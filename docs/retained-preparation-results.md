@@ -31,7 +31,32 @@ after authenticating the original bytes; 540 focused checks passed in both
 PowerShell 5 and 7. The archived bytes and pins are unchanged. The generated
 request SHA-256 is `2e5c967abee35bb8fbdb3f8ac856cab614ad00c205569ec77ad36c647fd97026`;
 its pin SHA-256 is `d84023d404f8a11eda22e51a9011cd8401cfe1779ca18fbca070aff6f9945cdb`.
-No reconstruction ran.
+The subsequent reconstruction preparation passed as recorded below.
+
+## Durable native reconstruction journal
+
+Case `native-reconstruct/prepare-20261024T052030708Z` completed its full
+source/shadow comparison and stability scans, then durably prepared an external
+journal inside the guest. It issued zero target payload writes and left both
+data disks offline. The host exported the ticket and reports, saved checkpoint
+`4b7a4dc4-a74e-4996-9f31-a4b18d2444cb`, and restored the off4GiB baseline.
+
+| Measurement | Result |
+| --- | --- |
+| Patch ranges | 130 |
+| Changed non-retained bytes | 69,451,776 |
+| Journal length | 138,933,772 |
+| Target bytes read | 111,738,601,472 |
+| Shadow bytes read | 111,738,601,472 |
+| Target bytes written/requested | 0 / 0 |
+| Host result SHA-256 | `a03b4228a520e76edc8e57c3edfd3e5295ed2d5938e4f426ff7c1544894cc76f` |
+| Ticket SHA-256 | `dd65983e8b73227bdad8eb649f10d58f9c0d1995b43a207b53c414a6d341816f` |
+| Native report SHA-256 | `54b96f4d6284f2f3194c8779b21600f3a88e36ecf32074d35a12933663eaad34` |
+| Expected final partition SHA-256 | `57b3fc2fb836c4091efd331e84b9c25488beff2af46886a45a86554e81a25443` |
+
+This proves journal preparation only. Apply was separately started in
+`apply-20261024T054132656Z`; its current result must be inspected before inferring
+completion. No native filesystem mount has yet validated the reconstruction.
 
 ## Complete native read evidence; host cleanup check failed
 

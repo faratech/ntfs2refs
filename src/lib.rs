@@ -10,6 +10,7 @@ pub mod lab_native;
 #[cfg(windows)]
 pub mod lab_native_reconstruct;
 pub mod lab_reconstruct;
+pub mod ntfs_allocation;
 pub mod ntfs_inspect;
 pub mod planner;
 pub mod refs_bootstrap;

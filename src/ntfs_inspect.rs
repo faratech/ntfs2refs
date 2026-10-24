@@ -5,6 +5,7 @@
 //! expose. Attribute-list assembly, directory reconciliation and $Secure lookup
 //! remain explicit coverage blockers; no report from this module certifies them.
 
+use crate::ntfs_allocation::{self, Assessment, AttributeKey, Limits, PhysicalInterval};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -134,6 +135,10 @@ pub struct NtfsInspection {
     pub records_scanned: u64,
     pub allocated_clusters: Option<u64>,
     pub free_clusters: Option<u64>,
+    /// Raw attribute/bitmap consistency only. Native allocation, namespace,
+    /// security, clean-state and backup reconciliation remain separate gates.
+    #[serde(default)]
+    pub allocation_reconciliation: Option<AllocationReconciliation>,
     pub files: Vec<FileInventory>,
     pub blockers: Vec<InspectionBlocker>,
     pub inventory_complete: bool,
@@ -145,6 +150,24 @@ pub struct NtfsInspection {
     pub stream_hash_bytes: u64,
     #[serde(default)]
     pub stream_hash_limit_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AllocationReconciliationStatus {
+    ConsistentRawModel,
+    Rejected,
+    IncompleteAttributeInventory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllocationReconciliation {
+    pub status: AllocationReconciliationStatus,
+    pub bitmap_sha256: String,
+    pub domain_clusters: u64,
+    pub physical_intervals: usize,
+    /// Rejected interval indices follow file/attribute/extent inventory order.
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1272,6 +1295,129 @@ fn classify_metadata_roles(report: &mut NtfsInspection, budget: &mut ReportBudge
     Ok(())
 }
 
+fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationReconciliation {
+    let mut result = AllocationReconciliation {
+        status: AllocationReconciliationStatus::Rejected,
+        bitmap_sha256: hex::encode(Sha256::digest(bitmap)),
+        domain_clusters: report.geometry.total_clusters,
+        physical_intervals: 0,
+        detail: String::new(),
+    };
+    for file in &report.files {
+        if file.base_file_reference != 0
+            || file
+                .attributes
+                .iter()
+                .any(|a| a.type_code == 0x20 || a.lowest_vcn != 0)
+        {
+            result.status = AllocationReconciliationStatus::IncompleteAttributeInventory;
+            result.detail = format!(
+                "MFT record {} needs attribute-list/extension assembly; no partial allocation model assessed",
+                file.record_number
+            );
+            return result;
+        }
+        if file.attributes.iter().enumerate().any(|(index, a)| {
+            file.attributes[..index]
+                .iter()
+                .any(|b| b.instance == a.instance)
+        }) {
+            result.status = AllocationReconciliationStatus::IncompleteAttributeInventory;
+            result.detail = format!(
+                "MFT record {} repeats an attribute instance; ownership identity is ambiguous",
+                file.record_number
+            );
+            return result;
+        }
+    }
+    let limits = Limits::default();
+    let cluster = u64::from(report.geometry.cluster_size);
+    let mut intervals = Vec::new();
+    let mut name_units = 0usize;
+    for file in &report.files {
+        // AttributeInventory is authoritative here. StreamInventory duplicates
+        // DATA attributes and must never produce additional ownership claims.
+        for attribute in &file.attributes {
+            if attribute.resident {
+                continue; // Already contained in the MFT's allocation.
+            }
+            for extent in &attribute.extents {
+                let Some(physical) = extent.physical_offset else {
+                    continue; // Sparse holes have no physical owner.
+                };
+                if intervals.len() >= limits.max_intervals {
+                    result.detail = "Allocation interval budget exceeded".into();
+                    return result;
+                }
+                name_units = match name_units.checked_add(attribute.name_utf16.len()) {
+                    Some(total) if total <= limits.max_total_name_units => total,
+                    _ => {
+                        result.detail = "Allocation attribute-name budget exceeded".into();
+                        return result;
+                    }
+                };
+                if !extent.logical_offset.is_multiple_of(cluster)
+                    || !physical.is_multiple_of(cluster)
+                    || extent.length == 0
+                    || !extent.length.is_multiple_of(cluster)
+                {
+                    result.detail = "Attribute extent is not a nonempty cluster interval".into();
+                    return result;
+                }
+                if intervals.try_reserve(1).is_err() {
+                    result.detail = "Allocation interval storage unavailable".into();
+                    return result;
+                }
+                let mut name = Vec::new();
+                if name.try_reserve_exact(attribute.name_utf16.len()).is_err() {
+                    result.detail = "Allocation attribute-name storage unavailable".into();
+                    return result;
+                }
+                name.extend_from_slice(&attribute.name_utf16);
+                intervals.push(PhysicalInterval {
+                    owner: AttributeKey {
+                        record_number: file.record_number,
+                        sequence_number: file.sequence_number,
+                        type_code: attribute.type_code,
+                        name_utf16: name,
+                        instance: attribute.instance,
+                    },
+                    vcn_start: extent.logical_offset / cluster,
+                    lcn_start: physical / cluster,
+                    clusters: extent.length / cluster,
+                });
+            }
+        }
+    }
+    result.physical_intervals = intervals.len();
+    match ntfs_allocation::assess(result.domain_clusters, bitmap, &intervals, limits) {
+        Assessment::Consistent(summary) => {
+            result.status = AllocationReconciliationStatus::ConsistentRawModel;
+            result.detail = format!(
+                "{} allocated clusters in {} attributes reconcile; native and semantic source admission remains unverified",
+                summary.allocated_clusters, summary.distinct_attributes
+            );
+        }
+        Assessment::Rejected(reason) => result.detail = format!("{reason:?}"),
+    }
+    result
+}
+
+fn require_bitmap_bytes(attribute: &AttributeInventory, needed: u64) -> Result<()> {
+    ensure!(
+        attribute.flags == 0
+            && attribute.lowest_vcn == 0
+            && attribute.initialized_size >= needed
+            && attribute.logical_size >= needed
+            && attribute
+                .extents
+                .iter()
+                .all(|extent| extent.physical_offset.is_some()),
+        "allocation bitmap must have initialized, unencoded, nonsparse bytes for the entire requested domain"
+    );
+    Ok(())
+}
+
 /// Inspect a raw NTFS partition without issuing writes. The report remains blocked
 /// until every semantic coverage requirement has a validated implementation.
 pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<NtfsInspection> {
@@ -1340,15 +1486,25 @@ pub fn inspect_with_limits<R: Read + Seek>(
         mft_record_count > 6 && mft_record_count <= MAX_MFT_RECORDS,
         "MFT record count exceeds inspection limit or lacks system records"
     );
+    let mft_bitmap_attribute = unnamed(&bootstrap, 0xb0)?;
+    require_bitmap_bytes(
+        &mft_bitmap_attribute.report,
+        mft_bitmap_attribute.report.logical_size,
+    )?;
     let mft_bitmap = read_small_attribute(
         reader,
-        unnamed(&bootstrap, 0xb0)?,
+        mft_bitmap_attribute,
         &geometry,
         MAX_MFT_RECORDS.div_ceil(8),
     )?;
     ensure!(
         mft_bitmap.len() as u64 >= mft_record_count.div_ceil(8),
         "MFT bitmap is too short"
+    );
+    ensure!(
+        (mft_record_count as usize..mft_bitmap.len() * 8)
+            .all(|bit| mft_bitmap[bit / 8] & (1 << (bit % 8)) == 0),
+        "MFT bitmap contains allocated records beyond MFT EOF"
     );
     let mut report = NtfsInspection {
         schema_version: 1,
@@ -1360,6 +1516,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
         records_scanned: 0,
         allocated_clusters: None,
         free_clusters: None,
+        allocation_reconciliation: None,
         files: Vec::new(),
         blockers: Vec::new(),
         inventory_complete: false,
@@ -1369,6 +1526,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
         stream_hash_limit_bytes: limits.max_stream_hash_bytes,
     };
     let mut root_seen = false;
+    let mut volume_bitmap = None;
     for number in 0..mft_record_count {
         if mft_bitmap[number as usize / 8] & (1 << (number % 8)) == 0 {
             continue;
@@ -1430,6 +1588,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
                 needed <= MAX_BITMAP_BYTES && bitmap_attr.report.logical_size >= needed,
                 "volume allocation bitmap is too short or exceeds inspection limit"
             );
+            require_bitmap_bytes(&bitmap_attr.report, needed)?;
             let mut bitmap = vec![0; needed as usize];
             read_attribute_range(reader, bitmap_attr, 0, &mut bitmap, &geometry)?;
             let mut allocated = 0u64;
@@ -1440,6 +1599,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
             }
             report.allocated_clusters = Some(allocated);
             report.free_clusters = Some(geometry.total_clusters - allocated);
+            volume_bitmap = Some(bitmap);
         }
         let mut inventory = FileInventory {
             record_number: number,
@@ -1674,6 +1834,12 @@ pub fn inspect_with_limits<R: Read + Seek>(
         "missing allocated root, volume-information, or allocation-bitmap records"
     );
     classify_metadata_roles(&mut report, &mut budget)?;
+    let allocation = reconcile_allocation(
+        &report,
+        volume_bitmap.as_deref().context("missing volume bitmap")?,
+    );
+    budget.charge((allocation.bitmap_sha256.capacity() + allocation.detail.capacity()) as u64)?;
+    report.allocation_reconciliation = Some(allocation);
     for (code, message) in [
         (
             "security_descriptors_unresolved",
@@ -1685,7 +1851,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
         ),
         (
             "allocation_ownership_unverified",
-            "Extent ownership has not been reconciled with $Bitmap and all metadata allocations",
+            "Raw allocation reconciliation is diagnostic; native bitmap/extent cross-checks and complete source admission remain unverified",
         ),
         (
             "journal_state_unverified",

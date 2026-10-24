@@ -117,7 +117,10 @@ mapping explicitly while retaining the original GPT disk/partition identity.
 ## First implementation: complete source admission, without target writes
 
 Implement a Rust admission certificate over a frozen source and pinned native
-observations. Reuse `ntfs_inspect`, but do not reinterpret its current
+observations. A [raw allocation diagnostic](ntfs-allocation-reconciliation.md)
+now reconciles decoded attribute intervals with initialized bitmap bytes and
+refuses incomplete attribute inventories. Native allocation cross-checks and
+the remaining source semantics still need implementation. Reuse `ntfs_inspect`, but do not reinterpret its current
 `inventory_complete=false` or ancestry candidates as ownership proof. Today it
 explicitly leaves directory indexes, security descriptors, allocation ownership,
 log state and backup metadata unresolved; attribute-list assembly is also

@@ -69,6 +69,8 @@ connects those concepts to ReFS's different metadata structures. It links the
 and proposed [journaled relocation path](docs/research/journaled-relocation-design.md).
 The [user-report reconciliation](docs/research/user-report-reconciliation.md)
 checks the supplied research against pinned sources and the current implementation.
+The [REFSNT evaluation](docs/research/refsnt-writer-evaluation.md) identifies its
+extent-adoption primitive and records reproduced read-only corpus results.
 These notes distinguish documented behavior, native observations and untested
 design proposals.
 
@@ -81,6 +83,9 @@ returning an incomplete result. Supported metadata DATA streams count too. The
 special unflagged `$BadClus:$Bad` layout is explicitly unsupported for hashing;
 its observed flags and extents remain in the report. Hashes do not establish complete metadata
 preservation or allocation ownership.
+The [allocation reconciliation](docs/ntfs-allocation-reconciliation.md) now
+compares decoded physical attribute intervals with the volume bitmap while
+leaving native and semantic source admission as separate requirements.
 
 ## Laboratory
 

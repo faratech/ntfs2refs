@@ -4,7 +4,11 @@ The user authorized implementation of the researched NTFS-to-ReFS plan. This
 session began implementation on 2026-10-23. Work is in progress, not a completed
 converter. Resume implementation from the actual files and host-result records.
 
-Latest verified state: 195 ordinary Rust tests pass across the workspace. The
+Latest verified state: 224 ordinary Rust tests pass across the workspace, with
+five explicitly ignored native/child-process tests. The raw NTFS inspector now
+reconciles a bounded attribute ownership model with initialized bitmap bytes;
+this remains diagnostic and does not grant source admission. See
+[allocation reconciliation](docs/ntfs-allocation-reconciliation.md). The
 new journal core contains actual old/new payloads, pinned recovery and a durable
 handoff barrier; file-based interruption/recovery tests pass. The bounded native
 adapter and `lab-native-probe` now also passed both complete native phases in
@@ -19,7 +23,19 @@ created the reconstruction request, SHA-256
 `2e5c967abee35bb8fbdb3f8ac856cab614ad00c205569ec77ad36c647fd97026`,
 and its pin, SHA-256
 `d84023d404f8a11eda22e51a9011cd8401cfe1779ca18fbca070aff6f9945cdb`.
-No reconstruction journal or target payload write has occurred.
+Native journal preparation then passed in
+`native-reconstruct/prepare-20261024T052030708Z`:130 ranges,69,451,776 changed
+bytes,138,933,772 journal bytes,zero target payload writes. Its complete host
+SHA-256 is `a03b4228a520e76edc8e57c3edfd3e5295ed2d5938e4f426ff7c1544894cc76f`;
+the independently persisted ticket SHA-256 is
+`dd65983e8b73227bdad8eb649f10d58f9c0d1995b43a207b53c414a6d341816f`.
+The expected reconstructed image SHA-256 is
+`57b3fc2fb836c4091efd331e84b9c25488beff2af46886a45a86554e81a25443`.
+Prepared checkpoint `4b7a4dc4-a74e-4996-9f31-a4b18d2444cb` is saved.
+Apply is running in case `apply-20261024T054132656Z`; inspect its live process
+and eventual host result before taking another VM action. The guest still uses
+the original frozen release; the224-test development build is in a separate
+ignored target directory. No Apply completion or native ReFS mount is claimed.
 The target's offline state survived restart, but the original shadow reattachment
 profile surfaced its fresh device online/read-write and was refused. No actual native
 filesystem conversion has passed. The previous release comparator passed its
@@ -87,9 +103,9 @@ passed in both PowerShell5/7 with independent review. Sources and manifests
 dated `20261024T045513153Z` were frozen for the successful fresh probe
 `win11-20261024T045526178Z`. All restore observations passed, and the complete
 host/native probe passed. The reviewed BOM compatibility fix and request
-generation are complete. Native reconstruction is pending; affected host source
-manifests must be regenerated, while the completed probe and its source pins
-remain unchanged.
+generation are complete. Updated reconstruction/CV manifests dated
+`20261024T052019110Z` are frozen; Prepare passed and Apply is in progress.
+The completed probe and its source pins remain unchanged.
 Failed branches/evidence are preserved; consult the latest host-result and
 failure-preservation records for live state. See
 [preparation measurements](docs/retained-preparation-results.md). Native journal

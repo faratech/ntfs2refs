@@ -17,6 +17,18 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    Request {
+        #[arg(long)]
+        inspection: PathBuf,
+        #[arg(long)]
+        inspection_sha256: String,
+        #[arg(long)]
+        source_binding: PathBuf,
+        #[arg(long)]
+        source_binding_sha256: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
     Collect {
         #[arg(long)]
         request: PathBuf,
@@ -77,6 +89,35 @@ fn save(path: &Path, value: &impl serde::Serialize) -> Result<()> {
 }
 fn main() -> Result<()> {
     match Args::parse().command {
+        Command::Request {
+            inspection,
+            inspection_sha256,
+            source_binding,
+            source_binding_sha256,
+            output,
+        } => {
+            let raw: ntfs2refs::planner::Inspection = serde_json::from_slice(&pinned(
+                &inspection,
+                &inspection_sha256,
+                64 * 1024 * 1024,
+            )?)?;
+            let input: serde_json::Value =
+                serde_json::from_slice(&pinned(&source_binding, &source_binding_sha256, 16_384)?)?;
+            ensure!(
+                input.get("schema_version").and_then(|v| v.as_u64()) == Some(1),
+                "source binding schema differs"
+            );
+            let binding: n2r_win32::layout::DiskBinding = serde_json::from_value(
+                input
+                    .get("source")
+                    .context("missing source binding")?
+                    .clone(),
+            )?;
+            save(
+                &output,
+                &ntfs_attestation::request_for_inspection(&raw, &inspection_sha256, &binding)?,
+            )?;
+        }
         Command::Collect {
             request,
             request_sha256,

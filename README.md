@@ -30,6 +30,9 @@ The [source-admission work](docs/source-admission-progress.md) now includes
 native directory observations, explicit object dispositions and actual backup
 boot/MFT-mirror checks. It reports remaining refusals; no admission certificate
 or existing-tree conversion has passed yet.
+An [existing four-file tree now has a native post-exclusion source basis](docs/native-ntfs-source-freeze.md),
+verified across restart and read-only Windows inspection. Its physical placement
+was untouched; conversion and interruption recovery for that tree remain open.
 
 ## Build and run
 

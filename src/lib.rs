@@ -15,6 +15,8 @@ pub mod ntfs_allocation;
 pub mod ntfs_attestation;
 pub mod ntfs_backup;
 pub mod ntfs_data_attestation;
+#[cfg(windows)]
+pub mod ntfs_freeze;
 pub mod ntfs_index;
 pub mod ntfs_inspect;
 pub mod ntfs_namespace;

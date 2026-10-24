@@ -232,6 +232,70 @@ fn matched_native_metadata_is_still_diagnostic() {
     assert!(c.all_requested_metadata_matched);
     assert!(!c.conversion_qualified);
 }
+
+fn request_inputs() -> (
+    ntfs2refs::planner::Inspection,
+    n2r_win32::layout::DiskBinding,
+) {
+    use n2r_win32::layout::{
+        DISK_BYTES, DiskBinding, PARTITION_BYTES, PARTITION_OFFSET, PartitionIdentity,
+    };
+    let (mut raw, _) = fixture();
+    raw.geometry.volume_size = PARTITION_BYTES - 512;
+    raw.geometry.serial_number = u64::MAX;
+    let inspection = ntfs2refs::planner::Inspection {
+        schema_version: 1,
+        source: ntfs2refs::block_io::SourceIdentity {
+            path: "source.raw".into(),
+            length: PARTITION_BYTES,
+            sha256: "b".repeat(64),
+        },
+        filesystem: ntfs2refs::planner::Filesystem::Ntfs(raw),
+    };
+    let binding = DiskBinding {
+        disk_number: 1,
+        volume_guid: "12345678-1234-5678-1234-567812345678".into(),
+        identity: PartitionIdentity {
+            disk_guid: "22345678-1234-5678-1234-567812345678".into(),
+            partition_guid: "32345678-1234-5678-1234-567812345678".into(),
+            partition_number: 2,
+            disk_bytes: DISK_BYTES,
+            partition_offset: PARTITION_OFFSET,
+            partition_bytes: PARTITION_BYTES,
+            logical_sector_bytes: 512,
+            physical_sector_bytes: 4096,
+        },
+    };
+    (inspection, binding)
+}
+#[test]
+fn generated_request_preserves_unsigned_64_bit_serial_and_all_identities() {
+    let (inspection, binding) = request_inputs();
+    let request =
+        ntfs2refs::ntfs_attestation::request_for_inspection(&inspection, &"a".repeat(64), &binding)
+            .unwrap();
+    let bytes = serde_json::to_vec(&request).unwrap();
+    let roundtrip: Request = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(roundtrip.ntfs_serial, u64::MAX);
+    assert_eq!(roundtrip.files, request.files);
+    assert_eq!(
+        roundtrip.volume,
+        format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid)
+    );
+}
+#[test]
+fn request_generation_refuses_source_length_mismatch_and_invalid_pins() {
+    let (mut inspection, binding) = request_inputs();
+    assert!(
+        ntfs2refs::ntfs_attestation::request_for_inspection(&inspection, "not-a-hash", &binding)
+            .is_err()
+    );
+    inspection.source.length -= 4096;
+    assert!(
+        ntfs2refs::ntfs_attestation::request_for_inspection(&inspection, &"a".repeat(64), &binding)
+            .is_err()
+    );
+}
 #[test]
 fn missing_file_observation_is_refused() {
     let (raw, mut r) = fixture();

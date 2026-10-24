@@ -1,6 +1,24 @@
 # Implementation handoff
 
-Latest implementation: P0 logical-stream verification is finished and committed
+Latest implementation: a newly populated four-file, three-directory NTFS tree
+now has an actual post-lock/dismount source basis. The Rust helper persists
+offline/read-only exclusion, hashes and inspects the owning device, verifies
+backups and revalidates the complete source. A clean guest restart preserved
+exclusion, full hash and byte-identical inspection. No source extent was moved.
+See [native source-freeze evidence](docs/native-ntfs-source-freeze.md).
+Native read-only NTFS observation then matched every user stream, extent and
+directory. All seven non-root user objects and root have matching stored/kernel
+and API security views. Read-only CHKDSK passed; the source remained byte-identical.
+Data reads changed only cached access times on the four files. The timestamp
+policy, reserved-root namespace projection, volume flags and internal/log state
+still need admission integration. The inactive resource-manager error is not
+treated as evidence of transaction cleanliness. No certificate or existing-tree
+conversion/recovery result is claimed. The source checkpoint is
+`7c406068-a102-4367-90f0-6f891bfa99a1`; the VM is off at 4 GiB on installed-clean.
+The workspace passes 388 tests with five ignored, formatting/clippy and 19 lab
+guards. Seven archive rejection cases pass without touching source artifacts.
+
+Previous implementation: P0 logical-stream verification is finished and committed
 at `8935e11`; [native evidence](docs/native-ntfs-logical-data.md) covers all eight
 fixture streams with the protected source unchanged. Native schema 5 now adds
 directory enumeration and exact name/reference reconciliation. The fixture

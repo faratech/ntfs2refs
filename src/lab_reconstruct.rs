@@ -150,7 +150,7 @@ fn read_at<R: Read + Seek>(io: &mut R, at: u64, bytes: &mut [u8]) -> Result<()> 
     io.read_exact(bytes)?;
     Ok(())
 }
-fn hash_range<R: Read + Seek>(io: &mut R, at: u64, length: u64) -> Result<[u8; 32]> {
+pub(crate) fn hash_range<R: Read + Seek>(io: &mut R, at: u64, length: u64) -> Result<[u8; 32]> {
     io.seek(SeekFrom::Start(at))?;
     let mut hash = Sha256::new();
     let mut buffer = vec![0; usize::try_from(length.min(BUFFER as u64))?];

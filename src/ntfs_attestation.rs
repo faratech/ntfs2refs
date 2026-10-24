@@ -9,6 +9,44 @@ use n2r_win32::attestation::{Report, Snapshot};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Generate an observer request in Rust so 64-bit identifiers stay exact.
+/// Collection independently checks the native route and read-only protection.
+pub fn request_for_inspection(
+    inspection: &crate::planner::Inspection,
+    inspection_sha256: &str,
+    binding: &n2r_win32::layout::DiskBinding,
+) -> Result<n2r_win32::attestation::Request> {
+    binding.validate()?;
+    let crate::planner::Filesystem::Ntfs(raw) = &inspection.filesystem else {
+        anyhow::bail!("native NTFS observer requires an NTFS inspection");
+    };
+    ensure!(
+        inspection.source.length == binding.identity.partition_bytes
+            && (raw.geometry.volume_size == inspection.source.length
+                || raw.geometry.volume_size.checked_add(512) == Some(inspection.source.length)),
+        "source inspection and native partition length differ"
+    );
+    let request = n2r_win32::attestation::Request {
+        schema_version: 1,
+        source_inspection_sha256: inspection_sha256.into(),
+        volume: format!("{}\\", binding.volume_path()?),
+        disk_number: binding.disk_number,
+        partition_offset: binding.identity.partition_offset,
+        partition_length: binding.identity.partition_bytes,
+        ntfs_serial: raw.geometry.serial_number,
+        files: raw
+            .files
+            .iter()
+            .map(|f| n2r_win32::attestation::FileIdentity {
+                record_number: f.record_number,
+                sequence_number: f.sequence_number,
+            })
+            .collect(),
+    };
+    request.validate()?;
+    Ok(request)
+}
+
 #[derive(Debug, Serialize)]
 pub struct FileComparison {
     pub record_number: u64,

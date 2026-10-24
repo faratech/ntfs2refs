@@ -162,7 +162,7 @@ pub fn compare(
 ) -> Result<Comparison> {
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2 | 3 | 4) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=4) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
     ensure!(
@@ -372,8 +372,10 @@ pub fn compare(
         all_requested_metadata_matched: matched == files.len()
             && native_streams
                 .as_ref()
-                .is_none_or(|s| s.all_mappings_matched),
-
+                .is_none_or(|s| s.all_mappings_matched)
+            && native_logical_data
+                .as_ref()
+                .is_none_or(|d| d.all_logical_data_matched),
         files,
         conversion_qualified: false,
         native_streams,

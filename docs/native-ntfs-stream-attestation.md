@@ -130,9 +130,10 @@ reserve. No existing disk image or checkpoint was deleted.
 Twenty-eight new tests cover stream/retrieval decoding, ownership, sparse and
 resident semantics, native-base units, bitmap corruption, partial responses and
 report encoding. The workspace passes 340 tests with five ignored, plus clippy
-and formatting; all 19 lab guard tests also pass. Next complete native logical
-hash/initialized-data and namespace reconciliation, then source freeze/admission
-and the existing-tree conversion path. General conversion remains gated.
+and formatting; all 19 lab guard tests also pass. This describes the verified
+stream milestone, preceding [native logical-data verification](native-ntfs-logical-data.md).
+Complete native namespace reconciliation, source freeze/admission and the
+existing-tree conversion path remain open. General conversion remains gated.
 
 Microsoft contracts: [FILE_STREAM_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_stream_info),
 [retrieval pointers](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_get_retrieval_pointers),

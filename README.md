@@ -22,8 +22,10 @@ matched 16 source objects; API inheritance views and cached root access time
 exposed differences that remain explicit admission blockers.
 Native [stream/extent and bitmap reconciliation](docs/native-ntfs-stream-attestation.md)
 now matches the full control-volume bitmap and every fixture object's stream
-mapping, including ADS and sparse holes. Logical-data, namespace and freeze
-admission remain unfinished.
+mapping, including ADS and sparse holes. Native [logical-stream hashing](docs/native-ntfs-logical-data.md)
+also matches every supported fixture stream without changing the protected
+source. Complete namespace reconciliation, source admission and a coherent
+freeze boundary remain unfinished.
 
 ## Build and run
 

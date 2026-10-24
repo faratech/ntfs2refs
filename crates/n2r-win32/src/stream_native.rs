@@ -1,4 +1,4 @@
-//! Native stream metadata queries only. No payload reads or setters.
+//! Native stream observations and bounded logical reads. No on-disk setters.
 use crate::{attestation::*, stream_layout as layout};
 use std::{
     fs::File,
@@ -8,7 +8,10 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::INVALID_HANDLE_VALUE,
-    Storage::FileSystem::{CreateFileW, GetFileInformationByHandleEx, GetFinalPathNameByHandleW},
+    Storage::FileSystem::{
+        CreateFileW, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FileIdType,
+        GetFileInformationByHandleEx, GetFinalPathNameByHandleW, OpenFileById, ReOpenFile,
+    },
     System::IO::DeviceIoControl,
 };
 
@@ -148,7 +151,104 @@ fn named(file: &File, r: &Request, name: &[u16]) -> io::Result<File> {
     }
     Ok(unsafe { File::from_raw_handle(h) })
 }
-pub(crate) fn capture(file: &File, r: &Request, id: &FileIdentity) -> StreamCapture {
+fn read_handle(file: &File, id: &FileIdentity, named_stream: bool) -> io::Result<File> {
+    // Named streams originated from CreateFileW, so ReOpenFile retains their
+    // stream. Default streams reopen by ID using the existing volume hint.
+    let h = if named_stream {
+        unsafe { ReOpenFile(file.as_raw_handle(), 0x80000080, 7, 0x02200000) }
+    } else {
+        let descriptor = FILE_ID_DESCRIPTOR {
+            dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+            Type: FileIdType,
+            Anonymous: FILE_ID_DESCRIPTOR_0 {
+                FileId: id.reference() as i64,
+            },
+        };
+        unsafe {
+            OpenFileById(
+                file.as_raw_handle(),
+                &descriptor,
+                0x80000080,
+                7,
+                ptr::null(),
+                0x02200000,
+            )
+        }
+    };
+    if h == INVALID_HANDLE_VALUE || h.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: transfer the newly returned, uniquely owned native handle.
+    Ok(unsafe { File::from_raw_handle(h) })
+}
+fn hash_stream(
+    file: &File,
+    r: &Request,
+    id: &FileIdentity,
+    name: &[u16],
+    expected: u64,
+    budget: &mut crate::logical_hash::Budget,
+) -> StreamHash {
+    let mut out = StreamHash {
+        name_utf16: name.to_vec(),
+        logical_size: expected,
+        identity_before: None,
+        identity_after: None,
+        standard_before: None,
+        standard_after: None,
+        outcome: crate::logical_hash::Outcome::refused(io::Error::other(
+            "data read was not started",
+        )),
+    };
+    let mut data = match read_handle(file, id, !name.is_empty()) {
+        Ok(f) => f,
+        Err(e) => {
+            out.outcome = crate::logical_hash::Outcome::refused(e);
+            return out;
+        }
+    };
+    let before = info(&data, 18, 24);
+    let valid = binding(&before, r, id);
+    out.identity_before = Some(before);
+    if let Err(e) = valid {
+        out.outcome = crate::logical_hash::Outcome::refused(e);
+        return out;
+    }
+    let standard = info(&data, 1, 24);
+    let correct = standard.native_error.is_none()
+        && standard.bytes.len() == 24
+        && u64::from_le_bytes(standard.bytes[8..16].try_into().unwrap()) == expected;
+    out.standard_before = Some(standard);
+    if !correct {
+        out.outcome = crate::logical_hash::Outcome::refused(io::Error::other(
+            "data stream length query differs",
+        ));
+        return out;
+    }
+    out.outcome = crate::logical_hash::read(&mut data, expected, budget);
+    let after = info(&data, 18, 24);
+    let valid = binding(&after, r, id);
+    out.identity_after = Some(after);
+    out.standard_after = Some(info(&data, 1, 24));
+    if valid.is_err()
+        || out.identity_before != out.identity_after
+        || out.standard_before != out.standard_after
+    {
+        let consumed = out.outcome.bytes_read;
+        out.outcome = crate::logical_hash::Outcome::refused(io::Error::other(
+            "data stream identity or length changed during read",
+        ));
+        out.outcome.bytes_read = consumed;
+    }
+    out
+}
+pub(crate) fn capture(
+    file: &File,
+    r: &Request,
+    id: &FileIdentity,
+    budget: &mut crate::logical_hash::Budget,
+) -> (StreamCapture, Vec<StreamHash>) {
+    let mut hashes = vec![];
     let mut enumeration = info(file, 7, layout::MAX_STREAM_BUFFER);
     let mut result = StreamCapture {
         enumeration: enumeration.clone(),
@@ -156,7 +256,7 @@ pub(crate) fn capture(file: &File, r: &Request, id: &FileIdentity) -> StreamCapt
         streams: vec![],
     };
     if enumeration.native_error.is_some() {
-        return result;
+        return (result, hashes);
     }
     let entries = match layout::parse_streams(&enumeration.bytes) {
         Ok((entries, end)) => {
@@ -167,7 +267,7 @@ pub(crate) fn capture(file: &File, r: &Request, id: &FileIdentity) -> StreamCapt
         }
         Err(e) => {
             result.parse_error = Some(e.to_string());
-            return result;
+            return (result, hashes);
         }
     };
     for entry in entries {
@@ -209,6 +309,14 @@ pub(crate) fn capture(file: &File, r: &Request, id: &FileIdentity) -> StreamCapt
             &[0; 8],
             layout::RETRIEVAL_CAPACITY,
         ));
+        hashes.push(hash_stream(
+            f,
+            r,
+            id,
+            &entry.name,
+            entry.logical_size,
+            budget,
+        ));
         let after = info(f, 18, 24);
         if let Err(e) = binding(&after, r, id) {
             q.binding_error = Some(e.to_string());
@@ -216,5 +324,5 @@ pub(crate) fn capture(file: &File, r: &Request, id: &FileIdentity) -> StreamCapt
         q.identity_after = Some(after);
         result.streams.push(q);
     }
-    result
+    (result, hashes)
 }

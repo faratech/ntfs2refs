@@ -128,6 +128,8 @@ pub struct Report {
     pub conversion_qualified: bool,
     #[serde(default)]
     pub allocation: Option<VolumeAllocation>,
+    #[serde(default)]
+    pub logical_data: Option<LogicalData>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IoctlQuery {
@@ -222,4 +224,48 @@ pub struct PrivilegeState {
     pub before: u32,
     pub enabled: u32,
     pub restored: u32,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamHash {
+    pub name_utf16: Vec<u16>,
+    pub logical_size: u64,
+    pub identity_before: Option<Query>,
+    pub identity_after: Option<Query>,
+    pub standard_before: Option<Query>,
+    pub standard_after: Option<Query>,
+    pub outcome: crate::logical_hash::Outcome,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LogicalFile {
+    pub identity: FileIdentity,
+    pub before: Vec<StreamHash>,
+    pub after: Vec<StreamHash>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LogicalData {
+    pub audit: crate::logical_hash::Audit,
+    pub files: Vec<LogicalFile>,
+}
+#[cfg(windows)]
+pub(crate) fn hash_retained_bytes(items: &Vec<StreamHash>) -> usize {
+    let mut bytes = items.capacity() * std::mem::size_of::<StreamHash>();
+    for h in items {
+        bytes = bytes.saturating_add(
+            h.name_utf16.capacity() * 2
+                + h.outcome.sha256.as_ref().map_or(0, String::capacity)
+                + h.outcome.detail.as_ref().map_or(0, String::capacity),
+        );
+        for q in [
+            &h.identity_before,
+            &h.identity_after,
+            &h.standard_before,
+            &h.standard_after,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            bytes = bytes.saturating_add(q.bytes.capacity());
+        }
+    }
+    bytes
 }

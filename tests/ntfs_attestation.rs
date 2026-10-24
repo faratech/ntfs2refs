@@ -220,6 +220,7 @@ fn fixture() -> (ntfs_inspect::NtfsInspection, Report) {
         }],
         conversion_qualified: false,
         allocation: None,
+        logical_data: None,
     };
     (raw, report)
 }

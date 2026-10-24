@@ -355,8 +355,15 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     let bitmap_before = crate::stream_native::bitmap(&volume);
     let mut stream_bytes = base_before.bytes.capacity() + bitmap_before.bytes.capacity();
     let mut files = vec![];
+    let mut logical_files = vec![];
+    let mut read_budget = crate::logical_hash::Budget::new(crate::logical_hash::DEFAULT_LIMIT);
     let mut security_bytes = 0;
     for identity in &request.files {
+        let mut logical = LogicalFile {
+            identity: identity.clone(),
+            before: vec![],
+            after: vec![],
+        };
         let descriptor = FILE_ID_DESCRIPTOR {
             dwSize: mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
             Type: FileIdType,
@@ -391,8 +398,14 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             // SAFETY: transfer the newly acquired unique file-handle ownership.
             let file = unsafe { File::from_raw_handle(handle) };
             obs.before = Some(snapshot(&file));
-            obs.streams_before = Some(crate::stream_native::capture(&file, request, identity));
-            obs.streams_after = Some(crate::stream_native::capture(&file, request, identity));
+            let (capture, hashes) =
+                crate::stream_native::capture(&file, request, identity, &mut read_budget);
+            obs.streams_before = Some(capture);
+            logical.before = hashes;
+            let (capture, hashes) =
+                crate::stream_native::capture(&file, request, identity, &mut read_budget);
+            obs.streams_after = Some(capture);
+            logical.after = hashes;
             obs.after = Some(snapshot(&file));
             for s in [&obs.before, &obs.after].into_iter().flatten() {
                 security_bytes +=
@@ -407,11 +420,15 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             {
                 stream_bytes = stream_bytes.saturating_add(s.retained_bytes());
             }
+            stream_bytes = stream_bytes.saturating_add(
+                hash_retained_bytes(&logical.before) + hash_retained_bytes(&logical.after),
+            );
             if stream_bytes > MAX_TOTAL_STREAM_BYTES {
                 return Err(invalid("native stream evidence budget exhausted"));
             }
         }
         files.push(obs);
+        logical_files.push(logical);
     }
     let base_after = crate::stream_native::base(&volume);
     let bitmap_after = crate::stream_native::bitmap(&volume);
@@ -423,7 +440,7 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     privileges.restore()?;
     let after = route(&volume, &disk, request)?;
     Ok(Report {
-        schema_version: 3,
+        schema_version: 4,
         request: request.clone(),
         volume_extents_before: before.0,
         volume_extents_after: after.0,
@@ -442,6 +459,10 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             base_after,
             bitmap_before,
             bitmap_after,
+        }),
+        logical_data: Some(LogicalData {
+            audit: read_budget.audit(),
+            files: logical_files,
         }),
     })
 }

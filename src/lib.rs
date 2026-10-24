@@ -12,6 +12,7 @@ pub mod lab_native_reconstruct;
 pub mod lab_reconstruct;
 pub mod ntfs_allocation;
 pub mod ntfs_attestation;
+pub mod ntfs_data_attestation;
 pub mod ntfs_index;
 pub mod ntfs_inspect;
 pub mod ntfs_namespace;

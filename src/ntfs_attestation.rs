@@ -29,6 +29,7 @@ pub struct Comparison {
     pub all_requested_metadata_matched: bool,
     pub conversion_qualified: bool,
     pub native_streams: Option<crate::ntfs_stream_attestation::Reconciliation>,
+    pub native_logical_data: Option<crate::ntfs_data_attestation::Reconciliation>,
 }
 fn acl_bytes(d: &Descriptor, a: &Acl) -> Result<Vec<Vec<u8>>> {
     let b = hex::decode(&d.relative_hex)?;
@@ -161,7 +162,7 @@ pub fn compare(
 ) -> Result<Comparison> {
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2 | 3) && !native.conversion_qualified,
+        matches!(native.schema_version, 2 | 3 | 4) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
     ensure!(
@@ -352,8 +353,13 @@ pub fn compare(
         });
     }
     let matched = files.iter().filter(|f| f.matched).count();
-    let native_streams = if native.schema_version == 3 {
+    let native_streams = if native.schema_version >= 3 {
         Some(crate::ntfs_stream_attestation::reconcile(raw, native)?)
+    } else {
+        None
+    };
+    let native_logical_data = if native.schema_version == 4 {
+        Some(crate::ntfs_data_attestation::reconcile(raw, native)?)
     } else {
         None
     };
@@ -367,8 +373,10 @@ pub fn compare(
             && native_streams
                 .as_ref()
                 .is_none_or(|s| s.all_mappings_matched),
+
         files,
         conversion_qualified: false,
         native_streams,
+        native_logical_data,
     })
 }

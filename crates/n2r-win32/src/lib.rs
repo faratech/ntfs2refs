@@ -7,6 +7,7 @@ mod attestation_native;
 #[cfg(windows)]
 pub mod journal_file;
 pub mod layout;
+pub mod logical_hash;
 pub mod stream_layout;
 #[cfg(windows)]
 mod stream_native;

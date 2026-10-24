@@ -15,7 +15,7 @@ pub struct Check {
     pub detail: String,
 }
 impl Check {
-    fn from(result: Result<()>) -> Self {
+    pub(crate) fn from(result: Result<()>) -> Self {
         match result {
             Ok(()) => Self {
                 matched: true,
@@ -311,7 +311,10 @@ pub fn check_file(
     Ok(())
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
-    ensure!(native.schema_version == 3, "native stream profile missing");
+    ensure!(
+        matches!(native.schema_version, 3 | 4),
+        "native stream profile missing"
+    );
     let volume = native
         .allocation
         .as_ref()

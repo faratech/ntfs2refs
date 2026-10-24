@@ -102,3 +102,16 @@ and [object ACE fields](https://learn.microsoft.com/en-us/windows/win32/api/winn
 Its [native validity contract](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-isvalidsecuritydescriptor)
 checks present components, without proving each ACE's meaning. No third-party
 writer engine was incorporated.
+
+## Dependency follow-up
+
+GitHub reported [GHSA-r6v5-fh4h-64xc](https://github.com/advisories/GHSA-r6v5-fh4h-64xc)
+for the locked `time 0.3.45`. The lockfile now selects patched `time 0.3.47`
+and its required transitive updates. All 296 tests and clippy pass again.
+`time` is optional in `ntfs` and absent from the active default Windows tree;
+the rebuilt inspector is byte-identical to the archived binary above. Those
+native observations therefore still apply. Their original lockfile archive
+remains unchanged; a separate patch-provenance record binds the updated lockfile,
+test logs and unchanged binary rather than rewriting historical evidence.
+That record is `.lab/development/time-patch-provenance-20261024T131709562Z.json`,
+SHA-256 `d8efaf06317e74c3c34d09ee7a385d1cdb88e1b9ffdec65fc29c05797604224e`.

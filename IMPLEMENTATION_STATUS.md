@@ -10,6 +10,9 @@ passes 296 tests with five ignored, plus formatting and clippy. Evidence is
 under ignored `.lab/development/security-observation-20261024T130105835Z`,
 summary SHA-256 `3d2c7539c0ba8b03b2d7b71a0bb422bb76e0bc4e10e2ae1eac78a46b759f9e2a`.
 No device operation or guest conversion binary changed during this follow-up.
+The subsequent lockfile update patches optional `time 0.3.45` to 0.3.47 for
+GHSA-r6v5-fh4h-64xc. Tests/clippy pass again and the default Windows inspector
+remains byte-identical; the security evidence above remains valid.
 Next bind native enumeration, file identities, security and extents to the raw
 model, then finish freeze/log/backup admission and multi-file conversion.
 Buffer validation is not native file-security attestation; conversion remains

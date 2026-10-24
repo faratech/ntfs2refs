@@ -16,6 +16,7 @@ pub mod ntfs_index;
 pub mod ntfs_inspect;
 pub mod ntfs_namespace;
 pub mod ntfs_security;
+pub mod ntfs_stream_attestation;
 pub mod planner;
 pub mod refs_bootstrap;
 pub mod refs_containers;

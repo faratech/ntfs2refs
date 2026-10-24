@@ -1,6 +1,26 @@
 # Implementation handoff
 
-Latest implementation: the Rust native file-handle collector ran inside the VM
+Latest implementation: native stream/extent and bitmap reconciliation passed
+inside the VM on two separate restores of the prepared NTFS source checkpoint.
+The whole 262,143-cluster bitmap matches the raw ownership ledger. Sixteen
+queryable identities match 13 data streams, including every fixture object and
+all eight fixture data streams. Native refusals remain explicit; whole-corpus
+admission and general conversion are still false. See
+[stream evidence](docs/native-ntfs-stream-attestation.md).
+The final collector/host/native/comparison hashes are
+`7f91c70e7356eefba48d1905be19999694ab4dc8b6153144b881bbf4b691c31c`,
+`e4b62cbd35411fb9f7ac9e6e847a62cc3a885365d7e561c731a20e409015c235`,
+`d8f0c81d24b53e913c3f157f53e5f13e7a660e73cae0728f007f49a8d8e0ade7`,
+`a048301db84ed790772be0c73c74ef5a3f7dadcaf2fbc02c5d98bda78b3633f0`.
+Binary IOCTL blobs use compact hex with legacy-array read compatibility.
+Outcome checkpoint `85dbe56e-0b6f-4f32-9bbb-c86d05499aac` is saved; the VM is
+restored to installed-clean, off at 4 GiB. Lab capacity is now 196 GiB with the
+64 GiB host reserve still enforced. The workspace passes 340 tests with five
+ignored, formatting/clippy, and all 19 lab guards. Next bind native logical
+hashes/initialized data and namespace evidence, finish coherent freeze/admission,
+and expand the conversion beyond the prepared single-file case.
+
+Previous implementation: the Rust native file-handle collector ran inside the VM
 against the restored 1 GiB NTFS corpus, mounted read-only before its first use.
 All 36 allocated identities were requested; 17 opened and 16 kernel security
 descriptors matched the raw model. Thirteen `GetSecurityInfo` views differed in

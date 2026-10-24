@@ -130,7 +130,9 @@ SDS mirrors/hashes, SII/SDH membership, legacy descriptors and file bindings.
 The [native file-handle collector](native-ntfs-file-attestation.md) now provides
 partial identity/metadata/security evidence: 16 kernel descriptors match, while
 native API projections, cached timestamps and system-record refusals remain
-explicit. Native enumeration, stream/allocation ownership, log state and backup
+explicit. Native [stream mappings and the complete bitmap](native-ntfs-stream-attestation.md)
+now reconcile on the control corpus, including every fixture data stream.
+Native namespace/logical-data coverage, coherent freeze, log state and backup
 metadata remain unresolved; attribute-list assembly is also
 unsupported. The certificate needs the following minimum evidence:
 

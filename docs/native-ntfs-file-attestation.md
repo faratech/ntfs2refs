@@ -116,8 +116,9 @@ stopped, checkpointed, then restored to `installed-clean`, off at 4 GiB.
 
 Sixteen new tests cover missing/stale observations, security repacking,
 owner/ACL/control/ACE differences, native protection and privilege failures.
-The workspace passes 312 tests with five ignored; formatting and clippy pass.
-Native stream/retrieval-pointer and namespace reconciliation, coherent
+At this milestone the workspace passed 312 tests with five ignored, formatting
+and clippy. [Stream/retrieval-pointer and bitmap checks](native-ntfs-stream-attestation.md)
+have since passed natively. Native namespace/logical-data reconciliation, coherent
 freeze/log/backup admission, general metadata construction and recovery testing
 remain unfinished. `conversion_qualified=false` and `inventory_complete=false`
 remain in force.

@@ -3,6 +3,8 @@
 These scripts manage only the two disposable VMs recorded in `.lab/hyperv`.
 They do not grant the Rust converter permission to write a filesystem. A passing
 native ReFS control and a qualified writer remain separate research gates.
+The current lab budget is 196 GiB of actual files, with an independently enforced
+64 GiB host free-space reserve. Both limits are checked before new lab work.
 
 ## Host checks and media
 

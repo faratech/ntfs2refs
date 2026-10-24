@@ -351,6 +351,9 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     let disk = open(&format!(r"\\.\PhysicalDrive{}", request.disk_number))?;
     let before = route(&volume, &disk, request)?;
     let mut privileges = Privileges::enable()?;
+    let base_before = crate::stream_native::base(&volume);
+    let bitmap_before = crate::stream_native::bitmap(&volume);
+    let mut stream_bytes = base_before.bytes.capacity() + bitmap_before.bytes.capacity();
     let mut files = vec![];
     let mut security_bytes = 0;
     for identity in &request.files {
@@ -379,6 +382,8 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             open_error: None,
             before: None,
             after: None,
+            streams_before: None,
+            streams_after: None,
         };
         if handle == INVALID_HANDLE_VALUE || handle.is_null() {
             obs.open_error = Some(io::Error::last_os_error().raw_os_error().unwrap_or(31));
@@ -386,6 +391,8 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             // SAFETY: transfer the newly acquired unique file-handle ownership.
             let file = unsafe { File::from_raw_handle(handle) };
             obs.before = Some(snapshot(&file));
+            obs.streams_before = Some(crate::stream_native::capture(&file, request, identity));
+            obs.streams_after = Some(crate::stream_native::capture(&file, request, identity));
             obs.after = Some(snapshot(&file));
             for s in [&obs.before, &obs.after].into_iter().flatten() {
                 security_bytes +=
@@ -394,13 +401,29 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             if security_bytes > MAX_TOTAL_SECURITY_BYTES {
                 return Err(invalid("native descriptor budget exhausted"));
             }
+            for s in [&obs.streams_before, &obs.streams_after]
+                .into_iter()
+                .flatten()
+            {
+                stream_bytes = stream_bytes.saturating_add(s.retained_bytes());
+            }
+            if stream_bytes > MAX_TOTAL_STREAM_BYTES {
+                return Err(invalid("native stream evidence budget exhausted"));
+            }
         }
         files.push(obs);
+    }
+    let base_after = crate::stream_native::base(&volume);
+    let bitmap_after = crate::stream_native::bitmap(&volume);
+    stream_bytes =
+        stream_bytes.saturating_add(base_after.bytes.capacity() + bitmap_after.bytes.capacity());
+    if stream_bytes > MAX_TOTAL_STREAM_BYTES {
+        return Err(invalid("native allocation evidence budget exhausted"));
     }
     privileges.restore()?;
     let after = route(&volume, &disk, request)?;
     Ok(Report {
-        schema_version: 2,
+        schema_version: 3,
         request: request.clone(),
         volume_extents_before: before.0,
         volume_extents_after: after.0,
@@ -414,5 +437,11 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
         privilege_states: privileges.audit.clone(),
         files,
         conversion_qualified: false,
+        allocation: Some(VolumeAllocation {
+            base_before,
+            base_after,
+            bitmap_before,
+            bitmap_after,
+        }),
     })
 }

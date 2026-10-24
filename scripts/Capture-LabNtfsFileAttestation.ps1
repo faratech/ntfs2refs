@@ -5,13 +5,15 @@ Use Invoke-GuestNtfsAttestation.ps1 for the separately bounded blank-disk setup.
 [CmdletBinding()]
 param([Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{32}\z')][string]$RunId,
  [Parameter(Mandatory)][string]$BinaryPath,
- [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256)
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256,
+ [guid]$SourceCheckpointId='eda059b3-6d50-46bb-bdf4-018b99b5b34f')
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $workspace=Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $workspace 'lab/Lab.psm1') -Force
 $configuration=Get-LabConfiguration -WorkspaceRoot $workspace
 $manifest=Read-LabManifest $configuration win11;$vm=Get-OwnedLabVM $configuration $manifest
-if($vm.State-ne'Running'-or$vm.MemoryStartup-ne8GB-or$vm.DynamicMemoryEnabled-or[string]$vm.ParentSnapshotId-ine'eda059b3-6d50-46bb-bdf4-018b99b5b34f'-or@(Get-VMNetworkAdapter -VM $vm|Where-Object SwitchName).Count){throw 'Exact running disposable baseline branch required.'}
+if($vm.State-ne'Running'-or$vm.MemoryStartup-ne8GB-or$vm.DynamicMemoryEnabled-or[guid]$vm.ParentSnapshotId-ne$SourceCheckpointId-or@(Get-VMNetworkAdapter -VM $vm|Where-Object SwitchName).Count){throw 'Exact running disposable source branch required.'}
+if($SourceCheckpointId-ne[guid]'eda059b3-6d50-46bb-bdf4-018b99b5b34f'){$cp=@(Get-VMCheckpoint -VM $vm|Where-Object Id -EQ $SourceCheckpointId);if($cp.Count-ne1-or$cp[0].Name-cne('ntfs-source-attestation-'+$RunId)-or$cp[0].State-ne'Off'-or$cp[0].MemoryStartup-ne8GB){throw 'Prepared source checkpoint identity differs.'}}
 Assert-LabCapacity (Get-LabCapacity $configuration) -AdditionalBytes 32MB
 $binary=Get-Item -LiteralPath $BinaryPath -Force
 if($binary.PSIsContainer-or($binary.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$binary.Length-gt16MB-or(Get-FileHash -LiteralPath $binary.FullName -Algorithm SHA256).Hash.ToLowerInvariant()-cne$BinarySha256){throw 'Pinned bounded collector binary required.'}
@@ -25,7 +27,8 @@ $nativeSha=(Get-FileHash -LiteralPath $nativePath -Algorithm SHA256).Hash.ToLowe
 $inspection=Join-Path $workspace '.lab/development/security-observation-20261024T130105835Z/control.json'
 $inspectionSha='a1b25e0e0bcabe41455fd67a25c55b7017b6b8da9ac6437e0c062b7dc2b86baa'
 if((Get-FileHash -LiteralPath $inspection -Algorithm SHA256).Hash.ToLowerInvariant()-cne$inspectionSha){throw 'Frozen source inspection differs.'}
-$sources=@('Cargo.toml','Cargo.lock','crates/n2r-win32/Cargo.toml','crates/n2r-win32/src/attestation.rs','crates/n2r-win32/src/attestation_native.rs','src/ntfs_attestation.rs','src/bin/lab-ntfs-attest.rs','lab/guest/NativeNtfsCorpusDisk.cs','lab/guest/Invoke-GuestNtfsAttestation.ps1','scripts/Capture-LabNtfsFileAttestation.ps1')
+$record['sourceCheckpointId']=[string]$SourceCheckpointId
+$sources=@('Cargo.toml','Cargo.lock','lab/lab.config.json','crates/n2r-win32/Cargo.toml','crates/n2r-win32/src/attestation.rs','crates/n2r-win32/src/attestation_native.rs','crates/n2r-win32/src/stream_layout.rs','crates/n2r-win32/src/stream_native.rs','src/ntfs_attestation.rs','src/ntfs_stream_attestation.rs','src/bin/lab-ntfs-attest.rs','lab/guest/NativeNtfsCorpusDisk.cs','lab/guest/Invoke-GuestNtfsAttestation.ps1','scripts/Capture-LabNtfsFileAttestation.ps1')
 $pins=@();foreach($path in $sources){$from=Join-Path $workspace $path;$to=Join-Path $output ('sources/'+$path);New-Item -ItemType Directory -Path (Split-Path $to -Parent) -Force|Out-Null;Copy-Item -LiteralPath $from -Destination $to;$pins+=@([ordered]@{path=$path;sha256=(Get-FileHash -LiteralPath $to -Algorithm SHA256).Hash.ToLowerInvariant()})}
 Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $output 'lab-ntfs-attest.exe');Save-CaptureJson 'sources.json' $pins
 $credential=Import-Clixml -LiteralPath (Join-Path $configuration.Root 'win11/secrets/guest-credential.xml')

@@ -215,8 +215,11 @@ fn fixture() -> (ntfs_inspect::NtfsInspection, Report) {
             open_error: None,
             before: Some(s.clone()),
             after: Some(s),
+            streams_before: None,
+            streams_after: None,
         }],
         conversion_qualified: false,
+        allocation: None,
     };
     (raw, report)
 }

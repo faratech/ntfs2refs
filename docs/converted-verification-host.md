@@ -1,5 +1,28 @@
 # Host orchestration for protected native verification
 
+The prepared fixture's first protected mount and subsequent clean reboot/remount
+have passed; see [native results](native-conversion-results.md). Default mode is
+`first-mount`. `-Mode clean-remount` additionally requires
+`-PriorVerificationResultPath` and `-PriorVerificationResultSha256` for a completed
+first native observation rooted in the same Prepare/Apply/Handoff chain.
+
+Clean remount restores that observation's converted checkpoint and starts the
+guest with its persistent target read-only state. It skips shadow attachment
+and the first-mount boundary, then runs the unchanged native observer in a new
+guest session. The old mount artifact supplies historical provenance; live
+protection and disk/file identity are rechecked by the observer. The result
+records `mountEvidenceReused:true`, `mountBoundaryInvoked:false` and separate
+status `retained-A-clean-remount-readonly-checkpointed`. An observed mismatch
+preserves the branch without repairing protection or replaying reconstruction.
+
+Prior source archives are authenticated using `sourceHashes` inside the pinned
+completed host result. The archived review manifest was reserialized by the
+older runner, so its byte hash differs from the original review-input hash.
+The latter remains recorded as provenance and is never substituted with a
+normalized-byte hash. Current execution still requires its own exact reviewed
+manifest. The remount mode/predecessor and actual-archive tests add 171 checks
+in each PowerShell runtime to the existing host/decoding coverage.
+
 `scripts/Invoke-LabConvertedVerification.ps1` runs one reviewed post-handoff
 experiment. It performs no reconstruction, replay, rollback, filesystem format
 or writable target mount. All target/virtual-disk operations remain inside the

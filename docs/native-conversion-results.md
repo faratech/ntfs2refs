@@ -57,10 +57,43 @@ known completion and no preserved/unknown session.
 
 ## Remaining acceptance work
 
-Test a clean remount of the saved converted outcome and a controlled native
+The clean reboot/remount passed as recorded below. Next test a controlled native
 allocation/mutation workload that preserves A and its ownership. Native power
 loss, journal recovery, tree growth and arbitrary-source admission remain
 unqualified. The current construction uses metadata produced in a native ReFS
 shadow; [REFSNT writer evaluation](research/refsnt-writer-evaluation.md) is a
 separate research path. These results do not establish a general no-recopy or
 low-scratch converter, and boot conversion remains deferred.
+
+## Clean reboot and remount passed
+
+Case `converted-verification/win11-20261024T064141050Z` restored the saved
+converted checkpoint, booted Windows, and observed the persistently read-only
+target through Microsoft's driver. It did not reattach the shadow, invoke the
+first-mount boundary, reconstruct the target or change its protection.
+The old mount artifact was authenticated as historical provenance; the native
+observer independently rechecked the live disk, partition, volume and file.
+
+Both new 64 KiB reads returned the original A hash. Four new snapshots were
+complete and stable, covering mapping, validity, timestamps and security.
+Native cleanup and privilege restoration completed, followed by a clean
+shutdown, a new checkpoint and restoration of the off-state 4 GiB baseline.
+
+| Remount artifact | Binding |
+| --- | --- |
+| Host result SHA-256 | `a84cf8826fbfea4f081a8ad0dfb4e76fa776bb071bf8e0958bc71b97445bf18c` |
+| Native evidence SHA-256 | `e79247b1e94771a32f23a9059d2cd8a9aa9d3d2557c013dba2cac6ae51c6e936` |
+| Input SHA-256 | `8752a078df0210782b9a23360593b9d732fe39c3203a7e2e40192d90974aae9f` |
+| Runner SHA-256 | `968318fee5793a3de2c74e2d1524d4533c74c12b17ccb114b5bd7df8727dae7f` |
+| Reviewed manifest SHA-256 | `c9a0b96919e63ca3cda8b1cb8e6b466558a17e52ca16e2acfef4198cabd37f71` |
+| Checkpoint ID | `8a87b135-d133-4eb1-a326-b6fa65cfc085` |
+| Checkpoint name | `converted-remount-2a92538b0b0b4392b7e4f7513a00ff88` |
+
+The earlier remount preflight case `win11-20261024T063625643Z` stopped before
+VM actions: its attempted raw hash check used the original review-input hash on
+a reserialized archive manifest. The corrected reader authenticates each source
+using the source hashes in the independently pinned completed host record.
+The original records and byte hashes were preserved. A 38-check actual-archive
+regression and 133 mode/predecessor checks pass in PowerShell 5 and 7, alongside
+174 existing host checks and 103 pinned-input checks. No new guest/native code
+was needed for this remount.

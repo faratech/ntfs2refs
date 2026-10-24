@@ -1,5 +1,26 @@
 # Implementation handoff
 
+Latest native follow-up: clean reboot/remount passed in
+`converted-verification/win11-20261024T064141050Z`. Host result SHA-256 is
+`a84cf8826fbfea4f081a8ad0dfb4e76fa776bb071bf8e0958bc71b97445bf18c`.
+The target stayed online/read-only across startup, shadow attachment and the
+first-mount helper were skipped, and the unchanged native observer returned A's
+original hash twice across four stable mapping/validity/security/time snapshots.
+The remount checkpoint is `8a87b135-d133-4eb1-a326-b6fa65cfc085`, named
+`converted-remount-2a92538b0b0b4392b7e4f7513a00ff88`. The VM is verified off
+at4GiB on installed-clean; no operation/session remains live or unknown.
+Next implement the separate controlled native allocation/mutation test. General
+source admission, native power-loss/recovery and the general converter remain
+unfinished. The remount runner SHA-256 is
+`968318fee5793a3de2c74e2d1524d4533c74c12b17ccb114b5bd7df8727dae7f`;
+its manifest `.lab/hyperv/converted-remount-review-20261024T064121678Z.json`
+is pinned by `c9a0b96919e63ca3cda8b1cb8e6b466558a17e52ca16e2acfef4198cabd37f71`.
+The first remount preflight stopped before VM actions because an archived
+manifest had been reserialized. Prior source bytes are now authenticated by the
+completed host record's source hashes; original artifacts/pins were preserved.
+133 mode/predecessor,38 actual-archive,174 host and103 input-decoding checks
+passed in PowerShell5/7. No guest/native/Rust source changed for this follow-up.
+
 The user authorized implementation of the researched NTFS-to-ReFS plan. This
 session began implementation on 2026-10-23. Work is in progress, not a completed
 converter. Resume implementation from the actual files and host-result records.

@@ -6,7 +6,7 @@ conversion and build-specific boot qualification are deferred.
 
 **A prepared one-file NTFS-to-ReFS conversion passed inside the Windows 11 VM.**
 The same partition became readable through Microsoft's ReFS driver while the
-64 KiB payload extent stayed unchanged. See the
+64 KiB payload extent stayed unchanged. A clean reboot/remount also passed. See the
 [native result and its limits](docs/native-conversion-results.md).
 The general-purpose executable still inspects images and reports blockers;
 its conversion, resume, rollback and finalize commands refuse writes. Existing

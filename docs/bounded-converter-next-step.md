@@ -119,11 +119,14 @@ mapping explicitly while retaining the original GPT disk/partition identity.
 Implement a Rust admission certificate over a frozen source and pinned native
 observations. A [raw allocation diagnostic](ntfs-allocation-reconciliation.md)
 now reconciles decoded attribute intervals with initialized bitmap bytes and
-refuses incomplete attribute inventories. Native allocation cross-checks and
-the remaining source semantics still need implementation. Reuse `ntfs_inspect`, but do not reinterpret its current
+refuses incomplete attribute inventories. A [raw namespace diagnostic](ntfs-namespace-reconciliation.md)
+also reconciles allocated I30 trees, key ordering, MFT names/sequence references,
+hard-link counts and root reachability on the initial geometry. Native
+allocation/namespace cross-checks and other source semantics still need
+implementation. Reuse `ntfs_inspect`, but do not reinterpret its current
 `inventory_complete=false` or ancestry candidates as ownership proof. Today it
-explicitly leaves directory indexes, security descriptors, allocation ownership,
-log state and backup metadata unresolved; attribute-list assembly is also
+still leaves native enumeration, security descriptors, native allocation
+ownership, log state and backup metadata unresolved; attribute-list assembly is also
 unsupported. The certificate needs the following minimum evidence:
 
 | Required fact | Required reconciliation |

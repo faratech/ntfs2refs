@@ -1,5 +1,18 @@
 # Implementation handoff
 
+Latest implementation: Rust raw namespace reconciliation now validates I30
+root/allocation pages, bitmap reachability, USA fixups, B-tree key order,
+MFT/index membership and sequence references, link counts and root reachability.
+The empty/populated native NTFS captures reconcile 24/33 entries respectively;
+their raw allocation models also reconcile. See
+[namespace evidence and limits](docs/ntfs-namespace-reconciliation.md).
+There are 32 new tests; the workspace passes 256 tests with five ignored,
+plus clippy with warnings denied and formatting checks. General admission
+still needs native enumeration/identity and allocation cross-checks, security
+descriptor resolution, stable freeze, clean log state and backup validation.
+The general converter remains gated. Next resolve security metadata and bind
+native source observations to the raw model, then build the multi-file path.
+
 Latest native follow-up: the controlled allocation/mutation workload passed in
 `allocation-workload/win11-20261024T072530927Z`. Host result SHA-256 is
 `2028495b74c16b6242b2c73e771b8dd477b3d8bb665a5976a035589b3fd75a5c`;

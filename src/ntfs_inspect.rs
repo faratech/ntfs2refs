@@ -2,8 +2,8 @@
 //!
 //! `ntfs` validates the standard geometry. The bounded record/run-list reader below
 //! also retains raw UTF-16 names and metadata that its high-level API does not yet
-//! expose. Attribute-list assembly, directory reconciliation and $Secure lookup
-//! remain explicit coverage blockers; no report from this module certifies them.
+//! expose. Raw directory-index reconciliation is diagnostic; native namespace
+//! enumeration, attribute-list assembly and $Secure lookup remain blockers.
 
 use crate::ntfs_allocation::{self, Assessment, AttributeKey, Limits, PhysicalInterval};
 use anyhow::{Context, Result, ensure};
@@ -139,6 +139,10 @@ pub struct NtfsInspection {
     /// security, clean-state and backup reconciliation remain separate gates.
     #[serde(default)]
     pub allocation_reconciliation: Option<AllocationReconciliation>,
+    /// Raw $I30/MFT membership and topology only, not native enumeration or
+    /// a filesystem-wide source-admission certificate.
+    #[serde(default)]
+    pub namespace_reconciliation: Option<crate::ntfs_namespace::Reconciliation>,
     pub files: Vec<FileInventory>,
     pub blockers: Vec<InspectionBlocker>,
     pub inventory_complete: bool,
@@ -1418,6 +1422,196 @@ fn require_bitmap_bytes(attribute: &AttributeInventory, needed: u64) -> Result<(
     Ok(())
 }
 
+#[derive(Default)]
+struct NamespaceCapture {
+    directories: Vec<crate::ntfs_namespace::Directory>,
+    upcase: Option<Vec<u16>>,
+    bytes_read: usize,
+    entries: usize,
+    name_units: usize,
+    failure: Option<String>,
+    incomplete_attributes: bool,
+}
+
+impl NamespaceCapture {
+    fn reserve(&mut self, bytes: u64) -> Result<()> {
+        let total = (self.bytes_read as u64)
+            .checked_add(bytes)
+            .context("index byte budget overflow")?;
+        ensure!(
+            total <= crate::ntfs_namespace::MAX_INDEX_BYTES as u64,
+            "global namespace read budget exceeded"
+        );
+        self.bytes_read = total as usize;
+        Ok(())
+    }
+
+    fn read<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        record: &Record,
+        number: u64,
+        geometry: &NtfsGeometry,
+    ) -> Result<()> {
+        use crate::ntfs_namespace as ns;
+        ensure!(
+            geometry.bytes_per_sector == 512
+                && geometry.cluster_size == 4096
+                && geometry.index_record_size == 4096,
+            "raw namespace profile requires 512-byte sectors and 4 KiB clusters/index records"
+        );
+        if number == 10 {
+            let table = unnamed(record, 0x80)?;
+            ensure!(
+                table.report.logical_size == 131_072,
+                "complete 128 KiB $UpCase stream required"
+            );
+            require_bitmap_bytes(&table.report, 131_072)?;
+            self.reserve(131_072)?;
+            let bytes = read_small_attribute(reader, table, geometry, 131_072)?;
+            self.upcase = Some(utf16(&bytes)?);
+        }
+        if record.flags & 2 == 0 {
+            return Ok(());
+        }
+        ensure!(
+            self.directories.len() < ns::MAX_DIRECTORIES,
+            "directory count limit exceeded"
+        );
+        let mut attributes = std::collections::BTreeMap::new();
+        for a in &record.attributes {
+            if ns::is_i30(&a.report.name_utf16) && [0x90, 0xa0, 0xb0].contains(&a.report.type_code)
+            {
+                ensure!(
+                    a.report.lowest_vcn == 0 && attributes.insert(a.report.type_code, a).is_none(),
+                    "duplicate or unassembled I30 attribute"
+                );
+            }
+        }
+        let root = attributes
+            .get(&0x90)
+            .context("directory lacks $I30 INDEX_ROOT")?;
+        ensure!(
+            root.report.resident && root.report.flags == 0,
+            "unsupported directory INDEX_ROOT encoding"
+        );
+        self.reserve(root.report.logical_size)?;
+        let root_bytes = root
+            .resident_value
+            .as_deref()
+            .context("missing resident INDEX_ROOT")?;
+        let (allocation, initialized) = if let Some(a) = attributes.get(&0xa0) {
+            ensure!(
+                !a.report.resident && a.report.flags == 0,
+                "unsupported INDEX_ALLOCATION encoding"
+            );
+            validate_stream_mapping(&a.report, geometry)?;
+            ensure!(
+                attributes.contains_key(&0xb0),
+                "INDEX_ALLOCATION lacks its bitmap"
+            );
+            self.reserve(a.report.logical_size)?;
+            (
+                read_small_attribute(reader, a, geometry, ns::MAX_INDEX_BYTES as u64)?,
+                a.report.initialized_size,
+            )
+        } else {
+            (Vec::new(), 0)
+        };
+        let bitmap = if let Some(a) = attributes.get(&0xb0) {
+            require_bitmap_bytes(&a.report, a.report.logical_size)?;
+            self.reserve(a.report.logical_size)?;
+            read_small_attribute(reader, a, geometry, 4096)?
+        } else {
+            Vec::new()
+        };
+        let directory = ns::parse_directory(
+            number | (u64::from(record.sequence) << 48),
+            root_bytes,
+            &allocation,
+            initialized,
+            &bitmap,
+        )?;
+        self.entries = self
+            .entries
+            .checked_add(directory.entries.len())
+            .context("global index entry overflow")?;
+        self.name_units += directory
+            .entries
+            .iter()
+            .map(|e| e.name.len())
+            .sum::<usize>();
+        ensure!(
+            self.entries <= ns::MAX_ENTRIES && self.name_units <= ns::MAX_NAME_UNITS,
+            "global namespace entry/name budget exceeded"
+        );
+        self.directories.push(directory);
+        Ok(())
+    }
+
+    fn observe<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        record: &Record,
+        number: u64,
+        geometry: &NtfsGeometry,
+    ) {
+        if record.base != 0 || record.attributes.iter().any(|a| a.report.type_code == 0x20) {
+            self.incomplete_attributes = true;
+            return;
+        }
+        if self.failure.is_none()
+            && (number == 10 || record.flags & 2 != 0)
+            && let Err(error) = self.read(reader, record, number, geometry)
+        {
+            self.failure = Some(format!("MFT record {number}: {error:#}"));
+        }
+    }
+
+    fn finish(self, files: &[FileInventory]) -> crate::ntfs_namespace::Reconciliation {
+        use crate::ntfs_namespace::{Reconciliation, Status};
+        let mut hash = Sha256::new();
+        hash.update(b"ntfs2refs-namespace-evidence-v1\0");
+        if let Some(table) = &self.upcase {
+            for unit in table {
+                hash.update(unit.to_le_bytes());
+            }
+        }
+        for dir in &self.directories {
+            hash.update(dir.reference.to_le_bytes());
+            hash.update(dir.evidence_sha256.as_bytes());
+        }
+        let mut result = Reconciliation {
+            status: Status::Rejected,
+            directories: self.directories.len(),
+            index_blocks: self.directories.iter().map(|d| d.index_blocks).sum(),
+            index_entries: self.entries,
+            reachable_objects: 0,
+            index_bytes_read: self.bytes_read,
+            evidence_sha256: hex::encode(hash.finalize()),
+            detail: String::new(),
+        };
+        if self.incomplete_attributes {
+            result.status = Status::IncompleteAttributeInventory;
+            result.detail = "Attribute-list or extension records require assembly before namespace reconciliation".into();
+        } else if let Some(error) = self.failure {
+            result.detail = error;
+        } else if let Some(upcase) = self.upcase {
+            match crate::ntfs_namespace::reconcile(files, &self.directories, &upcase) {
+                Ok(reachable) => {
+                    result.status = Status::ConsistentRawModel;
+                    result.reachable_objects = reachable;
+                    result.detail = "Allocated I30 nodes, key ordering, MFT names/references and root reachability reconcile; native enumeration remains unverified".into();
+                }
+                Err(error) => result.detail = format!("{error:#}"),
+            }
+        } else {
+            result.detail = "No complete $UpCase table was captured".into();
+        }
+        result
+    }
+}
+
 /// Inspect a raw NTFS partition without issuing writes. The report remains blocked
 /// until every semantic coverage requirement has a validated implementation.
 pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<NtfsInspection> {
@@ -1429,6 +1623,8 @@ pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<NtfsInspec
 /// storage is limited to one 64 KiB-or-smaller file record and its attributes.
 /// Logical stream hashing uses a fixed 64 KiB buffer and a cumulative byte limit.
 /// Metadata ancestry adds at most MAX_MFT_RECORDS states and 4096 stack frames.
+/// Raw namespace working storage has a separate 16 MiB read budget, 16,384 keys,
+/// 131,072 UTF-16 name units, 4096 directories and 64 B-tree levels.
 pub fn inspect_with_limits<R: Read + Seek>(
     reader: &mut R,
     length: u64,
@@ -1517,6 +1713,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
         allocated_clusters: None,
         free_clusters: None,
         allocation_reconciliation: None,
+        namespace_reconciliation: None,
         files: Vec::new(),
         blockers: Vec::new(),
         inventory_complete: false,
@@ -1527,6 +1724,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
     };
     let mut root_seen = false;
     let mut volume_bitmap = None;
+    let mut namespace = NamespaceCapture::default();
     for number in 0..mft_record_count {
         if mft_bitmap[number as usize / 8] & (1 << (number % 8)) == 0 {
             continue;
@@ -1638,6 +1836,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
                 }
             }
         }
+        namespace.observe(reader, &record, number, &geometry);
         for attribute in record.attributes {
             let a = &attribute.report;
             if a.flags & 0x00ff != 0 {
@@ -1840,6 +2039,9 @@ pub fn inspect_with_limits<R: Read + Seek>(
     );
     budget.charge((allocation.bitmap_sha256.capacity() + allocation.detail.capacity()) as u64)?;
     report.allocation_reconciliation = Some(allocation);
+    let namespace = namespace.finish(&report.files);
+    budget.charge((namespace.evidence_sha256.capacity() + namespace.detail.capacity()) as u64)?;
+    report.namespace_reconciliation = Some(namespace);
     for (code, message) in [
         (
             "security_descriptors_unresolved",
@@ -1847,7 +2049,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
         ),
         (
             "directory_indexes_unverified",
-            "MFT names have not been reconciled with all directory indexes and hard-link counts",
+            "Raw I30 reconciliation is diagnostic; complete native namespace enumeration and source admission remain unverified",
         ),
         (
             "allocation_ownership_unverified",

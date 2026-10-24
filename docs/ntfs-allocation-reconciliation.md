@@ -35,7 +35,7 @@ Nineteen pure-ledger tests include all 65,536 eight-cluster bitmap/claim-set
 combinations. Ten parser integration tests cover complete synthetic ownership,
 metadata/data overlap, false-free and unowned allocation, allocation past EOF,
 unassembled system attributes, ambiguous identities, out-of-MFT bitmap bits,
-and uninitialized MFT/volume bitmaps. The complete workspace currently passes
-224 tests, with five explicitly ignored native/child-process tests. The new
+and uninitialized MFT/volume bitmaps. At that milestone the workspace passed
+224 tests, with five explicitly ignored native/child-process tests. Its
 build uses a separate ignored target directory; the running guest experiment
 continues to use its original pinned release binaries.

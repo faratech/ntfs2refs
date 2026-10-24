@@ -53,8 +53,11 @@ then failed a baseline-restoration check, which is preserved rather than promote
 to a completed run. Fresh probe `win11-20261024T045526178Z` subsequently
 completed both native stages and host restoration successfully. See
 [measured results](retained-preparation-results.md).
-No actual native NTFS-to-ReFS reconstruction/remount or native power-loss
-qualification has yet passed. Boot conversion remains deferred.
+Journaled native reconstruction and a protected first ReFS mount subsequently
+passed the prepared one-file fixture; see the
+[native result](native-conversion-results.md). Clean remount, native mutation
+and native power-loss/recovery qualification remain open. Boot conversion
+remains deferred.
 
 The original NTFS location also supplies a concrete collision example:
 LCN6263..6278 is free in the ReFS legacy bitmap but occupied in its

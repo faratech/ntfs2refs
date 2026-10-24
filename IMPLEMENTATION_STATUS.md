@@ -32,13 +32,28 @@ the independently persisted ticket SHA-256 is
 The expected reconstructed image SHA-256 is
 `57b3fc2fb836c4091efd331e84b9c25488beff2af46886a45a86554e81a25443`.
 Prepared checkpoint `4b7a4dc4-a74e-4996-9f31-a4b18d2444cb` is saved.
-Apply is running in case `apply-20261024T054132656Z`; inspect its live process
-and eventual host result before taking another VM action. The guest still uses
-the original frozen release; the224-test development build is in a separate
-ignored target directory. No Apply completion or native ReFS mount is claimed.
-The target's offline state survived restart, but the original shadow reattachment
-profile surfaced its fresh device online/read-write and was refused. No actual native
-filesystem conversion has passed. The previous release comparator passed its
+Apply passed in case `apply-20261024T054132656Z`. It wrote exactly69,451,776
+bytes across130 patches, retained the64 KiB extent unchanged and verified the
+complete expected partition hash. Apply host SHA-256 is
+`111405c2a5239b1f4a76ef04fd909354e9a9673699554b3b4da1747760326610`;
+checkpoint `960ba24f-1177-4d1f-9faf-e3d174adad47` is saved.
+Handoff passed in `handoff-20261024T055719130Z`, host SHA-256
+`e1048284f3729f00720394c69c63670267392fb338205082125de29a60f0dbe1`.
+The protected native mount/observer then passed in
+`converted-verification/win11-20261024T061408952Z`, host SHA-256
+`ea53249c0f49be778a25cfa3aa2f7e3377ece25a874fc5c04e5ccc13dd40ac13`.
+Microsoft's ReFS driver returned A's original hash twice; physical mapping,
+validity, metadata and security matched across four stable snapshots. The
+converted checkpoint is `e7fda999-ad2e-4792-9011-e9b4fdaebf21`, named
+`converted-readonly-680c2833521a458b92560bf1dd1fd604`. The VM is verified off
+at4GiB on installed-clean. No operation/session remains live or unknown.
+The guest used the original frozen release; the224-test development build is in
+a separate ignored target directory. See the
+[native conversion result](docs/native-conversion-results.md) for scope and
+remaining clean-remount, mutation, recovery and general-admission work.
+Earlier, the target's offline state survived restart, but the original shadow
+reattachment profile surfaced its fresh device online/read-write and was refused.
+That failed branch remains preserved. The previous release comparator passed its
 tiny file-only guest run; it is distinct from the newer lab binaries.
 Guest-local preparation passed in case `win11-20261024T025713906Z`: both files
 have matching supported metadata and a single extent at LCN2097152. Its saved
@@ -104,7 +119,8 @@ dated `20261024T045513153Z` were frozen for the successful fresh probe
 `win11-20261024T045526178Z`. All restore observations passed, and the complete
 host/native probe passed. The reviewed BOM compatibility fix and request
 generation are complete. Updated reconstruction/CV manifests dated
-`20261024T052019110Z` are frozen; Prepare passed and Apply is in progress.
+`20261024T052019110Z` are frozen; Prepare/Apply/Handoff and protected native
+ReFS observation all passed the prepared fixture.
 The completed probe and its source pins remain unchanged.
 Failed branches/evidence are preserved; consult the latest host-result and
 failure-preservation records for live state. See

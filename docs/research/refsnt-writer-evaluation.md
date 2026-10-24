@@ -29,9 +29,9 @@ This is a design inference from the functions, not an executed adoption result.
 The public `rfstool do` command does not expose adoption directly.
 
 Although the README describes no formatter, the source includes an experimental
-`mkfs1` path and ReFS1.2 formatter whose own comment says Windows compatibility
-was not verified in that environment. That does not supply a qualified3.14
-formatter. The proposed3.14 experiment should begin with Windows-generated
+`mkfs1` path and ReFS 1.2 formatter whose own comment says Windows compatibility
+was not verified in that environment. That does not supply a qualified 3.14
+formatter. The proposed 3.14 experiment should begin with Windows-generated
 bootstrap metadata.
 
 [`RfsCommit`](https://github.com/ages2001/REFSNT/blob/bdde6875b47a7370f5f98dd1d6b1a3e19278ca2a/src/rfscommit.c)
@@ -99,6 +99,11 @@ The pinned native manifest SHA-256 was checked before comparing extracted data:
 The allocation remainder requires classification against native reservations and
 all metadata ownership; it is not evidence that the Windows-created volume is
 corrupt. It shows why this checker alone is not a complete allocation oracle.
+There is also a useful accounting cross-check: the pinned native post-remount
+query reports 13,232,896 free clusters and 151,584 reserved clusters. REFSNT's
+Medium allocator reports 13,384,480 free clusters, exactly their sum. This is an
+observed relationship on this one capture, not a universal allocator formula,
+and does not classify the 245,708-cluster ownership remainder.
 
 Both extracted logical files matched the native manifest by length and SHA-256:
 
@@ -111,6 +116,39 @@ Logs, build commands, compatibility header and extracted ordinary files remain
 under the ignored research build directory. No REFSNT write operation, target
 device access, driver installation or Windows mount of REFSNT-modified metadata
 occurred.
+
+## Independent forefst cross-check
+
+Also cloned forefst at
+[`d4d5fd28942eb14ebe11d90f4eb9342f5e3d7b92`](https://github.com/xbqt/forefst/tree/d4d5fd28942eb14ebe11d90f4eb9342f5e3d7b92)
+and ran its unchanged `forefst.py` with Python 3.15.0, isolated import settings
+and bytecode writes disabled. The script SHA-256 is
+`d0e162dcdf8755aa4543db76ed17a6321faf4cc06f24c5818b31564bd3c3860e`.
+An independent read handle denied source-image writers throughout each command.
+The raw partition requires an explicit `--partition-start 0`.
+
+The summary agrees on 3.14, 4 KiB clusters, CRC64, serial 9808427608425382,
+checkpoint clock 45, flags 0x6c2 and the two-file/one-directory namespace. It
+reports 832 container mappings and 14 objects. REFSNT reports 834 indexed container
+slots; its source sizes that array by maximum container ID plus one, so these
+are different measurements. The forefst summary SHA-256 is
+`632b988fa342bcb4cf804e49b48704a731441aa12c004c5441b33ca58896c710`.
+
+On this Windows host, strict nonresident extraction with `--refuse-holes`
+refuses because the tool cannot determine host-image sparse-hole coverage.
+The failed observation and stderr are preserved. Default extraction reports
+that limitation and writes the bytes as read; both logical outputs match the
+native length/SHA-256 pairs above and the REFSNT extraction. This establishes
+those logical bytes only, not strict capture-completeness qualification from
+forefst. The input file has no Windows sparse-file attribute. A fresh complete
+image SHA-256 check finished at 2026-10-24T06:07:49Z and matched the original
+captured `805eecc9f17436bac644b2b774e96896ace8af2aec8c66dcaf6c3bbb8e4be0c9`.
+
+Artifacts are under
+`.lab/research/forefst-observation-20261024T060142263Z`. No source-image writes,
+boot repair, image decompression or device operations were requested. These
+reader results supply a baseline for a later independent-writer experiment;
+they do not validate REFSNT-generated metadata.
 
 ## Next decisive experiment
 

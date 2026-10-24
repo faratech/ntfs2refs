@@ -4,11 +4,13 @@ Rust tooling and a Hyper-V laboratory for researching offline, extent-preserving
 NTFS-to-ReFS conversion. The current focus is data volumes; Windows OS-volume
 conversion and build-specific boot qualification are deferred.
 
-**No native filesystem conversion has yet passed.** The main executable
-inspects raw partition images, reports preservation/qualification blockers,
-verifies image identity, and compares native-format corpus images. Conversion,
-resume, rollback, and finalize commands fail without opening a source for write.
-ReFS metadata writing and native boot acceptance remain research gates.
+**A prepared one-file NTFS-to-ReFS conversion passed inside the Windows 11 VM.**
+The same partition became readable through Microsoft's ReFS driver while the
+64 KiB payload extent stayed unchanged. See the
+[native result and its limits](docs/native-conversion-results.md).
+The general-purpose executable still inspects images and reports blockers;
+its conversion, resume, rollback and finalize commands refuse writes. Existing
+file-tree admission and general ReFS metadata construction remain open work.
 
 ## Build and run
 
@@ -44,10 +46,11 @@ The separate [retained-range comparator](docs/retained-range-comparison.md)
 reports every differing sector outside explicitly pinned source ranges and
 hashes the hypothetical reconstructed image. It produces no patch payloads or
 write authority. This supports the [one-extent reconstruction milestone](docs/next-extent-preservation-milestone.md);
-native metadata semantics and native execution remain open work. The new
+the bounded native result above is separate from general source admission. The
 [laboratory journal core](docs/lab-reconstruction-journal.md) stores real old/new
 bytes and passes file-based interruption, resume and rollback tests. Its trusted
-ticket and persistent mount exclusion still require native qualification.
+ticket, persistent mount exclusion, raw Apply and protected native observation
+passed the prepared fixture. Native interruption/recovery qualification remains.
 
 The separate Windows-only `lab-native-probe` binary binds the exact laboratory
 partitions, persists offline disk attributes and verifies retained bytes through
@@ -58,8 +61,9 @@ The separate `lab-native-reconstruct` binary exposes explicit journal preparatio
 apply, resume, rollback and handoff operations for the exact enrolled offline
 fixture. It can issue bounded raw writes; it is not a general converter. It
 requires pinned requests and independently pinned recovery tickets, preserves
-failure artifacts, and never brings a disk online. Its native execution remains
-unqualified. See [the journal contract](docs/lab-reconstruction-journal.md).
+failure artifacts, and never brings a disk online. Its prepared-fixture
+Prepare/Apply/Handoff path passed; it grants no general converter capability.
+See [the journal contract](docs/lab-reconstruction-journal.md).
 See [the ntfs2btrfs design review](docs/ntfs2btrfs-design-lessons.md) for the
 allocation, collision and rollback concepts informing this work.
 The [conversion architecture research](docs/research/conversion-architecture.md)

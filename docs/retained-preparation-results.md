@@ -1,9 +1,11 @@
 # Guest-local preparation measurements
 
-These runs prepare a single retained-extent experiment. None performs a raw
-filesystem reconstruction or establishes a successful conversion. All formatting,
-fixture creation and shadow attachment runs inside the owned Windows 11 guest.
-Hyper-V supplies checkpoints and evidence transport only.
+These runs prepare and execute a single retained-extent experiment. The later
+journaled reconstruction and protected native ReFS observation passed the
+prepared one-file fixture; see [the result and limits](native-conversion-results.md).
+All formatting, fixture preparation, reconstruction and native mounting runs
+inside the owned Windows 11 guest. Hyper-V supplies checkpoints and evidence
+transport only.
 
 ## Completed native probe
 
@@ -54,9 +56,29 @@ data disks offline. The host exported the ticket and reports, saved checkpoint
 | Native report SHA-256 | `54b96f4d6284f2f3194c8779b21600f3a88e36ecf32074d35a12933663eaad34` |
 | Expected final partition SHA-256 | `57b3fc2fb836c4091efd331e84b9c25488beff2af46886a45a86554e81a25443` |
 
-This proves journal preparation only. Apply was separately started in
-`apply-20261024T054132656Z`; its current result must be inspected before inferring
-completion. No native filesystem mount has yet validated the reconstruction.
+## Complete native raw apply
+
+Case `apply-20261024T054132656Z` passed. Its native report records130 patches
+and69,451,776 actual/requested target write bytes, zero shadow write bytes,
+unchanged retained data and a complete final hash equal to the planned
+`57b3fc2fb836c4091efd331e84b9c25488beff2af46886a45a86554e81a25443`.
+The data disks remained offline. A clean shutdown and checkpoint completed,
+followed by restoration of the off4GiB installed-clean baseline.
+
+| Apply artifact | Binding |
+| --- | --- |
+| Host SHA-256 | `111405c2a5239b1f4a76ef04fd909354e9a9673699554b3b4da1747760326610` |
+| Native report SHA-256 | `b5717801fab64570f068a52ca6546dbd361b7e3d126a7de4b3b0c37c1f8f0d37` |
+| Process report SHA-256 | `4a7e9d221d8b2d0f1340f3c463f604646244f8ce2cc8c2cc76a97a4ba2baf47c` |
+| Checkpoint ID | `960ba24f-1177-4d1f-9faf-e3d174adad47` |
+| Checkpoint name | `reconstruct-apply-47fe163b8606409b9a06c487ce5421fe` |
+
+Handoff subsequently passed in `handoff-20261024T055719130Z`, followed by
+protected native ReFS acceptance in
+`converted-verification/win11-20261024T061408952Z`. The latter returned the
+original A hash twice across four stable snapshots and saved converted
+checkpoint `e7fda999-ad2e-4792-9011-e9b4fdaebf21`. These later phases and their
+scope are recorded in [the native result](native-conversion-results.md).
 
 ## Complete native read evidence; host cleanup check failed
 

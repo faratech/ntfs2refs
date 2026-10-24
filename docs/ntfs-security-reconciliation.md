@@ -81,16 +81,19 @@ Image hashes remain the original native capture pins recorded in
 tests and nine integration tests cover corruption, multiple mirror pairs,
 internal keys, stale/missing IDs, ACL states, audit/object/callback ACEs,
 malformed offsets, unsupported structures and old-report compatibility.
-The workspace passes 296 tests with five explicitly ignored native/child-process
+At that milestone the workspace passed 296 tests with five ignored native/child-process
 cases. Formatting and clippy with warnings denied pass.
 Audit/object/callback cases are synthetic parser tests; the captured buffers
 do not qualify every optional ACE feature on Windows.
 
 ## Remaining admission work
 
-Raw reconstruction and buffer validity do not establish native file-security
-attestation or effective access. Native `GetSecurityInfo` must still be bound
-to each frozen source identity, including privileged SACL retrieval. Target
+Raw reconstruction and buffer validity do not establish effective access.
+[Native file-handle observations](native-ntfs-file-attestation.md) now bind
+both Windows security APIs to the 36 requested identities on a read-only guest
+mount. Sixteen kernel descriptors match, while open/query refusals, API
+inheritance differences and a cached root access-time difference remain visible.
+This is incomplete source admission, not a blanket security certificate. Target
 round-trip preservation, freeze/log/backup checks and general conversion remain
 unfinished. `inventory_complete=false` and the security/admission blockers stay
 in force; no access check or target ACL write occurs in this implementation.

@@ -16,6 +16,10 @@ The inspector now reconciles [raw NTFS directory indexes and MFT names](docs/ntf
 on its initial profile, alongside allocation ownership diagnostics.
 It also resolves [central and legacy security descriptors](docs/ntfs-security-reconciliation.md),
 with independent Windows buffer-parser checks on the native captures.
+The [Rust file-handle collector](docs/native-ntfs-file-attestation.md) now also
+compares those bytes with native queries inside the VM. Kernel descriptors
+matched 16 source objects; API inheritance views and cached root access time
+exposed differences that remain explicit admission blockers.
 
 ## Build and run
 

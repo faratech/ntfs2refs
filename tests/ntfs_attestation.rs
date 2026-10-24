@@ -1,0 +1,315 @@
+#[allow(dead_code, reason = "Shared synthetic parser fixture")]
+mod support;
+use n2r_win32::attestation::{FileIdentity, Observation, Query, Report, Request, Snapshot};
+use ntfs2refs::{
+    ntfs_attestation::{compare, same_security},
+    ntfs_inspect, ntfs_security as sec,
+};
+use std::io::Cursor;
+fn p32(b: &mut [u8], o: usize, n: u32) {
+    b[o..o + 4].copy_from_slice(&n.to_le_bytes());
+}
+fn p64(b: &mut [u8], o: usize, n: u64) {
+    b[o..o + 8].copy_from_slice(&n.to_le_bytes());
+}
+fn request() -> Request {
+    Request {
+        schema_version: 1,
+        source_inspection_sha256: "a".repeat(64),
+        volume: "\\\\?\\Volume{12345678-1234-5678-1234-567812345678}\\".into(),
+        disk_number: 1,
+        partition_offset: 16 * 1024 * 1024,
+        partition_length: 2 * 1024 * 1024,
+        ntfs_serial: 0x1122334455667788,
+        files: vec![FileIdentity {
+            record_number: 16,
+            sequence_number: 1,
+        }],
+    }
+}
+fn descriptor(repacked: bool) -> Vec<u8> {
+    let mut b = vec![0; 40];
+    b[0] = 1;
+    b[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+    let (owner, dacl) = if repacked { (28, 20) } else { (20, 32) };
+    p32(&mut b, 4, owner as u32);
+    p32(&mut b, 16, dacl as u32);
+    b[owner..owner + 12].copy_from_slice(&[1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0]);
+    b[dacl] = 2;
+    b[dacl + 2..dacl + 4].copy_from_slice(&8u16.to_le_bytes());
+    b
+}
+#[test]
+fn descriptor_repacking_preserves_semantics() {
+    assert!(same_security(&descriptor(false), &descriptor(true)).unwrap());
+}
+#[test]
+fn owner_change_is_not_equivalent() {
+    let mut b = descriptor(true);
+    b[36] = 19;
+    assert!(!same_security(&descriptor(false), &b).unwrap());
+}
+#[test]
+fn null_and_empty_acl_are_distinct() {
+    let a = descriptor(false);
+    let mut b = a.clone();
+    p32(&mut b, 16, 0);
+    assert!(!same_security(&a, &b).unwrap());
+}
+#[test]
+fn malformed_descriptor_is_refused() {
+    assert!(same_security(&descriptor(false), &[0; 20]).is_err());
+}
+#[test]
+fn rejects_unbounded_or_ambiguous_requests() {
+    let r = request();
+    r.validate().unwrap();
+    let mut cases = vec![];
+    let mut b = r.clone();
+    b.volume = "C:\\".into();
+    cases.push(b);
+    let mut b = r.clone();
+    b.volume = "\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\".into();
+    cases.push(b);
+    let mut b = r.clone();
+    b.disk_number = 0;
+    cases.push(b);
+    let mut b = r.clone();
+    b.files.push(b.files[0].clone());
+    cases.push(b);
+    let mut b = r.clone();
+    b.files[0].record_number = 1 << 48;
+    cases.push(b);
+    let mut b = r.clone();
+    b.files[0].sequence_number = 0;
+    cases.push(b);
+    let mut b = r.clone();
+    b.partition_offset = u64::MAX;
+    cases.push(b);
+    let mut b = r.clone();
+    b.partition_length = 0;
+    cases.push(b);
+    let mut b = r.clone();
+    b.source_inspection_sha256 = "A".repeat(64);
+    cases.push(b);
+    for b in cases {
+        assert!(b.validate().is_err());
+    }
+}
+fn fixture() -> (ntfs_inspect::NtfsInspection, Report) {
+    let bytes = support::image();
+    let mut raw = ntfs_inspect::inspect(&mut Cursor::new(&bytes), bytes.len() as u64).unwrap();
+    // Deliberately isolated one-file diagnostic; it never grants source admission.
+    raw.files.retain(|f| f.record_number == 16);
+    let r = request();
+    let file = &raw.files[0];
+    assert_eq!(file.sequence_number, 1);
+    let d = sec::parse_descriptor(&descriptor(false)).unwrap();
+    raw.security_reconciliation = Some(sec::Reconciliation {
+        status: sec::Status::ConsistentRawModel,
+        metadata_bytes_read: 40,
+        central_descriptors: 1,
+        legacy_descriptors: 0,
+        sii_entries: 1,
+        sdh_entries: 1,
+        index_blocks: 0,
+        bound_files: 1,
+        evidence_sha256: "b".repeat(64),
+        detail: "synthetic isolated test".into(),
+        descriptors: vec![sec::DescriptorRecord {
+            security_id: Some(256),
+            legacy_record: None,
+            sds_offset: Some(0),
+            ntfs_hash: None,
+            descriptor: d.clone(),
+        }],
+        bindings: vec![sec::Binding {
+            record_number: 16,
+            sequence_number: 1,
+            security_id: Some(256),
+            descriptor_sha256: d.sha256,
+        }],
+    });
+    let mut basic = vec![0; 40];
+    p64(&mut basic, 0, 1234);
+    p32(&mut basic, 32, 32);
+    let mut standard = vec![0; 24];
+    p64(&mut standard, 0, 4096);
+    p64(&mut standard, 8, 17);
+    p32(&mut standard, 16, 2);
+    let mut id = vec![0; 24];
+    p64(&mut id, 0, r.ntfs_serial);
+    p64(&mut id, 8, r.files[0].reference());
+    let mut tag = vec![0; 8];
+    p32(&mut tag, 0, 32);
+    let s = Snapshot {
+        queries: vec![
+            Query {
+                class: 0,
+                bytes: basic,
+                native_error: None,
+            },
+            Query {
+                class: 1,
+                bytes: standard,
+                native_error: None,
+            },
+            Query {
+                class: 18,
+                bytes: id,
+                native_error: None,
+            },
+            Query {
+                class: 9,
+                bytes: tag,
+                native_error: None,
+            },
+        ],
+        security: descriptor(true),
+        security_error: None,
+        kernel_security: Some(n2r_win32::attestation::SecurityQuery {
+            bytes: descriptor(false),
+            native_error: None,
+        }),
+    };
+    let mut ext = vec![0; 32];
+    p32(&mut ext, 0, 1);
+    p32(&mut ext, 8, 1);
+    p64(&mut ext, 16, r.partition_offset);
+    p64(&mut ext, 24, r.partition_length);
+    let mut data = vec![0; 96];
+    p64(&mut data, 0, r.ntfs_serial);
+    p64(&mut data, 8, raw.geometry.total_sectors);
+    p64(&mut data, 16, raw.geometry.total_clusters);
+    p32(&mut data, 40, 512);
+    p32(&mut data, 44, 4096);
+    p32(&mut data, 48, 1024);
+    p64(&mut data, 64, raw.geometry.mft_lcn);
+    p64(&mut data, 72, raw.geometry.mftmirr_lcn);
+    let mut attrs = vec![0; 16];
+    p32(&mut attrs, 0, 16);
+    p64(&mut attrs, 8, 2);
+    let report = Report {
+        schema_version: 2,
+        request: r.clone(),
+        volume_extents_before: ext.clone(),
+        volume_extents_after: ext,
+        ntfs_data_before: data.clone(),
+        ntfs_data_after: data,
+        disk_attributes_before: attrs.clone(),
+        disk_attributes_after: attrs,
+        write_protect_error_before: 19,
+        write_protect_error_after: 19,
+        privileges_restored: true,
+        privilege_states: ["SeBackupPrivilege", "SeSecurityPrivilege"]
+            .into_iter()
+            .map(|name| n2r_win32::attestation::PrivilegeState {
+                name: name.into(),
+                before: 0,
+                enabled: 2,
+                restored: 0,
+            })
+            .collect(),
+        files: vec![Observation {
+            identity: r.files[0].clone(),
+            open_error: None,
+            before: Some(s.clone()),
+            after: Some(s),
+        }],
+        conversion_qualified: false,
+    };
+    (raw, report)
+}
+#[test]
+fn matched_native_metadata_is_still_diagnostic() {
+    let (raw, r) = fixture();
+    let c = compare(&raw, &"a".repeat(64), &r).unwrap();
+    assert!(c.all_requested_metadata_matched);
+    assert!(!c.conversion_qualified);
+}
+#[test]
+fn missing_file_observation_is_refused() {
+    let (raw, mut r) = fixture();
+    r.files.clear();
+    assert!(compare(&raw, &"a".repeat(64), &r).is_err());
+}
+#[test]
+fn stale_identity_never_matches() {
+    let (raw, mut r) = fixture();
+    let obs = &mut r.files[0];
+    for s in [&mut obs.before, &mut obs.after].into_iter().flatten() {
+        s.queries[2].bytes[14] ^= 1;
+    }
+    let c = compare(&raw, &"a".repeat(64), &r).unwrap();
+    assert_eq!(c.matched_files, 0);
+}
+#[test]
+fn rejected_system_open_remains_visible() {
+    let (raw, mut r) = fixture();
+    r.files[0].open_error = Some(5);
+    r.files[0].before = None;
+    r.files[0].after = None;
+    let c = compare(&raw, &"a".repeat(64), &r).unwrap();
+    assert_eq!(c.opened_files, 0);
+    assert_eq!(c.matched_files, 0);
+    assert!(c.files[0].issues[0].contains("error 5"));
+}
+#[test]
+fn changed_native_security_never_matches() {
+    let (raw, mut r) = fixture();
+    r.files[0].after.as_mut().unwrap().security[36] = 19;
+    assert_eq!(compare(&raw, &"a".repeat(64), &r).unwrap().matched_files, 0);
+}
+#[test]
+fn writable_or_changed_volume_is_refused() {
+    let (raw, mut r) = fixture();
+    r.write_protect_error_after = 0;
+    assert!(compare(&raw, &"a".repeat(64), &r).is_err());
+    let (_, mut r) = fixture();
+    r.disk_attributes_after[8] = 0;
+    assert!(compare(&raw, &"a".repeat(64), &r).is_err());
+}
+#[test]
+fn missing_kernel_query_does_not_pass() {
+    let (raw, mut r) = fixture();
+    r.files[0].before.as_mut().unwrap().kernel_security = None;
+    assert_eq!(compare(&raw, &"a".repeat(64), &r).unwrap().matched_files, 0);
+}
+#[test]
+fn changed_kernel_security_does_not_pass() {
+    let (raw, mut r) = fixture();
+    r.files[0]
+        .after
+        .as_mut()
+        .unwrap()
+        .kernel_security
+        .as_mut()
+        .unwrap()
+        .bytes[28] = 19;
+    assert_eq!(compare(&raw, &"a".repeat(64), &r).unwrap().matched_files, 0);
+}
+#[test]
+fn incorrect_privilege_restoration_is_refused() {
+    let (raw, mut r) = fixture();
+    r.privilege_states[0].restored = 2;
+    assert!(compare(&raw, &"a".repeat(64), &r).is_err());
+}
+#[test]
+fn sacl_protection_is_not_masked() {
+    let a = descriptor(false);
+    let mut b = a.clone();
+    b[3] |= 0x20;
+    assert!(!same_security(&a, &b).unwrap());
+}
+#[test]
+fn inherited_ace_flags_are_not_masked() {
+    let mut a = descriptor(false);
+    a.extend([
+        0, 0, 20, 0, 0xff, 1, 0x1f, 0, 1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0,
+    ]);
+    a[34..36].copy_from_slice(&28u16.to_le_bytes());
+    a[36..38].copy_from_slice(&1u16.to_le_bytes());
+    let mut b = a.clone();
+    b[41] = 0x10;
+    assert!(!same_security(&a, &b).unwrap());
+}

@@ -1,6 +1,25 @@
 # Implementation handoff
 
-Latest implementation: Rust security reconstruction now reconciles SDS
+Latest implementation: the Rust native file-handle collector ran inside the VM
+against the restored 1 GiB NTFS corpus, mounted read-only before its first use.
+All 36 allocated identities were requested; 17 opened and 16 kernel security
+descriptors matched the raw model. Thirteen `GetSecurityInfo` views differed in
+inheritance flags, and root last-access time changed in cache while the raw
+partition hash stayed unchanged. Those differences and system-record refusals
+remain explicit; the final strict comparator accepts only two complete records.
+See [native source observations](docs/native-ntfs-file-attestation.md).
+The final host/native/comparison hashes are respectively
+`83c11a16a7d0cf368c08f06e756467bd4bc70151939dc7631f4cf9605f5e543f`,
+`d9d27b87bf283dfebc60fe62d52c68e292a83c8ed31cc8c4132433c7ddabd519`,
+`9aadfef1382a83fbac4e5e56ab634ef37fcb5ddd8406800ee92a3d28fc1630e9`.
+Outcome checkpoint `c4f58c73-5ca5-4842-bc7b-6e980a8eabd7` preserves the prepared
+source and observations. The VM was restored to installed-clean, off at 4 GiB.
+The workspace passes 312 tests with five ignored, plus formatting and clippy.
+Next add native stream/extents and namespace reconciliation, resolve a coherent
+raw/native freeze boundary, and build the existing-tree admission certificate.
+General conversion and recovery remain gated.
+
+Previous implementation: Rust security reconstruction now reconciles SDS
 mirrors/hashes, SII/SDH indexes and central/legacy descriptor bindings. The
 empty/populated native captures resolve 11/14 descriptors across 28/36 MFT
 records. Windows buffer validation agrees on 28/44 ACEs in PowerShell 5/7.

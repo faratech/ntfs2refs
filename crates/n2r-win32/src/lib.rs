@@ -1,9 +1,14 @@
 //! Native I/O boundary. The main converter crate continues to forbid unsafe Rust.
 //! No formatter is exposed. An offline partition remains offline when dropped;
 //! making it mountable requires a separate explicit handoff operation.
+pub mod attestation;
+#[cfg(windows)]
+mod attestation_native;
 #[cfg(windows)]
 pub mod journal_file;
 pub mod layout;
+#[cfg(windows)]
+pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]

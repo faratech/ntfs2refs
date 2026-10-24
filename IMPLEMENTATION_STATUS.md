@@ -1,6 +1,24 @@
 # Implementation handoff
 
-Latest native follow-up: clean reboot/remount passed in
+Latest native follow-up: the controlled allocation/mutation workload passed in
+`allocation-workload/win11-20261024T072530927Z`. Host result SHA-256 is
+`2028495b74c16b6242b2c73e771b8dd477b3d8bb665a5976a035589b3fd75a5c`;
+native result SHA-256 is
+`ddae11eddd1af6c611fe8a5e5c6415d8bc1494bdf3431adaa026e05c10ed19e2`.
+Windows created 40 files, grew/truncated 32, renamed 16 and deleted 40, with 50 MiB
+normal file writes. Four native allocation snapshots preserved A's exact 16
+clusters; before/after protected observers preserved its data, identity,
+security and all timestamps. An independent archive reader verified 18,496
+payload-cluster entries and 32 mutation identities. The 54 pure boundary/bitmap
+checks and archive validation pass in PowerShell 5/7. No Rust source changed.
+Outcome checkpoint `751d896d-6d03-4efb-9530-e5dc209ed0ba` is named
+`converted-allocation-9f1bc0d1cb444fcc8390e263ff38e96d`. The VM is off at 4 GiB
+on installed-clean, with no unknown operation/session. See
+[native results](docs/native-conversion-results.md) for pins and failed-case
+dispositions. Next qualify native interruption/recovery and allocation after
+another reboot; arbitrary-source admission and general conversion remain open.
+
+Previous native follow-up: clean reboot/remount passed in
 `converted-verification/win11-20261024T064141050Z`. Host result SHA-256 is
 `a84cf8826fbfea4f081a8ad0dfb4e76fa776bb071bf8e0958bc71b97445bf18c`.
 The target stayed online/read-only across startup, shadow attachment and the
@@ -9,8 +27,7 @@ original hash twice across four stable mapping/validity/security/time snapshots.
 The remount checkpoint is `8a87b135-d133-4eb1-a326-b6fa65cfc085`, named
 `converted-remount-2a92538b0b0b4392b7e4f7513a00ff88`. The VM is verified off
 at4GiB on installed-clean; no operation/session remains live or unknown.
-Next implement the separate controlled native allocation/mutation test. General
-source admission, native power-loss/recovery and the general converter remain
+General source admission, native power-loss/recovery and the general converter remain
 unfinished. The remount runner SHA-256 is
 `968318fee5793a3de2c74e2d1524d4533c74c12b17ccb114b5bd7df8727dae7f`;
 its manifest `.lab/hyperv/converted-remount-review-20261024T064121678Z.json`

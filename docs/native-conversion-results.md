@@ -57,9 +57,9 @@ known completion and no preserved/unknown session.
 
 ## Remaining acceptance work
 
-The clean reboot/remount passed as recorded below. Next test a controlled native
-allocation/mutation workload that preserves A and its ownership. Native power
-loss, journal recovery, tree growth and arbitrary-source admission remain
+The clean reboot/remount and controlled native allocation/mutation workload
+passed as recorded below. Native power loss, journal recovery, large tree growth,
+post-mutation reboot/allocation and arbitrary-source admission remain
 unqualified. The current construction uses metadata produced in a native ReFS
 shadow; [REFSNT writer evaluation](research/refsnt-writer-evaluation.md) is a
 separate research path. These results do not establish a general no-recopy or
@@ -97,3 +97,97 @@ The original records and byte hashes were preserved. A 38-check actual-archive
 regression and 133 mode/predecessor checks pass in PowerShell 5 and 7, alongside
 174 existing host checks and 103 pinned-input checks. No new guest/native code
 was needed for this remount.
+
+## Native allocation and mutation passed
+
+Case `allocation-workload/win11-20261024T072530927Z` restored the saved clean
+remount checkpoint. The guest ran the unchanged protected observer, then
+transitioned the original target from online/read-only to offline/read-only,
+offline/writable and online/writable. Each step rechecked native disk identity,
+GPT layout, geometry, attributes and provider write protection. Raw disk
+handles were closed before filesystem discovery. The durable handoff had
+already closed NTFS journal rollback; this test never reopened that contract.
+
+All payload writes went through ordinary files in a fresh owned directory on
+the converted volume. The workload:
+
+- Created 32 files of 1 MiB each and verified their logical hashes and mappings.
+- Appended 64 KiB to each, verified the grown contents, truncated each to 512 KiB,
+  and renamed 16 within the same directory.
+- Deleted 16 files, then created 8 replacement files of 2 MiB each.
+- Deleted every remaining owned file and removed the owned directory.
+
+That is 40 creations, 32 truncations, 16 renames, 40 deletions and 50 MiB of requested
+and completed file writes, within a 64 MiB cap. The helper issued no raw payload
+writes. It then restored persistent read-only protection and repeated the
+unchanged protected observer. Both observations passed: A's bytes, physical
+extent, 128-bit identity, valid regions, integrity policy, security including
+SACL, retained-directory identity and frozen timestamps survived the workload.
+Writable-phase reads used the documented per-handle access-time suppression
+sentinel; they did not assign replacement timestamps. See Microsoft's
+[SetFileTime contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfiletime).
+
+Four full-domain native bitmap snapshots checked each live test extent and A.
+Every checked live cluster was allocated; unrelated payloads did not overlap,
+and no workload allocation overlapped A's 16 clusters at LCN 2097152.
+
+| Snapshot | Live test files including A | Payload clusters checked |
+| --- | ---: | ---: |
+| Created | 33 | 8208 |
+| Mutated | 33 | 4112 |
+| Reallocated | 25 | 6160 |
+| Cleaned | 1 | 16 |
+
+The independent PowerShell archive reader imports no C# code and performs no
+device/VM operations. It rehashed the raw artifacts, reconstructed occupancy
+from the stored extent records, checked all 18,496 cluster entries against the
+bitmap bytes, and confirmed all 32 truncated/renamed file identities remained
+stable. It passed in PowerShell 5 and 7, as did 54 pure failure-boundary and bitmap
+tests. Run `lab/Test-NativeAllocationWorkload.ps1` and
+`lab/Test-NativeAllocationArchive.ps1` to repeat those checks.
+
+ReFS returned 2,097,152 bytes for each bitmap query, while `BitmapSize` described
+13,631,488 clusters, requiring 1,703,952 bytes including the header. The extra
+returned bytes are preserved and hashed, but are outside the valid cluster
+domain. The parser now accepts a complete padded response and rejects a short
+useful bitmap. This follows the
+[VOLUME_BITMAP_BUFFER member definitions](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-volume_bitmap_buffer).
+Bitmap snapshots are observations at a point in time, as Microsoft's
+[FSCTL_GET_VOLUME_BITMAP documentation](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_get_volume_bitmap)
+specifies. The reallocated and cleaned bitmap hashes were identical: this
+test proves live allocation coverage and successful namespace deletion, not
+immediate free-space reclamation or a complete ReFS allocator reconciliation.
+
+| Workload artifact | Binding |
+| --- | --- |
+| Host result SHA-256 | `2028495b74c16b6242b2c73e771b8dd477b3d8bb665a5976a035589b3fd75a5c` |
+| Native result SHA-256 | `ddae11eddd1af6c611fe8a5e5c6415d8bc1494bdf3431adaa026e05c10ed19e2` |
+| Input SHA-256 | `b4cfb2b4795a947ad149ae5fbbdf5d978e5a8980d1b72c8902a53053239c9ece` |
+| Reviewed manifest SHA-256 | `ea8825935c8b69c91c234e5ebb9a9c482a43f7bced43b9abb963412b16c078b2` |
+| Host runner SHA-256 | `e6a3fa8a33d2abd0d753053f2a7f9452b40f48d2399d52ab22393fca8f282576` |
+| Native workload source SHA-256 | `ccac49c1e77c1676428e66d6d86454ccbf5b691743365cc29d456c28de7c796f` |
+| Guest wrapper SHA-256 | `ed7cfb66bd61e0b34cc4f750a90fafdd0d92b092d9d560dc11ce5c376c08a12d` |
+| Checkpoint ID | `751d896d-6d03-4efb-9530-e5dc209ed0ba` |
+| Checkpoint name | `converted-allocation-9f1bc0d1cb444fcc8390e263ff38e96d` |
+
+Both volume transitions needed one bounded discovery retry for native error 2
+after the completed online operation. Only read-only opens were retried;
+attribute changes and writes remained single-attempt. The guest shut down
+cleanly, saved the outcome checkpoint, and restored installed-clean, off with
+4 GiB memory. Completion and cleanup are known; no session remains live.
+
+Two failed cases remain unchanged, with separate cleanly shut-down checkpoints:
+
+- `win11-20261024T071526885Z` reached writable protection but volume discovery
+  lagged. It created no files and requested no file writes. Its failure
+  checkpoint is `5fa79c5a-84f1-4225-a444-a766f734f3a9`.
+- `win11-20261024T071956765Z` created/read 32 MiB successfully, then rejected the
+  padded bitmap response. Its failure checkpoint is
+  `f38cf599-9476-4710-ba16-c2b06fc9c332`. A separate raw diagnostic established
+  the native response shape before the parser changed. The corrected helper
+  also preserves a bitmap artifact when a later validation fails.
+
+Each failed case has a separate `failure-disposition.json`; original failure
+records were not converted into successes. These results remain bounded to
+the prepared one-file conversion. General source admission, a standalone ReFS
+writer, native crash recovery and boot conversion are not qualified by them.

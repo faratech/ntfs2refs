@@ -1,0 +1,162 @@
+# ntfs2refs
+
+Rust tooling and a Hyper-V laboratory for researching offline, extent-preserving
+NTFS-to-ReFS conversion. The current focus is data volumes; Windows OS-volume
+conversion and build-specific boot qualification are deferred.
+
+**No native filesystem conversion has yet passed.** The main executable
+inspects raw partition images, reports preservation/qualification blockers,
+verifies image identity, and compares native-format corpus images. Conversion,
+resume, rollback, and finalize commands fail without opening a source for write.
+ReFS metadata writing and native boot acceptance remain research gates.
+
+## Build and run
+
+The toolchain is pinned in `rust-toolchain.toml`; use the installed MSVC toolchain.
+Windows builds link the C runtime statically for fresh guests and recovery media.
+
+```powershell
+cargo build --release
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+.\target\release\ntfs2refs.exe capabilities
+.\target\release\ntfs2refs.exe inspect --image volume.raw --output inspection.json
+.\target\release\ntfs2refs.exe plan --image volume.raw --target win11 --target-build 26300.9457 --output plan.json
+.\target\release\ntfs2refs.exe verify --image volume.raw --baseline inspection.json
+.\target\release\ntfs2refs.exe diff --before control-before.raw --after control-after.raw --output changes.json
+.\target\release\ntfs2refs.exe compare-retained --source source.raw --shadow native-shadow.raw --request retained-request.json --output retained-comparison.json
+```
+
+On this host Cargo is available through
+`C:\Users\mfara\.cargo\bin\rustup.exe run stable cargo` if it is absent from PATH.
+Input must be a raw **partition** image; VHD/VHDX containers, whole GPT disks,
+encrypted volumes and live devices are not accepted. Reports are JSON and existing
+output files are never overwritten. Exit codes are 0 for successful read-only
+operations, 2 for a blocked conversion plan, and 1 for errors/unavailable writes.
+
+Inspection records the image SHA-256 before and after parsing. On Windows the
+source handle denies concurrent writers/deletion. `verify` only checks byte
+identity with its baseline; it does not certify a conversion or native mount.
+The planner deliberately leaves space requirements unknown until a qualified
+writer can calculate them. It never substitutes a guessed percentage.
+
+The separate [retained-range comparator](docs/retained-range-comparison.md)
+reports every differing sector outside explicitly pinned source ranges and
+hashes the hypothetical reconstructed image. It produces no patch payloads or
+write authority. This supports the [one-extent reconstruction milestone](docs/next-extent-preservation-milestone.md);
+native metadata semantics and native execution remain open work. The new
+[laboratory journal core](docs/lab-reconstruction-journal.md) stores real old/new
+bytes and passes file-based interruption, resume and rollback tests. Its trusted
+ticket and persistent mount exclusion still require native qualification.
+
+The separate Windows-only `lab-native-probe` binary binds the exact laboratory
+partitions, persists offline disk attributes and verifies retained bytes through
+aligned raw reads. It deliberately leaves disks offline, including on failure,
+and exposes no raw payload write command. Its platform boundary lives in
+`crates/n2r-win32`; the main Rust crate continues to forbid unsafe code.
+The separate `lab-native-reconstruct` binary exposes explicit journal preparation,
+apply, resume, rollback and handoff operations for the exact enrolled offline
+fixture. It can issue bounded raw writes; it is not a general converter. It
+requires pinned requests and independently pinned recovery tickets, preserves
+failure artifacts, and never brings a disk online. Its native execution remains
+unqualified. See [the journal contract](docs/lab-reconstruction-journal.md).
+See [the ntfs2btrfs design review](docs/ntfs2btrfs-design-lessons.md) for the
+allocation, collision and rollback concepts informing this work.
+The [conversion architecture research](docs/research/conversion-architecture.md)
+connects those concepts to ReFS's different metadata structures. It links the
+[pinned implementation review](docs/research/refs-implementation-evidence.md),
+[feature preservation contract](docs/research/ntfs-refs-preservation-contract.md)
+and proposed [journaled relocation path](docs/research/journaled-relocation-design.md).
+The [user-report reconciliation](docs/research/user-report-reconciliation.md)
+checks the supplied research against pinned sources and the current implementation.
+These notes distinguish documented behavior, native observations and untested
+design proposals.
+
+Supported NTFS DATA streams receive logical SHA-256 hashes, including sparse
+zeros and uninitialized tails up to logical EOF. Unsupported layouts receive an
+explicit status without a logical digest. Hashing defaults to a cumulative
+1 GiB logical-byte budget; use `--stream-hash-budget-mib` with `inspect` or `plan`
+to choose another bound. Exhausting the budget fails inspection rather than
+returning an incomplete result. Supported metadata DATA streams count too. The
+special unflagged `$BadClus:$Bad` layout is explicitly unsupported for hashing;
+its observed flags and extents remain in the report. Hashes do not establish complete metadata
+preservation or allocation ownership.
+
+## Laboratory
+
+See [the lab runbook](lab/README.md) for ownership guards, media, checkpoints,
+fixture generation and evidence capture. The checked-in configuration provisions
+Generation 2 Windows 11 and Server lanes; only one runs at a time.
+
+Codex can remain unelevated. A standard UAC helper performs a bounded host
+operation and records its result under `.lab/hyperv/host-results`:
+
+```powershell
+Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -WorkingDirectory 'D:\code\ntfs2refs' -ArgumentList '-NoProfile -File "D:\code\ntfs2refs\scripts\Invoke-ElevatedLab.ps1" -Action Provision'
+```
+
+This helper uses normal Windows consent; it installs no persistent privileged
+service and changes no account group membership. The Provision action uses the
+reviewed, task-specific Windows 11 ISO path in the helper. All VM artifacts,
+media extracts, logs and credentials stay under ignored `.lab` paths.
+Each run records source hashes, and repeat actions archive the previous result.
+`NativeResearch` captures native NTFS/ReFS data controls and prepares a separate
+native ReFS OS control. Only successful, verified preparation can invoke the
+guarded boot observer; failed boot observations retain the VM for diagnosis.
+`NativeDevDrive` runs a separate guest data-volume experiment with temporary
+8 GiB RAM and a 52 GiB partition, recording its Dev Drive provenance and checking
+file hashes across a clean guest reboot. It does not qualify ordinary ReFS or OS boot.
+`NativeDevDriveCorpus` exports an offline research image from that saved data
+checkpoint. `NativeExtentDiscovery` runs read-only allocation queries inside the
+guest, exports their exact buffers and restores the baseline. These actions
+collect evidence; neither performs an NTFS-to-ReFS conversion.
+`NativeExtentPlacement` creates one initialized 64 KiB file inside the guest,
+requests one native extent move, checks both fixture hashes and mappings across
+a clean reboot, and preserves the outcome in a checkpoint. This measures native
+initialized-file placement; payload I/O was not traced, and data reuse and
+conversion remain unqualified.
+`NativeRangeRead` tests bounded guest-side raw reads under a volume lock; the
+current build refused a required locked-volume query, so no raw sample qualified.
+`NativeProtectedRangeRead` separately establishes disk read-only protection inside
+the guest, checks the mounted allocation maps, and samples two fixed 64 KiB
+ranges under a lock. It retains protection and preserves incomplete runs for
+inspection. See [the protected-read results](docs/native-protected-range-read.md).
+`NativeVdlProbe` measures valid-data length on the known initialized file, then
+conditionally allocates one private 64 KiB file without payload I/O. It records
+cached and on-disk valid-data regions and preserves any changed test branch.
+`NativeVdlObservation` reopens that saved branch for metadata-only observation
+after remount. The observed ReFS profile has sparse validity; cached and on-disk
+region states differ. See [the validity implications](docs/sparse-validity-implications.md).
+`RustRetainedCompare` checks the standalone Rust comparison command inside the
+guest using two new 8 KiB files on its OS volume, verifies the exact report and
+unchanged inputs, exports evidence, and restores the clean baseline.
+This tests the comparison executable; it performs no filesystem conversion.
+The installation resume action accepts only specifically recorded deployment
+failures and preserves the already-applied Windows image. It uses signed host
+deployment tools with the guest Windows directory as source, the guest EFI
+partition as destination, and BCDBoot's documented offline servicing option.
+
+## Research contract
+
+- The converter must execute inside the machine owning the source disk. In this
+  lab that means inside the guest; on physical hardware the same Rust program
+  will use local Windows disk APIs. OS-volume conversion runs from an offline
+  recovery environment on that machine. Hyper-V, host PowerShell, checkpoints
+  and host-side corpus extraction are test infrastructure, never conversion
+  dependencies or a substitute for guest-side extent-preserving conversion.
+- Preserve the partition and reuse compatible file-data extents; work offline.
+- Refuse unsupported source features and insufficient staging/journal capacity.
+- Preserve supported file contents, streams, hard links and metadata semantics.
+- Guarantee recovery only before the first writable ReFS mount once the journal
+  implementation is qualified. Use VM checkpoints afterward.
+- Qualify Server and Windows 11 builds independently with signed boot components.
+
+[Research findings](docs/research.md) distinguish Microsoft documentation from
+reverse-engineering hypotheses. [Qualification gates](docs/format-gates.md)
+define the evidence still needed before enabling writes.
+The [measured lab results](docs/lab-results.md) record native captures, stream
+comparisons, formatter refusals and their remaining limits.
+
+The recovery test model exercises durable/volatile state, torn writes, reordered
+unflushed writes, journal capacity, foreign changes, and the mount handoff. It is
+memory-only and does not qualify Windows storage durability or ReFS crash recovery.

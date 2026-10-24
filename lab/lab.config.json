@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "relativeRoot": ".lab/hyperv",
+  "maximumActualBytes": 206158430208,
+  "minimumHostFreeBytes": 68719476736,
+  "processorCount": 4,
+  "memoryBytes": 4294967296,
+  "disks": [
+    { "role": "os", "sizeBytes": 68719476736, "controllerLocation": 0 },
+    { "role": "target", "sizeBytes": 68719476736, "controllerLocation": 1 },
+    { "role": "journal", "sizeBytes": 8589934592, "controllerLocation": 2 }
+  ],
+  "lanes": {
+    "win11": { "name": "ntfs2refs-win11" },
+    "server": { "name": "ntfs2refs-server" }
+  }
+}

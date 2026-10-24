@@ -1,0 +1,27 @@
+# Post-handoff read-only mount boundary
+
+`lab/guest/Invoke-GuestReadOnlyMount.ps1` is a separate laboratory step after complete raw Apply and durable Handoff. It does not perform conversion or qualify ReFS semantics. Root orchestration owns execution; tests use mocks only.
+
+The helper requires independently pinned shadow preparation, request, ticket, and Apply/Handoff `result.json` **and** `process-result.json`. Checks bind request/ticket/immutable journal, complete postimage hash, retained preservation, exact write accounting, final offline states, and successful process exit. Process artifact hashes must identify the exact result and intent. CLI JSON written before process exit is insufficient.
+
+Parameters: `RunId`, `ObservationId`, `ApplyPhaseId`, `HandoffPhaseId`, `ShadowPreparationSha256`, `RequestSha256`, `TicketSha256`, `ApplyResultSha256`, `HandoffResultSha256`, `ApplyProcessSha256`, `HandoffProcessSha256`, `ShadowNativeSourceSha256`, `MountNativeSourceSha256`. Paths are derived under `C:\ntfs2refs\native-reconstruct\<RunId>\<PhaseId>`, with common run ticket and `shadow-platform\<RunId>\prepare.json`. Inputs stay open with read sharing. The unchanged `NativeShadowDisk.cs` and new `NativeMountBoundary.cs` are hash-pinned dependencies.
+
+The one-attempt sequence:
+
+1. Require the enrolled Windows client guest, OS C:, journal J:, and exactly four disks. Bind physical target 1 and shadow 3 to separate GPT identities, complete native layouts, 64 GiB disks, 52 GiB partitions at 16 MiB, 512/4096 sector geometry, and exact native attributes 1 (offline/RW) and 3 (offline/RO). Open only the existing `J:\ntfs2refs-shadow\<RunId>\shadow.vhdx`; bind query 14 persistent ID and physical route. Query 2 remains generation evidence.
+2. Revalidate shadow identity/state; close its physical handle; detach once and close the VHD handle. This Windows client profile makes no privilege adjustment. Refusal is preserved without retry/fallback.
+3. Require only the original three enrolled disks. A separate read-only open of PhysicalDrive3 must return `ERROR_FILE_NOT_FOUND` (2), not merely access denied or not ready. Detach success alone is insufficient.
+4. Revalidate the still-held target handle. Persist attributes 3 with mask 2, changing only the read-only bit. Re-query full identity, exact attributes 3, and `IOCTL_DISK_IS_WRITABLE` returning `ERROR_WRITE_PROTECT` (19).
+5. Revalidate protection, then persist attributes 2 with mask 1, clearing only offline. Re-query full identity, exact attributes 2 and explicit write protection. Verify original-three inventory and close the target handle.
+
+The new native helper has no payload read/write, format, attach, or filesystem API. Only two disk-attribute requests change target state. It assigns no drive letter and opens no target filesystem path. Native online processing can discover/mount the filesystem with disk protection already established. There is no repair, rollback, retry, or writable-mount fallback.
+
+Unknown native activity leaves `OperationActive=true`; no further transitions or handle cleanup run. Known failures may close owned handles, without attribute repair or shadow reattachment. Root must preserve/export failure evidence. The output is a new private `C:\ntfs2refs\converted-mount\<RunId>\<ObservationId>\mount.json`, bounded to 2 MiB, held open and flushed before mutations and completion.
+
+JSON: `schemaVersion=1`, `kind=converted-retained-mount-boundary`, success `status=converted-target-online-read-only`, otherwise `failed-preserved`. It retains `pins`, full `request`, `expectedPostimageSha256`, `expectedTarget`, `expectedShadow`, `shadowBackingPath`, `shadowVirtualDiskId`, `shadowIdentityQueryVersion=14`, before/after inventory, and exact native calls/buffers. Success requires `operationCompletionKnown`, `cleanupComplete`, `shadowDetached`, and `targetOnlineReadOnly` true; native target states are separately recorded as 1→3→2 and shadow-before 3. Expected write-protection queries have native error 19 and `succeeded=false`.
+
+`rawPayloadWriteRequestsIssued`, `filePayloadWriteRequestsIssued`, `writableMountRequested`, `convertedFileVerificationPerformed`, `conversionQualified`, and `bootQualified` remain false. The verifier must discover the volume through the original target partition; neither former F: nor the NTFS volume GUID is assumed to survive.
+
+Microsoft's [VHDX detach sample](https://github.com/microsoft/Windows-classic-samples/blob/main/Samples/Hyper-V/Storage/cpp/DetachVirtualDisk.cpp) uses OpenVirtualDisk V2/access NONE/GetInfoOnly false, then detach flags NONE. The [detach contract](https://learn.microsoft.com/en-us/windows/win32/api/virtdisk/nf-virtdisk-detachvirtualdisk) requires other handles closed, describes permanent attachments that may remain after success, and specifies manage-volume privilege on Windows Server. This client profile measures absence directly.
+
+The [disk-attribute IOCTL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-ioctl_disk_set_disk_attributes) and [attribute structure](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-set_disk_attributes) define independent masks and persistence. SET input uses the installed SDK's 40-byte structure, matching the measured adapter; reserved bytes are zero. Pure tests verify ABI layout, ordering, wrong identities, failed protection/detach/absence/close, unknown operations, and evidence guards.

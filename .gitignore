@@ -1,0 +1,22 @@
+/target/
+/crates/*/target/
+/crates/*/Cargo.lock
+/.lab/
+/artifacts/
+*.vhd
+*.vhdx
+*.avhdx
+*.iso
+*.raw
+*.img
+*.journal
+*.dmp
+
+# Local credentials and environment configuration.
+secrets/
+.env
+.env.*
+!.env.example
+!.env.template
+*.pfx
+*.p12

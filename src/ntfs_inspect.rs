@@ -1,0 +1,1704 @@
+//! Read-only NTFS reconnaissance. Reports are evidence, not conversion approval.
+//!
+//! `ntfs` validates the standard geometry. The bounded record/run-list reader below
+//! also retains raw UTF-16 names and metadata that its high-level API does not yet
+//! expose. Attribute-list assembly, directory reconciliation and $Secure lookup
+//! remain explicit coverage blockers; no report from this module certifies them.
+
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::io::{Read, Seek, SeekFrom};
+
+const MAX_MFT_RECORDS: u64 = 1_000_000;
+const MAX_BITMAP_BYTES: u64 = 128 * 1024 * 1024;
+const STREAM_HASH_BUFFER_BYTES: usize = 64 * 1024;
+
+/// Bounds retained inventory data independently of the separately bounded
+/// metadata read buffers. Hitting the limit returns an error, never a partial
+/// report that could be mistaken for a complete inventory.
+#[derive(Debug, Clone, Copy)]
+pub struct InspectionLimits {
+    pub max_report_bytes: u64,
+    /// Cumulative logical DATA bytes, including sparse and uninitialized zeros.
+    /// Repeated physical mappings are charged again for every logical stream.
+    pub max_stream_hash_bytes: u64,
+}
+
+impl Default for InspectionLimits {
+    fn default() -> Self {
+        Self {
+            max_report_bytes: 64 * 1024 * 1024,
+            max_stream_hash_bytes: 1024 * 1024 * 1024,
+        }
+    }
+}
+
+struct HashBudget {
+    limit: u64,
+    used: u64,
+}
+
+impl HashBudget {
+    fn reserve(&mut self, bytes: u64) -> Result<()> {
+        let used = self
+            .used
+            .checked_add(bytes)
+            .context("stream hash accounting overflow")?;
+        ensure!(
+            used <= self.limit,
+            "cumulative stream hash byte limit exceeded (requires {used} bytes, limit {}); no partial inventory returned",
+            self.limit
+        );
+        self.used = used;
+        Ok(())
+    }
+}
+
+struct ReportBudget {
+    limit: u64,
+    used: u64,
+}
+
+impl ReportBudget {
+    fn charge(&mut self, bytes: u64) -> Result<()> {
+        let used = self
+            .used
+            .checked_add(bytes)
+            .context("inventory memory accounting overflow")?;
+        ensure!(
+            used <= self.limit,
+            "inventory report budget exceeded (requires at least {used} bytes, limit {}); no partial inventory returned",
+            self.limit
+        );
+        self.used = used;
+        Ok(())
+    }
+
+    fn push<T>(&mut self, items: &mut Vec<T>, item: T, heap_bytes: u64) -> Result<()> {
+        let element_bytes = std::mem::size_of::<T>() as u64;
+        self.charge(heap_bytes)?;
+        if items.len() == items.capacity() {
+            // Grow in bounded chunks instead of allowing an implicit doubling
+            // to exceed the remaining report budget. Count actual capacity.
+            let slots = ((self.limit - self.used) / element_bytes).min(64);
+            ensure!(
+                slots > 0,
+                "inventory report budget exceeded (limit {} bytes); no partial inventory returned",
+                self.limit
+            );
+            let before = items.capacity();
+            items
+                .try_reserve_exact(slots as usize)
+                .context("allocating bounded inventory report")?;
+            let bytes = ((items.capacity() - before) as u64)
+                .checked_mul(element_bytes)
+                .context("inventory vector accounting overflow")?;
+            self.charge(bytes)?;
+        }
+        items.push(item);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NtfsGeometry {
+    pub bytes_per_sector: u16,
+    pub sectors_per_cluster: u32,
+    pub cluster_size: u32,
+    pub total_sectors: u64,
+    pub volume_size: u64,
+    pub total_clusters: u64,
+    pub mft_lcn: u64,
+    pub mftmirr_lcn: u64,
+    pub file_record_size: u32,
+    pub index_record_size: u32,
+    pub serial_number: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InspectionBlocker {
+    pub code: String,
+    pub message: String,
+    pub file_record_number: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NtfsInspection {
+    pub schema_version: u32,
+    pub geometry: NtfsGeometry,
+    pub volume_version: Option<String>,
+    pub volume_flags: Option<u16>,
+    pub dirty: Option<bool>,
+    pub mft_record_count: u64,
+    pub records_scanned: u64,
+    pub allocated_clusters: Option<u64>,
+    pub free_clusters: Option<u64>,
+    pub files: Vec<FileInventory>,
+    pub blockers: Vec<InspectionBlocker>,
+    pub inventory_complete: bool,
+    /// Retained report storage, including vector spare capacity; excludes the
+    /// independently bounded input buffers and temporary current MFT record.
+    pub inventory_memory_bytes: u64,
+    pub inventory_memory_limit_bytes: u64,
+    #[serde(default)]
+    pub stream_hash_bytes: u64,
+    #[serde(default)]
+    pub stream_hash_limit_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileInventory {
+    pub record_number: u64,
+    pub sequence_number: u16,
+    pub hard_link_count: u16,
+    pub is_directory: bool,
+    /// Convenience summary: reserved record or $Extend descendant candidate.
+    /// Never permission to omit, overwrite, or free this record's extents. False
+    /// also covers unresolved roles; inspect metadata_role and its issue.
+    pub is_metadata: bool,
+    #[serde(default)]
+    pub metadata_role: MetadataRole,
+    #[serde(default)]
+    pub metadata_role_issue: Option<MetadataRoleIssue>,
+    pub base_file_reference: u64,
+    pub names: Vec<NameInventory>,
+    pub standard_information: Option<StandardInformation>,
+    pub streams: Vec<StreamInventory>,
+    pub attributes: Vec<AttributeInventory>,
+}
+
+/// MFT ancestry evidence only. Directory indexes, allocation ownership and
+/// preservation semantics remain unverified for every candidate role.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataRole {
+    /// Legacy reports have no ancestry evidence, regardless of is_metadata.
+    #[default]
+    NotClassified,
+    ReservedSystemRecord,
+    ExtendDescendantCandidate,
+    /// Outside $Extend is not proof that a file contains only ordinary user data.
+    OutsideExtendCandidate,
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataRoleIssue {
+    InvalidRootAnchor,
+    InvalidExtendAnchor,
+    ExtensionRecord,
+    AttributeListUnassembled,
+    ZeroSequenceNumber,
+    MissingNames,
+    LinkCountMismatch,
+    InvalidName,
+    MissingParent,
+    ParentSequenceMismatch,
+    ParentNotDirectory,
+    UnsupportedReservedParent,
+    Cycle,
+    MixedAncestry,
+    AncestorUnresolved,
+    DepthLimit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NameInventory {
+    pub name: String,
+    pub name_utf16: Vec<u16>,
+    pub namespace: u8,
+    pub parent_record_number: u64,
+    pub parent_sequence_number: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandardInformation {
+    /// Raw Windows FILETIME values; no precision or timezone conversion is applied.
+    pub creation_time: u64,
+    pub modification_time: u64,
+    pub mft_change_time: u64,
+    pub access_time: u64,
+    pub file_attributes: u32,
+    pub security_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Extent {
+    pub logical_offset: u64,
+    pub physical_offset: Option<u64>,
+    /// Allocation length, possibly extending past the stream's logical EOF.
+    pub length: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamInventory {
+    pub name: String,
+    pub name_utf16: Vec<u16>,
+    pub resident: bool,
+    pub flags: u16,
+    pub logical_size: u64,
+    pub initialized_size: u64,
+    pub allocated_size: u64,
+    pub extents: Vec<Extent>,
+    /// Raw resident bytes only; not a complete logical digest for unsupported layouts.
+    pub resident_sha256: Option<String>,
+    /// Complete logical content [0, EOF), with holes and uninitialized tails zeroed.
+    /// Present only when logical_hash_status is Complete.
+    #[serde(default)]
+    pub logical_sha256: Option<String>,
+    #[serde(default)]
+    pub logical_hash_status: LogicalHashStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LogicalHashStatus {
+    /// Legacy reports without logical hashing evidence deserialize conservatively.
+    #[default]
+    NotComputed,
+    Complete,
+    UnsupportedCompression,
+    UnsupportedEncryption,
+    UnsupportedAttributeList,
+    UnsupportedExtensionRecord,
+    UnsupportedFlags,
+    UnsupportedCompressionUnit,
+    /// $BadClus:$Bad can have unflagged sparse runs with system-specific semantics.
+    UnsupportedBadClusterMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttributeInventory {
+    pub type_code: u32,
+    pub instance: u16,
+    pub name_utf16: Vec<u16>,
+    pub flags: u16,
+    pub resident: bool,
+    pub logical_size: u64,
+    pub initialized_size: u64,
+    pub allocated_size: u64,
+    pub lowest_vcn: u64,
+    #[serde(default)]
+    pub compression_unit: u16,
+    pub extents: Vec<Extent>,
+    pub resident_sha256: Option<String>,
+    /// Exact bytes for resident semantic metadata, never file $DATA contents.
+    pub resident_metadata_hex: Option<String>,
+}
+
+#[derive(Clone)]
+struct Attribute {
+    report: AttributeInventory,
+    resident_value: Option<Vec<u8>>,
+}
+
+struct Record {
+    sequence: u16,
+    links: u16,
+    flags: u16,
+    base: u64,
+    attributes: Vec<Attribute>,
+}
+
+fn u16le(b: &[u8], at: usize) -> Result<u16> {
+    Ok(u16::from_le_bytes(
+        b.get(at..at + 2).context("truncated u16")?.try_into()?,
+    ))
+}
+fn u32le(b: &[u8], at: usize) -> Result<u32> {
+    Ok(u32::from_le_bytes(
+        b.get(at..at + 4).context("truncated u32")?.try_into()?,
+    ))
+}
+fn u64le(b: &[u8], at: usize) -> Result<u64> {
+    Ok(u64::from_le_bytes(
+        b.get(at..at + 8).context("truncated u64")?.try_into()?,
+    ))
+}
+
+fn record_size(encoded: u8, cluster_size: u32, label: &str) -> Result<u32> {
+    let signed = encoded as i8;
+    let size = if signed > 0 {
+        cluster_size
+            .checked_mul(signed as u32)
+            .context("record size overflow")?
+    } else {
+        ensure!(signed != 0, "{label} size is zero");
+        1u32.checked_shl(u32::from(signed.unsigned_abs()))
+            .context("record size exponent overflow")?
+    };
+    ensure!(
+        (512..=65536).contains(&size) && size.is_power_of_two(),
+        "unsupported {label} size {size}"
+    );
+    Ok(size)
+}
+
+/// Validate a partition boot sector before allowing any dependent allocation.
+/// `length` is the length of the bounded partition reader, not a VHDX container.
+pub fn inspect_boot_sector(bytes: &[u8], length: u64) -> Result<NtfsGeometry> {
+    ensure!(bytes.len() >= 512, "truncated NTFS boot sector");
+    ensure!(
+        &bytes[3..11] == b"NTFS    ",
+        "not an NTFS partition boot sector"
+    );
+    ensure!(
+        bytes[510..512] == [0x55, 0xaa],
+        "invalid NTFS boot signature"
+    );
+    let bytes_per_sector = u16le(bytes, 11)?;
+    ensure!(
+        (512..=4096).contains(&bytes_per_sector) && bytes_per_sector.is_power_of_two(),
+        "invalid bytes per sector"
+    );
+    let encoded = bytes[13];
+    let sectors_per_cluster = if encoded > 128 {
+        let shift = (encoded as i8).unsigned_abs() as u32;
+        ensure!(shift <= 12, "invalid cluster exponent");
+        1u32.checked_shl(shift)
+            .context("cluster exponent overflow")?
+    } else {
+        ensure!(
+            encoded != 0 && encoded.is_power_of_two(),
+            "invalid sectors per cluster"
+        );
+        u32::from(encoded)
+    };
+    let cluster_size = u32::from(bytes_per_sector)
+        .checked_mul(sectors_per_cluster)
+        .context("cluster size overflow")?;
+    ensure!(cluster_size <= 2 * 1024 * 1024, "unsupported cluster size");
+    ensure!(
+        u16le(bytes, 14)? == 0
+            && bytes[16] == 0
+            && u16le(bytes, 17)? == 0
+            && u16le(bytes, 19)? == 0
+            && u16le(bytes, 22)? == 0
+            && u32le(bytes, 32)? == 0,
+        "nonzero legacy FAT BPB fields in NTFS boot sector"
+    );
+    let total_sectors = u64le(bytes, 40)?;
+    ensure!(total_sectors > 0, "empty NTFS volume");
+    let volume_size = total_sectors
+        .checked_mul(u64::from(bytes_per_sector))
+        .context("volume size overflow")?;
+    ensure!(
+        volume_size <= length,
+        "NTFS volume exceeds partition reader length"
+    );
+    // NTFS commonly excludes its final backup boot sector from TotalSectors.
+    ensure!(
+        length == volume_size || length - volume_size == u64::from(bytes_per_sector),
+        "reader contains trailing data; provide exactly one NTFS partition"
+    );
+    let total_clusters = volume_size / u64::from(cluster_size);
+    ensure!(total_clusters > 0, "volume is smaller than one cluster");
+    let mft_lcn = u64le(bytes, 48)?;
+    let mftmirr_lcn = u64le(bytes, 56)?;
+    ensure!(
+        mft_lcn > 0 && mft_lcn < total_clusters,
+        "MFT location outside volume"
+    );
+    ensure!(
+        mftmirr_lcn > 0 && mftmirr_lcn < total_clusters,
+        "MFT mirror location outside volume"
+    );
+    let file_record_size = record_size(bytes[64], cluster_size, "file record")?;
+    let index_record_size = record_size(bytes[68], cluster_size, "index record")?;
+    for lcn in [mft_lcn, mftmirr_lcn] {
+        let end = lcn
+            .checked_mul(u64::from(cluster_size))
+            .and_then(|n| n.checked_add(u64::from(file_record_size)))
+            .context("MFT range overflow")?;
+        ensure!(end <= volume_size, "MFT record crosses volume boundary");
+    }
+    Ok(NtfsGeometry {
+        bytes_per_sector,
+        sectors_per_cluster,
+        cluster_size,
+        total_sectors,
+        volume_size,
+        total_clusters,
+        mft_lcn,
+        mftmirr_lcn,
+        file_record_size,
+        index_record_size,
+        serial_number: u64le(bytes, 72)?,
+    })
+}
+
+fn read_at<R: Read + Seek>(
+    reader: &mut R,
+    offset: u64,
+    bytes: &mut [u8],
+    limit: u64,
+) -> Result<()> {
+    let end = offset
+        .checked_add(bytes.len() as u64)
+        .context("read range overflow")?;
+    ensure!(end <= limit, "metadata read exceeds partition boundary");
+    reader.seek(SeekFrom::Start(offset))?;
+    reader.read_exact(bytes)?;
+    Ok(())
+}
+
+fn utf16(bytes: &[u8]) -> Result<Vec<u16>> {
+    ensure!(bytes.len().is_multiple_of(2), "odd UTF-16 byte length");
+    Ok(bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect())
+}
+
+fn parse_runs(
+    bytes: &[u8],
+    first_vcn: u64,
+    last_vcn: u64,
+    geometry: &NtfsGeometry,
+) -> Result<Vec<Extent>> {
+    let mut cursor = 0usize;
+    let mut lcn = 0i128;
+    let mut vcn = first_vcn;
+    let mut extents = Vec::new();
+    let mut terminated = false;
+    while cursor < bytes.len() {
+        let descriptor = bytes[cursor];
+        cursor += 1;
+        if descriptor == 0 {
+            terminated = true;
+            break;
+        }
+        let count_bytes = usize::from(descriptor & 15);
+        let delta_bytes = usize::from(descriptor >> 4);
+        ensure!(
+            (1..=8).contains(&count_bytes) && delta_bytes <= 8,
+            "invalid run-list field width"
+        );
+        let fields = bytes
+            .get(cursor..cursor + count_bytes + delta_bytes)
+            .context("truncated run-list entry")?;
+        let mut count_buffer = [0u8; 8];
+        count_buffer[..count_bytes].copy_from_slice(&fields[..count_bytes]);
+        let count = u64::from_le_bytes(count_buffer);
+        ensure!(count > 0, "zero-length data run");
+        let physical_offset = if delta_bytes == 0 {
+            None
+        } else {
+            let delta_data = &fields[count_bytes..];
+            let mut delta_buffer = if delta_data[delta_bytes - 1] & 0x80 != 0 {
+                [0xff; 8]
+            } else {
+                [0; 8]
+            };
+            delta_buffer[..delta_bytes].copy_from_slice(delta_data);
+            lcn += i128::from(i64::from_le_bytes(delta_buffer));
+            ensure!(
+                lcn >= 0 && lcn <= i128::from(u64::MAX),
+                "negative or overflowing data run LCN"
+            );
+            let offset = (lcn as u64)
+                .checked_mul(u64::from(geometry.cluster_size))
+                .context("data run position overflow")?;
+            Some(offset)
+        };
+        let length = count
+            .checked_mul(u64::from(geometry.cluster_size))
+            .context("data run length overflow")?;
+        if let Some(offset) = physical_offset {
+            ensure!(
+                offset
+                    .checked_add(length)
+                    .is_some_and(|end| end <= geometry.volume_size),
+                "data run outside volume"
+            );
+        }
+        let logical_offset = vcn
+            .checked_mul(u64::from(geometry.cluster_size))
+            .context("data run VCN overflow")?;
+        vcn = vcn.checked_add(count).context("data run VCN overflow")?;
+        extents.push(Extent {
+            logical_offset,
+            physical_offset,
+            length,
+        });
+        cursor += count_bytes + delta_bytes;
+    }
+    ensure!(terminated, "unterminated run list");
+    if !extents.is_empty() {
+        ensure!(
+            last_vcn.checked_add(1) == Some(vcn),
+            "run list does not match declared VCN range"
+        );
+    } else {
+        ensure!(
+            first_vcn == 0 && (last_vcn == 0 || last_vcn == u64::MAX),
+            "empty run list has a nonempty VCN range"
+        );
+    }
+    Ok(extents)
+}
+
+fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
+    ensure!(
+        bytes.len() == geometry.file_record_size as usize && bytes.len() >= 48,
+        "wrong file record length"
+    );
+    ensure!(&bytes[..4] == b"FILE", "invalid FILE record signature");
+    let usa = usize::from(u16le(&bytes, 4)?);
+    let usa_count = usize::from(u16le(&bytes, 6)?);
+    ensure!(
+        usa >= 8 && usa_count == bytes.len() / 512 + 1,
+        "invalid update sequence array count"
+    );
+    let usa_end = usa
+        .checked_add(usa_count * 2)
+        .context("USA range overflow")?;
+    ensure!(
+        usa_end <= bytes.len(),
+        "update sequence array outside record"
+    );
+    let sequence = [bytes[usa], bytes[usa + 1]];
+    for index in 1..usa_count {
+        let tail = index * 512 - 2;
+        ensure!(
+            bytes[tail..tail + 2] == sequence,
+            "torn file record: update sequence mismatch"
+        );
+        let replacement = [bytes[usa + index * 2], bytes[usa + index * 2 + 1]];
+        bytes[tail..tail + 2].copy_from_slice(&replacement);
+    }
+    let used = u32le(&bytes, 24)? as usize;
+    let allocated = u32le(&bytes, 28)? as usize;
+    ensure!(
+        used <= allocated && allocated == bytes.len(),
+        "invalid file record size fields"
+    );
+    let mut at = usize::from(u16le(&bytes, 20)?);
+    ensure!(
+        at >= 48 && at >= usa_end && at % 8 == 0 && at < used,
+        "invalid first attribute offset"
+    );
+    let mut attributes = Vec::new();
+    let mut terminated = false;
+    while at < used {
+        let type_code = u32le(&bytes[..used], at)?;
+        if type_code == u32::MAX {
+            terminated = true;
+            break;
+        }
+        let size = u32le(&bytes[..used], at + 4)? as usize;
+        ensure!(
+            size >= 24 && size.is_multiple_of(8),
+            "invalid attribute length"
+        );
+        let end = at.checked_add(size).context("attribute range overflow")?;
+        ensure!(end <= used, "attribute extends outside used record");
+        let raw = &bytes[at..end];
+        ensure!(raw[8] <= 1, "invalid resident/nonresident tag");
+        let resident = raw[8] == 0;
+        let name_length = usize::from(raw[9]) * 2;
+        let name_at = usize::from(u16le(raw, 10)?);
+        let flags = u16le(raw, 12)?;
+        let minimum_header = if resident {
+            24
+        } else if flags & 0x80ff != 0 && u64le(raw, 16)? == 0 {
+            // Sparse/compressed base attributes include TotalAllocated before
+            // their name and mapping pairs. Never interpret that field as runs.
+            72
+        } else {
+            64
+        };
+        ensure!(raw.len() >= minimum_header, "truncated attribute header");
+        if name_length > 0 {
+            ensure!(name_at >= minimum_header, "attribute name overlaps header");
+        }
+        let name_utf16 = if name_length == 0 {
+            Vec::new()
+        } else {
+            utf16(
+                raw.get(name_at..name_at + name_length)
+                    .context("attribute name outside attribute")?,
+            )?
+        };
+        let instance = u16le(raw, 14)?;
+        let (logical_size, initialized_size, allocated_size, lowest_vcn, extents, resident_value) =
+            if resident {
+                let value_len = u32le(raw, 16)? as usize;
+                let value_at = usize::from(u16le(raw, 20)?);
+                ensure!(
+                    value_at >= 24 && (name_length == 0 || name_at + name_length <= value_at),
+                    "resident value overlaps header or name"
+                );
+                let value = raw
+                    .get(value_at..value_at + value_len)
+                    .context("resident value outside attribute")?
+                    .to_vec();
+                (
+                    value_len as u64,
+                    value_len as u64,
+                    value_len as u64,
+                    0,
+                    Vec::new(),
+                    Some(value),
+                )
+            } else {
+                let lowest = u64le(raw, 16)?;
+                let highest = u64le(raw, 24)?;
+                let runs_at = usize::from(u16le(raw, 32)?);
+                ensure!(
+                    runs_at >= minimum_header
+                        && runs_at < raw.len()
+                        && (name_length == 0 || name_at + name_length <= runs_at),
+                    "invalid run-list offset"
+                );
+                let allocated = u64le(raw, 40)?;
+                let logical = u64le(raw, 48)?;
+                let initialized = u64le(raw, 56)?;
+                if lowest == 0 {
+                    ensure!(
+                        initialized <= logical,
+                        "initialized size exceeds logical size"
+                    );
+                }
+                let extents = parse_runs(&raw[runs_at..], lowest, highest, geometry)?;
+                if lowest == 0 {
+                    let coverage = extents.iter().try_fold(0u64, |sum, run| {
+                        sum.checked_add(run.length).context("run coverage overflow")
+                    })?;
+                    // An attribute-list continuation may supply the rest. It is explicitly blocked below.
+                    ensure!(
+                        logical == 0 || coverage > 0,
+                        "nonempty stream has no data runs"
+                    );
+                }
+                (logical, initialized, allocated, lowest, extents, None)
+            };
+        let resident_sha256 = resident_value
+            .as_ref()
+            .map(|v| hex::encode(Sha256::digest(v)));
+        let resident_metadata_hex = if matches!(
+            type_code,
+            0x10 | 0x30 | 0x40 | 0x50 | 0x70 | 0xc0 | 0xd0 | 0xe0
+        ) {
+            resident_value.as_ref().map(hex::encode)
+        } else {
+            None
+        };
+        attributes.push(Attribute {
+            report: AttributeInventory {
+                type_code,
+                instance,
+                name_utf16,
+                flags,
+                resident,
+                logical_size,
+                initialized_size,
+                allocated_size,
+                lowest_vcn,
+                compression_unit: if resident { 0 } else { u16le(raw, 34)? },
+                extents,
+                resident_sha256,
+                resident_metadata_hex,
+            },
+            resident_value,
+        });
+        at = end;
+    }
+    ensure!(terminated, "missing attribute terminator");
+    Ok(Record {
+        sequence: u16le(&bytes, 16)?,
+        links: u16le(&bytes, 18)?,
+        flags: u16le(&bytes, 22)?,
+        base: u64le(&bytes, 32)?,
+        attributes,
+    })
+}
+
+fn unnamed(record: &Record, type_code: u32) -> Result<&Attribute> {
+    let mut found = record.attributes.iter().filter(|a| {
+        a.report.type_code == type_code
+            && a.report.name_utf16.is_empty()
+            && a.report.lowest_vcn == 0
+    });
+    let value = found
+        .next()
+        .context(format!("missing unnamed attribute {type_code:#x}"))?;
+    ensure!(found.next().is_none(), "duplicate unnamed base attribute");
+    Ok(value)
+}
+
+fn read_attribute_range<R: Read + Seek>(
+    reader: &mut R,
+    attribute: &Attribute,
+    offset: u64,
+    output: &mut [u8],
+    geometry: &NtfsGeometry,
+) -> Result<()> {
+    let end = offset
+        .checked_add(output.len() as u64)
+        .context("attribute read overflow")?;
+    ensure!(
+        end <= attribute.report.logical_size,
+        "read beyond logical attribute EOF"
+    );
+    ensure!(
+        attribute.report.flags & 0x40ff == 0,
+        "cannot interpret compressed or encrypted metadata"
+    );
+    if let Some(data) = &attribute.resident_value {
+        output.copy_from_slice(&data[offset as usize..end as usize]);
+        return Ok(());
+    }
+    let mut position = offset;
+    let mut done = 0usize;
+    while done < output.len() {
+        if position >= attribute.report.initialized_size {
+            output[done..].fill(0);
+            break;
+        }
+        let extent = attribute
+            .report
+            .extents
+            .iter()
+            .find(|e| {
+                e.logical_offset <= position
+                    && e.logical_offset
+                        .checked_add(e.length)
+                        .is_some_and(|end| position < end)
+            })
+            .context("attribute run-list coverage gap")?;
+        let in_run = position - extent.logical_offset;
+        let available = (extent.length - in_run).min(attribute.report.initialized_size - position);
+        let count = available.min((output.len() - done) as u64) as usize;
+        ensure!(count > 0, "zero-progress attribute read");
+        if let Some(physical) = extent.physical_offset {
+            read_at(
+                reader,
+                physical
+                    .checked_add(in_run)
+                    .context("physical read overflow")?,
+                &mut output[done..done + count],
+                geometry.volume_size,
+            )?;
+        } else {
+            output[done..done + count].fill(0);
+        }
+        done += count;
+        position += count as u64;
+    }
+    Ok(())
+}
+
+fn read_small_attribute<R: Read + Seek>(
+    reader: &mut R,
+    attr: &Attribute,
+    geometry: &NtfsGeometry,
+    cap: u64,
+) -> Result<Vec<u8>> {
+    ensure!(
+        attr.report.logical_size <= cap,
+        "metadata exceeds inspection memory limit"
+    );
+    let mut value = vec![0; attr.report.logical_size as usize];
+    read_attribute_range(reader, attr, 0, &mut value, geometry)?;
+    Ok(value)
+}
+
+/// Validate the entire standalone mapping, including allocation past EOF and the
+/// uninitialized tail. Zero filling must never conceal missing mapping pairs.
+fn validate_stream_mapping(a: &AttributeInventory, geometry: &NtfsGeometry) -> Result<()> {
+    ensure!(
+        a.lowest_vcn == 0,
+        "standalone DATA mapping must start at VCN zero"
+    );
+    ensure!(
+        a.initialized_size <= a.logical_size,
+        "initialized size exceeds logical size"
+    );
+    let cluster_size = u64::from(geometry.cluster_size);
+    ensure!(
+        a.allocated_size.is_multiple_of(cluster_size),
+        "DATA allocated size is not cluster aligned"
+    );
+    let mut coverage = 0u64;
+    let mut physical_bytes = 0u64;
+    let mut physical_ranges = Vec::new();
+    for extent in &a.extents {
+        ensure!(
+            extent.logical_offset == coverage,
+            "DATA mapping has a logical gap or overlap"
+        );
+        ensure!(
+            extent.length > 0 && extent.length.is_multiple_of(cluster_size),
+            "invalid DATA extent length"
+        );
+        coverage = coverage
+            .checked_add(extent.length)
+            .context("DATA mapping coverage overflow")?;
+        if let Some(start) = extent.physical_offset {
+            ensure!(
+                start.is_multiple_of(cluster_size),
+                "DATA physical extent is not cluster aligned"
+            );
+            let end = start
+                .checked_add(extent.length)
+                .context("DATA physical extent overflow")?;
+            ensure!(
+                end <= geometry.volume_size,
+                "DATA extent exceeds partition boundary"
+            );
+            physical_bytes = physical_bytes
+                .checked_add(extent.length)
+                .context("DATA physical allocation overflow")?;
+            physical_ranges.push((start, end));
+        } else {
+            ensure!(
+                a.flags & 0x8000 != 0,
+                "sparse DATA run lacks the sparse attribute flag"
+            );
+        }
+    }
+    ensure!(
+        coverage >= a.logical_size,
+        "DATA mapping has a coverage gap before logical EOF"
+    );
+    if a.flags & 0x8000 == 0 {
+        ensure!(
+            a.allocated_size == coverage,
+            "DATA allocated size differs from mapped coverage"
+        );
+    } else {
+        // Sparse logical coverage and physical allocation are different quantities.
+        // Retain the raw allocation field; allocation ownership remains unverified.
+        ensure!(
+            physical_bytes <= a.allocated_size && a.allocated_size <= coverage,
+            "sparse DATA allocated size is inconsistent with mapped coverage"
+        );
+    }
+    physical_ranges.sort_unstable();
+    ensure!(
+        physical_ranges
+            .windows(2)
+            .all(|pair| pair[0].1 <= pair[1].0),
+        "DATA mapping contains overlapping physical extents"
+    );
+    Ok(())
+}
+
+fn hash_stream<R: Read + Seek>(
+    reader: &mut R,
+    attribute: &Attribute,
+    geometry: &NtfsGeometry,
+    budget: &mut HashBudget,
+    has_attribute_list: bool,
+    extension_record: bool,
+    record_number: u64,
+) -> Result<(LogicalHashStatus, Option<String>)> {
+    let a = &attribute.report;
+    let unsupported = if has_attribute_list || a.lowest_vcn != 0 {
+        Some(LogicalHashStatus::UnsupportedAttributeList)
+    } else if extension_record {
+        Some(LogicalHashStatus::UnsupportedExtensionRecord)
+    } else if record_number == 8
+        && a.name_utf16 == [0x24, 0x42, 0x61, 0x64]
+        && a.flags == 0
+        && a.extents
+            .iter()
+            .any(|extent| extent.physical_offset.is_none())
+    {
+        // mkntfs constructs $BadClus:$Bad using sparse mapping pairs and zero
+        // attribute flags. Preserve this system metadata without treating it as
+        // ordinary logical DATA or weakening the ordinary sparse-run check.
+        // https://github.com/tuxera/ntfs-3g/blob/edge/ntfsprogs/mkntfs.c
+        Some(LogicalHashStatus::UnsupportedBadClusterMetadata)
+    } else if a.flags & 0x00ff != 0 {
+        Some(LogicalHashStatus::UnsupportedCompression)
+    } else if a.flags & 0x4000 != 0 {
+        Some(LogicalHashStatus::UnsupportedEncryption)
+    } else if a.flags & !0xc0ff != 0 || (a.resident && a.flags != 0) {
+        Some(LogicalHashStatus::UnsupportedFlags)
+    } else if a.compression_unit != 0 && !(a.flags & 0x8000 != 0 && a.compression_unit == 4) {
+        // Native sparse attributes can carry unit 4 without compression. The
+        // compression method flags, not the unit alone, distinguish that case.
+        Some(LogicalHashStatus::UnsupportedCompressionUnit)
+    } else {
+        None
+    };
+    if let Some(status) = unsupported {
+        return Ok((status, None));
+    }
+    if let Some(value) = &attribute.resident_value {
+        ensure!(
+            a.logical_size == value.len() as u64 && a.initialized_size == a.logical_size,
+            "resident DATA size is inconsistent"
+        );
+        budget.reserve(a.logical_size)?;
+        return Ok((LogicalHashStatus::Complete, a.resident_sha256.clone()));
+    }
+    validate_stream_mapping(a, geometry)?;
+    // Reserve all work before the first DATA read, including CPU work hashing
+    // zeros. No partial digest or partial report is returned on exhaustion.
+    budget.reserve(a.logical_size)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
+    for extent in &a.extents {
+        if extent.logical_offset >= a.logical_size {
+            break;
+        }
+        let length = extent.length.min(a.logical_size - extent.logical_offset);
+        let initialized = a
+            .initialized_size
+            .saturating_sub(extent.logical_offset)
+            .min(length);
+        let mut done = 0u64;
+        while done < length {
+            let physical = extent.physical_offset.filter(|_| done < initialized);
+            let remaining = if physical.is_some() {
+                initialized - done
+            } else {
+                length - done
+            };
+            let count = remaining.min(buffer.len() as u64) as usize;
+            if let Some(start) = physical {
+                read_at(
+                    reader,
+                    start
+                        .checked_add(done)
+                        .context("DATA read position overflow")?,
+                    &mut buffer[..count],
+                    geometry.volume_size,
+                )?;
+            } else {
+                buffer[..count].fill(0);
+            }
+            hasher.update(&buffer[..count]);
+            done += count as u64;
+        }
+    }
+    Ok((
+        LogicalHashStatus::Complete,
+        Some(hex::encode(hasher.finalize())),
+    ))
+}
+
+fn blocker(
+    report: &mut NtfsInspection,
+    budget: &mut ReportBudget,
+    code: &str,
+    message: impl Into<String>,
+    record: Option<u64>,
+) -> Result<()> {
+    let item = InspectionBlocker {
+        code: code.into(),
+        message: message.into(),
+        file_record_number: record,
+    };
+    let heap_bytes = (item.code.capacity() as u64)
+        .checked_add(item.message.capacity() as u64)
+        .context("blocker memory accounting overflow")?;
+    budget.push(&mut report.blockers, item, heap_bytes)
+}
+
+fn file_heap_bytes(file: &FileInventory) -> Result<u64> {
+    let mut counter = ReportBudget {
+        limit: u64::MAX,
+        used: 0,
+    };
+    counter.charge((file.names.capacity() * std::mem::size_of::<NameInventory>()) as u64)?;
+    counter.charge((file.streams.capacity() * std::mem::size_of::<StreamInventory>()) as u64)?;
+    counter
+        .charge((file.attributes.capacity() * std::mem::size_of::<AttributeInventory>()) as u64)?;
+    for name in &file.names {
+        counter.charge(name.name.capacity() as u64)?;
+        counter.charge((name.name_utf16.capacity() * 2) as u64)?;
+    }
+    for stream in &file.streams {
+        counter.charge(stream.name.capacity() as u64)?;
+        counter.charge((stream.name_utf16.capacity() * 2) as u64)?;
+        counter.charge((stream.extents.capacity() * std::mem::size_of::<Extent>()) as u64)?;
+        if let Some(hash) = &stream.resident_sha256 {
+            counter.charge(hash.capacity() as u64)?;
+        }
+        if let Some(hash) = &stream.logical_sha256 {
+            counter.charge(hash.capacity() as u64)?;
+        }
+    }
+    for attribute in &file.attributes {
+        counter.charge((attribute.name_utf16.capacity() * 2) as u64)?;
+        counter.charge((attribute.extents.capacity() * std::mem::size_of::<Extent>()) as u64)?;
+        if let Some(hash) = &attribute.resident_sha256 {
+            counter.charge(hash.capacity() as u64)?;
+        }
+        if let Some(data) = &attribute.resident_metadata_hex {
+            counter.charge(data.capacity() as u64)?;
+        }
+    }
+    Ok(counter.used)
+}
+
+const MAX_METADATA_ANCESTRY_DEPTH: usize = 4096;
+
+#[derive(Clone, Copy)]
+enum AncestryState {
+    Unseen,
+    Visiting,
+    OutsideExtend,
+    WithinExtend,
+    Unresolved(MetadataRoleIssue),
+}
+
+struct AncestryFrame {
+    file_index: usize,
+    next_name: usize,
+    /// Bit 0 = a path to the root outside $Extend; bit 1 = a path via $Extend.
+    ancestry_mask: u8,
+}
+
+fn find_record(files: &[FileInventory], number: u64) -> Option<usize> {
+    files
+        .binary_search_by_key(&number, |file| file.record_number)
+        .ok()
+}
+
+fn has_attribute_list(file: &FileInventory) -> bool {
+    file.attributes.iter().any(|a| a.type_code == 0x20)
+}
+
+fn valid_role_anchor(file: &FileInventory, name: &[u16], root_sequence: u16) -> bool {
+    file.is_directory
+        && file.base_file_reference == 0
+        && file.sequence_number != 0
+        && !has_attribute_list(file)
+        && file.hard_link_count == 1
+        && file.names.len() == 1
+        && file.names[0].namespace != 2
+        && file.names[0].name_utf16 == name
+        && file.names[0].parent_record_number == 5
+        && file.names[0].parent_sequence_number == root_sequence
+}
+
+fn local_ancestry_issue(file: &FileInventory) -> Option<MetadataRoleIssue> {
+    use MetadataRoleIssue as Issue;
+    if file.base_file_reference != 0 {
+        Some(Issue::ExtensionRecord)
+    } else if has_attribute_list(file) {
+        Some(Issue::AttributeListUnassembled)
+    } else if file.sequence_number == 0 {
+        Some(Issue::ZeroSequenceNumber)
+    } else if file.names.is_empty() {
+        Some(Issue::MissingNames)
+    } else if file.hard_link_count == 0
+        || usize::from(file.hard_link_count)
+            != file.names.iter().filter(|name| name.namespace != 2).count()
+    {
+        // DOS aliases do not add hard links. This is a necessary consistency
+        // check, not a substitute for directory-index/link reconciliation.
+        Some(Issue::LinkCountMismatch)
+    } else if file.names.iter().any(|name| {
+        name.name_utf16.is_empty()
+            || name.name_utf16 == [u16::from(b'.')]
+            || name.name_utf16 == [u16::from(b'.'), u16::from(b'.')]
+    }) {
+        Some(Issue::InvalidName)
+    } else {
+        None
+    }
+}
+
+/// Classify only already-inventoried MFT references; this performs no image I/O
+/// and never follows a reparse target. Scratch storage is bounded by the MFT
+/// record limit plus at most 4096 explicit traversal frames (no recursion).
+fn classify_metadata_roles(report: &mut NtfsInspection, budget: &mut ReportBudget) -> Result<()> {
+    use AncestryState as State;
+    use MetadataRoleIssue as Issue;
+    let files = &report.files;
+    ensure!(
+        files.len() as u64 <= MAX_MFT_RECORDS
+            && files
+                .windows(2)
+                .all(|pair| pair[0].record_number < pair[1].record_number),
+        "metadata role classification requires unique sorted bounded records"
+    );
+    let mut states = Vec::new();
+    states
+        .try_reserve_exact(files.len())
+        .context("allocating bounded metadata ancestry state")?;
+    states.resize(files.len(), State::Unseen);
+    let mut stack: Vec<AncestryFrame> = Vec::new();
+    stack
+        .try_reserve_exact(files.len().min(MAX_METADATA_ANCESTRY_DEPTH))
+        .context("allocating bounded metadata ancestry stack")?;
+    let root = find_record(files, 5);
+    let root_valid = root.is_some_and(|i| {
+        valid_role_anchor(&files[i], &[u16::from(b'.')], files[i].sequence_number)
+    });
+    for (i, file) in files.iter().enumerate() {
+        if file.record_number < 16 {
+            states[i] = match file.record_number {
+                5 if root_valid => State::OutsideExtend,
+                5 => State::Unresolved(Issue::InvalidRootAnchor),
+                11 if root_valid
+                    && valid_role_anchor(
+                        file,
+                        &[36, 69, 120, 116, 101, 110, 100], // exact UTF-16 $Extend
+                        files[root.expect("validated root exists")].sequence_number,
+                    ) =>
+                {
+                    State::WithinExtend
+                }
+                11 => State::Unresolved(Issue::InvalidExtendAnchor),
+                _ => State::Unresolved(Issue::UnsupportedReservedParent),
+            };
+        } else if let Some(issue) = local_ancestry_issue(file) {
+            states[i] = State::Unresolved(issue);
+        }
+    }
+    for start in 0..files.len() {
+        if !matches!(states[start], State::Unseen) {
+            continue;
+        }
+        states[start] = State::Visiting;
+        stack.push(AncestryFrame {
+            file_index: start,
+            next_name: 0,
+            ancestry_mask: 0,
+        });
+        while let Some(frame) = stack.last_mut() {
+            let current = frame.file_index;
+            let file = &files[current];
+            if frame.next_name == file.names.len() {
+                states[current] = match frame.ancestry_mask {
+                    1 => State::OutsideExtend,
+                    2 => State::WithinExtend,
+                    3 => State::Unresolved(Issue::MixedAncestry),
+                    _ => State::Unresolved(Issue::MissingNames),
+                };
+                stack.pop();
+                continue;
+            }
+            // All names participate, including DOS aliases. An alias must not
+            // silently hide a conflicting or stale parent reference.
+            let name = &file.names[frame.next_name];
+            let parent = find_record(files, name.parent_record_number);
+            let issue = match parent {
+                None => Some(Issue::MissingParent),
+                Some(i) if files[i].sequence_number != name.parent_sequence_number => {
+                    Some(Issue::ParentSequenceMismatch)
+                }
+                Some(i) if !files[i].is_directory => Some(Issue::ParentNotDirectory),
+                _ => None,
+            };
+            if let Some(issue) = issue {
+                states[current] = State::Unresolved(issue);
+                stack.pop();
+                continue;
+            }
+            let parent = parent.expect("checked parent exists");
+            match states[parent] {
+                State::OutsideExtend | State::WithinExtend => {
+                    frame.ancestry_mask |= if matches!(states[parent], State::WithinExtend) {
+                        2
+                    } else {
+                        1
+                    };
+                    frame.next_name += 1;
+                }
+                State::Unresolved(_) => {
+                    states[current] = State::Unresolved(Issue::AncestorUnresolved);
+                    stack.pop();
+                }
+                State::Visiting => {
+                    states[current] = State::Unresolved(Issue::Cycle);
+                    stack.pop();
+                }
+                State::Unseen => {
+                    if stack.len() == MAX_METADATA_ANCESTRY_DEPTH {
+                        states[current] = State::Unresolved(Issue::DepthLimit);
+                        stack.pop();
+                    } else {
+                        states[parent] = State::Visiting;
+                        stack.push(AncestryFrame {
+                            file_index: parent,
+                            next_name: 0,
+                            ancestry_mask: 0,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    for (index, state) in states.into_iter().enumerate() {
+        let file = &mut report.files[index];
+        let issue = if file.record_number < 16 {
+            file.metadata_role = MetadataRole::ReservedSystemRecord;
+            match (file.record_number, state) {
+                (5 | 11, State::Unresolved(issue)) => Some(issue),
+                _ => None,
+            }
+        } else {
+            file.metadata_role = match state {
+                State::OutsideExtend => MetadataRole::OutsideExtendCandidate,
+                State::WithinExtend => MetadataRole::ExtendDescendantCandidate,
+                _ => MetadataRole::Unresolved,
+            };
+            match state {
+                State::Unresolved(issue) => Some(issue),
+                State::Unseen | State::Visiting => {
+                    anyhow::bail!("incomplete metadata ancestry traversal")
+                }
+                _ => None,
+            }
+        };
+        file.metadata_role_issue = issue;
+        file.is_metadata = matches!(
+            file.metadata_role,
+            MetadataRole::ReservedSystemRecord | MetadataRole::ExtendDescendantCandidate
+        );
+        let number = file.record_number;
+        if let Some(issue) = issue {
+            blocker(
+                report,
+                budget,
+                "metadata_role_ancestry_unresolved",
+                format!("MFT metadata role has unresolved ancestry: {issue:?}"),
+                Some(number),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Inspect a raw NTFS partition without issuing writes. The report remains blocked
+/// until every semantic coverage requirement has a validated implementation.
+pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<NtfsInspection> {
+    inspect_with_limits(reader, length, InspectionLimits::default())
+}
+
+/// The report limit bounds retained inventory data, not the entire process's
+/// resident set. Bitmap reads are separately capped at 128 MiB; parser working
+/// storage is limited to one 64 KiB-or-smaller file record and its attributes.
+/// Logical stream hashing uses a fixed 64 KiB buffer and a cumulative byte limit.
+/// Metadata ancestry adds at most MAX_MFT_RECORDS states and 4096 stack frames.
+pub fn inspect_with_limits<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    limits: InspectionLimits,
+) -> Result<NtfsInspection> {
+    let mut budget = ReportBudget {
+        limit: limits.max_report_bytes,
+        used: 0,
+    };
+    budget.charge(std::mem::size_of::<NtfsInspection>() as u64)?;
+    let mut hash_budget = HashBudget {
+        limit: limits.max_stream_hash_bytes,
+        used: 0,
+    };
+    let mut boot = [0u8; 512];
+    read_at(reader, 0, &mut boot, length)?;
+    let geometry = inspect_boot_sector(&boot, length)?;
+    let native_parser = ntfs::Ntfs::new(reader).context("ntfs crate rejected boot geometry")?;
+    ensure!(
+        native_parser.cluster_size() == geometry.cluster_size
+            && native_parser.file_record_size() == geometry.file_record_size,
+        "independent NTFS geometry interpretations disagree"
+    );
+    let mut record_bytes = vec![0; geometry.file_record_size as usize];
+    read_at(
+        reader,
+        geometry.mft_lcn * u64::from(geometry.cluster_size),
+        &mut record_bytes,
+        geometry.volume_size,
+    )?;
+    let bootstrap =
+        parse_record(record_bytes, &geometry).context("invalid MFT bootstrap record")?;
+    ensure!(
+        bootstrap.flags & 1 != 0 && bootstrap.base == 0,
+        "MFT bootstrap is not an allocated base record"
+    );
+    ensure!(
+        !bootstrap
+            .attributes
+            .iter()
+            .any(|a| a.report.type_code == 0x20),
+        "MFT attribute-list assembly is unsupported; inventory would be incomplete"
+    );
+    let mft_data = unnamed(&bootstrap, 0x80)?.clone();
+    ensure!(
+        !mft_data.report.resident && mft_data.report.flags == 0,
+        "invalid MFT data stream layout"
+    );
+    ensure!(
+        mft_data.report.logical_size % u64::from(geometry.file_record_size) == 0,
+        "partial MFT record at EOF"
+    );
+    let mft_record_count = mft_data.report.logical_size / u64::from(geometry.file_record_size);
+    ensure!(
+        mft_record_count > 6 && mft_record_count <= MAX_MFT_RECORDS,
+        "MFT record count exceeds inspection limit or lacks system records"
+    );
+    let mft_bitmap = read_small_attribute(
+        reader,
+        unnamed(&bootstrap, 0xb0)?,
+        &geometry,
+        MAX_MFT_RECORDS.div_ceil(8),
+    )?;
+    ensure!(
+        mft_bitmap.len() as u64 >= mft_record_count.div_ceil(8),
+        "MFT bitmap is too short"
+    );
+    let mut report = NtfsInspection {
+        schema_version: 1,
+        geometry: geometry.clone(),
+        volume_version: None,
+        volume_flags: None,
+        dirty: None,
+        mft_record_count,
+        records_scanned: 0,
+        allocated_clusters: None,
+        free_clusters: None,
+        files: Vec::new(),
+        blockers: Vec::new(),
+        inventory_complete: false,
+        inventory_memory_bytes: 0,
+        inventory_memory_limit_bytes: limits.max_report_bytes,
+        stream_hash_bytes: 0,
+        stream_hash_limit_bytes: limits.max_stream_hash_bytes,
+    };
+    let mut root_seen = false;
+    for number in 0..mft_record_count {
+        if mft_bitmap[number as usize / 8] & (1 << (number % 8)) == 0 {
+            continue;
+        }
+        let mut raw = vec![0; geometry.file_record_size as usize];
+        read_attribute_range(
+            reader,
+            &mft_data,
+            number * u64::from(geometry.file_record_size),
+            &mut raw,
+            &geometry,
+        )
+        .with_context(|| format!("reading MFT record {number}"))?;
+        let record =
+            parse_record(raw, &geometry).with_context(|| format!("parsing MFT record {number}"))?;
+        ensure!(
+            record.flags & 1 != 0,
+            "MFT bitmap marks record {number} allocated but its header disagrees"
+        );
+        report.records_scanned += 1;
+        if number == 5 {
+            ensure!(record.flags & 2 != 0, "root record is not a directory");
+            root_seen = true;
+        }
+        if number == 3 {
+            let value = read_small_attribute(reader, unnamed(&record, 0x70)?, &geometry, 1024)?;
+            ensure!(value.len() >= 12, "truncated volume information");
+            let flags = u16le(&value, 10)?;
+            let volume_version = format!("{}.{}", value[8], value[9]);
+            budget.charge(volume_version.capacity() as u64)?;
+            report.volume_version = Some(volume_version);
+            report.volume_flags = Some(flags);
+            report.dirty = Some(flags & 1 != 0);
+            if flags != 0 {
+                blocker(
+                    &mut report,
+                    &mut budget,
+                    "volume_state_flags",
+                    format!(
+                        "Volume flags {flags:#06x} require native validation before conversion"
+                    ),
+                    Some(number),
+                )?;
+            }
+            if value[8] != 3 || value[9] != 1 {
+                blocker(
+                    &mut report,
+                    &mut budget,
+                    "unsupported_ntfs_version",
+                    "Only NTFS 3.1 is a conversion research target",
+                    Some(number),
+                )?;
+            }
+        }
+        if number == 6 {
+            let bitmap_attr = unnamed(&record, 0x80)?;
+            let needed = geometry.total_clusters.div_ceil(8);
+            ensure!(
+                needed <= MAX_BITMAP_BYTES && bitmap_attr.report.logical_size >= needed,
+                "volume allocation bitmap is too short or exceeds inspection limit"
+            );
+            let mut bitmap = vec![0; needed as usize];
+            read_attribute_range(reader, bitmap_attr, 0, &mut bitmap, &geometry)?;
+            let mut allocated = 0u64;
+            for (i, byte) in bitmap.iter().enumerate() {
+                let remaining = geometry.total_clusters.saturating_sub(i as u64 * 8).min(8) as u32;
+                let mask = ((1u16 << remaining) - 1) as u8;
+                allocated += u64::from((byte & mask).count_ones());
+            }
+            report.allocated_clusters = Some(allocated);
+            report.free_clusters = Some(geometry.total_clusters - allocated);
+        }
+        let mut inventory = FileInventory {
+            record_number: number,
+            sequence_number: record.sequence,
+            hard_link_count: record.links,
+            is_directory: record.flags & 2 != 0,
+            is_metadata: number < 16,
+            metadata_role: MetadataRole::NotClassified,
+            metadata_role_issue: None,
+            base_file_reference: record.base,
+            names: Vec::new(),
+            standard_information: None,
+            streams: Vec::new(),
+            attributes: Vec::new(),
+        };
+        if record.base != 0 {
+            blocker(
+                &mut report,
+                &mut budget,
+                "extension_record_unassembled",
+                "Extension-record attributes have not been reconciled with their base file",
+                Some(number),
+            )?;
+        }
+        // Attribute order must not allow a DATA hash before a later list reveals
+        // that the stream is incomplete. Raw names avoid lossy UTF-16 collisions.
+        let has_attribute_list = record.attributes.iter().any(|a| a.report.type_code == 0x20);
+        if !has_attribute_list && record.base == 0 {
+            let mut data_names = std::collections::BTreeSet::new();
+            for attribute in &record.attributes {
+                if attribute.report.type_code == 0x80 {
+                    ensure!(
+                        data_names.insert(&attribute.report.name_utf16),
+                        "duplicate DATA stream name without attribute-list assembly in record {number}"
+                    );
+                }
+            }
+        }
+        for attribute in record.attributes {
+            let a = &attribute.report;
+            if a.flags & 0x00ff != 0 {
+                blocker(
+                    &mut report,
+                    &mut budget,
+                    "ntfs_compression",
+                    "Compressed attribute requires a preservation implementation",
+                    Some(number),
+                )?;
+            }
+            if a.flags & 0x4000 != 0 {
+                blocker(
+                    &mut report,
+                    &mut budget,
+                    "ntfs_encryption",
+                    "Encrypted attribute is outside the initial conversion scope",
+                    Some(number),
+                )?;
+            }
+            match a.type_code {
+                0x10 => {
+                    let value = attribute
+                        .resident_value
+                        .as_ref()
+                        .context("nonresident standard information is unsupported")?;
+                    ensure!(value.len() >= 48, "truncated standard information");
+                    ensure!(
+                        inventory.standard_information.is_none(),
+                        "duplicate standard information"
+                    );
+                    let flags = u32le(value, 32)?;
+                    inventory.standard_information = Some(StandardInformation {
+                        creation_time: u64le(value, 0)?,
+                        modification_time: u64le(value, 8)?,
+                        mft_change_time: u64le(value, 16)?,
+                        access_time: u64le(value, 24)?,
+                        file_attributes: flags,
+                        security_id: if value.len() >= 56 {
+                            Some(u32le(value, 52)?)
+                        } else {
+                            None
+                        },
+                    });
+                    if flags & 0x800 != 0 {
+                        blocker(
+                            &mut report,
+                            &mut budget,
+                            "compressed_file_attribute",
+                            "File or directory carries the NTFS compression attribute",
+                            Some(number),
+                        )?;
+                    }
+                    if flags & 0x4000 != 0 {
+                        blocker(
+                            &mut report,
+                            &mut budget,
+                            "encrypted_file_attribute",
+                            "File or directory carries the EFS attribute",
+                            Some(number),
+                        )?;
+                    }
+                }
+                0x20 => blocker(
+                    &mut report,
+                    &mut budget,
+                    "attribute_list_unassembled",
+                    "Attribute-list continuation mapping has not been validated",
+                    Some(number),
+                )?,
+                0x30 => {
+                    let value = attribute
+                        .resident_value
+                        .as_ref()
+                        .context("nonresident filename is unsupported")?;
+                    ensure!(value.len() >= 66, "truncated filename attribute");
+                    let name_bytes = value
+                        .get(66..66 + usize::from(value[64]) * 2)
+                        .context("truncated UTF-16 filename")?;
+                    let name_utf16 = utf16(name_bytes)?;
+                    let name = String::from_utf16_lossy(&name_utf16);
+                    let parent = u64le(value, 0)?;
+                    if value[65] == 2 {
+                        blocker(
+                            &mut report,
+                            &mut budget,
+                            "dos_short_name",
+                            "DOS short-name alias has no validated ReFS representation",
+                            Some(number),
+                        )?;
+                    }
+                    ensure!(value[65] <= 3, "unknown NTFS filename namespace");
+                    if name.eq_ignore_ascii_case("hiberfil.sys") {
+                        blocker(
+                            &mut report,
+                            &mut budget,
+                            "hibernation_state_unverified",
+                            "Hibernation file is present; a fully shut-down state must be established independently",
+                            Some(number),
+                        )?;
+                    }
+                    inventory.names.push(NameInventory {
+                        name,
+                        name_utf16,
+                        namespace: value[65],
+                        parent_record_number: parent & 0x0000_ffff_ffff_ffff,
+                        parent_sequence_number: (parent >> 48) as u16,
+                    });
+                }
+                0x40 => blocker(
+                    &mut report,
+                    &mut budget,
+                    "object_id",
+                    "NTFS object-ID semantics have no validated target mapping",
+                    Some(number),
+                )?,
+                0x80 => {
+                    let (logical_hash_status, logical_sha256) = hash_stream(
+                        reader,
+                        &attribute,
+                        &geometry,
+                        &mut hash_budget,
+                        has_attribute_list,
+                        record.base != 0,
+                        number,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "hashing DATA attribute {} in MFT record {number}",
+                            a.instance
+                        )
+                    })?;
+                    if logical_hash_status != LogicalHashStatus::Complete {
+                        blocker(
+                            &mut report,
+                            &mut budget,
+                            "logical_stream_hash_unavailable",
+                            format!(
+                                "DATA attribute {} has no complete logical hash: {logical_hash_status:?}",
+                                a.instance
+                            ),
+                            Some(number),
+                        )?;
+                    }
+                    inventory.streams.push(StreamInventory {
+                        name: String::from_utf16_lossy(&a.name_utf16),
+                        name_utf16: a.name_utf16.clone(),
+                        resident: a.resident,
+                        flags: a.flags,
+                        logical_size: a.logical_size,
+                        initialized_size: a.initialized_size,
+                        allocated_size: a.allocated_size,
+                        extents: a.extents.clone(),
+                        resident_sha256: a.resident_sha256.clone(),
+                        logical_sha256,
+                        logical_hash_status,
+                    });
+                }
+                0xc0 => blocker(
+                    &mut report,
+                    &mut budget,
+                    "reparse_semantics_unverified",
+                    "Raw reparse metadata is inventoried but tag-specific preservation is unvalidated",
+                    Some(number),
+                )?,
+                0xd0 | 0xe0 => blocker(
+                    &mut report,
+                    &mut budget,
+                    "extended_attributes_unverified",
+                    "Extended attributes are inventoried but target preservation is unvalidated",
+                    Some(number),
+                )?,
+                0x10..=0xb0 if a.type_code % 0x10 == 0 => {}
+                _ => blocker(
+                    &mut report,
+                    &mut budget,
+                    "unsupported_attribute",
+                    format!(
+                        "Attribute type {:#x} needs a preservation policy",
+                        a.type_code
+                    ),
+                    Some(number),
+                )?,
+            }
+            inventory.attributes.push(attribute.report);
+        }
+        let retained = file_heap_bytes(&inventory)?;
+        budget
+            .push(&mut report.files, inventory, retained)
+            .with_context(|| format!("retaining MFT record {number}"))?;
+    }
+    ensure!(
+        root_seen && report.volume_flags.is_some() && report.allocated_clusters.is_some(),
+        "missing allocated root, volume-information, or allocation-bitmap records"
+    );
+    classify_metadata_roles(&mut report, &mut budget)?;
+    for (code, message) in [
+        (
+            "security_descriptors_unresolved",
+            "$Secure descriptor lookup and owner/DACL/SACL reconciliation are not yet implemented",
+        ),
+        (
+            "directory_indexes_unverified",
+            "MFT names have not been reconciled with all directory indexes and hard-link counts",
+        ),
+        (
+            "allocation_ownership_unverified",
+            "Extent ownership has not been reconciled with $Bitmap and all metadata allocations",
+        ),
+        (
+            "journal_state_unverified",
+            "$LogFile restart state and clean-shutdown evidence have not been validated",
+        ),
+        (
+            "backup_boot_unverified",
+            "Backup boot sector and $MFTMirr consistency have not been validated",
+        ),
+    ] {
+        blocker(&mut report, &mut budget, code, message, None)?;
+    }
+    report.inventory_memory_bytes = budget.used;
+    report.stream_hash_bytes = hash_budget.used;
+    Ok(report)
+}

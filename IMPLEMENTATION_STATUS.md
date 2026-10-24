@@ -1,17 +1,32 @@
 # Implementation handoff
 
-Latest implementation: Rust raw namespace reconciliation now validates I30
+Latest implementation: Rust security reconstruction now reconciles SDS
+mirrors/hashes, SII/SDH indexes and central/legacy descriptor bindings. The
+empty/populated native captures resolve 11/14 descriptors across 28/36 MFT
+records. Windows buffer validation agrees on 28/44 ACEs in PowerShell 5/7.
+Namespace, allocation and security raw models all reconcile on both images.
+See [security evidence](docs/ntfs-security-reconciliation.md). The workspace
+passes 296 tests with five ignored, plus formatting and clippy. Evidence is
+under ignored `.lab/development/security-observation-20261024T130105835Z`,
+summary SHA-256 `3d2c7539c0ba8b03b2d7b71a0bb422bb76e0bc4e10e2ae1eac78a46b759f9e2a`.
+No device operation or guest conversion binary changed during this follow-up.
+Next bind native enumeration, file identities, security and extents to the raw
+model, then finish freeze/log/backup admission and multi-file conversion.
+Buffer validation is not native file-security attestation; conversion remains
+gated. The VM remains off at 4 GiB on installed-clean.
+
+Previous implementation: Rust raw namespace reconciliation now validates I30
 root/allocation pages, bitmap reachability, USA fixups, B-tree key order,
 MFT/index membership and sequence references, link counts and root reachability.
 The empty/populated native NTFS captures reconcile 24/33 entries respectively;
 their raw allocation models also reconcile. See
 [namespace evidence and limits](docs/ntfs-namespace-reconciliation.md).
-There are 32 new tests; the workspace passes 256 tests with five ignored,
+At that milestone 32 new tests brought the workspace to 256 with five ignored,
 plus clippy with warnings denied and formatting checks. General admission
 still needs native enumeration/identity and allocation cross-checks, security
 descriptor resolution, stable freeze, clean log state and backup validation.
-The general converter remains gated. Next resolve security metadata and bind
-native source observations to the raw model, then build the multi-file path.
+Security resolution and native source observations were still pending at that
+milestone; general conversion remained gated.
 
 Latest native follow-up: the controlled allocation/mutation workload passed in
 `allocation-workload/win11-20261024T072530927Z`. Host result SHA-256 is

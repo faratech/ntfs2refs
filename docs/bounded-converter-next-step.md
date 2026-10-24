@@ -125,7 +125,9 @@ hard-link counts and root reachability on the initial geometry. Native
 allocation/namespace cross-checks and other source semantics still need
 implementation. Reuse `ntfs_inspect`, but do not reinterpret its current
 `inventory_complete=false` or ancestry candidates as ownership proof. Today it
-still leaves native enumeration, security descriptors, native allocation
+also has [raw security reconstruction](ntfs-security-reconciliation.md), including
+SDS mirrors/hashes, SII/SDH membership, legacy descriptors and file bindings.
+It still leaves native enumeration/security attestation, native allocation
 ownership, log state and backup metadata unresolved; attribute-list assembly is also
 unsupported. The certificate needs the following minimum evidence:
 

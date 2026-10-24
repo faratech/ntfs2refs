@@ -48,7 +48,8 @@ indexes, internal keys, raw Unicode, hard links/DOS aliases, torn writes,
 wrong VCNs, uninitialized pages, bitmap holes/padding, shared/cyclic pages,
 missing entries, stale sequences, key ordering, link counts, disconnected
 components, depth/byte bounds, invalid `$UpCase`, omitted MFT bitmap records,
-root self-entry namespaces and older-report compatibility. The workspace passes
+root self-entry namespaces and older-report compatibility. At that milestone
+the workspace passed
 256 tests, with five
 explicitly ignored native/child-process cases; clippy passes with warnings
 denied. Frozen guest conversion binaries remain unchanged.

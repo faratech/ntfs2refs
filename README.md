@@ -14,6 +14,8 @@ its conversion, resume, rollback and finalize commands refuse writes. Existing
 file-tree admission and general ReFS metadata construction remain open work.
 The inspector now reconciles [raw NTFS directory indexes and MFT names](docs/ntfs-namespace-reconciliation.md)
 on its initial profile, alongside allocation ownership diagnostics.
+It also resolves [central and legacy security descriptors](docs/ntfs-security-reconciliation.md),
+with independent Windows buffer-parser checks on the native captures.
 
 ## Build and run
 

@@ -13,7 +13,6 @@ pub const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 16_384;
 pub const MAX_NAME_UNITS: usize = 131_072;
 pub const MAX_DIRECTORIES: usize = 4096;
-const MAX_DEPTH: usize = 64;
 const I30: &[u16] = &[36, 73, 51, 48];
 
 pub fn is_i30(name: &[u16]) -> bool {
@@ -57,37 +56,6 @@ pub struct Directory {
     pub evidence_sha256: String,
 }
 
-struct Entry {
-    key: Option<Link>,
-    child: Option<u64>,
-}
-struct Node {
-    entries: Vec<Entry>,
-    internal: bool,
-}
-
-fn u16le(b: &[u8], at: usize) -> Result<u16> {
-    Ok(u16::from_le_bytes(
-        b.get(at..at + 2)
-            .context("truncated index u16")?
-            .try_into()?,
-    ))
-}
-fn u32le(b: &[u8], at: usize) -> Result<u32> {
-    Ok(u32::from_le_bytes(
-        b.get(at..at + 4)
-            .context("truncated index u32")?
-            .try_into()?,
-    ))
-}
-fn u64le(b: &[u8], at: usize) -> Result<u64> {
-    Ok(u64::from_le_bytes(
-        b.get(at..at + 8)
-            .context("truncated index u64")?
-            .try_into()?,
-    ))
-}
-
 fn name_valid(name: &[u16], root_dot: bool) -> bool {
     !name.is_empty()
         && name.len() <= 255
@@ -96,168 +64,7 @@ fn name_valid(name: &[u16], root_dot: bool) -> bool {
         && name.iter().all(|c| ![0, 47, 92].contains(c))
 }
 
-fn parse_node(b: &[u8], base: usize, minimum: usize, parent: u64) -> Result<Node> {
-    let first = u32le(b, base)? as usize;
-    let used = u32le(b, base + 4)? as usize;
-    let allocated = u32le(b, base + 8)? as usize;
-    ensure!(
-        first >= 16
-            && first.is_multiple_of(8)
-            && first <= used
-            && used <= allocated
-            && allocated <= b.len().saturating_sub(base),
-        "invalid index node bounds"
-    );
-    ensure!(
-        base + first >= minimum,
-        "index entries overlap update-sequence metadata"
-    );
-    let flags = *b.get(base + 12).context("truncated node flags")?;
-    ensure!(
-        flags <= 1 && b.get(base + 13..base + 16) == Some(&[0, 0, 0]),
-        "unknown index node flags/reserved bytes"
-    );
-    let internal = flags == 1;
-    let mut at = base + first;
-    let end = base + used;
-    let mut entries = Vec::new();
-    let mut terminated = false;
-    while at < end {
-        ensure!(
-            entries.len() < MAX_ENTRIES,
-            "directory entry limit exceeded"
-        );
-        let length = usize::from(u16le(b, at + 8)?);
-        let key_length = usize::from(u16le(b, at + 10)?);
-        let flags = u16le(b, at + 12)?;
-        ensure!(
-            flags & !3 == 0 && u16le(b, at + 14)? == 0,
-            "unknown index entry flags/reserved bytes"
-        );
-        let child = flags & 1 != 0;
-        let last = flags & 2 != 0;
-        ensure!(
-            child == internal,
-            "inconsistent index node/entry child flags"
-        );
-        let expected = (16 + key_length + 7) & !7;
-        ensure!(
-            length == expected + if child { 8 } else { 0 } && length >= 16 && length <= end - at,
-            "invalid index entry bounds"
-        );
-        let key = if last {
-            ensure!(
-                key_length == 0 && at + length == end,
-                "invalid index terminator or trailing entries"
-            );
-            terminated = true;
-            None
-        } else {
-            ensure!(key_length >= 68, "short FILE_NAME index key");
-            let key = &b[at + 16..at + 16 + key_length];
-            let n = usize::from(key[64]);
-            ensure!(
-                n > 0 && key_length == 66 + 2 * n && key[65] <= 3,
-                "invalid FILE_NAME index key length/namespace"
-            );
-            let name = key[66..]
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect::<Vec<_>>();
-            let child_ref = u64le(b, at)?;
-            ensure!(
-                child_ref >> 48 != 0 && u64le(key, 0)? == parent,
-                "stale or misrouted index reference"
-            );
-            ensure!(
-                name_valid(
-                    &name,
-                    (parent & 0xffff_ffff_ffff) == 5 && child_ref == parent
-                ),
-                "invalid directory index name"
-            );
-            Some(Link {
-                child: child_ref,
-                parent,
-                namespace: key[65],
-                name,
-            })
-        };
-        let child = if child {
-            Some(u64le(b, at + length - 8)?)
-        } else {
-            None
-        };
-        entries.push(Entry { key, child });
-        at += length;
-    }
-    ensure!(terminated, "index node lacks final terminator");
-    Ok(Node { entries, internal })
-}
-
-fn fixup(mut b: Vec<u8>, expected_vcn: u64) -> Result<(Vec<u8>, usize)> {
-    ensure!(
-        b.len() == 4096 && b.get(..4) == Some(b"INDX"),
-        "invalid INDX signature/size"
-    );
-    let usa = usize::from(u16le(&b, 4)?);
-    let count = usize::from(u16le(&b, 6)?);
-    ensure!(
-        usa >= 40 && count == 9 && usa + 2 * count <= 510,
-        "invalid INDX update-sequence array"
-    );
-    ensure!(
-        u64le(&b, 16)? == expected_vcn,
-        "INDX VCN does not match allocated slot"
-    );
-    let sequence = u16le(&b, usa)?;
-    ensure!(sequence != 0, "zero INDX update sequence");
-    for sector in 1..count {
-        let tail = 512 * sector - 2;
-        ensure!(u16le(&b, tail)? == sequence, "torn INDX record");
-        let replacement = [b[usa + 2 * sector], b[usa + 2 * sector + 1]];
-        b[tail..tail + 2].copy_from_slice(&replacement);
-    }
-    Ok((b, usa + 2 * count))
-}
-
-fn walk(
-    node: &Node,
-    nodes: &BTreeMap<u64, Node>,
-    seen: &mut BTreeSet<u64>,
-    output: &mut Vec<Link>,
-    depth: usize,
-    leaf_depth: &mut Option<usize>,
-) -> Result<()> {
-    ensure!(depth <= MAX_DEPTH, "directory B-tree depth limit exceeded");
-    if !node.internal {
-        if let Some(prior) = *leaf_depth {
-            ensure!(depth == prior, "unbalanced directory B-tree");
-        } else {
-            *leaf_depth = Some(depth);
-        }
-    }
-    for entry in &node.entries {
-        if let Some(vcn) = entry.child {
-            ensure!(seen.insert(vcn), "cycle or multiply referenced INDX block");
-            let child = nodes
-                .get(&vcn)
-                .context("child references a free/out-of-range index block")?;
-            walk(child, nodes, seen, output, depth + 1, leaf_depth)?;
-        }
-        if let Some(key) = &entry.key {
-            ensure!(output.len() < MAX_ENTRIES, "directory entry limit exceeded");
-            output.push(key.clone());
-        }
-    }
-    Ok(())
-}
-
-/// Initial qualified geometry: 512-byte sectors, 4 KiB clusters/index records.
-/// Free slots are not interpreted as live nodes; every set bitmap bit must be
-/// initialized, valid, and reachable exactly once from INDEX_ROOT.
+/// Initial 4 KiB/512-sector profile, using the common bounded INDX walker.
 pub fn parse_directory(
     reference: u64,
     root: &[u8],
@@ -265,75 +72,50 @@ pub fn parse_directory(
     initialized: u64,
     bitmap: &[u8],
 ) -> Result<Directory> {
-    ensure!(
-        reference >> 48 != 0 && root.len() >= 48 && root.len() <= 4096,
-        "invalid directory/root identity or bound"
-    );
-    ensure!(
-        u32le(root, 0)? == 0x30
-            && u32le(root, 4)? == 1
-            && u32le(root, 8)? == 4096
-            && root[12] == 1
-            && root[13..16] == [0, 0, 0],
-        "unsupported directory index type/collation/geometry"
-    );
-    ensure!(
-        allocation.len() <= MAX_INDEX_BYTES
-            && allocation.len().is_multiple_of(4096)
-            && initialized <= allocation.len() as u64
-            && bitmap.len() <= 4096,
-        "index allocation bound exceeded"
-    );
-    let slots = allocation.len() / 4096;
-    ensure!(bitmap.len() * 8 >= slots, "index bitmap is too short");
-    ensure!(
-        (slots..bitmap.len() * 8).all(|slot| bitmap[slot / 8] & (1 << (slot % 8)) == 0),
-        "index bitmap allocates beyond stream EOF"
-    );
-    let root_node = parse_node(root, 16, 32, reference)?;
-    let mut nodes = BTreeMap::new();
-    let mut total_entries = root_node.entries.len();
+    use crate::ntfs_index::{self, Input, Profile};
+    ensure!(reference >> 48 != 0, "invalid directory identity");
     let mut name_units = 0usize;
-    for entry in &root_node.entries {
-        if let Some(k) = &entry.key {
-            name_units += k.name.len();
-        }
-    }
-    for slot in 0..slots {
-        if bitmap[slot / 8] & (1 << (slot % 8)) == 0 {
-            continue;
-        }
-        ensure!(
-            ((slot + 1) * 4096) as u64 <= initialized,
-            "allocated index block is uninitialized"
-        );
-        let (bytes, usa_end) = fixup(
-            allocation[slot * 4096..(slot + 1) * 4096].to_vec(),
-            slot as u64,
-        )?;
-        let node = parse_node(&bytes, 24, usa_end, reference)?;
-        total_entries = total_entries
-            .checked_add(node.entries.len())
-            .context("index entry count overflow")?;
-        for entry in &node.entries {
-            if let Some(k) = &entry.key {
-                name_units += k.name.len();
-            }
-        }
-        ensure!(
-            total_entries <= MAX_ENTRIES && name_units <= MAX_NAME_UNITS,
-            "index entry/name budget exceeded"
-        );
-        nodes.insert(slot as u64, node);
-    }
-    let mut seen = BTreeSet::new();
-    let mut entries = Vec::new();
-    walk(&root_node, &nodes, &mut seen, &mut entries, 0, &mut None)?;
-    ensure!(
-        seen.len() == nodes.len(),
-        "allocated INDX block is unreachable from root"
-    );
-    ensure!(name_units <= MAX_NAME_UNITS, "index name budget exceeded");
+    let parsed = ntfs_index::parse(
+        Input {
+            root,
+            allocation,
+            initialized,
+            bitmap,
+        },
+        Profile::FILE_NAME,
+        |header, key, _value| {
+            ensure!(key.len() >= 68, "short FILE_NAME index key");
+            let n = usize::from(key[64]);
+            ensure!(
+                n > 0 && key.len() == 66 + 2 * n && key[65] <= 3,
+                "invalid FILE_NAME index key length/namespace"
+            );
+            name_units += n;
+            ensure!(name_units <= MAX_NAME_UNITS, "index name budget exceeded");
+            let name = key[66..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_le_bytes(*c))
+                .collect::<Vec<_>>();
+            let child = u64::from_le_bytes(header[..8].try_into()?);
+            let parent = u64::from_le_bytes(key[..8].try_into()?);
+            ensure!(
+                child >> 48 != 0 && parent == reference,
+                "stale or misrouted index reference"
+            );
+            ensure!(
+                name_valid(&name, (parent & 0xffff_ffff_ffff) == 5 && child == parent),
+                "invalid directory index name"
+            );
+            Ok(Link {
+                child,
+                parent,
+                namespace: key[65],
+                name,
+            })
+        },
+    )?;
     let mut sha = Sha256::new();
     sha.update(b"ntfs2refs-I30-v1\0");
     sha.update(reference.to_le_bytes());
@@ -343,8 +125,8 @@ pub fn parse_directory(
     }
     Ok(Directory {
         reference,
-        entries,
-        index_blocks: nodes.len(),
+        entries: parsed.entries,
+        index_blocks: parsed.index_blocks,
         evidence_sha256: hex::encode(sha.finalize()),
     })
 }

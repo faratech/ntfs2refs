@@ -130,6 +130,27 @@ pub struct Report {
     pub allocation: Option<VolumeAllocation>,
     #[serde(default)]
     pub logical_data: Option<LogicalData>,
+    #[serde(default)]
+    pub namespace: Option<NamespaceData>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NamespaceData {
+    pub files: Vec<NamespaceFile>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NamespaceFile {
+    pub identity: FileIdentity,
+    pub open_error: Option<i32>,
+    pub identity_before: Option<Query>,
+    pub identity_after: Option<Query>,
+    pub standard: Option<Query>,
+    pub before: Option<DirectoryCapture>,
+    pub after: Option<DirectoryCapture>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DirectoryCapture {
+    pub calls: Vec<Query>,
+    pub refusal: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IoctlQuery {

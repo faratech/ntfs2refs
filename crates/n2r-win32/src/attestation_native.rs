@@ -437,10 +437,11 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     if stream_bytes > MAX_TOTAL_STREAM_BYTES {
         return Err(invalid("native allocation evidence budget exhausted"));
     }
+    let namespace = crate::namespace_native::collect(&volume, request);
     privileges.restore()?;
     let after = route(&volume, &disk, request)?;
     Ok(Report {
-        schema_version: 4,
+        schema_version: 5,
         request: request.clone(),
         volume_extents_before: before.0,
         volume_extents_after: after.0,
@@ -464,5 +465,6 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             audit: read_budget.audit(),
             files: logical_files,
         }),
+        namespace: Some(namespace),
     })
 }

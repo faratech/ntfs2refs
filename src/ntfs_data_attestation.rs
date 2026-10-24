@@ -132,7 +132,7 @@ pub fn check_file(file: &FileInventory, native: &LogicalFile, serial: u64) -> Re
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     ensure!(
-        native.schema_version == 4,
+        matches!(native.schema_version, 4..=5),
         "native logical-data profile absent"
     );
     let data = native

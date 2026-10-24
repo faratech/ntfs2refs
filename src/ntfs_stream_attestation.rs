@@ -312,7 +312,7 @@ pub fn check_file(
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     ensure!(
-        matches!(native.schema_version, 3 | 4),
+        matches!(native.schema_version, 3..=5),
         "native stream profile missing"
     );
     let volume = native

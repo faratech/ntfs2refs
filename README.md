@@ -26,6 +26,10 @@ mapping, including ADS and sparse holes. Native [logical-stream hashing](docs/na
 also matches every supported fixture stream without changing the protected
 source. Complete namespace reconciliation, source admission and a coherent
 freeze boundary remain unfinished.
+The [source-admission work](docs/source-admission-progress.md) now includes
+native directory observations, explicit object dispositions and actual backup
+boot/MFT-mirror checks. It reports remaining refusals; no admission certificate
+or existing-tree conversion has passed yet.
 
 ## Build and run
 

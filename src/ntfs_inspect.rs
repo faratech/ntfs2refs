@@ -839,6 +839,45 @@ fn read_small_attribute<R: Read + Seek>(
     Ok(value)
 }
 
+/// Reuse the checked parser for additional read-only source-state checks.
+pub(crate) fn validate_file_record(bytes: &[u8], geometry: &NtfsGeometry) -> Result<()> {
+    parse_record(bytes.to_vec(), geometry)?;
+    Ok(())
+}
+pub(crate) fn read_nonresident_inventory_range<R: Read + Seek>(
+    reader: &mut R,
+    attribute: &AttributeInventory,
+    offset: u64,
+    output: &mut [u8],
+    geometry: &NtfsGeometry,
+) -> Result<()> {
+    ensure!(
+        !attribute.resident && attribute.flags == 0 && attribute.compression_unit == 0,
+        "source-state attribute must be plain nonresident storage"
+    );
+    validate_stream_mapping(attribute, geometry)?;
+    ensure!(
+        attribute
+            .extents
+            .iter()
+            .all(|e| e.physical_offset.is_some())
+            && offset
+                .checked_add(output.len() as u64)
+                .is_some_and(|end| end <= attribute.initialized_size),
+        "source-state attribute has holes or uninitialized bytes"
+    );
+    read_attribute_range(
+        reader,
+        &Attribute {
+            report: attribute.clone(),
+            resident_value: None,
+        },
+        offset,
+        output,
+        geometry,
+    )
+}
+
 /// Validate the entire standalone mapping, including allocation past EOF and the
 /// uninitialized tail. Zero filling must never conceal missing mapping pairs.
 fn validate_stream_mapping(a: &AttributeInventory, geometry: &NtfsGeometry) -> Result<()> {

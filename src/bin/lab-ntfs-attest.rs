@@ -1,4 +1,4 @@
-//! Bounded lab collector/comparator. No source-admission or conversion command.
+//! Bounded read-only collector/comparator and source-policy diagnostics.
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use n2r_win32::attestation::{Report, Request};
@@ -36,6 +36,13 @@ enum Command {
         native_sha256: String,
         #[arg(long)]
         output: PathBuf,
+        /// Optional read-only source-policy assessment, never a write ticket.
+        #[arg(long)]
+        admission_output: Option<PathBuf>,
+        /// Optional source image, rehashed against the pinned inspection, for
+        /// actual backup reads. Requires --admission-output; never written.
+        #[arg(long, requires = "admission_output")]
+        source_image: Option<PathBuf>,
     },
 }
 fn pinned(path: &Path, hash: &str, limit: u64) -> Result<Vec<u8>> {
@@ -94,6 +101,8 @@ fn main() -> Result<()> {
             native,
             native_sha256,
             output,
+            admission_output,
+            source_image,
         } => {
             let raw: serde_json::Value = serde_json::from_slice(&pinned(
                 &inspection,
@@ -108,10 +117,41 @@ fn main() -> Result<()> {
             )?;
             let report: Report =
                 serde_json::from_slice(&pinned(&native, &native_sha256, 16 * 1024 * 1024)?)?;
-            save(
-                &output,
-                &ntfs_attestation::compare(&ntfs, &inspection_sha256, &report)?,
-            )?;
+            let comparison = ntfs_attestation::compare(&ntfs, &inspection_sha256, &report)?;
+            let backups = if let Some(path) = source_image {
+                let expected: ntfs2refs::block_io::SourceIdentity = serde_json::from_value(
+                    raw.get("source")
+                        .context("missing source image binding")?
+                        .clone(),
+                )?;
+                let mut file = ntfs2refs::block_io::open_image(&path)?;
+                let before = ntfs2refs::block_io::identity(&mut file, &path)?;
+                ensure!(
+                    before.sha256 == expected.sha256 && before.length == expected.length,
+                    "actual source image differs from pinned inspection"
+                );
+                let evidence = ntfs2refs::ntfs_backup::verify(&mut file, before.length, &ntfs)?;
+                let after = ntfs2refs::block_io::identity(&mut file, &path)?;
+                ensure!(
+                    after.sha256 == before.sha256 && after.length == before.length,
+                    "source image changed during backup validation"
+                );
+                Some(evidence)
+            } else {
+                None
+            };
+            save(&output, &comparison)?;
+            if let Some(path) = admission_output {
+                save(
+                    &path,
+                    &ntfs2refs::ntfs_admission::assess_with_backups(
+                        &ntfs,
+                        &comparison,
+                        report.schema_version,
+                        backups.as_ref(),
+                    ),
+                )?;
+            }
         }
     }
     Ok(())

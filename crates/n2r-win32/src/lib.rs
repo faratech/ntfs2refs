@@ -8,6 +8,9 @@ mod attestation_native;
 pub mod journal_file;
 pub mod layout;
 pub mod logical_hash;
+pub mod namespace_layout;
+#[cfg(windows)]
+mod namespace_native;
 pub mod stream_layout;
 #[cfg(windows)]
 mod stream_native;

@@ -190,6 +190,7 @@ fn fixture() -> (ntfs_inspect::NtfsInspection, Report) {
     p32(&mut attrs, 0, 16);
     p64(&mut attrs, 8, 2);
     let report = Report {
+        namespace: None,
         schema_version: 2,
         request: r.clone(),
         volume_extents_before: ext.clone(),

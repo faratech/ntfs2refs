@@ -1,6 +1,25 @@
 # Implementation handoff
 
-Latest implementation: native stream/extent and bitmap reconciliation passed
+Latest implementation: P0 logical-stream verification is finished and committed
+at `8935e11`; [native evidence](docs/native-ntfs-logical-data.md) covers all eight
+fixture streams with the protected source unchanged. Native schema 5 now adds
+directory enumeration and exact name/reference reconciliation. The fixture
+directory's eight names match; root enumeration omits reserved NTFS names and
+two internal directories refuse opens. These remain explicit, with no blanket
+metadata exemption. See [source-admission progress](docs/source-admission-progress.md).
+The single read-only policy assessment recognizes 27 internal roles and reports
+nine root/user-object refusals on the deliberately broad control corpus. Actual
+source reads verify its backup boot sector and all four mirrored MFT records.
+It issues no certificate: internal replacement/log state, supported security and
+timestamp policy, and post-exclusion source binding remain unfinished. The
+existing-tree retention/relocation and native crash-recovery milestones have not
+passed. The VM is restored to installed-clean, off at 4 GiB; no new checkpoint
+was created or existing image/checkpoint deleted for these observations.
+The workspace passes 386 tests with five ignored, formatting/clippy, and all
+19 lab guard checks. P1 is an assessment with explicit refusals, not a completed
+source-admission certificate.
+
+Previous implementation: native stream/extent and bitmap reconciliation passed
 inside the VM on two separate restores of the prepared NTFS source checkpoint.
 The whole 262,143-cluster bitmap matches the raw ownership ledger. Sixteen
 queryable identities match 13 data streams, including every fixture object and

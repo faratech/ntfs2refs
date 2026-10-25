@@ -39,19 +39,21 @@ try{
   do { try { $session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop; break } catch { Start-Sleep -Seconds 2 } } while([DateTime]::UtcNow-lt$deadline)
   if(-not$session){throw 'Guest session unavailable after bounded boot retry.'}
  if($fromShadowCheckpoint){
-  foreach($name in @('NativeMountBoundary.cs','NativeShadowReadOnlyAttachment.cs')){
-   Copy-Item -LiteralPath (Join-Path $workspace ('lab/guest/'+$name)) -Destination ($root+'\helpers\'+$name) -ToSession $session
-  }
   $attachment=Invoke-Command -Session $session -ArgumentList @($root,[string]$request.shadow.identity.disk_guid,[string]$request.shadow.identity.partition_guid) -ScriptBlock {
    param($Root,$DiskGuid,$PartitionGuid);$ErrorActionPreference='Stop'
-   Add-Type -Path @((Join-Path $Root 'helpers\NativeShadowDisk.cs'),(Join-Path $Root 'helpers\NativeMountBoundary.cs'),(Join-Path $Root 'helpers\NativeShadowReadOnlyAttachment.cs'))
+   Add-Type -Path (Join-Path $Root 'helpers\NativeShadowDisk.cs')
    $platform=Get-Content -LiteralPath ($Root+'\platform.json') -Raw|ConvertFrom-Json
-   $native=New-Object Ntfs2Refs.NativeShadowDisk($platform.backingPath,([guid]$platform.finalVhd.virtualDiskId),(New-Object Ntfs2Refs.ReadOnlyShadowDiskApi))
+   $native=New-Object Ntfs2Refs.NativeShadowDisk($platform.backingPath,([guid]$platform.finalVhd.virtualDiskId))
    $priv=New-Object Ntfs2Refs.ShadowManageVolumePrivilege
    try{$opened=$native.OpenOwned();try{$priv.Enable();$attached=$native.Attach()}finally{$priv.Restore()}
-    $protected=[Ntfs2Refs.NativeShadowProtection]::Observe([guid]$DiskGuid,[guid]$PartitionGuid,$true)
-    if($attached.physicalPath-cne'\\.\PhysicalDrive3'-or$protected.attributesAfter-ne3-or-not$protected.cleanupComplete){throw 'Checkpoint shadow protection differs.'}
-    [pscustomobject]@{opened=$opened;attached=$attached;protection=$protected;privilege=$priv.Audit}
+    if($attached.physicalPath-cne'\\.\PhysicalDrive3'){throw 'Checkpoint shadow physical route differs.'}
+    $disk=Get-Disk -Number 3
+    if([guid]$disk.Guid-ne[guid]$DiskGuid-or$disk.Size-ne64GB){throw 'Checkpoint shadow disk identity differs.'}
+    if($disk.IsReadOnly){Set-Disk -Number 3 -IsReadOnly $false}
+    if($disk.IsOffline){Set-Disk -Number 3 -IsOffline $false}
+    $disk=Get-Disk -Number 3;$partition=Get-Partition -DiskNumber 3 -PartitionNumber 2
+    if($disk.IsReadOnly-or$disk.IsOffline-or[guid]$disk.Guid-ne[guid]$DiskGuid-or[guid]$partition.Guid-ne[guid]$PartitionGuid){throw 'Checkpoint shadow is not online writable with the expected partition.'}
+    [pscustomobject]@{opened=$opened;attached=$attached;diskGuid=[string]$disk.Guid;partitionGuid=[string]$partition.Guid;onlineWritable=$true;privilege=$priv.Audit}
    }finally{if(-not$native.OperationActive){$native.Close()}}
   }
   Save 'reattachment.json' $attachment

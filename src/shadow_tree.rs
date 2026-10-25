@@ -1,6 +1,6 @@
 //! Semantic input for an independent, native-created ReFS shadow. This is not
 //! source admission, a conversion plan or authority to modify the NTFS source.
-use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security};
+use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security, ntfs_stream_plan};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -72,6 +72,7 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
     };
     let mut paths = BTreeSet::new();
     let mut source_ranges = vec![];
+    let source_plan = ntfs_stream_plan::classify(raw);
     for f in &raw.files {
         if let Some(role) = ntfs_admission::internal_role(raw, f) {
             tree.internal_replacement_pending.push(role);
@@ -159,40 +160,26 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
             "unsupported basic metadata"
         );
         let (source_offset, length, sha256) = match f.streams.first() {
-            Some(s)
-                if !s.resident
-                    && s.extents.len() == 1
-                    && s.logical_size > 0
-                    && s.logical_size.is_multiple_of(4096)
-                    && s.logical_size == s.initialized_size
-                    && s.logical_size == s.allocated_size =>
-            {
-                let offset = s.extents[0]
-                    .physical_offset
-                    .context("missing physical data")?;
-                ensure!(
-                    offset.is_multiple_of(4096)
-                        && offset
-                            .checked_add(s.logical_size)
-                            .is_some_and(|end| end <= raw.geometry.volume_size),
-                    "source payload bounds"
-                );
-                source_ranges.push((offset, s.logical_size));
+            Some(s) => {
+                let candidate = source_plan.streams.iter().find(|decision| {
+                    decision.record_number == f.record_number
+                        && decision.sequence_number == f.sequence_number
+                        && decision.name_utf16.is_empty()
+                });
+                let offset = candidate
+                    .filter(|decision| {
+                        decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate
+                    })
+                    .and_then(|decision| decision.source_offset);
+                if let Some(offset) = offset {
+                    source_ranges.push((offset, s.logical_size));
+                }
                 (
-                    Some(offset),
+                    offset,
                     s.logical_size,
                     Some(s.logical_sha256.clone().context("missing logical digest")?),
                 )
             }
-            Some(s) => (
-                None,
-                s.logical_size,
-                Some(
-                    s.logical_sha256
-                        .clone()
-                        .context("missing materialized logical digest")?,
-                ),
-            ),
             None => (None, 0, None),
         };
         tree.logical_bytes = tree

@@ -19,6 +19,7 @@ fn main() -> anyhow::Result<()> {
     enum Mode {
         Apply,
         Finalize,
+        FinalizeAfterMarker,
     }
     #[derive(Parser)]
     struct Args {
@@ -112,8 +113,13 @@ fn main() -> anyhow::Result<()> {
             Ok(report) => (true, false, Some(serde_json::to_value(report)?), None),
             Err(error) => (false, false, None, Some(format!("{error:#}"))),
         },
-        Mode::Finalize => {
-            match general_lab::finalize(&request, &ticket, &mut journal, &expectation) {
+        Mode::Finalize | Mode::FinalizeAfterMarker => {
+            let finalized = if matches!(args.mode, Mode::FinalizeAfterMarker) {
+                general_lab::finalize_after_marker(&request, &ticket, &mut journal, &expectation)
+            } else {
+                general_lab::finalize(&request, &ticket, &mut journal, &expectation)
+            };
+            match finalized {
                 Ok(report) => {
                     let success = report.success;
                     let rollback_closed = report.rollback_closed;

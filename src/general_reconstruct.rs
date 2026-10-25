@@ -511,6 +511,7 @@ pub struct Finalization {
     pub success: bool,
     pub rollback_closed: bool,
     pub handoff: Option<lab_reconstruct::ExecutionReport>,
+    pub completed_marker_proof: Option<lab_reconstruct::CompletedMarkerProof>,
     pub native: Option<shadow_native::GeneralConvertedReport>,
     pub error: Option<String>,
     pub events: Vec<NativeEvent>,
@@ -522,6 +523,7 @@ pub struct RollbackFinalization {
     pub success: bool,
     pub replay_closed: bool,
     pub marker: Option<lab_reconstruct::ExecutionReport>,
+    pub completed_marker_proof: Option<lab_reconstruct::CompletedMarkerProof>,
     pub mounted_filesystem: Option<String>,
     pub error: Option<String>,
     pub events: Vec<NativeEvent>,
@@ -565,6 +567,7 @@ pub fn complete_rollback(
         success: false,
         replay_closed: true,
         marker: None,
+        completed_marker_proof: None,
         mounted_filesystem: None,
         error: None,
         events,
@@ -600,6 +603,107 @@ pub fn complete_rollback(
         Err(error) => report.error = Some(error.to_string()),
     }
     Ok(report)
+}
+
+/// Complete only a fully verified rollback marker left durable by an earlier
+/// process. This path never writes or repairs the journal marker again.
+pub fn resume_completed_rollback(
+    request: &Request,
+    mut target: GeneralJournaledPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    mut events: Vec<NativeEvent>,
+) -> Result<RollbackFinalization> {
+    request.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
+        "completed NTFS rollback data bindings differ"
+    );
+    ensure!(
+        target.state(&mut events)?.disk_attributes == 1
+            && shadow.state(&mut events)?.disk_attributes == 3,
+        "completed NTFS rollback requires excluded target and shadow"
+    );
+    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_binding = binding(request, &observed_journal.identity)?;
+    let proof = lab_reconstruct::verify_completed_marker(
+        &mut target,
+        shadow,
+        journal,
+        ticket,
+        &observed_binding,
+        lab_reconstruct::CompletionKind::NtfsRollback,
+        request.comparison.expected_length,
+        &request.comparison.source_sha256,
+        &request.comparison.shadow_sha256,
+    )?;
+    let length = target.byte_len();
+    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    ntfs_backup::verify(&mut target, length, &raw)?;
+    ntfs_log::verify(&mut target, &raw)?;
+    let mut report = RollbackFinalization {
+        success: false,
+        replay_closed: true,
+        marker: None,
+        completed_marker_proof: Some(proof),
+        mounted_filesystem: None,
+        error: None,
+        events,
+        production_conversion_qualified: false,
+    };
+    if let Err(error) = target.bring_online(&mut report.events) {
+        report.error = Some(error.to_string());
+        return Ok(report);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    match mounted_filesystem_general(request.pair.source.clone(), &mut report.events) {
+        Ok(name) if name == "NTFS" => {
+            report.mounted_filesystem = Some(name);
+            report.success = true;
+        }
+        Ok(name) => {
+            report.mounted_filesystem = Some(name);
+            report.error = Some("completed rollback did not mount as NTFS".into());
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+    Ok(report)
+}
+
+/// Shared native readback of the original disk after a durable ReFS handoff.
+fn verify_converted_tree(
+    request: &Request,
+    expectation: &shadow_tree::ExpectedTree,
+) -> std::io::Result<shadow_native::GeneralConvertedReport> {
+    let input: Vec<_> = expectation
+        .objects
+        .iter()
+        .map(|object| shadow_native::Input {
+            components: &object.path,
+            directory: object.directory,
+            times: object.stored_times,
+            attributes: object.attributes,
+            security: &object.security,
+            payload: &[],
+            expected_length: if object.directory {
+                None
+            } else {
+                Some(object.length)
+            },
+            expected_sha256: if object.directory {
+                None
+            } else {
+                object.sha256.as_deref()
+            },
+            source_offset: object.source_offset,
+        })
+        .collect();
+    let same_security = |a: &[u8], b: &[u8]| {
+        ntfs_attestation::same_security(a, b)
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    };
+    shadow_native::verify_general_converted_ordinary(request.pair.clone(), &input, same_security)
 }
 
 /// The only planned general transition from an offline journal target to a
@@ -647,6 +751,7 @@ pub(crate) fn finalize(
         success: false,
         rollback_closed: false,
         handoff: None,
+        completed_marker_proof: None,
         native: None,
         error: None,
         events,
@@ -669,38 +774,76 @@ pub(crate) fn finalize(
         return Ok(report);
     }
     std::thread::sleep(std::time::Duration::from_millis(1000));
-    let input: Vec<_> = expectation
-        .objects
-        .iter()
-        .map(|object| shadow_native::Input {
-            components: &object.path,
-            directory: object.directory,
-            times: object.stored_times,
-            attributes: object.attributes,
-            security: &object.security,
-            payload: &[],
-            expected_length: if object.directory {
-                None
-            } else {
-                Some(object.length)
-            },
-            expected_sha256: if object.directory {
-                None
-            } else {
-                object.sha256.as_deref()
-            },
-            source_offset: object.source_offset,
-        })
-        .collect();
-    let same_security = |a: &[u8], b: &[u8]| {
-        ntfs_attestation::same_security(a, b)
-            .map_err(|error| std::io::Error::other(error.to_string()))
+    match verify_converted_tree(request, &expectation) {
+        Ok(native) => {
+            report.native = Some(native);
+            report.success = true;
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+    Ok(report)
+}
+
+/// Finish an already durable ReFS handoff marker after process death. This
+/// path proves the exact marker and target image without writing the journal.
+#[allow(
+    dead_code,
+    reason = "General handoff recovery awaits native qualification"
+)]
+pub(crate) fn finalize_after_marker(
+    request: &Request,
+    mut target: GeneralJournaledPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    expected_tree_bytes: &[u8],
+) -> Result<Finalization> {
+    request.validate()?;
+    ensure!(
+        hex::encode(Sha256::digest(expected_tree_bytes)) == request.expected_tree_sha256,
+        "completed ReFS target expectation pin differs"
+    );
+    let expectation: shadow_tree::ExpectedTree = serde_json::from_slice(expected_tree_bytes)?;
+    expectation.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
+        "completed ReFS handoff data bindings differ"
+    );
+    let mut events = Vec::new();
+    ensure!(
+        target.state(&mut events)?.disk_attributes == 1
+            && shadow.state(&mut events)?.disk_attributes == 3,
+        "completed ReFS handoff requires excluded target and shadow"
+    );
+    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_binding = binding(request, &observed_journal.identity)?;
+    let proof = lab_reconstruct::verify_completed_marker(
+        &mut target,
+        shadow,
+        journal,
+        ticket,
+        &observed_binding,
+        lab_reconstruct::CompletionKind::Refs,
+        request.comparison.expected_length,
+        &request.comparison.shadow_sha256,
+        &request.comparison.shadow_sha256,
+    )?;
+    let mut report = Finalization {
+        success: false,
+        rollback_closed: true,
+        handoff: None,
+        completed_marker_proof: Some(proof),
+        native: None,
+        error: None,
+        events,
+        general_conversion_qualified: false,
     };
-    match shadow_native::verify_general_converted_ordinary(
-        request.pair.clone(),
-        &input,
-        same_security,
-    ) {
+    if let Err(error) = target.bring_online(&mut report.events) {
+        report.error = Some(error.to_string());
+        return Ok(report);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    match verify_converted_tree(request, &expectation) {
         Ok(native) => {
             report.native = Some(native);
             report.success = true;

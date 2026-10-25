@@ -29,6 +29,10 @@ fn main() -> anyhow::Result<()> {
         journal: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// Finish an already durable N2RABT01 marker after process death.
+        /// This mode never writes the journal marker again.
+        #[arg(long)]
+        after_marker: bool,
     }
     fn pinned(path: &PathBuf, sha256: &str, max: u64) -> Result<Vec<u8>> {
         let metadata = fs::symlink_metadata(path)?;
@@ -86,16 +90,28 @@ fn main() -> anyhow::Result<()> {
         &intent,
         &serde_json::json!({"schema_version":1,"kind":"general-ntfs-rollback-completion-intent",
             "request_sha256":args.request_sha256,"ticket_sha256":args.ticket_sha256,
+            "after_marker":args.after_marker,
             "journal_replay_will_close":true,"source_payload_writes":0}),
     )?;
-    let completed = general_reconstruct::complete_rollback(
-        &request,
-        target,
-        &mut shadow,
-        &mut journal,
-        &ticket,
-        events,
-    )?;
+    let completed = if args.after_marker {
+        general_reconstruct::resume_completed_rollback(
+            &request,
+            target,
+            &mut shadow,
+            &mut journal,
+            &ticket,
+            events,
+        )?
+    } else {
+        general_reconstruct::complete_rollback(
+            &request,
+            target,
+            &mut shadow,
+            &mut journal,
+            &ticket,
+            events,
+        )?
+    };
     let success = completed.success;
     save(&args.output, &completed)?;
     ensure!(

@@ -159,3 +159,25 @@ pub fn finalize(
     report.events.splice(0..0, events);
     Ok(report)
 }
+
+pub fn finalize_after_marker(
+    request: &Request,
+    ticket: &JournalTicket,
+    journal: &mut File,
+    expected_tree_bytes: &[u8],
+) -> Result<general_reconstruct::Finalization> {
+    require_disposable_guest(request)?;
+    let mut events = Vec::new();
+    let target = GeneralJournaledPartition::reopen(request.pair.source.clone(), &mut events)?;
+    let mut shadow = GeneralFrozenPartition::reopen(request.pair.shadow.clone(), &mut events)?;
+    let mut report = general_reconstruct::finalize_after_marker(
+        request,
+        target,
+        &mut shadow,
+        journal,
+        ticket,
+        expected_tree_bytes,
+    )?;
+    report.events.splice(0..0, events);
+    Ok(report)
+}

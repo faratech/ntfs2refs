@@ -76,6 +76,18 @@ fn relocation_only_apply_rollback_and_handoff_preserve_both_exact_images() {
     )
     .unwrap();
     assert!(handoff.handoff_recorded);
+    lab_reconstruct::verify_completed_marker(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+        lab_reconstruct::CompletionKind::Refs,
+        f.original.len() as u64,
+        &sha(&f.native),
+        &sha(&f.native),
+    )
+    .unwrap();
     assert_eq!(fs::read(&f.target).unwrap(), f.native);
     assert!(
         lab_reconstruct::rollback(
@@ -125,7 +137,36 @@ fn completed_ntfs_rollback_closes_replay_before_writable_mount() {
     )
     .unwrap();
     assert_eq!(completed.target_sha256, sha(&fixture.original));
+    lab_reconstruct::verify_completed_marker(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+        lab_reconstruct::CompletionKind::NtfsRollback,
+        fixture.original.len() as u64,
+        &sha(&fixture.original),
+        &sha(&fixture.native),
+    )
+    .unwrap();
     assert_eq!(&fs::read(&fixture.journal).unwrap()[..8], b"N2RABT01");
+    journal.seek(SeekFrom::Start(512)).unwrap();
+    journal.write_all(&[0x7f]).unwrap();
+    journal.sync_all().unwrap();
+    assert!(
+        lab_reconstruct::verify_completed_marker(
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &prepared.ticket,
+            &binding(),
+            lab_reconstruct::CompletionKind::NtfsRollback,
+            fixture.original.len() as u64,
+            &sha(&fixture.original),
+            &sha(&fixture.native),
+        )
+        .is_err()
+    );
     assert!(
         lab_reconstruct::resume(
             &mut target,

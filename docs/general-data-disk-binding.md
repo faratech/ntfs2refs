@@ -166,6 +166,12 @@ the complete old image, writes a durable rollback-complete marker that rejects
 future journal replay, then brings the original disk online and checks that
 Windows mounts it as NTFS. A partial marker is treated as closing replay.
 This transition has not had a native disk run.
+If a process dies after either completion marker but before the disk becomes
+online, explicit `--after-marker` (NTFS) or `finalize-after-marker` (ReFS)
+rechecks the full 4 KiB marker, immutable journal, frozen shadow and exact
+target image before finishing the mount. These modes never rewrite a marker;
+partial or unknown marker bytes remain a hard refusal. The corresponding host
+dispatchers and collectors record which completion route was used.
 
 The internal general finalizer now accepts the independently pinned pre-cutover
 tree, checks the full journaled ReFS postimage, durably closes rollback, brings

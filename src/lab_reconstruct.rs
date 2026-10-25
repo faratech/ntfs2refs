@@ -101,6 +101,25 @@ pub struct ExecutionReport {
     pub conversion_qualified: bool,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionKind {
+    Refs,
+    NtfsRollback,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompletedMarkerProof {
+    pub kind: CompletionKind,
+    pub target_sha256: String,
+    pub shadow_sha256: String,
+    pub marker_sha256: String,
+    pub immutable_journal_sha256: String,
+    pub marker_exact: bool,
+    pub target_exact: bool,
+    pub shadow_exact: bool,
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct JournalPatchRange {
     pub offset: u64,
@@ -670,6 +689,65 @@ fn marker(
     let hash = digest(&bytes[..GRANULE as usize - 32]);
     bytes[GRANULE as usize - 32..].copy_from_slice(&hash);
     Ok(bytes)
+}
+
+/// Read-only proof for resuming an already durable final handoff after process
+/// death. A partial or unknown marker is never repaired or interpreted as a
+/// new write authorization.
+pub fn verify_completed_marker<T: ReadSeek, S: ReadSeek, J: ReadSeek>(
+    target: &mut T,
+    shadow: &mut S,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+    kind: CompletionKind,
+    expected_length: u64,
+    expected_target_sha256: &str,
+    expected_shadow_sha256: &str,
+) -> Result<CompletedMarkerProof> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        ticket.schema_version == 1
+            && ticket.binding == *observed_binding
+            && ticket.immutable_length.checked_add(BODY_START) == Some(ticket.journal_length)
+            && ticket.journal_length <= MAX_JOURNAL_BYTES
+            && journal.byte_len()? == ticket.journal_length
+            && target.byte_len()? == expected_length
+            && shadow.byte_len()? == expected_length,
+        "completed-marker ticket or storage length differs"
+    );
+    let immutable = hash_range(journal, BODY_START, ticket.immutable_length)?;
+    ensure!(
+        immutable == pin(&ticket.immutable_sha256)?,
+        "completed-marker immutable journal changed"
+    );
+    let (magic, code) = match kind {
+        CompletionKind::Refs => (b"N2RHND01", 3),
+        CompletionKind::NtfsRollback => (b"N2RABT01", 4),
+    };
+    let expected_marker = marker(magic, code, ticket, expected_target_sha256)?;
+    let mut observed = [0u8; GRANULE as usize];
+    read_at(journal, 0, &mut observed)?;
+    ensure!(
+        observed == expected_marker,
+        "completed handoff marker differs"
+    );
+    let target_sha256 = retained_compare::hash_reader(target, expected_length)?;
+    let shadow_sha256 = retained_compare::hash_reader(shadow, expected_length)?;
+    ensure!(
+        target_sha256 == expected_target_sha256 && shadow_sha256 == expected_shadow_sha256,
+        "completed-marker target or shadow bytes changed"
+    );
+    Ok(CompletedMarkerProof {
+        kind,
+        target_sha256,
+        shadow_sha256,
+        marker_sha256: hex::encode(digest(&observed)),
+        immutable_journal_sha256: hex::encode(immutable),
+        marker_exact: true,
+        target_exact: true,
+        shadow_exact: true,
+    })
 }
 
 fn write_span<T: DurableIo, J: Read + Seek>(

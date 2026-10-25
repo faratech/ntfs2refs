@@ -4,7 +4,8 @@
 param(
  [Parameter(Mandatory)][string]$RecoveryDispatchDirectory,
  [Parameter(Mandatory)][string]$BinaryPath,
- [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256,
+ [switch]$AfterMarker
 )
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $workspace=Split-Path -Parent $PSScriptRoot
@@ -23,15 +24,15 @@ $step=[guid]::NewGuid().ToString('N')
 $output=Assert-LabPath (Join-Path $cfg.Root ('general-rollback-complete/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
 New-Item -ItemType Directory -Path $output|Out-Null
 function Save([string]$Name,$Value){$path=Join-Path $output $Name;$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 16));$file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
-$record=[ordered]@{kind='general-ntfs-rollback-completion-dispatch';stepId=$step;runId=$start.runId;experimentId=$start.experimentId;recoveryDirectory=$recoveryDirectory;parentDirectory=$parent;parentCheckpointId=$start.parentCheckpointId;binarySha256=$BinarySha256;requestSha256=$start.requestSha256;status='started';operationCompletionKnown=$true;journalReplayWillClose=$true;productionConversionQualified=$false;error=$null}
+$record=[ordered]@{kind='general-ntfs-rollback-completion-dispatch';stepId=$step;runId=$start.runId;experimentId=$start.experimentId;recoveryDirectory=$recoveryDirectory;parentDirectory=$parent;parentCheckpointId=$start.parentCheckpointId;binarySha256=$BinarySha256;requestSha256=$start.requestSha256;afterMarker=[bool]$AfterMarker;status='started';operationCompletionKnown=$true;journalReplayWillClose=$true;productionConversionQualified=$false;error=$null}
 Save 'started.json' $record
 $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null
 try{
  $deadline=[DateTime]::UtcNow.AddSeconds(180)
  do{try{$session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop;break}catch{Start-Sleep -Seconds 2}}while([DateTime]::UtcNow-lt$deadline)
  if(-not$session){throw 'Guest session unavailable.'}
- $preflight=Invoke-Command -Session $session -ArgumentList @($original.guestArtifacts,$start.experimentId,$start.requestSha256,$recoveryStart.stepId) -ScriptBlock {
-  param($Artifacts,$ExperimentId,$RequestSha,$RecoveryStep)
+ $preflight=Invoke-Command -Session $session -ArgumentList @($original.guestArtifacts,$start.experimentId,$start.requestSha256,$recoveryStart.stepId,[bool]$AfterMarker) -ScriptBlock {
+  param($Artifacts,$ExperimentId,$RequestSha,$RecoveryStep,$AfterMarker)
   Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
   $recoveryTask=Get-ScheduledTask -TaskName ('N2R-GeneralRecover-'+$RecoveryStep) -ErrorAction Stop;$info=Get-ScheduledTaskInfo -TaskName $recoveryTask.TaskName -ErrorAction Stop
   if($recoveryTask.State-in@('Running','Queued')-or$info.LastTaskResult-ne0){throw 'Guest rollback task did not complete successfully.'}
@@ -44,15 +45,15 @@ try{
   $journal='J:\ntfs2refs-shadow\'+$ExperimentId+'\reconstruction.journal'
   if($pins.kind-cne'general-recovery-pins'-or$pins.journal-cne$journal-or$pins.request_sha256-cne$RequestSha-or(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()-cne$RequestSha-or(Get-FileHash -LiteralPath $ticket).Hash.ToLowerInvariant()-cne$pins.ticket_sha256){throw 'Guest rollback completion pins differ.'}
   $stream=[IO.File]::Open($journal,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
-  try{$marker=[byte[]]::new(4096);if($stream.Read($marker,0,$marker.Length)-ne$marker.Length-or@($marker|Where-Object {$_ -ne0}).Count-ne0){throw 'Journal handoff sector is not clear.'}}finally{$stream.Dispose()}
+  try{$marker=[byte[]]::new(4096);if($stream.Read($marker,0,$marker.Length)-ne$marker.Length){throw 'Journal handoff sector is truncated.'};$clear=@($marker|Where-Object {$_ -ne0}).Count-eq0;$kind=[Text.Encoding]::ASCII.GetString($marker,0,8);if($AfterMarker){if($clear-or$kind-cne'N2RABT01'){throw 'Exact rollback-complete marker is not present.'}}elseif(-not$clear){throw 'Journal handoff sector is not clear.'}}finally{$stream.Dispose()}
   [pscustomobject]@{request=$request;requestSha256=$RequestSha;ticket=$ticket;ticketSha256=$pins.ticket_sha256;journal=$journal;checkedUtc=[DateTime]::UtcNow.ToString('o')}
  }
  Save 'preflight.json' $preflight
  $guestExe='C:\ntfs2refs\general-replay\'+$start.runId+'\lab-complete-general-rollback-'+$step+'.exe'
  Copy-Item -LiteralPath $binary.FullName -Destination $guestExe -ToSession $session
  $guestOutput=$original.guestArtifacts+'\rollback-online-'+$step+'.json'
- $dispatch=Invoke-Command -Session $session -ArgumentList @($guestExe,$BinarySha256,$preflight,$guestOutput,$step) -ScriptBlock {
-  param($Exe,$ExeSha,$Preflight,$Output,$Step)
+ $dispatch=Invoke-Command -Session $session -ArgumentList @($guestExe,$BinarySha256,$preflight,$guestOutput,$step,[bool]$AfterMarker) -ScriptBlock {
+  param($Exe,$ExeSha,$Preflight,$Output,$Step,$AfterMarker)
   Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
   if((Get-FileHash -LiteralPath $Exe).Hash.ToLowerInvariant()-cne$ExeSha-or(Test-Path -LiteralPath $Output)){throw 'Guest rollback binary pin or fresh output differs.'}
   $source=Get-Disk -Number 1;$shadow=Get-Disk -Number 3
@@ -60,6 +61,7 @@ try{
   $name='N2R-GeneralRollbackOnline-'+$Step
   if(Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue){throw 'NTFS rollback completion task already exists.'}
   $arguments='--request "'+$Preflight.request+'" --request-sha256 '+$Preflight.requestSha256+' --ticket "'+$Preflight.ticket+'" --ticket-sha256 '+$Preflight.ticketSha256+' --journal "'+$Preflight.journal+'" --output "'+$Output+'"'
+  if($AfterMarker){$arguments+=' --after-marker'}
   $action=New-ScheduledTaskAction -Execute $Exe -Argument $arguments
   $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
   $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

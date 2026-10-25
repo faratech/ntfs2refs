@@ -4,7 +4,10 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume_wait, shadow_native};
+    use n2r_win32::{
+        capture_mount_paths_general, mounted_filesystem_general, rediscover_general_volume_wait,
+        shadow_native,
+    };
     use ntfs2refs::{general_reconstruct, ntfs_attestation, shadow_tree};
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -80,6 +83,11 @@ fn main() -> anyhow::Result<()> {
     let mut pair = request.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, &mut events)?;
     let filesystem = mounted_filesystem_general(pair.source.clone(), &mut events)?;
+    let (mount_paths, mount_paths_error) =
+        match capture_mount_paths_general(pair.source.clone(), &mut events) {
+            Ok(observation) => (Some(observation), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
     let input: Vec<_> = expected
         .objects
         .iter()
@@ -120,7 +128,9 @@ fn main() -> anyhow::Result<()> {
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"general-post-handoff-refs-verification",
             "request_sha256":args.request_sha256,"expected_tree_sha256":args.expectation_sha256,
-            "filesystem":filesystem,"native":attempted.ok(),"error":error,
+            "filesystem":filesystem,"mount_paths":mount_paths,
+            "mount_paths_error":mount_paths_error,
+            "native":attempted.ok(),"error":error,
             "events":events,"source_payload_writes":0,
             "ordinary_tree_verified":success,"production_conversion_qualified":false}),
     )?;

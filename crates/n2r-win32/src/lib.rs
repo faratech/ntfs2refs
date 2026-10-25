@@ -29,6 +29,7 @@ mod native;
 pub use native::{
     GeneralDiskState, GeneralFrozenPartition, GeneralJournaledPartition,
     GeneralLiveNtfsObservation, GeneralPartitionReader, GeneralProbe, LiveNtfsObservation,
-    NativeEvent, OfflinePartition, PartitionSnapshot, WritePolicy, mounted_filesystem_general,
-    probe_general, rediscover_general_volume, rediscover_general_volume_wait,
+    MountPathObservation, NativeEvent, OfflinePartition, PartitionSnapshot, WritePolicy,
+    capture_mount_paths_general, mounted_filesystem_general, probe_general,
+    rediscover_general_volume, rediscover_general_volume_wait,
 };

@@ -192,6 +192,11 @@ and [volume enumeration API](https://learn.microsoft.com/en-us/windows/win32/fil
 After an online transition, only temporary absence of the bound volume path
 is retried, for at most 15 seconds. An identity mismatch or ambiguous match
 remains an immediate refusal.
+The source-freeze report also captures drive letters and mounted-folder paths
+before dismount, resolving every path back to the bound volume GUID. The
+post-handoff verifier records the paths published for the rediscovered ReFS
+volume. These observations are diagnostic for now; automatic Mount Manager
+changes require a separate checked policy.
 The guest-only `lab-general-refs-mutation` workload creates a fresh temporary
 directory on the converted ReFS disk, writes and hashes a 50 MiB file, grows
 it across a zero-valid-data gap, truncates and renames it, then creates and

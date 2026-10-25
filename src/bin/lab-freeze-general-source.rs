@@ -5,7 +5,8 @@ fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
     use n2r_win32::{
-        GeneralFrozenPartition, GeneralPartitionReader, general_layout::GeneralDiskBinding,
+        GeneralFrozenPartition, GeneralPartitionReader, capture_mount_paths_general,
+        general_layout::GeneralDiskBinding,
     };
     use ntfs2refs::{lab_reconstruct, ntfs_backup, ntfs_inspect, ntfs_log};
     use serde::Serialize;
@@ -77,10 +78,12 @@ fn main() -> anyhow::Result<()> {
     );
     online.revalidate_route(&mut events)?;
     drop(online);
+    let mount_paths = capture_mount_paths_general(binding.clone(), &mut events)?;
     save(
         &intent,
         &serde_json::json!({"schema_version":1,"kind":"general-ntfs-freeze-intent",
             "binding_sha256":args.binding_sha256,"disk_number":binding.disk_number,
+            "mount_paths":mount_paths.paths,
             "source_payload_writes_authorized":false,"conversion_qualified":false}),
     )?;
     let mut source = GeneralFrozenPartition::isolate(binding, &mut events)?;
@@ -104,6 +107,7 @@ fn main() -> anyhow::Result<()> {
         &serde_json::json!({"schema_version":1,"kind":"general-frozen-ntfs-source",
             "binding_sha256":args.binding_sha256,"source_sha256":source_sha256,
             "before":before,"after":after,
+            "mount_paths":mount_paths,
             "ntfs":ntfs,"backups":backups,"log_restart":log_restart,
             "log_restart_error":log_restart_error,"events":events,
             "source_payload_writes":0,"source_admitted":false,"conversion_qualified":false}),

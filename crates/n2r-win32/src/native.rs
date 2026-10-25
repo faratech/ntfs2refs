@@ -19,6 +19,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationW,
+    GetVolumeNameForVolumeMountPointW, GetVolumePathNamesForVolumeNameW,
 };
 use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW};
 
@@ -69,6 +70,13 @@ pub struct GeneralProbe {
     pub read_only_probe: bool,
     pub source_write_requests: u64,
     pub conversion_qualified: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MountPathObservation {
+    pub binding: GeneralDiskBinding,
+    pub paths: Vec<String>,
+    pub all_paths_resolve_to_bound_volume: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -480,6 +488,92 @@ pub fn mounted_filesystem_general(
         .ok_or_else(|| invalid("mounted filesystem name is unterminated"))?;
     String::from_utf16(&filesystem[..end])
         .map_err(|_| invalid("mounted filesystem name is invalid UTF-16"))
+}
+
+fn decode_mount_paths(buffer: &[u16], returned: usize) -> io::Result<Vec<String>> {
+    if returned == 0 || returned > buffer.len() {
+        return Err(invalid("mount-path list exceeds bounded buffer"));
+    }
+    let mut paths = Vec::new();
+    let mut start = 0usize;
+    while start < returned {
+        let end = buffer[start..returned]
+            .iter()
+            .position(|unit| *unit == 0)
+            .map(|relative| start + relative)
+            .ok_or_else(|| invalid("mount-path list is unterminated"))?;
+        if end == start {
+            return Ok(paths);
+        }
+        let path = String::from_utf16(&buffer[start..end])
+            .map_err(|_| invalid("mount path is invalid UTF-16"))?;
+        if !path.ends_with('\\') || paths.contains(&path) || paths.len() >= 128 {
+            return Err(invalid("mount path is malformed or repeated"));
+        }
+        paths.push(path);
+        start = end + 1;
+    }
+    Err(invalid("mount-path list has no final terminator"))
+}
+
+/// Capture every drive-letter or mounted-folder path that Windows currently
+/// associates with the exact bound volume. Every returned path is resolved
+/// back to the same volume GUID through a separate Mount Manager query.
+pub fn capture_mount_paths_general(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<MountPathObservation> {
+    probe_general(binding.clone(), events)?;
+    let root = format!("{}\\", binding.volume_path()?);
+    let mut root_wide: Vec<u16> = root.encode_utf16().collect();
+    root_wide.push(0);
+    let mut buffer = [0u16; 4096];
+    let mut returned = 0u32;
+    // SAFETY: initialized NUL-terminated input and writable bounded output.
+    let success = unsafe {
+        GetVolumePathNamesForVolumeNameW(
+            root_wide.as_ptr(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            &mut returned,
+        )
+    };
+    if success == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let paths = decode_mount_paths(&buffer, returned as usize)?;
+    for path in &paths {
+        let mut path_wide: Vec<u16> = path.encode_utf16().collect();
+        path_wide.push(0);
+        let mut mapped = [0u16; 1024];
+        // SAFETY: initialized NUL-terminated mount path and writable output.
+        if unsafe {
+            GetVolumeNameForVolumeMountPointW(
+                path_wide.as_ptr(),
+                mapped.as_mut_ptr(),
+                mapped.len() as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let mapped_end = mapped
+            .iter()
+            .position(|unit| *unit == 0)
+            .ok_or_else(|| invalid("resolved mount volume name is unterminated"))?;
+        let mapped_name = String::from_utf16(&mapped[..mapped_end])
+            .map_err(|_| invalid("resolved mount volume name is invalid UTF-16"))?;
+        if layout::guid_bytes(&enumerated_guid(&mapped_name)?)?
+            != layout::guid_bytes(&binding.volume_guid)?
+        {
+            return Err(invalid("mount path resolves to a different volume"));
+        }
+    }
+    Ok(MountPathObservation {
+        binding,
+        paths,
+        all_paths_resolve_to_bound_volume: true,
+    })
 }
 
 fn enumerated_guid(name: &str) -> io::Result<String> {
@@ -1799,6 +1893,24 @@ mod tests {
         ] {
             assert!(enumerated_guid(name).is_err());
         }
+    }
+
+    #[test]
+    fn mount_path_multisz_requires_final_terminator_and_no_duplicates() {
+        let mut value: Vec<u16> = "F:\\".encode_utf16().collect();
+        value.push(0);
+        value.extend("C:\\mount\\".encode_utf16());
+        value.extend([0, 0]);
+        assert_eq!(
+            decode_mount_paths(&value, value.len()).unwrap(),
+            ["F:\\", "C:\\mount\\"]
+        );
+        assert!(decode_mount_paths(&value[..value.len() - 1], value.len() - 1).is_err());
+        let mut repeated: Vec<u16> = "F:\\".encode_utf16().collect();
+        repeated.push(0);
+        repeated.extend("F:\\".encode_utf16());
+        repeated.extend([0, 0]);
+        assert!(decode_mount_paths(&repeated, repeated.len()).is_err());
     }
 
     fn ordinary_stream() -> OfflinePartition {

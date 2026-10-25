@@ -3,7 +3,8 @@
 [CmdletBinding()]
 param(
  [Parameter(Mandatory)][string]$ShadowDirectory,
- [Parameter(Mandatory)][string]$ReplayDirectory
+ [Parameter(Mandatory)][string]$ReplayDirectory,
+ [switch]$ConvertedSource
 )
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $workspace=Split-Path -Parent $PSScriptRoot
@@ -26,7 +27,7 @@ $run=[guid]::NewGuid().ToString('N')
 $output=Assert-LabPath (Join-Path $cfg.Root ('general-shadow-reattach/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
 New-Item -ItemType Directory -Path $output -ErrorAction Stop|Out-Null
 function Save([string]$Name,$Value){$path=Join-Path $output $Name;$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 18));$file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
-$record=[ordered]@{schemaVersion=1;kind='general-shadow-readonly-reattachment';runId=$run;experimentId=$request.experiment_id;vmId=[string]$vm.Id;parentSnapshotId=[string]$vm.ParentSnapshotId;shadowDirectory=$shadow;requestSha256=$pins.general_request_sha256;helperHashes=$hashes;status='started';error=$null}
+$record=[ordered]@{schemaVersion=1;kind='general-shadow-readonly-reattachment';runId=$run;experimentId=$request.experiment_id;convertedSource=[bool]$ConvertedSource;vmId=[string]$vm.Id;parentSnapshotId=[string]$vm.ParentSnapshotId;shadowDirectory=$shadow;requestSha256=$pins.general_request_sha256;helperHashes=$hashes;status='started';error=$null}
 Save 'started.json' $record
 $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null
 try{
@@ -37,12 +38,13 @@ try{
  Invoke-Command -Session $session -ArgumentList $guestRoot -ScriptBlock {param($Root)$ErrorActionPreference='Stop';$base='C:\ntfs2refs';$parent=Split-Path $Root -Parent;$baseItem=Get-Item -LiteralPath $base -Force;if(-not$baseItem.PSIsContainer-or($baseItem.Attributes-band[IO.FileAttributes]::ReparsePoint)-or(Test-Path -LiteralPath $Root)){throw 'Fresh guest reattachment folder required.'};if(-not(Test-Path -LiteralPath $parent)){New-Item -ItemType Directory -Path $parent -ErrorAction Stop|Out-Null};$parentItem=Get-Item -LiteralPath $parent -Force;if(-not$parentItem.PSIsContainer-or($parentItem.Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'Guest replay parent differs.'};New-Item -ItemType Directory -Path $Root -ErrorAction Stop|Out-Null}|Out-Null
  Copy-Item -LiteralPath $readOnlyPath -Destination ($guestRoot+'\NativeShadowReadOnlyAttachment.cs') -ToSession $session
  Copy-Item -LiteralPath $mountPath -Destination ($guestRoot+'\NativeMountBoundary.cs') -ToSession $session
- $reply=Invoke-Command -Session $session -ArgumentList @($request.experiment_id,$platform.backingPath,[string]$platform.finalVhd.virtualDiskId,[string]$request.pair.source.identity.disk_guid,[string]$request.pair.shadow.identity.disk_guid,[string]$request.pair.shadow.identity.partition_guid,$guestRoot,$hashes) -ScriptBlock {
-  param($Experiment,$Backing,$VhdId,$SourceGuid,$ShadowGuid,$PartitionGuid,$Root,$Hashes)
+ $reply=Invoke-Command -Session $session -ArgumentList @($request.experiment_id,$platform.backingPath,[string]$platform.finalVhd.virtualDiskId,[string]$request.pair.source.identity.disk_guid,[string]$request.pair.shadow.identity.disk_guid,[string]$request.pair.shadow.identity.partition_guid,$guestRoot,$hashes,[bool]$ConvertedSource) -ScriptBlock {
+  param($Experiment,$Backing,$VhdId,$SourceGuid,$ShadowGuid,$PartitionGuid,$Root,$Hashes,$ConvertedSource)
   Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
   if($env:COMPUTERNAME-cne'N2R-WIN11'-or@(Get-Disk).Count-ne3-or(Get-Disk -Number 3 -ErrorAction SilentlyContinue)){throw 'Guest device inventory differs before attachment.'}
   $source=Get-Disk -Number 1;$journal=Get-Disk -Number 2
-  if([guid]$source.Guid-ne[guid]$SourceGuid-or-not$source.IsOffline-or-not$source.IsReadOnly-or$source.IsBoot-or$source.IsSystem-or$journal.IsOffline-or$journal.IsReadOnly){throw 'Source exclusion or journal state differs.'}
+  if([guid]$source.Guid-ne[guid]$SourceGuid-or$source.IsBoot-or$source.IsSystem-or$journal.IsOffline-or$journal.IsReadOnly){throw 'Source or journal identity differs.'}
+  if($ConvertedSource){$fs=(Get-Partition -DiskNumber 1 -PartitionNumber 2|Get-Volume).FileSystem;if($source.IsOffline-or$source.IsReadOnly-or$fs-cne'ReFS'){throw 'Converted source is not mounted ReFS.'};$journalPath='J:\ntfs2refs-shadow\'+$Experiment+'\reconstruction.journal';$stream=[IO.File]::Open($journalPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite);try{$marker=[byte[]]::new(8);if($stream.Read($marker,0,8)-ne8-or[Text.Encoding]::ASCII.GetString($marker)-cne'N2RHND01'){throw 'Converted source handoff marker differs.'}}finally{$stream.Dispose()}}elseif(-not$source.IsOffline-or-not$source.IsReadOnly){throw 'Frozen NTFS source exclusion differs.'}
   $platformPath='C:\ntfs2refs\tree-shadow\'+$Experiment+'\platform.json';$nativePath='C:\ntfs2refs\tree-shadow\'+$Experiment+'\helpers\NativeShadowDisk.cs'
   if((Get-FileHash -LiteralPath $platformPath).Hash.ToLowerInvariant()-cne$Hashes.platform-or(Get-FileHash -LiteralPath $nativePath).Hash.ToLowerInvariant()-cne$Hashes.native-or(Get-FileHash -LiteralPath ($Root+'\NativeShadowReadOnlyAttachment.cs')).Hash.ToLowerInvariant()-cne$Hashes.readOnly-or(Get-FileHash -LiteralPath ($Root+'\NativeMountBoundary.cs')).Hash.ToLowerInvariant()-cne$Hashes.mount){throw 'Guest helper or platform pin differs.'}
   $p=Get-Content -LiteralPath $platformPath -Raw|ConvertFrom-Json
@@ -57,11 +59,12 @@ try{
   $disk=Get-Disk -Number 3;$part=Get-Partition -DiskNumber 3 -PartitionNumber 2
   if([guid]$disk.Guid-ne[guid]$ShadowGuid-or[guid]$part.Guid-ne[guid]$PartitionGuid-or-not$disk.IsOffline-or-not$disk.IsReadOnly-or$disk.IsBoot-or$disk.IsSystem-or$disk.Size-ne64GB-or-not$native.HandleCloseSucceeded){throw 'Reattached shadow identity or state differs.'}
   $after=(Get-FileHash -LiteralPath $Backing -Algorithm SHA256).Hash.ToLowerInvariant()
-  if($before-cne$after-or-not(Get-Disk -Number 1).IsOffline-or-not(Get-Disk -Number 1).IsReadOnly){throw 'Backing or source changed during attachment.'}
-  [pscustomobject]@{kind='general-shadow-readonly-attachment';experimentId=$Experiment;physicalPath=$attached.physicalPath;diskGuid=[string]$disk.Guid;partitionGuid=[string]$part.Guid;backingSha256=$after;backingLength=$file.Length;sourceOfflineReadOnly=$true;shadowOfflineReadOnly=$true;providerReadOnly=$true;handleClosed=$native.HandleCloseSucceeded;completedUtc=[DateTime]::UtcNow.ToString('o')}
+  $sourceAfter=Get-Disk -Number 1
+  if($before-cne$after-or[guid]$sourceAfter.Guid-ne[guid]$SourceGuid-or($ConvertedSource-and($sourceAfter.IsOffline-or$sourceAfter.IsReadOnly))-or(-not$ConvertedSource-and(-not$sourceAfter.IsOffline-or-not$sourceAfter.IsReadOnly))){throw 'Backing or source changed during attachment.'}
+  [pscustomobject]@{kind='general-shadow-readonly-attachment';experimentId=$Experiment;convertedSource=[bool]$ConvertedSource;physicalPath=$attached.physicalPath;diskGuid=[string]$disk.Guid;partitionGuid=[string]$part.Guid;backingSha256=$after;backingLength=$file.Length;sourceStatePreserved=$true;shadowOfflineReadOnly=$true;providerReadOnly=$true;handleClosed=$native.HandleCloseSucceeded;completedUtc=[DateTime]::UtcNow.ToString('o')}
  }
  Save 'guest-reply.json' $reply
- if($reply.kind-cne'general-shadow-readonly-attachment'-or$reply.experimentId-cne$request.experiment_id-or[guid]$reply.diskGuid-ne[guid]$request.pair.shadow.identity.disk_guid-or-not$reply.sourceOfflineReadOnly-or-not$reply.shadowOfflineReadOnly-or-not$reply.providerReadOnly-or-not$reply.handleClosed){throw 'Guest reattachment report differs.'}
+ if($reply.kind-cne'general-shadow-readonly-attachment'-or$reply.experimentId-cne$request.experiment_id-or[guid]$reply.diskGuid-ne[guid]$request.pair.shadow.identity.disk_guid-or[bool]$reply.convertedSource-ne[bool]$ConvertedSource-or-not$reply.sourceStatePreserved-or-not$reply.shadowOfflineReadOnly-or-not$reply.providerReadOnly-or-not$reply.handleClosed){throw 'Guest reattachment report differs.'}
  $record.status='shadow-reattached-readonly';$record['backingSha256']=$reply.backingSha256
 }catch{$record.status='failed-preserved';$record.error=$_.Exception.ToString();throw}
 finally{Save 'host-result.json' $record;if($session){Remove-PSSession $session -ErrorAction SilentlyContinue}}

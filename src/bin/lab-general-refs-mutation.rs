@@ -4,7 +4,7 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume_wait};
+    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume_wait, shadow_native};
     use ntfs2refs::general_reconstruct;
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -95,6 +95,7 @@ fn main() -> anyhow::Result<()> {
         "converted source is not mounted as ReFS"
     );
     let root = PathBuf::from(format!("{}\\", mounted.volume_path()?));
+    let root_basic_before = shadow_native::observe_general_root_basic(&mounted)?;
     let directory = root.join(format!("n2r-mutation-{}", args.run_id));
     ensure!(
         !directory.exists(),
@@ -171,12 +172,20 @@ fn main() -> anyhow::Result<()> {
         fs::remove_file(directory.join(format!("entry-{index:03}.bin")))?;
     }
     fs::remove_dir(&directory)?;
+    let root_basic_after = shadow_native::observe_general_root_basic(&mounted)?;
+    ensure!(
+        root_basic_before[..8] == root_basic_after[..8]
+            && root_basic_before[32..] == root_basic_after[32..],
+        "mutation changed root creation time or attributes"
+    );
     save(
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"general-refs-mutation-workload",
             "run_id":args.run_id,"initial_bytes":INITIAL,"grown_bytes":GROWN,
             "truncated_bytes":TRUNCATED,"directory_entries_created":128,
             "mutation_directory_removed":true,"only_new_test_paths_written":true,
+            "root_basic_before":root_basic_before.to_vec(),
+            "root_basic_after":root_basic_after.to_vec(),
             "events":events,"production_conversion_qualified":false}),
     )?;
     Ok(())

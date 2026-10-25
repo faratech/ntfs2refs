@@ -31,6 +31,34 @@ fn main() -> anyhow::Result<()> {
         expectation_sha256: String,
         #[arg(long)]
         output: PathBuf,
+        /// Save bounded native observations without treating them as a passed
+        /// semantic verification. This never authorizes conversion writes.
+        #[arg(long)]
+        diagnose_only: bool,
+        /// Pinned report from the bounded ReFS mutation workload. Allows only
+        /// its exact recorded root basic-info change after reboot.
+        #[arg(
+            long,
+            requires = "mutation_report_sha256",
+            conflicts_with = "diagnose_only"
+        )]
+        mutation_report: Option<PathBuf>,
+        #[arg(long, requires = "mutation_report")]
+        mutation_report_sha256: Option<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct MutationEvidence {
+        schema_version: u32,
+        kind: String,
+        run_id: String,
+        initial_bytes: u64,
+        grown_bytes: u64,
+        truncated_bytes: u64,
+        directory_entries_created: u32,
+        mutation_directory_removed: bool,
+        only_new_test_paths_written: bool,
+        root_basic_before: Vec<u8>,
+        root_basic_after: Vec<u8>,
     }
     fn pinned(path: &PathBuf, expected: &str, max: u64) -> Result<Vec<u8>> {
         let metadata = fs::symlink_metadata(path)?;
@@ -80,6 +108,34 @@ fn main() -> anyhow::Result<()> {
     );
     let expected: shadow_tree::ExpectedTree = serde_json::from_slice(&expected_bytes)?;
     expected.validate()?;
+    let mutation = if let (Some(path), Some(pin)) =
+        (&args.mutation_report, &args.mutation_report_sha256)
+    {
+        let proof: MutationEvidence = serde_json::from_slice(&pinned(path, pin, 8 * 1024 * 1024)?)?;
+        ensure!(
+            proof.schema_version == 1
+                && proof.kind == "general-refs-mutation-workload"
+                && proof.run_id.len() == 32
+                && proof
+                    .run_id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && proof.initial_bytes == 50 * 1024 * 1024
+                && proof.grown_bytes == 80 * 1024 * 1024
+                && proof.truncated_bytes == 10 * 1024 * 1024
+                && proof.directory_entries_created == 128
+                && proof.mutation_directory_removed
+                && proof.only_new_test_paths_written
+                && proof.root_basic_before.len() == 40
+                && proof.root_basic_after.len() == 40
+                && proof.root_basic_before[..8] == proof.root_basic_after[..8]
+                && proof.root_basic_before[32..] == proof.root_basic_after[32..],
+            "pinned post-mutation root evidence differs"
+        );
+        Some(proof)
+    } else {
+        None
+    };
     let mut events = Vec::new();
     let mut pair = request.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, &mut events)?;
@@ -126,13 +182,27 @@ fn main() -> anyhow::Result<()> {
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
     let attempted = if filesystem == "ReFS" {
-        shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
+        if args.diagnose_only {
+            shadow_native::observe_general_converted_ordinary(pair, &input, same_security)
+        } else if let Some(proof) = &mutation {
+            let mut root_basic = [0u8; 40];
+            root_basic.copy_from_slice(&proof.root_basic_after);
+            shadow_native::verify_general_converted_after_mutation_ordinary(
+                pair,
+                &input,
+                root_basic,
+                same_security,
+            )
+        } else {
+            shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
+        }
     } else {
         Err(std::io::Error::other(
             "original data disk is not mounted as ReFS",
         ))
     };
-    let ordinary_tree_verified = attempted.is_ok();
+    let observation_complete = attempted.is_ok();
+    let ordinary_tree_verified = !args.diagnose_only && observation_complete;
     let mount_paths_preserved = request.expected_mount_paths.as_ref().map(|expected| {
         let before: BTreeSet<_> = expected.iter().map(|path| path.to_lowercase()).collect();
         mount_paths.as_ref().is_some_and(|observation| {
@@ -145,27 +215,34 @@ fn main() -> anyhow::Result<()> {
         })
     });
     let success = ordinary_tree_verified && mount_paths_preserved != Some(false);
-    let error = attempted
-        .as_ref()
-        .err()
-        .map(ToString::to_string)
-        .or_else(|| {
-            (mount_paths_preserved == Some(false))
-                .then(|| "converted ReFS mount paths differ from NTFS source".into())
-        });
+    let error = if args.diagnose_only && observation_complete {
+        Some("diagnostic native observation only; preservation comparison not passed".into())
+    } else {
+        attempted
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .or_else(|| {
+                (mount_paths_preserved == Some(false))
+                    .then(|| "converted ReFS mount paths differ from NTFS source".into())
+            })
+    };
     save(
         &args.output,
-        &serde_json::json!({"schema_version":1,"kind":"general-post-handoff-refs-verification",
+        &serde_json::json!({"schema_version":1,"kind":if args.diagnose_only {"general-post-handoff-refs-diagnostic"} else {"general-post-handoff-refs-verification"},
             "request_sha256":args.request_sha256,"expected_tree_sha256":args.expectation_sha256,
             "filesystem":filesystem,"mount_paths":mount_paths,
             "mount_paths_error":mount_paths_error,"mount_paths_preserved":mount_paths_preserved,
             "native":attempted.ok(),"error":error,
             "events":events,"source_payload_writes":0,
             "ordinary_tree_verified":ordinary_tree_verified,
+            "diagnostic_only":args.diagnose_only,"observation_complete":observation_complete,
+            "mutation_report_sha256":args.mutation_report_sha256,
+            "post_mutation_root_policy":mutation.is_some(),
             "success":success,"production_conversion_qualified":false}),
     )?;
     ensure!(
-        success,
+        success || (args.diagnose_only && observation_complete),
         "post-handoff ReFS verification refused; report saved"
     );
     Ok(())

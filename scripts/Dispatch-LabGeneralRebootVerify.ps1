@@ -13,6 +13,9 @@ $cfg=Get-LabConfiguration;$manifest=Read-LabManifest $cfg win11;$vm=Get-OwnedLab
 $mutationDirectory=Assert-LabPath $MutationDispatchDirectory $cfg.Root
 $mutationStart=Get-Content -LiteralPath (Join-Path $mutationDirectory 'started.json') -Raw|ConvertFrom-Json
 $mutated=Get-Content -LiteralPath (Join-Path $mutationDirectory 'collected.json') -Raw|ConvertFrom-Json
+$mutationEvidencePath=Join-Path $mutationDirectory 'guest-mutation.json'
+$mutationEvidence=Get-Content -LiteralPath $mutationEvidencePath -Raw|ConvertFrom-Json
+if((Get-FileHash -LiteralPath $mutationEvidencePath).Hash.ToLowerInvariant()-cne$mutated.reportSha256-or$mutationEvidence.kind-cne'general-refs-mutation-workload'-or$mutationEvidence.run_id-cne$mutationStart.stepId-or@($mutationEvidence.root_basic_before).Count-ne40-or@($mutationEvidence.root_basic_after).Count-ne40-or-not$mutationEvidence.mutation_directory_removed){throw 'Pinned root-mutation evidence differs.'}
 $parent=Assert-LabPath $mutationStart.parentDirectory $cfg.Root
 $start=Get-Content -LiteralPath (Join-Path $parent 'started.json') -Raw|ConvertFrom-Json
 $original=Get-Content -LiteralPath (Join-Path $parent 'dispatch.json') -Raw|ConvertFrom-Json
@@ -23,13 +26,13 @@ $step=[guid]::NewGuid().ToString('N')
 $output=Assert-LabPath (Join-Path $cfg.Root ('general-postreboot-verify/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
 New-Item -ItemType Directory -Path $output|Out-Null
 function Save([string]$Name,$Value){$path=Join-Path $output $Name;$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 16));$file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
-$record=[ordered]@{kind='general-postreboot-verification-dispatch';stepId=$step;runId=$start.runId;experimentId=$start.experimentId;mutationDirectory=$mutationDirectory;parentDirectory=$parent;parentCheckpointId=$start.parentCheckpointId;binarySha256=$BinarySha256;requestSha256=$start.requestSha256;expectationSha256=$start.expectationSha256;status='started';operationCompletionKnown=$true;rebootCompletionKnown=$false;productionConversionQualified=$false;error=$null}
+$record=[ordered]@{kind='general-postreboot-verification-dispatch';stepId=$step;runId=$start.runId;experimentId=$start.experimentId;mutationDirectory=$mutationDirectory;mutationReportSha256=$mutated.reportSha256;parentDirectory=$parent;parentCheckpointId=$start.parentCheckpointId;binarySha256=$BinarySha256;requestSha256=$start.requestSha256;expectationSha256=$start.expectationSha256;status='started';operationCompletionKnown=$true;rebootCompletionKnown=$false;productionConversionQualified=$false;error=$null}
 Save 'started.json' $record
 $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null
 try{
  $session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop
- $preflight=Invoke-Command -Session $session -ArgumentList @($original.guestArtifacts,$start.experimentId,$start.requestSha256,$start.expectationSha256) -ScriptBlock {
-  param($Artifacts,$ExperimentId,$RequestSha,$ExpectationSha)
+ $preflight=Invoke-Command -Session $session -ArgumentList @($original.guestArtifacts,$start.experimentId,$start.requestSha256,$start.expectationSha256,$mutationStart.stepId,$mutated.reportSha256) -ScriptBlock {
+  param($Artifacts,$ExperimentId,$RequestSha,$ExpectationSha,$MutationStep,$MutationSha)
   Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
   if(Get-Process -Name 'lab-general-complete*','lab-general-refs-mutation*','lab-general-experiment*' -ErrorAction SilentlyContinue){throw 'Another conversion or mutation process is running.'}
   $source=Get-Disk -Number 1;$shadow=Get-Disk -Number 3
@@ -38,10 +41,12 @@ try{
   if($volume.FileSystem-cne'ReFS'){throw 'Original data disk is not ReFS.'}
   $request=Join-Path $Artifacts 'request.json';$expectation=Join-Path $Artifacts 'expectation.json'
   if((Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()-cne$RequestSha-or(Get-FileHash -LiteralPath $expectation).Hash.ToLowerInvariant()-cne$ExpectationSha){throw 'Guest verifier inputs differ.'}
+  $mutation=Join-Path $Artifacts ('mutation-'+$MutationStep+'.json')
+  if((Get-FileHash -LiteralPath $mutation).Hash.ToLowerInvariant()-cne$MutationSha){throw 'Guest root-mutation evidence differs.'}
   $journal='J:\ntfs2refs-shadow\'+$ExperimentId+'\reconstruction.journal'
   $stream=[IO.File]::Open($journal,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
   try{$marker=[byte[]]::new(8);if($stream.Read($marker,0,8)-ne8-or[Text.Encoding]::ASCII.GetString($marker)-cne'N2RHND01'){throw 'ReFS journal handoff marker differs.'}}finally{$stream.Dispose()}
-  [pscustomobject]@{request=$request;expectation=$expectation;requestSha256=$RequestSha;expectationSha256=$ExpectationSha;bootUtc=([DateTime](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUniversalTime().ToString('o')}
+  [pscustomobject]@{request=$request;expectation=$expectation;mutationReport=$mutation;mutationSha256=$MutationSha;requestSha256=$RequestSha;expectationSha256=$ExpectationSha;bootUtc=([DateTime](Get-CimInstance Win32_OperatingSystem).LastBootUpTime).ToUniversalTime().ToString('o')}
  }
  Save 'preflight.json' $preflight
  try{Invoke-Command -Session $session -ScriptBlock {Restart-Computer -Force -ErrorAction Stop} -ErrorAction Stop|Out-Null}catch{$record['restartDispatchObservation']=$_.Exception.Message}
@@ -52,18 +57,21 @@ try{
  if([guid]$vm.ParentSnapshotId-ne[guid]$start.parentCheckpointId){throw 'VM checkpoint branch changed across reboot.'}
  $record.rebootCompletionKnown=$true
  Save 'reboot.json' ([ordered]@{beforeUtc=$preflight.bootUtc;afterUtc=$boot;vmId=[string]$vm.Id;parentCheckpointId=[string]$vm.ParentSnapshotId})
+ $shadowState=Invoke-Command -Session $session -ScriptBlock {Get-Disk -Number 3 -ErrorAction SilentlyContinue|Select-Object Number,IsOffline,IsReadOnly}
+ if(-not$shadowState){Remove-PSSession $session -ErrorAction SilentlyContinue;$session=$null;$attachment=& (Join-Path $PSScriptRoot 'Restore-LabGeneralShadowAttachment.ps1') -ShadowDirectory $start.shadowDirectory -ReplayDirectory $start.replayDirectory -ConvertedSource;if($attachment.status-cne'shadow-reattached-readonly'){throw 'Post-reboot shadow reattachment refused.'};Save 'reattachment.json' $attachment;$session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop}
+ elseif(-not$shadowState.IsOffline-or-not$shadowState.IsReadOnly){throw 'Post-reboot shadow exists without exclusion.'}
  $guestExe='C:\ntfs2refs\general-replay\'+$start.runId+'\lab-verify-general-converted-'+$step+'.exe'
  Copy-Item -LiteralPath $binary.FullName -Destination $guestExe -ToSession $session
  $guestOutput=$original.guestArtifacts+'\post-reboot-verify-'+$step+'.json'
  $dispatch=Invoke-Command -Session $session -ArgumentList @($guestExe,$BinarySha256,$preflight,$guestOutput,$step) -ScriptBlock {
   param($Exe,$ExeSha,$Preflight,$Output,$Step)
   Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
-  if((Get-FileHash -LiteralPath $Exe).Hash.ToLowerInvariant()-cne$ExeSha-or(Test-Path -LiteralPath $Output)){throw 'Guest verifier executable pin or output differs.'}
+  if((Get-FileHash -LiteralPath $Exe).Hash.ToLowerInvariant()-cne$ExeSha-or(Get-FileHash -LiteralPath $Preflight.mutationReport).Hash.ToLowerInvariant()-cne$Preflight.mutationSha256-or(Test-Path -LiteralPath $Output)){throw 'Guest verifier executable, mutation pin or output differs.'}
   $source=Get-Disk -Number 1;$shadow=Get-Disk -Number 3;$volume=Get-Partition -DiskNumber 1 -PartitionNumber 2|Get-Volume
   if($source.IsOffline-or$source.IsReadOnly-or$volume.FileSystem-cne'ReFS'-or-not$shadow.IsOffline-or-not$shadow.IsReadOnly){throw 'Rebooted ReFS source or shadow state differs.'}
   $name='N2R-GeneralReverify-'+$Step
   if(Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue){throw 'Guest re-verification task already exists.'}
-  $arguments='--request "'+$Preflight.request+'" --request-sha256 '+$Preflight.requestSha256+' --expectation "'+$Preflight.expectation+'" --expectation-sha256 '+$Preflight.expectationSha256+' --output "'+$Output+'"'
+  $arguments='--request "'+$Preflight.request+'" --request-sha256 '+$Preflight.requestSha256+' --expectation "'+$Preflight.expectation+'" --expectation-sha256 '+$Preflight.expectationSha256+' --mutation-report "'+$Preflight.mutationReport+'" --mutation-report-sha256 '+$Preflight.mutationSha256+' --output "'+$Output+'"'
   $action=New-ScheduledTaskAction -Execute $Exe -Argument $arguments
   $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
   $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

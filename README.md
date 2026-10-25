@@ -17,6 +17,9 @@ required relocation because they conflicted with ReFS metadata. See the
 The general-purpose executable still inspects images and reports blockers;
 its conversion, resume, rollback and finalize commands refuse writes. Existing
 file-tree admission and general ReFS metadata construction remain open work.
+The [general guest conversion result](docs/general-native-conversion-results.md)
+records a separate successful same-partition run, post-handoff mutation and
+reboot, with its current source-admission and retained-extent limits.
 The inspector now reconciles [raw NTFS directory indexes and MFT names](docs/ntfs-namespace-reconciliation.md)
 on its initial profile, alongside allocation ownership diagnostics.
 It also resolves [central and legacy security descriptors](docs/ntfs-security-reconciliation.md),

@@ -451,6 +451,7 @@ fn validate_existing(
     input: &[Input<'_>],
     same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     before_restore: bool,
+    root_basic_after_mutation: Option<&[u8; 40]>,
 ) -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     if report.objects.len() != input.len() {
@@ -459,8 +460,14 @@ fn validate_existing(
     let mut identities = BTreeMap::new();
     let mut unique = BTreeSet::new();
     for (i, o) in input.iter().zip(&report.objects) {
+        let expected_owned = basic_bytes(i);
+        let expected_basic: &[u8] = if i.components.is_empty() {
+            root_basic_after_mutation.map_or(&expected_owned, |bytes| bytes.as_slice())
+        } else {
+            &expected_owned
+        };
         if i.components != o.components
-            || query_bytes(&o.before, 0, 40)? != basic_bytes(i)
+            || query_bytes(&o.before, 0, 40)? != expected_basic
             || o.before != o.after
         {
             return Err(invalid(
@@ -598,7 +605,7 @@ fn repair_security_profile(
         None,
         None,
     )?;
-    validate_existing(&observed, input, &same, true)?;
+    validate_existing(&observed, input, &same, true, None)?;
     let preflight_sha = hex::encode(Sha256::digest(
         serde_json::to_vec(&observed).map_err(io::Error::other)?,
     ));
@@ -655,7 +662,7 @@ fn repair_security_profile(
         None,
         None,
     )?;
-    validate_existing(&verified, input, &same, false)?;
+    validate_existing(&verified, input, &same, false, None)?;
     if observed
         .objects
         .iter()
@@ -994,7 +1001,7 @@ pub fn run_general_ordinary_streaming(
         Some(payload_writer),
         Some(&pair.shadow),
     )?;
-    validate_existing(&native, input, &same_security, false)?;
+    validate_existing(&native, input, &same_security, false, None)?;
     Ok(GeneralReport {
         pair,
         native,
@@ -1026,7 +1033,7 @@ pub fn verify_general_ordinary(
         None,
         Some(&pair.shadow),
     )?;
-    validate_existing(&native, input, &same_security, false)?;
+    validate_existing(&native, input, &same_security, false, None)?;
     Ok(GeneralReport {
         pair,
         native,
@@ -1038,6 +1045,19 @@ pub fn verify_general_ordinary(
 /// durable and it has mounted as ReFS. The caller supplies the pre-cutover
 /// source tree from separately pinned recovery artifacts.
 pub fn verify_general_converted_ordinary(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralConvertedReport> {
+    let report = observe_general_converted_ordinary(pair, input, &same_security)?;
+    validate_existing(&report.native, input, &same_security, false, None)?;
+    Ok(report)
+}
+
+/// Return the bounded native observation even when a preservation comparison
+/// would fail. This diagnostic does not qualify the converted tree or write to
+/// the volume; callers must keep it separate from verified results.
+pub fn observe_general_converted_ordinary(
     pair: GeneralSourceShadowBinding,
     input: &[Input<'_>],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
@@ -1059,12 +1079,70 @@ pub fn verify_general_converted_ordinary(
         None,
         Some(&pair.source),
     )?;
-    validate_existing(&native, input, &same_security, false)?;
     Ok(GeneralConvertedReport {
         pair,
         native,
         conversion_qualified: false,
     })
+}
+
+/// Capture exact FileBasicInfo for the mounted volume root using the same
+/// access-time-suppressed handle policy as native tree verification.
+pub fn observe_general_root_basic(binding: &GeneralDiskBinding) -> io::Result<[u8; 40]> {
+    binding.validate()?;
+    let mut privileges = Privileges::enable_for(&[
+        "SeBackupPrivilege",
+        "SeSecurityPrivilege",
+        "SeRestorePrivilege",
+    ])?;
+    let root = format!("{}\\", binding.volume_path()?);
+    let file = open(&root, true, false)?;
+    let basic = info(&file, 0, 40)?;
+    drop(file);
+    privileges.restore()?;
+    Ok(basic
+        .try_into()
+        .map_err(|_| invalid("root basic-info size"))?)
+}
+
+/// After a recorded namespace mutation, require the exact root basic-info
+/// bytes captured by that workload. Creation time and attributes must still
+/// match the NTFS source; all other objects retain exact original metadata.
+pub fn verify_general_converted_after_mutation_ordinary(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    root_basic_after_mutation: [u8; 40],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralConvertedReport> {
+    let root = input
+        .first()
+        .ok_or_else(|| invalid("missing expected root"))?;
+    if !root.directory || !root.components.is_empty() {
+        return Err(invalid("expected post-mutation root differs"));
+    }
+    let original = basic_bytes(root);
+    if root_basic_after_mutation[..8] != original[..8]
+        || root_basic_after_mutation[32..] != original[32..]
+        || [8usize, 16, 24].into_iter().any(|at| {
+            let before = u64::from_le_bytes(original[at..at + 8].try_into().unwrap());
+            let after =
+                u64::from_le_bytes(root_basic_after_mutation[at..at + 8].try_into().unwrap());
+            after < before || after >= i64::MAX as u64
+        })
+    {
+        return Err(invalid(
+            "post-mutation root creation, attributes or time order differs",
+        ));
+    }
+    let report = observe_general_converted_ordinary(pair, input, &same_security)?;
+    validate_existing(
+        &report.native,
+        input,
+        &same_security,
+        false,
+        Some(&root_basic_after_mutation),
+    )?;
+    Ok(report)
 }
 /// Observe the enrolled converted original after durable journal handoff. All
 /// original shadow creation/repair entry points retain the disk3 restriction.
@@ -1092,7 +1170,7 @@ pub fn verify_converted(
         None,
         None,
     )?;
-    validate_existing(&report, input, &same_security, false)?;
+    validate_existing(&report, input, &same_security, false, None)?;
     Ok(report)
 }
 /// Verify an ordinary-file conversion on the owning guest after the durable
@@ -1115,7 +1193,7 @@ pub fn verify_converted_ordinary(
         None,
         None,
     )?;
-    validate_existing(&report, input, &same_security, false)?;
+    validate_existing(&report, input, &same_security, false, None)?;
     Ok(report)
 }
 fn run_role(

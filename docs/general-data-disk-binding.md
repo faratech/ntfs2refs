@@ -205,6 +205,12 @@ records the source/shadow disk state and journal marker. It reports a completed
 native handoff only when the full artifact set and ReFS finish report agree;
 exit 86 with a zero handoff marker and offline writable target is classified
 as requiring journal recovery.
+`Dispatch-LabGeneralRecovery.ps1` can then launch exactly one pinned resume or
+rollback task after confirming the original task is terminal, the handoff
+sector is zero, and the target/shadow remain excluded. Its read-only companion
+`Collect-LabGeneralRecovery.ps1` compares the recovered whole-image hash to
+the requested NTFS or ReFS image and leaves the target offline for a separate
+handoff or old-NTFS online transition.
 
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while

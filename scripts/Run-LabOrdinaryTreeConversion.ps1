@@ -6,7 +6,8 @@ param(
  [Parameter(Mandatory)][string]$FreezeDirectory,
  [Parameter(Mandatory)][string]$BinaryPath,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256,
- [switch]$Detached
+ [switch]$Detached,
+ [ValidateRange(0,4096)][int]$InterruptAfterWrites=0
 )
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $workspace=Split-Path -Parent $PSScriptRoot
@@ -40,7 +41,7 @@ $run=[guid]::NewGuid().ToString('N')
 $output=Assert-LabPath (Join-Path $cfg.Root ('ordinary-tree-conversion/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
 New-Item -ItemType Directory -Path $output|Out-Null
 function Save([string]$Name,$Value){$path=Join-Path $output $Name;$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 32));$file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
-$record=[ordered]@{kind='ordinary-tree-conversion';runId=$run;experimentId=$start.runId;shadowDirectory=$shadowDirectory;freezeDirectory=$freezeDirectory;binarySha256=$BinarySha256;detached=[bool]$Detached;status='started';operationCompletionKnown=$true;sourceAdmitted=$false;conversionQualified=$false;error=$null}
+$record=[ordered]@{kind='ordinary-tree-conversion';runId=$run;experimentId=$start.runId;shadowDirectory=$shadowDirectory;freezeDirectory=$freezeDirectory;binarySha256=$BinarySha256;detached=[bool]$Detached;interruptAfterWrites=$InterruptAfterWrites;status='started';operationCompletionKnown=$true;sourceAdmitted=$false;conversionQualified=$false;error=$null}
 Save 'request.json' $request
 $requestSha=(Get-FileHash (Join-Path $output 'request.json')).Hash.ToLowerInvariant()
 Save 'started.json' $record
@@ -57,8 +58,8 @@ try{
  Copy-Item -LiteralPath $binary.FullName -Destination $guestExe -ToSession $session
  Copy-Item -LiteralPath (Join-Path $output 'request.json') -Destination $guestRequest -ToSession $session
  if($Detached){
-  $dispatch=Invoke-Command -Session $session -ArgumentList @($guestExe,$guestRequest,$requestSha,$BinarySha256,$guestArtifacts,$start.runId,$run) -ScriptBlock {
-   param($Exe,$Request,$RequestSha,$BinarySha,$Artifacts,$ExperimentId,$Run)
+  $dispatch=Invoke-Command -Session $session -ArgumentList @($guestExe,$guestRequest,$requestSha,$BinarySha256,$guestArtifacts,$start.runId,$run,$InterruptAfterWrites) -ScriptBlock {
+   param($Exe,$Request,$RequestSha,$BinarySha,$Artifacts,$ExperimentId,$Run,$InterruptAfterWrites)
    $ErrorActionPreference='Stop'
    if((Get-FileHash $Exe).Hash.ToLowerInvariant()-cne$BinarySha-or(Get-FileHash $Request).Hash.ToLowerInvariant()-cne$RequestSha){throw 'Guest binary or request pin differs.'}
    if(Get-Process -Name 'lab-tree-shadow*','lab-tree-convert*','lab-tree-reconstruct*' -ErrorAction SilentlyContinue){throw 'Another native converter is running.'}
@@ -72,6 +73,7 @@ try{
    $name='N2R-Convert-'+$Run
    if(Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue){throw 'Converter task already exists.'}
    $arguments='--request "'+$Request+'" --request-sha256 '+$RequestSha+' --artifacts "'+$Artifacts+'" --journal "'+$journal+'"'
+   if($InterruptAfterWrites-gt0){$arguments+=' --interrupt-after-writes '+$InterruptAfterWrites}
    $action=New-ScheduledTaskAction -Execute $Exe -Argument $arguments
    $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
    $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
@@ -83,8 +85,8 @@ try{
   $record.status='guest-task-dispatched'
  }else{
  $record.operationCompletionKnown=$false
- $job=Invoke-Command -Session $session -AsJob -ArgumentList @($guestExe,$guestRequest,$requestSha,$BinarySha256,$guestArtifacts,$start.runId,$guestRoot,$run) -ScriptBlock {
-  param($Exe,$Request,$RequestSha,$BinarySha,$Artifacts,$ExperimentId,$Root,$Run)
+ $job=Invoke-Command -Session $session -AsJob -ArgumentList @($guestExe,$guestRequest,$requestSha,$BinarySha256,$guestArtifacts,$start.runId,$guestRoot,$run,$InterruptAfterWrites) -ScriptBlock {
+  param($Exe,$Request,$RequestSha,$BinarySha,$Artifacts,$ExperimentId,$Root,$Run,$InterruptAfterWrites)
   $ErrorActionPreference='Stop'
   if((Get-FileHash $Exe).Hash.ToLowerInvariant()-cne$BinarySha-or(Get-FileHash $Request).Hash.ToLowerInvariant()-cne$RequestSha){throw 'Guest binary or request pin differs.'}
   if(Get-Process -Name lab-tree-shadow,lab-tree-convert,lab-tree-reconstruct -ErrorAction SilentlyContinue){throw 'Another native converter is running.'}
@@ -95,7 +97,7 @@ try{
   if(Test-Path -LiteralPath $Artifacts){throw 'Fresh recovery directory required.'}
   $journal='J:\ntfs2refs-shadow\'+$ExperimentId+'\reconstruction.journal'
   if(Test-Path -LiteralPath $journal){throw 'Fresh external journal required.'}
-  $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$Exe;$psi.Arguments='--request "'+$Request+'" --request-sha256 '+$RequestSha+' --artifacts "'+$Artifacts+'" --journal "'+$journal+'"';$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
+  $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$Exe;$psi.Arguments='--request "'+$Request+'" --request-sha256 '+$RequestSha+' --artifacts "'+$Artifacts+'" --journal "'+$journal+'"';if($InterruptAfterWrites-gt0){$psi.Arguments+=' --interrupt-after-writes '+$InterruptAfterWrites};$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
   $process=[Diagnostics.Process]::new();$process.StartInfo=$psi;if(-not$process.Start()){throw 'Converter did not start.'}
   $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
   [IO.File]::WriteAllText(($Root+'\conversion-'+$Run+'.process.json'),([ordered]@{pid=$process.Id;startedUtc=[DateTime]::UtcNow.ToString('o');arguments=$psi.Arguments}|ConvertTo-Json))

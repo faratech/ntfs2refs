@@ -47,6 +47,11 @@ Its fresh `--artifacts` directory records the independent recovery pins. Before
 handoff, `lab-tree-reconstruct resume` or `rollback` can use that ticket and
 journal. A controlled interruption exits 86 after the requested number of
 durable target writes. Native interruption recovery has not yet been qualified.
+`Run-LabOrdinaryTreeConversion.ps1 -InterruptAfterWrites N` now passes the
+existing 1..4096 durable-write fault point through both attached and detached
+guest launch modes; zero leaves interruption disabled. The selected value is
+recorded with the conversion run so recovery evidence can identify the exact
+fault point.
 The owning-guest `lab-tree-finalize recover` mode now combines a pinned journal
 resume with finalization: it attempts handoff only after resume succeeds and
 writes both outcomes to one durable report. This mode is for a target already

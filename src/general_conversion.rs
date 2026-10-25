@@ -104,12 +104,14 @@ fn convert_profile(
             comparison,
             expected,
             mount_paths,
+            source_label,
         } = qualified;
         let plan = reconstruct::Request {
             schema_version: 1,
             experiment_id: request.experiment_id.clone(),
             expected_tree_sha256: hex::encode(Sha256::digest(&expected)),
             expected_mount_paths: Some(mount_paths.paths),
+            expected_source_label: Some(source_label.label().clone()),
             pair: request.pair.clone(),
             comparison,
             journal: request.journal.clone(),

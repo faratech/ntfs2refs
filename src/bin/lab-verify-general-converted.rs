@@ -184,18 +184,46 @@ fn main() -> anyhow::Result<()> {
     };
     let attempted = if filesystem == "ReFS" {
         if args.diagnose_only {
-            shadow_native::observe_general_converted_ordinary(pair, &input, same_security)
+            if let Some(label) = &request.expected_source_label {
+                shadow_native::observe_general_converted_ordinary_with_label(
+                    pair,
+                    &input,
+                    label,
+                    same_security,
+                )
+            } else {
+                shadow_native::observe_general_converted_ordinary(pair, &input, same_security)
+            }
         } else if let Some(proof) = &mutation {
             let mut root_basic = [0u8; 40];
             root_basic.copy_from_slice(&proof.root_basic_after);
-            shadow_native::verify_general_converted_after_mutation_ordinary(
-                pair,
-                &input,
-                root_basic,
-                same_security,
-            )
+            if let Some(label) = &request.expected_source_label {
+                shadow_native::verify_general_converted_after_mutation_ordinary_with_label(
+                    pair,
+                    &input,
+                    root_basic,
+                    label,
+                    same_security,
+                )
+            } else {
+                shadow_native::verify_general_converted_after_mutation_ordinary(
+                    pair,
+                    &input,
+                    root_basic,
+                    same_security,
+                )
+            }
         } else {
-            shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
+            if let Some(label) = &request.expected_source_label {
+                shadow_native::verify_general_converted_ordinary_with_label(
+                    pair,
+                    &input,
+                    label,
+                    same_security,
+                )
+            } else {
+                shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
+            }
         }
     } else {
         Err(std::io::Error::other(

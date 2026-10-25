@@ -102,6 +102,18 @@ fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> 
 fn resident_allocation(logical: u64, allocated: u64) -> bool {
     logical <= 4096 && allocated < 4096 && allocated >= logical
 }
+
+fn volume_label_matches(
+    actual: &[u16],
+    expected: Option<&crate::volume_label::VolumeLabel>,
+) -> io::Result<bool> {
+    if let Some(label) = expected {
+        label.validate()?;
+        Ok(actual == label.utf16())
+    } else {
+        Ok(actual == "n2r-retained-shadow".encode_utf16().collect::<Vec<_>>())
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     ProbeRoot,
@@ -1343,6 +1355,18 @@ pub fn verify_general_converted_ordinary(
     Ok(report)
 }
 
+pub fn verify_general_converted_ordinary_with_label(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    expected_label: &crate::volume_label::VolumeLabel,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralConvertedReport> {
+    let report =
+        observe_general_converted_ordinary_with_label(pair, input, expected_label, &same_security)?;
+    validate_existing(&report.native, input, &same_security, false, None)?;
+    Ok(report)
+}
+
 /// Return the bounded native observation even when a preservation comparison
 /// would fail. This diagnostic does not qualify the converted tree or write to
 /// the volume; callers must keep it separate from verified results.
@@ -1351,13 +1375,32 @@ pub fn observe_general_converted_ordinary(
     input: &[Input<'_>],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<GeneralConvertedReport> {
+    observe_general_converted_label_profile(pair, input, None, same_security)
+}
+
+pub fn observe_general_converted_ordinary_with_label(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    expected_label: &crate::volume_label::VolumeLabel,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralConvertedReport> {
+    expected_label.validate()?;
+    observe_general_converted_label_profile(pair, input, Some(expected_label), same_security)
+}
+
+fn observe_general_converted_label_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralConvertedReport> {
     pair.validate()?;
     let binding = DiskBinding {
         disk_number: pair.source.disk_number,
         volume_guid: pair.source.volume_guid.clone(),
         identity: pair.source.identity.clone(),
     };
-    let native = run_role(
+    let native = run_role_with_label(
         binding,
         pair.source.disk_number,
         input,
@@ -1367,6 +1410,7 @@ pub fn observe_general_converted_ordinary(
         true,
         None,
         Some(&pair.source),
+        expected_label,
     )?;
     Ok(GeneralConvertedReport {
         pair,
@@ -1403,6 +1447,39 @@ pub fn verify_general_converted_after_mutation_ordinary(
     root_basic_after_mutation: [u8; 40],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<GeneralConvertedReport> {
+    verify_general_mutation_label_profile(
+        pair,
+        input,
+        root_basic_after_mutation,
+        None,
+        same_security,
+    )
+}
+
+pub fn verify_general_converted_after_mutation_ordinary_with_label(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    root_basic_after_mutation: [u8; 40],
+    expected_label: &crate::volume_label::VolumeLabel,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralConvertedReport> {
+    expected_label.validate()?;
+    verify_general_mutation_label_profile(
+        pair,
+        input,
+        root_basic_after_mutation,
+        Some(expected_label),
+        same_security,
+    )
+}
+
+fn verify_general_mutation_label_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    root_basic_after_mutation: [u8; 40],
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralConvertedReport> {
     let root = input
         .first()
         .ok_or_else(|| invalid("missing expected root"))?;
@@ -1423,7 +1500,8 @@ pub fn verify_general_converted_after_mutation_ordinary(
             "post-mutation root creation, attributes or time order differs",
         ));
     }
-    let report = observe_general_converted_ordinary(pair, input, &same_security)?;
+    let report =
+        observe_general_converted_label_profile(pair, input, expected_label, &same_security)?;
     validate_existing(
         &report.native,
         input,
@@ -1493,9 +1571,43 @@ fn run_role(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     converted: bool,
     ordinary: bool,
-    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
 ) -> io::Result<Report> {
+    run_role_with_label(
+        binding,
+        source_disk,
+        input,
+        mode,
+        same_security,
+        converted,
+        ordinary,
+        payload_writer,
+        general_shadow,
+        None,
+    )
+}
+
+fn run_role_with_label(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    mode: Mode,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    converted: bool,
+    ordinary: bool,
+    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    general_shadow: Option<&GeneralDiskBinding>,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+) -> io::Result<Report> {
+    if let Some(label) = expected_label {
+        label.validate()?;
+        if !converted || mode != Mode::Verify {
+            return Err(invalid(
+                "restored labels apply only to converted-source verification",
+            ));
+        }
+    }
     if let Some(general) = general_shadow {
         general.validate()?;
         let route_mode_ok = if converted {
@@ -1706,12 +1818,12 @@ fn run_role(
     let text = |b: &[u16]| {
         String::from_utf16_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(b.len())])
     };
-    if text(&fs) != "ReFS"
-        || text(&label) != "n2r-retained-shadow"
-        || spc != 8
-        || bps != 512
-        || flags & 0x80000 != 0
-    {
+    let label_end = label
+        .iter()
+        .position(|unit| *unit == 0)
+        .ok_or_else(|| invalid("unterminated converted volume label"))?;
+    let label_matches = volume_label_matches(&label[..label_end], expected_label)?;
+    if text(&fs) != "ReFS" || !label_matches || spc != 8 || bps != 512 || flags & 0x80000 != 0 {
         return Err(invalid(
             "shadow filesystem, label, geometry or read-only flag differs",
         ));
@@ -2140,6 +2252,29 @@ fn run_role(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn converted_labels_are_explicit_and_shadow_enrollment_remains_exact() {
+        let source = crate::volume_label::VolumeLabel::from_text("工程 😀").unwrap();
+        assert!(volume_label_matches(source.utf16(), Some(&source)).unwrap());
+        assert!(!volume_label_matches(source.utf16(), None).unwrap());
+        assert!(
+            volume_label_matches(
+                &"n2r-retained-shadow".encode_utf16().collect::<Vec<_>>(),
+                None
+            )
+            .unwrap()
+        );
+        assert!(
+            !volume_label_matches(
+                &"N2R-RETAINED-SHADOW".encode_utf16().collect::<Vec<_>>(),
+                None
+            )
+            .unwrap()
+        );
+        let empty = crate::volume_label::VolumeLabel::from_text("").unwrap();
+        assert!(volume_label_matches(&[], Some(&empty)).unwrap());
+        assert!(!volume_label_matches(&[], None).unwrap());
+    }
     #[test]
     fn resident_metadata_allocation_cannot_be_a_physical_data_cluster() {
         assert!(resident_allocation(76, 80));

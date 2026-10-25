@@ -98,6 +98,7 @@ fn main() -> anyhow::Result<()> {
         experiment_id: old.experiment_id,
         expected_tree_sha256: expected_sha256.clone(),
         expected_mount_paths: None,
+        expected_source_label: None,
         pair: GeneralSourceShadowBinding {
             source: GeneralDiskBinding {
                 disk_number: old.source.disk_number,

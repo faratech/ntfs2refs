@@ -63,4 +63,5 @@ pub mod retained_compare;
 #[cfg(windows)]
 pub mod shadow_freeze;
 pub mod shadow_tree;
+pub mod source_volume_label;
 pub mod tree_placement;

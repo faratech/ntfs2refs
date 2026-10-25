@@ -19,6 +19,7 @@ pub mod retention_layout;
 #[cfg(windows)]
 pub mod shadow_native;
 pub mod stream_layout;
+pub mod volume_label;
 #[cfg(windows)]
 mod stream_native;
 #[cfg(windows)]

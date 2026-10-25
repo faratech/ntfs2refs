@@ -72,6 +72,8 @@ pub struct Request {
     pub expected_tree_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_mount_paths: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_source_label: Option<n2r_win32::volume_label::VolumeLabel>,
     pub pair: GeneralSourceShadowBinding,
     pub comparison: RetainedCompareRequest,
     pub journal: GeneralJournalStorageBinding,
@@ -99,6 +101,9 @@ impl Request {
         );
         self.pair.validate()?;
         crate::general_shadow::validate_mount_paths(&self.expected_mount_paths)?;
+        if let Some(label) = &self.expected_source_label {
+            label.validate()?;
+        }
         self.journal.validate()?;
         retained_compare::validate_request(&self.comparison)?;
         ensure!(
@@ -600,6 +605,7 @@ pub struct Finalization {
     pub handoff: Option<lab_reconstruct::ExecutionReport>,
     pub completed_marker_proof: Option<lab_reconstruct::CompletedMarkerProof>,
     pub native: Option<shadow_native::GeneralConvertedReport>,
+    pub label_restoration: Option<n2r_win32::volume_label::LabelRestoration>,
     pub mount_paths_after: Option<MountPathObservation>,
     pub mount_paths_preserved: Option<bool>,
     pub mount_paths_error: Option<String>,
@@ -940,6 +946,7 @@ fn verify_converted_tree(
     request: &Request,
     expectation: &shadow_tree::ExpectedTree,
     events: &mut Vec<NativeEvent>,
+    restored_label: bool,
 ) -> std::io::Result<shadow_native::GeneralConvertedReport> {
     let mut pair = request.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, events)?;
@@ -980,7 +987,51 @@ fn verify_converted_tree(
         ntfs_attestation::same_security(a, b)
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
-    shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
+    if restored_label && let Some(label) = &request.expected_source_label {
+        shadow_native::verify_general_converted_ordinary_with_label(
+            pair,
+            &input,
+            label,
+            same_security,
+        )
+    } else {
+        shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
+    }
+}
+
+fn restore_source_label(request: &Request, report: &mut Finalization) {
+    let Some(desired) = &request.expected_source_label else {
+        return;
+    };
+    let Some(native) = &report.native else {
+        report.error =
+            Some("label restoration requires successful native tree verification".into());
+        return;
+    };
+    let enrollment = match n2r_win32::volume_label::VolumeLabel::from_text("n2r-retained-shadow") {
+        Ok(value) => value,
+        Err(error) => {
+            report.error = Some(error.to_string());
+            return;
+        }
+    };
+    match n2r_win32::volume_label::restore_verified_label(
+        &request.pair.source,
+        desired,
+        native.pair.source.clone(),
+        &enrollment,
+    ) {
+        Ok(restored) => {
+            if !restored.success {
+                report.error = Some(format!(
+                    "source label restoration failed: {:?}",
+                    restored.error
+                ));
+            }
+            report.label_restoration = Some(restored);
+        }
+        Err(error) => report.error = Some(format!("source label restoration refused: {error}")),
+    }
 }
 
 /// The only planned general transition from an offline journal target to a
@@ -1030,6 +1081,7 @@ pub(crate) fn finalize(
         handoff: None,
         completed_marker_proof: None,
         native: None,
+        label_restoration: None,
         mount_paths_after: None,
         mount_paths_preserved: None,
         mount_paths_error: None,
@@ -1053,10 +1105,13 @@ pub(crate) fn finalize(
         report.error = Some(error.to_string());
         return Ok(report);
     }
-    match verify_converted_tree(request, &expectation, &mut report.events) {
+    match verify_converted_tree(request, &expectation, &mut report.events, false) {
         Ok(native) => {
             record_mount_paths(request, &native, &mut report);
             report.native = Some(native);
+            if report.error.is_none() {
+                restore_source_label(request, &mut report);
+            }
             report.success = report.error.is_none();
         }
         Err(error) => report.error = Some(error.to_string()),
@@ -1107,6 +1162,7 @@ pub fn finalize_after_marker(
         handoff: None,
         completed_marker_proof: Some(proof),
         native: None,
+        label_restoration: None,
         mount_paths_after: None,
         mount_paths_preserved: None,
         mount_paths_error: None,
@@ -1118,10 +1174,26 @@ pub fn finalize_after_marker(
         report.error = Some(error.to_string());
         return Ok(report);
     }
-    match verify_converted_tree(request, &expectation, &mut report.events) {
+    let restored_label = if let Some(desired) = &request.expected_source_label {
+        match rediscover_general_volume_wait(request.pair.source.clone(), &mut report.events)
+            .and_then(|binding| n2r_win32::volume_label::observe_label(binding, "ReFS"))
+        {
+            Ok(observed) => observed.label == *desired,
+            Err(error) => {
+                report.error = Some(error.to_string());
+                return Ok(report);
+            }
+        }
+    } else {
+        false
+    };
+    match verify_converted_tree(request, &expectation, &mut report.events, restored_label) {
         Ok(native) => {
             record_mount_paths(request, &native, &mut report);
             report.native = Some(native);
+            if report.error.is_none() {
+                restore_source_label(request, &mut report);
+            }
             report.success = report.error.is_none();
         }
         Err(error) => report.error = Some(error.to_string()),
@@ -1162,6 +1234,7 @@ mod tests {
             experiment_id: "a".repeat(32),
             expected_tree_sha256: "c".repeat(64),
             expected_mount_paths: None,
+            expected_source_label: None,
             pair: GeneralSourceShadowBinding {
                 source: disk(
                     1,
@@ -1229,5 +1302,30 @@ mod tests {
         valid.validate().unwrap();
         valid.comparison.max_change_bytes += 4096;
         assert!(valid.validate().is_err());
+    }
+    #[test]
+    fn source_labels_preserve_legacy_request_bytes_and_validate_new_metadata() {
+        let old = request();
+        let bytes = serde_json::to_vec(&old).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("expected_source_label"));
+        let replay: Request = serde_json::from_slice(&bytes).unwrap();
+        assert!(replay.expected_source_label.is_none());
+        assert_eq!(serde_json::to_vec(&replay).unwrap(), bytes);
+        let mut labeled = old;
+        labeled.expected_source_label =
+            Some(n2r_win32::volume_label::VolumeLabel::from_text("工程 😀").unwrap());
+        labeled.validate().unwrap();
+        let value = serde_json::to_value(&labeled).unwrap();
+        let replay: Request = serde_json::from_value(value.clone()).unwrap();
+        replay.validate().unwrap();
+        assert_eq!(replay.expected_source_label, labeled.expected_source_label);
+        let mut bad = value;
+        bad["expected_source_label"] = serde_json::json!({"utf16":[65,0,66]});
+        assert!(
+            serde_json::from_value::<Request>(bad)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
     }
 }

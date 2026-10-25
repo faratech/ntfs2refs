@@ -49,6 +49,7 @@ pub(crate) struct QualifiedTree {
     pub comparison: crate::retained_compare::RetainedCompareRequest,
     pub expected: Vec<u8>,
     pub mount_paths: n2r_win32::MountPathObservation,
+    pub source_label: n2r_win32::volume_label::SourceLabel,
 }
 
 pub(crate) fn create_output(output: &Path) -> Result<()> {
@@ -132,6 +133,8 @@ pub(crate) fn prepare_with_budget(
         drop(online);
         let mount_paths = n2r_win32::capture_mount_paths_general(pair.source.clone(), &mut events)?;
         save(output, "source-mount-paths.json", &mount_paths)?;
+        let source_label = n2r_win32::volume_label::capture_source_label(pair.source.clone())?;
+        save(output, "source-label.json", &source_label)?;
         save(output, "preflight-events.json", &events)?;
         events.clear();
         let mut source =
@@ -146,6 +149,9 @@ pub(crate) fn prepare_with_budget(
             "state":source.state(&mut events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
         )?;
         let raw = ntfs_inspect::inspect(&mut source, length)?;
+        let source_label_frozen =
+            crate::source_volume_label::verify(&mut source, &raw, source_label.label())?;
+        save(output, "source-label-frozen.json", &source_label_frozen)?;
         let pin = hex::encode(Sha256::digest(serde_json::to_vec(&raw)?));
         let backups = ntfs_backup::verify(&mut source, length, &raw)?;
         let log = ntfs_log::verify(&mut source, &raw)?;
@@ -269,6 +275,7 @@ pub(crate) fn prepare_with_budget(
             comparison: proof.comparison().clone(),
             expected: serde_json::to_vec_pretty(&expected)?,
             mount_paths,
+            source_label,
         })
     })();
     match attempted {

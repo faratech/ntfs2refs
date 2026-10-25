@@ -114,6 +114,7 @@ fn main() -> anyhow::Result<()> {
         experiment_id: args.experiment_id,
         expected_tree_sha256: freeze.expectation_sha256,
         expected_mount_paths: freeze.request.expected_mount_paths,
+        expected_source_label: None,
         pair: freeze.request.pair,
         comparison: freeze.comparison_request,
         journal,

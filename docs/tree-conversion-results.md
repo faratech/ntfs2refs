@@ -52,6 +52,12 @@ resume with finalization: it attempts handoff only after resume succeeds and
 writes both outcomes to one durable report. This mode is for a target already
 activated and persistently offline after an interrupted apply; its native
 interruption behavior is not yet qualified.
+`scripts/Run-LabOrdinaryRecovery.ps1` dispatches that mode as a SYSTEM task
+inside the enrolled guest after checking the conversion branch, source/shadow
+disk exclusion, absence of a live converter, zero pre-handoff marker, ticket
+pin and independently saved expectation. It records dispatch without claiming
+the guest task has finished; a separate collection step must inspect the
+durable guest report and journal marker.
 
 The independent shadow builder also supports `--retain-eligible`. It attempts
 placement only on the shadow, only where both allocation views permit it,

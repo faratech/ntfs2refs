@@ -15,7 +15,7 @@ use windows_sys::Win32::{
     System::{
         IO::DeviceIoControl,
         Ioctl::{
-            FSCTL_TXFS_LIST_TRANSACTIONS, FSCTL_TXFS_QUERY_RM_INFORMATION,
+            FSCTL_IS_VOLUME_DIRTY, FSCTL_TXFS_LIST_TRANSACTIONS, FSCTL_TXFS_QUERY_RM_INFORMATION,
             TXFS_QUERY_RM_INFORMATION,
         },
     },
@@ -47,12 +47,17 @@ pub struct Observation {
     pub schema_version: u32,
     pub kind: &'static str,
     pub binding: DiskBinding,
+    pub native_dirty_before: Option<u32>,
+    pub native_dirty_before_error: Option<u32>,
     pub query_before: Option<RmQuery>,
     pub query_before_error: Option<u32>,
     pub transaction_list: Option<TransactionList>,
     pub transaction_list_error: Option<u32>,
     pub query_after: Option<RmQuery>,
     pub query_after_error: Option<u32>,
+    pub native_dirty_after: Option<u32>,
+    pub native_dirty_after_error: Option<u32>,
+    pub native_volume_state_stably_clear: bool,
     pub queried_rm_stably_empty: bool,
     pub all_resource_managers_checked: bool,
     pub source_frozen: bool,
@@ -60,17 +65,17 @@ pub struct Observation {
 }
 
 fn control(file: &File, code: u32) -> Result<Vec<u8>, u32> {
-    let mut bytes = vec![0; MAX_REPLY];
+    let mut aligned = vec![0u64; MAX_REPLY / 8];
     let mut returned = 0u32;
-    // SAFETY: the file handle is borrowed; the output buffer is initialized,
-    // bounded, exclusively owned and kept alive for this synchronous FSCTL.
+    // SAFETY: the borrowed handle and initialized u64-aligned output buffer
+    // remain alive for this bounded synchronous FSCTL.
     let ok = unsafe {
         DeviceIoControl(
             file.as_raw_handle(),
             code,
             ptr::null(),
             0,
-            bytes.as_mut_ptr().cast(),
+            aligned.as_mut_ptr().cast(),
             MAX_REPLY as u32,
             &mut returned,
             ptr::null_mut(),
@@ -83,8 +88,11 @@ fn control(file: &File, code: u32) -> Result<Vec<u8>, u32> {
     if returned as usize > MAX_REPLY {
         return Err(13); // ERROR_INVALID_DATA
     }
-    bytes.truncate(returned as usize);
-    Ok(bytes)
+    // SAFETY: returned is bounded by the allocated 64 KiB above; the aligned
+    // storage remains alive while copying the exact initialized reply bytes.
+    Ok(unsafe {
+        std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), returned as usize).to_vec()
+    })
 }
 
 fn query(file: &File) -> (Option<RmQuery>, Option<u32>) {
@@ -128,6 +136,14 @@ fn list(file: &File) -> (Option<TransactionList>, Option<u32>) {
     }
 }
 
+fn dirty(file: &File) -> (Option<u32>, Option<u32>) {
+    match control(file, FSCTL_IS_VOLUME_DIRTY) {
+        Err(code) => (None, Some(code)),
+        Ok(bytes) if bytes.len() != 4 => (None, Some(13)),
+        Ok(bytes) => (Some(u32::from_le_bytes(bytes.try_into().unwrap())), None),
+    }
+}
+
 pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
     binding.validate()?;
     if binding.disk_number != 1 {
@@ -146,9 +162,13 @@ pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
         .read(true)
         .share_mode(3)
         .open(binding.volume_path()?)?;
+    let (native_dirty_before, native_dirty_before_error) = dirty(&volume);
     let (before, before_error) = query(&volume);
     let (transactions, list_error) = list(&volume);
     let (after, after_error) = query(&volume);
+    let (native_dirty_after, native_dirty_after_error) = dirty(&volume);
+    let native_volume_state_stably_clear =
+        native_dirty_before == Some(0) && native_dirty_after == Some(0);
     let queried_rm_stably_empty = before.as_ref().is_some_and(|q| q.transaction_count == 0)
         && after.as_ref().is_some_and(|q| q.transaction_count == 0)
         && transactions.as_ref().is_some_and(|l| {
@@ -162,12 +182,17 @@ pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
         schema_version: 1,
         kind: "mounted-ntfs-txf-resource-manager-observation",
         binding,
+        native_dirty_before,
+        native_dirty_before_error,
         query_before: before,
         query_before_error: before_error,
         transaction_list: transactions,
         transaction_list_error: list_error,
         query_after: after,
         query_after_error: after_error,
+        native_dirty_after,
+        native_dirty_after_error,
+        native_volume_state_stably_clear,
         queried_rm_stably_empty,
         all_resource_managers_checked: false,
         source_frozen: false,

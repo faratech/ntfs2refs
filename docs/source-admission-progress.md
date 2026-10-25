@@ -171,8 +171,12 @@ that ReFS does not support the TxF metadata FSCTL](https://learn.microsoft.com/e
 so TxF semantics cannot silently be carried across.
 
 `lab-txf-observe` now has a read-only in-guest path for the mounted NTFS source.
-It queries the resource manager twice and lists its transactions between the
-queries, recording native refusals and reply hashes. A zero count is explicitly
+It queries the native volume-dirty state and resource manager twice, listing
+transactions between the queries and recording native refusals and reply
+hashes. The dirty-state FSCTL uses a 32-bit-aligned reply buffer and records
+the entire returned flag word; [Microsoft documents the volume-dirty
+control](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/fsctl-is-volume-dirty).
+A zero TxF count is explicitly
 limited to the **queried RM**; secondary resource managers, clean log state and
 the final frozen source are not certified. It has compiled on the host but has
 not yet been run in the VM. [Microsoft documents the RM query's

@@ -11,10 +11,10 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{FILETIME, GetLastError},
+    Foundation::{FILETIME, GetLastError, HANDLE},
     Storage::FileSystem::SetFileTime,
     System::{
-        IO::DeviceIoControl,
+        IO::{DeviceIoControl, IO_STATUS_BLOCK},
         Ioctl::{
             FILE_FS_PERSISTENT_VOLUME_INFORMATION, FSCTL_IS_VOLUME_DIRTY,
             FSCTL_QUERY_PERSISTENT_VOLUME_STATE, FSCTL_TXFS_LIST_TRANSACTIONS,
@@ -29,6 +29,13 @@ const MAX_REPLY: usize = 64 * 1024;
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn RtlGetVersion(version: *mut OSVERSIONINFOW) -> i32;
+    fn NtQueryVolumeInformationFile(
+        handle: HANDLE,
+        status: *mut IO_STATUS_BLOCK,
+        information: *mut core::ffi::c_void,
+        length: u32,
+        class: i32,
+    ) -> i32;
 }
 
 fn windows_version() -> io::Result<[u32; 3]> {
@@ -89,6 +96,10 @@ pub struct Observation {
     pub kind: &'static str,
     pub rm_handle_profile: &'static str,
     pub windows_version: [u32; 3],
+    pub quota_before: Option<QuotaState>,
+    pub quota_before_error: Option<i32>,
+    pub quota_after: Option<QuotaState>,
+    pub quota_after_error: Option<i32>,
     pub binding: DiskBinding,
     pub native_dirty_before: Option<u32>,
     pub native_dirty_before_error: Option<u32>,
@@ -110,6 +121,53 @@ pub struct Observation {
     pub all_resource_managers_checked: bool,
     pub source_frozen: bool,
     pub execution_authorized: bool,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct QuotaState {
+    pub free_space_start_filtering: i64,
+    pub free_space_threshold: i64,
+    pub free_space_stop_filtering: i64,
+    pub default_threshold: i64,
+    pub default_limit: i64,
+    pub control_flags: u32,
+    pub reply_sha256: String,
+}
+
+fn quota(volume: &File) -> (Option<QuotaState>, Option<i32>) {
+    // FILE_FS_CONTROL_INFORMATION: five LARGE_INTEGERs, flags and padding.
+    let mut output = [0u64; 6];
+    let mut io_status = IO_STATUS_BLOCK::default();
+    // SAFETY: aligned initialized SDK-layout output and status storage stay
+    // live for the synchronous query on an ordinary synchronous volume handle.
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            volume.as_raw_handle(),
+            &mut io_status,
+            output.as_mut_ptr().cast(),
+            48,
+            6,
+        )
+    };
+    if status != 0 {
+        return (None, Some(status));
+    }
+    if io_status.Information != 48 {
+        return (None, Some(0xc000_0004u32 as i32));
+    }
+    let bytes: Vec<_> = output.into_iter().flat_map(u64::to_le_bytes).collect();
+    (
+        Some(QuotaState {
+            free_space_start_filtering: output[0] as i64,
+            free_space_threshold: output[1] as i64,
+            free_space_stop_filtering: output[2] as i64,
+            default_threshold: output[3] as i64,
+            default_limit: output[4] as i64,
+            control_flags: output[5] as u32,
+            reply_sha256: hex::encode(Sha256::digest(&bytes)),
+        }),
+        None,
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -315,10 +373,15 @@ pub fn observe_general(binding: GeneralDiskBinding) -> io::Result<GeneralObserva
 
 fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation> {
     let windows_version = windows_version()?;
+    let disk = File::options()
+        .read(true)
+        .share_mode(3)
+        .open(format!("\\\\.\\PhysicalDrive{}", binding.disk_number))?;
+    let disk_read_only = read_only_disk(&disk)?;
     // TxF resource-manager controls address the RM's root directory. The
     // direct volume handle remains separate for dirty/persistent-state FSCTLs.
     let root = File::options()
-        .access_mode(0x181)
+        .access_mode(if disk_read_only { 0x81 } else { 0x181 })
         .share_mode(3)
         .custom_flags(0x0220_0000)
         .open(format!("{}\\", binding.volume_path()?))?;
@@ -328,15 +391,19 @@ fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation>
     };
     // SAFETY: borrowed directory handle and documented per-handle last-access
     // suppression sentinel; no stored timestamp value is supplied.
-    if unsafe { SetFileTime(root.as_raw_handle(), ptr::null(), &suppress, ptr::null()) } == 0 {
+    if !disk_read_only
+        && unsafe { SetFileTime(root.as_raw_handle(), ptr::null(), &suppress, ptr::null()) } == 0
+    {
         return Err(io::Error::last_os_error());
     }
     let (native_dirty_before, native_dirty_before_error) = dirty(&volume);
+    let (quota_before, quota_before_error) = quota(&volume);
     let (persistent_state_before, persistent_state_before_error) = persistent(&volume);
     let (before, before_error) = query(&root);
     let (transactions, list_error) = list(&root);
     let (after, after_error) = query(&root);
     let (native_dirty_after, native_dirty_after_error) = dirty(&volume);
+    let (quota_after, quota_after_error) = quota(&volume);
     let (persistent_state_after, persistent_state_after_error) = persistent(&volume);
     let native_volume_state_stably_clear =
         native_dirty_before == Some(0) && native_dirty_after == Some(0);
@@ -358,11 +425,24 @@ fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation>
             .as_ref()
             .zip(after.as_ref())
             .is_some_and(|(a, b)| a.rm_state == b.rm_state && matches!(a.rm_state, 0 | 2));
+    if read_only_disk(&disk)? != disk_read_only {
+        return Err(io::Error::other(
+            "disk protection changed during NTFS observation",
+        ));
+    }
     Ok(Observation {
         schema_version: 2,
         kind: "mounted-ntfs-txf-resource-manager-observation",
-        rm_handle_profile: "volume-root-directory-access-time-suppressed",
+        rm_handle_profile: if disk_read_only {
+            "volume-root-directory-physical-disk-read-only"
+        } else {
+            "volume-root-directory-access-time-suppressed"
+        },
         windows_version,
+        quota_before,
+        quota_before_error,
+        quota_after,
+        quota_after_error,
         binding,
         native_dirty_before,
         native_dirty_before_error,
@@ -385,6 +465,45 @@ fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation>
         source_frozen: false,
         execution_authorized: false,
     })
+}
+
+/// A protected root must not request WRITE_ATTRIBUTES merely to suppress
+/// access-time updates. Require both the disk attribute and storage driver's
+/// write-protection response; never infer protection from a failed root open.
+fn read_only_disk(disk: &File) -> io::Result<bool> {
+    let attributes =
+        control(disk, 0x0007_00f0).map_err(|code| io::Error::from_raw_os_error(code as i32))?;
+    if attributes.len() != 16 || attributes[..4] != 16u32.to_le_bytes() {
+        return Err(io::Error::other("invalid disk-attribute response"));
+    }
+    let flags = u64::from_le_bytes(attributes[8..16].try_into().unwrap());
+    let mut returned = 0;
+    // SAFETY: synchronous no-buffer IOCTL on a borrowed live disk handle.
+    let writable = unsafe {
+        DeviceIoControl(
+            disk.as_raw_handle(),
+            0x0007_0024,
+            ptr::null(),
+            0,
+            ptr::null_mut(),
+            0,
+            &mut returned,
+            ptr::null_mut(),
+        )
+    };
+    let error = if writable == 0 {
+        Some(unsafe { GetLastError() })
+    } else {
+        None
+    };
+    match (flags, writable != 0, error) {
+        (0, true, None) => Ok(false),
+        (2, false, Some(19)) => Ok(true),
+        _ => Err(io::Error::other(format!(
+            "unsupported NTFS observer disk protection: attributes={flags}, writable={}, error={error:?}",
+            writable != 0
+        ))),
+    }
 }
 
 #[cfg(test)]

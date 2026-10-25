@@ -16,10 +16,13 @@ pub struct LiveAssessment {
     pub source_sha256: String,
     pub canonical_inspection_sha256: String,
     pub txf_evidence_sha256: Option<String>,
+    pub txf_observation: Option<serde_json::Value>,
     pub short_name_creation_disabled: Option<bool>,
     pub queried_rm_stably_empty: Option<bool>,
     pub all_resource_managers_checked: bool,
     pub txf_error: Option<String>,
+    pub internal_indexes: Option<crate::ntfs_internal::VerifiedIndexes>,
+    pub internal_indexes_error: Option<String>,
     pub source_admitted: bool,
     pub execution_authorized: bool,
 }
@@ -96,17 +99,33 @@ pub fn assess(
             .flatten()
     });
     ntfs_admission::bind_short_name_policy(&mut assessment, raw, observed);
+    let (internal_indexes, internal_indexes_error) = match crate::ntfs_internal::verify(source, raw)
+    {
+        Ok(mut proof) => {
+            proof.bind_native_quota(observed);
+            (Some(proof), None)
+        }
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
+    assessment.gates.push(ntfs_admission::Gate {
+        code: "internal_indexes".into(),
+        satisfied: internal_indexes.as_ref().is_some_and(|proof| proof.binds(raw) && proof.replacement_supported),
+        detail: "reread object-ID, reparse and quota indexes must contain only supported empty/default state; transaction replacement remains separate".into(),
+    });
     Ok(LiveAssessment {
         comparison,
         assessment,
         source_sha256,
         canonical_inspection_sha256: canonical_inspection_sha256.into(),
         txf_evidence_sha256,
+        txf_observation: txf.map(serde_json::to_value).transpose()?,
         short_name_creation_disabled,
         queried_rm_stably_empty: txf.map(|evidence| evidence.observation.queried_rm_stably_empty),
         all_resource_managers_checked: txf
             .is_some_and(|evidence| evidence.observation.all_resource_managers_checked),
         txf_error: observed.txf_error().map(str::to_owned),
+        internal_indexes,
+        internal_indexes_error,
         source_admitted: false,
         execution_authorized: false,
     })

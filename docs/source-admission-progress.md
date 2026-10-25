@@ -211,11 +211,33 @@ clear, and NTFS version is 3.1, so `clean_volume` passes. The observed
 `0x0080` volume policy bit was confirmed by a controlled native disabled /
 enabled / restored-disabled differential; see [the experiment](research/ntfs-volume-flag-0080.md).
 Its gate can now clear only on build 26300 with an actual frozen-source native
-policy witness and no DOS-only aliases. That live binding has not yet been run.
+policy witness and no DOS-only aliases. The live binding passed on October 25:
+all eight user objects passed the frozen source-view policy, and the complete
+52 GiB source hash remained unchanged. The native report is
+`.lab/hyperv/general-source-admission/win11-20261025T153838061Z/basis.json`,
+SHA-256 `a5751081de181abb1410231621877bbec305cdf098c8f2c25bf4f0297cb21349`.
+The observer now opens the root without write attributes when both the disk
+attribute and storage write-protection query confirm a physically read-only
+view. It retains last-access suppression on writable observations.
 The root's `$TXF_DATA`, NTFS log/transaction state, target preservation round
 trip and final device-bound certificate remain unfinished. [Microsoft states
 that ReFS does not support the TxF metadata FSCTL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_txfs_get_metadata_info),
 so TxF semantics cannot silently be carried across.
+
+The new `ntfs_internal` reader rereads resident object-ID, reparse and quota
+indexes from their actual MFT records, verifies their inventory identity and
+parses them through the bounded index reader. Object-ID/reparse indexes must
+be empty. Quota indexes must cross-match SID/owner identities and contain only
+unlimited default entries, zero accounting and no exceeded-limit state; an
+opaque native observation must additionally show stable disabled quota policy.
+Configured limits, tracking/enforcement, foreign entries and unsupported index
+layouts remain refused. The native eight-object source passed these checks in
+`.lab/hyperv/general-source-admission/win11-20261025T155436868Z/basis.json`,
+SHA-256 `fc6f56cf16bbdf3d36a1a8a9537c4695aea654f627cd49262ba7a4a707426b82`.
+The native query uses Microsoft's [FileFsControlInformation contract](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e5a70738-7ee4-46d9-a5f7-6644daa49a51).
+This is an internal-index proof, not complete transaction-state admission.
+TxF queries on the protected mount returned native error 6801; that refusal is
+retained and is not interpreted as zero transactions.
 
 `lab-txf-observe` now has a read-only in-guest path for the mounted NTFS source.
 It queries the native volume-dirty state and resource manager twice, listing

@@ -844,6 +844,61 @@ pub(crate) fn validate_file_record(bytes: &[u8], geometry: &NtfsGeometry) -> Res
     parse_record(bytes.to_vec(), geometry)?;
     Ok(())
 }
+
+/// Reread a bounded resident attribute from its actual MFT record. Inventory
+/// hashes alone are not a substitute for the bytes being interpreted.
+pub(crate) fn read_resident_inventory_attribute<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    file: &FileInventory,
+    attribute: &AttributeInventory,
+) -> Result<Vec<u8>> {
+    ensure!(
+        attribute.resident && attribute.logical_size <= 4096,
+        "bounded resident source attribute required"
+    );
+    let mft = raw
+        .files
+        .iter()
+        .find(|f| f.record_number == 0)
+        .context("missing MFT inventory")?;
+    let maps: Vec<_> = mft
+        .attributes
+        .iter()
+        .filter(|a| a.type_code == 0x80 && a.name_utf16.is_empty())
+        .collect();
+    ensure!(
+        maps.len() == 1 && mft.base_file_reference == 0,
+        "unassembled MFT source mapping"
+    );
+    let mut bytes = vec![0; raw.geometry.file_record_size as usize];
+    let offset = file
+        .record_number
+        .checked_mul(u64::from(raw.geometry.file_record_size))
+        .context("MFT source record offset overflow")?;
+    read_nonresident_inventory_range(reader, maps[0], offset, &mut bytes, &raw.geometry)?;
+    let record = parse_record(bytes, &raw.geometry)?;
+    ensure!(
+        record.sequence == file.sequence_number
+            && record.base == file.base_file_reference
+            && record.flags & 1 != 0
+            && (record.flags & 2 != 0) == file.is_directory,
+        "reread MFT record identity differs"
+    );
+    let found: Vec<_> = record
+        .attributes
+        .iter()
+        .filter(|a| a.report.instance == attribute.instance)
+        .collect();
+    ensure!(
+        found.len() == 1 && serde_json::to_vec(&found[0].report)? == serde_json::to_vec(attribute)?,
+        "reread resident attribute differs from inventory"
+    );
+    found[0]
+        .resident_value
+        .clone()
+        .context("resident attribute bytes absent")
+}
 pub(crate) fn read_nonresident_inventory_range<R: Read + Seek>(
     reader: &mut R,
     attribute: &AttributeInventory,

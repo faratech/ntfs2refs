@@ -73,13 +73,21 @@ general data disk.
 The live observer now feeds the combined ordinary-source assessment through an
 opaque native observation value and another complete excluded-device hash.
 Its report records matching and refusing gates separately; it still issues no
-admission certificate while volume-policy, internal replacement and target
-preservation rules remain unresolved.
+admission certificate while internal replacement and target preservation rules
+remain unresolved. Its build-26300 frozen-source short-name policy binding now
+passes; the complete source SHA-256 remained unchanged.
 The same read-only observation window now queries native dirty state,
 persistent short-name policy and TxF resource-manager/transaction state on the
 bound general volume. The report preserves query refusals and the fact that
-not every resource manager has been enumerated. These diagnostics do not clear
-the unresolved on-disk `0x0080` meaning or TxF admission gate.
+not every resource manager has been enumerated. The controlled `0x0080`
+differential and its live binding are documented in
+[source-admission progress](source-admission-progress.md). TxF admission remains
+closed: the protected mount returns error 6801 rather than an empty RM result.
+The new internal-index reader also cross-checks actual resident index bytes
+and live disabled quota policy. `Start-LabGeneralSourceAdmission.ps1` starts
+either the full source observation or the bounded `-Profile internal-index`
+probe; the matching collector exports pinned terminal reports without restarting
+the task. These scripts remain tied to the enrolled disposable NTFS branch.
 
 The general native I/O layer now also has a separate `GeneralJournaledPartition`
 type. It can activate an unchanged offline/read-only handle while retaining

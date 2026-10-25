@@ -313,7 +313,7 @@ fn rejects_invalid_range_shapes_and_request_budgets() {
     for case in 0..14 {
         let mut request = fixture.request.clone();
         match case {
-            0 => request.schema_version = 2,
+            0 => request.schema_version = 3,
             1 => request.sector_size = 1024,
             2 => request.expected_length = 4095,
             3 => request.expected_length = 128 * 1024 * 1024 * 1024 + 512,

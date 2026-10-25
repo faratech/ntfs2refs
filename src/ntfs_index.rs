@@ -17,6 +17,26 @@ pub struct Profile {
     encoding: Encoding,
 }
 impl Profile {
+    pub const OBJECT_ID: Self = Self {
+        indexed_type: 0,
+        collation: 0x13,
+        encoding: Encoding::DataOffset,
+    };
+    pub const REPARSE: Self = Self {
+        indexed_type: 0,
+        collation: 0x13,
+        encoding: Encoding::DataOffset,
+    };
+    pub const QUOTA_OWNER: Self = Self {
+        indexed_type: 0,
+        collation: 0x11,
+        encoding: Encoding::DataOffset,
+    };
+    pub const QUOTA_ID: Self = Self {
+        indexed_type: 0,
+        collation: 0x10,
+        encoding: Encoding::DataOffset,
+    };
     pub const FILE_NAME: Self = Self {
         indexed_type: 0x30,
         collation: 1,

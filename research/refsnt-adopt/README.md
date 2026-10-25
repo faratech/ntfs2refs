@@ -97,5 +97,9 @@ base without retaining a second full raw image.
 Automatic tool review rejected the combined evidence/reduction/deletion
 command with `blocked by policy` and no detailed reason. That command did not
 run; deletion was not retried through another route. Non-destructive overlay
-preservation succeeded separately. The newly created disposable raw image
-remains in place, as do the unchanged source archive and VM/checkpoint files.
+preservation succeeded separately. After the user explicitly authorized
+deletion of this exact disposable image, a checked literal-path deletion was
+attempted again. Automatic approval review again rejected it before execution
+with only `blocked by policy`. The raw image remains in place, as do the
+unchanged source archive and VM/checkpoint files. The preserved overlay and
+result hashes were rechecked before that attempt.

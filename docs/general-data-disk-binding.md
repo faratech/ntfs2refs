@@ -156,22 +156,31 @@ source admission and independent target verification are incomplete.
 
 `lab-recover-general-journal` exposes only resume and rollback for an already
 activated, persistently offline target. It requires separately pinned request
-and ticket files, an existing exclusive journal and a frozen shadow; the
-journal's zero handoff marker and exact patch list are checked before any
+and ticket files and an existing exclusive journal. ReFS resume requires the
+frozen shadow. NTFS rollback can use `--without-shadow` after shadow loss: it
+normalizes every journaled old/new byte against the durable old-byte records,
+proves the full original NTFS hash across unpatched bytes, and never attempts
+ReFS apply. The journal's zero handoff marker and exact patch list are checked before any
 target write. It writes an intent before recovery, records actual disk states
 afterward, and never brings the target online. It cannot initiate a new apply.
 After an exact NTFS rollback, `lab-complete-general-rollback` separately
 rechecks the original NTFS structures, backup and clean restart pages, verifies
 the complete old image, writes a durable rollback-complete marker that rejects
 future journal replay, then brings the original disk online and checks that
-Windows mounts it as NTFS. A partial marker is treated as closing replay.
+Windows mounts it as NTFS. It also accepts `--without-shadow` for this NTFS
+completion path. A partial marker is treated as closing replay.
 This transition has not had a native disk run.
 If a process dies after either completion marker but before the disk becomes
 online, explicit `--after-marker` (NTFS) or `finalize-after-marker` (ReFS)
 rechecks the full 4 KiB marker, immutable journal, frozen shadow and exact
-target image before finishing the mount. These modes never rewrite a marker;
+target image before finishing the mount. NTFS `--without-shadow --after-marker`
+instead verifies the full immutable journal and exact original target without
+claiming shadow verification. These modes never rewrite a marker;
 partial or unknown marker bytes remain a hard refusal. The corresponding host
 dispatchers and collectors record which completion route was used.
+For ReFS handoff with retained payloads, the expected target image hash comes
+from the immutable journal's hybrid postimage; it need not equal the shadow
+hash.
 `lab-complete-general-handoff` exposes only the already-marked ReFS recovery
 case on the disk-owning Windows machine. It requires separately pinned request,
 ticket and pre-cutover tree files and does not write the journal marker again.

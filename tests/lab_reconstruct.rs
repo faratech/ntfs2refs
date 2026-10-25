@@ -179,6 +179,100 @@ fn completed_ntfs_rollback_closes_replay_before_writable_mount() {
     );
     assert_eq!(fs::read(&fixture.target).unwrap(), fixture.original);
 }
+
+#[test]
+fn missing_shadow_allows_only_exact_ntfs_rollback_and_completion() {
+    let mut fixture = Fixture::new();
+    fixture.request.schema_version = 2;
+    fixture.request.retained_ranges.clear();
+    fixture.request.max_change_bytes = fixture.original.len() as u64;
+    fixture.request.max_ranges = 8;
+    let ticket = fixture.prepare().ticket;
+    {
+        let mut target = rw(&fixture.target);
+        let mut shadow = File::open(&fixture.shadow).unwrap();
+        let mut journal = rw(&fixture.journal);
+        lab_reconstruct::apply(&mut target, &mut shadow, &mut journal, &ticket, &binding())
+            .unwrap();
+    }
+    fs::remove_file(&fixture.shadow).unwrap();
+    let mut target = rw(&fixture.target);
+    let mut journal = rw(&fixture.journal);
+    let restored =
+        lab_reconstruct::rollback_without_shadow(&mut target, &mut journal, &ticket, &binding())
+            .unwrap();
+    assert_eq!(restored.target_sha256, sha(&fixture.original));
+    assert_eq!(fs::read(&fixture.target).unwrap(), fixture.original);
+    lab_reconstruct::mark_rollback_complete_without_shadow(
+        &mut target,
+        &mut journal,
+        &ticket,
+        &binding(),
+    )
+    .unwrap();
+    let proof = lab_reconstruct::verify_completed_rollback_marker_without_shadow(
+        &mut target,
+        &mut journal,
+        &ticket,
+        &binding(),
+        fixture.original.len() as u64,
+        &sha(&fixture.original),
+    )
+    .unwrap();
+    assert!(proof.marker_exact && proof.target_exact);
+    assert!(!proof.shadow_exact && proof.shadow_sha256.is_none());
+    assert!(
+        lab_reconstruct::rollback_without_shadow(&mut target, &mut journal, &ticket, &binding(),)
+            .is_err()
+    );
+}
+
+#[test]
+fn missing_shadow_rollback_refuses_foreign_unjournaled_bytes() {
+    let fixture = Fixture::new();
+    let ticket = fixture.prepare().ticket;
+    let mut foreign = fixture.original.clone();
+    foreign[8192] ^= 1;
+    fs::write(&fixture.target, &foreign).unwrap();
+    fs::remove_file(&fixture.shadow).unwrap();
+    let original_journal = fs::read(&fixture.journal).unwrap();
+    let mut target = rw(&fixture.target);
+    let mut journal = rw(&fixture.journal);
+    assert!(
+        lab_reconstruct::rollback_without_shadow(&mut target, &mut journal, &ticket, &binding(),)
+            .is_err()
+    );
+    assert_eq!(fs::read(&fixture.target).unwrap(), foreign);
+    assert_eq!(fs::read(&fixture.journal).unwrap(), original_journal);
+}
+
+#[test]
+fn retained_handoff_verifies_hybrid_target_from_immutable_journal() {
+    let fixture = Fixture::new();
+    let ticket = fixture.prepare().ticket;
+    assert_ne!(sha(&fixture.expected), sha(&fixture.native));
+    let mut target = rw(&fixture.target);
+    let mut shadow = File::open(&fixture.shadow).unwrap();
+    let mut journal = rw(&fixture.journal);
+    lab_reconstruct::apply(&mut target, &mut shadow, &mut journal, &ticket, &binding()).unwrap();
+    lab_reconstruct::mark_handoff(&mut target, &mut shadow, &mut journal, &ticket, &binding())
+        .unwrap();
+    let proof = lab_reconstruct::verify_completed_refs_marker_from_journal(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &ticket,
+        &binding(),
+        fixture.original.len() as u64,
+    )
+    .unwrap();
+    assert_eq!(proof.target_sha256, sha(&fixture.expected));
+    assert_eq!(
+        proof.shadow_sha256.as_deref(),
+        Some(sha(&fixture.native).as_str())
+    );
+    assert!(proof.target_exact && proof.shadow_exact);
+}
 struct Fixture {
     _dir: tempfile::TempDir,
     source: PathBuf,

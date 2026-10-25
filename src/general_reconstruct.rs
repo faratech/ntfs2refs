@@ -58,8 +58,7 @@ fn validated_ticket(
     );
     let descriptor = lab_reconstruct::inspect_journal(journal, ticket, &observed)?;
     ensure!(
-        serde_json::to_vec(&descriptor.request)? == serde_json::to_vec(&request.comparison)?
-            && descriptor.expected_postimage_sha256 == request.comparison.shadow_sha256,
+        serde_json::to_vec(&descriptor.request)? == serde_json::to_vec(&request.comparison)?,
         "general journal plan differs from request"
     );
     Ok(descriptor)
@@ -200,10 +199,6 @@ pub fn prepare(
         &observed_binding,
         request.max_journal_bytes,
     )?;
-    ensure!(
-        summary.expected_postimage_sha256 == request.comparison.shadow_sha256,
-        "general prepared postimage differs from frozen ReFS shadow"
-    );
     let source_after = source.state(&mut events)?;
     let shadow_after = shadow.state(&mut events)?;
     let journal_after = observe_general_journal_file(journal, &request.journal)?;
@@ -292,6 +287,7 @@ pub enum RecoveryOperation {
 pub struct Execution {
     pub operation: RecoveryOperation,
     pub result: lab_reconstruct::ExecutionReport,
+    pub expected_target_sha256: String,
     pub target_before: GeneralDiskState,
     pub target_after: GeneralDiskState,
     pub shadow_before: GeneralDiskState,
@@ -321,6 +317,87 @@ pub fn recover(
         "general recovery cannot initiate a new apply"
     );
     execute(operation, request, target, shadow, journal, ticket, events)
+}
+
+#[derive(Debug, Serialize)]
+pub struct ShadowlessRollback {
+    pub result: lab_reconstruct::ExecutionReport,
+    pub expected_target_sha256: String,
+    pub target_before: GeneralDiskState,
+    pub target_after: GeneralDiskState,
+    pub target_write_bytes_requested: u64,
+    pub target_bytes_written: u64,
+    pub shadow_available: bool,
+    pub conversion_qualified: bool,
+}
+
+/// Restore NTFS from the pinned old-byte journal when the independent ReFS
+/// shadow is unavailable. This cannot resume ReFS apply or reopen recovery
+/// after a handoff marker. The target remains persistently excluded.
+pub fn rollback_without_shadow(
+    request: &Request,
+    target: &mut GeneralJournaledPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    events: &mut Vec<NativeEvent>,
+) -> Result<ShadowlessRollback> {
+    request.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source,
+        "shadowless rollback target binding differs"
+    );
+    let before = target.state(events)?;
+    ensure!(
+        before.disk_attributes == 1,
+        "rollback target is not offline"
+    );
+    let observed = observe_general_journal_file(journal, &request.journal)?;
+    let descriptor = validated_ticket(
+        request,
+        journal,
+        ticket,
+        &observed.identity,
+        observed.file_bytes,
+    )?;
+    if !descriptor.patches.is_empty() {
+        target.arm_writes(
+            WritePolicy {
+                allowed: descriptor
+                    .patches
+                    .iter()
+                    .map(|p| (p.offset, p.length))
+                    .collect(),
+                retained: request
+                    .comparison
+                    .retained_ranges
+                    .iter()
+                    .map(|r| (r.offset, r.length))
+                    .collect(),
+                maximum_bytes: descriptor.changed_bytes,
+            },
+            events,
+        )?;
+    }
+    let bound = binding(request, &observed.identity)?;
+    let result = lab_reconstruct::rollback_without_shadow(target, journal, ticket, &bound)?;
+    let after = target.state(events)?;
+    let journal_after = observe_general_journal_file(journal, &request.journal)?;
+    ensure!(
+        before == after
+            && observed.identity == journal_after.identity
+            && observed.file_bytes == journal_after.file_bytes,
+        "shadowless rollback storage binding changed"
+    );
+    Ok(ShadowlessRollback {
+        result,
+        expected_target_sha256: request.comparison.source_sha256.clone(),
+        target_before: before,
+        target_after: after,
+        target_write_bytes_requested: target.native_write_bytes_requested,
+        target_bytes_written: target.native_bytes_written,
+        shadow_available: false,
+        conversion_qualified: false,
+    })
 }
 
 /// Recovery remains possible only while the journal's handoff sector is all
@@ -500,6 +577,11 @@ fn execute_with_interruption(
     Ok(Execution {
         operation,
         result,
+        expected_target_sha256: if matches!(operation, RecoveryOperation::Rollback) {
+            request.comparison.source_sha256.clone()
+        } else {
+            descriptor.expected_postimage_sha256
+        },
         target_before,
         target_after,
         shadow_before,
@@ -561,6 +643,7 @@ fn record_mount_paths(
 pub struct RollbackFinalization {
     pub success: bool,
     pub replay_closed: bool,
+    pub shadow_available: bool,
     pub marker: Option<lab_reconstruct::ExecutionReport>,
     pub completed_marker_proof: Option<lab_reconstruct::CompletedMarkerProof>,
     pub mounted_filesystem: Option<String>,
@@ -605,6 +688,7 @@ pub fn complete_rollback(
     let mut report = RollbackFinalization {
         success: false,
         replay_closed: true,
+        shadow_available: true,
         marker: None,
         completed_marker_proof: None,
         mounted_filesystem: None,
@@ -618,6 +702,80 @@ pub fn complete_rollback(
         journal,
         ticket,
         &observed_binding,
+    ) {
+        Ok(marker) => report.marker = Some(marker),
+        Err(error) => {
+            report.error = Some(format!("{error:#}"));
+            return Ok(report);
+        }
+    }
+    if let Err(error) = target.bring_online(&mut report.events) {
+        report.error = Some(error.to_string());
+        return Ok(report);
+    }
+    let mounted = rediscover_general_volume_wait(request.pair.source.clone(), &mut report.events)
+        .and_then(|binding| mounted_filesystem_general(binding, &mut report.events));
+    match mounted {
+        Ok(name) if name == "NTFS" => {
+            report.mounted_filesystem = Some(name);
+            report.success = true;
+        }
+        Ok(name) => {
+            report.mounted_filesystem = Some(name);
+            report.error = Some("restored original did not mount as NTFS".into());
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+    Ok(report)
+}
+
+/// Finish a journal-only rollback after proving the exact original NTFS
+/// image. No ReFS shadow is required for this direction of recovery.
+pub fn complete_rollback_without_shadow(
+    request: &Request,
+    mut target: GeneralJournaledPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    mut events: Vec<NativeEvent>,
+) -> Result<RollbackFinalization> {
+    request.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source,
+        "rollback target binding differs"
+    );
+    ensure!(
+        target.state(&mut events)?.disk_attributes == 1,
+        "rollback target is not offline"
+    );
+    let observed = observe_general_journal_file(journal, &request.journal)?;
+    validated_ticket(
+        request,
+        journal,
+        ticket,
+        &observed.identity,
+        observed.file_bytes,
+    )?;
+    let length = target.byte_len();
+    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    ntfs_backup::verify(&mut target, length, &raw)?;
+    ntfs_log::verify(&mut target, &raw)?;
+    let bound = binding(request, &observed.identity)?;
+    let mut report = RollbackFinalization {
+        success: false,
+        replay_closed: true,
+        shadow_available: false,
+        marker: None,
+        completed_marker_proof: None,
+        mounted_filesystem: None,
+        error: None,
+        events,
+        production_conversion_qualified: false,
+    };
+    match lab_reconstruct::mark_rollback_complete_without_shadow(
+        &mut target,
+        journal,
+        ticket,
+        &bound,
     ) {
         Ok(marker) => report.marker = Some(marker),
         Err(error) => {
@@ -685,6 +843,71 @@ pub fn resume_completed_rollback(
     let mut report = RollbackFinalization {
         success: false,
         replay_closed: true,
+        shadow_available: true,
+        marker: None,
+        completed_marker_proof: Some(proof),
+        mounted_filesystem: None,
+        error: None,
+        events,
+        production_conversion_qualified: false,
+    };
+    if let Err(error) = target.bring_online(&mut report.events) {
+        report.error = Some(error.to_string());
+        return Ok(report);
+    }
+    let mounted = rediscover_general_volume_wait(request.pair.source.clone(), &mut report.events)
+        .and_then(|binding| mounted_filesystem_general(binding, &mut report.events));
+    match mounted {
+        Ok(name) if name == "NTFS" => {
+            report.mounted_filesystem = Some(name);
+            report.success = true;
+        }
+        Ok(name) => {
+            report.mounted_filesystem = Some(name);
+            report.error = Some("completed rollback did not mount as NTFS".into());
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+    Ok(report)
+}
+
+/// Finish a durable NTFS rollback marker after process death when the ReFS
+/// shadow is unavailable. This path only reads the marker and target before
+/// Windows is allowed to mount the restored NTFS volume.
+pub fn resume_completed_rollback_without_shadow(
+    request: &Request,
+    mut target: GeneralJournaledPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    mut events: Vec<NativeEvent>,
+) -> Result<RollbackFinalization> {
+    request.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source,
+        "completed rollback target binding differs"
+    );
+    ensure!(
+        target.state(&mut events)?.disk_attributes == 1,
+        "completed rollback target is not offline"
+    );
+    let observed = observe_general_journal_file(journal, &request.journal)?;
+    let bound = binding(request, &observed.identity)?;
+    let proof = lab_reconstruct::verify_completed_rollback_marker_without_shadow(
+        &mut target,
+        journal,
+        ticket,
+        &bound,
+        request.comparison.expected_length,
+        &request.comparison.source_sha256,
+    )?;
+    let length = target.byte_len();
+    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    ntfs_backup::verify(&mut target, length, &raw)?;
+    ntfs_log::verify(&mut target, &raw)?;
+    let mut report = RollbackFinalization {
+        success: false,
+        replay_closed: true,
+        shadow_available: false,
         marker: None,
         completed_marker_proof: Some(proof),
         mounted_filesystem: None,
@@ -869,16 +1092,13 @@ pub fn finalize_after_marker(
     );
     let observed_journal = observe_general_journal_file(journal, &request.journal)?;
     let observed_binding = binding(request, &observed_journal.identity)?;
-    let proof = lab_reconstruct::verify_completed_marker(
+    let proof = lab_reconstruct::verify_completed_refs_marker_from_journal(
         &mut target,
         shadow,
         journal,
         ticket,
         &observed_binding,
-        lab_reconstruct::CompletionKind::Refs,
         request.comparison.expected_length,
-        &request.comparison.shadow_sha256,
-        &request.comparison.shadow_sha256,
     )?;
     let mut report = Finalization {
         success: false,

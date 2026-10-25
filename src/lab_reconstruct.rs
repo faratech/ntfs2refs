@@ -112,7 +112,8 @@ pub enum CompletionKind {
 pub struct CompletedMarkerProof {
     pub kind: CompletionKind,
     pub target_sha256: String,
-    pub shadow_sha256: String,
+    /// None when an NTFS rollback marker is verified after shadow loss.
+    pub shadow_sha256: Option<String>,
     pub marker_sha256: String,
     pub immutable_journal_sha256: String,
     pub marker_exact: bool,
@@ -407,6 +408,18 @@ pub fn prepare_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
 }
 
 fn load_journal<J: ReadSeek>(journal: &mut J, ticket: &JournalTicket) -> Result<Loaded> {
+    load_journal_state(journal, ticket, true)
+}
+
+fn load_completed_journal<J: ReadSeek>(journal: &mut J, ticket: &JournalTicket) -> Result<Loaded> {
+    load_journal_state(journal, ticket, false)
+}
+
+fn load_journal_state<J: ReadSeek>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    require_zero_handoff: bool,
+) -> Result<Loaded> {
     ensure!(ticket.schema_version == 1, "unsupported journal ticket");
     validate_binding(&ticket.binding)?;
     ensure!(
@@ -421,10 +434,12 @@ fn load_journal<J: ReadSeek>(journal: &mut J, ticket: &JournalTicket) -> Result<
     );
     let mut handoff = [0; GRANULE as usize];
     read_at(journal, 0, &mut handoff)?;
-    ensure!(
-        handoff.iter().all(|byte| *byte == 0),
-        "handoff may have started; all reconstruction recovery is closed"
-    );
+    if require_zero_handoff {
+        ensure!(
+            handoff.iter().all(|byte| *byte == 0),
+            "handoff may have started; all reconstruction recovery is closed"
+        );
+    }
     ensure!(
         hash_range(journal, BODY_START, ticket.immutable_length)? == pin(&ticket.immutable_sha256)?,
         "immutable journal differs from trusted ticket"
@@ -675,6 +690,26 @@ fn validate_recovery<T: ReadSeek, S: ReadSeek, J: DurableIo>(
     Ok(loaded)
 }
 
+/// The old image is completely determined by the trusted journal and the
+/// target's unpatched bytes. Rollback can therefore proceed when the shadow
+/// disk is lost, provided no handoff has started and normalization proves the
+/// entire target still belongs to the original source.
+fn validate_recovery_without_shadow<T: ReadSeek, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<Loaded> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        *observed_binding == ticket.binding,
+        "observed storage binding differs from trusted ticket"
+    );
+    let loaded = load_journal(journal, ticket)?;
+    normalized_target(target, journal, &loaded)?;
+    Ok(loaded)
+}
+
 fn marker(
     magic: &[u8; 8],
     code: u8,
@@ -716,10 +751,21 @@ pub fn verify_completed_marker<T: ReadSeek, S: ReadSeek, J: ReadSeek>(
             && shadow.byte_len()? == expected_length,
         "completed-marker ticket or storage length differs"
     );
-    let immutable = hash_range(journal, BODY_START, ticket.immutable_length)?;
+    let loaded = load_completed_journal(journal, ticket)?;
     ensure!(
-        immutable == pin(&ticket.immutable_sha256)?,
-        "completed-marker immutable journal changed"
+        loaded.manifest.request.expected_length == expected_length
+            && loaded.manifest.request.shadow_sha256 == expected_shadow_sha256
+            && expected_target_sha256
+                == match kind {
+                    CompletionKind::Refs => &loaded.manifest.expected_postimage_sha256,
+                    CompletionKind::NtfsRollback => &loaded.manifest.request.source_sha256,
+                },
+        "completed-marker request differs from immutable journal"
+    );
+    let immutable = pin(&ticket.immutable_sha256)?;
+    ensure!(
+        loaded.manifest.binding == *observed_binding,
+        "completed-marker journal binding changed"
     );
     let (magic, code) = match kind {
         CompletionKind::Refs => (b"N2RHND01", 3),
@@ -741,12 +787,99 @@ pub fn verify_completed_marker<T: ReadSeek, S: ReadSeek, J: ReadSeek>(
     Ok(CompletedMarkerProof {
         kind,
         target_sha256,
-        shadow_sha256,
+        shadow_sha256: Some(shadow_sha256),
         marker_sha256: hex::encode(digest(&observed)),
         immutable_journal_sha256: hex::encode(immutable),
         marker_exact: true,
         target_exact: true,
         shadow_exact: true,
+    })
+}
+
+/// Verify an already committed ReFS image whose retained source bytes make
+/// its expected full-image hash different from the independent shadow. The
+/// immutable journal supplies both exact expected hashes; no caller guesses
+/// that the target equals the shadow.
+pub fn verify_completed_refs_marker_from_journal<T: ReadSeek, S: ReadSeek, J: ReadSeek>(
+    target: &mut T,
+    shadow: &mut S,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+    expected_length: u64,
+) -> Result<CompletedMarkerProof> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        ticket.binding == *observed_binding,
+        "completed ReFS binding differs"
+    );
+    let loaded = load_completed_journal(journal, ticket)?;
+    ensure!(
+        loaded.manifest.request.expected_length == expected_length,
+        "completed ReFS length differs from immutable journal"
+    );
+    verify_completed_marker(
+        target,
+        shadow,
+        journal,
+        ticket,
+        observed_binding,
+        CompletionKind::Refs,
+        expected_length,
+        &loaded.manifest.expected_postimage_sha256,
+        &loaded.manifest.request.shadow_sha256,
+    )
+}
+
+/// Prove a previously durable NTFS rollback marker after shadow loss. The
+/// immutable journal is parsed in full and binds the expected source hash;
+/// this path cannot verify or assert anything about the missing shadow.
+pub fn verify_completed_rollback_marker_without_shadow<T: ReadSeek, J: ReadSeek>(
+    target: &mut T,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+    expected_length: u64,
+    expected_source_sha256: &str,
+) -> Result<CompletedMarkerProof> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        ticket.schema_version == 1
+            && ticket.binding == *observed_binding
+            && ticket.immutable_length.checked_add(BODY_START) == Some(ticket.journal_length)
+            && ticket.journal_length <= MAX_JOURNAL_BYTES
+            && journal.byte_len()? == ticket.journal_length
+            && target.byte_len()? == expected_length,
+        "shadowless rollback marker ticket or length differs"
+    );
+    let loaded = load_completed_journal(journal, ticket)?;
+    ensure!(
+        loaded.manifest.binding == *observed_binding
+            && loaded.manifest.request.expected_length == expected_length
+            && loaded.manifest.request.source_sha256 == expected_source_sha256,
+        "shadowless rollback request differs from immutable journal"
+    );
+    let expected_marker = marker(b"N2RABT01", 4, ticket, expected_source_sha256)?;
+    let mut observed = [0u8; GRANULE as usize];
+    read_at(journal, 0, &mut observed)?;
+    ensure!(
+        observed == expected_marker,
+        "completed NTFS rollback marker differs"
+    );
+    let target_sha256 = retained_compare::hash_reader(target, expected_length)?;
+    ensure!(
+        target_sha256 == expected_source_sha256,
+        "completed NTFS rollback target differs"
+    );
+    Ok(CompletedMarkerProof {
+        kind: CompletionKind::NtfsRollback,
+        target_sha256,
+        shadow_sha256: None,
+        marker_sha256: hex::encode(digest(&observed)),
+        immutable_journal_sha256: ticket.immutable_sha256.clone(),
+        marker_exact: true,
+        target_exact: true,
+        shadow_exact: false,
     })
 }
 
@@ -813,6 +946,16 @@ fn execute<T: DurableIo, S: ReadSeek, J: DurableIo>(
     forward: bool,
 ) -> Result<ExecutionReport> {
     let loaded = validate_recovery(target, shadow, journal, ticket, observed_binding)?;
+    execute_loaded(target, journal, ticket, loaded, forward)
+}
+
+fn execute_loaded<T: DurableIo, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    loaded: Loaded,
+    forward: bool,
+) -> Result<ExecutionReport> {
     let expected = if forward {
         &loaded.manifest.expected_postimage_sha256
     } else {
@@ -911,6 +1054,19 @@ pub fn rollback<T: DurableIo, S: ReadSeek, J: DurableIo>(
     execute(target, shadow, journal, ticket, observed_binding, false)
 }
 
+/// Restore the exact NTFS preimage even if the independent ReFS shadow has
+/// been lost. This never permits resuming ReFS apply and never crosses a
+/// nonzero handoff marker. The caller must keep the target excluded.
+pub fn rollback_without_shadow<T: DurableIo, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<ExecutionReport> {
+    let loaded = validate_recovery_without_shadow(target, journal, ticket, observed_binding)?;
+    execute_loaded(target, journal, ticket, loaded, false)
+}
+
 /// Irreversibly close this core's recovery BEFORE any writable native mount.
 /// A failed/partial marker is also a barrier; it must never be cleared here.
 pub fn mark_handoff<T: DurableIo, S: ReadSeek, J: DurableIo>(
@@ -992,6 +1148,38 @@ pub fn mark_rollback_complete<T: DurableIo, S: ReadSeek, J: DurableIo>(
         retained_compare::hash_reader(shadow, length)? == loaded.manifest.request.shadow_sha256,
         "rollback completion shadow image changed"
     );
+    write_rollback_completion_marker(target, journal, ticket, loaded)
+}
+
+/// Close replay after a journal-only rollback. The complete restored NTFS
+/// preimage, immutable journal and zero handoff sector are verified here;
+/// the absent shadow is never inferred to have matched.
+pub fn mark_rollback_complete_without_shadow<T: DurableIo, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<ExecutionReport> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        *observed_binding == ticket.binding,
+        "rollback completion storage binding differs"
+    );
+    let loaded = load_journal(journal, ticket)?;
+    ensure!(
+        target.byte_len()? == loaded.manifest.request.expected_length,
+        "rollback completion target length changed"
+    );
+    write_rollback_completion_marker(target, journal, ticket, loaded)
+}
+
+fn write_rollback_completion_marker<T: DurableIo, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    loaded: Loaded,
+) -> Result<ExecutionReport> {
+    let length = loaded.manifest.request.expected_length;
     target.sync_all()?;
     let target_sha256 = retained_compare::hash_reader(target, length)?;
     ensure!(

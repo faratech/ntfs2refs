@@ -33,6 +33,9 @@ fn main() -> anyhow::Result<()> {
         /// This mode never writes the journal marker again.
         #[arg(long)]
         after_marker: bool,
+        /// Complete a journal-only NTFS rollback after the ReFS shadow is lost.
+        #[arg(long)]
+        without_shadow: bool,
     }
     fn pinned(path: &PathBuf, sha256: &str, max: u64) -> Result<Vec<u8>> {
         let metadata = fs::symlink_metadata(path)?;
@@ -79,7 +82,6 @@ fn main() -> anyhow::Result<()> {
         serde_json::from_slice(&pinned(&args.ticket, &args.ticket_sha256, 65536)?)?;
     let mut events = Vec::new();
     let target = GeneralJournaledPartition::reopen(request.pair.source.clone(), &mut events)?;
-    let mut shadow = GeneralFrozenPartition::reopen(request.pair.shadow.clone(), &mut events)?;
     let mut journal = OpenOptions::new()
         .read(true)
         .write(true)
@@ -91,26 +93,48 @@ fn main() -> anyhow::Result<()> {
         &serde_json::json!({"schema_version":1,"kind":"general-ntfs-rollback-completion-intent",
             "request_sha256":args.request_sha256,"ticket_sha256":args.ticket_sha256,
             "after_marker":args.after_marker,
+            "shadow_available":!args.without_shadow,
             "journal_replay_will_close":true,"source_payload_writes":0}),
     )?;
-    let completed = if args.after_marker {
-        general_reconstruct::resume_completed_rollback(
-            &request,
-            target,
-            &mut shadow,
-            &mut journal,
-            &ticket,
-            events,
-        )?
+    let completed = if args.without_shadow {
+        if args.after_marker {
+            general_reconstruct::resume_completed_rollback_without_shadow(
+                &request,
+                target,
+                &mut journal,
+                &ticket,
+                events,
+            )?
+        } else {
+            general_reconstruct::complete_rollback_without_shadow(
+                &request,
+                target,
+                &mut journal,
+                &ticket,
+                events,
+            )?
+        }
     } else {
-        general_reconstruct::complete_rollback(
-            &request,
-            target,
-            &mut shadow,
-            &mut journal,
-            &ticket,
-            events,
-        )?
+        let mut shadow = GeneralFrozenPartition::reopen(request.pair.shadow.clone(), &mut events)?;
+        if args.after_marker {
+            general_reconstruct::resume_completed_rollback(
+                &request,
+                target,
+                &mut shadow,
+                &mut journal,
+                &ticket,
+                events,
+            )?
+        } else {
+            general_reconstruct::complete_rollback(
+                &request,
+                target,
+                &mut shadow,
+                &mut journal,
+                &ticket,
+                events,
+            )?
+        }
     };
     let success = completed.success;
     save(&args.output, &completed)?;

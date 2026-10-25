@@ -40,6 +40,10 @@ fn main() -> anyhow::Result<()> {
         journal: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// Restore NTFS from the trusted old-byte journal when the ReFS shadow
+        /// is unavailable. Valid only with rollback, never with resume.
+        #[arg(long)]
+        without_shadow: bool,
     }
     fn pinned(path: &PathBuf, expected: &str, max: u64) -> Result<Vec<u8>> {
         let metadata = fs::symlink_metadata(path)?;
@@ -74,6 +78,10 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     }
     let args = Args::parse();
+    ensure!(
+        !args.without_shadow || matches!(args.mode, Mode::Rollback),
+        "shadowless recovery is restricted to NTFS rollback"
+    );
     let intent = args.output.with_extension("intent.json");
     ensure!(
         !args.output.exists() && !intent.exists(),
@@ -86,7 +94,6 @@ fn main() -> anyhow::Result<()> {
         serde_json::from_slice(&pinned(&args.ticket, &args.ticket_sha256, 65536)?)?;
     let mut events = Vec::new();
     let mut target = GeneralJournaledPartition::reopen(request.pair.source.clone(), &mut events)?;
-    let mut shadow = GeneralFrozenPartition::reopen(request.pair.shadow.clone(), &mut events)?;
     let mut journal = OpenOptions::new()
         .read(true)
         .write(true)
@@ -98,30 +105,48 @@ fn main() -> anyhow::Result<()> {
         &serde_json::json!({"schema_version":1,"kind":"general-journal-recovery-intent",
             "mode":args.mode,"request_sha256":args.request_sha256,
             "ticket_sha256":args.ticket_sha256,"source_disk":request.pair.source.disk_number,
-            "handoff_authorized":false}),
+            "shadow_available":!args.without_shadow,"handoff_authorized":false}),
     )?;
     let operation = match args.mode {
         Mode::Resume => RecoveryOperation::Resume,
         Mode::Rollback => RecoveryOperation::Rollback,
     };
-    let attempted = general_reconstruct::recover(
-        operation,
-        &request,
-        &mut target,
-        &mut shadow,
-        &mut journal,
-        &ticket,
-        &mut events,
-    );
+    let (attempted, shadow_state) = if args.without_shadow {
+        (
+            general_reconstruct::rollback_without_shadow(
+                &request,
+                &mut target,
+                &mut journal,
+                &ticket,
+                &mut events,
+            )
+            .and_then(|report| Ok(serde_json::to_value(report)?)),
+            None,
+        )
+    } else {
+        let mut shadow = GeneralFrozenPartition::reopen(request.pair.shadow.clone(), &mut events)?;
+        let attempted = general_reconstruct::recover(
+            operation,
+            &request,
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &ticket,
+            &mut events,
+        )
+        .and_then(|report| Ok(serde_json::to_value(report)?));
+        (attempted, shadow.state(&mut events).ok())
+    };
     let target_state = target.state(&mut events).ok();
-    let shadow_state = shadow.state(&mut events).ok();
     let target_offline_observed = target_state
         .as_ref()
         .is_some_and(|state| state.disk_attributes == 1);
     let shadow_excluded_observed = shadow_state
         .as_ref()
         .is_some_and(|state| state.disk_attributes == 3);
-    let success = attempted.is_ok() && target_offline_observed && shadow_excluded_observed;
+    let success = attempted.is_ok()
+        && target_offline_observed
+        && (args.without_shadow || shadow_excluded_observed);
     let error = attempted.as_ref().err().map(|error| format!("{error:#}"));
     save(
         &args.output,
@@ -131,7 +156,8 @@ fn main() -> anyhow::Result<()> {
             "target_bytes_written":target.native_bytes_written,"events":events,
             "target_state":target_state,"shadow_state":shadow_state,
             "target_offline_observed":target_offline_observed,
-            "shadow_excluded_observed":shadow_excluded_observed,"handoff_recorded":false,
+            "shadow_excluded_observed":shadow_excluded_observed,
+            "shadow_available":!args.without_shadow,"handoff_recorded":false,
             "conversion_qualified":false}),
     )?;
     ensure!(

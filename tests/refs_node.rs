@@ -337,3 +337,28 @@ fn native_roots_match_full_capture_page_hashes_and_observed_structure() {
     }
     assert_eq!(bytes_read, 3 * 16384);
 }
+
+#[test]
+#[ignore = "requires N2R_NATIVE_REFS_CORPUS; reads one pinned Medium Allocator root page"]
+fn native_medium_allocator_root_has_bounded_index_structure() {
+    use std::io::{Read, Seek, SeekFrom};
+    let corpus = std::path::PathBuf::from(
+        std::env::var_os("N2R_NATIVE_REFS_CORPUS").expect("explicit native corpus directory"),
+    );
+    let mut source = std::fs::File::open(corpus.join("devdrive.raw")).unwrap();
+    assert_eq!(source.metadata().unwrap().len(), 55834574848);
+    let mut page = [0u8; 16384];
+    source.seek(SeekFrom::Start(290816 * 4096)).unwrap();
+    source.read_exact(&mut page).unwrap();
+    assert_eq!(
+        hex::encode(Sha256::digest(page)),
+        "071733eddb05f09fe37cb70d9365fe4249f1e5a266c7e02c4efdfb990205a161"
+    );
+    let node = inspect_root_node(&page).unwrap();
+    assert_eq!(node.table_id_low, 33);
+    assert_eq!(node.schema_id, 0xe010);
+    assert_eq!(node.whole_table_row_count, 23);
+    assert_eq!(node.node_level, 1);
+    assert_eq!(node.node_row_count, 2);
+    assert!(node.index_node);
+}

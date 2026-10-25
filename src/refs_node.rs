@@ -1,4 +1,4 @@
-//! Bounded observations of three researched ReFS 3.14 / 4 KiB root-node types.
+//! Bounded observations of researched ReFS 3.14 / 4 KiB root-node types.
 //! The caller supplies one assembled 16 KiB page. No address is followed and no
 //! checksum, table completeness, key ordering or filesystem health is certified.
 //! Format observations: https://xbpt.gitlab.io/forefst/structures/btree_node/
@@ -115,7 +115,8 @@ fn row_field(offset: u16, size: u16, row_size: usize) -> Result<Range<usize>> {
     range(usize::from(offset), usize::from(size), row_size)
 }
 
-/// Observe a single root page of container tables 11/12 or allocator table 34.
+/// Observe a single root page of container tables 11/12 or allocator tables
+/// 33/34. Allocator rows remain uninterpreted here.
 /// Refuses unsupported profiles or malformed structure without returning partial
 /// rows. At most 1024 index bytes (256 rows) are accepted. Row spans are disjoint,
 /// so retained row hex is bounded by twice the 16 KiB input length.
@@ -130,8 +131,8 @@ pub fn inspect_root_node(bytes: &[u8]) -> Result<RootNodeObservation> {
     let table_id_low = u64le(bytes, 0x48);
     let expected_schema = match table_id_low {
         11 | 12 => 0xe0c0,
-        34 => 0xe010,
-        _ => anyhow::bail!("root table is outside the three physical bootstrap types"),
+        33 | 34 => 0xe010,
+        _ => anyhow::bail!("root table is outside the bounded observed types"),
     };
     let descriptor_size = u16le(bytes, ROOT_OFFSET + 4);
     ensure!(
@@ -181,24 +182,28 @@ pub fn inspect_root_node(bytes: &[u8]) -> Result<RootNodeObservation> {
 /// Initial native container-child profile: an eight-byte prefix at 0x50, then
 /// the node header at 0x58. The caller must independently validate CRC, page
 /// self-locations, volume signature and the expected table ID before traversal.
-pub fn inspect_container_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
+pub fn inspect_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
     ensure!(
         bytes.len() == PAGE_BYTES,
         "container child requires exactly 16 KiB"
     );
     ensure!(
         &bytes[..4] == b"MSB+" && u32le(bytes, 4) == 2,
-        "unsupported container child header"
+        "unsupported metadata child header"
     );
     ensure!(
-        u64le(bytes, 0x40) == 0 && matches!(u64le(bytes, 0x48), 11 | 12),
-        "unsupported container child table"
+        u64le(bytes, 0x40) == 0 && matches!(u64le(bytes, 0x48), 11 | 12 | 33 | 34),
+        "unsupported metadata child table"
     );
     ensure!(
         u32le(bytes, ROOT_OFFSET) == 8,
         "unsupported non-root node prefix"
     );
     inspect_node_body(bytes, ROOT_OFFSET + 8)
+}
+
+pub fn inspect_container_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
+    inspect_child_node(bytes)
 }
 
 fn inspect_node_body(bytes: &[u8], node_offset: usize) -> Result<NodeBodyObservation> {

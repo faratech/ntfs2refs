@@ -182,6 +182,18 @@ records, 131,072 written metadata bytes, an untouched adopted cluster, ReFS
 3.14 and a matching backup VBR. The Rust decoder never opens the base for
 writing.
 
+The Rust reader now also follows the higher-clock checkpoint's virtual Medium
+Allocator root through the Container Table, verifies root/child CRC64 and
+self-addresses, and decodes all 23 leaf rows. On the base image it counted
+13,384,480 Medium-free clusters and found physical LCN 10,243 free. On the
+adoption overlay it counted 13,384,479 free and found that LCN allocated. The
+row count and free totals match REFSNT's independent checker. The reports are
+`.lab/research/refsnt-overlay/medium-base-rust.json` and
+`medium-adopt-rust.json`; an explicit ignored native-corpus test replays both
+read-only. This is a Medium-allocator proof, **not** a full ownership proof:
+the Small allocator and every reachable metadata/data reference still require
+reconciliation before native Windows mounting.
+
 REFSNT's checker reported zero checksum, duplicate-reference or unallocated
 reference errors on both images. Its referenced-cluster count increased from
 1,300 to 1,301 and Medium free count decreased by one; its

@@ -1,5 +1,60 @@
 # General guest conversion: existing NTFS tree
 
+## Public CLI conversion with a natural 128 MiB file
+
+On October 25, 2026, run `da82958436a84a91b446cfdc6221c2eb` completed through
+`ntfs2refs convert --request` inside the Windows 11 VM. The original 52 GiB
+NTFS partition became writable ReFS at F:. All twelve objects matched through
+Microsoft's driver: seven files and five directories, including the two
+resident Windows cache files. Names, logical hashes, stored timestamps,
+stored/kernel security descriptors, API security projections and mount paths
+passed the native comparison.
+
+Before conversion, `Add-NaturalLargeFile.ps1` created `natural-large.bin`
+through ordinary sequential NTFS writes and flush/readback. Its 134,217,728
+bytes occupied source LCN 6408 for 32,768 clusters; no source extent move or
+defragmentation arranged that position. Its logical SHA-256 was
+`db7ba0d1de48a1ac100e6865d591ad68a3ebe53c5634c83b584fe9a9bc11b376`.
+
+Every admission gate passed. Apply wrote 106 patch ranges totaling
+346,841,088 bytes. The complete old/new recovery journal was 693,708,354 bytes,
+within its 805,306,368-byte ceiling. An earlier attempt with the old 256 MiB
+changed-sector cap refused journal preparation before target activation. The
+successful run used the capacity-derived 376 MiB cap with the same exact
+journal-size checks.
+
+The frozen NTFS image SHA-256 was
+`a1278213487fdf19b931eec4cf175ae8b2947aeb2f2da4df65de256e074a8856`.
+The expected and applied ReFS image SHA-256 was
+`5f30e039f5f64e193dfe8a372099da4a680ae1f09bee9cd92d964c8777d06104`.
+Five ordinary payloads totaling 134,742,016 bytes were relocated and 88
+resident bytes were materialized. **Retained payload bytes were zero.** The
+native metadata-inclusive allocation view blocked the natural source range;
+the converter did not override that occupancy. This run establishes public
+CLI execution on a larger existing tree, not efficient retained-block
+conversion or payload-independent scratch requirements.
+
+Ignored evidence directory:
+`.lab/hyperv/certificate-conversion/win11-20261025T203834359Z`.
+
+- `result.json`: success, source admission and closed rollback; SHA-256
+  `56eafffa795cbb146117542027d23c17a5c179557bba8aa93815c08293ee6e30`.
+- `apply.json`: exact image and patch accounting; SHA-256
+  `dcb91b34fe9396a2ce96eba2b8fedb240fd52a390348e95cd8f90fd6449aaabe`.
+- `finalization.json`: handoff and twelve-object native verification; SHA-256
+  `0ba79448a5a0a03a999e4a9aa19c91b007957efc3abf24e4c113127f3fad4237`.
+- `postboot.json`: strict twelve-object verification after clean shutdown,
+  checkpoint and boot, exit 0 with mount paths preserved; SHA-256
+  `89fd0710197e50a9a6d60c57cbc1142011ab56345de0c56075e09cbafb32ef45`.
+
+The powered-off successful branch is checkpoint
+`94091799-c19b-4e6a-ada0-fd87cbdb6ad0`, named
+`public-refs-128m-20261025T212721801Z`. The VM subsequently booted and passed
+the strict verifier. The converter binary was pinned as
+`a6fe7b80ca53c244c8f0bc5801cc5f6d36ec38d853d936ace6f37772ac56398a`;
+it predates the source-label integration. Native qualification of label
+restoration and the new public recovery dispatcher remains separate work.
+
 ## Certificate-backed eleven-object conversion
 
 On October 25, 2026, run `c03cbc02c74145fdbca61c59cc94a5dd` completed the
@@ -145,6 +200,7 @@ accounts for the Windows files' distinct security views and passes target
 preservation. The first-write interruption
 and resume path passed, but a broader write/flush fault matrix and the
 shadowless rollback path remain to be qualified natively. The public conversion
-and recovery CLI now wraps the generic core; its native invocation and broader
-profile qualification remain distinct work. Boot volume conversion is a
+and recovery CLI now wraps the generic core; public conversion passed the
+larger run above, while public recovery invocation and broader profile
+qualification remain distinct work. Boot volume conversion is a
 separate later objective.

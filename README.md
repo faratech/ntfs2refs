@@ -4,16 +4,16 @@ Rust tooling and a Hyper-V laboratory for researching offline, extent-preserving
 NTFS-to-ReFS conversion. The current focus is data volumes; Windows OS-volume
 conversion and build-specific boot qualification are deferred.
 
-**The generic Rust core has completed a live certificate-backed conversion of
-an existing eleven-object tree on its original 52 GiB NTFS data partition.**
+**The public Rust CLI has converted an existing twelve-object tree, including
+a naturally allocated 128 MiB file, on its original 52 GiB NTFS partition.**
 All admission gates passed; the worker saved its external journal/ticket,
-applied 151 patches, recorded handoff and verified the tree through Microsoft's
-ReFS driver at F:. Strict verification of all eleven objects also passed after
-a clean reboot. Four ordinary payloads (512 KiB) were relocated and two resident
+applied 106 patches, recorded handoff and verified the tree through Microsoft's
+ReFS driver at F:. Strict verification of all twelve objects also passed after
+a clean reboot. Five ordinary payloads (128.5 MiB) were relocated and two resident
 Windows files (88 bytes) were materialized; retained payload bytes were zero.
 See the [certificate-backed result and its limits](docs/general-native-conversion-results.md).
-The native run used the lab entry point to the same generic core exposed by
-the public CLI; CLI invocation/refusal tests passed separately.
+The run used `ntfs2refs convert --request` inside the owning VM. Its complete
+recovery journal was 693,708,354 bytes, within the 768 MiB bound.
 
 **A prepared one-file NTFS-to-ReFS conversion passed inside the Windows 11 VM.**
 The same partition became readable through Microsoft's ReFS driver while the
@@ -48,7 +48,7 @@ Native [stream/extent and bitmap reconciliation](docs/native-ntfs-stream-attesta
 now matches the full control-volume bitmap and every fixture object's stream
 mapping, including ADS and sparse holes. Native [logical-stream hashing](docs/native-ntfs-logical-data.md)
 also matches every supported fixture stream without changing the protected
-source. The eleven-object run issued a device-bound certificate with all
+source. The certificate-backed runs issued device-bound certificates with all
 admission gates satisfied and completed its connected journal/cutover path.
 The [source-admission work](docs/source-admission-progress.md) now includes
 native directory observations, explicit object dispositions and actual backup

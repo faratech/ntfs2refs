@@ -13,7 +13,13 @@ $start=Get-Content (Join-Path $directory 'started.json') -Raw|ConvertFrom-Json
 $ordinaryFiles=($start.PSObject.Properties.Name -contains 'ordinaryFiles') -and [bool]$start.ordinaryFiles
 $request=Get-Content (Join-Path $directory 'request.json') -Raw|ConvertFrom-Json
 $requestSha=(Get-FileHash (Join-Path $directory 'request.json')).Hash.ToLowerInvariant()
-if($vm.State-ne'Running'-or$vm.MemoryStartup-ne8GB-or[guid]$vm.ParentSnapshotId-ne[guid]$start.sourceCheckpointId-or$request.source.disk_number-ne1-or$request.shadow.disk_number-ne3-or$request.source_sha256-cne$start.sourceSha256){throw 'Existing running source/shadow branch differs.'}
+$fromShadowCheckpoint=$false
+$hostResultPath=Join-Path $directory 'host-result.json'
+if(Test-Path -LiteralPath $hostResultPath){
+ $prior=Get-Content -LiteralPath $hostResultPath -Raw|ConvertFrom-Json
+ $fromShadowCheckpoint=$prior.status-ceq'independent-shadow-built-source-unchanged' -and $prior.runId-ceq$start.runId -and $prior.shadowCheckpointId -and [guid]$vm.ParentSnapshotId-eq[guid]$prior.shadowCheckpointId
+}
+if($vm.State-ne'Running'-or$vm.MemoryStartup-ne8GB-or(-not$fromShadowCheckpoint-and[guid]$vm.ParentSnapshotId-ne[guid]$start.sourceCheckpointId)-or$request.source.disk_number-ne1-or$request.shadow.disk_number-ne3-or$request.source_sha256-cne$start.sourceSha256){throw 'Existing running source/shadow branch differs.'}
 Assert-LabCapacity (Get-LabCapacity $cfg) -AdditionalBytes 32MB
 $binary=Get-Item -LiteralPath $BinaryPath -Force
 if($binary.PSIsContainer-or($binary.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$binary.Length-gt16MB-or(Get-FileHash $binary.FullName).Hash.ToLowerInvariant()-cne$BinarySha256){throw 'Pinned binary required.'}
@@ -27,8 +33,29 @@ Copy-Item -LiteralPath (Join-Path $directory 'request.json') -Destination (Join-
 $pins=@();foreach($p in @('src/bin/lab-tree-shadow.rs','src/shadow_tree.rs','src/tree_placement.rs','crates/n2r-win32/src/shadow_native.rs','crates/n2r-win32/src/region_layout.rs','crates/n2r-win32/src/bitmap_layout.rs','src/ntfs_freeze.rs','scripts/Continue-LabExistingTreeShadow.ps1','Cargo.toml','crates/n2r-win32/Cargo.toml','.cargo/config.toml','Cargo.lock')){
  $to=Join-Path $output ('sources/'+$p);New-Item -ItemType Directory -Path (Split-Path $to -Parent) -Force|Out-Null;Copy-Item -LiteralPath (Join-Path $workspace $p) -Destination $to;$pins+=@([pscustomobject]@{path=$p;sha256=(Get-FileHash $to).Hash.ToLowerInvariant()})
 };Save 'sources.json' $pins;Save 'started.json' $record
-$credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=New-PSSession -VMId $vm.Id -Credential $credential;$job=$null
+$credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null;$job=$null
 try{
+  $deadline=[DateTime]::UtcNow.AddSeconds(180)
+  do { try { $session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop; break } catch { Start-Sleep -Seconds 2 } } while([DateTime]::UtcNow-lt$deadline)
+  if(-not$session){throw 'Guest session unavailable after bounded boot retry.'}
+ if($fromShadowCheckpoint){
+  foreach($name in @('NativeMountBoundary.cs','NativeShadowReadOnlyAttachment.cs')){
+   Copy-Item -LiteralPath (Join-Path $workspace ('lab/guest/'+$name)) -Destination ($root+'\helpers\'+$name) -ToSession $session
+  }
+  $attachment=Invoke-Command -Session $session -ArgumentList @($root,[string]$request.shadow.identity.disk_guid,[string]$request.shadow.identity.partition_guid) -ScriptBlock {
+   param($Root,$DiskGuid,$PartitionGuid);$ErrorActionPreference='Stop'
+   Add-Type -Path @((Join-Path $Root 'helpers\NativeShadowDisk.cs'),(Join-Path $Root 'helpers\NativeMountBoundary.cs'),(Join-Path $Root 'helpers\NativeShadowReadOnlyAttachment.cs'))
+   $platform=Get-Content -LiteralPath ($Root+'\platform.json') -Raw|ConvertFrom-Json
+   $native=New-Object Ntfs2Refs.NativeShadowDisk($platform.backingPath,([guid]$platform.finalVhd.virtualDiskId),(New-Object Ntfs2Refs.ReadOnlyShadowDiskApi))
+   $priv=New-Object Ntfs2Refs.ShadowManageVolumePrivilege
+   try{$opened=$native.OpenOwned();try{$priv.Enable();$attached=$native.Attach()}finally{$priv.Restore()}
+    $protected=[Ntfs2Refs.NativeShadowProtection]::Observe([guid]$DiskGuid,[guid]$PartitionGuid,$true)
+    if($attached.physicalPath-cne'\\.\PhysicalDrive3'-or$protected.attributesAfter-ne3-or-not$protected.cleanupComplete){throw 'Checkpoint shadow protection differs.'}
+    [pscustomobject]@{opened=$opened;attached=$attached;protection=$protected;privilege=$priv.Audit}
+   }finally{if(-not$native.OperationActive){$native.Close()}}
+  }
+  Save 'reattachment.json' $attachment
+ }
  Copy-Item -LiteralPath $binary.FullName -Destination ($root+'\lab-tree-shadow-'+$step+'.exe') -ToSession $session
  $record.operationCompletionKnown=$false
  $job=Invoke-Command -Session $session -AsJob -ArgumentList @($root,$step,$Mode,$BinarySha256,$requestSha,$request,$ordinaryFiles) -ScriptBlock {
@@ -60,5 +87,5 @@ try{
  $record['exitCode']=$reply[0].exitCode;$record['reportSha256']=$reply[0].reportSha256
  $record.status=if($reply[0].exitCode-eq0-and$report.success){'native-step-verified'}else{'native-step-failed-terminal'}
 }catch{$record.status='failed-preserved';$record.error=$_.Exception.ToString();throw}
-finally{Save 'host-result.json' $record;if($job-and$job.State-in@('Completed','Failed','Stopped')){Remove-Job $job -Force};if($record.operationCompletionKnown){Remove-PSSession $session -ErrorAction SilentlyContinue}}
+finally{Save 'host-result.json' $record;if($job-and$job.State-in@('Completed','Failed','Stopped')){Remove-Job $job -Force};if($session-and$record.operationCompletionKnown){Remove-PSSession $session -ErrorAction SilentlyContinue}}
 [pscustomobject]$record

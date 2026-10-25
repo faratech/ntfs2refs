@@ -1,6 +1,6 @@
-//! Native journaled reconstruction for the enrolled natural four-file tree.
-//! Uses the existing durable journal engine, with a separate relocation-only
-//! profile. General-purpose source admission remains a separate capability.
+//! Native journaled reconstruction for the enrolled four-file tree and a
+//! versioned ordinary-tree laboratory profile. Both use the same durable
+//! journal engine. General-purpose source admission remains separate.
 use crate::{
     lab_native_reconstruct::{identity_hash, partition_hash},
     lab_reconstruct::{self, JournalBinding, JournalSummary, JournalTicket},
@@ -38,14 +38,14 @@ impl Request {
                     .experiment_id
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-            "invalid natural-tree reconstruction identity"
+            "invalid tree reconstruction identity"
         );
         self.source.validate()?;
         self.shadow.validate()?;
         self.journal.validate()?;
         ensure!(
             self.source.disk_number == 1 && self.shadow.disk_number == 3,
-            "natural-tree source/shadow routes differ"
+            "tree source/shadow routes differ"
         );
         if self.schema_version == 2 {
             ensure!(

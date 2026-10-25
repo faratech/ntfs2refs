@@ -172,6 +172,12 @@ target through the verified journal and leaves it offline after exact apply.
 verifies its files through native ReFS. Separate pinned request, ticket and
 expectation files are required. This path has compiled but has not run in the
 VM and does not qualify general production conversion.
+`lab-general-complete` now runs those stages in one owning-guest invocation.
+It saves request and expectation copies on C:, prepares the external journal,
+durably saves and reads back the ticket and recovery pins, then applies and
+finalizes. If it stops during apply, the target remains excluded and the
+separate general resume/rollback command uses the saved ticket. It has not
+been run in the VM.
 
 `lab-replay-general-from-tree` can package the previously successful pinned
 ordinary-tree freeze into this new guest experiment's request and expected-tree

@@ -172,6 +172,10 @@ rechecks the full 4 KiB marker, immutable journal, frozen shadow and exact
 target image before finishing the mount. These modes never rewrite a marker;
 partial or unknown marker bytes remain a hard refusal. The corresponding host
 dispatchers and collectors record which completion route was used.
+`lab-complete-general-handoff` exposes only the already-marked ReFS recovery
+case on the disk-owning Windows machine. It requires separately pinned request,
+ticket and pre-cutover tree files and does not write the journal marker again.
+Fresh general apply/handoff remains unavailable outside the disposable lab.
 
 The internal general finalizer now accepts the independently pinned pre-cutover
 tree, checks the full journaled ReFS postimage, durably closes rollback, brings

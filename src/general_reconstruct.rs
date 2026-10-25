@@ -786,11 +786,7 @@ pub(crate) fn finalize(
 
 /// Finish an already durable ReFS handoff marker after process death. This
 /// path proves the exact marker and target image without writing the journal.
-#[allow(
-    dead_code,
-    reason = "General handoff recovery awaits native qualification"
-)]
-pub(crate) fn finalize_after_marker(
+pub fn finalize_after_marker(
     request: &Request,
     mut target: GeneralJournaledPartition,
     shadow: &mut GeneralFrozenPartition,

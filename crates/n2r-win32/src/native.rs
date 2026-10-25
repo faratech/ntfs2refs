@@ -64,6 +64,15 @@ pub struct GeneralProbe {
     pub source_write_requests: u64,
     pub conversion_qualified: bool,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct GeneralDiskState {
+    pub device: Vec<u8>,
+    pub disk_length: Vec<u8>,
+    pub alignment: Vec<u8>,
+    pub gpt_layout: Vec<u8>,
+    pub disk_attributes: u64,
+}
 /// Created only by a physically read-only native observation bracketed by
 /// actual excluded-device snapshots. Exporting it cannot recreate a lease.
 #[derive(Debug, Serialize)]
@@ -316,22 +325,13 @@ pub(crate) fn snapshot(
     })
 }
 
-/// Probe one dedicated non-system basic data disk without locking, dismounting,
-/// setting attributes or issuing raw writes. This is a route to later generic
-/// source inventory, not a conversion lease or write authorization.
-pub fn probe_general(
-    binding: GeneralDiskBinding,
+/// Recheck immutable disk route, geometry and layout through the same handle.
+fn general_disk_state(
+    disk: &File,
+    binding: &GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
-) -> io::Result<GeneralProbe> {
+) -> io::Result<GeneralDiskState> {
     binding.validate()?;
-    if current_windows_disk(events)? == binding.disk_number {
-        return Err(invalid("current Windows disk is excluded"));
-    }
-    let disk = device_file(
-        &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
-        false,
-        false,
-    )?;
     let device = control(&disk, "general-storage-device", DEVICE, &[], 12, events)?;
     layout::validate_device(&device, binding.disk_number)?;
     let disk_length = control(&disk, "general-disk-length", LENGTH, &[], 8, events)?;
@@ -351,7 +351,33 @@ pub fn probe_general(
     binding.validate_alignment(&alignment)?;
     let gpt_layout = control(&disk, "general-gpt-layout", LAYOUT, &[], 65536, events)?;
     binding.validate_layout(&gpt_layout)?;
-    let disk_attributes_before = attributes(&disk, events)?;
+    let disk_attributes = attributes(&disk, events)?;
+    Ok(GeneralDiskState {
+        device,
+        disk_length,
+        alignment,
+        gpt_layout,
+        disk_attributes,
+    })
+}
+
+/// Probe one dedicated non-system basic data disk without locking, dismounting,
+/// setting attributes or issuing raw writes. This is not a conversion lease.
+pub fn probe_general(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralProbe> {
+    binding.validate()?;
+    if current_windows_disk(events)? == binding.disk_number {
+        return Err(invalid("current Windows disk is excluded"));
+    }
+    let disk = device_file(
+        &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+        false,
+        false,
+    )?;
+    let state = general_disk_state(&disk, &binding, events)?;
+    let disk_attributes_before = state.disk_attributes;
     if disk_attributes_before != 0 {
         return Err(invalid("general data disk is not online and writable"));
     }
@@ -365,7 +391,15 @@ pub fn probe_general(
         events,
     )?;
     binding.validate_volume_extent(&volume_extents)?;
-    let disk_attributes_after = attributes(&disk, events)?;
+    let after = general_disk_state(&disk, &binding, events)?;
+    let disk_attributes_after = after.disk_attributes;
+    if after.device != state.device
+        || after.disk_length != state.disk_length
+        || after.alignment != state.alignment
+        || after.gpt_layout != state.gpt_layout
+    {
+        return Err(invalid("general disk layout changed during probe"));
+    }
     if disk_attributes_after != disk_attributes_before {
         return Err(invalid("general disk attributes changed during probe"));
     }
@@ -373,10 +407,10 @@ pub fn probe_general(
         binding,
         disk_attributes_before,
         disk_attributes_after,
-        device,
-        disk_length,
-        alignment,
-        gpt_layout,
+        device: state.device,
+        disk_length: state.disk_length,
+        alignment: state.alignment,
+        gpt_layout: state.gpt_layout,
         volume_extents,
         read_only_probe: true,
         source_write_requests: 0,
@@ -437,6 +471,125 @@ pub struct GeneralPartitionReader {
     position: u64,
     buffer: AlignedBuffer,
     pub native_bytes_read: u64,
+}
+
+/// Persistently excluded general data partition. No Write implementation or
+/// online transition is exposed in this phase; a separate journaled recovery
+/// workflow is required before using this on a real disk.
+pub(crate) struct GeneralFrozenPartition {
+    file: File,
+    binding: GeneralDiskBinding,
+    frozen_state: GeneralDiskState,
+    position: u64,
+    buffer: AlignedBuffer,
+    native_bytes_read: u64,
+}
+
+impl GeneralFrozenPartition {
+    #[allow(dead_code, reason = "Reserved for the versioned general recovery path")]
+    pub(crate) fn isolate(
+        binding: GeneralDiskBinding,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        let before = probe_general(binding.clone(), events)?;
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            true,
+            true,
+        )?;
+        let pre_lock = general_disk_state(&management, &binding, events)?;
+        if pre_lock.disk_attributes != 0
+            || pre_lock.device != before.device
+            || pre_lock.disk_length != before.disk_length
+            || pre_lock.alignment != before.alignment
+            || pre_lock.gpt_layout != before.gpt_layout
+        {
+            return Err(invalid("general disk changed before lock"));
+        }
+        let volume = device_file(&binding.volume_path()?, true, false)?;
+        let extents = control(
+            &volume,
+            "general-lock-volume-extents",
+            VOLUME_EXTENTS,
+            &[],
+            1024,
+            events,
+        )?;
+        binding.validate_volume_extent(&extents)?;
+        let buffer = AlignedBuffer::new()?;
+        control(&volume, "general-lock-volume", LOCK, &[], 0, events)?;
+        control(&volume, "general-dismount-volume", DISMOUNT, &[], 0, events)?;
+        set_attributes(&management, OFFLINE | READ_ONLY, events)?;
+        close_file(volume, "close-general-volume-lock", events)?;
+        let frozen = general_disk_state(&management, &binding, events)?;
+        if frozen.disk_attributes != OFFLINE | READ_ONLY
+            || frozen.device != pre_lock.device
+            || frozen.disk_length != pre_lock.disk_length
+            || frozen.alignment != pre_lock.alignment
+            || frozen.gpt_layout != pre_lock.gpt_layout
+        {
+            return Err(invalid("general disk exclusion or identity changed"));
+        }
+        close_file(management, "close-general-management", events)?;
+        let file = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            false,
+            true,
+        )?;
+        if general_disk_state(&file, &binding, events)? != frozen {
+            return Err(invalid("general read-only reopen differs after exclusion"));
+        }
+        Ok(Self {
+            file,
+            binding,
+            frozen_state: frozen,
+            position: 0,
+            buffer,
+            native_bytes_read: 0,
+        })
+    }
+
+    #[allow(dead_code, reason = "Reserved for the versioned general recovery path")]
+    pub(crate) fn reopen(
+        binding: GeneralDiskBinding,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        binding.validate()?;
+        if current_windows_disk(events)? == binding.disk_number {
+            return Err(invalid("current Windows disk is excluded"));
+        }
+        let file = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            false,
+            true,
+        )?;
+        let frozen_state = general_disk_state(&file, &binding, events)?;
+        if frozen_state.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "general disk is not persistently offline and read-only",
+            ));
+        }
+        Ok(Self {
+            file,
+            binding,
+            frozen_state,
+            position: 0,
+            buffer: AlignedBuffer::new()?,
+            native_bytes_read: 0,
+        })
+    }
+
+    #[allow(dead_code, reason = "Reserved for the versioned general recovery path")]
+    pub(crate) fn revalidate_route(&self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        if general_disk_state(&self.file, &self.binding, events)? != self.frozen_state {
+            return Err(invalid("general frozen route changed"));
+        }
+        Ok(())
+    }
+
+    fn byte_len(&self) -> u64 {
+        self.binding.identity.partition_bytes
+    }
 }
 
 impl GeneralPartitionReader {
@@ -524,6 +677,53 @@ impl Seek for GeneralPartitionReader {
         };
         if position < 0 || position > i128::from(self.byte_len()) {
             return Err(invalid("seek escapes general partition"));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
+}
+
+impl Read for GeneralFrozenPartition {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() || self.position == self.byte_len() {
+            return Ok(0);
+        }
+        let aligned = self.position / GRANULE * GRANULE;
+        let prefix = (self.position - aligned) as usize;
+        let wanted = output
+            .len()
+            .min(MAX_IO - prefix)
+            .min((self.byte_len() - self.position) as usize);
+        let count = (prefix + wanted).div_ceil(GRANULE as usize) * GRANULE as usize;
+        if aligned + count as u64 > self.byte_len() {
+            return Err(invalid("aligned frozen read escapes partition"));
+        }
+        self.file.seek(SeekFrom::Start(
+            self.binding.identity.partition_offset + aligned,
+        ))?;
+        let read = self.file.read(&mut self.buffer.bytes_mut()[..count])?;
+        self.native_bytes_read += read as u64;
+        if read != count {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short frozen aligned read",
+            ));
+        }
+        output[..wanted].copy_from_slice(&self.buffer.bytes_mut()[prefix..prefix + wanted]);
+        self.position += wanted as u64;
+        Ok(wanted)
+    }
+}
+
+impl Seek for GeneralFrozenPartition {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let position = match from {
+            SeekFrom::Start(value) => i128::from(value),
+            SeekFrom::Current(value) => i128::from(self.position) + i128::from(value),
+            SeekFrom::End(value) => i128::from(self.byte_len()) + i128::from(value),
+        };
+        if position < 0 || position > i128::from(self.byte_len()) {
+            return Err(invalid("seek escapes frozen partition"));
         }
         self.position = position as u64;
         Ok(self.position)
@@ -1044,6 +1244,43 @@ mod tests {
         }
         assert!(reader.seek(SeekFrom::End(1)).is_err());
         assert!(reader.seek(SeekFrom::Current(-65537)).is_err());
+    }
+
+    #[test]
+    fn frozen_general_reader_is_read_only_and_partition_relative() {
+        let OfflinePartition {
+            file,
+            binding,
+            buffer,
+            ..
+        } = ordinary_stream();
+        let binding = GeneralDiskBinding {
+            disk_number: binding.disk_number,
+            volume_guid: binding.volume_guid,
+            identity: binding.identity,
+        };
+        let mut reader = GeneralFrozenPartition {
+            file,
+            binding,
+            frozen_state: GeneralDiskState {
+                device: vec![],
+                disk_length: vec![],
+                alignment: vec![],
+                gpt_layout: vec![],
+                disk_attributes: OFFLINE | READ_ONLY,
+            },
+            position: 0,
+            buffer,
+            native_bytes_read: 0,
+        };
+        reader.seek(SeekFrom::Start(4095)).unwrap();
+        let mut bytes = vec![0; 4098];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes[0], ((4096 + 4095) % 251) as u8);
+        assert_eq!(bytes[4097], ((4096 + 4095 + 4097) % 251) as u8);
+        assert!(reader.seek(SeekFrom::Start(65537)).is_err());
+        reader.seek(SeekFrom::End(0)).unwrap();
+        assert_eq!(reader.read(&mut bytes).unwrap(), 0);
     }
 
     #[test]

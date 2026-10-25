@@ -23,6 +23,15 @@ the mounted source was not frozen and is not admitted. A synthetic bounce-read
 test covers unaligned requests and partition boundaries. Neither command has
 a write method.
 
+An internal `GeneralFrozenPartition` now implements the next source-only step:
+after an exact online probe it locks and dismounts the bound volume, persists
+offline/read-only disk attributes, closes the lock owner, reopens the physical
+disk read-only, and checks identity again. It also has an explicit read-only
+reopen path after interruption. It is **not exposed by a command** until a
+versioned journal and recovery/handoff path can safely bring that disk back
+online. Synthetic tests cover its aligned reads; a real-device freeze has not
+been attempted.
+
 This is **not** a general conversion command. The raw writer, journal, source
 admission and ReFS target profile still use the narrower enrolled laboratory
 route. A successful read-only probe cannot authorize switching a volume's

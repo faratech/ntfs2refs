@@ -51,6 +51,10 @@ enum Command {
         /// Optional read-only source-policy assessment, never a write ticket.
         #[arg(long)]
         admission_output: Option<PathBuf>,
+        /// Optional persisted-source policy replay. Never establishes a device
+        /// freeze or changes the strict comparison/admission result.
+        #[arg(long)]
+        source_view_output: Option<PathBuf>,
         /// Optional source image, rehashed against the pinned inspection, for
         /// actual backup reads. Requires --admission-output; never written.
         #[arg(long, requires = "admission_output")]
@@ -143,6 +147,7 @@ fn main() -> Result<()> {
             native_sha256,
             output,
             admission_output,
+            source_view_output,
             source_image,
         } => {
             let raw: serde_json::Value = serde_json::from_slice(&pinned(
@@ -182,6 +187,12 @@ fn main() -> Result<()> {
                 None
             };
             save(&output, &comparison)?;
+            if let Some(path) = source_view_output {
+                save(
+                    &path,
+                    &ntfs2refs::ntfs_source_view::diagnose(&ntfs, &inspection_sha256, &report)?,
+                )?;
+            }
             if let Some(path) = admission_output {
                 save(
                     &path,

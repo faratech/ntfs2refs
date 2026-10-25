@@ -49,11 +49,18 @@ impl ObservedFrozenSource {
         let Filesystem::Ntfs(raw) = &basis.inspection.filesystem else {
             anyhow::bail!("source is not NTFS")
         };
-        let mut assessment = crate::ntfs_admission::assess_with_backups(
+        let mut view = crate::ntfs_source_view::diagnose(
+            raw,
+            &self.canonical_inspection_sha256,
+            self.native.report(),
+        )?;
+        view.bind_frozen_source(&self.source_sha256);
+        let mut assessment = crate::ntfs_admission::assess_source_view(
             raw,
             &self.comparison,
             self.native.report().schema_version,
             Some(&basis.evidence.backups),
+            Some(view),
         );
         for gate in &mut assessment.gates {
             if gate.code == "frozen_device_basis" {

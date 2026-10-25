@@ -98,7 +98,10 @@ fn valid_hash(value: &str) -> bool {
 }
 
 pub(crate) fn validate_request(request: &RetainedCompareRequest) -> Result<()> {
-    ensure!(request.schema_version == 1, "unsupported comparison schema");
+    ensure!(
+        matches!(request.schema_version, 1 | 2),
+        "unsupported comparison schema"
+    );
     ensure!(
         matches!(request.sector_size, 512 | 4096),
         "sector size must be 512 or 4096"
@@ -122,8 +125,9 @@ pub(crate) fn validate_request(request: &RetainedCompareRequest) -> Result<()> {
         "changed-sector byte budget exceeds image length"
     );
     ensure!(
-        !request.retained_ranges.is_empty() && request.retained_ranges.len() <= MAX_RETAINED_RANGES,
-        "retained range count must be 1..=1024"
+        request.retained_ranges.len() <= MAX_RETAINED_RANGES
+            && (request.schema_version == 2 || !request.retained_ranges.is_empty()),
+        "schema 1 requires 1..=1024 retained ranges; tree schema 2 permits relocation-only reconstruction"
     );
     let mut end = 0;
     for range in &request.retained_ranges {

@@ -100,7 +100,11 @@ pub struct WritePolicy {
 impl WritePolicy {
     pub fn validate(&self, length: u64) -> io::Result<()> {
         layout::validate_ranges(&self.allowed, length)?;
-        layout::validate_ranges(&self.retained, length)?;
+        // Relocation-only tree plans have no retained ranges. The native
+        // fixture adapter still enforces its original one-range profile.
+        if !self.retained.is_empty() {
+            layout::validate_ranges(&self.retained, length)?;
+        }
         let mut bytes = 0_u64;
         for &(offset, count) in &self.allowed {
             bytes = bytes
@@ -562,6 +566,42 @@ impl OfflinePartition {
 
     /// Caller must finish and flush its complete journal and independently
     /// validate the journal ticket before supplying this explicit write set.
+    pub fn enable_excluded_writes(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        if !self.read_only
+            || self.policy.is_some()
+            || self.write_poisoned
+            || self.native_write_bytes_requested != 0
+            || self.inspect(events)?.disk_attributes != OFFLINE | READ_ONLY
+        {
+            return Err(invalid(
+                "journal activation requires an unchanged excluded read-only handle",
+            ));
+        }
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number),
+            true,
+            false,
+        )?;
+        if snapshot(&management, &self.binding, events)?.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid("activation control-handle binding differs"));
+        }
+        // Persist OFFLINE throughout. If reopening fails, recovery observes the
+        // actual state; never retry the transition or expose the volume.
+        set_attributes(&management, OFFLINE, events)?;
+        let writable = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number),
+            true,
+            true,
+        )?;
+        if snapshot(&writable, &self.binding, events)?.disk_attributes != OFFLINE {
+            return Err(invalid("journal activation lost persistent exclusion"));
+        }
+        self.file = writable;
+        self.read_only = false;
+        Ok(())
+    }
+
+    /// Arm the exact ranges of an already durable, independently pinned journal.
     pub fn arm_writes(
         &mut self,
         policy: WritePolicy,
@@ -601,6 +641,14 @@ impl OfflinePartition {
             return Err(invalid("target isolation changed before handoff"));
         }
         set_attributes(&self.file, 0, events)?;
+        control(
+            &self.file,
+            "refresh-online-target-properties",
+            UPDATE_PROPERTIES,
+            &[],
+            0,
+            events,
+        )?;
         close_file(self.file, "close-online-target", events)
     }
 }

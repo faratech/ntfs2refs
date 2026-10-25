@@ -624,8 +624,38 @@ pub fn run(
     mode: Mode,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<Report> {
+    run_role(binding, source_disk, input, mode, same_security, false)
+}
+/// Observe the enrolled converted original after durable journal handoff. All
+/// original shadow creation/repair entry points retain the disk3 restriction.
+pub fn verify_converted(
+    binding: DiskBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<Report> {
+    if binding.disk_number != 1
+        || layout::guid_bytes(&binding.identity.disk_guid)?
+            != layout::guid_bytes("a01574d5-2a5c-4136-958a-dcf0d0e0f7aa")?
+        || layout::guid_bytes(&binding.identity.partition_guid)?
+            != layout::guid_bytes("79eaccdf-38d3-4561-97cc-9276af5d223a")?
+    {
+        return Err(invalid("converted natural-tree enrollment differs"));
+    }
+    let report = run_role(binding, 1, input, Mode::Verify, &same_security, true)?;
+    validate_existing(&report, input, &same_security, false)?;
+    Ok(report)
+}
+fn run_role(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    mode: Mode,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    converted: bool,
+) -> io::Result<Report> {
     binding.validate()?;
-    if binding.disk_number != 3
+    if binding.disk_number != if converted { 1 } else { 3 }
+        || (converted && mode != Mode::Verify)
         || source_disk != 1
         || input.is_empty()
         || input.len() > 160

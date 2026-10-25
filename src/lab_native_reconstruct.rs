@@ -44,6 +44,10 @@ impl NativeReconstructRequest {
             "unsupported native reconstruction request"
         );
         self.probe.validate()?;
+        ensure!(
+            self.comparison.schema_version == 1,
+            "legacy fixture requires comparison schema 1"
+        );
         self.journal.validate()?;
         ensure!(
             self.experiment_id == self.probe.experiment_id,
@@ -229,7 +233,7 @@ struct CanonicalPartitionIdentity {
     physical_sector_bytes: u32,
 }
 
-fn identity_hash(domain: &[u8], value: &impl Serialize) -> Result<String> {
+pub(crate) fn identity_hash(domain: &[u8], value: &impl Serialize) -> Result<String> {
     let mut hash = Sha256::new();
     hash.update(domain);
     hash.update([0]);
@@ -237,7 +241,7 @@ fn identity_hash(domain: &[u8], value: &impl Serialize) -> Result<String> {
     Ok(hex::encode(hash.finalize()))
 }
 
-fn partition_hash(p: &PartitionIdentity) -> Result<String> {
+pub(crate) fn partition_hash(p: &PartitionIdentity) -> Result<String> {
     identity_hash(
         b"ntfs2refs/lab/gpt-partition-identity/v1",
         &CanonicalPartitionIdentity {

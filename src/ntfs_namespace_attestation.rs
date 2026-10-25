@@ -28,6 +28,21 @@ pub struct Reconciliation {
     pub all_visible_names_matched: bool,
     pub conversion_qualified: bool,
 }
+#[derive(Debug, Serialize)]
+pub struct InternalVisibility {
+    pub record_number: u64,
+    pub sequence_number: u16,
+    pub name_utf16: Vec<u16>,
+    pub role: String,
+    pub visible: bool,
+}
+#[derive(Debug, Serialize)]
+pub struct ProjectedDirectory {
+    pub visible_names: usize,
+    /// Every optionally hidden entry remains explicitly identified and must
+    /// still pass allocation and filesystem-internal replacement admission.
+    pub internal_visibility: Vec<InternalVisibility>,
+}
 fn reference(f: &FileInventory) -> u64 {
     f.record_number | (u64::from(f.sequence_number) << 48)
 }
@@ -50,6 +65,47 @@ pub fn check_directory(
     f: &FileInventory,
     n: &NamespaceFile,
 ) -> Result<usize> {
+    Ok(check_directory_view(raw, f, n, &BTreeMap::new())?.visible_names)
+}
+
+/// A native namespace projection, not permission to omit internal objects.
+/// Only the eleven exact reserved NTFS root identities can be absent. A
+/// returned internal entry must still have its exact raw name, ID and type.
+/// Non-root directories always use the unchanged exact-membership check.
+pub fn check_projected_directory(
+    raw: &NtfsInspection,
+    f: &FileInventory,
+    n: &NamespaceFile,
+) -> Result<ProjectedDirectory> {
+    let mut optional = BTreeMap::new();
+    if f.record_number == 5 {
+        for child in &raw.files {
+            if matches!(child.record_number, 0..=4 | 6..=11) {
+                let role = crate::ntfs_admission::internal_role(raw, child)
+                    .context("reserved root object lacks its exact internal identity")?;
+                ensure!(
+                    child.names.len() == 1
+                        && child.names[0].parent_record_number == f.record_number
+                        && child.names[0].parent_sequence_number == f.sequence_number
+                        && optional.insert(reference(child), role).is_none(),
+                    "reserved root object name, ancestry or identity differs"
+                );
+            }
+        }
+        ensure!(
+            optional.len() == 11,
+            "reserved root object set is incomplete"
+        );
+    }
+    check_directory_view(raw, f, n, &optional)
+}
+
+fn check_directory_view(
+    raw: &NtfsInspection,
+    f: &FileInventory,
+    n: &NamespaceFile,
+    optional: &BTreeMap<u64, String>,
+) -> Result<ProjectedDirectory> {
     ensure!(
         f.is_directory && n.identity.reference() == reference(f),
         "directory route differs"
@@ -135,8 +191,13 @@ pub fn check_directory(
                 "duplicate native directory name"
             );
         }
+        let projected: BTreeMap<_, _> = expected
+            .iter()
+            .filter(|(name, (id, _))| !optional.contains_key(id) || names.contains_key(*name))
+            .map(|(name, value)| (name.clone(), *value))
+            .collect();
         ensure!(
-            names == expected,
+            names == projected,
             "native directory names, child identities or types differ from I30/MFT"
         );
         snapshots.push(names);
@@ -145,7 +206,23 @@ pub fn check_directory(
         snapshots[0] == snapshots[1],
         "native namespace changed between passes"
     );
-    Ok(expected.len())
+    let visible = &snapshots[0];
+    let internal_visibility = expected
+        .iter()
+        .filter_map(|(name, (id, _))| {
+            optional.get(id).map(|role| InternalVisibility {
+                record_number: id & 0x0000_ffff_ffff_ffff,
+                sequence_number: (id >> 48) as u16,
+                name_utf16: name.clone(),
+                role: role.clone(),
+                visible: visible.contains_key(name),
+            })
+        })
+        .collect();
+    Ok(ProjectedDirectory {
+        visible_names: visible.len(),
+        internal_visibility,
+    })
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     ensure!(

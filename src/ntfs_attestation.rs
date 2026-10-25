@@ -127,6 +127,33 @@ fn u32le(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(b[at..at + 4].try_into().unwrap())
 }
 fn check_snapshot(file: &FileInventory, serial: u64, sd: &[u8], s: &Snapshot) -> Result<()> {
+    let times = check_non_time_snapshot(file, serial, sd, s)?;
+    let si = file
+        .standard_information
+        .as_ref()
+        .context("missing raw standard information")?;
+    ensure!(
+        times
+            == [
+                si.creation_time,
+                si.access_time,
+                si.modification_time,
+                si.mft_change_time
+            ],
+        "native timestamps differ"
+    );
+    Ok(())
+}
+/// Validate every other metadata field independently of timestamp comparison.
+/// Returns the unchanged observed FILETIMEs. The strict comparator above still
+/// requires all four to match; a separate frozen-source policy may explain only
+/// cached access time and must record both observed and persisted values.
+pub(crate) fn check_non_time_snapshot(
+    file: &FileInventory,
+    serial: u64,
+    sd: &[u8],
+    s: &Snapshot,
+) -> Result<[u64; 4]> {
     ensure!(s.queries.len() == 4, "unexpected native query count");
     let id = buffer(s, 18, 24)?;
     ensure!(
@@ -140,20 +167,6 @@ fn check_snapshot(file: &FileInventory, serial: u64, sd: &[u8], s: &Snapshot) ->
         .standard_information
         .as_ref()
         .context("missing raw standard information")?;
-    ensure!(
-        [
-            u64le(basic, 0),
-            u64le(basic, 8),
-            u64le(basic, 16),
-            u64le(basic, 24)
-        ] == [
-            si.creation_time,
-            si.access_time,
-            si.modification_time,
-            si.mft_change_time
-        ],
-        "native timestamps differ"
-    );
     // NTFS $STANDARD_INFORMATION omits the directory bit and carries internal
     // index/view flags in the high nibble, outside Win32 FILE_ATTRIBUTE_*.
     let mut attrs = (si.file_attributes & 0x0fff_ffff) | if file.is_directory { 16 } else { 0 };
@@ -191,7 +204,12 @@ fn check_snapshot(file: &FileInventory, serial: u64, sd: &[u8], s: &Snapshot) ->
         same_security(sd, &s.security)?,
         "native security semantics differ"
     );
-    Ok(())
+    Ok([
+        u64le(basic, 0),
+        u64le(basic, 8),
+        u64le(basic, 16),
+        u64le(basic, 24),
+    ])
 }
 
 pub fn compare(

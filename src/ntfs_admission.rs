@@ -49,6 +49,7 @@ pub struct Assessment {
     pub certificate_issued: bool,
     pub execution_authorized: bool,
     pub backup_evidence: Option<crate::ntfs_backup::VerifiedBackups>,
+    pub source_view: Option<crate::ntfs_source_view::Analysis>,
 }
 fn reference(f: &FileInventory) -> u64 {
     f.record_number | (u64::from(f.sequence_number) << 48)
@@ -242,7 +243,21 @@ pub fn assess_with_backups(
     native_schema: u32,
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
 ) -> Assessment {
+    assess_source_view(raw, comparison, native_schema, backups, None)
+}
+/// The opaque live observer is the only caller supplying a frozen-bound view.
+/// Replay diagnostics cannot remove strict native object refusals.
+pub(crate) fn assess_source_view(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    native_schema: u32,
+    backups: Option<&crate::ntfs_backup::VerifiedBackups>,
+    source_view: Option<crate::ntfs_source_view::Analysis>,
+) -> Assessment {
     let backups = backups.filter(|b| b.binds(raw));
+    let view_is_live = source_view
+        .as_ref()
+        .is_some_and(|v| v.binds_live(&comparison.source_inspection_sha256));
     let mut objects = vec![];
     let mut files = 0;
     let mut directories = 0;
@@ -277,10 +292,15 @@ pub fn assess_with_backups(
             )
         };
         if disposition != Disposition::RecognizedFilesystemInternal {
+            let view = source_view.as_ref().filter(|_| view_is_live).and_then(|v| {
+                v.objects.iter().find(|o| {
+                    o.record_number == f.record_number && o.sequence_number == f.sequence_number
+                })
+            });
             match comparison.files.iter().find(|o| {
                 o.record_number == f.record_number && o.sequence_number == f.sequence_number
             }) {
-                Some(o) if o.matched => (),
+                Some(o) if o.matched || view.is_some_and(|v| v.metadata.matched) => (),
                 Some(o) => issues.extend(o.issues.iter().map(|s| format!("native metadata: {s}"))),
                 None => issues.push("native metadata identity missing".into()),
             }
@@ -311,6 +331,9 @@ pub fn assess_with_backups(
                             && o.check.matched
                     })
                 })
+                && !view
+                    .and_then(|v| v.directory.as_ref())
+                    .is_some_and(|d| d.check.matched)
             {
                 issues.push("native directory completeness is unresolved".into());
             }
@@ -468,5 +491,6 @@ pub fn assess_with_backups(
         certificate_issued: false,
         execution_authorized: false,
         backup_evidence: backups.cloned(),
+        source_view,
     }
 }

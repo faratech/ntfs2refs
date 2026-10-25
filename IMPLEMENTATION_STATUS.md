@@ -1,5 +1,25 @@
 # Implementation handoff
 
+The native four-file reconstruction engine and its CLI are implemented and build
+in release mode. The new schema-2 laboratory profile supports a genuine empty
+retained set: all four naturally placed files require relocation. It reuses the
+durable old/new journal for prepare, offline activation, apply, resume, rollback
+and irreversible handoff. The original one-file adapter retains its schema-1
+and single-retained-range guards. A second tool captures exact source tree
+expectations and verifies the converted original through native ReFS after
+handoff. Controlled process interruption after a chosen durable target write is
+implemented for recovery qualification. Native tree conversion is currently
+running under the owned VM workflow; this paragraph is implementation status,
+not a claim that the native conversion or interruption suite passed. The general
+converter remains blocked pending source admission and broader qualification.
+
+The explicit persisted-source view records all stored/native FILETIMEs and each
+optionally hidden reserved NTFS root identity. Its focused tests and pinned
+native-capture replay passed. Only an actual unchanged frozen-device observation
+can use these policies in source assessment; a replay cannot grant authority.
+
+Previous implementation:
+
 Latest implementation: a newly populated four-file, three-directory NTFS tree
 now has an actual post-lock/dismount source basis. The Rust helper persists
 offline/read-only exclusion, hashes and inspects the owning device, verifies

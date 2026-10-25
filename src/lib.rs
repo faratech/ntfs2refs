@@ -10,6 +10,10 @@ pub mod lab_native;
 #[cfg(windows)]
 pub mod lab_native_reconstruct;
 pub mod lab_reconstruct;
+#[cfg(windows)]
+pub mod lab_tree_expectation;
+#[cfg(windows)]
+pub mod lab_tree_reconstruct;
 pub mod ntfs_admission;
 pub mod ntfs_allocation;
 pub mod ntfs_attestation;
@@ -22,6 +26,7 @@ pub mod ntfs_inspect;
 pub mod ntfs_namespace;
 pub mod ntfs_namespace_attestation;
 pub mod ntfs_security;
+pub mod ntfs_source_view;
 pub mod ntfs_stream_attestation;
 pub mod planner;
 pub mod refs_bootstrap;

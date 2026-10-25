@@ -6,7 +6,7 @@ use n2r_win32::{
 };
 use ntfs2refs::{
     ntfs_inspect::{self, NameInventory, NtfsInspection},
-    ntfs_namespace_attestation::check_directory,
+    ntfs_namespace_attestation::{check_directory, check_projected_directory},
 };
 use std::io::Cursor;
 fn query(class: i32, bytes: Vec<u8>, native_error: Option<i32>) -> Query {
@@ -146,4 +146,104 @@ fn duplicate_names_and_non_ntfs_identifiers_are_refused() {
     let (r, mut x) = fixture();
     x.after.as_mut().unwrap().calls[0].bytes[80] = 1;
     assert!(check_directory(&r, &r.files[0], &x).is_err());
+}
+fn reserved_root_fixture() -> (NtfsInspection, NamespaceFile) {
+    use ntfs2refs::ntfs_inspect::MetadataRole;
+    let (mut r, n) = fixture();
+    r.files[0].metadata_role = MetadataRole::ReservedSystemRecord;
+    r.files[0].metadata_role_issue = None;
+    for (id, name) in [
+        (0, "$MFT"),
+        (1, "$MFTMirr"),
+        (2, "$LogFile"),
+        (3, "$Volume"),
+        (4, "$AttrDef"),
+        (6, "$Bitmap"),
+        (7, "$Boot"),
+        (8, "$BadClus"),
+        (9, "$Secure"),
+        (10, "$UpCase"),
+        (11, "$Extend"),
+    ] {
+        let mut f = r.files[1].clone();
+        f.record_number = id;
+        f.base_file_reference = 0;
+        f.metadata_role = MetadataRole::ReservedSystemRecord;
+        f.metadata_role_issue = None;
+        f.is_directory = id == 11;
+        f.names[0].name = name.into();
+        f.names[0].name_utf16 = name.encode_utf16().collect();
+        r.files.push(f);
+    }
+    (r, n)
+}
+#[test]
+fn optional_root_system_names_remain_identity_bound_and_reported() {
+    let (r, mut n) = reserved_root_fixture();
+    assert!(check_directory(&r, &r.files[0], &n).is_err());
+    let p = check_projected_directory(&r, &r.files[0], &n).unwrap();
+    assert_eq!(p.visible_names, 1);
+    assert_eq!(p.internal_visibility.len(), 11);
+    assert!(p.internal_visibility.iter().all(|i| !i.visible));
+    for pass in [&mut n.before, &mut n.after] {
+        pass.as_mut()
+            .unwrap()
+            .calls
+            .insert(1, query(n::CONTINUE, entry("$MFT", 1u64 << 48, 32), None));
+    }
+    let p = check_projected_directory(&r, &r.files[0], &n).unwrap();
+    assert_eq!(p.visible_names, 2);
+    assert_eq!(
+        p.internal_visibility.iter().filter(|i| i.visible).count(),
+        1
+    );
+}
+#[test]
+fn projection_cannot_hide_a_user_name_or_a_failed_enumeration() {
+    for error in [n::END, 5] {
+        let (r, mut x) = reserved_root_fixture();
+        for pass in [&mut x.before, &mut x.after] {
+            pass.as_mut().unwrap().calls = vec![query(n::RESTART, vec![], Some(error))];
+        }
+        assert!(check_projected_directory(&r, &r.files[0], &x).is_err());
+    }
+}
+#[test]
+fn wrong_visible_internal_ids_types_and_unknown_names_are_refused() {
+    for data in [
+        entry("$MFT", 16 | 1u64 << 48, 32),
+        entry("$MFT", 2u64 << 48, 32),
+        entry("$MFT", 1u64 << 48, 16),
+        entry("$unknown", 1u64 << 48, 32),
+    ] {
+        let (r, mut x) = reserved_root_fixture();
+        for pass in [&mut x.before, &mut x.after] {
+            pass.as_mut()
+                .unwrap()
+                .calls
+                .insert(1, query(n::CONTINUE, data.clone(), None));
+        }
+        assert!(check_projected_directory(&r, &r.files[0], &x).is_err());
+    }
+}
+#[test]
+fn internal_visibility_changes_and_false_metadata_roles_are_refused() {
+    let (r, mut x) = reserved_root_fixture();
+    x.after
+        .as_mut()
+        .unwrap()
+        .calls
+        .insert(1, query(n::CONTINUE, entry("$MFT", 1u64 << 48, 32), None));
+    assert!(check_projected_directory(&r, &r.files[0], &x).is_err());
+    for kind in 0..4 {
+        let (mut r, x) = reserved_root_fixture();
+        let f = r.files.iter_mut().find(|f| f.record_number == 0).unwrap();
+        match kind {
+            0 => f.names[0].name_utf16 = "$MFT-copy".encode_utf16().collect(),
+            1 => f.names[0].parent_sequence_number = 2,
+            2 => f.metadata_role = ntfs2refs::ntfs_inspect::MetadataRole::NotClassified,
+            _ => f.is_directory = true,
+        }
+        assert!(check_projected_directory(&r, &r.files[0], &x).is_err());
+    }
 }

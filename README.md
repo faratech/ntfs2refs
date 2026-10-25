@@ -40,7 +40,9 @@ boot/MFT-mirror checks. It reports remaining refusals; an admission certificate
 has not yet been issued for arbitrary existing volumes.
 An [existing four-file tree now has a native post-exclusion source basis](docs/native-ntfs-source-freeze.md),
 verified across restart and read-only Windows inspection. Its physical placement
-was untouched. Same-partition conversion has passed; interruption recovery remains open.
+was untouched. Same-partition conversion has passed. A separate first-write
+interruption now resumes from the durable journal to a native ReFS mount and
+survives a clean reboot; broader fault injection remains open.
 An [independent native ReFS shadow](docs/existing-tree-shadow.md) now reproduces
 that tree's contents, all four stored timestamps, permissions and names after a
 clean restart. All four natural source locations conflict with ReFS metadata;

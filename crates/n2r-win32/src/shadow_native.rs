@@ -38,7 +38,37 @@ pub struct Input<'a> {
     pub attributes: u32,
     pub security: &'a [u8],
     pub payload: &'a [u8],
+    /// Hash-only expectations are accepted only for converted-volume
+    /// verification. Construction always receives the actual payload bytes.
+    pub expected_length: Option<u64>,
+    pub expected_sha256: Option<&'a str>,
     pub source_offset: Option<u64>,
+}
+impl Input<'_> {
+    fn logical_length(&self) -> u64 {
+        self.expected_length.unwrap_or(self.payload.len() as u64)
+    }
+    fn logical_sha256(&self) -> String {
+        self.expected_sha256
+            .map(str::to_owned)
+            .unwrap_or_else(|| hex::encode(Sha256::digest(self.payload)))
+    }
+}
+fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> {
+    let mut hash = Sha256::new();
+    let mut remaining = length;
+    let mut buffer = [0u8; 65536];
+    while remaining > 0 {
+        let count = usize::try_from(remaining.min(buffer.len() as u64))
+            .map_err(|_| invalid("stream read bound"))?;
+        reader.read_exact(&mut buffer[..count])?;
+        hash.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    if reader.read(&mut buffer[..1])? != 0 {
+        return Err(invalid("converted stream has data beyond expected EOF"));
+    }
+    Ok(hex::encode(hash.finalize()))
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -362,8 +392,8 @@ fn validate_existing(
         if layout::u32_at(standard, 16)? != 1
             || standard[20] != 0
             || (standard[21] != 0) != i.directory
-            || (!i.directory && layout::u64_at(standard, 8)? != i.payload.len() as u64)
-            || o.logical_sha256 != (!i.directory).then(|| hex::encode(Sha256::digest(i.payload)))
+            || (!i.directory && layout::u64_at(standard, 8)? != i.logical_length())
+            || o.logical_sha256 != (!i.directory).then(|| i.logical_sha256())
         {
             return Err(invalid(
                 "existing shadow links, type, EOF or contents differ",
@@ -855,6 +885,23 @@ fn run_role(
     }
     let mut total = 0usize;
     for i in input {
+        let digest_only = i.expected_length.is_some() || i.expected_sha256.is_some();
+        if digest_only
+            && (!converted
+                || !ordinary
+                || mode != Mode::Verify
+                || i.directory
+                || i.expected_length.is_none()
+                || i.expected_sha256.is_none()
+                || !i.payload.is_empty()
+                || !i.expected_sha256.is_some_and(|s| {
+                    s.len() == 64
+                        && s.bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                }))
+        {
+            return Err(invalid("invalid hash-only verification input"));
+        }
         if i.components.len() > 16
             || i.components.iter().any(|s| {
                 s.is_empty()
@@ -875,7 +922,10 @@ fn run_role(
             return Err(invalid("invalid bounded shadow input"));
         }
         total = total
-            .checked_add(i.payload.len())
+            .checked_add(
+                usize::try_from(i.logical_length())
+                    .map_err(|_| invalid("payload length overflow"))?,
+            )
             .ok_or_else(|| invalid("payload overflow"))?;
         if total > 256 * 1024 * 1024 {
             return Err(invalid("shadow payload budget"));
@@ -1139,7 +1189,7 @@ fn run_role(
                 ) {
                     Ok(bytes)
                         if ordinary
-                            && i.payload.is_empty()
+                            && i.logical_length() == 0
                             && expected_allocation == 0
                             && bytes.len() == 16
                             && layout::u32_at(&bytes, 0)? == 0
@@ -1172,15 +1222,14 @@ fn run_role(
                     }
                     end += r.clusters;
                 }
-                if (!ordinary && end * 4096 != i.payload.len() as u64)
+                if (!ordinary && end * 4096 != i.logical_length())
                     || (ordinary
                         && (end * 4096 != expected_allocation
-                            || (expected_allocation == 0 && i.payload.len() > 4096)
+                            || (expected_allocation == 0 && i.logical_length() > 4096)
                             || (expected_allocation != 0
                                 && expected_allocation
-                                    < (i.payload.len() as u64).next_multiple_of(4096))
-                            || expected_allocation
-                                > (i.payload.len() as u64).next_multiple_of(65536)))
+                                    < i.logical_length().next_multiple_of(4096))
+                            || expected_allocation > i.logical_length().next_multiple_of(65536)))
                 {
                     return Err(invalid(
                         "shadow allocation differs from initialized payload",
@@ -1193,13 +1242,13 @@ fn run_role(
                         continue;
                     }
                     let mut q = [0; 24];
-                    q[8..16].copy_from_slice(&(i.payload.len() as u64).to_le_bytes());
+                    q[8..16].copy_from_slice(&i.logical_length().to_le_bytes());
                     q[16..20].copy_from_slice(&usage.to_le_bytes());
                     let b = ctl(&h, 0x90284, &q, 16 + 24 * 1024)?;
                     if ordinary {
-                        crate::region_layout::validate_logical(&b, i.payload.len() as u64, usage)?;
+                        crate::region_layout::validate_logical(&b, i.logical_length(), usage)?;
                     } else {
-                        crate::region_layout::validate(&b, i.payload.len() as u64, usage)?;
+                        crate::region_layout::validate(&b, i.logical_length(), usage)?;
                     }
                     regions.push(b);
                 }
@@ -1210,15 +1259,24 @@ fn run_role(
                 {
                     return Err(invalid("shadow data integrity profile differs"));
                 }
-                let mut bytes = vec![];
-                (&mut h)
-                    .take(i.payload.len() as u64 + 1)
-                    .read_to_end(&mut bytes)?;
-                if bytes != i.payload {
-                    return Err(invalid("shadow logical bytes or EOF differ"));
-                }
+                let logical_hash = if let Some(expected) = i.expected_sha256 {
+                    let actual = hash_exact_stream(&mut h, i.logical_length())?;
+                    if actual != expected {
+                        return Err(invalid("converted logical stream hash differs"));
+                    }
+                    actual
+                } else {
+                    let mut bytes = vec![];
+                    (&mut h)
+                        .take(i.logical_length() + 1)
+                        .read_to_end(&mut bytes)?;
+                    if bytes != i.payload {
+                        return Err(invalid("shadow logical bytes or EOF differ"));
+                    }
+                    hex::encode(Sha256::digest(&bytes))
+                };
                 (
-                    Some(hex::encode(Sha256::digest(&bytes))),
+                    Some(logical_hash),
                     retrieval,
                     regions.remove(0),
                     regions.remove(0),
@@ -1237,12 +1295,12 @@ fn run_role(
             let (entries, used) = stream_layout::parse_streams(&b)?;
             if entries.len() != 1
                 || !entries[0].name.is_empty()
-                || entries[0].logical_size != i.payload.len() as u64
+                || entries[0].logical_size != i.logical_length()
                 || entries[0].allocated_size
                     != if ordinary {
                         expected_allocation
                     } else {
-                        i.payload.len() as u64
+                        i.logical_length()
                     }
             {
                 return Err(invalid("unexpected target data stream or allocation"));
@@ -1333,5 +1391,20 @@ mod tests {
         actual[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
         assert!(!creation_loss_only(&expected, &actual, &same).unwrap());
         assert!(!creation_loss_only(&actual, &expected, &same).unwrap());
+    }
+    #[test]
+    fn hash_only_verification_enforces_exact_eof() {
+        let bytes = vec![0x5a; 65537];
+        let expected = hex::encode(Sha256::digest(&bytes));
+        assert_eq!(
+            hash_exact_stream(&mut bytes.as_slice(), bytes.len() as u64).unwrap(),
+            expected
+        );
+        assert!(hash_exact_stream(&mut bytes.as_slice(), bytes.len() as u64 + 1).is_err());
+        assert!(hash_exact_stream(&mut bytes.as_slice(), bytes.len() as u64 - 1).is_err());
+        assert_eq!(
+            hash_exact_stream(&mut &[][..], 0).unwrap(),
+            hex::encode(Sha256::digest([]))
+        );
     }
 }

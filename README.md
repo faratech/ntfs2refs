@@ -51,16 +51,22 @@ point, `lab-tree-convert`. It captures source expectations, prepares and flushes
 the journal/ticket, applies the original partition and performs native ReFS
 verification. It saves recovery paths and pins under `--artifacts`; native
 `lab-tree-reconstruct resume` / `rollback` remain available before handoff.
-This laboratory command uses the separately enrolled four-file source/shadow
-profile. It does not enable the general converter's blocked commands.
+This laboratory command accepts the pinned four-file profile and a versioned
+ordinary-tree request assembled from a frozen native shadow. The latter has
+converted the same four-file tree on its original partition and recovered from
+loss of the host control process after apply. It does not enable the general
+converter's blocked commands.
 
 The independent shadow builder accepts `--ordinary-files` for a broader
 experimental source profile. It reads empty and resident streams from their
 checked NTFS records, materializes fragmented and partial-cluster streams as
 logical bytes, and restores inherited security descriptors on the native ReFS
-shadow. It reports inline data separately from physical extents. This profile
-builds and passes focused parser/planner checks; native Windows qualification
-and connection to a general conversion request remain open.
+shadow. It reports inline data separately from physical extents. The versioned
+path passed native Windows qualification on the four cluster-aligned files in
+the enrolled tree; empty, resident, fragmented and partial-cluster cases still
+need native conversion runs. New ordinary verification manifests store stream
+lengths and hashes, then check bytes through ReFS in bounded chunks instead of
+embedding the full payload in the recovery artifact.
 
 The toolchain is pinned in `rust-toolchain.toml`; use the installed MSVC toolchain.
 Windows builds link the C runtime statically for fresh guests and recovery media.

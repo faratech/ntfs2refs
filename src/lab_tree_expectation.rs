@@ -1,7 +1,7 @@
 //! Capture exact natural-tree expectations before conversion and verify the
 //! original partition through native ReFS after durable handoff.
 use crate::{lab_tree_reconstruct::Request, ntfs_inspect, shadow_tree};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use n2r_win32::{NativeEvent, OfflinePartition, shadow_native};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,8 @@ pub struct Object {
     security_hex: String,
     payload_hex: String,
     payload_sha256: Option<String>,
+    #[serde(default)]
+    logical_length: Option<u64>,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,8 +81,17 @@ pub fn capture(request: &Request, events: &mut Vec<NativeEvent>) -> Result<Expec
             times: o.stored_times,
             attributes: o.attributes,
             security_hex: hex::encode(o.security),
-            payload_hex: hex::encode(&payload),
-            payload_sha256: o.sha256,
+            payload_hex: if ordinary {
+                String::new()
+            } else {
+                hex::encode(&payload)
+            },
+            payload_sha256: if ordinary && !o.directory {
+                Some(hex::encode(Sha256::digest(&payload)))
+            } else {
+                o.sha256
+            },
+            logical_length: ordinary.then_some(o.length),
         });
     }
     ensure!(
@@ -88,7 +99,7 @@ pub fn capture(request: &Request, events: &mut Vec<NativeEvent>) -> Result<Expec
         "source capture lost exclusion"
     );
     Ok(Expectation {
-        schema_version: if ordinary { 2 } else { 1 },
+        schema_version: if ordinary { 3 } else { 1 },
         source_sha256: request.comparison.source_sha256.clone(),
         canonical_inspection_sha256: pin,
         source: request.source.clone(),
@@ -98,9 +109,13 @@ pub fn capture(request: &Request, events: &mut Vec<NativeEvent>) -> Result<Expec
 impl Expectation {
     pub fn validate(&self, request: &Request) -> Result<()> {
         let ordinary = request.schema_version == 3;
+        let hash_only = self.schema_version == 3;
         ensure!(
-            self.schema_version == if ordinary { 2 } else { 1 }
-                && self.source_sha256 == request.comparison.source_sha256
+            (if ordinary {
+                matches!(self.schema_version, 2 | 3)
+            } else {
+                self.schema_version == 1
+            }) && self.source_sha256 == request.comparison.source_sha256
                 && self.source == request.source
                 && (ordinary
                     || self.canonical_inspection_sha256
@@ -132,12 +147,25 @@ impl Expectation {
                 "invalid security descriptor"
             );
             let p = hex::decode(&o.payload_hex)?;
+            let length = if hash_only {
+                ensure!(p.is_empty(), "hash-only expectation embeds payload bytes");
+                o.logical_length.context("hash-only stream length absent")?
+            } else {
+                p.len() as u64
+            };
             total = total
-                .checked_add(p.len())
+                .checked_add(usize::try_from(length)?)
                 .ok_or_else(|| anyhow::anyhow!("payload overflow"))?;
             ensure!(
                 if o.directory {
-                    p.is_empty()
+                    p.is_empty() && (!hash_only || (length == 0 && o.payload_sha256.is_none()))
+                } else if hash_only {
+                    o.payload_sha256.as_ref().is_some_and(|hash| {
+                        hash.len() == 64
+                            && hash
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
                 } else {
                     (ordinary || (!p.is_empty() && p.len().is_multiple_of(65536)))
                         && (p.is_empty() && ordinary && o.payload_sha256.is_none()
@@ -170,17 +198,12 @@ impl Expectation {
             .iter()
             .map(|o| hex::decode(&o.payload_hex))
             .collect::<Result<_, _>>()?;
-        ensure!(
-            if request.schema_version == 3 {
-                payload.iter().map(Vec::len).sum::<usize>() <= 256 * 1024 * 1024
-            } else {
-                payload.iter().map(Vec::len).sum::<usize>() == 524288
-            },
-            "verification payload size differs"
-        );
+        let hash_only = self.schema_version == 3;
         for (o, p) in self.objects.iter().zip(&payload) {
             ensure!(
-                o.directory || o.payload_sha256.as_deref() == Some(&hex::encode(Sha256::digest(p))),
+                hash_only
+                    || o.directory
+                    || o.payload_sha256.as_deref() == Some(&hex::encode(Sha256::digest(p))),
                 "verification payload hash differs"
             );
         }
@@ -195,6 +218,16 @@ impl Expectation {
                 attributes: o.attributes,
                 security: &security[i],
                 payload: &payload[i],
+                expected_length: if hash_only && !o.directory {
+                    o.logical_length
+                } else {
+                    None
+                },
+                expected_sha256: if hash_only && !o.directory {
+                    o.payload_sha256.as_deref()
+                } else {
+                    None
+                },
                 source_offset: None,
             })
             .collect();

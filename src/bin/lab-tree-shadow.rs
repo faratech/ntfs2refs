@@ -173,6 +173,8 @@ fn main() -> anyhow::Result<()> {
                 attributes: o.attributes,
                 security: &o.security,
                 payload: p,
+                expected_length: None,
+                expected_sha256: None,
                 source_offset: o.source_offset,
             })
             .collect();

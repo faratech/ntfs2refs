@@ -111,6 +111,21 @@ fn pinned_ordinary_expectation_round_trips_and_rejects_changed_digest() {
         .sha256 = Some("z".repeat(64));
     assert!(replay.validate().is_err());
 }
+
+#[test]
+fn expected_tree_requires_parent_before_child_and_unique_source_identity() {
+    let tree = shadow_tree::derive_ordinary(&model()).unwrap();
+    let mut expected = shadow_tree::ExpectedTree::from(&tree);
+    expected.objects[1].path = vec!["missing".into(), "payload.bin".into()];
+    assert!(expected.validate().is_err());
+
+    let mut expected = shadow_tree::ExpectedTree::from(&tree);
+    let mut duplicate = expected.objects[1].clone();
+    duplicate.path = vec!["copy.bin".into()];
+    expected.logical_bytes += duplicate.length;
+    expected.objects.push(duplicate);
+    assert!(expected.validate().is_err());
+}
 #[test]
 fn inconsistent_raw_views_missing_security_and_stale_parent_are_refused() {
     let raw = model();

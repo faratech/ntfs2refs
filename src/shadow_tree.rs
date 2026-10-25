@@ -3,7 +3,7 @@
 use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security, ntfs_stream_plan};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -65,9 +65,11 @@ impl ExpectedTree {
                     == 1,
             "expected general tree profile or root differs"
         );
-        let mut paths = BTreeSet::new();
+        let mut paths = BTreeMap::new();
+        let mut identities = BTreeSet::new();
         let mut bytes = 0u64;
         for object in &self.objects {
+            let path_key = object.path.join("\\").to_ascii_uppercase();
             ensure!(
                 object.path.len() <= 16
                     && object.path.iter().all(|part| valid_component(part))
@@ -77,9 +79,20 @@ impl ExpectedTree {
                         .all(|time| *time > 0 && *time < i64::MAX as u64)
                     && object.attributes & !0x2037 == 0
                     && (object.attributes & 16 != 0) == object.directory
-                    && paths.insert(object.path.join("\\").to_ascii_uppercase()),
+                    && identities.insert((object.record_number, object.sequence_number))
+                    && !paths.contains_key(&path_key),
                 "expected general tree object is invalid or duplicated"
             );
+            if !object.path.is_empty() {
+                let parent = object.path[..object.path.len() - 1]
+                    .join("\\")
+                    .to_ascii_uppercase();
+                ensure!(
+                    paths.get(&parent) == Some(&true),
+                    "expected tree parent is missing, is not a directory, or follows its child"
+                );
+            }
+            paths.insert(path_key, object.directory);
             if !object.directory {
                 let digest = object.sha256.as_deref().unwrap_or("");
                 ensure!(

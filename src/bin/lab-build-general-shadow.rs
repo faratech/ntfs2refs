@@ -4,12 +4,12 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::{
-        GeneralFrozenPartition, GeneralPartitionReader, general_layout::GeneralSourceShadowBinding,
-        shadow_native,
+    use n2r_win32::{GeneralFrozenPartition, GeneralPartitionReader, shadow_native};
+    use ntfs2refs::{
+        general_shadow::Request, lab_reconstruct, ntfs_attestation, ntfs_inspect, refs_inspect,
+        shadow_tree,
     };
-    use ntfs2refs::{lab_reconstruct, ntfs_attestation, ntfs_inspect, refs_inspect, shadow_tree};
-    use serde::{Deserialize, Serialize};
+    use serde::Serialize;
     use sha2::{Digest, Sha256};
     use std::{
         fs::{self, OpenOptions},
@@ -30,13 +30,6 @@ fn main() -> anyhow::Result<()> {
         retain_eligible: bool,
         #[arg(long)]
         verify_only: bool,
-    }
-    #[derive(Clone, Deserialize, Serialize)]
-    #[serde(deny_unknown_fields)]
-    struct Request {
-        schema_version: u32,
-        pair: GeneralSourceShadowBinding,
-        source_sha256: String,
     }
     fn save(path: &PathBuf, value: &impl Serialize) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(value)?;
@@ -72,16 +65,10 @@ fn main() -> anyhow::Result<()> {
         "general shadow request pin differs"
     );
     let request: Request = serde_json::from_slice(&bytes)?;
-    request.pair.validate()?;
+    request.validate()?;
     ensure!(
-        request.schema_version == 1
-            && request.source_sha256.len() == 64
-            && request
-                .source_sha256
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            && !args.output.exists(),
-        "general shadow profile or fresh output differs"
+        !args.output.exists(),
+        "fresh general shadow output required"
     );
     let mut events = Vec::new();
     let mut shadow_reader = GeneralPartitionReader::open(request.pair.shadow.clone(), &mut events)?;

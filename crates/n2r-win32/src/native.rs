@@ -496,11 +496,9 @@ pub struct GeneralJournaledPartition {
 }
 
 impl GeneralFrozenPartition {
-    #[allow(dead_code, reason = "Reserved for the versioned general recovery path")]
-    pub(crate) fn isolate(
-        binding: GeneralDiskBinding,
-        events: &mut Vec<NativeEvent>,
-    ) -> io::Result<Self> {
+    /// Lock/dismount and persistently exclude a bound dedicated data disk.
+    /// Dropping the returned handle does not bring the disk online.
+    pub fn isolate(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
         let before = probe_general(binding.clone(), events)?;
         let management = device_file(
             &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),

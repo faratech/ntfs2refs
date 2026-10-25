@@ -36,31 +36,30 @@ retention candidate, a logical materialization candidate, or rejected. Named
 streams are identified but remain pending target reconstruction. These
 classifications do not authorize writes.
 
-An internal `GeneralFrozenPartition` now implements the next source-only step:
+`GeneralFrozenPartition` implements the offline/read-only transition:
 after an exact online probe it locks and dismounts the bound volume, persists
 offline/read-only disk attributes, closes the lock owner, reopens the physical
 disk read-only, and checks identity again. It also has an explicit read-only
-reopen path after interruption. The initial isolate transition is **not
-exposed by a command** until a versioned journal and recovery/handoff path can
-safely bring that disk back online. Synthetic tests cover its aligned reads; a
-real-device freeze has not been attempted.
+reopen path after interruption. The initial isolate transition is exposed only
+for the independent shadow; source isolation remains outside the general CLI
+until recovery/handoff is complete. Synthetic tests cover its aligned reads;
+a real-device freeze has not been attempted.
 
 The already-excluded read-only reopen is now public. `lab-inspect-frozen-general`
 uses it to hash the entire partition before and after NTFS inventory, verify
 the backup boot/MFT mirror, read both `$LogFile` restart pages when supported,
 and emit stream dispositions and an optional ordinary tree. It cannot isolate
 or bring a disk online and never supplies a write handle. Its report explicitly
-keeps source admission and conversion qualification false. The initial
-lock/dismount transition remains internal until general recovery is implemented.
+keeps source admission and conversion qualification false.
 
 The general native I/O layer now also has a separate `GeneralJournaledPartition`
 type. It can activate an unchanged offline/read-only handle while retaining
 offline exclusion, reopen an already activated offline target after interruption,
 and issue only aligned writes in an exact armed `WritePolicy`. Failed or short
 writes poison that handle. The generic old/new journal engine accepts these
-types as read-only preparation inputs and a durable target. No general CLI
-currently supplies the complete source-admission, target-construction and
-recovery witnesses needed to use this write route on an actual disk.
+types as read-only preparation inputs and a durable target. The general CLI
+still lacks the complete source-admission and recovery witnesses needed to
+use this write route on an actual disk.
 
 `lab-prepare-general-journal` is the first general journal command. Given two
 already excluded, read-only dedicated data disks, a pinned request, and a fresh
@@ -86,6 +85,13 @@ file, verifies the native ReFS tree and records actual placement attempts.
 `--verify-only` reobserves the same live shadow without creating files.
 It does not freeze the shadow or authorize journal activation, and the general
 native run has not yet been performed.
+
+`lab-freeze-general-shadow` independently reopens the NTFS source, verifies the
+live ReFS tree against it, saves the native evidence, then locks/dismounts only
+the shadow disk and persists its offline/read-only state. It hashes the frozen
+shadow and rehashes the source afterward. A failure after exclusion leaves the
+shadow offline; its durable intent identifies the attempted transition. This
+command has not had a native run and does not authorize cutover.
 
 The library now has internal general activation and apply/resume/rollback
 functions. They rebind the separately pinned ticket to the actual GPT source,

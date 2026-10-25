@@ -198,7 +198,9 @@ that survives host-controller loss. It checks the frozen shadow checkpoint,
 actual guest disk exclusion and GPT identities, absence of a journal file and
 absence of another converter before dispatch. It never restores a VM checkpoint
 or changes a guest data disk itself. The current converted VM branch does not
-meet its source-offline/read-only preflight.
+meet its source-offline/read-only preflight. Initial dispatch also honors the
+lab's host free-space reserve; the observed 2026-10-25 host D: free space of
+64,804,052,992 bytes is below the configured 68,719,476,736-byte reserve.
 `Collect-LabGeneralReplay.ps1` observes the scheduled task without restarting
 it, exports each guest artifact with a guest-to-host SHA-256 comparison, and
 records the source/shadow disk state and journal marker. It reports a completed

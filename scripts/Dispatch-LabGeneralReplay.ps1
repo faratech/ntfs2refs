@@ -22,6 +22,7 @@ if($pins.kind-cne'pinned-general-tree-replay'-or$shadowHost.status-cne'independe
 if((Get-FileHash -LiteralPath $requestPath).Hash.ToLowerInvariant()-cne$pins.general_request_sha256-or(Get-FileHash -LiteralPath $expectationPath).Hash.ToLowerInvariant()-cne$pins.expected_tree_sha256-or$request.expected_tree_sha256-cne$pins.expected_tree_sha256-or$request.comparison.source_sha256-cne$pins.source_sha256-or$request.comparison.shadow_sha256-cne$pins.shadow_sha256){throw 'Pinned general replay content differs.'}
 $binary=Get-Item -LiteralPath $BinaryPath -Force
 if($binary.PSIsContainer-or($binary.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$binary.Length-gt16MB-or(Get-FileHash -LiteralPath $binary.FullName).Hash.ToLowerInvariant()-cne$BinarySha256){throw 'Pinned guest converter executable required.'}
+Assert-LabCapacity (Get-LabCapacity $cfg) -AdditionalBytes 64MB
 $run=[guid]::NewGuid().ToString('N')
 $output=Assert-LabPath (Join-Path $cfg.Root ('general-replay/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
 New-Item -ItemType Directory -Path $output|Out-Null

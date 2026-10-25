@@ -45,8 +45,8 @@ pub struct Plan {
 
 pub fn classify(raw: &NtfsInspection) -> Plan {
     let mut plan = Plan {
-        schema_version: 1,
-        profile: "ntfs-4k-to-refs-4k-source-streams-v1",
+        schema_version: 2,
+        profile: "ntfs-4k-to-refs-4k-source-streams-v2",
         streams: Vec::new(),
         retained_candidate_bytes: 0,
         materialized_candidate_bytes: 0,

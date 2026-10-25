@@ -58,6 +58,10 @@ disk exclusion, absence of a live converter, zero pre-handoff marker, ticket
 pin and independently saved expectation. It records dispatch without claiming
 the guest task has finished; a separate collection step must inspect the
 durable guest report and journal marker.
+`scripts/Collect-LabOrdinaryRecovery.ps1` performs that read-only collection.
+It reports a still-running task without restarting it, or exports the completed
+report with a guest-to-host SHA-256 match and checks the handoff marker and
+source disk state. It does not treat a successful task exit alone as proof.
 
 The independent shadow builder also supports `--retain-eligible`. It attempts
 placement only on the shadow, only where both allocation views permit it,

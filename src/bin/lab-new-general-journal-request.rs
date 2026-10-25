@@ -113,6 +113,7 @@ fn main() -> anyhow::Result<()> {
         schema_version: 1,
         experiment_id: args.experiment_id,
         expected_tree_sha256: freeze.expectation_sha256,
+        expected_mount_paths: freeze.request.expected_mount_paths,
         pair: freeze.request.pair,
         comparison: freeze.comparison_request,
         journal,

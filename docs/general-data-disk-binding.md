@@ -195,8 +195,14 @@ remains an immediate refusal.
 The source-freeze report also captures drive letters and mounted-folder paths
 before dismount, resolving every path back to the bound volume GUID. The
 post-handoff verifier records the paths published for the rediscovered ReFS
-volume. These observations are diagnostic for now; automatic Mount Manager
-changes require a separate checked policy.
+volume. This path compares but does not modify Mount Manager mappings;
+automatic restoration requires a separate checked policy.
+`lab-new-general-shadow-request` carries the verified pre-freeze path set from
+the pinned NTFS source report into the independent shadow request. Shadow
+freeze and journal-request assembly retain that optional set. When it is
+present, final ReFS verification requires the same paths; the older archived
+four-file replay records the path set as unknown rather than asserting an
+empty set.
 The guest-only `lab-general-refs-mutation` workload creates a fresh temporary
 directory on the converted ReFS disk, writes and hashes a 50 MiB file, grows
 it across a zero-valid-data gap, truncates and renames it, then creates and

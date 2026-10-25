@@ -12,6 +12,7 @@ fn main() -> anyhow::Result<()> {
     use serde::Serialize;
     use sha2::{Digest, Sha256};
     use std::{
+        collections::BTreeSet,
         fs::{self, OpenOptions},
         io::{Read, Write},
         os::windows::fs::{MetadataExt, OpenOptionsExt},
@@ -122,17 +123,37 @@ fn main() -> anyhow::Result<()> {
             "original data disk is not mounted as ReFS",
         ))
     };
-    let success = attempted.is_ok();
-    let error = attempted.as_ref().err().map(ToString::to_string);
+    let ordinary_tree_verified = attempted.is_ok();
+    let mount_paths_preserved = request.expected_mount_paths.as_ref().map(|expected| {
+        let before: BTreeSet<_> = expected.iter().map(|path| path.to_lowercase()).collect();
+        mount_paths.as_ref().is_some_and(|observation| {
+            let after: BTreeSet<_> = observation
+                .paths
+                .iter()
+                .map(|path| path.to_lowercase())
+                .collect();
+            before == after
+        })
+    });
+    let success = ordinary_tree_verified && mount_paths_preserved != Some(false);
+    let error = attempted
+        .as_ref()
+        .err()
+        .map(ToString::to_string)
+        .or_else(|| {
+            (mount_paths_preserved == Some(false))
+                .then(|| "converted ReFS mount paths differ from NTFS source".into())
+        });
     save(
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"general-post-handoff-refs-verification",
             "request_sha256":args.request_sha256,"expected_tree_sha256":args.expectation_sha256,
             "filesystem":filesystem,"mount_paths":mount_paths,
-            "mount_paths_error":mount_paths_error,
+            "mount_paths_error":mount_paths_error,"mount_paths_preserved":mount_paths_preserved,
             "native":attempted.ok(),"error":error,
             "events":events,"source_payload_writes":0,
-            "ordinary_tree_verified":success,"production_conversion_qualified":false}),
+            "ordinary_tree_verified":ordinary_tree_verified,
+            "success":success,"production_conversion_qualified":false}),
     )?;
     ensure!(
         success,

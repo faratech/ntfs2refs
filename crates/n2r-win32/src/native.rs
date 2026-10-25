@@ -72,7 +72,7 @@ pub struct GeneralProbe {
     pub conversion_qualified: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
 pub struct MountPathObservation {
     pub binding: GeneralDiskBinding,
     pub paths: Vec<String>,

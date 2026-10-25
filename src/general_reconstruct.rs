@@ -10,7 +10,8 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use n2r_win32::{
-    GeneralDiskState, GeneralFrozenPartition, GeneralJournaledPartition, NativeEvent, WritePolicy,
+    GeneralDiskState, GeneralFrozenPartition, GeneralJournaledPartition, MountPathObservation,
+    NativeEvent, WritePolicy, capture_mount_paths_general,
     general_layout::GeneralSourceShadowBinding,
     journal_file::{
         GeneralJournalStorageBinding, JournalFileIdentity, MAX_JOURNAL_BYTES,
@@ -22,6 +23,7 @@ use n2r_win32::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
 };
@@ -69,6 +71,8 @@ pub struct Request {
     pub schema_version: u32,
     pub experiment_id: String,
     pub expected_tree_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_mount_paths: Option<Vec<String>>,
     pub pair: GeneralSourceShadowBinding,
     pub comparison: RetainedCompareRequest,
     pub journal: GeneralJournalStorageBinding,
@@ -95,6 +99,7 @@ impl Request {
             "missing pinned general target expectation"
         );
         self.pair.validate()?;
+        crate::general_shadow::validate_mount_paths(&self.expected_mount_paths)?;
         self.journal.validate()?;
         retained_compare::validate_request(&self.comparison)?;
         ensure!(
@@ -513,9 +518,43 @@ pub struct Finalization {
     pub handoff: Option<lab_reconstruct::ExecutionReport>,
     pub completed_marker_proof: Option<lab_reconstruct::CompletedMarkerProof>,
     pub native: Option<shadow_native::GeneralConvertedReport>,
+    pub mount_paths_after: Option<MountPathObservation>,
+    pub mount_paths_preserved: Option<bool>,
+    pub mount_paths_error: Option<String>,
     pub error: Option<String>,
     pub events: Vec<NativeEvent>,
     pub general_conversion_qualified: bool,
+}
+
+fn record_mount_paths(
+    request: &Request,
+    native: &shadow_native::GeneralConvertedReport,
+    report: &mut Finalization,
+) {
+    match capture_mount_paths_general(native.pair.source.clone(), &mut report.events) {
+        Ok(observed) => {
+            report.mount_paths_preserved = request.expected_mount_paths.as_ref().map(|expected| {
+                let before: BTreeSet<_> = expected.iter().map(|path| path.to_lowercase()).collect();
+                let after: BTreeSet<_> = observed
+                    .paths
+                    .iter()
+                    .map(|path| path.to_lowercase())
+                    .collect();
+                before == after
+            });
+            if report.mount_paths_preserved == Some(false) {
+                report.error =
+                    Some("converted ReFS mount paths differ from the original NTFS volume".into());
+            }
+            report.mount_paths_after = Some(observed);
+        }
+        Err(error) => {
+            report.mount_paths_error = Some(error.to_string());
+            if request.expected_mount_paths.is_some() {
+                report.error = Some("converted ReFS mount paths could not be verified".into());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -758,6 +797,9 @@ pub(crate) fn finalize(
         handoff: None,
         completed_marker_proof: None,
         native: None,
+        mount_paths_after: None,
+        mount_paths_preserved: None,
+        mount_paths_error: None,
         error: None,
         events,
         general_conversion_qualified: false,
@@ -780,8 +822,9 @@ pub(crate) fn finalize(
     }
     match verify_converted_tree(request, &expectation, &mut report.events) {
         Ok(native) => {
+            record_mount_paths(request, &native, &mut report);
             report.native = Some(native);
-            report.success = true;
+            report.success = report.error.is_none();
         }
         Err(error) => report.error = Some(error.to_string()),
     }
@@ -834,6 +877,9 @@ pub fn finalize_after_marker(
         handoff: None,
         completed_marker_proof: Some(proof),
         native: None,
+        mount_paths_after: None,
+        mount_paths_preserved: None,
+        mount_paths_error: None,
         error: None,
         events,
         general_conversion_qualified: false,
@@ -844,8 +890,9 @@ pub fn finalize_after_marker(
     }
     match verify_converted_tree(request, &expectation, &mut report.events) {
         Ok(native) => {
+            record_mount_paths(request, &native, &mut report);
             report.native = Some(native);
-            report.success = true;
+            report.success = report.error.is_none();
         }
         Err(error) => report.error = Some(error.to_string()),
     }
@@ -884,6 +931,7 @@ mod tests {
             schema_version: 1,
             experiment_id: "a".repeat(32),
             expected_tree_sha256: "c".repeat(64),
+            expected_mount_paths: None,
             pair: GeneralSourceShadowBinding {
                 source: disk(
                     1,

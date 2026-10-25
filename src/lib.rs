@@ -24,6 +24,7 @@ pub mod ntfs_data_attestation;
 pub mod ntfs_freeze;
 pub mod ntfs_index;
 pub mod ntfs_inspect;
+pub mod ntfs_log;
 pub mod ntfs_namespace;
 pub mod ntfs_namespace_attestation;
 pub mod ntfs_security;

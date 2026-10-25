@@ -186,3 +186,10 @@ not yet been run in the VM. [Microsoft documents the RM query's
 `TransactionCount`](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-txfs_query_rm_information)
 and the transaction-list control's buffer semantics
 [separately](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_txfs_list_transactions).
+
+The raw reader now also checks both `$LogFile` restart pages after the actual
+source freeze. A Windows-created 1 GiB control image passed the LFS 1.1
+clean-dismount candidate checks; see [the restart-page record](ntfs-log-restart.md).
+The frozen-source assessment has a separate gate for this opaque, actual-read
+evidence. That gate is not full NTFS log replay and cannot clear the remaining
+`internal_replacement_state` refusal by itself.

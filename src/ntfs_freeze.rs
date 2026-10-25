@@ -2,7 +2,7 @@
 //! A frozen basis is not source admission or authority to arm writes.
 use crate::{
     block_io::SourceIdentity,
-    ntfs_backup, ntfs_inspect,
+    ntfs_backup, ntfs_inspect, ntfs_log,
     planner::{Filesystem, Inspection},
 };
 use anyhow::{Result, ensure};
@@ -21,6 +21,8 @@ pub struct Evidence {
     before: PartitionSnapshot,
     after: PartitionSnapshot,
     backups: ntfs_backup::VerifiedBackups,
+    log_restart: Option<ntfs_log::VerifiedRestart>,
+    log_restart_error: Option<String>,
     raw_bytes_read: u64,
     raw_bytes_written: u64,
     source_admitted: bool,
@@ -89,6 +91,16 @@ impl ObservedFrozenSource {
             if gate.code == "frozen_device_basis" {
                 gate.satisfied = true;
                 gate.detail="actual excluded device and complete source hash revalidated before and after a live physically read-only native observation".into();
+            }
+            if gate.code == "log_restart_pages"
+                && basis
+                    .evidence
+                    .log_restart
+                    .as_ref()
+                    .is_some_and(|proof| proof.binds(raw))
+            {
+                gate.satisfied = true;
+                gate.detail = "both clean-flagged LFS 1.1 restart copies passed USA, bounds, identity and matching-state checks on the unchanged frozen device; full log replay remains unproven".into();
             }
         }
         Ok(assessment)
@@ -207,6 +219,10 @@ impl FrozenBasis {
         let hash = crate::lab_reconstruct::hash_range(source, 0, length)?;
         let raw = ntfs_inspect::inspect(source, length)?;
         let backups = ntfs_backup::verify(source, length, &raw)?;
+        let (log_restart, log_restart_error) = match ntfs_log::verify(source, &raw) {
+            Ok(proof) => (Some(proof), None),
+            Err(error) => (None, Some(format!("{error:#}"))),
+        };
         let inspection = Inspection {
             schema_version: 1,
             source: SourceIdentity {
@@ -238,6 +254,8 @@ impl FrozenBasis {
             before,
             after,
             backups,
+            log_restart,
+            log_restart_error,
             raw_bytes_read: source.native_bytes_read - read_start,
             raw_bytes_written: 0,
             source_admitted: false,

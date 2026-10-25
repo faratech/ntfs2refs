@@ -494,6 +494,11 @@ fn assess_source_view_profile(
         backups.is_some(),
         "verify the backup boot sector and all four mirrored MFT records through actual source reads",
     );
+    gate(
+        "log_restart_pages",
+        false,
+        "read and reconcile both $LogFile restart pages from the frozen device; clean flags alone do not prove complete log recovery",
+    );
     let unresolved: Vec<_> = raw
         .blockers
         .iter()

@@ -71,6 +71,14 @@ data-disk writes. Its ReFS check covers the 3.14 VBR geometry, not the complete
 metadata graph or Windows mount behavior; the resulting preparation explicitly
 does not authorize execution.
 
+The native shadow engine now has a separate general entry point for a
+Windows-created ReFS data disk bound by `GeneralSourceShadowBinding`. It accepts
+bounded streamed NTFS bytes, can attempt source-relative retention through
+ReFS's native placement control, and reopens the resulting files to check
+content, namespace and security. The legacy disk-3/guest entry points keep
+their exact fixture checks. A general shadow CLI and native qualification of
+this new route are still pending.
+
 The library now has internal general activation and apply/resume/rollback
 functions. They rebind the separately pinned ticket to the actual GPT source,
 shadow and journal file, inspect the immutable journal before changing disk

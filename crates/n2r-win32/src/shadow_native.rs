@@ -3,6 +3,7 @@
 use crate::{
     attestation::{PrivilegeState, Snapshot},
     attestation_native::{Privileges, snapshot},
+    general_layout::{GeneralDiskBinding, GeneralSourceShadowBinding},
     layout::{self, DiskBinding, invalid},
     namespace_layout,
     native::{self, NativeEvent},
@@ -116,6 +117,34 @@ pub struct Report {
     pub security_repair_preflight_sha256: Option<String>,
     pub security_repair_privileges: Vec<PrivilegeState>,
     pub retention_attempts: Vec<RetentionAttempt>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GeneralReport {
+    pub pair: GeneralSourceShadowBinding,
+    pub native: Report,
+    pub conversion_qualified: bool,
+}
+
+fn observed_shadow(
+    disk: &File,
+    binding: &DiskBinding,
+    general: Option<&GeneralDiskBinding>,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<crate::PartitionSnapshot> {
+    if let Some(general) = general {
+        let probe = native::probe_general(general.clone(), events)?;
+        Ok(crate::PartitionSnapshot {
+            binding: binding.clone(),
+            disk_attributes: probe.disk_attributes_after,
+            device: probe.device,
+            length: probe.disk_length,
+            alignment: probe.alignment,
+            layout: probe.gpt_layout,
+        })
+    } else {
+        native::snapshot(disk, binding, events)
+    }
 }
 #[derive(Debug, Serialize)]
 pub struct RetentionAttempt {
@@ -508,6 +537,7 @@ fn repair_security_profile(
         false,
         ordinary,
         None,
+        None,
     )?;
     validate_existing(&observed, input, &same, true)?;
     let preflight_sha = hex::encode(Sha256::digest(
@@ -563,6 +593,7 @@ fn repair_security_profile(
         &same,
         false,
         ordinary,
+        None,
         None,
     )?;
     validate_existing(&verified, input, &same, false)?;
@@ -822,6 +853,7 @@ pub fn run(
         false,
         false,
         None,
+        None,
     )
 }
 /// Ordinary stream forms remain confined to the independent lab shadow.
@@ -840,6 +872,7 @@ pub fn run_ordinary(
         same_security,
         false,
         true,
+        None,
         None,
     )
 }
@@ -867,7 +900,79 @@ pub fn run_ordinary_streaming(
         false,
         true,
         Some(payload_writer),
+        None,
     )
+}
+
+/// Construct a Windows-created ReFS shadow on a separately bound dedicated
+/// data disk. The source callback provides checked logical NTFS bytes; this
+/// function never opens or writes the source disk.
+pub fn run_general_ordinary_streaming(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    retain_eligible: bool,
+    payload_writer: &mut impl FnMut(usize, &mut File) -> io::Result<()>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralReport> {
+    pair.validate()?;
+    let binding = DiskBinding {
+        disk_number: pair.shadow.disk_number,
+        volume_guid: pair.shadow.volume_guid.clone(),
+        identity: pair.shadow.identity.clone(),
+    };
+    let native = run_role(
+        binding,
+        pair.source.disk_number,
+        input,
+        if retain_eligible {
+            Mode::ConstructRetaining
+        } else {
+            Mode::Construct
+        },
+        &same_security,
+        false,
+        true,
+        Some(payload_writer),
+        Some(&pair.shadow),
+    )?;
+    validate_existing(&native, input, &same_security, false)?;
+    Ok(GeneralReport {
+        pair,
+        native,
+        conversion_qualified: false,
+    })
+}
+
+/// Re-observe an existing general shadow without creating files or changing
+/// stored metadata. Security/namespace comparison remains caller-owned.
+pub fn verify_general_ordinary(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralReport> {
+    pair.validate()?;
+    let binding = DiskBinding {
+        disk_number: pair.shadow.disk_number,
+        volume_guid: pair.shadow.volume_guid.clone(),
+        identity: pair.shadow.identity.clone(),
+    };
+    let native = run_role(
+        binding,
+        pair.source.disk_number,
+        input,
+        Mode::Verify,
+        &same_security,
+        false,
+        true,
+        None,
+        Some(&pair.shadow),
+    )?;
+    validate_existing(&native, input, &same_security, false)?;
+    Ok(GeneralReport {
+        pair,
+        native,
+        conversion_qualified: false,
+    })
 }
 /// Observe the enrolled converted original after durable journal handoff. All
 /// original shadow creation/repair entry points retain the disk3 restriction.
@@ -893,6 +998,7 @@ pub fn verify_converted(
         true,
         false,
         None,
+        None,
     )?;
     validate_existing(&report, input, &same_security, false)?;
     Ok(report)
@@ -915,6 +1021,7 @@ pub fn verify_converted_ordinary(
         true,
         true,
         None,
+        None,
     )?;
     validate_existing(&report, input, &same_security, false)?;
     Ok(report)
@@ -928,16 +1035,36 @@ fn run_role(
     converted: bool,
     ordinary: bool,
     mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    general_shadow: Option<&GeneralDiskBinding>,
 ) -> io::Result<Report> {
-    binding.validate()?;
-    if binding.disk_number != if converted { 1 } else { 3 }
-        || (converted && mode != Mode::Verify)
-        || source_disk != 1
-        || input.is_empty()
-        || input.len() > 160
-        || std::env::var("COMPUTERNAME").ok().as_deref() != Some("N2R-WIN11")
-    {
-        return Err(invalid("restricted tree shadow lab profile differs"));
+    if let Some(general) = general_shadow {
+        general.validate()?;
+        if converted
+            || !ordinary
+            || source_disk == binding.disk_number
+            || !matches!(
+                mode,
+                Mode::ProbeRoot | Mode::Construct | Mode::ConstructRetaining | Mode::Verify
+            )
+            || binding.disk_number != general.disk_number
+            || binding.volume_guid != general.volume_guid
+            || binding.identity != general.identity
+            || input.is_empty()
+            || input.len() > 160
+        {
+            return Err(invalid("general independent shadow profile differs"));
+        }
+    } else {
+        binding.validate()?;
+        if binding.disk_number != if converted { 1 } else { 3 }
+            || (converted && mode != Mode::Verify)
+            || source_disk != 1
+            || input.is_empty()
+            || input.len() > 160
+            || std::env::var("COMPUTERNAME").ok().as_deref() != Some("N2R-WIN11")
+        {
+            return Err(invalid("restricted tree shadow lab profile differs"));
+        }
     }
     if payload_writer.is_some()
         && (!ordinary || converted || !matches!(mode, Mode::Construct | Mode::ConstructRetaining))
@@ -1023,7 +1150,7 @@ fn run_role(
         .read(true)
         .share_mode(3)
         .open(format!("\\\\.\\PhysicalDrive{}", binding.disk_number))?;
-    let before = native::snapshot(&disk, &binding, &mut events)?;
+    let before = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
     if before.disk_attributes != 0 {
         return Err(invalid("shadow must be online writable"));
     }
@@ -1110,7 +1237,7 @@ fn run_role(
         return Err(invalid("root security changed before verification"));
     }
     if mode == Mode::ProbeRoot {
-        let after = native::snapshot(&disk, &binding, &mut events)?;
+        let after = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
         privileges.restore()?;
         return Ok(Report {
             binding,
@@ -1155,7 +1282,7 @@ fn run_role(
         }
         if mode == Mode::RestoreRootOnly {
             volume.sync_all()?;
-            let after = native::snapshot(&disk, &binding, &mut events)?;
+            let after = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
             privileges.restore()?;
             return Ok(Report {
                 binding,
@@ -1418,7 +1545,7 @@ fn run_role(
                 .transpose()?,
         });
     }
-    let after = native::snapshot(&disk, &binding, &mut events)?;
+    let after = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
     if after.disk_attributes != 0 {
         return Err(invalid("shadow disk state changed"));
     }

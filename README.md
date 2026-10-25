@@ -33,7 +33,7 @@ source. Complete namespace reconciliation, source admission and a coherent
 admission decision remain unfinished.
 The [source-admission work](docs/source-admission-progress.md) now includes
 native directory observations, explicit object dispositions and actual backup
-boot/MFT-mirror checks. It reports remaining refusals; no admission certificate
+boot/MFT-mirror checks. It reports remaining refusals; an admission certificate
 has not yet been issued for arbitrary existing volumes.
 An [existing four-file tree now has a native post-exclusion source basis](docs/native-ntfs-source-freeze.md),
 verified across restart and read-only Windows inspection. Its physical placement

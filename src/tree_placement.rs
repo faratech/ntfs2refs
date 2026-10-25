@@ -329,7 +329,9 @@ fn diagnose_impl(
                 "single source extent exceeds partition"
             );
             source_allocations.push((offset, o.length));
-        } else if !o.source_extents.is_empty() {
+        }
+        let mut source_covered = 0u64;
+        if !o.source_extents.is_empty() {
             let mut covered = 0u64;
             for run in &o.source_extents {
                 let offset = run.physical_offset.context("fragmented source hole")?;
@@ -348,7 +350,11 @@ fn diagnose_impl(
                     .context("source run overflow")?;
                 source_allocations.push((offset, run.length));
             }
-            ensure!(covered == o.length, "fragmented source coverage differs");
+            ensure!(
+                covered == o.length / 4096 * 4096,
+                "source full-cluster coverage differs"
+            );
+            source_covered = covered;
         }
         ensure!(
             Some(&m.logical_sha256) == o.sha256.as_ref(),
@@ -407,7 +413,7 @@ fn diagnose_impl(
             while cursor < end {
                 let (from, segment_end) = if let Some(start) = source {
                     (Some(start + cursor), end)
-                } else if o.source_extents.is_empty() {
+                } else if o.source_extents.is_empty() || cursor >= source_covered {
                     (None, end)
                 } else {
                     let run = o
@@ -609,6 +615,44 @@ mod tests {
         let (_, mut invalid_mapping, _) = example(4096);
         invalid_mapping.logical_sha256 = tree.objects[0].sha256.clone().unwrap();
         assert!(diagnose(&tree, &[invalid_mapping], &payloads, 65536).is_err());
+    }
+    #[test]
+    fn partial_final_cluster_materializes_only_the_tail() {
+        let (mut tree, mut mapping, mut payloads) = example(4096);
+        payloads[0].truncate(4097);
+        let digest = hex::encode(Sha256::digest(&payloads[0]));
+        tree.objects[0].source_offset = None;
+        tree.objects[0].source_extents = vec![Extent {
+            logical_offset: 0,
+            physical_offset: Some(4096),
+            length: 4096,
+        }];
+        tree.objects[0].length = 4097;
+        tree.objects[0].sha256 = Some(digest.clone());
+        tree.logical_bytes = 4097;
+        mapping.logical_sha256 = digest;
+        let plan = diagnose(&tree, &[mapping], &payloads, 65536).unwrap();
+        assert_eq!(
+            (
+                plan.retained_bytes,
+                plan.relocated_bytes,
+                plan.materialized_bytes
+            ),
+            (4096, 0, 1)
+        );
+        assert_eq!(plan.ranges.len(), 2);
+        assert_eq!(plan.ranges[0].source_offset, Some(4096));
+        assert_eq!(plan.ranges[0].disposition, Disposition::Retained);
+        assert_eq!(plan.ranges[1].source_offset, None);
+        assert_eq!(plan.ranges[1].destination_offset, Some(8192));
+        assert_eq!(plan.ranges[1].disposition, Disposition::Materialized);
+        assert_eq!(
+            plan.comparison_request(65536, &"1".repeat(64), &"2".repeat(64), 65536)
+                .unwrap()
+                .retained_ranges
+                .len(),
+            1
+        );
     }
     #[test]
     fn streamed_fragmented_source_hashes_each_original_physical_run() {

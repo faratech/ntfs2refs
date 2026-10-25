@@ -10,6 +10,7 @@ const MAX_MATERIALIZE: u64 = 256 * 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {
     RetainCandidate,
+    MixedCandidate,
     MaterializeCandidate,
     Reject,
 }
@@ -22,8 +23,8 @@ pub struct StreamDecision {
     pub logical_bytes: u64,
     pub logical_sha256: Option<String>,
     pub source_offset: Option<u64>,
-    /// Physical runs for a fully initialized ordinary stream with more than
-    /// one NTFS run. Empty for single-run or materialized streams.
+    /// Complete physical clusters in an initialized ordinary stream. A final
+    /// partial cluster is deliberately excluded and must be materialized.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_extents: Vec<Extent>,
     pub disposition: Disposition,
@@ -45,8 +46,8 @@ pub struct Plan {
 
 pub fn classify(raw: &NtfsInspection) -> Plan {
     let mut plan = Plan {
-        schema_version: 2,
-        profile: "ntfs-4k-to-refs-4k-source-streams-v2",
+        schema_version: 3,
+        profile: "ntfs-4k-to-refs-4k-source-streams-v3",
         streams: Vec::new(),
         retained_candidate_bytes: 0,
         materialized_candidate_bytes: 0,
@@ -70,6 +71,8 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                 });
             let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
             let physical = single.and_then(|e| e.physical_offset);
+            let full_prefix = stream.logical_size / CLUSTER * CLUSTER;
+            let rounded = stream.logical_size.checked_next_multiple_of(CLUSTER);
             let mut covered = 0u64;
             let physical_runs = !stream.extents.is_empty()
                 && stream.extents.len() <= 1024
@@ -86,14 +89,13 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                     covered = covered.saturating_add(extent.length);
                     valid
                 })
-                && covered == stream.logical_size;
-            let retainable = !named
+                && Some(covered) == rounded;
+            let adoptable_prefix = !named
                 && !stream.resident
                 && stream.flags == 0
-                && stream.logical_size > 0
-                && stream.logical_size.is_multiple_of(CLUSTER)
+                && full_prefix > 0
                 && stream.initialized_size == stream.logical_size
-                && stream.allocated_size == stream.logical_size
+                && Some(stream.allocated_size) == rounded
                 && physical_runs;
             let (disposition, reason) = if u64::from(raw.geometry.cluster_size) != CLUSTER
                 || stream.flags != 0
@@ -104,10 +106,15 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                     Disposition::Reject,
                     "source geometry, encoding, logical hash or bounded copy is unsupported",
                 )
-            } else if retainable {
+            } else if adoptable_prefix && full_prefix == stream.logical_size {
                 (
                     Disposition::RetainCandidate,
                     "initialized aligned physical runs may be adopted",
+                )
+            } else if adoptable_prefix {
+                (
+                    Disposition::MixedCandidate,
+                    "complete physical clusters may be retained; final partial cluster must be materialized",
                 )
             } else {
                 (
@@ -118,6 +125,10 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
             match disposition {
                 Disposition::RetainCandidate => {
                     plan.retained_candidate_bytes += stream.logical_size;
+                }
+                Disposition::MixedCandidate => {
+                    plan.retained_candidate_bytes += full_prefix;
+                    plan.materialized_candidate_bytes += stream.logical_size - full_prefix;
                 }
                 Disposition::MaterializeCandidate => {
                     plan.materialized_candidate_bytes += stream.logical_size;
@@ -135,8 +146,20 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                 } else {
                     None
                 },
-                source_extents: if disposition == Disposition::RetainCandidate && single.is_none() {
-                    stream.extents.clone()
+                source_extents: if disposition == Disposition::MixedCandidate
+                    || (disposition == Disposition::RetainCandidate && single.is_none())
+                {
+                    stream
+                        .extents
+                        .iter()
+                        .filter_map(|extent| {
+                            (extent.logical_offset < full_prefix).then(|| Extent {
+                                logical_offset: extent.logical_offset,
+                                physical_offset: extent.physical_offset,
+                                length: extent.length.min(full_prefix - extent.logical_offset),
+                            })
+                        })
+                        .collect()
                 } else {
                     Vec::new()
                 },

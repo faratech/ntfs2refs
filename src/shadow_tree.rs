@@ -123,8 +123,8 @@ impl ExpectedTree {
                         .context("source run overflow")?;
                 }
                 ensure!(
-                    covered == object.length,
-                    "fragmented source coverage differs"
+                    covered == object.length / 4096 * 4096,
+                    "source full-cluster coverage differs"
                 );
             }
         }
@@ -279,7 +279,11 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
                     .and_then(|decision| decision.source_offset);
                 let extents = candidate
                     .filter(|decision| {
-                        decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate
+                        matches!(
+                            decision.disposition,
+                            ntfs_stream_plan::Disposition::RetainCandidate
+                                | ntfs_stream_plan::Disposition::MixedCandidate
+                        )
                     })
                     .map(|decision| decision.source_extents.clone())
                     .unwrap_or_default();

@@ -1190,7 +1190,10 @@ fn run_role(
                     .ok_or_else(|| invalid("source placement overflow"))?;
                 source_allocations.push((offset, run.length));
             }
-            if i.directory || covered != i.logical_length() || i.source_runs.len() > 1024 {
+            if i.directory
+                || covered != i.logical_length() / 4096 * 4096
+                || i.source_runs.len() > 1024
+            {
                 return Err(invalid("fragmented source placement coverage differs"));
             }
         }

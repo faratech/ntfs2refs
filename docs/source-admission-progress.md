@@ -194,6 +194,12 @@ fragmented run. It checks both ReFS allocation bitmap views before each move
 and re-reads the file's actual VCN mapping after the attempt; a refused or
 partial move remains a measured relocation in the conversion plan. No source
 NTFS extent is moved by this shadow operation.
+For ordinary files ending inside a 4 KiB cluster, source planning now carries
+only the complete initialized physical clusters into that move/retention path.
+The final partial cluster is reconstructed from logical NTFS bytes in the
+shadow and recorded separately as materialized, avoiding adoption of
+uninitialized bytes beyond EOF. Native qualification of this mixed case is
+still pending.
 
 The dirty-state and volume-policy questions are now separate gates. On the
 Windows 11 source, the native dirty result is false, on-disk dirty bit is

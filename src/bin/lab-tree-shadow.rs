@@ -35,6 +35,11 @@ fn main() -> anyhow::Result<()> {
         finalize_security: bool,
         #[arg(long, requires = "verify_only")]
         freeze_shadow: bool,
+        /// Place eligible target streams at the frozen source locations using
+        /// native ReFS movement; conflicting streams retain their real target
+        /// allocations and are counted as journaled relocations.
+        #[arg(long,conflicts_with_all=["verify_only","finalize_security","root_security_experiment"])]
+        retain_eligible: bool,
     }
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
@@ -112,6 +117,7 @@ fn main() -> anyhow::Result<()> {
         "root_security_experiment":args.root_security_experiment,
         "finalize_security":args.finalize_security,
         "freeze_shadow":args.freeze_shadow,
+        "retain_eligible":args.retain_eligible,
         "source_writes_authorized":false,"conversion_qualified":false}),
     )?;
     let mut events = vec![];
@@ -214,6 +220,8 @@ fn main() -> anyhow::Result<()> {
                 &input,
                 if args.verify_only {
                     shadow_native::Mode::Verify
+                } else if args.retain_eligible {
+                    shadow_native::Mode::ConstructRetaining
                 } else {
                     shadow_native::Mode::Construct
                 },

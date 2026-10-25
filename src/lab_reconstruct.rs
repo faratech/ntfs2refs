@@ -557,7 +557,7 @@ fn normalized_target<T: ReadSeek, J: Read + Seek>(
     target: &mut T,
     journal: &mut J,
     loaded: &Loaded,
-) -> Result<String> {
+) -> Result<()> {
     let request = &loaded.manifest.request;
     ensure!(
         target.byte_len()? == request.expected_length,
@@ -567,13 +567,11 @@ fn normalized_target<T: ReadSeek, J: Read + Seek>(
     let mut before = vec![0; BUFFER];
     let mut after = vec![0; BUFFER];
     let mut normalized = Sha256::new();
-    let mut actual = Sha256::new();
     let mut offset = 0;
     let mut first_record = 0;
     while offset < request.expected_length {
         let count = usize::try_from((request.expected_length - offset).min(BUFFER as u64))?;
         read_at(target, offset, &mut current[..count])?;
-        actual.update(&current[..count]);
         while first_record < loaded.records.len()
             && loaded.records[first_record].offset + loaded.records[first_record].length <= offset
         {
@@ -607,7 +605,7 @@ fn normalized_target<T: ReadSeek, J: Read + Seek>(
         hex::encode(normalized.finalize()) == request.source_sha256,
         "target retained or unmanaged bytes differ from source identity"
     );
-    Ok(hex::encode(actual.finalize()))
+    Ok(())
 }
 
 fn validate_recovery<T: ReadSeek, S: ReadSeek, J: DurableIo>(
@@ -822,7 +820,25 @@ pub fn mark_handoff<T: DurableIo, S: ReadSeek, J: DurableIo>(
     ticket: &JournalTicket,
     observed_binding: &JournalBinding,
 ) -> Result<ExecutionReport> {
-    let loaded = validate_recovery(target, shadow, journal, ticket, observed_binding)?;
+    validate_binding(observed_binding)?;
+    ensure!(
+        *observed_binding == ticket.binding,
+        "handoff storage binding differs"
+    );
+    let loaded = load_journal(journal, ticket)?;
+    ensure!(
+        target.byte_len()? == loaded.manifest.request.expected_length
+            && shadow.byte_len()? == loaded.manifest.request.expected_length,
+        "handoff data lengths changed"
+    );
+    ensure!(
+        retained_compare::hash_reader(shadow, loaded.manifest.request.expected_length)?
+            == loaded.manifest.request.shadow_sha256,
+        "handoff shadow image changed"
+    );
+    // The complete expected-postimage check below is stronger than separately
+    // normalizing its patches back to the source. Avoid that redundant full
+    // target scan while retaining the pinned journal/shadow and flush barriers.
     target.sync_all()?;
     let target_sha256 =
         retained_compare::hash_reader(target, loaded.manifest.request.expected_length)?;

@@ -6,9 +6,11 @@ param(
  [Parameter(Mandatory)][ValidateSet('Prepare','Activate','Apply','Resume','Rollback','Handoff')][string]$Operation,
  [Parameter(Mandatory)][string]$BinaryPath,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256,
- [string]$Directory
+ [string]$Directory,
+ [ValidateRange(0,4096)][int]$InterruptAfterWrites=0
 )
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+if($InterruptAfterWrites-gt0-and$Operation-notin@('Apply','Resume','Rollback')){throw 'Crash injection requires a journaled payload operation.'}
 $workspace=Split-Path -Parent $PSScriptRoot;Import-Module (Join-Path $workspace 'lab/Lab.psm1') -Force
 $cfg=Get-LabConfiguration;$manifest=Read-LabManifest $cfg win11;$vm=Get-OwnedLabVM $cfg $manifest
 $binary=Get-Item -LiteralPath $BinaryPath -Force
@@ -49,7 +51,7 @@ $Directory=Assert-LabPath $Directory $cfg.Root
 $step=$Operation.ToLowerInvariant()+'-'+[guid]::NewGuid().ToString('N')
 $requestSha=(Get-FileHash -LiteralPath (Join-Path $Directory 'request.json')).Hash.ToLowerInvariant()
 $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null;$job=$null
-$record=[ordered]@{operation=$Operation;runId=$run;guestRoot=$root;step=$step;directory=$Directory;status='started';operationCompletionKnown=$true;error=$null}
+$record=[ordered]@{operation=$Operation;runId=$run;guestRoot=$root;step=$step;directory=$Directory;status='started';operationCompletionKnown=$true;interruptAfterWrites=$InterruptAfterWrites;error=$null}
 Save-New (Join-Path $Directory ($step+'.started.json')) $record
 try{
  for($i=0;$i-lt90;$i++){try{$session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop;break}catch{Start-Sleep -Seconds 2}}
@@ -79,28 +81,36 @@ try{
  }
  $record.operationCompletionKnown=$false
  $ticketSha=if($Operation-eq'Prepare'){$null}else{(Get-FileHash -LiteralPath (Join-Path $Directory 'ticket.json')).Hash.ToLowerInvariant()}
- $job=Invoke-Command -Session $session -AsJob -ArgumentList @($root,$step,$Operation,$BinarySha256,$requestSha,$shadowRun,$ticketSha) -ScriptBlock {
-  param($Root,$Step,$Operation,$BinarySha,$RequestSha,$Run,$TicketSha);$ErrorActionPreference='Stop'
+ $job=Invoke-Command -Session $session -AsJob -ArgumentList @($root,$step,$Operation,$BinarySha256,$requestSha,$shadowRun,$ticketSha,$InterruptAfterWrites) -ScriptBlock {
+  param($Root,$Step,$Operation,$BinarySha,$RequestSha,$Run,$TicketSha,$InterruptAfterWrites);$ErrorActionPreference='Stop'
   $exe=$Root+'\lab-tree-reconstruct.exe';$req=$Root+'\request.json';$ticket=$Root+'\ticket.json'
   if((Get-FileHash -LiteralPath $exe).Hash.ToLowerInvariant()-cne$BinarySha-or(Get-FileHash -LiteralPath $req).Hash.ToLowerInvariant()-cne$RequestSha){throw 'Guest binary or request pin differs.'}
   if(Get-Process -Name lab-tree-reconstruct,lab-native-reconstruct,lab-tree-shadow -ErrorAction SilentlyContinue){throw 'A native conversion operation is already live.'}
   $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$exe;$psi.Arguments=$Operation.ToLowerInvariant()+' --request "'+$req+'" --request-sha256 '+$RequestSha+' --journal "J:\ntfs2refs-shadow\'+$Run+'\reconstruction.journal" --ticket "'+$ticket+'" --output "'+$Root+'\'+$Step+'.json"'
   if($Operation-ne'Prepare'){if((Get-FileHash -LiteralPath $ticket).Hash.ToLowerInvariant()-cne$TicketSha){throw 'Independent host ticket pin differs.'};$psi.Arguments+=' --ticket-sha256 '+$TicketSha}
+  if($InterruptAfterWrites-gt0){$psi.Arguments+=' --interrupt-after-writes '+$InterruptAfterWrites}
   $psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
   $p=[Diagnostics.Process]::new();$p.StartInfo=$psi;if(-not$p.Start()){throw 'Native process failed to start.'};$stdout=$p.StandardOutput.ReadToEndAsync();$stderr=$p.StandardError.ReadToEndAsync()
   [IO.File]::WriteAllText($Root+'\'+$Step+'.process.json',([ordered]@{pid=$p.Id;arguments=$psi.Arguments;startedUtc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json))
   if(-not$p.WaitForExit(2400000)){throw ('Native operation still live; preserve PID '+$p.Id)}
   [IO.File]::WriteAllText($Root+'\'+$Step+'.stdout',$stdout.Result);[IO.File]::WriteAllText($Root+'\'+$Step+'.stderr',$stderr.Result)
-  [pscustomobject]@{exitCode=$p.ExitCode;reportSha256=(Get-FileHash -LiteralPath ($Root+'\'+$Step+'.json')).Hash.ToLowerInvariant()}
+  $interrupted=$InterruptAfterWrites-gt0-and$p.ExitCode-eq86
+  if($interrupted){
+   $disk=Get-Disk -Number 1
+   if($disk.UniqueId-cne'60022480D091C4251B5FFD619706C2B5'-or-not$disk.IsOffline){throw 'Interrupted target exclusion was not preserved.'}
+   [IO.File]::WriteAllText($Root+'\'+$Step+'.interruption.json',([ordered]@{exitCode=86;requestedDurableWrites=$InterruptAfterWrites;targetDisk=1;targetUniqueId=$disk.UniqueId;isOffline=$disk.IsOffline;isReadOnly=$disk.IsReadOnly;recoveryRequired=$true;handoffAttempted=$false}|ConvertTo-Json))
+  }
+  [pscustomobject]@{exitCode=$p.ExitCode;interrupted=$interrupted;reportSha256=if($interrupted){$null}else{(Get-FileHash -LiteralPath ($Root+'\'+$Step+'.json')).Hash.ToLowerInvariant()}}
  }
  if(-not(Wait-Job $job -Timeout 2700)){throw 'Native operation live or unknown; preserve branch.'}
  $reply=@(Receive-Job $job -ErrorAction Stop);if($job.State-ne'Completed'-or$reply.Count-ne1){throw 'Native completion not established.'}
  $record.operationCompletionKnown=$true
  Save-New (Join-Path $Directory ($step+'.reply.json')) $reply[0]
  foreach($name in @('.json','.intent.json','.process.json','.stdout','.stderr')){Copy-Item -LiteralPath ($root+'\'+$step+$name) -Destination (Join-Path $Directory ($step+$name)) -FromSession $session}
- if((Get-FileHash -LiteralPath (Join-Path $Directory ($step+'.json'))).Hash.ToLowerInvariant()-cne$reply[0].reportSha256){throw 'Exported report differs.'}
+ if($reply[0].interrupted){Copy-Item -LiteralPath ($root+'\'+$step+'.interruption.json') -Destination (Join-Path $Directory ($step+'.interruption.json')) -FromSession $session}
+ elseif((Get-FileHash -LiteralPath (Join-Path $Directory ($step+'.json'))).Hash.ToLowerInvariant()-cne$reply[0].reportSha256){throw 'Exported report differs.'}
  if($Operation-eq'Prepare'-and$reply[0].exitCode-eq0){Copy-Item -LiteralPath ($root+'\ticket.json') -Destination (Join-Path $Directory 'ticket.json') -FromSession $session}
- $record.status=if($reply[0].exitCode-eq0){'native-operation-complete'}else{'native-operation-failed-terminal'}
+ $record.status=if($reply[0].interrupted){'native-operation-interrupted-recovery-required'}elseif($reply[0].exitCode-eq0){'native-operation-complete'}else{'native-operation-failed-terminal'}
  $record['exitCode']=$reply[0].exitCode
 }catch{$record.status='failed-preserved';$record.error=$_.Exception.ToString();throw}
 finally{Save-New (Join-Path $Directory ($step+'.host-result.json')) $record;if($job-and$job.State-in@('Completed','Failed','Stopped')){Remove-Job $job -Force};if($session-and$record.operationCompletionKnown){Remove-PSSession $session -ErrorAction SilentlyContinue}}

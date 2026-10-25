@@ -45,6 +45,7 @@ pub enum Mode {
     ProbeRoot,
     RestoreRootOnly,
     Construct,
+    ConstructRetaining,
     Verify,
 }
 #[derive(Debug, Serialize)]
@@ -81,6 +82,122 @@ pub struct Report {
     pub security_restorations: Vec<ObjectSecurityRestore>,
     pub security_repair_preflight_sha256: Option<String>,
     pub security_repair_privileges: Vec<PrivilegeState>,
+    pub retention_attempts: Vec<RetentionAttempt>,
+}
+#[derive(Debug, Serialize)]
+pub struct RetentionAttempt {
+    pub components: Vec<String>,
+    pub destination_lcn: u64,
+    pub clusters: u32,
+    pub candidate: CandidateReport,
+    pub submitted: bool,
+    pub native_error: Option<i32>,
+    pub mapping_before: Vec<u8>,
+    pub mapping_after: Vec<u8>,
+    pub all_clusters_at_source: bool,
+}
+fn retain_on_shadow(
+    volume: &File,
+    root: &str,
+    i: &Input<'_>,
+    partition: u64,
+) -> io::Result<RetentionAttempt> {
+    let offset = i
+        .source_offset
+        .ok_or_else(|| invalid("retention requires the original physical source range"))?;
+    let h = open(&format!("{}{}", root, i.components.join("\\")), false, true)?;
+    let mapping_before = ctl(
+        &h,
+        stream_layout::GET_RETRIEVAL,
+        &[0; 8],
+        stream_layout::RETRIEVAL_CAPACITY,
+    )?;
+    let legacy = ctl(
+        volume,
+        stream_layout::GET_BITMAP,
+        &[0; 8],
+        stream_layout::MAX_BITMAP_BYTES,
+    )?;
+    let mut ex = [0; 16];
+    ex[8] = 1;
+    let metadata = ctl(
+        volume,
+        stream_layout::GET_BITMAP,
+        &ex,
+        stream_layout::MAX_BITMAP_BYTES,
+    )?;
+    let candidate = CandidateReport {
+        legacy: crate::bitmap_layout::candidate(
+            &legacy,
+            offset,
+            i.payload.len() as u64,
+            partition,
+        )?,
+        metadata_inclusive: crate::bitmap_layout::candidate(
+            &metadata,
+            offset,
+            i.payload.len() as u64,
+            partition,
+        )?,
+    };
+    let clusters =
+        u32::try_from(i.payload.len() / 4096).map_err(|_| invalid("retention cluster budget"))?;
+    let destination_lcn = offset / 4096;
+    let matches = |b: &[u8]| -> io::Result<bool> {
+        let runs = stream_layout::parse_retrieval(b)?;
+        let mut end = 0;
+        for r in runs {
+            if r.vcn != end
+                || !destination_lcn
+                    .checked_add(r.vcn)
+                    .is_some_and(|p| r.lcn == Some(p))
+            {
+                return Ok(false);
+            }
+            end = end
+                .checked_add(r.clusters)
+                .ok_or_else(|| invalid("retention mapping overflow"))?;
+        }
+        Ok(end == u64::from(clusters))
+    };
+    let already = matches(&mapping_before)?;
+    let mut r = RetentionAttempt {
+        components: i.components.to_vec(),
+        destination_lcn,
+        clusters,
+        candidate,
+        submitted: false,
+        native_error: None,
+        mapping_after: mapping_before.clone(),
+        mapping_before,
+        all_clusters_at_source: already,
+    };
+    // Include the independent metadata view. Never force a move into an
+    // occupied bootstrap/container range or relocate the NTFS source itself.
+    if already
+        || r.candidate.legacy.allocated_clusters != 0
+        || r.candidate.metadata_inclusive.allocated_clusters != 0
+    {
+        return Ok(r);
+    }
+    let mut input = [0; 32];
+    input[..8].copy_from_slice(&(h.as_raw_handle() as usize as u64).to_le_bytes());
+    input[16..24].copy_from_slice(&destination_lcn.to_le_bytes());
+    input[24..28].copy_from_slice(&clusters.to_le_bytes());
+    r.submitted = true;
+    if let Err(e) = ctl(volume, 0x00090074, &input, 0) {
+        r.native_error = e.raw_os_error().or(Some(-1));
+    }
+    // A refusal can have partial completion. Do not retry; measure its actual
+    // mapping and let the ordinary content/storage checks qualify the shadow.
+    r.mapping_after = ctl(
+        &h,
+        stream_layout::GET_RETRIEVAL,
+        &[0; 8],
+        stream_layout::RETRIEVAL_CAPACITY,
+    )?;
+    r.all_clusters_at_source = matches(&r.mapping_after)?;
+    Ok(r)
 }
 #[derive(Debug, Serialize)]
 pub struct ObjectSecurityRestore {
@@ -772,11 +889,15 @@ fn run_role(
     if base.len() != 8 || layout::u64_at(&base, 0)? != 0 {
         return Err(invalid("initial tree shadow requires zero retrieval base"));
     }
-    let mut privileges = Privileges::enable_for(&[
+    let mut names = vec![
         "SeBackupPrivilege",
         "SeSecurityPrivilege",
         "SeRestorePrivilege",
-    ])?;
+    ];
+    if mode == Mode::ConstructRetaining {
+        names.push("SeManageVolumePrivilege");
+    }
+    let mut privileges = Privileges::enable_for(&names)?;
     let root_handle = open(&root, true, true)?;
     let root_state = snapshot(&root_handle);
     let matched_before = security_matches(input[0].security, &root_state, &same_security)?;
@@ -788,6 +909,8 @@ fn run_role(
         backup: None,
     };
     let mut security_restorations = vec![];
+    let mut retention_attempts = vec![];
+    let constructing = matches!(mode, Mode::Construct | Mode::ConstructRetaining);
     if mode == Mode::Verify && !matched_before {
         return Err(invalid("root security changed before verification"));
     }
@@ -808,9 +931,10 @@ fn run_role(
             security_restorations,
             security_repair_preflight_sha256: None,
             security_repair_privileges: vec![],
+            retention_attempts,
         });
     }
-    if mode == Mode::Construct || mode == Mode::RestoreRootOnly {
+    if constructing || mode == Mode::RestoreRootOnly {
         let initial = enumerate(&root_handle)?;
         if initial.iter().any(|e| {
             let n = String::from_utf16_lossy(&e.name_utf16);
@@ -851,10 +975,21 @@ fn run_role(
                 security_restorations,
                 security_repair_preflight_sha256: None,
                 security_repair_privileges: vec![],
+                retention_attempts,
             });
         }
         for i in &input[1..] {
             create(&format!("{}{}", root, i.components.join("\\")), i)?;
+        }
+        if mode == Mode::ConstructRetaining {
+            for i in input.iter().filter(|i| !i.directory) {
+                retention_attempts.push(retain_on_shadow(
+                    &volume,
+                    &root,
+                    i,
+                    binding.identity.partition_bytes,
+                )?);
+            }
         }
         // Final metadata follows every child creation. Root security has
         // already matched the source through both independent query views.
@@ -1034,16 +1169,13 @@ fn run_role(
         base_sectors: 0,
         privilege_states: privileges.audit().to_vec(),
         events,
-        payload_bytes_written: if mode == Mode::Construct {
-            total as u64
-        } else {
-            0
-        },
+        payload_bytes_written: if constructing { total as u64 } else { 0 },
         conversion_qualified: false,
         root_security,
         security_restorations,
         security_repair_preflight_sha256: None,
         security_repair_privileges: vec![],
+        retention_attempts,
     })
 }
 #[cfg(test)]

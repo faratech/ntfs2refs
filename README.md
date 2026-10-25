@@ -41,6 +41,14 @@ shadow is a construction milestone, not an existing-tree conversion.
 
 ## Build and run
 
+The enrolled natural-tree experiment also has a single owning-machine entry
+point, `lab-tree-convert`. It captures source expectations, prepares and flushes
+the journal/ticket, applies the original partition and performs native ReFS
+verification. It saves recovery paths and pins under `--artifacts`; native
+`lab-tree-reconstruct resume` / `rollback` remain available before handoff.
+This laboratory command uses the separately enrolled four-file source/shadow
+profile. It does not enable the general converter's blocked commands.
+
 The toolchain is pinned in `rust-toolchain.toml`; use the installed MSVC toolchain.
 Windows builds link the C runtime statically for fresh guests and recovery media.
 

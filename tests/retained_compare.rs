@@ -7,6 +7,23 @@ use std::{fs, path::PathBuf};
 fn sha(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
+#[test]
+fn relocation_only_compares_equal_chunks_and_cross_chunk_patches_exactly() {
+    let left = vec![0; 3 * 1024 * 1024];
+    let mut right = left.clone();
+    right[..4096].fill(7);
+    right[1024 * 1024 - 4096..1024 * 1024 + 4096].fill(11);
+    let mut f = Fixture::new(left, right, &[], 4096);
+    assert!(f.reject().contains("schema 1"));
+    f.request.schema_version = 2;
+    let r = f.compare();
+    assert_eq!(r.retained_bytes, 0);
+    assert_eq!(r.expected_postimage_sha256, sha(&f.right));
+    assert_eq!(r.patch_bytes, 12288);
+    assert_eq!(r.patches.len(), 2);
+    assert_eq!(r.patches[1].length, 8192);
+    f.verify_reconstruction(&r);
+}
 
 struct Fixture {
     _dir: tempfile::TempDir,

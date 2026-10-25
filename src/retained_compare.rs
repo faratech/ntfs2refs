@@ -389,6 +389,7 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
         .iter()
         .map(|_| RangeHashes::default())
         .collect();
+    let wholly_shadow = request.retained_ranges.is_empty();
     let mut patches = Vec::new();
     let mut pending: Option<PendingPatch> = None;
     let mut left = vec![0; BUFFER_BYTES];
@@ -405,6 +406,13 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
         shadow.read_exact(&mut right[..count])?;
         source_hash.update(&left[..count]);
         shadow_hash.update(&right[..count]);
+        // A relocation-only postimage is exactly the pinned shadow. Equal
+        // chunks need neither a byte-count loop nor a third SHA-256 state.
+        if wholly_shadow && left[..count] == right[..count] {
+            finish_patch(&mut pending, &mut patches);
+            offset += count as u64;
+            continue;
+        }
         for index in (0..count).step_by(sector) {
             let position = offset + index as u64;
             let a = &left[index..index + sector];
@@ -431,7 +439,9 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
                 hashes.differing_sectors += u64::from(changed != 0);
                 post_hash.update(a);
             } else {
-                post_hash.update(b);
+                if !wholly_shadow {
+                    post_hash.update(b);
+                }
                 if changed == 0 {
                     finish_patch(&mut pending, &mut patches);
                     continue;
@@ -466,6 +476,11 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
     finish_patch(&mut pending, &mut patches);
     let source_sha256 = hex::encode(source_hash.finalize());
     let shadow_sha256 = hex::encode(shadow_hash.finalize());
+    let expected_postimage_sha256 = if wholly_shadow {
+        shadow_sha256.clone()
+    } else {
+        hex::encode(post_hash.finalize())
+    };
     ensure!(
         source_sha256 == request.source_sha256,
         "full source SHA-256 pin differs"
@@ -538,7 +553,7 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
         patch_bytes,
         patches,
         retained_ranges: observations,
-        expected_postimage_sha256: hex::encode(post_hash.finalize()),
+        expected_postimage_sha256,
         source_shadow_unchanged_after_comparison: true,
         full_scan_input_bytes_read,
         container_probe_bytes_read: 0,

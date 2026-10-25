@@ -29,6 +29,65 @@ fn binding() -> JournalBinding {
         journal_identity_sha256: "3".repeat(64),
     }
 }
+#[test]
+fn relocation_only_apply_rollback_and_handoff_preserve_both_exact_images() {
+    let mut f = Fixture::new();
+    f.request.schema_version = 2;
+    f.request.retained_ranges.clear();
+    f.request.max_change_bytes = f.original.len() as u64;
+    f.request.max_ranges = 8;
+    let prepared = f.prepare();
+    assert_eq!(prepared.expected_postimage_sha256, sha(&f.native));
+    let mut target = rw(&f.target);
+    let mut shadow = File::open(&f.shadow).unwrap();
+    let mut journal = rw(&f.journal);
+    lab_reconstruct::apply(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&f.target).unwrap(), f.native);
+    lab_reconstruct::rollback(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&f.target).unwrap(), f.original);
+    lab_reconstruct::resume(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+    )
+    .unwrap();
+    let handoff = lab_reconstruct::mark_handoff(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+    )
+    .unwrap();
+    assert!(handoff.handoff_recorded);
+    assert_eq!(fs::read(&f.target).unwrap(), f.native);
+    assert!(
+        lab_reconstruct::rollback(
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &prepared.ticket,
+            &binding()
+        )
+        .is_err()
+    );
+}
 struct Fixture {
     _dir: tempfile::TempDir,
     source: PathBuf,

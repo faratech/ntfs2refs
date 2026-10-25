@@ -1,0 +1,74 @@
+<# Complete only a successfully resumed general ReFS postimage. This dispatch
+   crosses the irreversible handoff boundary inside the owning guest. #>
+[CmdletBinding()]
+param(
+ [Parameter(Mandatory)][string]$RecoveryDispatchDirectory,
+ [Parameter(Mandatory)][string]$BinaryPath,
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256
+)
+Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+$workspace=Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $workspace 'lab/Lab.psm1') -Force
+$cfg=Get-LabConfiguration;$manifest=Read-LabManifest $cfg win11;$vm=Get-OwnedLabVM $cfg $manifest
+$recoveryDirectory=Assert-LabPath $RecoveryDispatchDirectory $cfg.Root
+$recoveryStart=Get-Content -LiteralPath (Join-Path $recoveryDirectory 'started.json') -Raw|ConvertFrom-Json
+$recovered=Get-Content -LiteralPath (Join-Path $recoveryDirectory 'collected.json') -Raw|ConvertFrom-Json
+$parent=Assert-LabPath $recoveryStart.parentDirectory $cfg.Root
+$start=Get-Content -LiteralPath (Join-Path $parent 'started.json') -Raw|ConvertFrom-Json
+$original=Get-Content -LiteralPath (Join-Path $parent 'dispatch.json') -Raw|ConvertFrom-Json
+if($recoveryStart.kind-cne'general-tree-recovery-dispatch'-or$recoveryStart.mode-cne'Resume'-or$recovered.kind-cne'general-tree-recovery-observation'-or-not$recovered.exactImageRecovered-or-not$recovered.readyForHandoff-or$recovered.stepId-cne$recoveryStart.stepId-or$start.kind-cne'general-tree-replay-dispatch'-or$start.runId-cne$recoveryStart.runId-or$start.experimentId-cne$recoveryStart.experimentId-or$original.guestArtifacts-cne('C:\ntfs2refs\general-replay\'+$start.runId+'\artifacts')-or$vm.State-ne'Running'-or[guid]$vm.ParentSnapshotId-ne[guid]$start.parentCheckpointId){throw 'Successful resumed ReFS image and owning VM branch required.'}
+$binary=Get-Item -LiteralPath $BinaryPath -Force
+if($binary.PSIsContainer-or($binary.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$binary.Length-gt16MB-or(Get-FileHash -LiteralPath $binary.FullName).Hash.ToLowerInvariant()-cne$BinarySha256){throw 'Pinned guest finalizer executable required.'}
+$step=[guid]::NewGuid().ToString('N')
+$output=Assert-LabPath (Join-Path $cfg.Root ('general-finalize/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
+New-Item -ItemType Directory -Path $output|Out-Null
+function Save([string]$Name,$Value){$path=Join-Path $output $Name;$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 16));$file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
+$record=[ordered]@{kind='general-tree-finalize-dispatch';stepId=$step;runId=$start.runId;experimentId=$start.experimentId;recoveryDirectory=$recoveryDirectory;parentDirectory=$parent;parentCheckpointId=$start.parentCheckpointId;binarySha256=$BinarySha256;requestSha256=$start.requestSha256;expectationSha256=$start.expectationSha256;status='started';operationCompletionKnown=$true;rollbackWillClose=$true;productionConversionQualified=$false;error=$null}
+Save 'started.json' $record
+$credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null
+try{
+ $deadline=[DateTime]::UtcNow.AddSeconds(180)
+ do{try{$session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop;break}catch{Start-Sleep -Seconds 2}}while([DateTime]::UtcNow-lt$deadline)
+ if(-not$session){throw 'Guest session unavailable.'}
+ $preflight=Invoke-Command -Session $session -ArgumentList @($original.guestArtifacts,$start.experimentId,$start.requestSha256,$start.expectationSha256,$recoveryStart.stepId) -ScriptBlock {
+  param($Artifacts,$ExperimentId,$RequestSha,$ExpectationSha,$RecoveryStep)
+  Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+  $recoveryTask=Get-ScheduledTask -TaskName ('N2R-GeneralRecover-'+$RecoveryStep) -ErrorAction Stop;$info=Get-ScheduledTaskInfo -TaskName $recoveryTask.TaskName -ErrorAction Stop
+  if($recoveryTask.State-in@('Running','Queued')-or$info.LastTaskResult-ne0){throw 'Guest resume task did not complete successfully.'}
+  if(Get-Process -Name 'lab-general-complete*','lab-general-experiment*','lab-recover-general-journal*' -ErrorAction SilentlyContinue){throw 'Another converter is running.'}
+  $source=Get-Disk -Number 1;$shadow=Get-Disk -Number 3
+  if(-not$source.IsOffline-or$source.IsReadOnly-or-not$shadow.IsOffline-or-not$shadow.IsReadOnly){throw 'Resumed ReFS target or shadow exclusion differs.'}
+  $request=Join-Path $Artifacts 'request.json';$expectation=Join-Path $Artifacts 'expectation.json';$ticket=Join-Path $Artifacts 'ticket.json';$recovery=Join-Path $Artifacts 'recovery.json'
+  foreach($path in @($request,$expectation,$ticket,$recovery)){if(-not(Test-Path -LiteralPath $path -PathType Leaf)){throw 'Guest finalization input absent.'}}
+  $pins=Get-Content -LiteralPath $recovery -Raw|ConvertFrom-Json
+  $journal='J:\ntfs2refs-shadow\'+$ExperimentId+'\reconstruction.journal'
+  if($pins.kind-cne'general-recovery-pins'-or$pins.journal-cne$journal-or$pins.request_sha256-cne$RequestSha-or$pins.expectation_sha256-cne$ExpectationSha-or(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()-cne$RequestSha-or(Get-FileHash -LiteralPath $expectation).Hash.ToLowerInvariant()-cne$ExpectationSha-or(Get-FileHash -LiteralPath $ticket).Hash.ToLowerInvariant()-cne$pins.ticket_sha256){throw 'Guest finalization pins differ.'}
+  $stream=[IO.File]::Open($journal,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+  try{$marker=[byte[]]::new(4096);if($stream.Read($marker,0,$marker.Length)-ne$marker.Length-or@($marker|Where-Object {$_ -ne0}).Count-ne0){throw 'Journal handoff sector is not clear.'}}finally{$stream.Dispose()}
+  [pscustomobject]@{request=$request;requestSha256=$RequestSha;expectation=$expectation;expectationSha256=$ExpectationSha;ticket=$ticket;ticketSha256=$pins.ticket_sha256;journal=$journal;sourceOffline=$source.IsOffline;shadowOffline=$shadow.IsOffline;checkedUtc=[DateTime]::UtcNow.ToString('o')}
+ }
+ Save 'preflight.json' $preflight
+ $guestExe='C:\ntfs2refs\general-replay\'+$start.runId+'\lab-general-experiment-finalize-'+$step+'.exe'
+ Copy-Item -LiteralPath $binary.FullName -Destination $guestExe -ToSession $session
+ $guestOutput=$original.guestArtifacts+'\finalize-'+$step+'.json'
+ $dispatch=Invoke-Command -Session $session -ArgumentList @($guestExe,$BinarySha256,$preflight,$guestOutput,$step) -ScriptBlock {
+  param($Exe,$ExeSha,$Preflight,$Output,$Step)
+  Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+  if((Get-FileHash -LiteralPath $Exe).Hash.ToLowerInvariant()-cne$ExeSha-or(Test-Path -LiteralPath $Output)){throw 'Guest finalizer pin or fresh output differs.'}
+  $source=Get-Disk -Number 1;$shadow=Get-Disk -Number 3
+  if(-not$source.IsOffline-or$source.IsReadOnly-or-not$shadow.IsOffline-or-not$shadow.IsReadOnly){throw 'Guest exclusion changed before handoff dispatch.'}
+  $name='N2R-GeneralFinalize-'+$Step
+  if(Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue){throw 'Finalizer task already exists.'}
+  $arguments='finalize --request "'+$Preflight.request+'" --request-sha256 '+$Preflight.requestSha256+' --ticket "'+$Preflight.ticket+'" --ticket-sha256 '+$Preflight.ticketSha256+' --expectation "'+$Preflight.expectation+'" --expectation-sha256 '+$Preflight.expectationSha256+' --journal "'+$Preflight.journal+'" --output "'+$Output+'"'
+  $action=New-ScheduledTaskAction -Execute $Exe -Argument $arguments
+  $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+  $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -ErrorAction Stop|Out-Null
+  Start-ScheduledTask -TaskName $name -ErrorAction Stop
+  [pscustomobject]@{taskName=$name;taskState=[string](Get-ScheduledTask -TaskName $name).State;guestOutput=$Output;dispatchedUtc=[DateTime]::UtcNow.ToString('o')}
+ }
+ Save 'dispatch.json' $dispatch
+ $record.status='guest-general-finalizer-dispatched';$record['taskName']=$dispatch.taskName;$record['guestOutput']=$dispatch.guestOutput
+}catch{$record.status='failed-preserved';$record.error=$_.Exception.ToString();throw}
+finally{Save 'host-result.json' $record;if($session){Remove-PSSession $session -ErrorAction SilentlyContinue}}
+[pscustomobject]$record

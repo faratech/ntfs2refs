@@ -211,6 +211,13 @@ sector is zero, and the target/shadow remain excluded. Its read-only companion
 `Collect-LabGeneralRecovery.ps1` compares the recovered whole-image hash to
 the requested NTFS or ReFS image and leaves the target offline for a separate
 handoff or old-NTFS online transition.
+For a successful resume, `Dispatch-LabGeneralFinalize.ps1` requires that
+collected image proof, a terminal recovery task, zero handoff sector and the
+offline ReFS postimage before scheduling a pinned guest finalizer.
+`Collect-LabGeneralFinalize.ps1` exports its report with a matching hash and
+checks the ReFS mount, original-disk state and durable handoff marker. It
+conservatively treats a partial marker or already online source as closing
+NTFS rollback, even when native verification fails.
 
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while

@@ -221,6 +221,11 @@ launch and observe that workload only after a collected successful ReFS
 handoff. The dispatcher checks the source/shadow state, `N2RHND01` journal
 marker and host free-space reserve; collection exports the pinned report and
 requires the temporary directory to have been removed before reboot testing.
+`Dispatch-LabGeneralRebootVerify.ps1` then performs one clean guest reboot,
+requires a newer observed boot time on the same VM checkpoint branch and
+starts a pinned native verifier task. Its read-only collector exports the
+verifier report with matching SHA-256 and requires the original tree to match
+after reboot while the `N2RHND01` marker and ReFS mount remain intact.
 
 The internal general finalizer now accepts the independently pinned pre-cutover
 tree, checks the full journaled ReFS postimage, durably closes rollback, brings

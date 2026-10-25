@@ -31,6 +31,7 @@ pub mod ntfs_stream_attestation;
 pub mod planner;
 pub mod refs_bootstrap;
 pub mod refs_containers;
+pub mod refs_cow_overlay;
 pub mod refs_inspect;
 pub mod refs_node;
 pub mod refs_virtual_roots;

@@ -173,6 +173,15 @@ The overlay was only 131,280 bytes, and the original 55,834,574,848-byte raw
 image retained its last-write timestamp. Opening the base without the overlay
 does not show `adopted.bin`.
 
+The repository now contains an independent Rust read-only overlay decoder and
+`lab-refs-cow` auditor. It replays the external writer's append-only block log,
+rejects damaged records, checks original and merged payload hashes, proves no
+write overlaps the adopted range, and parses the merged ReFS VBR and backup.
+Its result under `.lab/research/refsnt-overlay/rust-audit.json` agrees on eight
+records, 131,072 written metadata bytes, an untouched adopted cluster, ReFS
+3.14 and a matching backup VBR. The Rust decoder never opens the base for
+writing.
+
 REFSNT's checker reported zero checksum, duplicate-reference or unallocated
 reference errors on both images. Its referenced-cluster count increased from
 1,300 to 1,301 and Medium free count decreased by one; its

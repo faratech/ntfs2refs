@@ -14,9 +14,11 @@ Microsoft's ReFS driver matched all file contents, names, stored timestamps and
 permissions. The source extents were never prearranged; all four payload ranges
 required relocation because they conflicted with ReFS metadata. See the
 [tree conversion result and its limits](docs/tree-conversion-results.md).
-The general-purpose executable still inspects images and reports blockers;
-its conversion, resume, rollback and finalize commands refuse writes. Existing
-file-tree admission and general ReFS metadata construction remain open work.
+The Windows executable now exposes an experimental
+[owning-machine conversion and recovery CLI](docs/cli-workflow.md). Conversion
+requires live source/target qualification and an independent journal; image
+feasibility plans remain non-executable. The current profile is bounded and
+boot volumes remain excluded.
 The [general guest conversion result](docs/general-native-conversion-results.md)
 records a separate successful same-partition run, post-handoff mutation and
 reboot, with its current source-admission and retained-extent limits.
@@ -27,13 +29,17 @@ with independent Windows buffer-parser checks on the native captures.
 The [Rust file-handle collector](docs/native-ntfs-file-attestation.md) now also
 compares those bytes with native queries inside the VM. Kernel descriptors
 matched 16 source objects; API inheritance views and cached root access time
-exposed differences that remain explicit admission blockers.
+exposed differences retained in the strict comparison. The
+[paired security-view implementation](docs/paired-security-and-resident-data.md)
+now records API projections separately and has reproduced both views on native
+ReFS, including the two resident Windows cache files.
 Native [stream/extent and bitmap reconciliation](docs/native-ntfs-stream-attestation.md)
 now matches the full control-volume bitmap and every fixture object's stream
 mapping, including ADS and sparse holes. Native [logical-stream hashing](docs/native-ntfs-logical-data.md)
 also matches every supported fixture stream without changing the protected
-source. Complete namespace reconciliation, source admission and a coherent
-admission decision remain unfinished.
+source. A live eleven-object source/target run has issued a device-bound
+certificate with all admission gates satisfied. The connected journal/cutover
+run remains under native qualification.
 The [source-admission work](docs/source-admission-progress.md) now includes
 native directory observations, explicit object dispositions and actual backup
 boot/MFT-mirror checks. It reports remaining refusals; an admission certificate

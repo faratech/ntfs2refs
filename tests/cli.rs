@@ -214,13 +214,15 @@ fn retained_comparison_pins_inputs_and_never_enables_writes() {
     assert!(!cli(&args[..7]).status.success());
     let capabilities: Value = serde_json::from_slice(&cli(&["capabilities"]).stdout).unwrap();
     assert_eq!(capabilities["retained_range_comparison"], true);
-    for field in [
-        "conversion_writes",
-        "native_refs_writer",
-        "journal_recovery",
-    ] {
-        assert_eq!(capabilities[field], false);
-    }
+    assert_eq!(capabilities["native_refs_writer"], false);
+    assert_eq!(capabilities["conversion_writes"], cfg!(windows));
+    assert_eq!(capabilities["journal_recovery"], cfg!(windows));
+    assert!(
+        capabilities["qualified_boot_builds"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -239,4 +241,95 @@ fn retained_request_is_bounded_before_images_are_opened() {
     ]);
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("request exceeds 128 KiB"));
+}
+
+#[test]
+fn conversion_request_requires_an_unambiguous_complete_pinned_envelope() {
+    let zero = "0".repeat(64);
+    for args in [
+        vec!["convert"],
+        vec!["convert", "--request", "absent.json"],
+        vec![
+            "convert",
+            "--request",
+            "absent.json",
+            "--request-sha256",
+            zero.as_str(),
+        ],
+        vec![
+            "convert",
+            "--plan",
+            "plan.json",
+            "--request",
+            "request.json",
+            "--request-sha256",
+            zero.as_str(),
+            "--output",
+            "new-output",
+        ],
+    ] {
+        let result = cli(&args);
+        assert_eq!(
+            result.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let help = cli(&["convert", "--help"]);
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("--request-sha256") && help.contains("--plan"));
+}
+
+#[cfg(windows)]
+#[test]
+fn conversion_request_refuses_hash_size_and_forged_flags_before_device_io() {
+    use sha2::{Digest, Sha256};
+    let temp = tempfile::tempdir().unwrap();
+    let request = temp.path().join("request.json");
+    let output = temp.path().join("never-created");
+    let invoke = |pin: &str| {
+        cli(&[
+            "convert",
+            "--request",
+            request.to_str().unwrap(),
+            "--request-sha256",
+            pin,
+            "--output",
+            output.to_str().unwrap(),
+        ])
+    };
+    fs::write(&request, br#"{"schema_version":1,"executable":true}"#).unwrap();
+    let result = invoke(&"0".repeat(64));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("SHA-256 differs"));
+    let pin = hex::encode(Sha256::digest(fs::read(&request).unwrap()));
+    let result = invoke(&pin);
+    assert!(String::from_utf8_lossy(&result.stderr).contains("unknown field"));
+    assert!(!output.exists());
+    fs::write(&request, vec![b' '; 16 * 1024 + 1]).unwrap();
+    let result = invoke(&"0".repeat(64));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("exceeds 16 KiB"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn recovery_requires_all_pinned_inputs_when_request_is_supplied() {
+    for command in ["resume", "rollback", "finalize"] {
+        let result = cli(&[
+            command,
+            "--journal",
+            "journal.bin",
+            "--request",
+            "request.json",
+        ]);
+        assert_eq!(result.status.code(), Some(2));
+        let help = cli(&[command, "--help"]);
+        assert!(help.status.success());
+        assert!(
+            String::from_utf8(help.stdout)
+                .unwrap()
+                .contains("--ticket-sha256")
+        );
+    }
 }

@@ -12,7 +12,7 @@ use std::{
 #[derive(Parser)]
 #[command(
     version,
-    about = "NTFS/ReFS inspection and feasibility-gated conversion research. Conversion writes are not enabled."
+    about = "NTFS/ReFS inspection and experimental certificate-backed data-volume conversion."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -85,26 +85,50 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Unavailable until a ReFS writer passes native-driver qualification.
+    /// Convert a bound data volume through live qualification and an external journal.
     Convert {
-        #[arg(long)]
-        plan: PathBuf,
+        /// Legacy feasibility plans remain non-executable.
+        #[arg(long, required_unless_present = "request", conflicts_with = "request")]
+        plan: Option<PathBuf>,
+        /// Device-bound conversion request; success flags do not authorize writes.
+        #[arg(long, requires_all = ["request_sha256", "output"])]
+        request: Option<PathBuf>,
+        #[arg(long, requires = "request")]
+        request_sha256: Option<String>,
+        /// Fresh artifact directory on the Windows OS volume.
+        #[arg(long, requires = "request")]
+        output: Option<PathBuf>,
     },
-    /// Unavailable until the recovery protocol passes power-loss qualification.
-    Resume {
-        #[arg(long)]
-        journal: PathBuf,
-    },
-    /// Unavailable until the recovery protocol passes power-loss qualification.
-    Rollback {
-        #[arg(long)]
-        journal: PathBuf,
-    },
-    /// Unavailable until conversion and recovery qualification are complete.
-    Finalize {
-        #[arg(long)]
-        journal: PathBuf,
-    },
+    /// Resume an already activated offline target using pinned recovery inputs.
+    Resume(RecoveryArgs),
+    /// Restore the admitted NTFS preimage before the handoff barrier.
+    Rollback(RecoveryArgs),
+    /// Complete native ReFS handoff after an exact completed apply.
+    Finalize(RecoveryArgs),
+}
+
+#[derive(clap::Args)]
+struct RecoveryArgs {
+    #[arg(long)]
+    journal: PathBuf,
+    #[arg(long, requires_all = ["request_sha256", "ticket", "ticket_sha256", "output"])]
+    request: Option<PathBuf>,
+    #[arg(long, requires = "request")]
+    request_sha256: Option<String>,
+    #[arg(long, requires = "request")]
+    ticket: Option<PathBuf>,
+    #[arg(long, requires = "request")]
+    ticket_sha256: Option<String>,
+    #[arg(long, requires = "request")]
+    output: Option<PathBuf>,
+    /// Required for finalize; must match the request's expected tree hash.
+    #[arg(long, requires_all = ["request", "expectation_sha256"])]
+    expectation: Option<PathBuf>,
+    #[arg(long, requires = "expectation")]
+    expectation_sha256: Option<String>,
+    /// Complete an already durable rollback or handoff marker after process death.
+    #[arg(long, requires = "request")]
+    after_marker: bool,
 }
 #[derive(Deserialize)]
 struct IdentityBaseline {
@@ -151,6 +175,96 @@ fn retained_request(path: &Path) -> Result<ntfs2refs::retained_compare::Retained
     ensure!(bytes.len() as u64 <= LIMIT, "request exceeds 128 KiB");
     serde_json::from_slice(&bytes).context("parse retained comparison request")
 }
+
+#[cfg(windows)]
+fn conversion_request(path: &Path, pin: &str) -> Result<ntfs2refs::general_conversion::Request> {
+    use sha2::{Digest, Sha256};
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    const LIMIT: u64 = 16 * 1024;
+    ensure!(
+        pin.len() == 64
+            && pin
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "conversion request SHA-256 must be canonical lowercase hex"
+    );
+    let metadata = std::fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file() && metadata.file_attributes() & 0x400 == 0,
+        "conversion request must be an ordinary file"
+    );
+    ensure!(metadata.len() <= LIMIT, "conversion request exceeds 16 KiB");
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.file_attributes() & 0x400 == 0 && metadata.len() <= LIMIT,
+        "opened conversion request differs from bounded ordinary input"
+    );
+    let mut bytes = Vec::new();
+    (&mut file).take(LIMIT + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= LIMIT && hex::encode(Sha256::digest(&bytes)) == pin,
+        "conversion request SHA-256 differs"
+    );
+    let request: ntfs2refs::general_conversion::Request = serde_json::from_slice(&bytes)?;
+    request.validate()?;
+    Ok(request)
+}
+
+fn recover(args: RecoveryArgs, operation: &str) -> Result<()> {
+    let Some(request) = args.request else {
+        return planner::require_writer();
+    };
+    ensure!(
+        !args.after_marker || matches!(operation, "finalize" | "rollback"),
+        "--after-marker is only valid for rollback or finalize"
+    );
+    #[cfg(windows)]
+    {
+        use ntfs2refs::general_recovery::{Inputs, Operation};
+        let operation = match (operation, args.after_marker) {
+            ("resume", false) => Operation::Resume,
+            ("rollback", false) => Operation::Rollback,
+            ("rollback", true) => Operation::RollbackAfterMarker,
+            ("finalize", false) => Operation::Finalize,
+            ("finalize", true) => Operation::FinalizeAfterMarker,
+            _ => anyhow::bail!("unsupported recovery operation"),
+        };
+        let inputs = Inputs {
+            request,
+            request_sha256: args.request_sha256.context("request SHA-256 required")?,
+            ticket: args.ticket.context("ticket required")?,
+            ticket_sha256: args.ticket_sha256.context("ticket SHA-256 required")?,
+            journal: args.journal,
+            expectation: args.expectation,
+            expectation_sha256: args.expectation_sha256,
+        };
+        ntfs2refs::general_recovery::recover(
+            operation,
+            &inputs,
+            &args.output.context("fresh output required")?,
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (
+            request,
+            args.journal,
+            args.request_sha256,
+            args.ticket,
+            args.ticket_sha256,
+            args.output,
+            args.expectation,
+            args.expectation_sha256,
+            operation,
+        );
+        anyhow::bail!("native journal recovery requires Windows")
+    }
+}
 fn run() -> Result<u8> {
     match Cli::parse().command {
         Command::Inspect {
@@ -194,7 +308,7 @@ fn run() -> Result<u8> {
             )?;
             output(&plan, destination.as_deref())?;
             eprintln!(
-                "Plan is blocked: {} qualification/preservation findings. No conversion writes are available.",
+                "Image plan is blocked: {} qualification/preservation findings. This report cannot authorize conversion writes.",
                 plan.blockers.len()
             );
             return Ok(2);
@@ -216,7 +330,7 @@ fn run() -> Result<u8> {
             )?;
         }
         Command::Capabilities => output(
-            &serde_json::json!({"schema_version":1,"raw_image_inspection":true,"ntfs_inventory_complete":false,"refs_header_inspection":true,"retained_range_comparison":true,"conversion_planning":"feasibility only","native_refs_writer":false,"conversion_writes":false,"journal_recovery":false,"qualified_boot_builds":[]}),
+            &serde_json::json!({"schema_version":1,"raw_image_inspection":true,"ntfs_inventory_complete":false,"refs_header_inspection":true,"retained_range_comparison":true,"conversion_planning":"image feasibility reports remain non-executable","native_refs_writer":false,"conversion_writes":cfg!(windows),"journal_recovery":cfg!(windows),"native_workflow":"experimental single-profile data volumes; live qualification and external journal required","qualified_boot_builds":[]}),
             None,
         )?,
         Command::Diff {
@@ -241,10 +355,30 @@ fn run() -> Result<u8> {
             )?,
             destination.as_deref(),
         )?,
-        Command::Convert { .. }
-        | Command::Resume { .. }
-        | Command::Rollback { .. }
-        | Command::Finalize { .. } => planner::require_writer()?,
+        Command::Convert {
+            request: Some(request),
+            request_sha256,
+            output,
+            ..
+        } => {
+            #[cfg(windows)]
+            ntfs2refs::general_conversion::convert(
+                &conversion_request(
+                    &request,
+                    &request_sha256.context("request SHA-256 required")?,
+                )?,
+                &output.context("fresh artifact output required")?,
+            )?;
+            #[cfg(not(windows))]
+            {
+                let _ = (request, request_sha256, output);
+                anyhow::bail!("native data-volume conversion requires Windows");
+            }
+        }
+        Command::Convert { .. } => planner::require_writer()?,
+        Command::Resume(args) => recover(args, "resume")?,
+        Command::Rollback(args) => recover(args, "rollback")?,
+        Command::Finalize(args) => recover(args, "finalize")?,
     }
     Ok(0)
 }

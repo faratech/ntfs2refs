@@ -371,6 +371,7 @@ fn retain_run_on_shadow(
     i: &Input<'_>,
     partition: u64,
     run: &SourceRun,
+    submit_if_free: bool,
 ) -> io::Result<RetentionAttempt> {
     let offset = run
         .physical_offset
@@ -403,6 +404,11 @@ fn retain_run_on_shadow(
             &metadata, offset, run.length, partition,
         )?,
     };
+    if candidate.legacy.declared_clusters != partition / 4096
+        || candidate.metadata_inclusive.declared_clusters != partition / 4096
+    {
+        return Err(invalid("retention bitmap domain is incomplete or changed"));
+    }
     let clusters =
         u32::try_from(run.length / 4096).map_err(|_| invalid("retention cluster budget"))?;
     let destination_lcn = offset / 4096;
@@ -429,7 +435,8 @@ fn retain_run_on_shadow(
     };
     // Include the independent metadata view. Never force a move into an
     // occupied bootstrap/container range or relocate the NTFS source itself.
-    if already
+    if !submit_if_free
+        || already
         || r.candidate.legacy.allocated_clusters != 0
         || r.candidate.metadata_inclusive.allocated_clusters != 0
     {
@@ -454,6 +461,70 @@ fn retain_run_on_shadow(
     )?;
     r.all_clusters_at_source = matches(&r.mapping_after)?;
     Ok(r)
+}
+
+/// Split around both bitmap views, then recheck and measure each move. An
+/// earlier free-space observation alone never becomes retained-extent proof.
+fn retain_source_run_on_shadow(
+    volume: &File,
+    root: &str,
+    input: &Input<'_>,
+    partition: u64,
+    run: &SourceRun,
+    attempts: &mut Vec<RetentionAttempt>,
+) -> io::Result<()> {
+    // Bound the complete tree, including non-submitted collision diagnostics.
+    let remaining = crate::retention_layout::MAX_SUBRUNS
+        .checked_sub(attempts.len())
+        .filter(|remaining| *remaining > 0)
+        .ok_or_else(|| invalid("tree retention-attempt budget exceeded"))?;
+    let physical_offset = run
+        .physical_offset
+        .ok_or_else(|| invalid("source placement hole"))?;
+    let legacy = ctl(
+        volume,
+        stream_layout::GET_BITMAP,
+        &[0; 8],
+        stream_layout::MAX_BITMAP_BYTES,
+    )?;
+    let mut ex = [0; 16];
+    ex[8] = 1;
+    let metadata = ctl(
+        volume,
+        stream_layout::GET_BITMAP,
+        &ex,
+        stream_layout::MAX_BITMAP_BYTES,
+    )?;
+    let plan = crate::retention_layout::plan_free_subruns(
+        &legacy,
+        &metadata,
+        crate::retention_layout::SourceRun {
+            logical_offset: run.logical_offset,
+            physical_offset,
+            length: run.length,
+        },
+        partition,
+        remaining,
+    )?;
+    if plan.subruns.is_empty() {
+        // A later free-space change must not turn this diagnostic into an
+        // unplanned move. Already-correct placement is still recorded.
+        attempts.push(retain_run_on_shadow(
+            volume, root, input, partition, run, false,
+        )?);
+    } else {
+        for candidate in plan.subruns {
+            let subrun = SourceRun {
+                logical_offset: candidate.logical_offset,
+                physical_offset: Some(candidate.physical_offset),
+                length: candidate.length,
+            };
+            attempts.push(retain_run_on_shadow(
+                volume, root, input, partition, &subrun, true,
+            )?);
+        }
+    }
+    Ok(())
 }
 #[derive(Debug, Serialize)]
 pub struct ObjectSecurityRestore {
@@ -1784,7 +1855,7 @@ fn run_role(
                     && i.logical_length() > 0
                     && i.logical_length().is_multiple_of(4096)
                 {
-                    retention_attempts.push(retain_run_on_shadow(
+                    retain_source_run_on_shadow(
                         &volume,
                         &root,
                         i,
@@ -1794,16 +1865,18 @@ fn run_role(
                             physical_offset: Some(offset),
                             length: i.logical_length(),
                         },
-                    )?);
+                        &mut retention_attempts,
+                    )?;
                 }
                 for run in &i.source_runs {
-                    retention_attempts.push(retain_run_on_shadow(
+                    retain_source_run_on_shadow(
                         &volume,
                         &root,
                         i,
                         binding.identity.partition_bytes,
                         run,
-                    )?);
+                        &mut retention_attempts,
+                    )?;
                 }
             }
         }

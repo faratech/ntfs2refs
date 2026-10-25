@@ -15,6 +15,8 @@ pub mod general_qualification;
 #[cfg(windows)]
 pub mod general_reconstruct;
 #[cfg(windows)]
+pub mod general_recovery;
+#[cfg(windows)]
 pub mod general_shadow;
 #[cfg(windows)]
 pub mod general_source_admission;

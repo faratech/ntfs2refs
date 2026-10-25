@@ -14,6 +14,7 @@ pub mod namespace_layout;
 #[cfg(windows)]
 mod namespace_native;
 pub mod region_layout;
+pub mod retention_layout;
 #[cfg(windows)]
 pub mod shadow_native;
 pub mod stream_layout;

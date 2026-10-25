@@ -10,7 +10,7 @@ ntfs2refs convert --request .\devices.json --request-sha256 $pin --output C:\ntf
 ```
 
 The output directory must be fresh, on the Windows OS volume, with ordinary
-directory ancestry; its parent directory must already exist. The request is a bounded ordinary JSON file, at most
+directory ancestry; missing parents are created and checked before use. The request is a bounded ordinary JSON file, at most
 16 KiB, matching `general_conversion::Request`. Its fields are:
 
 - `schema_version`: `1`.

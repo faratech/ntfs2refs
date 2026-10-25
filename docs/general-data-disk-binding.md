@@ -231,6 +231,11 @@ offline ReFS postimage before scheduling a pinned guest finalizer.
 checks the ReFS mount, original-disk state and durable handoff marker. It
 conservatively treats a partial marker or already online source as closing
 NTFS rollback, even when native verification fails.
+For a successful rollback, `Dispatch-LabGeneralRollbackCompletion.ps1` instead
+launches the pinned NTFS completion binary. The read-only
+`Collect-LabGeneralRollbackCompletion.ps1` checks the `N2RABT01` marker, exact
+old image hash, online NTFS mount and frozen shadow. It never retries journal
+replay after the source becomes writable.
 
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while

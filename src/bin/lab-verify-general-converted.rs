@@ -4,7 +4,7 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::{mounted_filesystem_general, shadow_native};
+    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume, shadow_native};
     use ntfs2refs::{general_reconstruct, ntfs_attestation, shadow_tree};
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -77,7 +77,9 @@ fn main() -> anyhow::Result<()> {
     let expected: shadow_tree::ExpectedTree = serde_json::from_slice(&expected_bytes)?;
     expected.validate()?;
     let mut events = Vec::new();
-    let filesystem = mounted_filesystem_general(request.pair.source.clone(), &mut events)?;
+    let mut pair = request.pair.clone();
+    pair.source = rediscover_general_volume(pair.source, &mut events)?;
+    let filesystem = mounted_filesystem_general(pair.source.clone(), &mut events)?;
     let input: Vec<_> = expected
         .objects
         .iter()
@@ -106,11 +108,7 @@ fn main() -> anyhow::Result<()> {
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
     let attempted = if filesystem == "ReFS" {
-        shadow_native::verify_general_converted_ordinary(
-            request.pair.clone(),
-            &input,
-            same_security,
-        )
+        shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
     } else {
         Err(std::io::Error::other(
             "original data disk is not mounted as ReFS",

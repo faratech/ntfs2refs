@@ -4,7 +4,7 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::mounted_filesystem_general;
+    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume};
     use ntfs2refs::general_reconstruct;
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -89,11 +89,12 @@ fn main() -> anyhow::Result<()> {
         "mutation workload is restricted to the disposable owning guest"
     );
     let mut events = Vec::new();
+    let mounted = rediscover_general_volume(request.pair.source.clone(), &mut events)?;
     ensure!(
-        mounted_filesystem_general(request.pair.source.clone(), &mut events)? == "ReFS",
+        mounted_filesystem_general(mounted.clone(), &mut events)? == "ReFS",
         "converted source is not mounted as ReFS"
     );
-    let root = PathBuf::from(format!("{}\\", request.pair.source.volume_path()?));
+    let root = PathBuf::from(format!("{}\\", mounted.volume_path()?));
     let directory = root.join(format!("n2r-mutation-{}", args.run_id));
     ensure!(
         !directory.exists(),

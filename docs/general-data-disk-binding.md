@@ -182,6 +182,13 @@ separately pinned pre-cutover tree, including logical bytes, names, stored
 timestamps and both security views, and saves an explicit failure report.
 It is intended to run again after reboots and ordinary ReFS mutation workloads;
 it does not reopen NTFS rollback.
+Windows can assign a volume-GUID path when a volume is formatted. After the
+filesystem switch, native verification and mutation now enumerate mounted
+volumes, match the exact disk number and partition byte range, then revalidate
+the GPT identity before using the discovered path. Zero or multiple matches
+refuse; the old NTFS volume path is not assumed to survive cutover. See
+[Microsoft's volume naming guidance](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-volume)
+and [volume enumeration API](https://learn.microsoft.com/en-us/windows/win32/fileio/enumerating-volumes).
 The guest-only `lab-general-refs-mutation` workload creates a fresh temporary
 directory on the converted ReFS disk, writes and hashes a 50 MiB file, grows
 it across a zero-valid-data gap, truncates and renames it, then creates and

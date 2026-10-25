@@ -14,8 +14,12 @@ use std::{
     },
     ptr::{self, NonNull},
 };
-use windows_sys::Win32::Foundation::CloseHandle;
-use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationW;
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationW,
+};
 use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW};
 
 const DEVICE: u32 = 0x002d1080;
@@ -476,6 +480,96 @@ pub fn mounted_filesystem_general(
         .ok_or_else(|| invalid("mounted filesystem name is unterminated"))?;
     String::from_utf16(&filesystem[..end])
         .map_err(|_| invalid("mounted filesystem name is invalid UTF-16"))
+}
+
+fn enumerated_guid(name: &str) -> io::Result<String> {
+    let guid = name
+        .strip_prefix("\\\\?\\Volume{")
+        .and_then(|rest| rest.strip_suffix("}\\"))
+        .ok_or_else(|| invalid("enumerated volume GUID path differs"))?;
+    layout::guid_bytes(guid)?;
+    Ok(guid.into())
+}
+
+struct VolumeEnumeration(windows_sys::Win32::Foundation::HANDLE);
+impl Drop for VolumeEnumeration {
+    fn drop(&mut self) {
+        // SAFETY: this is the unique live search handle returned by
+        // FindFirstVolumeW; Drop runs exactly once.
+        unsafe { FindVolumeClose(self.0) };
+    }
+}
+
+/// Rediscover the volume-GUID path of the same GPT partition after formatting
+/// changes the filesystem identity. Every candidate must resolve to the exact
+/// bound physical disk/partition; zero or multiple matches are refused.
+pub fn rediscover_general_volume(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralDiskBinding> {
+    binding.validate()?;
+    if current_windows_disk(events)? == binding.disk_number {
+        return Err(invalid("current Windows disk is excluded"));
+    }
+    let disk = device_file(
+        &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+        false,
+        false,
+    )?;
+    if general_disk_state(&disk, &binding, events)?.disk_attributes != 0 {
+        return Err(invalid(
+            "general volume rediscovery requires online writable disk",
+        ));
+    }
+    let mut buffer = [0u16; 1024];
+    // SAFETY: initialized writable UTF-16 buffer of the declared length.
+    let handle = unsafe { FindFirstVolumeW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let _search = VolumeEnumeration(handle);
+    let mut matches = Vec::new();
+    let mut finished = false;
+    for _ in 0..1024 {
+        let end = buffer
+            .iter()
+            .position(|unit| *unit == 0)
+            .ok_or_else(|| invalid("enumerated volume name is unterminated"))?;
+        let name = String::from_utf16(&buffer[..end])
+            .map_err(|_| invalid("enumerated volume name is invalid UTF-16"))?;
+        if let Ok(guid) = enumerated_guid(&name)
+            && let Ok(volume) = device_file(name.trim_end_matches('\\'), false, false)
+            && let Ok(extents) = control(
+                &volume,
+                "rediscovered-volume-extents",
+                VOLUME_EXTENTS,
+                &[],
+                1024,
+                events,
+            )
+            && binding.validate_volume_extent(&extents).is_ok()
+        {
+            matches.push(guid);
+        }
+        buffer.fill(0);
+        // SAFETY: the search handle and writable buffer remain live for this
+        // synchronous enumeration call.
+        if unsafe { FindNextVolumeW(handle, buffer.as_mut_ptr(), buffer.len() as u32) } == 0 {
+            // SAFETY: the error belongs to the immediately preceding call.
+            if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
+                return Err(io::Error::last_os_error());
+            }
+            finished = true;
+            break;
+        }
+    }
+    if !finished || matches.len() != 1 {
+        return Err(invalid("physical partition has no unique volume-GUID path"));
+    }
+    let mut updated = binding;
+    updated.volume_guid = matches.remove(0);
+    probe_general(updated.clone(), events)?;
+    Ok(updated)
 }
 
 struct AlignedBuffer {
@@ -1663,6 +1757,21 @@ impl Seek for OfflinePartition {
 mod tests {
     use super::*;
     use crate::layout::PartitionIdentity;
+
+    #[test]
+    fn enumerated_volume_name_must_be_a_complete_guid_root() {
+        assert_eq!(
+            enumerated_guid("\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\").unwrap(),
+            "11111111-2222-3333-4444-555555555555"
+        );
+        for name in [
+            "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}",
+            "\\\\?\\Volume{11111111-2222-3333-4444-555555555555}\\file",
+            "\\\\?\\Volume{not-a-guid}\\",
+        ] {
+            assert!(enumerated_guid(name).is_err());
+        }
+    }
 
     fn ordinary_stream() -> OfflinePartition {
         let mut file = tempfile::tempfile().unwrap();

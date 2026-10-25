@@ -17,7 +17,7 @@ use n2r_win32::{
         observe_general_journal_file,
     },
     layout::guid_bytes,
-    mounted_filesystem_general, shadow_native,
+    mounted_filesystem_general, rediscover_general_volume, shadow_native,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -591,7 +591,9 @@ pub fn complete_rollback(
         return Ok(report);
     }
     std::thread::sleep(std::time::Duration::from_millis(1000));
-    match mounted_filesystem_general(request.pair.source.clone(), &mut report.events) {
+    let mounted = rediscover_general_volume(request.pair.source.clone(), &mut report.events)
+        .and_then(|binding| mounted_filesystem_general(binding, &mut report.events));
+    match mounted {
         Ok(name) if name == "NTFS" => {
             report.mounted_filesystem = Some(name);
             report.success = true;
@@ -657,7 +659,9 @@ pub fn resume_completed_rollback(
         return Ok(report);
     }
     std::thread::sleep(std::time::Duration::from_millis(1000));
-    match mounted_filesystem_general(request.pair.source.clone(), &mut report.events) {
+    let mounted = rediscover_general_volume(request.pair.source.clone(), &mut report.events)
+        .and_then(|binding| mounted_filesystem_general(binding, &mut report.events));
+    match mounted {
         Ok(name) if name == "NTFS" => {
             report.mounted_filesystem = Some(name);
             report.success = true;
@@ -675,7 +679,10 @@ pub fn resume_completed_rollback(
 fn verify_converted_tree(
     request: &Request,
     expectation: &shadow_tree::ExpectedTree,
+    events: &mut Vec<NativeEvent>,
 ) -> std::io::Result<shadow_native::GeneralConvertedReport> {
+    let mut pair = request.pair.clone();
+    pair.source = rediscover_general_volume(pair.source, events)?;
     let input: Vec<_> = expectation
         .objects
         .iter()
@@ -703,7 +710,7 @@ fn verify_converted_tree(
         ntfs_attestation::same_security(a, b)
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
-    shadow_native::verify_general_converted_ordinary(request.pair.clone(), &input, same_security)
+    shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
 }
 
 /// The only planned general transition from an offline journal target to a
@@ -774,7 +781,7 @@ pub(crate) fn finalize(
         return Ok(report);
     }
     std::thread::sleep(std::time::Duration::from_millis(1000));
-    match verify_converted_tree(request, &expectation) {
+    match verify_converted_tree(request, &expectation, &mut report.events) {
         Ok(native) => {
             report.native = Some(native);
             report.success = true;
@@ -839,7 +846,7 @@ pub fn finalize_after_marker(
         return Ok(report);
     }
     std::thread::sleep(std::time::Duration::from_millis(1000));
-    match verify_converted_tree(request, &expectation) {
+    match verify_converted_tree(request, &expectation, &mut report.events) {
         Ok(native) => {
             report.native = Some(native);
             report.success = true;

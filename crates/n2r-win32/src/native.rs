@@ -81,6 +81,17 @@ pub struct LiveNtfsObservation {
     before: PartitionSnapshot,
     after: PartitionSnapshot,
 }
+#[derive(Debug, Serialize)]
+pub struct GeneralLiveNtfsObservation {
+    report: crate::attestation::Report,
+    before: GeneralDiskState,
+    after: GeneralDiskState,
+}
+impl GeneralLiveNtfsObservation {
+    pub fn report(&self) -> &crate::attestation::Report {
+        &self.report
+    }
+}
 impl LiveNtfsObservation {
     pub fn report(&self) -> &crate::attestation::Report {
         &self.report
@@ -608,6 +619,91 @@ impl GeneralFrozenPartition {
 
     pub fn native_bytes_read(&self) -> u64 {
         self.native_bytes_read
+    }
+
+    /// Temporarily publish only a READ_ONLY NTFS view for native semantic
+    /// collection, then restore OFFLINE|READ_ONLY before returning. A process
+    /// death can leave a write-protected mounted view requiring explicit
+    /// recovery; no automatic writable fallback exists.
+    pub fn observe_ntfs_files(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
+        request.validate()?;
+        if request.schema_version != 2
+            || request.disk_number != self.binding.disk_number
+            || request.volume != format!("{}\\", self.binding.volume_path()?)
+            || request.partition_offset != self.binding.identity.partition_offset
+            || request.partition_length != self.byte_len()
+        {
+            return Err(invalid("general native observer binding differs"));
+        }
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid("general source is not persistently excluded"));
+        }
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number),
+            true,
+            false,
+        )?;
+        if general_disk_state(&management, &self.binding, events)? != before {
+            return Err(invalid("general observer control-handle route differs"));
+        }
+        let mut lease = ReadonlyObservationLease {
+            file: &management,
+            events,
+            restoration_attempted: false,
+        };
+        set_attributes(lease.file, READ_ONLY, lease.events)?;
+        control(
+            lease.file,
+            "refresh-general-readonly-source-properties",
+            UPDATE_PROPERTIES,
+            &[],
+            0,
+            lease.events,
+        )?;
+        let mut ready = false;
+        for _ in 0..60 {
+            if attributes(lease.file, lease.events)? != READ_ONLY {
+                return Err(invalid(
+                    "general source read-only observation state changed",
+                ));
+            }
+            match device_file(&self.binding.volume_path()?, false, false) {
+                Ok(volume) => {
+                    drop(volume);
+                    ready = true;
+                    break;
+                }
+                Err(error) if matches!(error.raw_os_error(), Some(2 | 3 | 21 | 1167)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(250))
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if !ready {
+            return Err(invalid(
+                "general read-only volume was not published within 15 seconds",
+            ));
+        }
+        let collected = crate::attestation_native::collect_file_metadata(request);
+        let restored = lease.finish();
+        drop(lease);
+        restored?;
+        let after = self.state(events)?;
+        if before != after {
+            return Err(invalid(
+                "general source exclusion changed during native observation",
+            ));
+        }
+        Ok(GeneralLiveNtfsObservation {
+            report: collected?,
+            before,
+            after,
+        })
     }
 
     /// Transition only an unchanged OFFLINE|READ_ONLY source to OFFLINE. The

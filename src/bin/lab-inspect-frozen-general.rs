@@ -6,7 +6,8 @@ fn main() -> anyhow::Result<()> {
     use clap::Parser;
     use n2r_win32::{GeneralFrozenPartition, general_layout::GeneralDiskBinding};
     use ntfs2refs::{
-        lab_reconstruct, ntfs_backup, ntfs_inspect, ntfs_log, ntfs_stream_plan, shadow_tree,
+        lab_reconstruct, ntfs_attestation, ntfs_backup, ntfs_inspect, ntfs_log, ntfs_stream_plan,
+        shadow_tree,
     };
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -26,6 +27,10 @@ fn main() -> anyhow::Result<()> {
         output: PathBuf,
         #[arg(long)]
         ordinary_tree: bool,
+        /// Temporarily publish a write-protected NTFS mount for native file
+        /// evidence, then restore persistent offline/read-only exclusion.
+        #[arg(long)]
+        native: bool,
     }
     #[derive(Serialize)]
     struct Report {
@@ -42,6 +47,10 @@ fn main() -> anyhow::Result<()> {
         stream_plan: ntfs_stream_plan::Plan,
         ordinary_tree: Option<shadow_tree::Tree>,
         ordinary_tree_refusal: Option<String>,
+        canonical_inspection_sha256: String,
+        native: Option<serde_json::Value>,
+        native_comparison: Option<ntfs_attestation::Comparison>,
+        native_error: Option<String>,
         native_bytes_read: u64,
         events: Vec<n2r_win32::NativeEvent>,
         source_frozen: bool,
@@ -49,6 +58,7 @@ fn main() -> anyhow::Result<()> {
         conversion_qualified: bool,
     }
     let args = Args::parse();
+    ensure!(!args.output.exists(), "fresh frozen-source output required");
     let metadata = fs::symlink_metadata(&args.binding)?;
     ensure!(
         metadata.is_file() && metadata.len() <= 16384,
@@ -81,6 +91,31 @@ fn main() -> anyhow::Result<()> {
     } else {
         (None, None)
     };
+    let canonical_inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&ntfs)?));
+    let observed = if args.native {
+        let intent = args.output.with_extension("intent.json");
+        ensure!(!intent.exists(), "fresh native observation intent required");
+        let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version":1,"kind":"general-frozen-native-observation-intent",
+            "source_sha256":hex::encode(hash),
+            "canonical_inspection_sha256":canonical_inspection_sha256.clone(),
+            "source_writes_authorized":false,"conversion_qualified":false
+        }))?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(intent)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        let request = ntfs_attestation::request_for_general_inspection(
+            &ntfs,
+            &canonical_inspection_sha256,
+            source.binding(),
+        )?;
+        Some(source.observe_ntfs_files(&request, &mut events))
+    } else {
+        None
+    };
     let after_hash = lab_reconstruct::hash_range(&mut source, 0, length)?;
     ensure!(hash == after_hash, "excluded NTFS source bytes changed");
     let after = source.state(&mut events)?;
@@ -88,6 +123,22 @@ fn main() -> anyhow::Result<()> {
         before == after,
         "excluded disk route changed during inspection"
     );
+    let (native, native_comparison, native_error) = match observed {
+        Some(Ok(observation)) => {
+            let comparison = ntfs_attestation::compare(
+                &ntfs,
+                &canonical_inspection_sha256,
+                observation.report(),
+            );
+            let native = Some(serde_json::to_value(observation.report())?);
+            match comparison {
+                Ok(comparison) => (native, Some(comparison), None),
+                Err(error) => (native, None, Some(format!("{error:#}"))),
+            }
+        }
+        Some(Err(error)) => (None, None, Some(error.to_string())),
+        None => (None, None, None),
+    };
     let report = Report {
         schema_version: 1,
         kind: "general-frozen-ntfs-read-only-basis",
@@ -102,6 +153,10 @@ fn main() -> anyhow::Result<()> {
         stream_plan,
         ordinary_tree,
         ordinary_tree_refusal,
+        canonical_inspection_sha256,
+        native,
+        native_comparison,
+        native_error,
         native_bytes_read: source.native_bytes_read(),
         events,
         source_frozen: true,

@@ -48,18 +48,30 @@ impl Request {
                 && s.bytes().any(|b| b != b'0' && b != b'-')
         });
         let mut ids = BTreeSet::new();
-        if self.schema_version != 1
+        let geometry_profile = match self.schema_version {
+            1 => {
+                self.disk_number <= 255
+                    && self
+                        .partition_offset
+                        .checked_add(self.partition_length)
+                        .is_some_and(|n| n <= 64 * 1024 * 1024 * 1024)
+            }
+            2 => {
+                self.disk_number <= 4095
+                    && self
+                        .partition_offset
+                        .checked_add(self.partition_length)
+                        .is_some_and(|n| n <= 64 * 1024 * 1024 * 1024 * 1024)
+            }
+            _ => false,
+        };
+        if !geometry_profile
             || !valid_guid
-            || self.disk_number == 0
-            || self.disk_number > 255
+            || (self.schema_version == 1 && self.disk_number == 0)
             || self.partition_offset == 0
             || !self.partition_offset.is_multiple_of(4096)
             || self.partition_length == 0
             || !self.partition_length.is_multiple_of(4096)
-            || self
-                .partition_offset
-                .checked_add(self.partition_length)
-                .is_none_or(|n| n > 64 * 1024 * 1024 * 1024)
             || self.ntfs_serial == 0
             || self.files.is_empty()
             || self.files.len() > MAX_FILES
@@ -78,6 +90,33 @@ impl Request {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod request_tests {
+    use super::*;
+
+    #[test]
+    fn general_request_extends_disk_bounds_without_widening_lab_schema() {
+        let mut request = Request {
+            schema_version: 1,
+            source_inspection_sha256: "a".repeat(64),
+            volume: "\\\\?\\Volume{11111111-1111-1111-1111-111111111111}\\".into(),
+            disk_number: 300,
+            partition_offset: 1 << 20,
+            partition_length: 4 << 30,
+            ntfs_serial: 1,
+            files: vec![FileIdentity {
+                record_number: 5,
+                sequence_number: 1,
+            }],
+        };
+        assert!(request.validate().is_err());
+        request.schema_version = 2;
+        request.validate().unwrap();
+        request.partition_offset = u64::MAX - 4095;
+        assert!(request.validate().is_err());
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

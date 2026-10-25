@@ -47,6 +47,41 @@ pub fn request_for_inspection(
     Ok(request)
 }
 
+/// Generate the same native semantic inventory request for a dedicated data
+/// disk. Schema 2 widens only route/geometry bounds; the collector still
+/// verifies read-only NTFS identity through actual Windows handles.
+pub fn request_for_general_inspection(
+    raw: &NtfsInspection,
+    inspection_sha256: &str,
+    binding: &n2r_win32::general_layout::GeneralDiskBinding,
+) -> Result<n2r_win32::attestation::Request> {
+    binding.validate()?;
+    ensure!(
+        raw.geometry.volume_size == binding.identity.partition_bytes
+            || raw.geometry.volume_size.checked_add(512) == Some(binding.identity.partition_bytes),
+        "general raw NTFS geometry differs from bound partition"
+    );
+    let request = n2r_win32::attestation::Request {
+        schema_version: 2,
+        source_inspection_sha256: inspection_sha256.into(),
+        volume: format!("{}\\", binding.volume_path()?),
+        disk_number: binding.disk_number,
+        partition_offset: binding.identity.partition_offset,
+        partition_length: binding.identity.partition_bytes,
+        ntfs_serial: raw.geometry.serial_number,
+        files: raw
+            .files
+            .iter()
+            .map(|file| n2r_win32::attestation::FileIdentity {
+                record_number: file.record_number,
+                sequence_number: file.sequence_number,
+            })
+            .collect(),
+    };
+    request.validate()?;
+    Ok(request)
+}
+
 #[derive(Debug, Serialize)]
 pub struct FileComparison {
     pub record_number: u64,

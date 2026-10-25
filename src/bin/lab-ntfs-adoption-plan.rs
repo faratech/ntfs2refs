@@ -42,6 +42,7 @@ struct Report {
     kind: &'static str,
     inspection_sha256: String,
     occupied_sha256: String,
+    target_bitmap_sha256: Option<String>,
     target_occupied_ranges: usize,
     files: Vec<FilePlan>,
     adopted_logical_bytes: u64,
@@ -90,7 +91,44 @@ fn main() -> Result<()> {
                 <= u64::from(raw.geometry.bytes_per_sector),
         "partition length differs from NTFS boot geometry"
     );
-    let target_occupied: Vec<PhysicalRange> = serde_json::from_slice(&occupancy)?;
+    let occupied_value: serde_json::Value = serde_json::from_slice(&occupancy)?;
+    let allocation = if occupied_value.is_array() {
+        None
+    } else if occupied_value.get("native").is_some() {
+        ensure!(
+            occupied_value["success"] == true,
+            "successful native shadow report required"
+        );
+        Some(&occupied_value["native"]["metadata_allocation"])
+    } else {
+        Some(&occupied_value)
+    };
+    let target_occupied: Vec<PhysicalRange> = match allocation {
+        Some(map) => serde_json::from_value(map["ranges"].clone())?,
+        None => serde_json::from_value(occupied_value.clone())?,
+    };
+    let target_bitmap_sha256 = allocation
+        .and_then(|map| map["bitmap_sha256"].as_str())
+        .map(str::to_owned);
+    if let Some(map) = allocation {
+        let mapped_allocated = target_occupied.iter().try_fold(0u64, |total, range| {
+            ensure!(
+                range.length.is_multiple_of(u64::from(args.refs_cluster)),
+                "target bitmap range is not cluster aligned"
+            );
+            total
+                .checked_add(range.length / u64::from(args.refs_cluster))
+                .context("target bitmap count overflow")
+        })?;
+        ensure!(
+            map["cluster_count"]
+                .as_u64()
+                .and_then(|clusters| clusters.checked_mul(u64::from(args.refs_cluster)))
+                == Some(partition_bytes)
+                && map["allocated_clusters"].as_u64() == Some(mapped_allocated),
+            "target bitmap interval coverage or geometry differs"
+        );
+    }
     let tree = shadow_tree::derive_ordinary(&raw)?;
     let mut plans = Vec::new();
     let mut adopted = 0u64;
@@ -145,6 +183,7 @@ fn main() -> Result<()> {
         kind: "ntfs-refs-direct-adoption-candidates",
         inspection_sha256: hex::encode(Sha256::digest(&inspected)),
         occupied_sha256: hex::encode(Sha256::digest(&occupancy)),
+        target_bitmap_sha256,
         target_occupied_ranges: target_occupied.len(),
         files: plans,
         adopted_logical_bytes: adopted,

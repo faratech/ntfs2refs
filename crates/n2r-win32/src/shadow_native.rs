@@ -103,6 +103,9 @@ pub struct Report {
     pub before: crate::PartitionSnapshot,
     pub after: crate::PartitionSnapshot,
     pub objects: Vec<ObjectReport>,
+    /// Complete metadata-inclusive allocation intervals observed through
+    /// refs.sys on this mounted shadow. Not a stand-alone ownership proof.
+    pub metadata_allocation: Option<crate::bitmap_layout::AllocationMap>,
     pub base_sectors: u64,
     pub privilege_states: Vec<PrivilegeState>,
     pub events: Vec<NativeEvent>,
@@ -1048,6 +1051,7 @@ fn run_role(
             before,
             after,
             objects: vec![],
+            metadata_allocation: None,
             base_sectors: 0,
             privilege_states: privileges.audit().to_vec(),
             events,
@@ -1092,6 +1096,7 @@ fn run_role(
                 before,
                 after,
                 objects: vec![],
+                metadata_allocation: None,
                 base_sectors: 0,
                 privilege_states: privileges.audit().to_vec(),
                 events,
@@ -1168,6 +1173,8 @@ fn run_role(
         &ex_input,
         stream_layout::MAX_BITMAP_BYTES,
     )?;
+    let metadata_allocation =
+        crate::bitmap_layout::allocated_ranges(&metadata_bitmap, binding.identity.partition_bytes)?;
     let mut objects = vec![];
     for i in input {
         let mut h = open(
@@ -1350,6 +1357,7 @@ fn run_role(
         before,
         after,
         objects,
+        metadata_allocation: Some(metadata_allocation),
         base_sectors: 0,
         privilege_states: privileges.audit().to_vec(),
         events,

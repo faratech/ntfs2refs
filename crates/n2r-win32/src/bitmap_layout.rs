@@ -3,6 +3,75 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AllocatedRange {
+    pub offset: u64,
+    pub length: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AllocationMap {
+    pub bitmap_sha256: String,
+    pub cluster_count: u64,
+    pub allocated_clusters: u64,
+    pub ranges: Vec<AllocatedRange>,
+}
+
+/// Compress a complete metadata-inclusive bitmap into physical byte ranges.
+/// This does not establish ownership of the set bits or authorize omission of
+/// any ReFS bootstrap sector from a reconstruction write set.
+pub fn allocated_ranges(bytes: &[u8], partition: u64) -> io::Result<AllocationMap> {
+    let bad = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+    if !partition.is_multiple_of(4096)
+        || bytes.len() < 16
+        || bytes.len() > 2 * 1024 * 1024
+        || bytes[..8] != [0; 8]
+    {
+        return Err(bad("invalid metadata-inclusive bitmap header or geometry"));
+    }
+    let bits = i64::from_le_bytes(bytes[8..16].try_into().unwrap());
+    if bits <= 0
+        || bits as u64 != partition / 4096
+        || bytes.len() - 16 < (bits as u64).div_ceil(8) as usize
+    {
+        return Err(bad("metadata-inclusive bitmap is incomplete"));
+    }
+    let mut ranges = Vec::new();
+    let mut first = None;
+    let mut allocated = 0u64;
+    for cluster in 0..bits as u64 {
+        let set = bytes[16 + (cluster / 8) as usize] & (1 << (cluster % 8)) != 0;
+        if set {
+            allocated += 1;
+            if first.is_none() {
+                first = Some(cluster);
+            }
+        } else if let Some(start) = first.take() {
+            if ranges.len() >= 65536 {
+                return Err(bad("metadata-inclusive allocation range budget exceeded"));
+            }
+            ranges.push(AllocatedRange {
+                offset: start * 4096,
+                length: (cluster - start) * 4096,
+            });
+        }
+    }
+    if let Some(start) = first {
+        if ranges.len() >= 65536 {
+            return Err(bad("metadata-inclusive allocation range budget exceeded"));
+        }
+        ranges.push(AllocatedRange {
+            offset: start * 4096,
+            length: (bits as u64 - start) * 4096,
+        });
+    }
+    Ok(AllocationMap {
+        bitmap_sha256: hex::encode(Sha256::digest(bytes)),
+        cluster_count: bits as u64,
+        allocated_clusters: allocated,
+        ranges,
+    })
+}
 #[derive(Debug, Serialize)]
 pub struct Candidate {
     pub start_lcn: u64,
@@ -92,5 +161,32 @@ mod tests {
         ] {
             assert!(candidate(&bitmap(), o, l, 65536).is_err());
         }
+    }
+    #[test]
+    fn compresses_complete_metadata_bitmap_without_losing_tail() {
+        let mut b = bitmap();
+        b[16] = 0b0001_0011;
+        b[17] = 0b1000_0000;
+        let map = allocated_ranges(&b, 16 * 4096).unwrap();
+        assert_eq!(map.allocated_clusters, 4);
+        assert_eq!(
+            map.ranges,
+            [
+                AllocatedRange {
+                    offset: 0,
+                    length: 8192
+                },
+                AllocatedRange {
+                    offset: 4 * 4096,
+                    length: 4096
+                },
+                AllocatedRange {
+                    offset: 15 * 4096,
+                    length: 4096
+                },
+            ]
+        );
+        assert!(allocated_ranges(&b, 17 * 4096).is_err());
+        assert!(allocated_ranges(&b[..17], 16 * 4096).is_err());
     }
 }

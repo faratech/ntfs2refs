@@ -80,8 +80,10 @@ relocated; this run does not demonstrate retained physical extents. Source
 admission for arbitrary NTFS volumes is still closed. The NTFS `0x0080`
 short-name policy mapping and its live frozen-source binding have passed.
 Frozen object-ID/reparse indexes and disabled unlimited quota defaults also
-passed their new raw/native checks. TxF replacement state and target
-preservation admission remain unfinished. The first-write interruption
+passed their new raw/native checks. The bounded default-RM freeze also passed
+in a separate native source run. Newly generated Windows files still expose
+security-view differences, and target-preservation admission remains unfinished.
+The first-write interruption
 and resume path passed, but a broader write/flush fault matrix and the
 shadowless rollback path remain to be qualified natively. A usable general
 conversion CLI remains unfinished. Boot volume conversion is a separate later

@@ -176,6 +176,48 @@ pub struct GeneralObservation {
     pub observation: Observation,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultRmState {
+    QueriedEmpty,
+    Inactive,
+    Unresolved,
+}
+
+impl Observation {
+    /// ERROR_RM_NOT_ACTIVE is an explicit inactive state, not an invented
+    /// transaction count. Other native failures remain unresolved.
+    pub fn default_rm_state(&self) -> DefaultRmState {
+        classify_default_rm(
+            self.queried_rm_stably_empty,
+            [
+                self.query_before.is_some(),
+                self.query_after.is_some(),
+                self.transaction_list.is_some(),
+            ],
+            [
+                self.query_before_error,
+                self.query_after_error,
+                self.transaction_list_error,
+            ],
+        )
+    }
+}
+
+fn classify_default_rm(
+    empty: bool,
+    results: [bool; 3],
+    errors: [Option<u32>; 3],
+) -> DefaultRmState {
+    if empty && results == [true; 3] && errors == [None; 3] {
+        DefaultRmState::QueriedEmpty
+    } else if results == [false; 3] && errors == [Some(6801); 3] {
+        DefaultRmState::Inactive
+    } else {
+        DefaultRmState::Unresolved
+    }
+}
+
 fn control(file: &File, code: u32) -> Result<Vec<u8>, u32> {
     let mut aligned = vec![0u64; MAX_REPLY / 8];
     let mut returned = 0u32;
@@ -509,6 +551,35 @@ fn read_only_disk(disk: &File) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inactive_is_distinct_from_empty_and_partial_queries_never_qualify() {
+        assert_eq!(
+            classify_default_rm(true, [true; 3], [None; 3]),
+            DefaultRmState::QueriedEmpty
+        );
+        assert_eq!(
+            classify_default_rm(false, [false; 3], [Some(6801); 3]),
+            DefaultRmState::Inactive
+        );
+        for slot in 0..3 {
+            let mut errors = [Some(6801); 3];
+            errors[slot] = Some(5);
+            assert_eq!(
+                classify_default_rm(false, [false; 3], errors),
+                DefaultRmState::Unresolved
+            );
+            let mut results = [true; 3];
+            results[slot] = false;
+            assert_eq!(
+                classify_default_rm(true, results, [None; 3]),
+                DefaultRmState::Unresolved
+            );
+        }
+        assert_eq!(
+            classify_default_rm(false, [true; 3], [None; 3]),
+            DefaultRmState::Unresolved
+        );
+    }
     #[test]
     fn native_version_query_returns_a_build_fingerprint() {
         let version = windows_version().unwrap();

@@ -541,6 +541,7 @@ fn validate_existing(
                 continue;
             }
             if i.components.is_empty()
+                && !expected.contains_key(&entry.name_utf16)
                 && entry.name_utf16
                     == "System Volume Information"
                         .encode_utf16()

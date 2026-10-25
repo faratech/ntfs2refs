@@ -27,9 +27,10 @@ pub use attestation_native::collect_file_metadata;
 mod native;
 #[cfg(windows)]
 pub use native::{
-    DriveLetterRestore, GeneralDiskState, GeneralFrozenPartition, GeneralJournaledPartition,
-    GeneralLiveNtfsObservation, GeneralLockedPartition, GeneralPartitionReader, GeneralProbe,
-    LiveNtfsObservation, MountPathObservation, NativeEvent, OfflinePartition, PartitionSnapshot,
-    WritePolicy, capture_mount_paths_general, mounted_filesystem_general, probe_general,
-    rediscover_general_volume, rediscover_general_volume_wait, restore_drive_letter_general,
+    DriveLetterRestore, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenPartition,
+    GeneralJournaledPartition, GeneralLiveNtfsObservation, GeneralLockedPartition,
+    GeneralPartitionReader, GeneralProbe, LiveNtfsObservation, MountPathObservation, NativeEvent,
+    OfflinePartition, PartitionSnapshot, WritePolicy, capture_mount_paths_general,
+    mounted_filesystem_general, probe_general, rediscover_general_volume,
+    rediscover_general_volume_wait, restore_drive_letter_general,
 };

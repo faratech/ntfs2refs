@@ -266,6 +266,79 @@ pub struct Gate {
     pub satisfied: bool,
     pub detail: String,
 }
+
+#[derive(Debug, Serialize)]
+pub struct InternalReplacement {
+    pub record_number: u64,
+    pub role: String,
+    pub action: &'static str,
+}
+
+/// Replace NTFS runtime structures with the native-created ReFS structures
+/// only after their source-state obligations have actual bound evidence.
+pub(crate) fn bind_internal_replacement(
+    assessment: &mut Assessment,
+    raw: &ntfs::NtfsInspection,
+    indexes: &crate::ntfs_internal::VerifiedIndexes,
+    transactions: &crate::ntfs_transactions::VerifiedTransactions,
+) -> Option<Vec<InternalReplacement>> {
+    let required = [
+        "clean_volume",
+        "raw_allocation",
+        "raw_namespace",
+        "raw_security",
+        "objects",
+        "native_volume_allocation",
+        "source_backups",
+        "log_restart_pages",
+        "remaining_inspection_refusals",
+        "frozen_device_basis",
+    ];
+    if !indexes.binds(raw)
+        || !indexes.replacement_supported
+        || !transactions.binds(raw)
+        || required.iter().any(|code| {
+            !assessment
+                .gates
+                .iter()
+                .any(|g| g.code == *code && g.satisfied)
+        })
+    {
+        return None;
+    }
+    let mut replacements = Vec::new();
+    for object in &assessment.objects {
+        if object.disposition != Disposition::RecognizedFilesystemInternal {
+            continue;
+        }
+        let file = raw.files.iter().find(|f| {
+            f.record_number == object.record_number && f.sequence_number == object.sequence_number
+        })?;
+        if internal_role(raw, file).as_deref() != Some(object.role.as_str()) {
+            return None;
+        }
+        let action = match object.role.as_str() {
+            "$LogFile" | "$Extend\\$UsnJrnl" => "start_new_filesystem_journal_epoch",
+            "$Extend\\$RmMetadata\\$Repair" => "replace_ntfs_runtime_diagnostics",
+            role if role.starts_with("$Extend\\$RmMetadata") || role == "$Extend\\$Deleted" => {
+                "replace_idle_default_transaction_metadata"
+            }
+            _ => "replace_with_native_refs_structure",
+        };
+        replacements.push(InternalReplacement {
+            record_number: object.record_number,
+            role: object.role.clone(),
+            action,
+        });
+    }
+    for gate in &mut assessment.gates {
+        if gate.code == "internal_replacement_state" {
+            gate.satisfied = true;
+            gate.detail = "frozen allocation/namespace/security, backup/restart copies, empty object/reparse indexes, disabled default quotas and the observed default-RM freeze agree; each NTFS-internal object has an explicit replacement disposition".into();
+        }
+    }
+    Some(replacements)
+}
 #[derive(Debug, Serialize)]
 pub struct Assessment {
     pub schema_version: u32,

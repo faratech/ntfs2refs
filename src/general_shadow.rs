@@ -4,6 +4,36 @@ use n2r_win32::general_layout::GeneralSourceShadowBinding;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_native::Input<'_>> {
+    tree.objects
+        .iter()
+        .map(|object| n2r_win32::shadow_native::Input {
+            components: &object.path,
+            directory: object.directory,
+            times: object.stored_times,
+            attributes: object.attributes,
+            security: &object.security,
+            payload: &[],
+            expected_length: (!object.directory).then_some(object.length),
+            expected_sha256: if object.directory {
+                None
+            } else {
+                object.sha256.as_deref()
+            },
+            source_offset: object.source_offset,
+            source_runs: object
+                .source_extents
+                .iter()
+                .map(|run| n2r_win32::shadow_native::SourceRun {
+                    logical_offset: run.logical_offset,
+                    physical_offset: run.physical_offset,
+                    length: run.length,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 pub fn validate_mount_paths(paths: &Option<Vec<String>>) -> Result<()> {
     let Some(paths) = paths else { return Ok(()) };
     ensure!(paths.len() <= 128, "too many source mount paths");

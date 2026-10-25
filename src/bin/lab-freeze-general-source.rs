@@ -26,6 +26,10 @@ fn main() -> anyhow::Result<()> {
         binding_sha256: String,
         #[arg(long)]
         output: PathBuf,
+        /// Collect live native evidence in the same process as the actual
+        /// observed freeze. Reopened reports cannot supply this witness.
+        #[arg(long)]
+        native: bool,
     }
     fn save(path: &PathBuf, value: &impl Serialize) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(value)?;
@@ -86,7 +90,11 @@ fn main() -> anyhow::Result<()> {
             "mount_paths":mount_paths.paths,
             "source_payload_writes_authorized":false,"conversion_qualified":false}),
     )?;
-    let mut source = GeneralFrozenPartition::isolate(binding, &mut events)?;
+    let mut source = if args.native {
+        GeneralFrozenPartition::isolate_observed_ntfs(binding, &mut events)?
+    } else {
+        GeneralFrozenPartition::isolate(binding, &mut events)?
+    };
     let before = source.state(&mut events)?;
     let length = source.byte_len();
     let source_sha256 = hex::encode(lab_reconstruct::hash_range(&mut source, 0, length)?);
@@ -96,7 +104,37 @@ fn main() -> anyhow::Result<()> {
         Ok(proof) => (Some(proof), None),
         Err(error) => (None, Some(format!("{error:#}"))),
     };
-    let after_sha256 = hex::encode(lab_reconstruct::hash_range(&mut source, 0, length)?);
+    let canonical_pin = hex::encode(Sha256::digest(serde_json::to_vec(&ntfs)?));
+    let (live_assessment, native_error) = if args.native {
+        let request = ntfs2refs::ntfs_attestation::request_for_general_inspection(
+            &ntfs,
+            &canonical_pin,
+            source.binding(),
+        )?;
+        match source.observe_ntfs_files(&request, &mut events) {
+            Ok(observed) => match ntfs2refs::general_source_admission::assess(
+                &mut source,
+                &ntfs,
+                &canonical_pin,
+                &source_sha256,
+                &backups,
+                log_restart.as_ref(),
+                &observed,
+                &mut events,
+            ) {
+                Ok(assessment) => (Some(assessment), None),
+                Err(error) => (None, Some(format!("{error:#}"))),
+            },
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
+    };
+    let after_sha256 = if let Some(assessment) = &live_assessment {
+        assessment.source_sha256.clone()
+    } else {
+        hex::encode(lab_reconstruct::hash_range(&mut source, 0, length)?)
+    };
     let after = source.state(&mut events)?;
     ensure!(
         before == after && source_sha256 == after_sha256,
@@ -110,6 +148,7 @@ fn main() -> anyhow::Result<()> {
             "mount_paths":mount_paths,
             "ntfs":ntfs,"backups":backups,"log_restart":log_restart,
             "log_restart_error":log_restart_error,"events":events,
+            "canonical_inspection_sha256":canonical_pin,"live_assessment":live_assessment,"native_error":native_error,
             "source_payload_writes":0,"source_admitted":false,"conversion_qualified":false}),
     )?;
     Ok(())

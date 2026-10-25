@@ -919,6 +919,20 @@ pub struct GeneralFrozenPartition {
     position: u64,
     buffer: AlignedBuffer,
     native_bytes_read: u64,
+    freeze_observation: Option<GeneralFreezeObservation>,
+}
+
+/// Constructed only across an actual native observation, successful volume
+/// lock/dismount and persistent exclusion. Reopening cannot recreate it.
+#[derive(Debug, Serialize)]
+pub struct GeneralFreezeObservation {
+    mounted_ntfs: crate::txf_native::GeneralObservation,
+    frozen_state: GeneralDiskState,
+}
+impl GeneralFreezeObservation {
+    pub fn mounted_ntfs(&self) -> &crate::txf_native::GeneralObservation {
+        &self.mounted_ntfs
+    }
 }
 
 /// Activated, persistently offline general target. Writes remain unavailable
@@ -933,6 +947,34 @@ pub struct GeneralJournaledPartition {
 }
 
 impl GeneralFrozenPartition {
+    pub fn isolate_observed_ntfs(
+        binding: GeneralDiskBinding,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        if mounted_filesystem_general(binding.clone(), events)? != "NTFS" {
+            return Err(invalid("observed source freeze requires mounted NTFS"));
+        }
+        let mounted_ntfs = crate::txf_native::observe_general(binding.clone())?;
+        if mounted_ntfs.observation.default_rm_state()
+            == crate::txf_native::DefaultRmState::Unresolved
+        {
+            return Err(invalid(
+                "default NTFS resource manager is not idle or inactive",
+            ));
+        }
+        let mut frozen = Self::isolate(binding, events)?;
+        frozen.freeze_observation = Some(GeneralFreezeObservation {
+            mounted_ntfs,
+            frozen_state: frozen.frozen_state.clone(),
+        });
+        Ok(frozen)
+    }
+
+    pub fn freeze_observation(&self) -> Option<&GeneralFreezeObservation> {
+        self.freeze_observation.as_ref().filter(|proof| {
+            proof.frozen_state == self.frozen_state && proof.mounted_ntfs.binding == self.binding
+        })
+    }
     /// Lock/dismount and persistently exclude a bound dedicated data disk.
     /// Dropping the returned handle does not bring the disk online.
     pub fn isolate(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
@@ -991,6 +1033,7 @@ impl GeneralFrozenPartition {
             position: 0,
             buffer,
             native_bytes_read: 0,
+            freeze_observation: None,
         })
     }
 
@@ -1017,6 +1060,7 @@ impl GeneralFrozenPartition {
             position: 0,
             buffer: AlignedBuffer::new()?,
             native_bytes_read: 0,
+            freeze_observation: None,
         })
     }
 
@@ -1340,6 +1384,7 @@ impl GeneralJournaledPartition {
         }
         Ok(Self {
             inner: GeneralFrozenPartition {
+                freeze_observation: None,
                 file,
                 binding,
                 frozen_state,
@@ -2184,6 +2229,7 @@ mod tests {
             identity: binding.identity,
         };
         let mut reader = GeneralFrozenPartition {
+            freeze_observation: None,
             file,
             binding,
             frozen_state: GeneralDiskState {
@@ -2197,6 +2243,7 @@ mod tests {
             buffer,
             native_bytes_read: 0,
         };
+        assert!(reader.freeze_observation().is_none());
         reader.seek(SeekFrom::Start(4095)).unwrap();
         let mut bytes = vec![0; 4098];
         reader.read_exact(&mut bytes).unwrap();
@@ -2217,6 +2264,7 @@ mod tests {
         } = ordinary_stream();
         let mut target = GeneralJournaledPartition {
             inner: GeneralFrozenPartition {
+                freeze_observation: None,
                 file,
                 binding: GeneralDiskBinding {
                     disk_number: binding.disk_number,

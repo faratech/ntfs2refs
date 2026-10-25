@@ -1,5 +1,5 @@
-//! Live, device-bound source diagnostics for a dedicated NTFS data disk. This
-//! does not issue an admission certificate or authorize journal activation.
+//! Live source admission for a dedicated NTFS data disk. Inspection alone
+//! cannot issue a certificate; a bound frozen native target is also required.
 use crate::{
     lab_reconstruct, ntfs_admission, ntfs_attestation, ntfs_backup, ntfs_inspect, ntfs_log,
     ntfs_source_view,
@@ -11,6 +11,8 @@ use sha2::{Digest, Sha256};
 
 #[derive(Debug, Serialize)]
 pub struct LiveAssessment {
+    #[serde(skip)]
+    context: AdmissionContext,
     pub comparison: ntfs_attestation::Comparison,
     pub assessment: ntfs_admission::Assessment,
     pub source_sha256: String,
@@ -23,8 +25,91 @@ pub struct LiveAssessment {
     pub txf_error: Option<String>,
     pub internal_indexes: Option<crate::ntfs_internal::VerifiedIndexes>,
     pub internal_indexes_error: Option<String>,
+    pub transaction_freeze: Option<crate::ntfs_transactions::VerifiedTransactions>,
+    pub transaction_freeze_error: Option<String>,
+    pub freeze_observation: Option<serde_json::Value>,
+    pub internal_replacements: Option<Vec<ntfs_admission::InternalReplacement>>,
     pub source_admitted: bool,
     pub execution_authorized: bool,
+}
+
+#[derive(Debug)]
+struct AdmissionContext {
+    source_binding: n2r_win32::general_layout::GeneralDiskBinding,
+    source_sha256: String,
+    inspection_sha256: String,
+    source_gates_satisfied: bool,
+}
+
+/// Issued only after live source admission and same-tree native target
+/// preservation pass. A serialized copy cannot recreate write authority.
+#[derive(Debug, Serialize)]
+pub struct SourceCertificate {
+    source_sha256: String,
+    inspection_sha256: String,
+    pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+    comparison: crate::retained_compare::RetainedCompareRequest,
+    expected_tree_sha256: String,
+    assessment_sha256: String,
+}
+impl SourceCertificate {
+    pub fn binds_request(&self, request: &crate::general_reconstruct::Request) -> bool {
+        self.pair == request.pair
+            && self.expected_tree_sha256 == request.expected_tree_sha256
+            && self.source_sha256 == request.comparison.source_sha256
+            && matches!((serde_json::to_vec(&self.comparison), serde_json::to_vec(&request.comparison)),
+                (Ok(a),Ok(b)) if a == b)
+    }
+}
+impl LiveAssessment {
+    pub fn qualify_target(
+        &mut self,
+        raw: &ntfs_inspect::NtfsInspection,
+        target: &crate::general_target_preservation::FrozenTargetPreservation,
+    ) -> Result<SourceCertificate> {
+        ensure!(
+            self.context.source_gates_satisfied
+                && target.pair().source == self.context.source_binding
+                && self.source_sha256 == self.context.source_sha256
+                && self.canonical_inspection_sha256 == self.context.inspection_sha256
+                && target.binds(raw, &self.source_sha256)
+                && self.canonical_inspection_sha256 == self.assessment.source_inspection_sha256
+                && self
+                    .assessment
+                    .source_view
+                    .as_ref()
+                    .is_some_and(|view| view.binds_live(&self.canonical_inspection_sha256)),
+            "source admission is refused or target preservation differs from the original live device context"
+        );
+        for gate in &mut self.assessment.gates {
+            if gate.code == "security_timestamp_preservation" {
+                gate.satisfied = true;
+                gate.detail = "actual native ReFS tree verified stored times, descriptors, attributes, namespace and contents; the same target was locked/dismounted and its complete image hash bound".into();
+            }
+        }
+        let refusals: Vec<_> = self
+            .assessment
+            .gates
+            .iter()
+            .filter(|g| !g.satisfied)
+            .map(|g| g.code.as_str())
+            .collect();
+        ensure!(
+            refusals.is_empty(),
+            "source admission remains refused: {refusals:?}"
+        );
+        self.source_admitted = true;
+        self.assessment.source_admitted = true;
+        self.assessment.certificate_issued = true;
+        Ok(SourceCertificate {
+            source_sha256: self.source_sha256.clone(),
+            inspection_sha256: self.canonical_inspection_sha256.clone(),
+            pair: target.pair().clone(),
+            comparison: target.comparison().clone(),
+            expected_tree_sha256: target.expected_tree_sha256().into(),
+            assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
+        })
+    }
 }
 
 pub fn assess(
@@ -112,7 +197,35 @@ pub fn assess(
         satisfied: internal_indexes.as_ref().is_some_and(|proof| proof.binds(raw) && proof.replacement_supported),
         detail: "reread object-ID, reparse and quota indexes must contain only supported empty/default state; transaction replacement remains separate".into(),
     });
+    let (transaction_freeze, transaction_freeze_error) = match (source.freeze_observation(), log_restart) {
+        (Some(freeze), Some(log)) => match crate::ntfs_transactions::verify(raw,log,freeze,observed) {
+            Ok(proof) => (Some(proof),None), Err(error) => (None,Some(format!("{error:#}"))),
+        },
+        _ => (None,Some("actual observed lock/dismount freeze and clean restart evidence are required; reopening cannot recreate this witness".into())),
+    };
+    assessment.gates.push(ntfs_admission::Gate {
+        code:"transaction_freeze".into(),
+        satisfied:transaction_freeze.as_ref().is_some_and(|proof|proof.binds(raw)),
+        detail:"idle/inactive native default RM, actual lock/dismount exclusion, clean restart copies and empty deferred namespaces must agree".into(),
+    });
+    let internal_replacements = match (&internal_indexes, &transaction_freeze) {
+        (Some(indexes), Some(transactions)) => {
+            ntfs_admission::bind_internal_replacement(&mut assessment, raw, indexes, transactions)
+        }
+        _ => None,
+    };
+    let context = AdmissionContext {
+        source_binding: source.binding().clone(),
+        source_sha256: source_sha256.clone(),
+        inspection_sha256: canonical_inspection_sha256.into(),
+        source_gates_satisfied: assessment
+            .gates
+            .iter()
+            .filter(|g| g.code != "security_timestamp_preservation")
+            .all(|g| g.satisfied),
+    };
     Ok(LiveAssessment {
+        context,
         comparison,
         assessment,
         source_sha256,
@@ -126,6 +239,13 @@ pub fn assess(
         txf_error: observed.txf_error().map(str::to_owned),
         internal_indexes,
         internal_indexes_error,
+        transaction_freeze,
+        transaction_freeze_error,
+        internal_replacements,
+        freeze_observation: source
+            .freeze_observation()
+            .map(serde_json::to_value)
+            .transpose()?,
         source_admitted: false,
         execution_authorized: false,
     })

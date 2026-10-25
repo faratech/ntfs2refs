@@ -1,13 +1,13 @@
 <# Collect native source evidence on the already frozen NTFS branch. The
    Rust observer restores offline/read-only exclusion before returning. #>
 [CmdletBinding()]
-param([ValidateSet('full','internal-index')][string]$Profile='full', [string]$BinaryPath)
+param([ValidateSet('full','internal-index','observed-freeze')][string]$Profile='full', [string]$BinaryPath)
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $workspace=Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $workspace 'lab/Lab.psm1') -Force
 $cfg=Get-LabConfiguration;$manifest=Read-LabManifest $cfg win11;$vm=Get-OwnedLabVM $cfg $manifest
 if($vm.State-ne'Running'-or$vm.ParentSnapshotId-ne[guid]'481eb504-504d-40a4-8a6c-6e48d087b6e9'){throw 'Running original frozen NTFS branch required.'}
-if(-not$BinaryPath){$BinaryPath=Join-Path $workspace $(if($Profile-eq'full'){'target/release/lab-inspect-frozen-general.exe'}else{'target/release/lab-inspect-ntfs-internals.exe'})}
+if(-not$BinaryPath){$BinaryPath=Join-Path $workspace $(switch($Profile){'full'{'target/release/lab-inspect-frozen-general.exe'};'observed-freeze'{'target/release/lab-freeze-general-source.exe'};default{'target/release/lab-inspect-ntfs-internals.exe'}})}
 $binary=Get-Item -LiteralPath $BinaryPath -Force
 if($binary.PSIsContainer-or($binary.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$binary.Length-gt16MB){throw 'Bounded ordinary collector binary required.'}
 $binarySha=(Get-FileHash -LiteralPath $binary.FullName).Hash.ToLowerInvariant()
@@ -24,10 +24,11 @@ $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($record|ConvertTo-Json -Depth 
 $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null
 try{
  $session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop
- Invoke-Command -Session $session -ArgumentList $root -ScriptBlock {
-  param($Root);$ErrorActionPreference='Stop'
+ Invoke-Command -Session $session -ArgumentList @($root,$Profile) -ScriptBlock {
+  param($Root,$Profile);$ErrorActionPreference='Stop'
   $disk=Get-Disk -Number 1
-  if([guid]$disk.Guid-ne[guid]'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa'-or-not$disk.IsOffline-or-not$disk.IsReadOnly){throw 'Frozen source identity or exclusion differs.'}
+  if([guid]$disk.Guid-ne[guid]'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa'-or
+    $(if($Profile-eq'observed-freeze'){$disk.IsOffline-or$disk.IsReadOnly}else{-not$disk.IsOffline-or-not$disk.IsReadOnly})){throw 'Source identity or expected initial protection differs.'}
   if(@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.State-in@('Running','Queued')}).Count){throw 'A lab task is still running.'}
   New-Item -ItemType Directory -Path $Root -ErrorAction Stop|Out-Null
  }|Out-Null

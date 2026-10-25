@@ -15,6 +15,8 @@ pub mod general_shadow;
 #[cfg(windows)]
 pub mod general_source_admission;
 #[cfg(windows)]
+pub mod general_target_preservation;
+#[cfg(windows)]
 pub mod lab_native;
 #[cfg(windows)]
 pub mod lab_native_reconstruct;
@@ -40,6 +42,7 @@ pub mod ntfs_security;
 pub mod ntfs_source_view;
 pub mod ntfs_stream_attestation;
 pub mod ntfs_stream_plan;
+pub mod ntfs_transactions;
 pub mod planner;
 pub mod refs_allocator;
 pub mod refs_bootstrap;

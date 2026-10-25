@@ -219,8 +219,10 @@ SHA-256 `a5751081de181abb1410231621877bbec305cdf098c8f2c25bf4f0297cb21349`.
 The observer now opens the root without write attributes when both the disk
 attribute and storage write-protection query confirm a physically read-only
 view. It retains last-access suppression on writable observations.
-The root's `$TXF_DATA`, NTFS log/transaction state, target preservation round
-trip and final device-bound certificate remain unfinished. [Microsoft states
+The default-manager observed freeze now passes the bounded native
+[transaction policy](transaction-freeze-policy.md). Target preservation,
+security-view differences on newly generated Windows metadata files and a
+qualified device-bound certificate remain unfinished. [Microsoft states
 that ReFS does not support the TxF metadata FSCTL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_txfs_get_metadata_info),
 so TxF semantics cannot silently be carried across.
 
@@ -236,8 +238,9 @@ layouts remain refused. The native eight-object source passed these checks in
 SHA-256 `fc6f56cf16bbdf3d36a1a8a9537c4695aea654f627cd49262ba7a4a707426b82`.
 The native query uses Microsoft's [FileFsControlInformation contract](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e5a70738-7ee4-46d9-a5f7-6644daa49a51).
 This is an internal-index proof, not complete transaction-state admission.
-TxF queries on the protected mount returned native error 6801; that refusal is
-retained and is not interpreted as zero transactions.
+TxF queries on the protected mount returned native error 6801. The new freeze
+policy distinguishes that inactive result from the actual zero transaction
+counts observed before locking the mounted source; neither alone is admission.
 
 `lab-txf-observe` now has a read-only in-guest path for the mounted NTFS source.
 It queries the native volume-dirty state and resource manager twice, listing

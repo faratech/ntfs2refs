@@ -1,5 +1,64 @@
 # General guest conversion: existing NTFS tree
 
+## Certificate-backed eleven-object conversion
+
+On October 25, 2026, run `c03cbc02c74145fdbca61c59cc94a5dd` completed the
+generic certificate-backed Rust workflow inside the Windows 11 VM. The
+original 52 GiB NTFS data partition became mounted, writable ReFS at F:.
+The worker exited 0, and the native verifier matched all eleven objects:
+six files and five directories, including both resident Windows cache files.
+Stored/kernel descriptors and the separately recorded API security projections
+were preserved. The recorded mount-path comparison also passed.
+
+Every source admission gate passed and a live device-bound certificate was
+issued before journal activation. The external journal and trusted ticket were
+durably saved; apply wrote 151 patch ranges totaling 70,795,264 bytes and proved
+the expected target image before handoff. Finalization recorded the irreversible
+handoff barrier, mounted through `refs.sys` and completed native tree verification.
+
+The source image SHA-256 was
+`c7fdc13e41008b89de797a87b3307e7129411e30607f043eddabae56944a5b1c`.
+The expected ReFS image SHA-256 was
+`2a655e548d850af06ccfff04b37e66c2a0760155f3c6ea3cd5b4b084bb92c0bc`.
+The source contained 524,376 logical bytes: four ordinary file payloads totaling
+524,288 bytes were relocated, and the two resident streams totaling 88 bytes
+were materialized. **Retained payload bytes were zero.** This result does not
+demonstrate natural retained extents or payload-independent scratch usage.
+
+Exported evidence is under ignored local path
+`.lab/hyperv/certificate-conversion/win11-20261025T185439277Z`:
+
+- `qualification/admitted-assessment.json`: zero failed gates, source admitted
+  and certificate issued; SHA-256
+  `c21aace70a7fe47b19e265e09041563f9031c682b8f8cde30d1e29fc1399b857`.
+- `apply.json`: exact target image, patch count and bytes written; SHA-256
+  `545576df273ad96cb7b0f8442ec927d2ae62ba0926487bb27d14b4f8bc3c849f`.
+- `finalization.json`: successful handoff, native eleven-object verification
+  and preserved mount paths; SHA-256
+  `e20d202bc27a49d946ea070f10261f06e255502e5425d668c93bc302d708745b`.
+- `result.json` and `collected.json`: successful workflow and host observation
+  of exit 0 and online/writable ReFS. The result SHA-256 is
+  `0cc52dd58ae4c628313ad0b682b3c12ff66dab32b06e8f3924ce5e07344b5174`.
+
+After a clean reboot, the strict `lab-verify-general-converted` check also
+exited 0 and matched all eleven objects through ReFS. Its exported
+`postboot.json` has SHA-256
+`fe50b52f0f44607e514d13fd4c2161643f6bcab8a42065c7237b74641d3a69df`.
+The converted branch was saved as powered-off checkpoint
+`71c4130a-a7cd-4476-996f-0fb912684009`, named
+`admitted-refs-11objects-20261025T194150282Z`, then started again with writable
+ReFS at F:.
+
+The native invocation used `lab-convert-admitted-tree`, which calls the same
+`general_conversion::convert` core as the public `ntfs2refs convert --request`
+interface. Public CLI argument, pin and refusal tests passed separately; they
+are not a second native conversion run. Earlier mutation and interruption/
+resume evidence below belongs to the earlier eight-object runs. The supported
+profile remains bounded; boot conversion and a broad compatibility or
+failure-injection matrix are not qualified by this result.
+
+## Earlier four-file conversion and mutation
+
 On October 25, 2026, the generalized Rust guest path converted the existing
 four-file NTFS tree on its original 52 GiB data partition. The work ran inside
 the Windows 11 VM. The converted partition mounted through Microsoft's ReFS
@@ -75,16 +134,17 @@ Ignored evidence paths are:
 - `.lab/hyperv/general-recovery-reboot/win11-20261025T143305523Z` (reboot,
   strict verifier and saved-checkpoint provenance).
 
-This is a **bounded laboratory success**. The four user payload ranges were
-relocated; this run does not demonstrate retained physical extents. Source
-admission for arbitrary NTFS volumes is still closed. The NTFS `0x0080`
+These are **bounded laboratory successes**. The four user payload ranges were
+relocated; these runs do not demonstrate retained physical extents. Arbitrary
+NTFS volumes still require the supported profile and live admission. The NTFS `0x0080`
 short-name policy mapping and its live frozen-source binding have passed.
 Frozen object-ID/reparse indexes and disabled unlimited quota defaults also
 passed their new raw/native checks. The bounded default-RM freeze also passed
-in a separate native source run. Newly generated Windows files still expose
-security-view differences, and target-preservation admission remains unfinished.
-The first-write interruption
+in a separate native source run. The later certificate-backed run above
+accounts for the Windows files' distinct security views and passes target
+preservation. The first-write interruption
 and resume path passed, but a broader write/flush fault matrix and the
-shadowless rollback path remain to be qualified natively. A usable general
-conversion CLI remains unfinished. Boot volume conversion is a separate later
-objective.
+shadowless rollback path remain to be qualified natively. The public conversion
+and recovery CLI now wraps the generic core; its native invocation and broader
+profile qualification remain distinct work. Boot volume conversion is a
+separate later objective.

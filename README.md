@@ -4,6 +4,17 @@ Rust tooling and a Hyper-V laboratory for researching offline, extent-preserving
 NTFS-to-ReFS conversion. The current focus is data volumes; Windows OS-volume
 conversion and build-specific boot qualification are deferred.
 
+**The generic Rust core has completed a live certificate-backed conversion of
+an existing eleven-object tree on its original 52 GiB NTFS data partition.**
+All admission gates passed; the worker saved its external journal/ticket,
+applied 151 patches, recorded handoff and verified the tree through Microsoft's
+ReFS driver at F:. Strict verification of all eleven objects also passed after
+a clean reboot. Four ordinary payloads (512 KiB) were relocated and two resident
+Windows files (88 bytes) were materialized; retained payload bytes were zero.
+See the [certificate-backed result and its limits](docs/general-native-conversion-results.md).
+The native run used the lab entry point to the same generic core exposed by
+the public CLI; CLI invocation/refusal tests passed separately.
+
 **A prepared one-file NTFS-to-ReFS conversion passed inside the Windows 11 VM.**
 The same partition became readable through Microsoft's ReFS driver while the
 64 KiB payload extent stayed unchanged. A clean reboot/remount and a native
@@ -37,9 +48,8 @@ Native [stream/extent and bitmap reconciliation](docs/native-ntfs-stream-attesta
 now matches the full control-volume bitmap and every fixture object's stream
 mapping, including ADS and sparse holes. Native [logical-stream hashing](docs/native-ntfs-logical-data.md)
 also matches every supported fixture stream without changing the protected
-source. A live eleven-object source/target run has issued a device-bound
-certificate with all admission gates satisfied. The connected journal/cutover
-run remains under native qualification.
+source. The eleven-object run issued a device-bound certificate with all
+admission gates satisfied and completed its connected journal/cutover path.
 The [source-admission work](docs/source-admission-progress.md) now includes
 native directory observations, explicit object dispositions and actual backup
 boot/MFT-mirror checks. It reports remaining refusals; an admission certificate
@@ -65,8 +75,8 @@ verification. It saves recovery paths and pins under `--artifacts`; native
 This laboratory command accepts the pinned four-file profile and a versioned
 ordinary-tree request assembled from a frozen native shadow. The latter has
 converted the same four-file tree on its original partition and recovered from
-loss of the host control process after apply. It does not enable the general
-converter's blocked commands.
+loss of the host control process after apply. The public CLI now uses the
+generic certificate-backed workflow described above.
 
 The independent shadow builder accepts `--ordinary-files` for a broader
 experimental source profile. It reads empty and resident streams from their
@@ -75,8 +85,9 @@ cluster prefixes into the retention plan, materializes incompatible ranges
 from logical bytes, and restores inherited security descriptors on the native ReFS
 shadow. It reports inline data separately from physical extents. The versioned
 path passed native Windows qualification on the four cluster-aligned files in
-the enrolled tree; empty, resident, fragmented and partial-cluster cases still
-need native conversion runs. New ordinary verification manifests store stream
+the enrolled tree; the certificate-backed run also converted two resident
+streams. Empty, fragmented and partial-cluster cases still need native
+conversion runs. New ordinary verification manifests store stream
 lengths and hashes, then check bytes through ReFS in bounded chunks instead of
 embedding the full payload in the recovery artifact.
 The optional `--stream-payload` path also constructs the independent shadow
@@ -102,10 +113,12 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 On this host Cargo is available through
 `C:\Users\mfara\.cargo\bin\rustup.exe run stable cargo` if it is absent from PATH.
-Input must be a raw **partition** image; VHD/VHDX containers, whole GPT disks,
-encrypted volumes and live devices are not accepted. Reports are JSON and existing
-output files are never overwritten. Exit codes are 0 for successful read-only
-operations, 2 for a blocked conversion plan, and 1 for errors/unavailable writes.
+Image commands require a raw **partition** image; VHD/VHDX containers, whole
+GPT disks, encrypted volumes and live devices are not accepted by those commands.
+Native conversion instead uses the explicit device bindings in the
+[CLI workflow](docs/cli-workflow.md). Reports are JSON and existing output files
+are never overwritten. Exit codes are 0 for successful operations, 2 for a
+blocked image conversion plan, and 1 for operation errors.
 
 Inspection records the image SHA-256 before and after parsing. On Windows the
 source handle denies concurrent writers/deletion. `verify` only checks byte
@@ -120,11 +133,12 @@ The separate [retained-range comparator](docs/retained-range-comparison.md)
 reports every differing sector outside explicitly pinned source ranges and
 hashes the hypothetical reconstructed image. It produces no patch payloads or
 write authority. This supports the [one-extent reconstruction milestone](docs/next-extent-preservation-milestone.md);
-the bounded native result above is separate from general source admission. The
+the prepared native result is separate from the later live-admission run. The
 [laboratory journal core](docs/lab-reconstruction-journal.md) stores real old/new
 bytes and passes file-based interruption, resume and rollback tests. Its trusted
 ticket, persistent mount exclusion, raw Apply and protected native observation
-passed the prepared fixture. Native interruption/recovery qualification remains.
+passed the prepared fixture. A separate native first-write interruption/resume
+run passed; broader interruption/recovery qualification remains.
 
 The separate Windows-only `lab-native-probe` binary binds the exact laboratory
 partitions, persists offline disk attributes and verifies retained bytes through

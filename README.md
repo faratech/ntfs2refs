@@ -9,6 +9,11 @@ The same partition became readable through Microsoft's ReFS driver while the
 64 KiB payload extent stayed unchanged. A clean reboot/remount and a native
 50 MiB create/grow/truncate/rename/delete workload also passed. See the
 [native result and its limits](docs/native-conversion-results.md).
+**An existing four-file tree has now also converted on its original partition.**
+Microsoft's ReFS driver matched all file contents, names, stored timestamps and
+permissions. The source extents were never prearranged; all four payload ranges
+required relocation because they conflicted with ReFS metadata. See the
+[tree conversion result and its limits](docs/tree-conversion-results.md).
 The general-purpose executable still inspects images and reports blockers;
 its conversion, resume, rollback and finalize commands refuse writes. Existing
 file-tree admission and general ReFS metadata construction remain open work.
@@ -29,15 +34,15 @@ admission decision remain unfinished.
 The [source-admission work](docs/source-admission-progress.md) now includes
 native directory observations, explicit object dispositions and actual backup
 boot/MFT-mirror checks. It reports remaining refusals; no admission certificate
-or existing-tree conversion has passed yet.
+has not yet been issued for arbitrary existing volumes.
 An [existing four-file tree now has a native post-exclusion source basis](docs/native-ntfs-source-freeze.md),
 verified across restart and read-only Windows inspection. Its physical placement
-was untouched; conversion and interruption recovery for that tree remain open.
+was untouched. Same-partition conversion has passed; interruption recovery remains open.
 An [independent native ReFS shadow](docs/existing-tree-shadow.md) now reproduces
 that tree's contents, all four stored timestamps, permissions and names after a
 clean restart. All four natural source locations conflict with ReFS metadata;
 the diagnostic plan explicitly records relocation of all 512 KiB. The frozen
-shadow is a construction milestone, not an existing-tree conversion.
+shadow was then journaled onto the original partition in the successful tree conversion.
 
 ## Build and run
 

@@ -9,7 +9,7 @@ use crate::ntfs_allocation::{self, Assessment, AttributeKey, Limits, PhysicalInt
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 const MAX_MFT_RECORDS: u64 = 1_000_000;
 const MAX_BITMAP_BYTES: u64 = 128 * 1024 * 1024;
@@ -1923,16 +1923,13 @@ pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<NtfsInspec
     inspect_with_limits(reader, length, InspectionLimits::default())
 }
 
-/// Materialize one bounded, plain unnamed stream from the actual source.
-/// Re-read its MFT record (including USA fixups) and bind it to the inspected
-/// identity and attribute before returning logical bytes. Never expose bytes
-/// beyond initialized length as valid data.
-pub fn read_plain_stream<R: Read + Seek>(
+/// Re-read boot/MFT identity and the current attribute before any stream copy.
+fn checked_plain_attribute<R: Read + Seek>(
     reader: &mut R,
     raw: &NtfsInspection,
     record_number: u64,
     max_bytes: u64,
-) -> Result<Vec<u8>> {
+) -> Result<(Attribute, String)> {
     let file = raw
         .files
         .iter()
@@ -2025,11 +2022,77 @@ pub fn read_plain_stream<R: Read + Seek>(
     if !data.report.resident {
         validate_stream_mapping(&data.report, geometry)?;
     }
-    let payload = read_small_attribute(reader, data, geometry, max_bytes)?;
+    let digest = stream
+        .logical_sha256
+        .as_deref()
+        .context("inspected logical stream digest absent")?;
     ensure!(
-        stream.logical_sha256.as_deref() == Some(&hex::encode(Sha256::digest(&payload))),
-        "materialized logical stream differs from inspected hash"
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "invalid inspected logical stream hash"
     );
+    Ok((data.clone(), digest.into()))
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StreamCopyProof {
+    pub record_number: u64,
+    pub logical_bytes: u64,
+    pub sha256: String,
+}
+
+/// Stream one bounded plain unnamed DATA attribute through a fixed 64 KiB
+/// buffer. Sparse holes and bytes beyond NTFS valid-data length are emitted as
+/// zeroes. The caller must discard any partial output if this returns an error;
+/// no source or destination write authority is granted by this function.
+pub fn copy_plain_stream<R: Read + Seek, W: Write>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    max_bytes: u64,
+    output: &mut W,
+) -> Result<StreamCopyProof> {
+    let (attribute, expected) = checked_plain_attribute(reader, raw, record_number, max_bytes)?;
+    let mut digest = Sha256::new();
+    let mut copied = 0u64;
+    let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
+    while copied < attribute.report.logical_size {
+        let count = (attribute.report.logical_size - copied).min(buffer.len() as u64) as usize;
+        read_attribute_range(
+            reader,
+            &attribute,
+            copied,
+            &mut buffer[..count],
+            &raw.geometry,
+        )?;
+        output.write_all(&buffer[..count])?;
+        digest.update(&buffer[..count]);
+        copied += count as u64;
+    }
+    let actual = hex::encode(digest.finalize());
+    ensure!(
+        actual == expected,
+        "copied logical stream differs from inspected hash"
+    );
+    Ok(StreamCopyProof {
+        record_number,
+        logical_bytes: copied,
+        sha256: actual,
+    })
+}
+
+/// Materialize the same verified stream into bounded memory for the existing
+/// small laboratory shadow path.
+pub fn read_plain_stream<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
+    let mut payload = Vec::new();
+    copy_plain_stream(reader, raw, record_number, max_bytes, &mut payload)?;
     Ok(payload)
 }
 

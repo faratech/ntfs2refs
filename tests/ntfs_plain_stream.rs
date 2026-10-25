@@ -24,6 +24,22 @@ fn logical_reader_recovers_resident_and_nonresident_bytes_and_rejects_changed_pa
         ntfs_inspect::read_plain_stream(&mut source, &raw, 16, 1024).unwrap(),
         b"Synthetic content"
     );
+    let mut streamed = Vec::new();
+    let proof =
+        ntfs_inspect::copy_plain_stream(&mut source, &raw, 16, 1024, &mut streamed).unwrap();
+    assert_eq!(streamed, b"Synthetic content");
+    assert_eq!(proof.logical_bytes, 17);
+    assert_eq!(
+        proof.sha256,
+        raw.files
+            .iter()
+            .find(|f| f.record_number == 16)
+            .unwrap()
+            .streams[0]
+            .logical_sha256
+            .as_deref()
+            .unwrap()
+    );
     let resident = ntfs_inspect::read_plain_stream(&mut source, &raw, 6, 1024).unwrap();
     assert_eq!(resident.len(), 64);
     assert_eq!(resident[0], 0xf1);

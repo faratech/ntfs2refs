@@ -5,7 +5,7 @@ fn main() -> anyhow::Result<()> {
     use anyhow::ensure;
     use clap::Parser;
     use n2r_win32::{GeneralPartitionReader, general_layout::GeneralDiskBinding};
-    use ntfs2refs::ntfs_inspect;
+    use ntfs2refs::{ntfs_inspect, shadow_tree};
     use serde::Serialize;
     use sha2::{Digest, Sha256};
     use std::{
@@ -22,6 +22,10 @@ fn main() -> anyhow::Result<()> {
         binding_sha256: String,
         #[arg(long)]
         output: PathBuf,
+        /// Derive the bounded ordinary file-tree model used by the ReFS shadow
+        /// builder. A refusal is recorded without granting source admission.
+        #[arg(long)]
+        ordinary_tree: bool,
     }
     #[derive(Serialize)]
     struct Report {
@@ -31,6 +35,8 @@ fn main() -> anyhow::Result<()> {
         before: n2r_win32::GeneralProbe,
         after: n2r_win32::GeneralProbe,
         ntfs: ntfs_inspect::NtfsInspection,
+        ordinary_tree: Option<shadow_tree::Tree>,
+        ordinary_tree_refusal: Option<String>,
         native_bytes_read: u64,
         events: Vec<n2r_win32::NativeEvent>,
         source_frozen: bool,
@@ -55,6 +61,14 @@ fn main() -> anyhow::Result<()> {
     let before = reader.initial_probe().clone();
     let length = reader.byte_len();
     let ntfs = ntfs_inspect::inspect(&mut reader, length)?;
+    let (ordinary_tree, ordinary_tree_refusal) = if args.ordinary_tree {
+        match shadow_tree::derive_ordinary(&ntfs) {
+            Ok(tree) => (Some(tree), None),
+            Err(error) => (None, Some(format!("{error:#}"))),
+        }
+    } else {
+        (None, None)
+    };
     let after = reader.revalidate_route(&mut events)?;
     let report = Report {
         schema_version: 1,
@@ -63,6 +77,8 @@ fn main() -> anyhow::Result<()> {
         before,
         after,
         ntfs,
+        ordinary_tree,
+        ordinary_tree_refusal,
         native_bytes_read: reader.native_bytes_read,
         events,
         source_frozen: false,

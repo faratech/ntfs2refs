@@ -23,6 +23,12 @@ the mounted source was not frozen and is not admitted. A synthetic bounce-read
 test covers unaligned requests and partition boundaries. Neither command has
 a write method.
 
+With `--ordinary-tree`, the inspection also derives the bounded file-tree model
+used by native ReFS shadow construction. Unsupported source semantics produce
+an `ordinary_tree_refusal` in the report. This projection uses the mounted
+read-only view and remains diagnostic until a frozen source certificate binds
+the same model to an excluded device.
+
 An internal `GeneralFrozenPartition` now implements the next source-only step:
 after an exact online probe it locks and dismounts the bound volume, persists
 offline/read-only disk attributes, closes the lock owner, reopens the physical

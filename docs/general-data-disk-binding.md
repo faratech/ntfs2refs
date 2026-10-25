@@ -178,6 +178,10 @@ durably saves and reads back the ticket and recovery pins, then applies and
 finalizes. If it stops during apply, the target remains excluded and the
 separate general resume/rollback command uses the saved ticket. It has not
 been run in the VM.
+`--interrupt-after-writes N` deliberately exits 86 after the Nth flushed
+target write, before journal handoff. The intent, prepared journal and
+read-back ticket are saved first, so a new guest process can exercise the
+general resume/rollback command against the persistently offline target.
 
 `lab-replay-general-from-tree` can package the previously successful pinned
 ordinary-tree freeze into this new guest experiment's request and expected-tree

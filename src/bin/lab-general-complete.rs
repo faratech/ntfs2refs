@@ -29,6 +29,10 @@ fn main() -> anyhow::Result<()> {
         journal: PathBuf,
         #[arg(long)]
         artifacts: PathBuf,
+        /// Exit 86 after this many durable target writes. The saved ticket
+        /// remains usable for explicit resume or rollback before handoff.
+        #[arg(long)]
+        interrupt_after_writes: Option<u32>,
     }
     fn ordinary(path: &Path, existing: bool) -> Result<()> {
         let text = path.to_str().context("non-Unicode guest artifact")?;
@@ -91,6 +95,11 @@ fn main() -> anyhow::Result<()> {
         save(path, &serde_json::to_vec_pretty(value)?)
     }
     let args = Args::parse();
+    ensure!(
+        args.interrupt_after_writes
+            .is_none_or(|count| (1..=4096).contains(&count)),
+        "general interruption count must be 1..=4096"
+    );
     let request_bytes = pinned(&args.request, &args.request_sha256, 131072)?;
     let request: general_reconstruct::Request = serde_json::from_slice(&request_bytes)?;
     general_lab::require_disposable_guest(&request)?;
@@ -121,6 +130,7 @@ fn main() -> anyhow::Result<()> {
                 "request_sha256":args.request_sha256,
                 "expectation_sha256":args.expectation_sha256,
                 "journal":args.journal,"rollback_closes_before_native_mount":true,
+                "interrupt_after_writes":args.interrupt_after_writes,
                 "production_conversion_qualified":false}),
         )?;
         ensure!(
@@ -164,7 +174,17 @@ fn main() -> anyhow::Result<()> {
                 "rollback_expires_at_handoff":true}),
         )?;
         phase = "apply";
-        let applied = general_lab::apply(&request, &ticket, &mut journal, &expectation_bytes)?;
+        let applied = if let Some(writes) = args.interrupt_after_writes {
+            general_lab::apply_interrupted(
+                &request,
+                &ticket,
+                &mut journal,
+                &expectation_bytes,
+                writes,
+            )?
+        } else {
+            general_lab::apply(&request, &ticket, &mut journal, &expectation_bytes)?
+        };
         save_json(&args.artifacts.join("apply.json"), &applied)?;
         phase = "finalize";
         let finished = general_lab::finalize(&request, &ticket, &mut journal, &expectation_bytes)?;

@@ -21,7 +21,10 @@ use n2r_win32::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::File;
+use std::{
+    fs::File,
+    io::{self, Read, Seek, SeekFrom, Write},
+};
 
 fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBinding> {
     Ok(JournalBinding {
@@ -328,7 +331,95 @@ pub(crate) fn execute(
     ticket: &JournalTicket,
     events: &mut Vec<NativeEvent>,
 ) -> Result<Execution> {
+    execute_with_interruption(
+        operation, request, target, shadow, journal, ticket, events, None,
+    )
+}
+
+/// Disposable guest fault injection after N complete, flushed target writes.
+/// The process exits before any handoff; recovery reopens the same journal.
+pub(crate) fn execute_interrupted_apply(
+    request: &Request,
+    target: &mut GeneralJournaledPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    events: &mut Vec<NativeEvent>,
+    writes: u32,
+) -> Result<Execution> {
+    execute_with_interruption(
+        RecoveryOperation::Apply,
+        request,
+        target,
+        shadow,
+        journal,
+        ticket,
+        events,
+        Some(writes),
+    )
+}
+
+struct InterruptingGeneralTarget<'a> {
+    inner: &'a mut GeneralJournaledPartition,
+    remaining: u32,
+}
+impl Read for InterruptingGeneralTarget<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(bytes)
+    }
+}
+impl Seek for InterruptingGeneralTarget<'_> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(from)
+    }
+}
+impl Write for InterruptingGeneralTarget<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(bytes)?;
+        if written > 0 {
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.inner.sync_all()?;
+                eprintln!(
+                    "Controlled general target interruption; source stays offline, recover using the pinned ticket."
+                );
+                std::process::exit(86);
+            }
+        }
+        Ok(written)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.sync_all()
+    }
+}
+impl lab_reconstruct::ReadSeek for InterruptingGeneralTarget<'_> {
+    fn byte_len(&mut self) -> io::Result<u64> {
+        Ok(n2r_win32::GeneralJournaledPartition::byte_len(self.inner))
+    }
+}
+impl lab_reconstruct::DurableIo for InterruptingGeneralTarget<'_> {
+    fn sync_all(&mut self) -> io::Result<()> {
+        self.inner.sync_all()
+    }
+}
+
+fn execute_with_interruption(
+    operation: RecoveryOperation,
+    request: &Request,
+    target: &mut GeneralJournaledPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    events: &mut Vec<NativeEvent>,
+    interrupt_after_writes: Option<u32>,
+) -> Result<Execution> {
     request.validate()?;
+    ensure!(
+        interrupt_after_writes.is_none_or(|count| {
+            (1..=4096).contains(&count) && matches!(operation, RecoveryOperation::Apply)
+        }),
+        "invalid general interruption point"
+    );
     ensure!(
         target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
         "general execution data bindings differ"
@@ -367,16 +458,29 @@ pub(crate) fn execute(
         )?;
     }
     let observed = binding(request, &before.identity)?;
-    let result = match operation {
-        RecoveryOperation::Apply => {
+    let result = match (operation, interrupt_after_writes) {
+        (RecoveryOperation::Apply, Some(remaining)) => {
+            let mut interrupted = InterruptingGeneralTarget {
+                inner: target,
+                remaining,
+            };
+            let result =
+                lab_reconstruct::apply(&mut interrupted, shadow, journal, ticket, &observed)?;
+            anyhow::bail!(
+                "requested general interruption was not reached: {} patches",
+                result.patches_written
+            )
+        }
+        (RecoveryOperation::Apply, None) => {
             lab_reconstruct::apply(target, shadow, journal, ticket, &observed)?
         }
-        RecoveryOperation::Resume => {
+        (RecoveryOperation::Resume, None) => {
             lab_reconstruct::resume(target, shadow, journal, ticket, &observed)?
         }
-        RecoveryOperation::Rollback => {
+        (RecoveryOperation::Rollback, None) => {
             lab_reconstruct::rollback(target, shadow, journal, ticket, &observed)?
         }
+        _ => unreachable!(),
     };
     let target_after = target.state(events)?;
     let shadow_after = shadow.state(events)?;

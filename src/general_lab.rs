@@ -51,6 +51,26 @@ pub fn apply(
     journal: &mut File,
     expected_tree_bytes: &[u8],
 ) -> Result<ApplyReport> {
+    apply_profile(request, ticket, journal, expected_tree_bytes, None)
+}
+
+pub fn apply_interrupted(
+    request: &Request,
+    ticket: &JournalTicket,
+    journal: &mut File,
+    expected_tree_bytes: &[u8],
+    writes: u32,
+) -> Result<ApplyReport> {
+    apply_profile(request, ticket, journal, expected_tree_bytes, Some(writes))
+}
+
+fn apply_profile(
+    request: &Request,
+    ticket: &JournalTicket,
+    journal: &mut File,
+    expected_tree_bytes: &[u8],
+    interrupt_after_writes: Option<u32>,
+) -> Result<ApplyReport> {
     require_disposable_guest(request)?;
     ensure!(
         hex::encode(sha2::Sha256::digest(expected_tree_bytes)) == request.expected_tree_sha256,
@@ -79,15 +99,27 @@ pub fn apply(
         .candidate_clean_dismount;
     let mut target =
         general_reconstruct::activate(request, source, &mut shadow, journal, ticket, &mut events)?;
-    let execution = general_reconstruct::execute(
-        general_reconstruct::RecoveryOperation::Apply,
-        request,
-        &mut target,
-        &mut shadow,
-        journal,
-        ticket,
-        &mut events,
-    )?;
+    let execution = if let Some(writes) = interrupt_after_writes {
+        general_reconstruct::execute_interrupted_apply(
+            request,
+            &mut target,
+            &mut shadow,
+            journal,
+            ticket,
+            &mut events,
+            writes,
+        )?
+    } else {
+        general_reconstruct::execute(
+            general_reconstruct::RecoveryOperation::Apply,
+            request,
+            &mut target,
+            &mut shadow,
+            journal,
+            ticket,
+            &mut events,
+        )?
+    };
     let source_remains_offline = target.state(&mut events)?.disk_attributes == 1;
     ensure!(
         source_remains_offline,

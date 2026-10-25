@@ -164,10 +164,16 @@ fn pinned_root_txf_has_exact_internal_form_but_replacement_is_not_admitted() {
         .find(|gate| gate.code == "remaining_inspection_refusals")
         .unwrap();
     assert!(!remaining.detail.contains("unsupported_attribute"));
+    assert!(!remaining.detail.contains("logical_stream_hash_unavailable"));
     assert!(
         remaining
             .detail
             .contains("exact internal TxF replacements still pending: 2")
+    );
+    assert!(
+        remaining
+            .detail
+            .contains("empty internal $BadClus streams accounted: 1")
     );
     assert!(!assessed.source_admitted);
 }

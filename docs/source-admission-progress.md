@@ -156,6 +156,12 @@ the exact `$Extend\$RmMetadata\$Txf` internal role. Its two raw
 `unsupported_attribute` messages are accounted under the still-failing
 internal-replacement gate; any other unknown attribute remains a refusal.
 The pinned four-file source confirms exactly two such TxF obligations.
+The pinned source's `$BadClus:$Bad` stream is also recognized only in its empty
+form: one all-sparse run spanning `total_clusters × cluster_size`, zero
+initialized bytes, and no physical LCN. Its unavailable logical hash is then
+accounted as filesystem-internal metadata; an allocated bad-cluster mapping
+still refuses. This recognition does not replace a storage-health check or
+issue an admission certificate.
 
 ## Ordinary-file admission diagnostics
 

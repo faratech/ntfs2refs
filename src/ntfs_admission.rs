@@ -65,6 +65,57 @@ fn accounted_internal_txf_blocker(
             .any(|attribute| recognized_root_txf(attribute))
 }
 
+fn accounted_empty_badclus_blocker(
+    raw: &ntfs::NtfsInspection,
+    blocker: &ntfs::InspectionBlocker,
+) -> bool {
+    if blocker.code != "logical_stream_hash_unavailable"
+        || blocker.file_record_number != Some(8)
+        || blocker.message
+            != "DATA attribute 1 has no complete logical hash: UnsupportedBadClusterMetadata"
+    {
+        return false;
+    }
+    let Some(file) = raw.files.iter().find(|file| file.record_number == 8) else {
+        return false;
+    };
+    if internal_role(raw, file).as_deref() != Some("$BadClus") || file.streams.len() != 2 {
+        return false;
+    }
+    let Some(unnamed) = file
+        .streams
+        .iter()
+        .find(|stream| stream.name_utf16.is_empty())
+    else {
+        return false;
+    };
+    let Some(bad) = file
+        .streams
+        .iter()
+        .find(|stream| stream.name_utf16 == [36, 66, 97, 100])
+    else {
+        return false;
+    };
+    unnamed.resident
+        && unnamed.logical_size == 0
+        && unnamed.extents.is_empty()
+        && unnamed.logical_hash_status == ntfs::LogicalHashStatus::Complete
+        && !bad.resident
+        && bad.flags == 0
+        && raw
+            .geometry
+            .total_clusters
+            .checked_mul(u64::from(raw.geometry.cluster_size))
+            == Some(bad.logical_size)
+        && bad.initialized_size == 0
+        && bad.allocated_size == bad.logical_size
+        && bad.logical_hash_status == ntfs::LogicalHashStatus::UnsupportedBadClusterMetadata
+        && bad.extents.len() == 1
+        && bad.extents[0].logical_offset == 0
+        && bad.extents[0].physical_offset.is_none()
+        && bad.extents[0].length == bad.logical_size
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {
@@ -570,6 +621,7 @@ fn assess_source_view_profile(
                     | "allocation_ownership_unverified"
             ) && !(b.code == "backup_boot_unverified" && backups.is_some())
                 && !accounted_internal_txf_blocker(raw, b)
+                && !accounted_empty_badclus_blocker(raw, b)
         })
         .map(|b| b.code.clone())
         .collect();
@@ -578,11 +630,16 @@ fn assess_source_view_profile(
         .iter()
         .filter(|blocker| accounted_internal_txf_blocker(raw, blocker))
         .count();
+    let empty_badclus_count = raw
+        .blockers
+        .iter()
+        .filter(|blocker| accounted_empty_badclus_blocker(raw, blocker))
+        .count();
     gate(
         "remaining_inspection_refusals",
         unresolved.is_empty(),
         &format!(
-            "unresolved inspection checks: {unresolved:?}; exact internal TxF replacements still pending: {internal_txf_count}"
+            "unresolved inspection checks: {unresolved:?}; exact internal TxF replacements still pending: {internal_txf_count}; empty internal $BadClus streams accounted: {empty_badclus_count}"
         ),
     );
     gate(

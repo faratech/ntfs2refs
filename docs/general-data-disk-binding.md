@@ -176,6 +176,12 @@ dispatchers and collectors record which completion route was used.
 case on the disk-owning Windows machine. It requires separately pinned request,
 ticket and pre-cutover tree files and does not write the journal marker again.
 Fresh general apply/handoff remains unavailable outside the disposable lab.
+`lab-verify-general-converted` is a repeatable read-only native verifier for the
+original disk after handoff. It checks the current ReFS mount against the
+separately pinned pre-cutover tree, including logical bytes, names, stored
+timestamps and both security views, and saves an explicit failure report.
+It is intended to run again after reboots and ordinary ReFS mutation workloads;
+it does not reopen NTFS rollback.
 
 The internal general finalizer now accepts the independently pinned pre-cutover
 tree, checks the full journaled ReFS postimage, durably closes rollback, brings

@@ -10,6 +10,7 @@ $workspace=Split-Path -Parent $PSScriptRoot;Import-Module (Join-Path $workspace 
 $cfg=Get-LabConfiguration;$manifest=Read-LabManifest $cfg win11;$vm=Get-OwnedLabVM $cfg $manifest
 $directory=Assert-LabPath $Directory $cfg.Root
 $start=Get-Content (Join-Path $directory 'started.json') -Raw|ConvertFrom-Json
+$ordinaryFiles=($start.PSObject.Properties.Name -contains 'ordinaryFiles') -and [bool]$start.ordinaryFiles
 $request=Get-Content (Join-Path $directory 'request.json') -Raw|ConvertFrom-Json
 $requestSha=(Get-FileHash (Join-Path $directory 'request.json')).Hash.ToLowerInvariant()
 if($vm.State-ne'Running'-or$vm.MemoryStartup-ne8GB-or[guid]$vm.ParentSnapshotId-ne[guid]$start.sourceCheckpointId-or$request.source.disk_number-ne1-or$request.shadow.disk_number-ne3-or$request.source_sha256-cne$start.sourceSha256){throw 'Existing running source/shadow branch differs.'}
@@ -20,7 +21,7 @@ $step=[guid]::NewGuid().ToString('N');$root='C:\ntfs2refs\tree-shadow\'+$start.r
 $output=Assert-LabPath (Join-Path $cfg.Root ('existing-tree-shadow-steps/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
 New-Item -ItemType Directory -Path $output|Out-Null
 function Save([string]$Name,$Value){$p=Join-Path $output $Name;$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 16));$f=[IO.File]::Open($p,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}}
-$record=[ordered]@{kind='existing-shadow-native-step';stepId=$step;mode=$Mode;parentDirectory=$directory;runId=$start.runId;binarySha256=$BinarySha256;requestSha256=$requestSha;status='started';operationCompletionKnown=$true;sourceAdmitted=$false;conversionQualified=$false;error=$null}
+$record=[ordered]@{kind='existing-shadow-native-step';stepId=$step;mode=$Mode;parentDirectory=$directory;runId=$start.runId;binarySha256=$BinarySha256;requestSha256=$requestSha;ordinaryFiles=$ordinaryFiles;status='started';operationCompletionKnown=$true;sourceAdmitted=$false;conversionQualified=$false;error=$null}
 Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $output 'lab-tree-shadow.exe')
 Copy-Item -LiteralPath (Join-Path $directory 'request.json') -Destination (Join-Path $output 'request.json')
 $pins=@();foreach($p in @('src/bin/lab-tree-shadow.rs','src/shadow_tree.rs','src/tree_placement.rs','crates/n2r-win32/src/shadow_native.rs','crates/n2r-win32/src/region_layout.rs','crates/n2r-win32/src/bitmap_layout.rs','src/ntfs_freeze.rs','scripts/Continue-LabExistingTreeShadow.ps1','Cargo.toml','crates/n2r-win32/Cargo.toml','.cargo/config.toml','Cargo.lock')){
@@ -30,8 +31,8 @@ $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.x
 try{
  Copy-Item -LiteralPath $binary.FullName -Destination ($root+'\lab-tree-shadow-'+$step+'.exe') -ToSession $session
  $record.operationCompletionKnown=$false
- $job=Invoke-Command -Session $session -AsJob -ArgumentList @($root,$step,$Mode,$BinarySha256,$requestSha,$request) -ScriptBlock {
-  param($Root,$Step,$Mode,$BinarySha,$RequestSha,$Request)
+ $job=Invoke-Command -Session $session -AsJob -ArgumentList @($root,$step,$Mode,$BinarySha256,$requestSha,$request,$ordinaryFiles) -ScriptBlock {
+  param($Root,$Step,$Mode,$BinarySha,$RequestSha,$Request,$OrdinaryFiles)
   Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
   function CheckSource{$d=Get-Disk -Number 1;if($d.UniqueId-cne'60022480D091C4251B5FFD619706C2B5'-or[guid]$d.Guid-ne[guid]$Request.source.identity.disk_guid-or-not$d.IsOffline-or-not$d.IsReadOnly-or$d.IsBoot-or$d.IsSystem){throw 'Source exclusion or identity differs.'}}
   CheckSource
@@ -42,6 +43,7 @@ try{
   if($Mode-ceq'RootSecurity'){$psi.Arguments+=' --root-security-experiment'}elseif($Mode-ceq'Verify'){$psi.Arguments+=' --verify-only'}
   elseif($Mode-ceq'FinalizeSecurity'){$psi.Arguments+=' --finalize-security'}
   elseif($Mode-ceq'Freeze'){$psi.Arguments+=' --verify-only --freeze-shadow'}
+  if($OrdinaryFiles-and$Mode-cne'RootSecurity'){$psi.Arguments+=' --ordinary-files'}
   $psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
   $p=[Diagnostics.Process]::new();$p.StartInfo=$psi;if(-not$p.Start()){throw 'Native process failed to start.'};$out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync()
   [IO.File]::WriteAllText($Root+'\'+$Step+'.process.json',([ordered]@{pid=$p.Id;executable=$exe;arguments=$psi.Arguments;startedUtc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json))

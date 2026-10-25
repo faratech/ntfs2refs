@@ -32,7 +32,7 @@ pub struct Request {
 impl Request {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.schema_version == 2
+            matches!(self.schema_version, 2 | 3)
                 && self.experiment_id.len() == 32
                 && self
                     .experiment_id
@@ -47,33 +47,47 @@ impl Request {
             self.source.disk_number == 1 && self.shadow.disk_number == 3,
             "natural-tree source/shadow routes differ"
         );
-        ensure!(
-            guid_bytes(&self.source.identity.disk_guid)?
-                == guid_bytes("a01574d5-2a5c-4136-958a-dcf0d0e0f7aa")?
-                && guid_bytes(&self.source.identity.partition_guid)?
-                    == guid_bytes("79eaccdf-38d3-4561-97cc-9276af5d223a")?
-                && guid_bytes(&self.source.volume_guid)?
-                    == guid_bytes("79eaccdf-38d3-4561-97cc-9276af5d223a")?
-                && guid_bytes(&self.shadow.identity.disk_guid)?
-                    == guid_bytes("cd923950-593c-41f2-bc9b-7b2625d6cb6a")?
-                && guid_bytes(&self.shadow.identity.partition_guid)?
-                    == guid_bytes("f9fefbb5-3781-45aa-a8d4-69463f46bf51")?
-                && guid_bytes(&self.shadow.volume_guid)?
-                    == guid_bytes("f9fefbb5-3781-45aa-a8d4-69463f46bf51")?,
-            "natural-tree experiment enrollment differs"
-        );
+        if self.schema_version == 2 {
+            ensure!(
+                guid_bytes(&self.source.identity.disk_guid)?
+                    == guid_bytes("a01574d5-2a5c-4136-958a-dcf0d0e0f7aa")?
+                    && guid_bytes(&self.source.identity.partition_guid)?
+                        == guid_bytes("79eaccdf-38d3-4561-97cc-9276af5d223a")?
+                    && guid_bytes(&self.source.volume_guid)?
+                        == guid_bytes("79eaccdf-38d3-4561-97cc-9276af5d223a")?
+                    && guid_bytes(&self.shadow.identity.disk_guid)?
+                        == guid_bytes("cd923950-593c-41f2-bc9b-7b2625d6cb6a")?
+                    && guid_bytes(&self.shadow.identity.partition_guid)?
+                        == guid_bytes("f9fefbb5-3781-45aa-a8d4-69463f46bf51")?
+                    && guid_bytes(&self.shadow.volume_guid)?
+                        == guid_bytes("f9fefbb5-3781-45aa-a8d4-69463f46bf51")?,
+                "natural-tree experiment enrollment differs"
+            );
+        }
         retained_compare::validate_request(&self.comparison)?;
         let c = &self.comparison;
         ensure!(
             c.schema_version == 2
                 && c.expected_length == PARTITION_BYTES
                 && c.sector_size == 4096
-                && c.source_sha256 == SOURCE_SHA256
-                && c.shadow_sha256 == SHADOW_SHA256
-                && c.retained_ranges.is_empty()
-                && c.max_change_bytes <= 256 * 1024 * 1024,
-            "natural-tree image pins, relocation-only profile or budgets differ"
+                && c.max_change_bytes <= 256 * 1024 * 1024
+                && (self.schema_version == 3
+                    || (c.source_sha256 == SOURCE_SHA256
+                        && c.shadow_sha256 == SHADOW_SHA256
+                        && c.retained_ranges.is_empty())),
+            "tree image pins, placement or budgets differ"
         );
+        if self.schema_version == 3 {
+            ensure!(
+                guid_bytes(&self.source.identity.disk_guid)?
+                    != guid_bytes(&self.shadow.identity.disk_guid)?
+                    && guid_bytes(&self.source.identity.partition_guid)?
+                        != guid_bytes(&self.shadow.identity.partition_guid)?
+                    && guid_bytes(&self.source.volume_guid)?
+                        != guid_bytes(&self.shadow.volume_guid)?,
+                "ordinary source and shadow identities overlap"
+            );
+        }
         ensure!(
             (1..=MAX_JOURNAL_BYTES).contains(&self.max_journal_bytes),
             "invalid journal capacity"
@@ -239,7 +253,11 @@ fn run_with_interruption(
 ) -> Report {
     let mut report = Report {
         schema_version: 1,
-        kind: "native-natural-tree-journal-reconstruction",
+        kind: if request.schema_version == 3 {
+            "native-ordinary-tree-journal-reconstruction"
+        } else {
+            "native-natural-tree-journal-reconstruction"
+        },
         operation,
         request: request.clone(),
         success: false,
@@ -323,7 +341,7 @@ fn run_with_interruption(
                 request.max_journal_bytes,
             )?;
             ensure!(
-                summary.expected_postimage_sha256 == SHADOW_SHA256,
+                summary.expected_postimage_sha256 == request.comparison.shadow_sha256,
                 "relocation-only postimage differs"
             );
             expected_length = summary.ticket.journal_length;
@@ -343,7 +361,7 @@ fn run_with_interruption(
             ensure!(
                 serde_json::to_vec(&descriptor.request)?
                     == serde_json::to_vec(&request.comparison)?
-                    && descriptor.expected_postimage_sha256 == SHADOW_SHA256,
+                    && descriptor.expected_postimage_sha256 == request.comparison.shadow_sha256,
                 "journal plan differs from the enrolled tree conversion"
             );
             expected_length = ticket.journal_length;
@@ -359,7 +377,12 @@ fn run_with_interruption(
                             .iter()
                             .map(|p| (p.offset, p.length))
                             .collect(),
-                        retained: vec![],
+                        retained: request
+                            .comparison
+                            .retained_ranges
+                            .iter()
+                            .map(|r| (r.offset, r.length))
+                            .collect(),
                         maximum_bytes: descriptor.changed_bytes,
                     };
                     t.arm_writes(policy, &mut report.events)?;

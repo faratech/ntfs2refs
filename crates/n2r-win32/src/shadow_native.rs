@@ -821,6 +821,19 @@ pub fn verify_converted(
     validate_existing(&report, input, &same_security, false)?;
     Ok(report)
 }
+/// Verify an ordinary-file conversion on the owning guest after the durable
+/// handoff. The caller must bind this volume to its frozen source and journal
+/// ticket before bringing it online; this routine independently checks the
+/// complete expected tree through the mounted ReFS driver.
+pub fn verify_converted_ordinary(
+    binding: DiskBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<Report> {
+    let report = run_role(binding, 1, input, Mode::Verify, &same_security, true, true)?;
+    validate_existing(&report, input, &same_security, false)?;
+    Ok(report)
+}
 fn run_role(
     binding: DiskBinding,
     source_disk: u32,

@@ -1,7 +1,7 @@
 //! Read-only TxF resource-manager observations while NTFS is still mounted.
 //! A pair of zero-count queries is diagnostic; source freeze and log recovery
 //! still have to be proven separately before conversion.
-use crate::layout::DiskBinding;
+use crate::{general_layout::GeneralDiskBinding, layout::DiskBinding};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -77,6 +77,12 @@ pub struct Observation {
     pub all_resource_managers_checked: bool,
     pub source_frozen: bool,
     pub execution_authorized: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GeneralObservation {
+    pub binding: GeneralDiskBinding,
+    pub observation: Observation,
 }
 
 fn control(file: &File, code: u32) -> Result<Vec<u8>, u32> {
@@ -229,6 +235,42 @@ pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
         .read(true)
         .share_mode(3)
         .open(binding.volume_path()?)?;
+    let extents =
+        control(&volume, 0x00560000).map_err(|code| io::Error::from_raw_os_error(code as i32))?;
+    crate::layout::validate_volume_extent(&extents, &binding)?;
+    observe_volume(binding, volume)
+}
+
+/// The same read-only TxF and persistent-policy queries on a separately bound
+/// dedicated NTFS data disk. The actual volume extent is checked first.
+pub fn observe_general(binding: GeneralDiskBinding) -> io::Result<GeneralObservation> {
+    binding.validate()?;
+    if crate::native::current_windows_disk(&mut Vec::new())? == binding.disk_number {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Windows disk cannot be queried as a general NTFS source",
+        ));
+    }
+    let volume = File::options()
+        .read(true)
+        .share_mode(3)
+        .open(binding.volume_path()?)?;
+    let extents =
+        control(&volume, 0x00560000).map_err(|code| io::Error::from_raw_os_error(code as i32))?;
+    binding.validate_volume_extent(&extents)?;
+    let proxy = DiskBinding {
+        disk_number: binding.disk_number,
+        volume_guid: binding.volume_guid.clone(),
+        identity: binding.identity.clone(),
+    };
+    let observation = observe_volume(proxy, volume)?;
+    Ok(GeneralObservation {
+        binding,
+        observation,
+    })
+}
+
+fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation> {
     let (native_dirty_before, native_dirty_before_error) = dirty(&volume);
     let (persistent_state_before, persistent_state_before_error) = persistent(&volume);
     let (before, before_error) = query(&volume);

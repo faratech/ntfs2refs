@@ -15,6 +15,11 @@ pub struct LiveAssessment {
     pub assessment: ntfs_admission::Assessment,
     pub source_sha256: String,
     pub canonical_inspection_sha256: String,
+    pub txf_evidence_sha256: Option<String>,
+    pub short_name_creation_disabled: Option<bool>,
+    pub queried_rm_stably_empty: Option<bool>,
+    pub all_resource_managers_checked: bool,
+    pub txf_error: Option<String>,
     pub source_admitted: bool,
     pub execution_authorized: bool,
 }
@@ -72,11 +77,36 @@ pub fn assess(
             gate.detail = "both clean NTFS restart copies matched the frozen source; full log replay remains unproven".into();
         }
     }
+    let txf = observed.txf();
+    let txf_evidence_sha256 = txf
+        .map(|evidence| {
+            serde_json::to_vec(evidence).map(|bytes| hex::encode(Sha256::digest(bytes)))
+        })
+        .transpose()?;
+    let short_name_creation_disabled = txf.and_then(|evidence| {
+        evidence
+            .observation
+            .short_name_state_stable
+            .then(|| {
+                evidence
+                    .observation
+                    .persistent_state_before
+                    .as_ref()
+                    .map(|state| state.short_name_creation_disabled)
+            })
+            .flatten()
+    });
     Ok(LiveAssessment {
         comparison,
         assessment,
         source_sha256,
         canonical_inspection_sha256: canonical_inspection_sha256.into(),
+        txf_evidence_sha256,
+        short_name_creation_disabled,
+        queried_rm_stably_empty: txf.map(|evidence| evidence.observation.queried_rm_stably_empty),
+        all_resource_managers_checked: txf
+            .is_some_and(|evidence| evidence.observation.all_resource_managers_checked),
+        txf_error: observed.txf_error().map(str::to_owned),
         source_admitted: false,
         execution_authorized: false,
     })

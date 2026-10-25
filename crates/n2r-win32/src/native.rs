@@ -85,12 +85,20 @@ pub struct LiveNtfsObservation {
 #[derive(Debug, Serialize)]
 pub struct GeneralLiveNtfsObservation {
     report: crate::attestation::Report,
+    txf: Option<crate::txf_native::GeneralObservation>,
+    txf_error: Option<String>,
     before: GeneralDiskState,
     after: GeneralDiskState,
 }
 impl GeneralLiveNtfsObservation {
     pub fn report(&self) -> &crate::attestation::Report {
         &self.report
+    }
+    pub fn txf(&self) -> Option<&crate::txf_native::GeneralObservation> {
+        self.txf.as_ref()
+    }
+    pub fn txf_error(&self) -> Option<&str> {
+        self.txf_error.as_deref()
     }
 }
 impl LiveNtfsObservation {
@@ -826,6 +834,10 @@ impl GeneralFrozenPartition {
             ));
         }
         let collected = crate::attestation_native::collect_file_metadata(request);
+        let (txf, txf_error) = match crate::txf_native::observe_general(self.binding.clone()) {
+            Ok(observation) => (Some(observation), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
         let restored = lease.finish();
         drop(lease);
         restored?;
@@ -837,6 +849,8 @@ impl GeneralFrozenPartition {
         }
         Ok(GeneralLiveNtfsObservation {
             report: collected?,
+            txf,
+            txf_error,
             before,
             after,
         })

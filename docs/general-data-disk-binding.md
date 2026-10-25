@@ -75,6 +75,11 @@ opaque native observation value and another complete excluded-device hash.
 Its report records matching and refusing gates separately; it still issues no
 admission certificate while volume-policy, internal replacement and target
 preservation rules remain unresolved.
+The same read-only observation window now queries native dirty state,
+persistent short-name policy and TxF resource-manager/transaction state on the
+bound general volume. The report preserves query refusals and the fact that
+not every resource manager has been enumerated. These diagnostics do not clear
+the unresolved on-disk `0x0080` meaning or TxF admission gate.
 
 The general native I/O layer now also has a separate `GeneralJournaledPartition`
 type. It can activate an unchanged offline/read-only handle while retaining

@@ -58,3 +58,37 @@ but has not yet been qualified in a native mixed-placement case.
 The executables remain restricted to enrolled laboratory disks and images.
 General source admission, arbitrary existing volumes, low-scratch construction,
 broader stream semantics and boot conversion remain unfinished.
+
+## Ordinary-tree profile and interrupted host control
+
+The versioned ordinary-file path independently reconstructed the same frozen
+eight-object NTFS tree in a Windows-created ReFS 3.14 shadow. The four source
+files were each placed at a different target extent; no source extent shaping
+or source partition writes occurred. The shadow's complete partition SHA-256
+was `893ddaae593f3b25a6e27fe125e6ee292747214e6be5ad2a92d5450c21db8453`.
+The frozen shadow report matched the eight objects, source security and logical
+content, and left the original NTFS image at SHA-256
+`798926b2783a747f0d046d1010c9a8d2b109a900388117fcef46449c3abddd89`.
+
+The in-guest `lab-tree-convert` prepared a 141,008,546-byte durable journal and
+completed the patch apply. The host control process then exited without
+exporting its terminal result. A separate elevated read-only probe found no
+live converter process, the source persistently offline and writable, the
+shadow offline and read-only, a successful durable apply report, and a zero
+pre-handoff journal marker. The applied target's complete SHA-256 matched the
+frozen shadow hash above. A pinned finalizer, dispatched as a task inside the
+VM, completed the handoff and native verification. The journal marker became
+`N2RHND01`; the original disk 1 mounted as ReFS. Microsoft's driver returned
+all eight expected objects and four matching logical file hashes. The native
+verifier requested no payload writes. The finish report SHA-256 is
+`0b97d4603acd367186e9b630b14c8a22dda1d6cd0e095dbb238f67a4794567cd`.
+
+The recorded artifacts are under
+`.lab/hyperv/existing-tree-shadow/win11-20261025T023729434Z`,
+`.lab/hyperv/existing-tree-shadow-steps/win11-20261025T025142276Z`, and
+`.lab/hyperv/ordinary-tree-conversion/win11-20261025T030515888Z`.
+This qualifies recovery from **loss of the host controller after a completed
+apply**. It does not yet qualify interruption during a target write or general
+NTFS source admission. The ordinary profile also has code paths for empty,
+resident, fragmented and partial-cluster streams; this native case exercises
+the versioned path on four cluster-aligned files.

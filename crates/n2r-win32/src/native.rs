@@ -1,4 +1,7 @@
-use crate::layout::{self, DiskBinding, GRANULE, invalid};
+use crate::{
+    general_layout::GeneralDiskBinding,
+    layout::{self, DiskBinding, GRANULE, invalid},
+};
 use serde::Serialize;
 use std::{
     alloc::{Layout, alloc_zeroed, dealloc},
@@ -45,6 +48,21 @@ pub struct PartitionSnapshot {
     pub length: Vec<u8>,
     pub alignment: Vec<u8>,
     pub layout: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct GeneralProbe {
+    pub binding: GeneralDiskBinding,
+    pub disk_attributes_before: u64,
+    pub disk_attributes_after: u64,
+    pub device: Vec<u8>,
+    pub disk_length: Vec<u8>,
+    pub alignment: Vec<u8>,
+    pub gpt_layout: Vec<u8>,
+    pub volume_extents: Vec<u8>,
+    pub read_only_probe: bool,
+    pub source_write_requests: u64,
+    pub conversion_qualified: bool,
 }
 /// Created only by a physically read-only native observation bracketed by
 /// actual excluded-device snapshots. Exporting it cannot recreate a lease.
@@ -295,6 +313,74 @@ pub(crate) fn snapshot(
         length,
         alignment,
         layout: layout_bytes,
+    })
+}
+
+/// Probe one dedicated non-system basic data disk without locking, dismounting,
+/// setting attributes or issuing raw writes. This is a route to later generic
+/// source inventory, not a conversion lease or write authorization.
+pub fn probe_general(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralProbe> {
+    binding.validate()?;
+    if current_windows_disk(events)? == binding.disk_number {
+        return Err(invalid("current Windows disk is excluded"));
+    }
+    let disk = device_file(
+        &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+        false,
+        false,
+    )?;
+    let device = control(&disk, "general-storage-device", DEVICE, &[], 12, events)?;
+    layout::validate_device(&device, binding.disk_number)?;
+    let disk_length = control(&disk, "general-disk-length", LENGTH, &[], 8, events)?;
+    if disk_length.len() != 8 || layout::u64_at(&disk_length, 0)? != binding.identity.disk_bytes {
+        return Err(invalid("general disk length differs"));
+    }
+    let mut property = [0u8; 12];
+    property[0] = 6;
+    let alignment = control(
+        &disk,
+        "general-storage-alignment",
+        ALIGNMENT,
+        &property,
+        28,
+        events,
+    )?;
+    binding.validate_alignment(&alignment)?;
+    let gpt_layout = control(&disk, "general-gpt-layout", LAYOUT, &[], 65536, events)?;
+    binding.validate_layout(&gpt_layout)?;
+    let disk_attributes_before = attributes(&disk, events)?;
+    if disk_attributes_before != 0 {
+        return Err(invalid("general data disk is not online and writable"));
+    }
+    let volume = device_file(&binding.volume_path()?, false, false)?;
+    let volume_extents = control(
+        &volume,
+        "general-volume-extents",
+        VOLUME_EXTENTS,
+        &[],
+        1024,
+        events,
+    )?;
+    binding.validate_volume_extent(&volume_extents)?;
+    let disk_attributes_after = attributes(&disk, events)?;
+    if disk_attributes_after != disk_attributes_before {
+        return Err(invalid("general disk attributes changed during probe"));
+    }
+    Ok(GeneralProbe {
+        binding,
+        disk_attributes_before,
+        disk_attributes_after,
+        device,
+        disk_length,
+        alignment,
+        gpt_layout,
+        volume_extents,
+        read_only_probe: true,
+        source_write_requests: 0,
+        conversion_qualified: false,
     })
 }
 

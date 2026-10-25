@@ -5,6 +5,7 @@ pub mod attestation;
 #[cfg(windows)]
 mod attestation_native;
 pub mod bitmap_layout;
+pub mod general_layout;
 #[cfg(windows)]
 pub mod journal_file;
 pub mod layout;
@@ -26,5 +27,6 @@ pub use attestation_native::collect_file_metadata;
 mod native;
 #[cfg(windows)]
 pub use native::{
-    LiveNtfsObservation, NativeEvent, OfflinePartition, PartitionSnapshot, WritePolicy,
+    GeneralProbe, LiveNtfsObservation, NativeEvent, OfflinePartition, PartitionSnapshot,
+    WritePolicy, probe_general,
 };

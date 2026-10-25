@@ -12,7 +12,8 @@ use n2r_win32::{
     GeneralDiskState, GeneralFrozenPartition, GeneralJournaledPartition, NativeEvent, WritePolicy,
     general_layout::GeneralSourceShadowBinding,
     journal_file::{
-        JournalFileIdentity, JournalStorageBinding, MAX_JOURNAL_BYTES, observe_journal_file,
+        GeneralJournalStorageBinding, JournalFileIdentity, MAX_JOURNAL_BYTES,
+        observe_general_journal_file,
     },
     layout::guid_bytes,
 };
@@ -63,7 +64,7 @@ pub struct Request {
     pub experiment_id: String,
     pub pair: GeneralSourceShadowBinding,
     pub comparison: RetainedCompareRequest,
-    pub journal: JournalStorageBinding,
+    pub journal: GeneralJournalStorageBinding,
     pub max_journal_bytes: u64,
 }
 
@@ -91,12 +92,13 @@ impl Request {
         );
         for data in [&self.pair.source, &self.pair.shadow] {
             ensure!(
-                data.disk_number != self.journal.disk_number
+                data.disk_number != self.journal.disk.disk_number
                     && guid_bytes(&data.identity.disk_guid)?
-                        != guid_bytes(&self.journal.identity.disk_guid)?
+                        != guid_bytes(&self.journal.disk.identity.disk_guid)?
                     && guid_bytes(&data.identity.partition_guid)?
-                        != guid_bytes(&self.journal.identity.partition_guid)?
-                    && guid_bytes(&data.volume_guid)? != guid_bytes(&self.journal.volume_guid)?,
+                        != guid_bytes(&self.journal.disk.identity.partition_guid)?
+                    && guid_bytes(&data.volume_guid)?
+                        != guid_bytes(&self.journal.disk.volume_guid)?,
                 "external journal overlaps a data disk"
             );
         }
@@ -142,7 +144,7 @@ pub fn prepare(
     let mut events = Vec::new();
     let source_before = source.state(&mut events)?;
     let shadow_before = shadow.state(&mut events)?;
-    let journal_before = observe_journal_file(journal, &request.journal)?;
+    let journal_before = observe_general_journal_file(journal, &request.journal)?;
     ensure!(
         journal_before.file_bytes == 0,
         "journal is not a fresh empty file"
@@ -184,7 +186,7 @@ pub fn prepare(
     );
     let source_after = source.state(&mut events)?;
     let shadow_after = shadow.state(&mut events)?;
-    let journal_after = observe_journal_file(journal, &request.journal)?;
+    let journal_after = observe_general_journal_file(journal, &request.journal)?;
     ensure!(
         source_before == source_after
             && shadow_before == shadow_after
@@ -237,7 +239,7 @@ pub(crate) fn activate(
     );
     source.state(events)?;
     let shadow_before = shadow.state(events)?;
-    let before = observe_journal_file(journal, &request.journal)?;
+    let before = observe_general_journal_file(journal, &request.journal)?;
     validated_ticket(
         request,
         journal,
@@ -250,7 +252,7 @@ pub(crate) fn activate(
         target.state(events)?.disk_attributes == 1 && shadow.state(events)? == shadow_before,
         "general activation lost disk exclusion"
     );
-    let after = observe_journal_file(journal, &request.journal)?;
+    let after = observe_general_journal_file(journal, &request.journal)?;
     ensure!(
         after.identity == before.identity && after.file_bytes == before.file_bytes,
         "general journal changed during activation"
@@ -325,7 +327,7 @@ pub(crate) fn execute(
         target_before.disk_attributes == 1 && shadow_before.disk_attributes == 3,
         "general execution requires an excluded target and shadow"
     );
-    let before = observe_journal_file(journal, &request.journal)?;
+    let before = observe_general_journal_file(journal, &request.journal)?;
     let descriptor = validated_ticket(
         request,
         journal,
@@ -366,7 +368,7 @@ pub(crate) fn execute(
     };
     let target_after = target.state(events)?;
     let shadow_after = shadow.state(events)?;
-    let after = observe_journal_file(journal, &request.journal)?;
+    let after = observe_general_journal_file(journal, &request.journal)?;
     ensure!(
         target_before == target_after
             && shadow_before == shadow_after
@@ -443,19 +445,21 @@ mod tests {
                 max_change_bytes: 256 << 20,
                 max_ranges: 65536,
             },
-            journal: JournalStorageBinding {
-                disk_number: 2,
+            journal: GeneralJournalStorageBinding {
                 externally_enrolled_disk_unique_id: "JOURNAL-TEST".into(),
-                volume_guid: "77777777-7777-7777-7777-777777777777".into(),
-                identity: PartitionIdentity {
-                    disk_guid: "88888888-8888-8888-8888-888888888888".into(),
-                    partition_guid: "99999999-9999-9999-9999-999999999999".into(),
-                    partition_number: 2,
-                    disk_bytes: 8 << 30,
-                    partition_offset: 16 << 20,
-                    partition_bytes: (8 << 30) - (32 << 20),
-                    logical_sector_bytes: 512,
-                    physical_sector_bytes: 4096,
+                disk: GeneralDiskBinding {
+                    disk_number: 2,
+                    volume_guid: "77777777-7777-7777-7777-777777777777".into(),
+                    identity: PartitionIdentity {
+                        disk_guid: "88888888-8888-8888-8888-888888888888".into(),
+                        partition_guid: "99999999-9999-9999-9999-999999999999".into(),
+                        partition_number: 2,
+                        disk_bytes: 8 << 30,
+                        partition_offset: 16 << 20,
+                        partition_bytes: (8 << 30) - (32 << 20),
+                        logical_sector_bytes: 512,
+                        physical_sector_bytes: 4096,
+                    },
                 },
             },
             max_journal_bytes: 768 << 20,

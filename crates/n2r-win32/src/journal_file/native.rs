@@ -176,3 +176,27 @@ pub fn observe_journal_file(
     storage_observation(&volume, &disk, &mut after)?;
     finish_observation(snapshot, &after_path, &after)
 }
+
+/// Observe a journal file on any separately bound dedicated GPT data disk.
+/// The caller still owns its exclusive file handle and durable ticket.
+pub fn observe_general_journal_file(
+    file: &File,
+    expected: &GeneralJournalStorageBinding,
+) -> io::Result<JournalFileSnapshot> {
+    expected.validate()?;
+    let (before_path, mut before) = file_observation(file)?;
+    let volume_path = final_volume_path(&before_path, &guid_bytes(&expected.disk.volume_guid)?)?;
+    let volume = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(volume_path)?;
+    let disk = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(format!("\\\\.\\PhysicalDrive{}", expected.disk.disk_number))?;
+    storage_observation(&volume, &disk, &mut before)?;
+    let snapshot = validate_general_evidence(expected, &before_path, before)?;
+    let (after_path, mut after) = file_observation(file)?;
+    storage_observation(&volume, &disk, &mut after)?;
+    finish_observation(snapshot, &after_path, &after)
+}

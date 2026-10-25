@@ -94,6 +94,26 @@ fn fixture(b: &JournalStorageBinding) -> JournalFileEvidence {
 }
 
 #[test]
+fn general_journal_binding_accepts_distinct_dedicated_disk_geometry() {
+    let fixed = binding();
+    let mut evidence = fixture(&fixed);
+    let mut disk = GeneralDiskBinding {
+        disk_number: fixed.disk_number,
+        volume_guid: fixed.volume_guid.clone(),
+        identity: fixed.identity.clone(),
+    };
+    disk.identity.disk_bytes = 12 * 1024 * 1024 * 1024;
+    put64(&mut evidence.disk_length, 0, disk.identity.disk_bytes);
+    let general = GeneralJournalStorageBinding {
+        disk,
+        externally_enrolled_disk_unique_id: fixed.externally_enrolled_disk_unique_id.clone(),
+    };
+    let observed = validate_general_evidence(&general, &path(&fixed), evidence).unwrap();
+    assert_eq!(observed.identity.disk_bytes, 12 * 1024 * 1024 * 1024);
+    assert_eq!(observed.identity.partition_bytes, JOURNAL_PARTITION_BYTES);
+}
+
+#[test]
 fn empty_and_prepared_files_have_the_same_stable_identity() {
     let b = binding();
     let e = fixture(&b);

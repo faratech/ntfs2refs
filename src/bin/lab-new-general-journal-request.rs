@@ -4,7 +4,7 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::ensure;
     use clap::Parser;
-    use n2r_win32::{GeneralDiskState, journal_file::JournalStorageBinding};
+    use n2r_win32::{GeneralDiskState, journal_file::GeneralJournalStorageBinding};
     use ntfs2refs::{
         general_reconstruct, general_shadow, retained_compare::RetainedCompareRequest,
     };
@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
         &args.freeze_sha256,
         64 * 1024 * 1024,
     )?)?;
-    let journal: JournalStorageBinding = serde_json::from_slice(&pinned(
+    let journal: GeneralJournalStorageBinding = serde_json::from_slice(&pinned(
         &args.journal_binding,
         &args.journal_binding_sha256,
         16384,

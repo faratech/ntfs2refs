@@ -6,7 +6,10 @@
 //! It neither creates a file nor changes disk attributes, contents or privilege.
 //! External MSFT_Disk.UniqueId enrollment is retained explicitly as unverified;
 //! the native binding uses GPT identities, volume identity and FILE_ID_INFO.
-use crate::layout::{PartitionIdentity, guid_bytes, invalid, u32_at, u64_at};
+use crate::{
+    general_layout::GeneralDiskBinding,
+    layout::{PartitionIdentity, guid_bytes, invalid, u32_at, u64_at},
+};
 use serde::{Deserialize, Serialize};
 use std::io;
 
@@ -24,6 +27,29 @@ pub struct JournalStorageBinding {
     /// GUID alone, with optional braces; never a caller-provided device path.
     pub volume_guid: String,
     pub identity: PartitionIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneralJournalStorageBinding {
+    pub disk: GeneralDiskBinding,
+    pub externally_enrolled_disk_unique_id: String,
+}
+
+impl GeneralJournalStorageBinding {
+    pub fn validate(&self) -> io::Result<()> {
+        self.disk.validate()?;
+        require(
+            self.disk.identity.partition_bytes >= 1024 * 1024 * 1024
+                && !self.externally_enrolled_disk_unique_id.is_empty()
+                && self.externally_enrolled_disk_unique_id.len() <= 128
+                && self
+                    .externally_enrolled_disk_unique_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')),
+            "general journal capacity or enrollment differs",
+        )
+    }
 }
 
 impl JournalStorageBinding {
@@ -343,6 +369,58 @@ fn validate_evidence(
     })
 }
 
+fn validate_general_evidence(
+    expected: &GeneralJournalStorageBinding,
+    final_path: &str,
+    evidence: JournalFileEvidence,
+) -> io::Result<JournalFileSnapshot> {
+    expected.validate()?;
+    let binding = &expected.disk;
+    let volume_guid = guid_bytes(&binding.volume_guid)?;
+    final_volume_path(final_path, &volume_guid)?;
+    let (file_bytes, allocation_bytes, file_attributes) = validate_file_fields(&evidence)?;
+    crate::layout::validate_device(&evidence.disk_device_number, binding.disk_number)?;
+    binding.validate_alignment(&evidence.disk_alignment)?;
+    require(
+        evidence.disk_length.len() == 8
+            && u64_at(&evidence.disk_length, 0)? == binding.identity.disk_bytes,
+        "general journal disk length differs",
+    )?;
+    binding.validate_volume_extent(&evidence.volume_extents)?;
+    binding.validate_layout(&evidence.disk_layout)?;
+    let p = &binding.identity;
+    Ok(JournalFileSnapshot {
+        schema_version: 1,
+        identity: JournalFileIdentity {
+            volume_serial_number: u64_at(&evidence.file_id_info, 0)?,
+            file_id_128: evidence.file_id_info[8..24]
+                .try_into()
+                .expect("fixed FILE_ID_INFO"),
+            volume_guid,
+            disk_guid: guid_bytes(&p.disk_guid)?,
+            partition_guid: guid_bytes(&p.partition_guid)?,
+            partition_number: p.partition_number,
+            disk_bytes: p.disk_bytes,
+            partition_offset: p.partition_offset,
+            partition_bytes: p.partition_bytes,
+            logical_sector_bytes: p.logical_sector_bytes,
+            physical_sector_bytes: p.physical_sector_bytes,
+        },
+        disk_number: binding.disk_number,
+        final_path: final_path.into(),
+        file_bytes,
+        allocation_bytes,
+        file_attributes,
+        number_of_links: 1,
+        externally_enrolled_disk_unique_id: expected.externally_enrolled_disk_unique_id.clone(),
+        external_unique_id_verified: false,
+        sharing_mode_verified: false,
+        observations_match_before_after: false,
+        conversion_qualified: false,
+        evidence,
+    })
+}
+
 fn finish_observation(
     mut before: JournalFileSnapshot,
     after_path: &str,
@@ -359,7 +437,9 @@ fn finish_observation(
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
-pub use native::{observe_journal_file, observe_ordinary_file_handle};
+pub use native::{
+    observe_general_journal_file, observe_journal_file, observe_ordinary_file_handle,
+};
 
 #[cfg(test)]
 #[path = "../tests/support/journal_file.rs"]

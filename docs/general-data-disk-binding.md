@@ -87,12 +87,15 @@ use this write route on an actual disk.
 
 `lab-prepare-general-journal` is the first general journal command. Given two
 already excluded, read-only dedicated data disks, a pinned request, and a fresh
-file on the enrolled independent journal disk, it reads the NTFS and ReFS
+file on a separately bound dedicated journal disk, it reads the NTFS and ReFS
 headers, compares the full partitions, writes the durable old/new journal, and
 saves its ticket as a separate file. It does not activate the target or issue
 data-disk writes. Its ReFS check covers the 3.14 VBR geometry, not the complete
 metadata graph or Windows mount behavior; the resulting preparation explicitly
 does not authorize execution.
+The general journal binding accepts independently measured GPT geometry and
+file identity instead of the original disk-2/8 GiB fixture, while retaining a
+768 MiB journal-file ceiling and a minimum 1 GiB journal partition.
 
 The native shadow engine now has a separate general entry point for a
 Windows-created ReFS data disk bound by `GeneralSourceShadowBinding`. It accepts

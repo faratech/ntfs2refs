@@ -72,12 +72,12 @@ try{
   $process=[Diagnostics.Process]::new();$process.StartInfo=$psi;if(-not$process.Start()){throw 'Converter did not start.'}
   $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
   [IO.File]::WriteAllText(($Root+'\conversion-'+$Run+'.process.json'),([ordered]@{pid=$process.Id;startedUtc=[DateTime]::UtcNow.ToString('o');arguments=$psi.Arguments}|ConvertTo-Json))
-  if(-not$process.WaitForExit(2700000)){throw ('Native converter still live; preserve PID '+$process.Id)}
+  if(-not$process.WaitForExit(3600000)){throw ('Native converter still live; preserve PID '+$process.Id)}
   [IO.File]::WriteAllText(($Root+'\conversion-'+$Run+'.stdout'),$stdout.Result)
   [IO.File]::WriteAllText(($Root+'\conversion-'+$Run+'.stderr'),$stderr.Result)
   [pscustomobject]@{exitCode=$process.ExitCode;artifacts=$Artifacts;stdoutSha256=(Get-FileHash ($Root+'\conversion-'+$Run+'.stdout')).Hash.ToLowerInvariant()}
  }
- if(-not(Wait-Job $job -Timeout 2800)){throw 'Native operation live or unknown; preserve branch.'}
+ if(-not(Wait-Job $job -Timeout 3700)){throw 'Native operation live or unknown; preserve branch.'}
  $reply=@(Receive-Job $job -ErrorAction Stop);if($job.State-ne'Completed'-or$reply.Count-ne1){throw 'Converter completion unknown.'}
  $record.operationCompletionKnown=$true
  Save 'guest-reply.json' $reply[0]

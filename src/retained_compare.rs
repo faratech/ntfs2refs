@@ -10,7 +10,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 const MAX_RETAINED_RANGES: usize = 1024;
 const MAX_PATCH_RANGES: u32 = 65_536;
 const BUFFER_BYTES: usize = 1024 * 1024;
@@ -406,11 +406,41 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
         shadow.read_exact(&mut right[..count])?;
         source_hash.update(&left[..count]);
         shadow_hash.update(&right[..count]);
-        // A relocation-only postimage is exactly the pinned shadow. Equal
-        // chunks need neither a byte-count loop nor a third SHA-256 state.
-        if wholly_shadow && left[..count] == right[..count] {
+        // Equal bytes have the same hybrid value regardless of ownership.
+        // Keep every retained pin proof, but hash its exact overlap in bulk
+        // instead of visiting each equal sector.
+        if left[..count] == right[..count] {
             finish_patch(&mut pending, &mut patches);
-            offset += count as u64;
+            if !wholly_shadow {
+                post_hash.update(&left[..count]);
+            }
+            let end = offset + count as u64;
+            while retained_index < request.retained_ranges.len()
+                && request.retained_ranges[retained_index].offset
+                    + request.retained_ranges[retained_index].length
+                    <= offset
+            {
+                retained_index += 1;
+            }
+            while retained_index < request.retained_ranges.len()
+                && request.retained_ranges[retained_index].offset < end
+            {
+                let range = &request.retained_ranges[retained_index];
+                let range_end = range.offset + range.length;
+                let first = range.offset.max(offset);
+                let last = range_end.min(end);
+                let start = (first - offset) as usize;
+                let stop = (last - offset) as usize;
+                let hashes = &mut retained[retained_index];
+                hashes.source.update(&left[start..stop]);
+                hashes.shadow.update(&right[start..stop]);
+                hashes.bytes += last - first;
+                if range_end > end {
+                    break;
+                }
+                retained_index += 1;
+            }
+            offset = end;
             continue;
         }
         for index in (0..count).step_by(sector) {
@@ -570,6 +600,67 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct MutatingOnSecondPass {
+        inner: std::io::Cursor<Vec<u8>>,
+        starts: u32,
+        mutate: bool,
+    }
+    impl Read for MutatingOnSecondPass {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.inner.read(output)
+        }
+    }
+    impl Seek for MutatingOnSecondPass {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            if matches!(position, SeekFrom::Start(0)) {
+                self.starts += 1;
+                if self.mutate && self.starts == 2 {
+                    self.inner.get_mut()[512] ^= 0xff;
+                }
+            }
+            self.inner.seek(position)
+        }
+    }
+    #[test]
+    fn equal_retained_fast_chunks_still_rehash_both_inputs_after_comparison() {
+        let bytes = vec![0x31; BUFFER_BYTES + 4096];
+        let hash = hex::encode(Sha256::digest(&bytes));
+        let retained_hash = hex::encode(Sha256::digest(&bytes[512..512 + BUFFER_BYTES]));
+        let request = RetainedCompareRequest {
+            schema_version: 1,
+            sector_size: 512,
+            expected_length: bytes.len() as u64,
+            source_sha256: hash.clone(),
+            shadow_sha256: hash,
+            retained_ranges: vec![RetainedRangeRequest {
+                offset: 512,
+                length: BUFFER_BYTES as u64,
+                source_sha256: retained_hash.clone(),
+                shadow_sha256: retained_hash,
+            }],
+            max_change_bytes: 0,
+            max_ranges: 1,
+        };
+        for side in 0..2 {
+            let mut source = MutatingOnSecondPass {
+                inner: std::io::Cursor::new(bytes.clone()),
+                starts: 0,
+                mutate: side == 0,
+            };
+            let mut shadow = MutatingOnSecondPass {
+                inner: std::io::Cursor::new(bytes.clone()),
+                starts: 0,
+                mutate: side == 1,
+            };
+            let error = compare_streams(&mut source, &mut shadow, &request).unwrap_err();
+            let expected = if side == 0 {
+                "source changed after comparison"
+            } else {
+                "shadow changed after comparison"
+            };
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+    }
     #[test]
     fn mutation_is_denied_or_detected() {
         let dir = tempfile::tempdir().unwrap();

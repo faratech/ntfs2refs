@@ -13,6 +13,10 @@ fn main() -> anyhow::Result<()> {
         request_sha256: String,
         #[arg(long)]
         output: PathBuf,
+        /// Exit 86 after this many complete, flushed journaled target writes.
+        /// The durable ticket remains available for explicit recovery.
+        #[arg(long,value_parser=clap::value_parser!(u32).range(1..=4096))]
+        interrupt_after_writes: Option<u32>,
     }
     let args = Args::parse();
     ensure!(
@@ -36,7 +40,11 @@ fn main() -> anyhow::Result<()> {
             && request.journal.disk.disk_number == 2,
         "enrolled disposable disk roles differ"
     );
-    ntfs2refs::general_conversion::convert(&request, &args.output)
+    if let Some(writes) = args.interrupt_after_writes {
+        ntfs2refs::general_conversion::convert_interrupted(&request, &args.output, writes)
+    } else {
+        ntfs2refs::general_conversion::convert(&request, &args.output)
+    }
 }
 #[cfg(not(windows))]
 fn main() {

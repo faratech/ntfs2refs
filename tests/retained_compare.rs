@@ -25,6 +25,147 @@ fn relocation_only_compares_equal_chunks_and_cross_chunk_patches_exactly() {
     f.verify_reconstruction(&r);
 }
 
+fn assert_independent_difference_metrics(fixture: &Fixture, report: &RetainedComparison) {
+    let changed = fixture
+        .left
+        .iter()
+        .zip(&fixture.right)
+        .filter(|(a, b)| a != b)
+        .count() as u64;
+    let changed_sectors = fixture
+        .left
+        .chunks_exact(fixture.request.sector_size as usize)
+        .zip(
+            fixture
+                .right
+                .chunks_exact(fixture.request.sector_size as usize),
+        )
+        .filter(|(a, b)| a != b)
+        .count() as u64;
+    assert_eq!(report.differing_bytes, changed);
+    assert_eq!(report.differing_sectors, changed_sectors);
+    let mut retained_changed = 0;
+    let mut retained_sectors = 0;
+    for (range, observation) in fixture
+        .request
+        .retained_ranges
+        .iter()
+        .zip(&report.retained_ranges)
+    {
+        let start = range.offset as usize;
+        let end = (range.offset + range.length) as usize;
+        let a = &fixture.left[start..end];
+        let b = &fixture.right[start..end];
+        let changed = a.iter().zip(b).filter(|(a, b)| a != b).count() as u64;
+        let sectors = a
+            .chunks_exact(fixture.request.sector_size as usize)
+            .zip(b.chunks_exact(fixture.request.sector_size as usize))
+            .filter(|(a, b)| a != b)
+            .count() as u64;
+        assert_eq!(observation.bytes_compared, range.length);
+        assert_eq!(observation.source_sha256, sha(a));
+        assert_eq!(observation.shadow_sha256, sha(b));
+        assert_eq!(observation.differing_bytes, changed);
+        assert_eq!(observation.differing_sectors, sectors);
+        retained_changed += changed;
+        retained_sectors += sectors;
+    }
+    assert_eq!(report.retained_differing_bytes, retained_changed);
+    assert_eq!(report.retained_differing_sectors, retained_sectors);
+    assert_eq!(
+        report.nonretained_differing_bytes,
+        changed - retained_changed
+    );
+    fixture.verify_reconstruction(report);
+}
+
+#[test]
+fn equal_chunks_feed_exact_retained_overlaps_across_every_boundary() {
+    const CHUNK: usize = 1024 * 1024;
+    for sector in [512usize, 4096] {
+        let mut source = vec![0; 4 * CHUNK + 3 * sector];
+        for (i, byte) in source.iter_mut().enumerate() {
+            *byte = (i.wrapping_mul(29) % 251) as u8;
+        }
+        let mut shadow = source.clone();
+        shadow[0] ^= 0xff;
+        shadow[CHUNK - sector..CHUNK].fill(8);
+        shadow[2 * CHUNK..2 * CHUNK + sector].fill(9);
+        shadow[3 * CHUNK - sector..3 * CHUNK].fill(7);
+        shadow[4 * CHUNK + 2 * sector] ^= 0xff;
+        let fixture = Fixture::new(
+            source,
+            shadow,
+            &[
+                (CHUNK - sector, 2 * sector),
+                (CHUNK + sector, 4 * sector),
+                (2 * CHUNK - 4 * sector, 8 * sector),
+                (3 * CHUNK, CHUNK + sector),
+            ],
+            sector as u32,
+        );
+        let report = fixture.compare();
+        assert_eq!(report.patches.len(), 3);
+        assert_independent_difference_metrics(&fixture, &report);
+    }
+}
+
+#[test]
+fn equal_chunk_flushes_pending_changes_before_a_later_nonretained_change() {
+    const CHUNK: usize = 1024 * 1024;
+    let source = vec![0x31; 3 * CHUNK];
+    let mut shadow = source.clone();
+    shadow[CHUNK - 512..CHUNK].fill(0x32);
+    shadow[2 * CHUNK..2 * CHUNK + 512].fill(0x33);
+    let fixture = Fixture::new(source, shadow, &[(CHUNK + 512, 512)], 512);
+    let report = fixture.compare();
+    assert_eq!(report.patches.len(), 2);
+    assert_eq!(
+        (report.patches[0].offset, report.patches[0].length),
+        ((CHUNK - 512) as u64, 512)
+    );
+    assert_eq!(
+        (report.patches[1].offset, report.patches[1].length),
+        ((2 * CHUNK) as u64, 512)
+    );
+    assert_independent_difference_metrics(&fixture, &report);
+}
+
+#[test]
+fn all_equal_chunks_still_reject_forged_individual_retained_pins() {
+    const CHUNK: usize = 1024 * 1024;
+    let source = vec![0x71; 4 * CHUNK + 4096];
+    let fixture = Fixture::new(
+        source.clone(),
+        source,
+        &[
+            (0, CHUNK),
+            (CHUNK, 512),
+            (CHUNK + 4096, 2 * CHUNK - 4096),
+            (3 * CHUNK + 4096, CHUNK),
+        ],
+        512,
+    );
+    assert_independent_difference_metrics(&fixture, &fixture.compare());
+    for range in 0..fixture.request.retained_ranges.len() {
+        for field in 0..2 {
+            let mut request = fixture.request.clone();
+            if field == 0 {
+                request.retained_ranges[range].source_sha256 = sha(&[]);
+            } else {
+                request.retained_ranges[range].shadow_sha256 = sha(&[]);
+            }
+            let error = compare_retained(&fixture.source, &fixture.shadow, &request).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("retained range SHA-256 pin differs"),
+                "range {range} field {field}: {error:#}"
+            );
+        }
+    }
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     source: PathBuf,

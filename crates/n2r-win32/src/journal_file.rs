@@ -17,6 +17,9 @@ pub const JOURNAL_DISK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const JOURNAL_PARTITION_OFFSET: u64 = 16 * 1024 * 1024;
 pub const JOURNAL_PARTITION_BYTES: u64 = JOURNAL_DISK_BYTES - 32 * 1024 * 1024;
 pub const MAX_JOURNAL_BYTES: u64 = 768 * 1024 * 1024;
+/// Complete journal admission reserves metadata before the two payload copies.
+pub const JOURNAL_OVERHEAD_RESERVE: u64 = 16 * 1024 * 1024;
+pub const MAX_CHANGED_BYTES: u64 = (MAX_JOURNAL_BYTES - JOURNAL_OVERHEAD_RESERVE) / 2 / 4096 * 4096;
 const MAX_PATH_UNITS: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

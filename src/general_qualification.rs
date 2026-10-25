@@ -67,7 +67,14 @@ pub(crate) fn create_output(output: &Path) -> Result<()> {
             && !output.exists(),
         "fresh OS-volume output required"
     );
-    for ancestor in output.ancestors().skip(1) {
+    let mut parents: Vec<_> = output.ancestors().skip(1).collect();
+    parents.reverse();
+    for ancestor in parents {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(ancestor)?,
+            Err(error) => return Err(error.into()),
+        }
         let meta = fs::symlink_metadata(ancestor)?;
         ensure!(
             meta.is_dir() && meta.file_attributes() & 0x400 == 0,
@@ -83,37 +90,30 @@ pub(crate) fn prepare(
     output: &Path,
     verify_existing: bool,
 ) -> Result<QualifiedTree> {
+    prepare_with_budget(pair, output, verify_existing, 256 * 1024 * 1024)
+}
+
+pub(crate) fn prepare_with_budget(
+    pair: GeneralSourceShadowBinding,
+    output: &Path,
+    verify_existing: bool,
+    max_change_bytes: u64,
+) -> Result<QualifiedTree> {
     pair.validate()?;
+    ensure!(
+        (1..=lab_reconstruct::MAX_CHANGE_BYTES).contains(&max_change_bytes)
+            && max_change_bytes <= pair.source.identity.partition_bytes,
+        "qualification changed-byte budget differs"
+    );
     // Qualification artifacts stay on the Windows OS volume, which both
     // dedicated data-disk routes explicitly exclude.
-    let path = output
-        .to_str()
-        .context("qualification output must be Unicode")?;
-    let system_root = std::env::var("SystemRoot")?;
-    ensure!(
-        path.len() <= 512
-            && path.get(..3).is_some_and(|prefix| system_root
-                .get(..3)
-                .is_some_and(|root| prefix.eq_ignore_ascii_case(root)))
-            && !path[3..].contains(':')
-            && !path.contains(['/', '\0'])
-            && !path.contains("..")
-            && !output.exists(),
-        "fresh OS-volume qualification output required"
-    );
-    for ancestor in output.ancestors().skip(1) {
-        let metadata = fs::symlink_metadata(ancestor)?;
-        ensure!(
-            metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
-            "ordinary output ancestry required"
-        );
-    }
-    fs::create_dir(output)?;
+    create_output(output)?;
     save(
         output,
         "intent.json",
         &serde_json::json!({"schema_version":1,"kind":"live-general-qualification-intent",
-        "pair":pair,"verify_existing":verify_existing,"source_payload_writes_authorized":false,"source_admitted":false}),
+        "pair":pair,"verify_existing":verify_existing,"max_change_bytes":max_change_bytes,
+        "source_payload_writes_authorized":false,"source_admitted":false}),
     )?;
     let mut phase = "source-freeze";
     let attempted = (|| -> Result<QualifiedTree> {
@@ -244,7 +244,7 @@ pub(crate) fn prepare(
             &source_hash,
             views,
             pair.clone(),
-            256 * 1024 * 1024,
+            max_change_bytes,
             &mut events,
         )?;
         save(output, "target-preservation.json", &proof)?;
@@ -282,5 +282,22 @@ pub(crate) fn prepare(
             )?;
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fresh_artifact_output_creates_missing_ordinary_parents_and_refuses_reuse() {
+        let temporary = tempfile::tempdir().unwrap();
+        let output = temporary.path().join("missing").join("parents").join("run");
+        create_output(&output).unwrap();
+        assert!(output.is_dir());
+        assert!(create_output(&output).is_err());
+        let file = temporary.path().join("file");
+        fs::write(&file, b"keep").unwrap();
+        assert!(create_output(&file.join("run")).is_err());
+        assert_eq!(fs::read(file).unwrap(), b"keep");
     }
 }

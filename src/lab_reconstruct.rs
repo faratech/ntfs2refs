@@ -18,9 +18,36 @@ const HEADER_SIZE: usize = 128;
 const RECORD_SIZE: usize = 160;
 const FOOTER_SIZE: usize = 128;
 const MAX_METADATA: usize = 1024 * 1024;
-const MAX_CHANGE_BYTES: u64 = 256 * 1024 * 1024;
+/// Reserve covers the bounded manifest, every permitted patch record and
+/// fixed headers. Old and new payloads each consume the changed-byte count.
+const JOURNAL_OVERHEAD_RESERVE: u64 = n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE;
+pub(crate) const MAX_CHANGE_BYTES: u64 = n2r_win32::journal_file::MAX_CHANGED_BYTES;
 const MAX_JOURNAL_BYTES: u64 = 768 * 1024 * 1024;
 const BUFFER: usize = 1024 * 1024;
+
+/// Admission bound derived from independent journal capacity, not a promise
+/// that a particular source fits. Preparation still enforces the exact size.
+pub fn changed_byte_budget(max_journal_bytes: u64, image_bytes: u64) -> Result<u64> {
+    ensure!(
+        max_journal_bytes <= MAX_JOURNAL_BYTES,
+        "journal budget exceeds supported ceiling"
+    );
+    ensure!(
+        (GRANULE..=retained_compare::MAX_IMAGE_BYTES).contains(&image_bytes)
+            && image_bytes.is_multiple_of(GRANULE),
+        "comparison image size is unsupported"
+    );
+    let payload_capacity = max_journal_bytes
+        .checked_sub(JOURNAL_OVERHEAD_RESERVE)
+        .context("journal budget cannot reserve metadata overhead")?
+        / 2;
+    let budget = (payload_capacity.min(MAX_CHANGE_BYTES).min(image_bytes) / GRANULE) * GRANULE;
+    ensure!(
+        budget >= GRANULE,
+        "journal budget cannot cover one changed granule and its recovery payload"
+    );
+    Ok(budget)
+}
 
 /// Caller keeps the exact storage binding and exclusive lease intact.
 pub trait ReadSeek: Read + Seek {
@@ -233,7 +260,7 @@ fn validate_profile(request: &RetainedCompareRequest) -> Result<()> {
     );
     ensure!(
         request.max_change_bytes <= MAX_CHANGE_BYTES,
-        "reconstruction changed-byte cap is 256 MiB"
+        "reconstruction changed-byte cap exceeds supported journal capacity"
     );
     Ok(())
 }
@@ -1205,4 +1232,70 @@ fn write_rollback_completion_marker<T: DurableIo, J: DurableIo>(
         handoff_recorded: true,
         conversion_qualified: false,
     })
+}
+
+#[cfg(test)]
+mod capacity_budget_tests {
+    use super::*;
+    #[test]
+    fn journal_capacity_reserves_both_payloads_and_worst_case_metadata() {
+        let image = 52u64 << 30;
+        assert_eq!(changed_byte_budget(768 << 20, image).unwrap(), 376 << 20);
+        assert_eq!(changed_byte_budget(512 << 20, image).unwrap(), 248 << 20);
+        assert_eq!(changed_byte_budget(128 << 20, image).unwrap(), 56 << 20);
+        assert_eq!(
+            changed_byte_budget(JOURNAL_OVERHEAD_RESERVE + 2 * GRANULE, image).unwrap(),
+            GRANULE
+        );
+        let worst_overhead = BODY_START
+            + HEADER_SIZE as u64
+            + MAX_METADATA as u64
+            + 65536 * RECORD_SIZE as u64
+            + FOOTER_SIZE as u64;
+        assert!(worst_overhead <= JOURNAL_OVERHEAD_RESERVE);
+        for journal in [
+            JOURNAL_OVERHEAD_RESERVE + 2 * GRANULE,
+            32 << 20,
+            (128 << 20) + 1,
+            MAX_JOURNAL_BYTES,
+        ] {
+            let changed = changed_byte_budget(journal, image).unwrap();
+            assert!(changed.is_multiple_of(GRANULE));
+            assert!(changed <= MAX_CHANGE_BYTES);
+            assert!(2 * changed + worst_overhead <= journal);
+        }
+        assert_eq!(
+            changed_byte_budget(MAX_JOURNAL_BYTES, 2 * GRANULE).unwrap(),
+            2 * GRANULE
+        );
+    }
+    #[test]
+    fn undersized_or_overflowing_capacity_is_refused() {
+        let image = 52u64 << 30;
+        for journal in [
+            0,
+            JOURNAL_OVERHEAD_RESERVE - 1,
+            JOURNAL_OVERHEAD_RESERVE,
+            JOURNAL_OVERHEAD_RESERVE + 2 * GRANULE - 1,
+            MAX_JOURNAL_BYTES + 1,
+            u64::MAX,
+        ] {
+            assert!(
+                changed_byte_budget(journal, image).is_err(),
+                "journal {journal}"
+            );
+        }
+        for image in [
+            0,
+            GRANULE - 1,
+            GRANULE + 1,
+            retained_compare::MAX_IMAGE_BYTES + GRANULE,
+            u64::MAX,
+        ] {
+            assert!(
+                changed_byte_budget(MAX_JOURNAL_BYTES, image).is_err(),
+                "image {image}"
+            );
+        }
+    }
 }

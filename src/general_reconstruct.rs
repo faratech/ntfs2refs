@@ -105,7 +105,7 @@ impl Request {
             self.comparison.schema_version == 2
                 && self.comparison.sector_size == 4096
                 && self.comparison.expected_length == self.pair.source.identity.partition_bytes
-                && self.comparison.max_change_bytes <= 256 * 1024 * 1024
+                && self.comparison.max_change_bytes <= lab_reconstruct::MAX_CHANGE_BYTES
                 && (1..=MAX_JOURNAL_BYTES).contains(&self.max_journal_bytes),
             "general comparison or journal budget differs"
         );
@@ -1221,5 +1221,13 @@ mod tests {
         let mut wrong_image = valid;
         wrong_image.comparison.expected_length += 4096;
         assert!(wrong_image.validate().is_err());
+    }
+    #[test]
+    fn general_request_accepts_capacity_derived_bound_but_not_a_larger_one() {
+        let mut valid = request();
+        valid.comparison.max_change_bytes = lab_reconstruct::MAX_CHANGE_BYTES;
+        valid.validate().unwrap();
+        valid.comparison.max_change_bytes += 4096;
+        assert!(valid.validate().is_err());
     }
 }

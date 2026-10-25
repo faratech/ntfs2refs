@@ -186,9 +186,10 @@ impl WritePolicy {
                 }
             }
         }
-        if bytes > self.maximum_bytes || self.maximum_bytes > 256 * 1024 * 1024 {
+        if bytes > self.maximum_bytes || self.maximum_bytes > crate::journal_file::MAX_CHANGED_BYTES
+        {
             return Err(invalid(
-                "native write policy exceeds the explicit 256 MiB profile",
+                "native write policy exceeds the explicit journal-capacity profile",
             ));
         }
         Ok(())
@@ -2347,5 +2348,28 @@ mod tests {
                 "byte {n}"
             );
         }
+    }
+    #[test]
+    fn write_policy_accepts_only_the_shared_capacity_bound() {
+        let cap = crate::journal_file::MAX_CHANGED_BYTES;
+        assert_eq!(cap, 376 * 1024 * 1024);
+        let valid = WritePolicy {
+            allowed: vec![(0, cap)],
+            retained: vec![],
+            maximum_bytes: cap,
+        };
+        valid.validate(cap + 4096).unwrap();
+        let excessive = WritePolicy {
+            allowed: vec![(0, cap + 4096)],
+            retained: vec![],
+            maximum_bytes: cap + 4096,
+        };
+        assert!(excessive.validate(cap + 4096).is_err());
+        let underfunded = WritePolicy {
+            allowed: vec![(0, cap)],
+            retained: vec![],
+            maximum_bytes: cap - 4096,
+        };
+        assert!(underfunded.validate(cap + 4096).is_err());
     }
 }

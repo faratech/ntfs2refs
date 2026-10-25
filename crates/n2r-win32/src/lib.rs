@@ -5,6 +5,7 @@ pub mod attestation;
 #[cfg(windows)]
 mod attestation_native;
 pub mod bitmap_layout;
+pub mod discovery;
 pub mod general_layout;
 #[cfg(windows)]
 pub mod journal_file;

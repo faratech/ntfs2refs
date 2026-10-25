@@ -68,7 +68,8 @@ pub fn verify_and_freeze(
     }
     .validate()?;
     ensure!(
-        source.binding() == &pair.source && (1..=256 * 1024 * 1024).contains(&max_change_bytes),
+        source.binding() == &pair.source
+            && (1..=lab_reconstruct::MAX_CHANGE_BYTES).contains(&max_change_bytes),
         "target preservation source or comparison bound differs"
     );
     let source_before = source.state(events)?;

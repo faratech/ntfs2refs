@@ -54,20 +54,48 @@ impl Request {
                 "journal storage must be independent of both data disks"
             );
         }
+        crate::lab_reconstruct::changed_byte_budget(
+            self.max_journal_bytes,
+            self.pair.source.identity.partition_bytes,
+        )?;
         Ok(())
     }
 }
 
 pub fn convert(request: &Request, output: &Path) -> Result<()> {
+    convert_profile(request, output, None)
+}
+
+/// Controlled lab fault injection after N complete, flushed target writes.
+/// The public conversion CLI does not expose this path. All qualification and
+/// durable recovery prerequisites are identical to an ordinary conversion.
+pub fn convert_interrupted(request: &Request, output: &Path, writes: u32) -> Result<()> {
+    ensure!(
+        (1..=4096).contains(&writes),
+        "interruption count must be 1..=4096"
+    );
+    convert_profile(request, output, Some(writes))
+}
+
+fn convert_profile(
+    request: &Request,
+    output: &Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
     request.validate()?;
     qualification::create_output(output)?;
     qualification::save(output, "conversion-intent.json", request)?;
     let mut phase = "qualification";
     let attempted = (|| -> Result<()> {
-        let qualified = qualification::prepare(
+        let max_change_bytes = crate::lab_reconstruct::changed_byte_budget(
+            request.max_journal_bytes,
+            request.pair.source.identity.partition_bytes,
+        )?;
+        let qualified = qualification::prepare_with_budget(
             request.pair.clone(),
             &output.join("qualification"),
             request.verify_existing_shadow,
+            max_change_bytes,
         )?;
         let qualification::QualifiedTree {
             mut source,
@@ -145,6 +173,18 @@ pub fn convert(request: &Request, output: &Path) -> Result<()> {
             "durable ticket readback differs"
         );
         let ticket: crate::lab_reconstruct::JournalTicket = serde_json::from_slice(&ticket_bytes)?;
+        if let Some(writes) = interrupt_after_writes {
+            qualification::save(
+                output,
+                "interruption-intent.json",
+                &serde_json::json!({
+                    "schema_version":1,"kind":"controlled-conversion-interruption-intent",
+                    "interrupt_after_writes":writes,"expected_process_exit_code":86,
+                    "ticket_sha256":ticket_pin,"journal_path":journal_path,
+                    "handoff_authorized":false,"ordinary_conversion_behavior_changed":false
+                }),
+            )?;
+        }
         phase = "activate-apply";
         let mut events = Vec::<NativeEvent>::new();
         let mut original = reconstruct::activate(
@@ -155,15 +195,27 @@ pub fn convert(request: &Request, output: &Path) -> Result<()> {
             &ticket,
             &mut events,
         )?;
-        let applied = reconstruct::execute(
-            reconstruct::RecoveryOperation::Apply,
-            &plan,
-            &mut original,
-            &mut target,
-            &mut journal,
-            &ticket,
-            &mut events,
-        )?;
+        let applied = if let Some(writes) = interrupt_after_writes {
+            reconstruct::execute_interrupted_apply(
+                &plan,
+                &mut original,
+                &mut target,
+                &mut journal,
+                &ticket,
+                &mut events,
+                writes,
+            )?
+        } else {
+            reconstruct::execute(
+                reconstruct::RecoveryOperation::Apply,
+                &plan,
+                &mut original,
+                &mut target,
+                &mut journal,
+                &ticket,
+                &mut events,
+            )?
+        };
         qualification::save(output, "apply.json", &applied)?;
         phase = "handoff";
         let finalization = reconstruct::finalize(
@@ -277,10 +329,27 @@ mod tests {
         bad.max_journal_bytes = 0;
         assert!(bad.validate().is_err());
         let mut bad = good.clone();
+        bad.max_journal_bytes = 16 * 1024 * 1024 + 8191;
+        assert!(bad.validate().is_err());
+        let mut bad = good.clone();
         bad.max_journal_bytes = MAX_JOURNAL_BYTES + 1;
         assert!(bad.validate().is_err());
         let mut bad = good;
         bad.experiment_id = "..".repeat(16);
         assert!(bad.validate().is_err());
+    }
+    #[test]
+    fn invalid_interruption_count_is_refused_before_output_or_device_access() {
+        let request = request();
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("output");
+        for writes in [0, 4097, u32::MAX] {
+            let error = convert_interrupted(&request, &output, writes).unwrap_err();
+            assert!(
+                error.to_string().contains("interruption count"),
+                "{error:#}"
+            );
+            assert!(!output.exists());
+        }
     }
 }

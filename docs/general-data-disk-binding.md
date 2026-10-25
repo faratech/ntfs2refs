@@ -61,6 +61,11 @@ offline/read-only exclusion, and verifies the complete source bytes. It also
 accepts an already excluded source without changing its attributes. Neither
 the native observation nor the recovery command has been qualified on a real
 general data disk.
+The live observer now feeds the combined ordinary-source assessment through an
+opaque native observation value and another complete excluded-device hash.
+Its report records matching and refusing gates separately; it still issues no
+admission certificate while volume-policy, internal replacement and target
+preservation rules remain unresolved.
 
 The general native I/O layer now also has a separate `GeneralJournaledPartition`
 type. It can activate an unchanged offline/read-only handle while retaining

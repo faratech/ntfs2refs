@@ -6,8 +6,8 @@ fn main() -> anyhow::Result<()> {
     use clap::Parser;
     use n2r_win32::{GeneralFrozenPartition, general_layout::GeneralDiskBinding};
     use ntfs2refs::{
-        lab_reconstruct, ntfs_attestation, ntfs_backup, ntfs_inspect, ntfs_log, ntfs_stream_plan,
-        shadow_tree,
+        general_source_admission, lab_reconstruct, ntfs_attestation, ntfs_backup, ntfs_inspect,
+        ntfs_log, ntfs_stream_plan, shadow_tree,
     };
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -49,7 +49,7 @@ fn main() -> anyhow::Result<()> {
         ordinary_tree_refusal: Option<String>,
         canonical_inspection_sha256: String,
         native: Option<serde_json::Value>,
-        native_comparison: Option<ntfs_attestation::Comparison>,
+        live_assessment: Option<general_source_admission::LiveAssessment>,
         native_error: Option<String>,
         native_bytes_read: u64,
         events: Vec<n2r_win32::NativeEvent>,
@@ -116,29 +116,41 @@ fn main() -> anyhow::Result<()> {
     } else {
         None
     };
-    let after_hash = lab_reconstruct::hash_range(&mut source, 0, length)?;
-    ensure!(hash == after_hash, "excluded NTFS source bytes changed");
-    let after = source.state(&mut events)?;
-    ensure!(
-        before == after,
-        "excluded disk route changed during inspection"
-    );
-    let (native, native_comparison, native_error) = match observed {
+    let (native, live_assessment, native_error) = match observed {
         Some(Ok(observation)) => {
-            let comparison = ntfs_attestation::compare(
+            let assessment = general_source_admission::assess(
+                &mut source,
                 &ntfs,
                 &canonical_inspection_sha256,
-                observation.report(),
+                &hex::encode(hash),
+                &backups,
+                log_restart.as_ref(),
+                &observation,
+                &mut events,
             );
             let native = Some(serde_json::to_value(observation.report())?);
-            match comparison {
-                Ok(comparison) => (native, Some(comparison), None),
+            match assessment {
+                Ok(assessment) => (native, Some(assessment), None),
                 Err(error) => (native, None, Some(format!("{error:#}"))),
             }
         }
         Some(Err(error)) => (None, None, Some(error.to_string())),
         None => (None, None, None),
     };
+    let after_sha256 = if let Some(assessment) = &live_assessment {
+        assessment.source_sha256.clone()
+    } else {
+        hex::encode(lab_reconstruct::hash_range(&mut source, 0, length)?)
+    };
+    ensure!(
+        hex::encode(hash) == after_sha256,
+        "excluded NTFS source bytes changed"
+    );
+    let after = source.state(&mut events)?;
+    ensure!(
+        before == after,
+        "excluded disk route changed during inspection"
+    );
     let report = Report {
         schema_version: 1,
         kind: "general-frozen-ntfs-read-only-basis",
@@ -155,7 +167,7 @@ fn main() -> anyhow::Result<()> {
         ordinary_tree_refusal,
         canonical_inspection_sha256,
         native,
-        native_comparison,
+        live_assessment,
         native_error,
         native_bytes_read: source.native_bytes_read(),
         events,

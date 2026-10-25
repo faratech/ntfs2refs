@@ -40,10 +40,18 @@ An internal `GeneralFrozenPartition` now implements the next source-only step:
 after an exact online probe it locks and dismounts the bound volume, persists
 offline/read-only disk attributes, closes the lock owner, reopens the physical
 disk read-only, and checks identity again. It also has an explicit read-only
-reopen path after interruption. It is **not exposed by a command** until a
-versioned journal and recovery/handoff path can safely bring that disk back
-online. Synthetic tests cover its aligned reads; a real-device freeze has not
-been attempted.
+reopen path after interruption. The initial isolate transition is **not
+exposed by a command** until a versioned journal and recovery/handoff path can
+safely bring that disk back online. Synthetic tests cover its aligned reads; a
+real-device freeze has not been attempted.
+
+The already-excluded read-only reopen is now public. `lab-inspect-frozen-general`
+uses it to hash the entire partition before and after NTFS inventory, verify
+the backup boot/MFT mirror, read both `$LogFile` restart pages when supported,
+and emit stream dispositions and an optional ordinary tree. It cannot isolate
+or bring a disk online and never supplies a write handle. Its report explicitly
+keeps source admission and conversion qualification false. The initial
+lock/dismount transition remains internal until general recovery is implemented.
 
 This is **not** a general conversion command. The raw writer, journal, source
 admission and ReFS target profile still use the narrower enrolled laboratory

@@ -476,7 +476,7 @@ pub struct GeneralPartitionReader {
 /// Persistently excluded general data partition. No Write implementation or
 /// online transition is exposed in this phase; a separate journaled recovery
 /// workflow is required before using this on a real disk.
-pub(crate) struct GeneralFrozenPartition {
+pub struct GeneralFrozenPartition {
     file: File,
     binding: GeneralDiskBinding,
     frozen_state: GeneralDiskState,
@@ -549,11 +549,7 @@ impl GeneralFrozenPartition {
         })
     }
 
-    #[allow(dead_code, reason = "Reserved for the versioned general recovery path")]
-    pub(crate) fn reopen(
-        binding: GeneralDiskBinding,
-        events: &mut Vec<NativeEvent>,
-    ) -> io::Result<Self> {
+    pub fn reopen(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
         binding.validate()?;
         if current_windows_disk(events)? == binding.disk_number {
             return Err(invalid("current Windows disk is excluded"));
@@ -579,16 +575,27 @@ impl GeneralFrozenPartition {
         })
     }
 
-    #[allow(dead_code, reason = "Reserved for the versioned general recovery path")]
-    pub(crate) fn revalidate_route(&self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    pub fn revalidate_route(&self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         if general_disk_state(&self.file, &self.binding, events)? != self.frozen_state {
             return Err(invalid("general frozen route changed"));
         }
         Ok(())
     }
 
-    fn byte_len(&self) -> u64 {
+    pub fn byte_len(&self) -> u64 {
         self.binding.identity.partition_bytes
+    }
+
+    pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralDiskState> {
+        let state = general_disk_state(&self.file, &self.binding, events)?;
+        if state != self.frozen_state {
+            return Err(invalid("general frozen route changed"));
+        }
+        Ok(state)
+    }
+
+    pub fn native_bytes_read(&self) -> u64 {
+        self.native_bytes_read
     }
 }
 

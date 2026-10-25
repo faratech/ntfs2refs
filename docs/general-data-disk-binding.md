@@ -159,9 +159,19 @@ afterward, and never brings the target online. It cannot initiate a new apply.
 The internal general finalizer now accepts the independently pinned pre-cutover
 tree, checks the full journaled ReFS postimage, durably closes rollback, brings
 the original data disk online and reads the expected files through `refs.sys`.
-A partial handoff marker is treated as an irreversible boundary. No general
-CLI exposes this finalizer while source admission and native qualification are
-unfinished.
+A partial handoff marker is treated as an irreversible boundary. No
+unrestricted general CLI exposes this finalizer while source admission and
+native qualification are unfinished.
+
+For disposable qualification, `lab-general-experiment` exposes two guest-only
+phases on the enrolled 64 GiB/52 GiB source and shadow disks plus the 8 GiB
+journal disk. `apply` rederives the expected tree from the frozen NTFS bytes,
+requires matching backup and clean restart evidence, activates the offline
+target through the verified journal and leaves it offline after exact apply.
+`finalize` records the irreversible handoff, mounts the original disk and
+verifies its files through native ReFS. Separate pinned request, ticket and
+expectation files are required. This path has compiled but has not run in the
+VM and does not qualify general production conversion.
 
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while

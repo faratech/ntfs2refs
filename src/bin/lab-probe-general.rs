@@ -4,7 +4,10 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::{general_layout::GeneralDiskBinding, probe_general};
+    use n2r_win32::{
+        general_layout::{GeneralDiskBinding, GeneralSourceShadowBinding},
+        probe_general,
+    };
     use serde::Serialize;
     use sha2::{Digest, Sha256};
     use std::{
@@ -21,6 +24,12 @@ fn main() -> anyhow::Result<()> {
         binding_sha256: String,
         #[arg(long)]
         output: PathBuf,
+        /// Optional independent shadow binding for the future general
+        /// data-volume conversion route.
+        #[arg(long, requires = "shadow_binding_sha256")]
+        shadow_binding: Option<PathBuf>,
+        #[arg(long, requires = "shadow_binding")]
+        shadow_binding_sha256: Option<String>,
     }
     #[derive(Serialize)]
     struct Report {
@@ -28,6 +37,8 @@ fn main() -> anyhow::Result<()> {
         kind: &'static str,
         binding_sha256: String,
         observed: n2r_win32::GeneralProbe,
+        shadow_observed: Option<n2r_win32::GeneralProbe>,
+        shadow_binding_sha256: Option<String>,
         events: Vec<n2r_win32::NativeEvent>,
         conversion_qualified: bool,
     }
@@ -54,7 +65,32 @@ fn main() -> anyhow::Result<()> {
     );
     let binding: GeneralDiskBinding = serde_json::from_slice(&bytes)?;
     let mut events = Vec::new();
+    let shadow =
+        if let (Some(path), Some(pin)) = (&args.shadow_binding, &args.shadow_binding_sha256) {
+            let metadata = fs::symlink_metadata(path)?;
+            ensure!(
+                metadata.is_file() && metadata.len() <= 16384,
+                "bounded regular shadow binding file required"
+            );
+            let bytes = fs::read(path)?;
+            ensure!(
+                pin.len() == 64 && hex::encode(Sha256::digest(&bytes)) == *pin,
+                "shadow binding pin differs"
+            );
+            let shadow: GeneralDiskBinding = serde_json::from_slice(&bytes)?;
+            GeneralSourceShadowBinding {
+                source: binding.clone(),
+                shadow: shadow.clone(),
+            }
+            .validate()?;
+            Some(shadow)
+        } else {
+            None
+        };
     let observed = probe_general(binding, &mut events)?;
+    let shadow_observed = shadow
+        .map(|binding| probe_general(binding, &mut events))
+        .transpose()?;
     save(
         &args.output,
         &Report {
@@ -62,6 +98,8 @@ fn main() -> anyhow::Result<()> {
             kind: "general-dedicated-data-disk-read-only-probe",
             binding_sha256: args.binding_sha256,
             observed,
+            shadow_observed,
+            shadow_binding_sha256: args.shadow_binding_sha256,
             events,
             conversion_qualified: false,
         },

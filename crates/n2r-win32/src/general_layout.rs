@@ -17,6 +17,38 @@ pub struct GeneralDiskBinding {
     pub identity: PartitionIdentity,
 }
 
+/// Separate physical disks with identically sized data partitions. This is a
+/// read-only construction input; journal and write authority remain separate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneralSourceShadowBinding {
+    pub source: GeneralDiskBinding,
+    pub shadow: GeneralDiskBinding,
+}
+
+impl GeneralSourceShadowBinding {
+    pub fn validate(&self) -> io::Result<()> {
+        self.source.validate()?;
+        self.shadow.validate()?;
+        let s = &self.source.identity;
+        let t = &self.shadow.identity;
+        require(
+            self.source.disk_number != self.shadow.disk_number
+                && guid_bytes(&s.disk_guid)? != guid_bytes(&t.disk_guid)?
+                && guid_bytes(&s.partition_guid)? != guid_bytes(&t.partition_guid)?
+                && guid_bytes(&self.source.volume_guid)? != guid_bytes(&self.shadow.volume_guid)?,
+            "source and shadow storage identities overlap",
+        )?;
+        require(
+            s.partition_bytes == t.partition_bytes
+                && s.logical_sector_bytes == t.logical_sector_bytes
+                && s.physical_sector_bytes == t.physical_sector_bytes
+                && s.partition_bytes <= 128 * 1024 * 1024 * 1024,
+            "source and shadow geometry exceeds comparison profile",
+        )
+    }
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -171,5 +203,56 @@ impl GeneralDiskBinding {
             target == 1 && msr_count <= 1,
             "dedicated data-disk partition set differs",
         )
+    }
+}
+
+#[cfg(test)]
+mod pair_tests {
+    use super::*;
+
+    fn disk(
+        number: u32,
+        disk_guid: &str,
+        partition_guid: &str,
+        volume_guid: &str,
+    ) -> GeneralDiskBinding {
+        GeneralDiskBinding {
+            disk_number: number,
+            volume_guid: volume_guid.into(),
+            identity: PartitionIdentity {
+                disk_guid: disk_guid.into(),
+                partition_guid: partition_guid.into(),
+                partition_number: 1,
+                disk_bytes: 8 << 30,
+                partition_offset: 1 << 20,
+                partition_bytes: 4 << 30,
+                logical_sector_bytes: 512,
+                physical_sector_bytes: 4096,
+            },
+        }
+    }
+
+    #[test]
+    fn source_shadow_pair_requires_separate_matching_data_disks() {
+        let source = disk(
+            1,
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+            "33333333-3333-3333-3333-333333333333",
+        );
+        let shadow = disk(
+            2,
+            "44444444-4444-4444-4444-444444444444",
+            "55555555-5555-5555-5555-555555555555",
+            "66666666-6666-6666-6666-666666666666",
+        );
+        let pair = GeneralSourceShadowBinding { source, shadow };
+        assert!(pair.validate().is_ok());
+        let mut alias = pair.clone();
+        alias.shadow.volume_guid = alias.source.volume_guid.clone();
+        assert!(alias.validate().is_err());
+        let mut mismatch = pair;
+        mismatch.shadow.identity.partition_bytes += 4096;
+        assert!(mismatch.validate().is_err());
     }
 }

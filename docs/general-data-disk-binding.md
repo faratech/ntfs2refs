@@ -14,6 +14,9 @@ disk attributes and single-volume extents, and checks that disk attributes stay
 unchanged. It never locks, dismounts, sets attributes or writes sectors. The
 pure layout tests cover a second disk size, 512e and 4Kn, wrong routes,
 overlapping partitions, another data partition and EFI/system partitions.
+An optional independently pinned shadow binding probes a second dedicated disk
+and requires distinct disk/partition/volume identities and matching source and
+shadow partition geometry within the current 128 GiB comparison limit.
 
 `GeneralPartitionReader` now adds a partition-relative, 4 KiB-aligned,
 read-only `Read + Seek` view over the same bound physical disk. The

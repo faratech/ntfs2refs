@@ -15,6 +15,7 @@ use std::{
     ptr::{self, NonNull},
 };
 use windows_sys::Win32::Foundation::CloseHandle;
+use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationW;
 use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW};
 
 const DEVICE: u32 = 0x002d1080;
@@ -436,6 +437,45 @@ pub fn probe_general(
         source_write_requests: 0,
         conversion_qualified: false,
     })
+}
+
+/// Observe the mounted filesystem name only after the bound dedicated disk
+/// has become online and writable. The GPT route is rechecked first.
+pub fn mounted_filesystem_general(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<String> {
+    probe_general(binding.clone(), events)?;
+    let path = format!("{}\\", binding.volume_path()?);
+    let mut path_wide: Vec<u16> = path.encode_utf16().collect();
+    path_wide.push(0);
+    let mut filesystem = [0u16; 32];
+    let mut serial = 0u32;
+    let mut component = 0u32;
+    let mut flags = 0u32;
+    // SAFETY: both buffers are initialized, the path is NUL-terminated, and
+    // the synchronous API retains no pointer.
+    let success = unsafe {
+        GetVolumeInformationW(
+            path_wide.as_ptr(),
+            ptr::null_mut(),
+            0,
+            &mut serial,
+            &mut component,
+            &mut flags,
+            filesystem.as_mut_ptr(),
+            filesystem.len() as u32,
+        )
+    };
+    if success == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let end = filesystem
+        .iter()
+        .position(|unit| *unit == 0)
+        .ok_or_else(|| invalid("mounted filesystem name is unterminated"))?;
+    String::from_utf16(&filesystem[..end])
+        .map_err(|_| invalid("mounted filesystem name is invalid UTF-16"))
 }
 
 struct AlignedBuffer {

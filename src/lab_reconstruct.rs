@@ -888,3 +888,55 @@ pub fn mark_handoff<T: DurableIo, S: ReadSeek, J: DurableIo>(
         conversion_qualified: false,
     })
 }
+
+/// Close the conversion journal before exposing a completely restored NTFS
+/// preimage for ordinary writable service. Any partial marker also prevents
+/// later replay; a separate completion path must inspect that state.
+pub fn mark_rollback_complete<T: DurableIo, S: ReadSeek, J: DurableIo>(
+    target: &mut T,
+    shadow: &mut S,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<ExecutionReport> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        *observed_binding == ticket.binding,
+        "rollback completion storage binding differs"
+    );
+    let loaded = load_journal(journal, ticket)?;
+    let length = loaded.manifest.request.expected_length;
+    ensure!(
+        target.byte_len()? == length && shadow.byte_len()? == length,
+        "rollback completion data lengths changed"
+    );
+    ensure!(
+        retained_compare::hash_reader(shadow, length)? == loaded.manifest.request.shadow_sha256,
+        "rollback completion shadow image changed"
+    );
+    target.sync_all()?;
+    let target_sha256 = retained_compare::hash_reader(target, length)?;
+    ensure!(
+        target_sha256 == loaded.manifest.request.source_sha256,
+        "rollback completion requires the complete original NTFS image"
+    );
+    let complete = marker(b"N2RABT01", 4, ticket, &target_sha256)?;
+    journal.seek(SeekFrom::Start(0))?;
+    journal.write_all(&complete)?;
+    journal.sync_all()?;
+    let mut observed = [0; GRANULE as usize];
+    read_at(journal, 0, &mut observed)?;
+    ensure!(
+        observed == complete,
+        "rollback-complete marker readback differs; replay remains closed"
+    );
+    Ok(ExecutionReport {
+        operation: "ntfs-rollback-complete".into(),
+        target_sha256,
+        target_bytes_written: 0,
+        patches_written: 0,
+        retained_bytes_unchanged: true,
+        handoff_recorded: true,
+        conversion_qualified: false,
+    })
+}

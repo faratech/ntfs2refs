@@ -88,6 +88,56 @@ fn relocation_only_apply_rollback_and_handoff_preserve_both_exact_images() {
         .is_err()
     );
 }
+
+#[test]
+fn completed_ntfs_rollback_closes_replay_before_writable_mount() {
+    let mut fixture = Fixture::new();
+    fixture.request.schema_version = 2;
+    fixture.request.retained_ranges.clear();
+    fixture.request.max_change_bytes = fixture.original.len() as u64;
+    fixture.request.max_ranges = 8;
+    let prepared = fixture.prepare();
+    let mut target = rw(&fixture.target);
+    let mut shadow = File::open(&fixture.shadow).unwrap();
+    let mut journal = rw(&fixture.journal);
+    lab_reconstruct::apply(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+    )
+    .unwrap();
+    lab_reconstruct::rollback(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+    )
+    .unwrap();
+    let completed = lab_reconstruct::mark_rollback_complete(
+        &mut target,
+        &mut shadow,
+        &mut journal,
+        &prepared.ticket,
+        &binding(),
+    )
+    .unwrap();
+    assert_eq!(completed.target_sha256, sha(&fixture.original));
+    assert_eq!(&fs::read(&fixture.journal).unwrap()[..8], b"N2RABT01");
+    assert!(
+        lab_reconstruct::resume(
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &prepared.ticket,
+            &binding()
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(&fixture.target).unwrap(), fixture.original);
+}
 struct Fixture {
     _dir: tempfile::TempDir,
     source: PathBuf,

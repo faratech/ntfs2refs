@@ -160,6 +160,12 @@ and ticket files, an existing exclusive journal and a frozen shadow; the
 journal's zero handoff marker and exact patch list are checked before any
 target write. It writes an intent before recovery, records actual disk states
 afterward, and never brings the target online. It cannot initiate a new apply.
+After an exact NTFS rollback, `lab-complete-general-rollback` separately
+rechecks the original NTFS structures, backup and clean restart pages, verifies
+the complete old image, writes a durable rollback-complete marker that rejects
+future journal replay, then brings the original disk online and checks that
+Windows mounts it as NTFS. A partial marker is treated as closing replay.
+This transition has not had a native disk run.
 
 The internal general finalizer now accepts the independently pinned pre-cutover
 tree, checks the full journaled ReFS postimage, durably closes rollback, brings

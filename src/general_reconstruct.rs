@@ -4,7 +4,7 @@
 use crate::{
     lab_native_reconstruct::{identity_hash, partition_hash},
     lab_reconstruct::{self, JournalBinding, JournalDescriptor, JournalSummary, JournalTicket},
-    ntfs_attestation, ntfs_inspect, refs_inspect, refs_retained_allocation,
+    ntfs_attestation, ntfs_backup, ntfs_inspect, ntfs_log, refs_inspect, refs_retained_allocation,
     retained_compare::{self, RetainedCompareRequest},
     shadow_tree,
 };
@@ -17,7 +17,7 @@ use n2r_win32::{
         observe_general_journal_file,
     },
     layout::guid_bytes,
-    shadow_native,
+    mounted_filesystem_general, shadow_native,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -515,6 +515,91 @@ pub struct Finalization {
     pub error: Option<String>,
     pub events: Vec<NativeEvent>,
     pub general_conversion_qualified: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RollbackFinalization {
+    pub success: bool,
+    pub replay_closed: bool,
+    pub marker: Option<lab_reconstruct::ExecutionReport>,
+    pub mounted_filesystem: Option<String>,
+    pub error: Option<String>,
+    pub events: Vec<NativeEvent>,
+    pub production_conversion_qualified: bool,
+}
+
+/// Close stale conversion recovery before returning an exact restored NTFS
+/// image to ordinary writable service. A partial marker is treated as closed.
+pub fn complete_rollback(
+    request: &Request,
+    mut target: GeneralJournaledPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    mut events: Vec<NativeEvent>,
+) -> Result<RollbackFinalization> {
+    request.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
+        "NTFS rollback completion data bindings differ"
+    );
+    ensure!(
+        target.state(&mut events)?.disk_attributes == 1
+            && shadow.state(&mut events)?.disk_attributes == 3,
+        "NTFS rollback completion requires excluded target and shadow"
+    );
+    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    validated_ticket(
+        request,
+        journal,
+        ticket,
+        &observed_journal.identity,
+        observed_journal.file_bytes,
+    )?;
+    let length = target.byte_len();
+    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    ntfs_backup::verify(&mut target, length, &raw)?;
+    ntfs_log::verify(&mut target, &raw)?;
+    let observed_binding = binding(request, &observed_journal.identity)?;
+    let mut report = RollbackFinalization {
+        success: false,
+        replay_closed: true,
+        marker: None,
+        mounted_filesystem: None,
+        error: None,
+        events,
+        production_conversion_qualified: false,
+    };
+    match lab_reconstruct::mark_rollback_complete(
+        &mut target,
+        shadow,
+        journal,
+        ticket,
+        &observed_binding,
+    ) {
+        Ok(marker) => report.marker = Some(marker),
+        Err(error) => {
+            report.error = Some(format!("{error:#}"));
+            return Ok(report);
+        }
+    }
+    if let Err(error) = target.bring_online(&mut report.events) {
+        report.error = Some(error.to_string());
+        return Ok(report);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    match mounted_filesystem_general(request.pair.source.clone(), &mut report.events) {
+        Ok(name) if name == "NTFS" => {
+            report.mounted_filesystem = Some(name);
+            report.success = true;
+        }
+        Ok(name) => {
+            report.mounted_filesystem = Some(name);
+            report.error = Some("restored original did not mount as NTFS".into());
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+    Ok(report)
 }
 
 /// The only planned general transition from an offline journal target to a

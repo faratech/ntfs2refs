@@ -158,6 +158,17 @@ fn pinned_root_txf_has_exact_internal_form_but_replacement_is_not_admitted() {
             .unwrap()
             .satisfied
     );
+    let remaining = assessed
+        .gates
+        .iter()
+        .find(|gate| gate.code == "remaining_inspection_refusals")
+        .unwrap();
+    assert!(!remaining.detail.contains("unsupported_attribute"));
+    assert!(
+        remaining
+            .detail
+            .contains("exact internal TxF replacements still pending: 2")
+    );
     assert!(!assessed.source_admitted);
 }
 #[test]

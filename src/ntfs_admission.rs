@@ -31,6 +31,40 @@ pub(crate) fn recognized_root_txf(attribute: &AttributeInventory) -> bool {
         && attribute.extents.is_empty()
 }
 
+fn accounted_internal_txf_blocker(
+    raw: &ntfs::NtfsInspection,
+    blocker: &ntfs::InspectionBlocker,
+) -> bool {
+    if blocker.code != "unsupported_attribute"
+        || blocker.message != "Attribute type 0x100 needs a preservation policy"
+    {
+        return false;
+    }
+    let Some(record_number) = blocker.file_record_number else {
+        return false;
+    };
+    let Some(file) = raw
+        .files
+        .iter()
+        .find(|file| file.record_number == record_number)
+    else {
+        return false;
+    };
+    let role_matches = record_number == 5
+        || internal_role(raw, file).as_deref() == Some("$Extend\\$RmMetadata\\$Txf");
+    role_matches
+        && file
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.type_code == 0x100)
+            .count()
+            == 1
+        && file
+            .attributes
+            .iter()
+            .any(|attribute| recognized_root_txf(attribute))
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {
@@ -535,13 +569,21 @@ fn assess_source_view_profile(
                     | "directory_indexes_unverified"
                     | "allocation_ownership_unverified"
             ) && !(b.code == "backup_boot_unverified" && backups.is_some())
+                && !accounted_internal_txf_blocker(raw, b)
         })
         .map(|b| b.code.clone())
         .collect();
+    let internal_txf_count = raw
+        .blockers
+        .iter()
+        .filter(|blocker| accounted_internal_txf_blocker(raw, blocker))
+        .count();
     gate(
         "remaining_inspection_refusals",
         unresolved.is_empty(),
-        &format!("unresolved inspection checks: {unresolved:?}"),
+        &format!(
+            "unresolved inspection checks: {unresolved:?}; exact internal TxF replacements still pending: {internal_txf_count}"
+        ),
     );
     gate(
         "internal_replacement_state",

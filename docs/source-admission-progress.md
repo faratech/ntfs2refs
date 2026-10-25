@@ -151,6 +151,11 @@ allocated bytes, no extents, compression or flags. The pinned ordinary NTFS
 tree satisfies it. This removes the generic unknown-attribute label from the
 root object; `internal_replacement_state` remains unsatisfied until TxF state
 and replacement semantics are established.
+The combined assessment now also recognizes the identical `$TXF_DATA` form in
+the exact `$Extend\$RmMetadata\$Txf` internal role. Its two raw
+`unsupported_attribute` messages are accounted under the still-failing
+internal-replacement gate; any other unknown attribute remains a refusal.
+The pinned four-file source confirms exactly two such TxF obligations.
 
 ## Ordinary-file admission diagnostics
 

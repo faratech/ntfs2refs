@@ -45,8 +45,12 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let intent_path = args.output.with_extension("intent.json");
     let native_path = args.output.with_extension("native.json");
+    let expectation_path = args.output.with_extension("expectation.json");
     ensure!(
-        !args.output.exists() && !intent_path.exists() && !native_path.exists(),
+        !args.output.exists()
+            && !intent_path.exists()
+            && !native_path.exists()
+            && !expectation_path.exists(),
         "fresh freeze output and evidence paths required"
     );
     let metadata = fs::symlink_metadata(&args.request)?;
@@ -86,6 +90,10 @@ fn main() -> anyhow::Result<()> {
     )?;
     let raw = ntfs_inspect::inspect(&mut source, source_length)?;
     let tree = shadow_tree::derive_ordinary(&raw)?;
+    let expectation = shadow_tree::ExpectedTree::from(&tree);
+    expectation.validate()?;
+    save(&expectation_path, &expectation)?;
+    let expectation_sha256 = hex::encode(Sha256::digest(fs::read(&expectation_path)?));
     let input: Vec<_> = tree
         .objects
         .iter()
@@ -184,6 +192,7 @@ fn main() -> anyhow::Result<()> {
             "source_before":source_before,"source_after":source_after,
             "shadow_before":shadow_before,"shadow_after":shadow_after,
             "refs":refs,"native_evidence_sha256":native_sha256,
+            "expectation_sha256":expectation_sha256,
             "placement":placement,"comparison_request":comparison,
             "retained_allocation":retained_allocation,
             "retained_allocation_error":retained_allocation_error,

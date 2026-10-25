@@ -2,10 +2,11 @@
 //! source admission, a conversion plan or authority to modify the NTFS source.
 use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security, ntfs_stream_plan};
 use anyhow::{Context, Result, ensure};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Object {
     pub record_number: u64,
     pub sequence_number: u16,
@@ -25,6 +26,81 @@ pub struct Tree {
     pub objects: Vec<Object>,
     pub logical_bytes: u64,
     pub internal_replacement_pending: Vec<String>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExpectedTree {
+    pub profile: String,
+    pub objects: Vec<Object>,
+    pub logical_bytes: u64,
+    pub internal_replacement_pending: Vec<String>,
+}
+impl From<&Tree> for ExpectedTree {
+    fn from(tree: &Tree) -> Self {
+        Self {
+            profile: tree.profile.into(),
+            objects: tree.objects.clone(),
+            logical_bytes: tree.logical_bytes,
+            internal_replacement_pending: tree.internal_replacement_pending.clone(),
+        }
+    }
+}
+impl ExpectedTree {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.profile == "native-ordinary-tree-shadow-v2"
+                && !self.objects.is_empty()
+                && self.objects.len() <= 160
+                && self.objects[0].directory
+                && self.objects[0].path.is_empty()
+                && self
+                    .objects
+                    .iter()
+                    .filter(|object| object.path.is_empty())
+                    .count()
+                    == 1,
+            "expected general tree profile or root differs"
+        );
+        let mut paths = BTreeSet::new();
+        let mut bytes = 0u64;
+        for object in &self.objects {
+            ensure!(
+                object.path.len() <= 16
+                    && object.path.iter().all(|part| valid_component(part))
+                    && object
+                        .stored_times
+                        .iter()
+                        .all(|time| *time > 0 && *time < i64::MAX as u64)
+                    && object.attributes & !0x2037 == 0
+                    && (object.attributes & 16 != 0) == object.directory
+                    && paths.insert(object.path.join("\\").to_ascii_uppercase()),
+                "expected general tree object is invalid or duplicated"
+            );
+            if !object.directory {
+                let digest = object.sha256.as_deref().unwrap_or("");
+                ensure!(
+                    digest.len() == 64
+                        && digest
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                    "expected stream digest differs"
+                );
+                bytes = bytes
+                    .checked_add(object.length)
+                    .context("expected byte overflow")?;
+            } else {
+                ensure!(
+                    object.length == 0 && object.sha256.is_none() && object.source_offset.is_none(),
+                    "expected directory carries stream data"
+                );
+            }
+        }
+        ensure!(
+            bytes == self.logical_bytes && bytes <= ntfs_admission::MAX_LOGICAL_BYTES,
+            "expected logical byte total differs"
+        );
+        Ok(())
+    }
 }
 pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
     derive_profile(raw, false)

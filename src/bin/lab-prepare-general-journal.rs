@@ -21,6 +21,10 @@ fn main() -> anyhow::Result<()> {
         #[arg(long)]
         request_sha256: String,
         #[arg(long)]
+        expectation: PathBuf,
+        #[arg(long)]
+        expectation_sha256: String,
+        #[arg(long)]
         journal: PathBuf,
         #[arg(long)]
         ticket: PathBuf,
@@ -80,6 +84,17 @@ fn main() -> anyhow::Result<()> {
     );
     let request: Request = serde_json::from_slice(&bytes)?;
     request.validate()?;
+    regular(&args.expectation)?;
+    let expectation_bytes = fs::read(&args.expectation)?;
+    ensure!(
+        expectation_bytes.len() <= 16 * 1024 * 1024
+            && args.expectation_sha256 == request.expected_tree_sha256
+            && hex::encode(Sha256::digest(&expectation_bytes)) == args.expectation_sha256,
+        "general target expectation pin differs"
+    );
+    let expectation: ntfs2refs::shadow_tree::ExpectedTree =
+        serde_json::from_slice(&expectation_bytes)?;
+    expectation.validate()?;
     let mut events = Vec::<NativeEvent>::new();
     let mut source = GeneralFrozenPartition::reopen(request.pair.source.clone(), &mut events)?;
     let mut shadow = GeneralFrozenPartition::reopen(request.pair.shadow.clone(), &mut events)?;

@@ -28,6 +28,10 @@ fn main() -> anyhow::Result<()> {
         #[arg(long)]
         journal_binding_sha256: String,
         #[arg(long)]
+        expectation: PathBuf,
+        #[arg(long)]
+        expectation_sha256: String,
+        #[arg(long)]
         experiment_id: String,
         #[arg(long)]
         output: PathBuf,
@@ -40,6 +44,7 @@ fn main() -> anyhow::Result<()> {
         source_sha256: String,
         shadow_sha256: String,
         native_evidence_sha256: String,
+        expectation_sha256: String,
         source_before: GeneralDiskState,
         source_after: GeneralDiskState,
         shadow_before: GeneralDiskState,
@@ -77,6 +82,12 @@ fn main() -> anyhow::Result<()> {
         &args.journal_binding_sha256,
         16384,
     )?)?;
+    let expectation: ntfs2refs::shadow_tree::ExpectedTree = serde_json::from_slice(&pinned(
+        &args.expectation,
+        &args.expectation_sha256,
+        16 * 1024 * 1024,
+    )?)?;
+    expectation.validate()?;
     freeze.request.validate()?;
     ensure!(
         freeze.schema_version == 1
@@ -87,6 +98,7 @@ fn main() -> anyhow::Result<()> {
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             && freeze.source_sha256 == freeze.request.source_sha256
+            && freeze.expectation_sha256 == args.expectation_sha256
             && freeze.comparison_request.source_sha256 == freeze.source_sha256
             && freeze.comparison_request.shadow_sha256 == freeze.shadow_sha256
             && freeze.source_before == freeze.source_after
@@ -100,6 +112,7 @@ fn main() -> anyhow::Result<()> {
     let request = general_reconstruct::Request {
         schema_version: 1,
         experiment_id: args.experiment_id,
+        expected_tree_sha256: freeze.expectation_sha256,
         pair: freeze.request.pair,
         comparison: freeze.comparison_request,
         journal,

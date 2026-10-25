@@ -4,8 +4,9 @@
 use crate::{
     lab_native_reconstruct::{identity_hash, partition_hash},
     lab_reconstruct::{self, JournalBinding, JournalDescriptor, JournalSummary, JournalTicket},
-    ntfs_inspect, refs_inspect, refs_retained_allocation,
+    ntfs_attestation, ntfs_inspect, refs_inspect, refs_retained_allocation,
     retained_compare::{self, RetainedCompareRequest},
+    shadow_tree,
 };
 use anyhow::{Result, ensure};
 use n2r_win32::{
@@ -16,8 +17,10 @@ use n2r_win32::{
         observe_general_journal_file,
     },
     layout::guid_bytes,
+    shadow_native,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs::File;
 
 fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBinding> {
@@ -62,6 +65,7 @@ fn validated_ticket(
 pub struct Request {
     pub schema_version: u32,
     pub experiment_id: String,
+    pub expected_tree_sha256: String,
     pub pair: GeneralSourceShadowBinding,
     pub comparison: RetainedCompareRequest,
     pub journal: GeneralJournalStorageBinding,
@@ -78,6 +82,14 @@ impl Request {
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
             "invalid general preparation experiment identity"
+        );
+        ensure!(
+            self.expected_tree_sha256.len() == 64
+                && self
+                    .expected_tree_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "missing pinned general target expectation"
         );
         self.pair.validate()?;
         self.journal.validate()?;
@@ -390,6 +402,125 @@ pub(crate) fn execute(
     })
 }
 
+#[derive(Debug, Serialize)]
+pub struct Finalization {
+    pub success: bool,
+    pub rollback_closed: bool,
+    pub handoff: Option<lab_reconstruct::ExecutionReport>,
+    pub native: Option<shadow_native::GeneralConvertedReport>,
+    pub error: Option<String>,
+    pub events: Vec<NativeEvent>,
+    pub general_conversion_qualified: bool,
+}
+
+/// The only planned general transition from an offline journal target to a
+/// writable ReFS mount. Keep this internal until source admission and target
+/// profile qualification issue an execution certificate.
+#[allow(
+    dead_code,
+    reason = "General handoff awaits admission and native qualification"
+)]
+pub(crate) fn finalize(
+    request: &Request,
+    mut target: GeneralJournaledPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    expected_tree_bytes: &[u8],
+) -> Result<Finalization> {
+    request.validate()?;
+    ensure!(
+        hex::encode(Sha256::digest(expected_tree_bytes)) == request.expected_tree_sha256,
+        "general target expectation pin differs"
+    );
+    let expectation: shadow_tree::ExpectedTree = serde_json::from_slice(expected_tree_bytes)?;
+    expectation.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
+        "general handoff data bindings differ"
+    );
+    let mut events = Vec::new();
+    ensure!(
+        target.state(&mut events)?.disk_attributes == 1
+            && shadow.state(&mut events)?.disk_attributes == 3,
+        "general handoff requires excluded target and shadow"
+    );
+    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    validated_ticket(
+        request,
+        journal,
+        ticket,
+        &observed_journal.identity,
+        observed_journal.file_bytes,
+    )?;
+    let observed_binding = binding(request, &observed_journal.identity)?;
+    let mut report = Finalization {
+        success: false,
+        rollback_closed: false,
+        handoff: None,
+        native: None,
+        error: None,
+        events,
+        general_conversion_qualified: false,
+    };
+    // A partial marker also closes rollback; record that boundary before the
+    // first handoff write and never retry it on this handle.
+    report.rollback_closed = true;
+    let handoff =
+        lab_reconstruct::mark_handoff(&mut target, shadow, journal, ticket, &observed_binding);
+    match handoff {
+        Ok(value) => report.handoff = Some(value),
+        Err(error) => {
+            report.error = Some(format!("{error:#}"));
+            return Ok(report);
+        }
+    }
+    if let Err(error) = target.bring_online(&mut report.events) {
+        report.error = Some(error.to_string());
+        return Ok(report);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let input: Vec<_> = expectation
+        .objects
+        .iter()
+        .map(|object| shadow_native::Input {
+            components: &object.path,
+            directory: object.directory,
+            times: object.stored_times,
+            attributes: object.attributes,
+            security: &object.security,
+            payload: &[],
+            expected_length: if object.directory {
+                None
+            } else {
+                Some(object.length)
+            },
+            expected_sha256: if object.directory {
+                None
+            } else {
+                object.sha256.as_deref()
+            },
+            source_offset: object.source_offset,
+        })
+        .collect();
+    let same_security = |a: &[u8], b: &[u8]| {
+        ntfs_attestation::same_security(a, b)
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    };
+    match shadow_native::verify_general_converted_ordinary(
+        request.pair.clone(),
+        &input,
+        same_security,
+    ) {
+        Ok(native) => {
+            report.native = Some(native);
+            report.success = true;
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,6 +552,7 @@ mod tests {
         Request {
             schema_version: 1,
             experiment_id: "a".repeat(32),
+            expected_tree_sha256: "c".repeat(64),
             pair: GeneralSourceShadowBinding {
                 source: disk(
                     1,

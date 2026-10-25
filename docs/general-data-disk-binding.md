@@ -156,6 +156,13 @@ journal's zero handoff marker and exact patch list are checked before any
 target write. It writes an intent before recovery, records actual disk states
 afterward, and never brings the target online. It cannot initiate a new apply.
 
+The internal general finalizer now accepts the independently pinned pre-cutover
+tree, checks the full journaled ReFS postimage, durably closes rollback, brings
+the original data disk online and reads the expected files through `refs.sys`.
+A partial handoff marker is treated as an irreversible boundary. No general
+CLI exposes this finalizer while source admission and native qualification are
+unfinished.
+
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while
 general activation, handoff and recovery remain unavailable from the CLI.

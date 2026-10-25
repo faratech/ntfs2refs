@@ -94,6 +94,23 @@ fn derives_stored_times_and_physical_payload_without_native_write_authority() {
     );
     assert_eq!(t.logical_bytes, 65536);
 }
+
+#[test]
+fn pinned_ordinary_expectation_round_trips_and_rejects_changed_digest() {
+    let tree = shadow_tree::derive_ordinary(&model()).unwrap();
+    let expected = shadow_tree::ExpectedTree::from(&tree);
+    expected.validate().unwrap();
+    let bytes = serde_json::to_vec(&expected).unwrap();
+    let mut replay: shadow_tree::ExpectedTree = serde_json::from_slice(&bytes).unwrap();
+    replay.validate().unwrap();
+    replay
+        .objects
+        .iter_mut()
+        .find(|o| !o.directory)
+        .unwrap()
+        .sha256 = Some("z".repeat(64));
+    assert!(replay.validate().is_err());
+}
 #[test]
 fn inconsistent_raw_views_missing_security_and_stale_parent_are_refused() {
     let raw = model();

@@ -126,6 +126,13 @@ pub struct GeneralReport {
     pub conversion_qualified: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GeneralConvertedReport {
+    pub pair: GeneralSourceShadowBinding,
+    pub native: Report,
+    pub conversion_qualified: bool,
+}
+
 fn observed_shadow(
     disk: &File,
     binding: &DiskBinding,
@@ -974,6 +981,39 @@ pub fn verify_general_ordinary(
         conversion_qualified: false,
     })
 }
+
+/// Inspect the original data disk after the journal handoff has been made
+/// durable and it has mounted as ReFS. The caller supplies the pre-cutover
+/// source tree from separately pinned recovery artifacts.
+pub fn verify_general_converted_ordinary(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<GeneralConvertedReport> {
+    pair.validate()?;
+    let binding = DiskBinding {
+        disk_number: pair.source.disk_number,
+        volume_guid: pair.source.volume_guid.clone(),
+        identity: pair.source.identity.clone(),
+    };
+    let native = run_role(
+        binding,
+        pair.source.disk_number,
+        input,
+        Mode::Verify,
+        &same_security,
+        true,
+        true,
+        None,
+        Some(&pair.source),
+    )?;
+    validate_existing(&native, input, &same_security, false)?;
+    Ok(GeneralConvertedReport {
+        pair,
+        native,
+        conversion_qualified: false,
+    })
+}
 /// Observe the enrolled converted original after durable journal handoff. All
 /// original shadow creation/repair entry points retain the disk3 restriction.
 pub fn verify_converted(
@@ -1039,13 +1079,17 @@ fn run_role(
 ) -> io::Result<Report> {
     if let Some(general) = general_shadow {
         general.validate()?;
-        if converted
+        let route_mode_ok = if converted {
+            source_disk == binding.disk_number && mode == Mode::Verify
+        } else {
+            source_disk != binding.disk_number
+                && matches!(
+                    mode,
+                    Mode::ProbeRoot | Mode::Construct | Mode::ConstructRetaining | Mode::Verify
+                )
+        };
+        if !route_mode_ok
             || !ordinary
-            || source_disk == binding.disk_number
-            || !matches!(
-                mode,
-                Mode::ProbeRoot | Mode::Construct | Mode::ConstructRetaining | Mode::Verify
-            )
             || binding.disk_number != general.disk_number
             || binding.volume_guid != general.volume_guid
             || binding.identity != general.identity

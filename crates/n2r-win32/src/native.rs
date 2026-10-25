@@ -594,6 +594,76 @@ impl GeneralFrozenPartition {
         })
     }
 
+    /// Recover from process death during native observation. An already
+    /// excluded disk is reopened unchanged. A still-mounted READ_ONLY disk is
+    /// locked, dismounted and returned to persistent OFFLINE|READ_ONLY. Any
+    /// writable, foreign or changed disk is refused.
+    pub fn restore_exclusion(
+        binding: GeneralDiskBinding,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(Self, bool)> {
+        binding.validate()?;
+        if current_windows_disk(events)? == binding.disk_number {
+            return Err(invalid("current Windows disk is excluded"));
+        }
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            true,
+            false,
+        )?;
+        let before = general_disk_state(&management, &binding, events)?;
+        if before.disk_attributes == OFFLINE | READ_ONLY {
+            close_file(management, "close-general-already-excluded", events)?;
+            return Ok((Self::reopen(binding, events)?, false));
+        }
+        if before.disk_attributes != READ_ONLY {
+            return Err(invalid(
+                "general observation recovery requires read-only disk",
+            ));
+        }
+        let volume = device_file(&binding.volume_path()?, false, false)?;
+        let extents = control(
+            &volume,
+            "general-recovery-volume-extents",
+            VOLUME_EXTENTS,
+            &[],
+            1024,
+            events,
+        )?;
+        binding.validate_volume_extent(&extents)?;
+        control(
+            &volume,
+            "general-recovery-lock-volume",
+            LOCK,
+            &[],
+            0,
+            events,
+        )?;
+        control(
+            &volume,
+            "general-recovery-dismount-volume",
+            DISMOUNT,
+            &[],
+            0,
+            events,
+        )?;
+        set_attributes(&management, OFFLINE | READ_ONLY, events)?;
+        close_file(volume, "close-general-recovery-volume", events)?;
+        let mut expected = before;
+        expected.disk_attributes = OFFLINE | READ_ONLY;
+        if general_disk_state(&management, &binding, events)? != expected {
+            return Err(invalid(
+                "general exclusion recovery changed storage identity",
+            ));
+        }
+        close_file(management, "close-general-recovery-management", events)?;
+        let restored = Self::reopen(binding, events)?;
+        if restored.frozen_state != expected {
+            return Err(invalid("general exclusion recovery reopen differs"));
+        }
+        Ok((restored, true))
+    }
+
     pub fn revalidate_route(&self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         if general_disk_state(&self.file, &self.binding, events)? != self.frozen_state {
             return Err(invalid("general frozen route changed"));

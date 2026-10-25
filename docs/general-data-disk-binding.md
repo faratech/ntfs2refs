@@ -48,14 +48,19 @@ a real-device freeze has not been attempted.
 The already-excluded read-only reopen is now public. `lab-inspect-frozen-general`
 uses it to hash the entire partition before and after NTFS inventory, verify
 the backup boot/MFT mirror, read both `$LogFile` restart pages when supported,
-and emit stream dispositions and an optional ordinary tree. It cannot isolate
-or bring a disk online and never supplies a write handle. Its report explicitly
-keeps source admission and conversion qualification false.
+and emit stream dispositions and an optional ordinary tree. It cannot clear
+write protection and never supplies a payload write handle. Its report
+explicitly keeps source admission and conversion qualification false.
 With `--native`, it records an intent, briefly publishes only a read-only NTFS
 view, collects file, stream, namespace and security observations, restores
 offline/read-only exclusion and rehashes the entire source. A killed process
-can leave the volume mounted but still write-protected; a separate exclusion
-recovery command is required before this can be a production admission path.
+can leave the volume mounted but still write-protected. The new
+`lab-restore-general-exclusion` command accepts an independently pinned source
+hash, locks/dismounts only that read-only volume, restores persistent
+offline/read-only exclusion, and verifies the complete source bytes. It also
+accepts an already excluded source without changing its attributes. Neither
+the native observation nor the recovery command has been qualified on a real
+general data disk.
 
 The general native I/O layer now also has a separate `GeneralJournaledPartition`
 type. It can activate an unchanged offline/read-only handle while retaining

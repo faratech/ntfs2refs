@@ -150,14 +150,45 @@ boot repair, image decompression or device operations were requested. These
 reader results supply a baseline for a later independent-writer experiment;
 they do not validate REFSNT-generated metadata.
 
-## Next decisive experiment
+## Isolated writer adoption experiment
 
-Use a disposable Windows-formatted 3.14 image with a strict block backend and a
-complete write trace. Adopt one pre-existing, independently hashed payload run
-without a normal ReFS payload write. Require every metadata write to avoid that
-run; export the changed blocks and independently decode the resulting extent,
-allocator and checkpoint graph. Only then test the modified image through
-`refs.sys`, including logical SHA-256, native physical mapping and both cached
-and storage valid-data state. A native mutation/remount experiment and real
-flush/fault injection follow. The current native-shadow journal experiment
-continues independently and does not confer writer authority on REFSNT.
+A separate ignored copy of REFSNT's userspace tool now uses a copy-on-write
+block backend. It opens the Windows-generated `devdrive.raw` with read-only
+access; every experimental write goes to a separate append-only overlay on C:.
+The pinned upstream checkout remains unchanged. The overlay reader replays
+records in order, checks each record, and the adapted `RfsHostFlush` calls
+`FlushFileBuffers` on the overlay instead of returning unconditional success.
+This is laboratory GPL code, separate from the Rust converter.
+
+The experimental `adopt` operation reserved physical LCN 10,243 in the ReFS
+Medium allocator, created `/adopted.bin`, converted the physical LCN to a
+virtual cluster and called `RfsFileAdopt`. The pre-existing 4,096 bytes at that
+base-image LCN had SHA-256
+`6234f364d8fb1b532234405c7e2bb1c8e08337ef7fc6e4138f80c8b3d9411786`.
+Both REFSNT and the independent forefst parser extracted exactly 4,096 bytes
+with that SHA-256 from the adopted file. Forefst described it as extent-backed,
+with 4,096 allocated bytes. The overlay contained eight write records totaling
+131,072 bytes of new metadata; **none overlapped the adopted payload cluster**.
+The overlay was only 131,280 bytes, and the original 55,834,574,848-byte raw
+image retained its last-write timestamp. Opening the base without the overlay
+does not show `adopted.bin`.
+
+REFSNT's checker reported zero checksum, duplicate-reference or unallocated
+reference errors on both images. Its referenced-cluster count increased from
+1,300 to 1,301 and Medium free count decreased by one; its
+245,708 allocated-but-unreferenced remainder was unchanged. Forefst parsed
+the new checkpoint at virtual clock 46 with valid VBR, SUPB and checkpoint
+checksums. Forefst still could not determine host sparse-hole coverage when
+extracting the file; its extracted bytes matched the raw base cluster and the
+REFSNT extraction.
+
+This proves an **offline candidate-writer mechanism on one 3.14 image**: an
+existing physical payload cluster can be referenced by newly written ReFS
+metadata without rewriting its bytes. It does not yet prove that Microsoft's
+`refs.sys` accepts or safely mutates that metadata. The candidate scanner also
+showed that `RfsClusterFree` alone is insufficient to identify every usable
+cluster: it called an early `MSB+` metadata page free in the Medium allocator.
+The selected data cluster therefore still needs an independent whole-volume
+ownership check before any native mount test. The next gate is to expose the
+overlay as a disposable virtual disk to Windows, verify native read/mutation
+and storage-validity behavior, then qualify flush ordering and power cuts.

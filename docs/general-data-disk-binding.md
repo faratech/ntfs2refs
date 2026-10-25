@@ -71,6 +71,14 @@ data-disk writes. Its ReFS check covers the 3.14 VBR geometry, not the complete
 metadata graph or Windows mount behavior; the resulting preparation explicitly
 does not authorize execution.
 
+The library now has internal general activation and apply/resume/rollback
+functions. They rebind the separately pinned ticket to the actual GPT source,
+shadow and journal file, inspect the immutable journal before changing disk
+attributes, and arm only its listed patch ranges. They leave both data disks
+excluded and do not perform handoff. These functions are intentionally not
+reachable from the general CLI while source admission and independent target
+verification remain incomplete.
+
 This is **not** a general conversion command. The raw writer, journal, source
 admission and ReFS target profile still use the narrower enrolled laboratory
 route. A successful read-only probe cannot authorize switching a volume's

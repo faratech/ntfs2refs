@@ -1,20 +1,60 @@
-//! Read-only general source/shadow preparation using the existing durable
-//! old/new journal. This module cannot activate or write a target partition.
+//! General source/shadow journal plumbing. Preparation is read-only on both
+//! data disks; activation and execution remain internal until admission and
+//! target qualification supply the missing write authority.
 use crate::{
     lab_native_reconstruct::{identity_hash, partition_hash},
-    lab_reconstruct::{self, JournalBinding, JournalSummary},
+    lab_reconstruct::{self, JournalBinding, JournalDescriptor, JournalSummary, JournalTicket},
     ntfs_inspect, refs_inspect,
     retained_compare::{self, RetainedCompareRequest},
 };
 use anyhow::{Result, ensure};
 use n2r_win32::{
-    GeneralDiskState, GeneralFrozenPartition, NativeEvent,
+    GeneralDiskState, GeneralFrozenPartition, GeneralJournaledPartition, NativeEvent, WritePolicy,
     general_layout::GeneralSourceShadowBinding,
-    journal_file::{JournalStorageBinding, MAX_JOURNAL_BYTES, observe_journal_file},
+    journal_file::{
+        JournalFileIdentity, JournalStorageBinding, MAX_JOURNAL_BYTES, observe_journal_file,
+    },
     layout::guid_bytes,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::File;
+
+fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBinding> {
+    Ok(JournalBinding {
+        experiment_id: request.experiment_id.clone(),
+        target_identity_sha256: partition_hash(&request.pair.source.identity)?,
+        shadow_identity_sha256: partition_hash(&request.pair.shadow.identity)?,
+        journal_identity_sha256: identity_hash(
+            b"ntfs2refs/general/journal-file-identity/v1",
+            journal,
+        )?,
+    })
+}
+
+fn validated_ticket(
+    request: &Request,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    identity: &JournalFileIdentity,
+    file_bytes: u64,
+) -> Result<JournalDescriptor> {
+    let observed = binding(request, identity)?;
+    ensure!(
+        ticket.schema_version == 1
+            && ticket.binding == observed
+            && ticket.journal_length == file_bytes
+            && ticket.journal_length <= request.max_journal_bytes
+            && ticket.immutable_length.checked_add(8192) == Some(ticket.journal_length),
+        "general ticket, journal length or storage identity differs"
+    );
+    let descriptor = lab_reconstruct::inspect_journal(journal, ticket, &observed)?;
+    ensure!(
+        serde_json::to_vec(&descriptor.request)? == serde_json::to_vec(&request.comparison)?
+            && descriptor.expected_postimage_sha256 == request.comparison.shadow_sha256,
+        "general journal plan differs from request"
+    );
+    Ok(descriptor)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -116,15 +156,7 @@ pub fn prepare(
             && refs.geometry.volume_bytes == shadow.byte_len(),
         "initial NTFS/ReFS format geometry differs"
     );
-    let observed_binding = JournalBinding {
-        experiment_id: request.experiment_id.clone(),
-        target_identity_sha256: partition_hash(&request.pair.source.identity)?,
-        shadow_identity_sha256: partition_hash(&request.pair.shadow.identity)?,
-        journal_identity_sha256: identity_hash(
-            b"ntfs2refs/general/journal-file-identity/v1",
-            &journal_before.identity,
-        )?,
-    };
+    let observed_binding = binding(request, &journal_before.identity)?;
     let summary = lab_reconstruct::prepare_journal(
         source,
         shadow,
@@ -168,4 +200,245 @@ pub fn prepare(
         target_profile_qualified: false,
         execution_authorized: false,
     })
+}
+
+/// Only a separately pinned, fully inspected journal can remove READ_ONLY
+/// from the still-offline source. No payload range is armed at this point.
+#[allow(
+    dead_code,
+    reason = "General source admission does not yet call activation"
+)]
+pub(crate) fn activate(
+    request: &Request,
+    source: GeneralFrozenPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    events: &mut Vec<NativeEvent>,
+) -> Result<GeneralJournaledPartition> {
+    request.validate()?;
+    ensure!(
+        source.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
+        "general activation data bindings differ"
+    );
+    source.state(events)?;
+    let shadow_before = shadow.state(events)?;
+    let before = observe_journal_file(journal, &request.journal)?;
+    validated_ticket(
+        request,
+        journal,
+        ticket,
+        &before.identity,
+        before.file_bytes,
+    )?;
+    let target = source.activate_for_journal(events)?;
+    ensure!(
+        target.state(events)?.disk_attributes == 1 && shadow.state(events)? == shadow_before,
+        "general activation lost disk exclusion"
+    );
+    let after = observe_journal_file(journal, &request.journal)?;
+    ensure!(
+        after.identity == before.identity && after.file_bytes == before.file_bytes,
+        "general journal changed during activation"
+    );
+    Ok(target)
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryOperation {
+    Apply,
+    Resume,
+    Rollback,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Execution {
+    pub operation: RecoveryOperation,
+    pub result: lab_reconstruct::ExecutionReport,
+    pub target_before: GeneralDiskState,
+    pub target_after: GeneralDiskState,
+    pub shadow_before: GeneralDiskState,
+    pub shadow_after: GeneralDiskState,
+    pub target_write_bytes_requested: u64,
+    pub target_bytes_written: u64,
+    pub source_admitted: bool,
+    pub conversion_qualified: bool,
+}
+
+/// Recovery remains possible only while the journal's handoff sector is all
+/// zero. The journal descriptor, rather than serialized plan flags, supplies
+/// the exact patch policy. No operation here exposes a disk for mounting.
+#[allow(dead_code, reason = "General recovery CLI awaits source admission")]
+pub(crate) fn execute(
+    operation: RecoveryOperation,
+    request: &Request,
+    target: &mut GeneralJournaledPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    events: &mut Vec<NativeEvent>,
+) -> Result<Execution> {
+    request.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
+        "general execution data bindings differ"
+    );
+    let target_before = target.state(events)?;
+    let shadow_before = shadow.state(events)?;
+    ensure!(
+        target_before.disk_attributes == 1 && shadow_before.disk_attributes == 3,
+        "general execution requires an excluded target and shadow"
+    );
+    let before = observe_journal_file(journal, &request.journal)?;
+    let descriptor = validated_ticket(
+        request,
+        journal,
+        ticket,
+        &before.identity,
+        before.file_bytes,
+    )?;
+    if !descriptor.patches.is_empty() {
+        target.arm_writes(
+            WritePolicy {
+                allowed: descriptor
+                    .patches
+                    .iter()
+                    .map(|p| (p.offset, p.length))
+                    .collect(),
+                retained: request
+                    .comparison
+                    .retained_ranges
+                    .iter()
+                    .map(|r| (r.offset, r.length))
+                    .collect(),
+                maximum_bytes: descriptor.changed_bytes,
+            },
+            events,
+        )?;
+    }
+    let observed = binding(request, &before.identity)?;
+    let result = match operation {
+        RecoveryOperation::Apply => {
+            lab_reconstruct::apply(target, shadow, journal, ticket, &observed)?
+        }
+        RecoveryOperation::Resume => {
+            lab_reconstruct::resume(target, shadow, journal, ticket, &observed)?
+        }
+        RecoveryOperation::Rollback => {
+            lab_reconstruct::rollback(target, shadow, journal, ticket, &observed)?
+        }
+    };
+    let target_after = target.state(events)?;
+    let shadow_after = shadow.state(events)?;
+    let after = observe_journal_file(journal, &request.journal)?;
+    ensure!(
+        target_before == target_after
+            && shadow_before == shadow_after
+            && before.identity == after.identity
+            && before.file_bytes == after.file_bytes,
+        "general execution storage binding changed"
+    );
+    Ok(Execution {
+        operation,
+        result,
+        target_before,
+        target_after,
+        shadow_before,
+        shadow_after,
+        target_write_bytes_requested: target.native_write_bytes_requested,
+        target_bytes_written: target.native_bytes_written,
+        source_admitted: false,
+        conversion_qualified: false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use n2r_win32::{general_layout::GeneralDiskBinding, layout::PartitionIdentity};
+
+    fn disk(
+        number: u32,
+        disk_guid: &str,
+        partition_guid: &str,
+        volume_guid: &str,
+    ) -> GeneralDiskBinding {
+        GeneralDiskBinding {
+            disk_number: number,
+            volume_guid: volume_guid.into(),
+            identity: PartitionIdentity {
+                disk_guid: disk_guid.into(),
+                partition_guid: partition_guid.into(),
+                partition_number: 1,
+                disk_bytes: 8 << 30,
+                partition_offset: 1 << 20,
+                partition_bytes: 4 << 30,
+                logical_sector_bytes: 512,
+                physical_sector_bytes: 4096,
+            },
+        }
+    }
+
+    fn request() -> Request {
+        Request {
+            schema_version: 1,
+            experiment_id: "a".repeat(32),
+            pair: GeneralSourceShadowBinding {
+                source: disk(
+                    1,
+                    "11111111-1111-1111-1111-111111111111",
+                    "22222222-2222-2222-2222-222222222222",
+                    "33333333-3333-3333-3333-333333333333",
+                ),
+                shadow: disk(
+                    3,
+                    "44444444-4444-4444-4444-444444444444",
+                    "55555555-5555-5555-5555-555555555555",
+                    "66666666-6666-6666-6666-666666666666",
+                ),
+            },
+            comparison: RetainedCompareRequest {
+                schema_version: 2,
+                sector_size: 4096,
+                expected_length: 4 << 30,
+                source_sha256: "1".repeat(64),
+                shadow_sha256: "2".repeat(64),
+                retained_ranges: vec![],
+                max_change_bytes: 256 << 20,
+                max_ranges: 65536,
+            },
+            journal: JournalStorageBinding {
+                disk_number: 2,
+                externally_enrolled_disk_unique_id: "JOURNAL-TEST".into(),
+                volume_guid: "77777777-7777-7777-7777-777777777777".into(),
+                identity: PartitionIdentity {
+                    disk_guid: "88888888-8888-8888-8888-888888888888".into(),
+                    partition_guid: "99999999-9999-9999-9999-999999999999".into(),
+                    partition_number: 2,
+                    disk_bytes: 8 << 30,
+                    partition_offset: 16 << 20,
+                    partition_bytes: (8 << 30) - (32 << 20),
+                    logical_sector_bytes: 512,
+                    physical_sector_bytes: 4096,
+                },
+            },
+            max_journal_bytes: 768 << 20,
+        }
+    }
+
+    #[test]
+    fn general_request_requires_distinct_external_journal_and_equal_partitions() {
+        let valid = request();
+        valid.validate().unwrap();
+        let mut overlapping = valid.clone();
+        overlapping.pair.source.disk_number = 2;
+        assert!(overlapping.validate().is_err());
+        let mut unequal = valid.clone();
+        unequal.pair.shadow.identity.partition_bytes += 4096;
+        assert!(unequal.validate().is_err());
+        let mut wrong_image = valid;
+        wrong_image.comparison.expected_length += 4096;
+        assert!(wrong_image.validate().is_err());
+    }
 }

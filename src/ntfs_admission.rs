@@ -116,6 +116,50 @@ fn accounted_empty_badclus_blocker(
         && bad.extents[0].length == bad.logical_size
 }
 
+fn unresolved_codes(raw: &ntfs::NtfsInspection, backups: bool, clean_log: bool) -> Vec<String> {
+    raw.blockers
+        .iter()
+        .filter(|blocker| {
+            !matches!(
+                blocker.code.as_str(),
+                "security_descriptors_unresolved"
+                    | "directory_indexes_unverified"
+                    | "allocation_ownership_unverified"
+            ) && !(blocker.code == "backup_boot_unverified" && backups)
+                && !(blocker.code == "journal_state_unverified" && clean_log)
+                && !accounted_internal_txf_blocker(raw, blocker)
+                && !accounted_empty_badclus_blocker(raw, blocker)
+        })
+        .map(|blocker| blocker.code.clone())
+        .collect()
+}
+
+/// Bind a non-deserializable restart proof from actual source reads. This
+/// clears only the restart-page diagnostic and its duplicate raw blocker;
+/// full transaction replay and internal replacement remain separate gates.
+pub(crate) fn bind_clean_log(
+    assessment: &mut Assessment,
+    raw: &ntfs::NtfsInspection,
+    proof: &crate::ntfs_log::VerifiedRestart,
+) -> bool {
+    if !proof.binds(raw) || !proof.restart.candidate_clean_dismount {
+        return false;
+    }
+    let unresolved = unresolved_codes(raw, assessment.backup_evidence.is_some(), true);
+    for gate in &mut assessment.gates {
+        if gate.code == "log_restart_pages" {
+            gate.satisfied = true;
+            gate.detail = "both clean-flagged NTFS restart copies passed structural checks on the frozen source; full log replay remains unproven".into();
+        } else if gate.code == "remaining_inspection_refusals" {
+            gate.satisfied = unresolved.is_empty();
+            gate.detail = format!(
+                "unresolved inspection checks after frozen log proof: {unresolved:?}; internal replacement obligations remain separate"
+            );
+        }
+    }
+    true
+}
+
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {
@@ -610,21 +654,7 @@ fn assess_source_view_profile(
         false,
         "read and reconcile both $LogFile restart pages from the frozen device; clean flags alone do not prove complete log recovery",
     );
-    let unresolved: Vec<_> = raw
-        .blockers
-        .iter()
-        .filter(|b| {
-            !matches!(
-                b.code.as_str(),
-                "security_descriptors_unresolved"
-                    | "directory_indexes_unverified"
-                    | "allocation_ownership_unverified"
-            ) && !(b.code == "backup_boot_unverified" && backups.is_some())
-                && !accounted_internal_txf_blocker(raw, b)
-                && !accounted_empty_badclus_blocker(raw, b)
-        })
-        .map(|b| b.code.clone())
-        .collect();
+    let unresolved = unresolved_codes(raw, backups.is_some(), false);
     let internal_txf_count = raw
         .blockers
         .iter()

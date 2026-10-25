@@ -92,16 +92,9 @@ impl ObservedFrozenSource {
                 gate.satisfied = true;
                 gate.detail="actual excluded device and complete source hash revalidated before and after a live physically read-only native observation".into();
             }
-            if gate.code == "log_restart_pages"
-                && basis
-                    .evidence
-                    .log_restart
-                    .as_ref()
-                    .is_some_and(|proof| proof.binds(raw))
-            {
-                gate.satisfied = true;
-                gate.detail = "both clean-flagged LFS 1.1 restart copies passed USA, bounds, identity and matching-state checks on the unchanged frozen device; full log replay remains unproven".into();
-            }
+        }
+        if let Some(proof) = basis.evidence.log_restart.as_ref() {
+            crate::ntfs_admission::bind_clean_log(&mut assessment, raw, proof);
         }
         Ok(assessment)
     }

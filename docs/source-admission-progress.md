@@ -162,6 +162,11 @@ initialized bytes, and no physical LCN. Its unavailable logical hash is then
 accounted as filesystem-internal metadata; an allocated bad-cluster mapping
 still refuses. This recognition does not replace a storage-health check or
 issue an admission certificate.
+When an actual frozen-device `$LogFile` restart proof binds the inspected NTFS
+state, the combined assessment now clears both the restart-page gate and its
+duplicate raw `journal_state_unverified` blocker. The detail still states that
+full log replay is unproven, and the TxF/internal replacement gate stays
+closed.
 
 ## Ordinary-file admission diagnostics
 

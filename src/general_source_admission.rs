@@ -72,10 +72,9 @@ pub fn assess(
             gate.satisfied = true;
             gate.detail = "actual dedicated disk remained offline/read-only and matched the complete pinned source hash after native collection".into();
         }
-        if gate.code == "log_restart_pages" && log_restart.is_some_and(|proof| proof.binds(raw)) {
-            gate.satisfied = true;
-            gate.detail = "both clean NTFS restart copies matched the frozen source; full log replay remains unproven".into();
-        }
+    }
+    if let Some(proof) = log_restart {
+        ntfs_admission::bind_clean_log(&mut assessment, raw, proof);
     }
     let txf = observed.txf();
     let txf_evidence_sha256 = txf

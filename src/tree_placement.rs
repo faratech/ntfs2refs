@@ -18,6 +18,70 @@ pub struct Mapping {
     pub logical_sha256: String,
     pub extents: Vec<Extent>,
 }
+
+/// Convert the actual native ReFS observation into stream mappings. This
+/// rejects missing identities, holes and malformed retrieval extents before
+/// any source/shadow comparison request is constructed.
+#[cfg(windows)]
+pub fn mappings_from_native(
+    tree: &Tree,
+    native: &n2r_win32::shadow_native::Report,
+) -> Result<Vec<Mapping>> {
+    ensure!(
+        tree.objects.len() == native.objects.len(),
+        "native tree coverage differs"
+    );
+    tree.objects
+        .iter()
+        .zip(&native.objects)
+        .filter(|(object, _)| !object.directory)
+        .map(|(object, measured)| -> Result<_> {
+            ensure!(
+                object.path == measured.components,
+                "native stream identity order differs"
+            );
+            let id = measured
+                .before
+                .queries
+                .iter()
+                .find(|q| q.class == 18 && q.native_error.is_none() && q.bytes.len() == 24)
+                .context("missing target file identity")?;
+            let runs = if object.length == 0 && measured.retrieval.is_empty() {
+                vec![]
+            } else {
+                n2r_win32::stream_layout::parse_retrieval(&measured.retrieval)?
+            };
+            let extents = runs
+                .into_iter()
+                .map(|run| -> Result<_> {
+                    Ok(Extent {
+                        logical_offset: run.vcn.checked_mul(4096).context("VCN overflow")?,
+                        physical_offset: Some(
+                            run.lcn
+                                .context("target sparse mapping")?
+                                .checked_mul(4096)
+                                .context("LCN overflow")?,
+                        ),
+                        length: run
+                            .clusters
+                            .checked_mul(4096)
+                            .context("run length overflow")?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Mapping {
+                record_number: object.record_number,
+                sequence_number: object.sequence_number,
+                target_file_id: id.bytes[8..24].try_into()?,
+                logical_sha256: measured
+                    .logical_sha256
+                    .clone()
+                    .context("missing target logical hash")?,
+                extents,
+            })
+        })
+        .collect()
+}
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {

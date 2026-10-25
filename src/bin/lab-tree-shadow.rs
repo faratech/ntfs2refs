@@ -370,53 +370,7 @@ fn main() -> anyhow::Result<()> {
             tree.objects.len() == native.objects.len(),
             "shadow object coverage differs"
         );
-        let mappings: Vec<_> = tree
-            .objects
-            .iter()
-            .zip(&native.objects)
-            .filter(|(o, _)| !o.directory)
-            .map(|(o, n)| -> Result<_> {
-                let id = n
-                    .before
-                    .queries
-                    .iter()
-                    .find(|q| q.class == 18 && q.native_error.is_none() && q.bytes.len() == 24)
-                    .context("missing target file identity")?;
-                let runs = if o.length == 0 && n.retrieval.is_empty() {
-                    vec![]
-                } else {
-                    n2r_win32::stream_layout::parse_retrieval(&n.retrieval)?
-                };
-                let extents = runs
-                    .into_iter()
-                    .map(|r| -> Result<_> {
-                        Ok(ntfs_inspect::Extent {
-                            logical_offset: r.vcn.checked_mul(4096).context("VCN overflow")?,
-                            physical_offset: Some(
-                                r.lcn
-                                    .context("target sparse mapping")?
-                                    .checked_mul(4096)
-                                    .context("LCN overflow")?,
-                            ),
-                            length: r
-                                .clusters
-                                .checked_mul(4096)
-                                .context("run length overflow")?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(ntfs2refs::tree_placement::Mapping {
-                    record_number: o.record_number,
-                    sequence_number: o.sequence_number,
-                    target_file_id: id.bytes[8..24].try_into()?,
-                    logical_sha256: n
-                        .logical_sha256
-                        .clone()
-                        .context("missing target logical hash")?,
-                    extents,
-                })
-            })
-            .collect::<Result<_>>()?;
+        let mappings = ntfs2refs::tree_placement::mappings_from_native(&tree, &native)?;
         let partition_len = source.byte_len();
         let placement = if args.stream_payload {
             ntfs2refs::tree_placement::diagnose_measured(

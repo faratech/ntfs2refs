@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
     use n2r_win32::{GeneralFrozenPartition, shadow_native};
     use ntfs2refs::{
         general_shadow::Request, lab_reconstruct, ntfs_attestation, ntfs_inspect, refs_inspect,
-        shadow_tree,
+        shadow_tree, tree_placement,
     };
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -117,6 +117,23 @@ fn main() -> anyhow::Result<()> {
         shadow_native::verify_general_ordinary(request.pair.clone(), &input, same_security)?;
     save(&native_path, &native)?;
     let native_sha256 = hex::encode(Sha256::digest(fs::read(&native_path)?));
+    let mappings = tree_placement::mappings_from_native(&tree, &native.native)?;
+    let placement = tree_placement::diagnose_measured(
+        &tree,
+        &mappings,
+        &mut source,
+        source_length,
+        |reader, object, start, end| {
+            ntfs_inspect::hash_plain_stream_range(
+                reader,
+                &raw,
+                object.record_number,
+                start,
+                end - start,
+                256 * 1024 * 1024,
+            )
+        },
+    )?;
     let mut shadow = GeneralFrozenPartition::isolate(request.pair.shadow.clone(), &mut events)?;
     let shadow_before = shadow.state(&mut events)?;
     let shadow_length = shadow.byte_len();
@@ -139,13 +156,20 @@ fn main() -> anyhow::Result<()> {
             && shadow_before == shadow_after,
         "source or shadow changed during freeze"
     );
+    let comparison = placement.comparison_request(
+        shadow_length,
+        &source_hash,
+        &shadow_hash,
+        256 * 1024 * 1024,
+    )?;
     save(
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"general-frozen-refs-shadow",
             "request":request,"source_sha256":source_hash,"shadow_sha256":shadow_hash,
             "source_before":source_before,"source_after":source_after,
             "shadow_before":shadow_before,"shadow_after":shadow_after,
-            "refs":refs,"native_evidence_sha256":native_sha256,"events":events,
+            "refs":refs,"native_evidence_sha256":native_sha256,
+            "placement":placement,"comparison_request":comparison,"events":events,
             "source_writes":0,"shadow_payload_writes":0,
             "source_admitted":false,"conversion_qualified":false}),
     )?;

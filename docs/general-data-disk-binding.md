@@ -89,8 +89,10 @@ native run has not yet been performed.
 `lab-freeze-general-shadow` independently reopens the NTFS source, verifies the
 live ReFS tree against it, saves the native evidence, then locks/dismounts only
 the shadow disk and persists its offline/read-only state. It hashes the frozen
-shadow and rehashes the source afterward. A failure after exclusion leaves the
-shadow offline; its durable intent identifies the attempted transition. This
+shadow and rehashes the source afterward. The measured stream mappings and
+logical-range hashes produce a versioned retained/relocated comparison request
+bound to those complete source and shadow hashes. A failure after exclusion
+leaves the shadow offline; its durable intent identifies the attempted transition. This
 command has not had a native run and does not authorize cutover.
 
 The library now has internal general activation and apply/resume/rollback

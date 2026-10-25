@@ -167,6 +167,13 @@ This helper uses normal Windows consent; it installs no persistent privileged
 service and changes no account group membership. The Provision action uses the
 reviewed, task-specific Windows 11 ISO path in the helper. All VM artifacts,
 media extracts, logs and credentials stay under ignored `.lab` paths.
+
+For the separately authorized one-time Hyper-V access grant, run
+`scripts\Request-LabHyperVAccess.cmd` from the Windows desktop and approve its
+UAC prompt. It invokes the reviewed group-membership helper, saves a verified
+result under `.lab/development`, and requires signing out and back in before
+new Hyper-V permissions appear in the session. This launcher is not run
+automatically by the converter.
 Each run records source hashes, and repeat actions archive the previous result.
 `NativeResearch` captures native NTFS/ReFS data controls and prepares a separate
 native ReFS OS control. Only successful, verified preparation can invoke the

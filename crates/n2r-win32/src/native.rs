@@ -427,6 +427,109 @@ pub struct OfflinePartition {
     pub native_write_bytes_requested: u64,
 }
 
+/// Partition-relative, physically aligned read-only view of a currently
+/// mounted dedicated data disk. Concurrent filesystem writes remain possible;
+/// callers must not mistake an inspection through this handle for admission.
+pub struct GeneralPartitionReader {
+    file: File,
+    binding: GeneralDiskBinding,
+    initial_probe: GeneralProbe,
+    position: u64,
+    buffer: AlignedBuffer,
+    pub native_bytes_read: u64,
+}
+
+impl GeneralPartitionReader {
+    pub fn open(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
+        let initial_probe = probe_general(binding.clone(), events)?;
+        let file = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            false,
+            true,
+        )?;
+        Ok(Self {
+            file,
+            binding,
+            initial_probe,
+            position: 0,
+            buffer: AlignedBuffer::new()?,
+            native_bytes_read: 0,
+        })
+    }
+
+    pub fn byte_len(&self) -> u64 {
+        self.binding.identity.partition_bytes
+    }
+
+    pub fn initial_probe(&self) -> &GeneralProbe {
+        &self.initial_probe
+    }
+
+    pub fn revalidate_route(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralProbe> {
+        let after = probe_general(self.binding.clone(), events)?;
+        if after.binding != self.initial_probe.binding
+            || after.device != self.initial_probe.device
+            || after.disk_length != self.initial_probe.disk_length
+            || after.alignment != self.initial_probe.alignment
+            || after.gpt_layout != self.initial_probe.gpt_layout
+            || after.volume_extents != self.initial_probe.volume_extents
+            || after.disk_attributes_after != self.initial_probe.disk_attributes_after
+        {
+            return Err(invalid(
+                "general disk route changed during read-only inventory",
+            ));
+        }
+        Ok(after)
+    }
+}
+
+impl Read for GeneralPartitionReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() || self.position == self.byte_len() {
+            return Ok(0);
+        }
+        let aligned = self.position / GRANULE * GRANULE;
+        let prefix = (self.position - aligned) as usize;
+        let wanted = output
+            .len()
+            .min(MAX_IO - prefix)
+            .min((self.byte_len() - self.position) as usize);
+        let count = (prefix + wanted).div_ceil(GRANULE as usize) * GRANULE as usize;
+        if aligned + count as u64 > self.byte_len() {
+            return Err(invalid("aligned general read escapes partition"));
+        }
+        self.file.seek(SeekFrom::Start(
+            self.binding.identity.partition_offset + aligned,
+        ))?;
+        let read = self.file.read(&mut self.buffer.bytes_mut()[..count])?;
+        self.native_bytes_read += read as u64;
+        if read != count {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short general aligned read",
+            ));
+        }
+        output[..wanted].copy_from_slice(&self.buffer.bytes_mut()[prefix..prefix + wanted]);
+        self.position += wanted as u64;
+        Ok(wanted)
+    }
+}
+
+impl Seek for GeneralPartitionReader {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let position = match from {
+            SeekFrom::Start(value) => i128::from(value),
+            SeekFrom::Current(value) => i128::from(self.position) + i128::from(value),
+            SeekFrom::End(value) => i128::from(self.byte_len()) + i128::from(value),
+        };
+        if position < 0 || position > i128::from(self.byte_len()) {
+            return Err(invalid("seek escapes general partition"));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
+}
+
 fn close_file(file: File, name: &str, events: &mut Vec<NativeEvent>) -> io::Result<()> {
     let raw = file.into_raw_handle();
     // SAFETY: into_raw_handle transferred sole ownership; this is the only close.
@@ -895,6 +998,52 @@ mod tests {
         assert!(stream.seek(SeekFrom::Start(u64::MAX)).is_err());
         stream.seek(SeekFrom::Start(0)).unwrap();
         assert!(stream.seek(SeekFrom::Current(-1)).is_err());
+    }
+
+    #[test]
+    fn general_read_only_reader_uses_the_same_partition_bounded_bounce() {
+        let OfflinePartition {
+            file,
+            binding,
+            buffer,
+            ..
+        } = ordinary_stream();
+        let binding = GeneralDiskBinding {
+            disk_number: binding.disk_number,
+            volume_guid: binding.volume_guid,
+            identity: binding.identity,
+        };
+        let mut reader = GeneralPartitionReader {
+            file,
+            initial_probe: GeneralProbe {
+                binding: binding.clone(),
+                disk_attributes_before: 0,
+                disk_attributes_after: 0,
+                device: vec![],
+                disk_length: vec![],
+                alignment: vec![],
+                gpt_layout: vec![],
+                volume_extents: vec![],
+                read_only_probe: true,
+                source_write_requests: 0,
+                conversion_qualified: false,
+            },
+            binding,
+            position: 0,
+            buffer,
+            native_bytes_read: 0,
+        };
+        for (at, count) in [(0, 1), (3, 5000), (4095, 4098), (65535, 10)] {
+            reader.seek(SeekFrom::Start(at)).unwrap();
+            let mut bytes = vec![0; count];
+            let read = reader.read(&mut bytes).unwrap();
+            assert_eq!(read, count.min((65536 - at) as usize));
+            for (index, &byte) in bytes[..read].iter().enumerate() {
+                assert_eq!(byte, ((4096 + at + index as u64) % 251) as u8);
+            }
+        }
+        assert!(reader.seek(SeekFrom::End(1)).is_err());
+        assert!(reader.seek(SeekFrom::Current(-65537)).is_err());
     }
 
     #[test]

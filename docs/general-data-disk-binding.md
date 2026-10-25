@@ -15,6 +15,14 @@ unchanged. It never locks, dismounts, sets attributes or writes sectors. The
 pure layout tests cover a second disk size, 512e and 4Kn, wrong routes,
 overlapping partitions, another data partition and EFI/system partitions.
 
+`GeneralPartitionReader` now adds a partition-relative, 4 KiB-aligned,
+read-only `Read + Seek` view over the same bound physical disk. The
+`lab-inspect-general` command feeds that view to the existing raw NTFS
+inspector, then rechecks the disk and volume route. Its output explicitly says
+the mounted source was not frozen and is not admitted. A synthetic bounce-read
+test covers unaligned requests and partition boundaries. Neither command has
+a write method.
+
 This is **not** a general conversion command. The raw writer, journal, source
 admission and ReFS target profile still use the narrower enrolled laboratory
 route. A successful read-only probe cannot authorize switching a volume's

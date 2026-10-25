@@ -266,6 +266,27 @@ pub struct Execution {
     pub conversion_qualified: bool,
 }
 
+/// Public recovery is limited to an already activated, persistently offline
+/// target. Fresh apply and activation remain internal pending admission.
+pub fn recover(
+    operation: RecoveryOperation,
+    request: &Request,
+    target: &mut GeneralJournaledPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    events: &mut Vec<NativeEvent>,
+) -> Result<Execution> {
+    ensure!(
+        matches!(
+            operation,
+            RecoveryOperation::Resume | RecoveryOperation::Rollback
+        ),
+        "general recovery cannot initiate a new apply"
+    );
+    execute(operation, request, target, shadow, journal, ticket, events)
+}
+
 /// Recovery remains possible only while the journal's handoff sector is all
 /// zero. The journal descriptor, rather than serialized plan flags, supplies
 /// the exact patch policy. No operation here exposes a disk for mounting.

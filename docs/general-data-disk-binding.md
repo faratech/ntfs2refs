@@ -118,13 +118,19 @@ device, then emits the exact request consumed by
 the actual disks; neither a copied success flag nor this request grants write
 authority.
 
-The library now has internal general activation and apply/resume/rollback
-functions. They rebind the separately pinned ticket to the actual GPT source,
-shadow and journal file, inspect the immutable journal before changing disk
-attributes, and arm only its listed patch ranges. They leave both data disks
-excluded and do not perform handoff. These functions are intentionally not
-reachable from the general CLI while source admission and independent target
-verification remain incomplete.
+The library has general activation and apply/resume/rollback functions. They
+rebind the separately pinned ticket to the actual GPT source, shadow and
+journal file, inspect the immutable journal before changing disk attributes,
+and arm only its listed patch ranges. They leave both data disks excluded and
+do not perform handoff. Fresh activation and apply remain internal while
+source admission and independent target verification are incomplete.
+
+`lab-recover-general-journal` exposes only resume and rollback for an already
+activated, persistently offline target. It requires separately pinned request
+and ticket files, an existing exclusive journal and a frozen shadow; the
+journal's zero handoff marker and exact patch list are checked before any
+target write. It writes an intent before recovery, records actual disk states
+afterward, and never brings the target online. It cannot initiate a new apply.
 
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while

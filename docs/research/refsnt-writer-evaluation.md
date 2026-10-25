@@ -192,8 +192,10 @@ extracting the file; its extracted bytes matched the raw base cluster and the
 REFSNT extraction.
 
 This proves an **offline candidate-writer mechanism on one 3.14 image**: an
-existing physical payload cluster can be referenced by newly written ReFS
-metadata without rewriting its bytes. It does not yet prove that Microsoft's
+existing physical block can be exposed as file data by newly written ReFS
+metadata without rewriting its bytes. The block was not traced to an NTFS
+file; same-partition NTFS payload adoption remains the next experiment. This
+also does not yet prove that Microsoft's
 `refs.sys` accepts or safely mutates that metadata. The candidate scanner also
 showed that `RfsClusterFree` alone is insufficient to identify every usable
 cluster: it called an early `MSB+` metadata page free in the Medium allocator.

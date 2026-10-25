@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROFILE: &str = "existing-data-tree-v1";
+pub const ORDINARY_PROFILE: &str = "ordinary-data-tree-v2";
 pub const MAX_FILES: usize = 128;
 pub const MAX_DIRECTORIES: usize = 32;
 pub const MAX_LOGICAL_BYTES: u64 = 256 * 1024 * 1024;
@@ -257,6 +258,14 @@ pub fn assess_with_backups(
 ) -> Assessment {
     assess_source_view(raw, comparison, native_schema, backups, None)
 }
+pub fn assess_ordinary_with_backups(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    native_schema: u32,
+    backups: Option<&crate::ntfs_backup::VerifiedBackups>,
+) -> Assessment {
+    assess_source_view_profile(raw, comparison, native_schema, backups, None, true)
+}
 /// The opaque live observer is the only caller supplying a frozen-bound view.
 /// Replay diagnostics cannot remove strict native object refusals.
 pub(crate) fn assess_source_view(
@@ -265,6 +274,25 @@ pub(crate) fn assess_source_view(
     native_schema: u32,
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
     source_view: Option<crate::ntfs_source_view::Analysis>,
+) -> Assessment {
+    assess_source_view_profile(raw, comparison, native_schema, backups, source_view, false)
+}
+pub(crate) fn assess_ordinary_source_view(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    native_schema: u32,
+    backups: Option<&crate::ntfs_backup::VerifiedBackups>,
+    source_view: Option<crate::ntfs_source_view::Analysis>,
+) -> Assessment {
+    assess_source_view_profile(raw, comparison, native_schema, backups, source_view, true)
+}
+fn assess_source_view_profile(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    native_schema: u32,
+    backups: Option<&crate::ntfs_backup::VerifiedBackups>,
+    source_view: Option<crate::ntfs_source_view::Analysis>,
+    ordinary: bool,
 ) -> Assessment {
     let backups = backups.filter(|b| b.binds(raw));
     let view_is_live = source_view
@@ -289,7 +317,11 @@ pub(crate) fn assess_source_view(
                 .iter()
                 .try_fold(bytes, |sum, s| sum.checked_add(s.logical_size))
                 .unwrap_or(u64::MAX);
-            let issues = user_issues(raw, f);
+            let issues = if ordinary {
+                ordinary_user_issues(raw, f)
+            } else {
+                user_issues(raw, f)
+            };
             let disposition = if issues.is_empty() {
                 Disposition::PreserveSupportedUserSemantics
             } else {
@@ -399,9 +431,14 @@ pub(crate) fn assess_source_view(
     gate(
         "clean_volume",
         raw.dirty == Some(false)
-            && raw.volume_flags == Some(0)
+            && raw.volume_flags.is_some_and(|flags| flags & 1 == 0)
             && raw.volume_version.as_deref() == Some("3.1"),
-        "require NTFS 3.1, known zero volume flags and a clean volume",
+        "require NTFS 3.1, clear native dirty state and clear on-disk dirty bit",
+    );
+    gate(
+        "volume_policy_flags",
+        raw.volume_flags == Some(0),
+        "nonzero NTFS policy flags require independent native meaning and preservation evidence; 0x0080 is observed on clean Windows 11 lab volumes",
     );
     gate(
         "raw_allocation",
@@ -492,7 +529,7 @@ pub(crate) fn assess_source_view(
     );
     Assessment {
         schema_version: 1,
-        profile: PROFILE.into(),
+        profile: if ordinary { ORDINARY_PROFILE } else { PROFILE }.into(),
         source_inspection_sha256: comparison.source_inspection_sha256.clone(),
         objects,
         gates,

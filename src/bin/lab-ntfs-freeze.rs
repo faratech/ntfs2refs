@@ -28,6 +28,8 @@ fn main() -> anyhow::Result<()> {
         verify_source_sha256: Option<String>,
         #[arg(long, requires = "reopen", conflicts_with = "verify_source_sha256")]
         observation_output: Option<PathBuf>,
+        #[arg(long, requires = "observation_output")]
+        ordinary_files: bool,
         #[arg(long,requires="reopen",conflicts_with_all=["verify_source_sha256","observation_output","inspection_output"])]
         native_interface_probe: bool,
     }
@@ -207,11 +209,15 @@ fn main() -> anyhow::Result<()> {
         let observation_hash = if let Some(output) = &args.observation_output {
             phase = "observe-protected-source-and-revalidate";
             let observed = basis.observe_native(&mut source, &mut events)?;
-            let assessment = observed.assessment(&basis)?;
+            let assessment = if args.ordinary_files {
+                observed.assessment_ordinary(&basis)?
+            } else {
+                observed.assessment(&basis)?
+            };
             phase = "persist-live-source-observation";
             Some(save(
                 output,
-                &serde_json::json!({"schema_version":1,"kind":"live-frozen-ntfs-observation-v1",
+                &serde_json::json!({"schema_version":1,"kind":if args.ordinary_files {"live-frozen-ordinary-ntfs-observation-v2"} else {"live-frozen-ntfs-observation-v1"},
                 "observation":observed,"assessment":assessment,"source_admitted":false,
                 "certificate_issued":false,"conversion_qualified":false}),
                 32 * 1024 * 1024,

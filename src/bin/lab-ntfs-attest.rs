@@ -51,6 +51,8 @@ enum Command {
         /// Optional read-only source-policy assessment, never a write ticket.
         #[arg(long)]
         admission_output: Option<PathBuf>,
+        #[arg(long, requires = "admission_output")]
+        ordinary_files: bool,
         /// Optional persisted-source policy replay. Never establishes a device
         /// freeze or changes the strict comparison/admission result.
         #[arg(long)]
@@ -147,6 +149,7 @@ fn main() -> Result<()> {
             native_sha256,
             output,
             admission_output,
+            ordinary_files,
             source_view_output,
             source_image,
         } => {
@@ -194,15 +197,22 @@ fn main() -> Result<()> {
                 )?;
             }
             if let Some(path) = admission_output {
-                save(
-                    &path,
-                    &ntfs2refs::ntfs_admission::assess_with_backups(
+                let assessment = if ordinary_files {
+                    ntfs2refs::ntfs_admission::assess_ordinary_with_backups(
                         &ntfs,
                         &comparison,
                         report.schema_version,
                         backups.as_ref(),
-                    ),
-                )?;
+                    )
+                } else {
+                    ntfs2refs::ntfs_admission::assess_with_backups(
+                        &ntfs,
+                        &comparison,
+                        report.schema_version,
+                        backups.as_ref(),
+                    )
+                };
+                save(&path, &assessment)?;
             }
         }
     }

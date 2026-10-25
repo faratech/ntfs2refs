@@ -41,6 +41,19 @@ pub struct ObservedFrozenSource {
 }
 impl ObservedFrozenSource {
     pub fn assessment(&self, basis: &FrozenBasis) -> Result<crate::ntfs_admission::Assessment> {
+        self.assessment_profile(basis, false)
+    }
+    pub fn assessment_ordinary(
+        &self,
+        basis: &FrozenBasis,
+    ) -> Result<crate::ntfs_admission::Assessment> {
+        self.assessment_profile(basis, true)
+    }
+    fn assessment_profile(
+        &self,
+        basis: &FrozenBasis,
+        ordinary: bool,
+    ) -> Result<crate::ntfs_admission::Assessment> {
         ensure!(
             self.source_sha256 == basis.evidence.source_sha256
                 && self.canonical_inspection_sha256 == basis.evidence.canonical_inspection_sha256,
@@ -55,13 +68,23 @@ impl ObservedFrozenSource {
             self.native.report(),
         )?;
         view.bind_frozen_source(&self.source_sha256);
-        let mut assessment = crate::ntfs_admission::assess_source_view(
-            raw,
-            &self.comparison,
-            self.native.report().schema_version,
-            Some(&basis.evidence.backups),
-            Some(view),
-        );
+        let mut assessment = if ordinary {
+            crate::ntfs_admission::assess_ordinary_source_view(
+                raw,
+                &self.comparison,
+                self.native.report().schema_version,
+                Some(&basis.evidence.backups),
+                Some(view),
+            )
+        } else {
+            crate::ntfs_admission::assess_source_view(
+                raw,
+                &self.comparison,
+                self.native.report().schema_version,
+                Some(&basis.evidence.backups),
+                Some(view),
+            )
+        };
         for gate in &mut assessment.gates {
             if gate.code == "frozen_device_basis" {
                 gate.satisfied = true;

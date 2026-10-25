@@ -215,3 +215,36 @@ fn unsupported_attributes_and_streams_have_explicit_object_refusals() {
             .any(|s| s.contains("stream requires"))
     );
 }
+
+#[test]
+fn ordinary_profile_classifies_partial_plain_stream_without_granting_writes() {
+    let mut r = fixture();
+    r.files[1]
+        .streams
+        .retain(|stream| stream.name_utf16.is_empty());
+    r.files[1]
+        .attributes
+        .retain(|attribute| attribute.type_code != 0x80 || attribute.name_utf16.is_empty());
+    let c = comparison(&r);
+    let strict = a::assess(&r, &c, 5);
+    let ordinary = a::assess_ordinary_with_backups(&r, &c, 5, None);
+    assert!(
+        strict.objects[1]
+            .issues
+            .iter()
+            .any(|issue| issue.contains("stream requires"))
+    );
+    assert!(
+        !ordinary.objects[1]
+            .issues
+            .iter()
+            .any(|issue| issue.contains("stream requires")),
+        "{:?} {:?}",
+        ordinary.objects[1].issues,
+        r.files[1].streams
+    );
+    assert_eq!(ordinary.profile, a::ORDINARY_PROFILE);
+    assert!(!ordinary.source_admitted);
+    assert!(!ordinary.certificate_issued);
+    assert!(!ordinary.execution_authorized);
+}

@@ -144,3 +144,28 @@ issue a device-bound certificate and consume it in a separate versioned
 multi-file retention/relocation profile. Keep the old fixture guards and journal
 handoff boundary intact. Native interrupted reconstruction must preserve disk
 exclusion and recover exactly before the first writable ReFS mount.
+
+## Ordinary-file admission diagnostics
+
+The admission assessor now has a separate `ordinary-data-tree-v2` path matching
+the shadow constructor's bounded support for empty, resident, fragmented and
+partial-cluster plain streams. It keeps every other source and execution gate.
+Both the archived native report and the frozen raw inspection can be replayed
+through `lab-ntfs-attest compare --ordinary-files`; the recorded replay is
+under `.lab/development/ordinary-attestation-replay-2-*.json`.
+
+The current persisted-source view matches all eight user objects and all four
+directory projections when replayed against the same pinned raw/native
+evidence. It records cached last-access changes while preserving the raw
+stored timestamps as the target authority. Replay itself does not bind a live
+frozen device or issue a certificate.
+
+The dirty-state and volume-policy questions are now separate gates. On the
+Windows 11 source, the native dirty result is false, on-disk dirty bit is
+clear, and NTFS version is 3.1, so `clean_volume` passes. The observed
+`0x0080` volume policy bit still fails `volume_policy_flags` until its exact
+native behavior is confirmed; see [the flag investigation](ntfs-volume-flags.md).
+The root's `$TXF_DATA`, NTFS log/transaction state, target preservation round
+trip and final device-bound certificate remain unfinished. [Microsoft states
+that ReFS does not support the TxF metadata FSCTL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_txfs_get_metadata_info),
+so TxF semantics cannot silently be carried across.

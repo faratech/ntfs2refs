@@ -5,7 +5,8 @@ param(
  [Parameter(Mandatory)][string]$ShadowDirectory,
  [Parameter(Mandatory)][string]$FreezeDirectory,
  [Parameter(Mandatory)][string]$BinaryPath,
- [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256,
+ [switch]$Detached
 )
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $workspace=Split-Path -Parent $PSScriptRoot
@@ -39,7 +40,7 @@ $run=[guid]::NewGuid().ToString('N')
 $output=Assert-LabPath (Join-Path $cfg.Root ('ordinary-tree-conversion/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
 New-Item -ItemType Directory -Path $output|Out-Null
 function Save([string]$Name,$Value){$path=Join-Path $output $Name;$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 32));$file=[IO.File]::Open($path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
-$record=[ordered]@{kind='ordinary-tree-conversion';runId=$run;experimentId=$start.runId;shadowDirectory=$shadowDirectory;freezeDirectory=$freezeDirectory;binarySha256=$BinarySha256;status='started';operationCompletionKnown=$true;sourceAdmitted=$false;conversionQualified=$false;error=$null}
+$record=[ordered]@{kind='ordinary-tree-conversion';runId=$run;experimentId=$start.runId;shadowDirectory=$shadowDirectory;freezeDirectory=$freezeDirectory;binarySha256=$BinarySha256;detached=[bool]$Detached;status='started';operationCompletionKnown=$true;sourceAdmitted=$false;conversionQualified=$false;error=$null}
 Save 'request.json' $request
 $requestSha=(Get-FileHash (Join-Path $output 'request.json')).Hash.ToLowerInvariant()
 Save 'started.json' $record
@@ -55,6 +56,32 @@ try{
  $guestArtifacts='C:\ntfs2refs\tree-conversion\'+$run
  Copy-Item -LiteralPath $binary.FullName -Destination $guestExe -ToSession $session
  Copy-Item -LiteralPath (Join-Path $output 'request.json') -Destination $guestRequest -ToSession $session
+ if($Detached){
+  $dispatch=Invoke-Command -Session $session -ArgumentList @($guestExe,$guestRequest,$requestSha,$BinarySha256,$guestArtifacts,$start.runId,$run) -ScriptBlock {
+   param($Exe,$Request,$RequestSha,$BinarySha,$Artifacts,$ExperimentId,$Run)
+   $ErrorActionPreference='Stop'
+   if((Get-FileHash $Exe).Hash.ToLowerInvariant()-cne$BinarySha-or(Get-FileHash $Request).Hash.ToLowerInvariant()-cne$RequestSha){throw 'Guest binary or request pin differs.'}
+   if(Get-Process -Name 'lab-tree-shadow*','lab-tree-convert*','lab-tree-reconstruct*' -ErrorAction SilentlyContinue){throw 'Another native converter is running.'}
+   $source=Get-Disk -Number 1;$shadow=Get-Disk -Number 3
+   if(-not$source.IsOffline-or-not$source.IsReadOnly-or-not$shadow.IsOffline-or-not$shadow.IsReadOnly){throw 'Frozen source or shadow exclusion differs.'}
+   $parent=Split-Path $Artifacts -Parent
+   if(-not(Test-Path -LiteralPath $parent)){New-Item -ItemType Directory -Path $parent|Out-Null}
+   if(Test-Path -LiteralPath $Artifacts){throw 'Fresh recovery directory required.'}
+   $journal='J:\ntfs2refs-shadow\'+$ExperimentId+'\reconstruction.journal'
+   if(Test-Path -LiteralPath $journal){throw 'Fresh external journal required.'}
+   $name='N2R-Convert-'+$Run
+   if(Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue){throw 'Converter task already exists.'}
+   $arguments='--request "'+$Request+'" --request-sha256 '+$RequestSha+' --artifacts "'+$Artifacts+'" --journal "'+$journal+'"'
+   $action=New-ScheduledTaskAction -Execute $Exe -Argument $arguments
+   $principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+   $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+   Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -ErrorAction Stop|Out-Null
+   Start-ScheduledTask -TaskName $name -ErrorAction Stop
+   [pscustomobject]@{taskName=$name;state=[string](Get-ScheduledTask -TaskName $name).State;startedUtc=[DateTime]::UtcNow.ToString('o');guestArtifacts=$Artifacts;requestSha256=$RequestSha;binarySha256=$BinarySha}
+  }
+  Save 'dispatch.json' $dispatch
+  $record.status='guest-task-dispatched'
+ }else{
  $record.operationCompletionKnown=$false
  $job=Invoke-Command -Session $session -AsJob -ArgumentList @($guestExe,$guestRequest,$requestSha,$BinarySha256,$guestArtifacts,$start.runId,$guestRoot,$run) -ScriptBlock {
   param($Exe,$Request,$RequestSha,$BinarySha,$Artifacts,$ExperimentId,$Root,$Run)
@@ -89,6 +116,7 @@ try{
  }
  $record.status=if($reply[0].exitCode-eq0){'native-conversion-complete'}else{'native-conversion-failed-preserved'}
  $record['exitCode']=$reply[0].exitCode
+ }
 }catch{$record.status='failed-preserved';$record.error=$_.Exception.ToString();throw}
 finally{Save 'host-result.json' $record;if($job-and$job.State-in@('Completed','Failed','Stopped')){Remove-Job $job -Force};if($session-and$record.operationCompletionKnown){Remove-PSSession $session -ErrorAction SilentlyContinue}}
 [pscustomobject]$record

@@ -25,8 +25,9 @@ fixed bootstrap locations. The journal then needs a hybrid postimage hash:
 shadow bytes in target-owned ranges and original NTFS bytes in preserved
 ranges, followed by native ReFS mutation qualification.
 
-The Rust Medium-allocator reader now validates the checkpoint/container route
-and decodes every Medium row on the pinned Windows-generated 3.14 corpus. Its
-free count agrees with REFSNT before and after one isolated extent adoption.
-The Small allocator, block refcounts and whole metadata/data reference graph
-remain outside that reader's proof.
+The Rust allocator reader now validates the checkpoint/container route and
+decodes every Medium row plus the physical Small allocator root on the pinned
+Windows-generated 3.14 corpus. Both tiers' free counts agree with REFSNT
+before and after one isolated extent adoption. Block refcounts, other
+reservations and the whole metadata/data reference graph remain outside that
+reader's proof.

@@ -190,8 +190,11 @@ adoption overlay it counted 13,384,479 free and found that LCN allocated. The
 row count and free totals match REFSNT's independent checker. The reports are
 `.lab/research/refsnt-overlay/medium-base-rust.json` and
 `medium-adopt-rust.json`; an explicit ignored native-corpus test replays both
-read-only. This is a Medium-allocator proof, **not** a full ownership proof:
-the Small allocator and every reachable metadata/data reference still require
+read-only. The Rust reader also checks the physical Small allocator root: its
+two rows report 16,304 free and 92 allocated clusters both before and after
+adoption. LCN 10,243 is outside its allocated ranges. This is an
+allocator-tier observation, **not** a full ownership proof: reachable
+metadata/data references, refcounts and other reservations still require
 reconciliation before native Windows mounting.
 
 REFSNT's checker reported zero checksum, duplicate-reference or unallocated
@@ -209,9 +212,10 @@ metadata without rewriting its bytes. The block was not traced to an NTFS
 file; same-partition NTFS payload adoption remains the next experiment. This
 also does not yet prove that Microsoft's
 `refs.sys` accepts or safely mutates that metadata. The candidate scanner also
-showed that `RfsClusterFree` alone is insufficient to identify every usable
-cluster: it called an early `MSB+` metadata page free in the Medium allocator.
-The selected data cluster therefore still needs an independent whole-volume
-ownership check before any native mount test. The next gate is to expose the
+found an `MSB+` signature at an early Medium-free cluster. That page may be
+stale copy-on-write metadata; its signature alone does not establish live
+ownership, and the Medium bitmap alone does not account for other allocation
+tiers. The selected data cluster therefore still needs an independent
+whole-volume ownership check before any native mount test. The next gate is to expose the
 overlay as a disposable virtual disk to Windows, verify native read/mutation
 and storage-validity behavior, then qualify flush ordering and power cuts.

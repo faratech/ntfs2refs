@@ -46,6 +46,21 @@ pub struct MediumAllocatorObservation {
     pub windows_mount_qualified: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SmallAllocatorObservation {
+    pub profile: &'static str,
+    pub checkpoint_lcn: u64,
+    pub checkpoint_clock: u64,
+    pub root_physical_lcns: [u64; 4],
+    pub rows: Vec<AllocatorRow>,
+    pub managed_clusters: u64,
+    pub free_clusters: u64,
+    pub allocated_clusters: u64,
+    pub allocated_ranges: Vec<AllocatedRange>,
+    pub allocator_walk_complete: bool,
+    pub whole_volume_ownership_verified: bool,
+}
+
 impl MediumAllocatorObservation {
     pub fn medium_allocated(&self, lcn: u64) -> bool {
         let offset = lcn.saturating_mul(CLUSTER);
@@ -172,10 +187,12 @@ fn decode_leaf(
     let (free, bitmap_sha256) = if flags & 1 != 0 {
         let bitmap_at = usize::from(value[0x14]);
         ensure!(
-            count == CPC && bitmap_at >= 24 && bitmap_at + (count / 8) as usize <= value.len(),
+            count <= CPC
+                && bitmap_at >= 24
+                && bitmap_at + count.div_ceil(8) as usize <= value.len(),
             "unsupported allocator bitmap row"
         );
-        let bitmap = &value[bitmap_at..bitmap_at + (count / 8) as usize];
+        let bitmap = &value[bitmap_at..bitmap_at + count.div_ceil(8) as usize];
         let mut free = 0u64;
         let mut run_start = None;
         for bit in 0..count {
@@ -400,5 +417,112 @@ pub fn inspect_medium(
         allocator_walk_complete: true,
         whole_volume_ownership_verified: false,
         windows_mount_qualified: false,
+    })
+}
+
+/// Read the checkpoint-bound physical Small allocator root. Its disjoint
+/// managed ranges do not cover the whole volume and may sit inside areas
+/// reserved by the Medium tier.
+pub fn inspect_small(
+    reader: &mut (impl Read + Seek),
+    image_bytes: u64,
+) -> Result<SmallAllocatorObservation> {
+    let refs = refs_inspect::inspect(reader, image_bytes)?;
+    let geometry = &refs.geometry;
+    ensure!(
+        geometry.major_version == 3
+            && geometry.minor_version == 14
+            && geometry.bytes_per_cluster == 4096
+            && geometry.volume_bytes == image_bytes,
+        "unsupported Small allocator profile"
+    );
+    let bootstrap = refs.bootstrap.context("bootstrap observation absent")?;
+    let valid_checkpoints: Vec<_> = bootstrap
+        .checkpoints
+        .iter()
+        .filter(|c| c.rejection.is_none() && c.self_checksum.as_ref().is_some_and(|s| s.matches))
+        .filter_map(|c| c.checkpoint.as_ref().map(|cp| (c.lcn, cp.virtual_clock)))
+        .collect();
+    let checkpoint = *valid_checkpoints
+        .iter()
+        .max_by_key(|&&(_, clock)| clock)
+        .context("valid checkpoint absent")?;
+    ensure!(
+        valid_checkpoints
+            .iter()
+            .filter(|&&(_, clock)| clock == checkpoint.1)
+            .count()
+            == 1,
+        "highest valid checkpoint clock is ambiguous"
+    );
+    let reference = bootstrap
+        .physical_root_references
+        .iter()
+        .find(|root| root.checkpoint_lcn == checkpoint.0 && root.root_index == 12)
+        .context("Small allocator reference absent")?;
+    ensure!(
+        reference.rejection.is_none()
+            && reference.checksum_matches == Some(true)
+            && reference.header_matches == Some(true)
+            && reference.table_id_matches == Some(true),
+        "Small allocator root reference rejected"
+    );
+    let observed_page = bootstrap
+        .physical_root_pages
+        .get(
+            reference
+                .page_index
+                .context("Small root page index absent")?,
+        )
+        .context("Small root page absent")?;
+    let page = read_page(reader, &reference.lcn_slots, image_bytes)?;
+    ensure!(
+        observed_page.lcn_slots == reference.lcn_slots
+            && observed_page.table_id_low == 34
+            && hex::encode(Sha256::digest(page)) == observed_page.sha256
+            && crc64_nvme(&page)
+                == u64::from_str_radix(
+                    reference
+                        .stored_crc64_nvme
+                        .as_deref()
+                        .context("Small root CRC absent")?,
+                    16,
+                )?,
+        "Small allocator root hash, table or CRC differs"
+    );
+    let root = refs_node::inspect_root_node(&page)?;
+    ensure!(
+        root.table_id_low == 34
+            && root.node_level == 0
+            && root.rows.len() as u64 == root.whole_table_row_count,
+        "unsupported Small allocator root shape"
+    );
+    let mut rows = Vec::new();
+    let mut allocated_ranges = Vec::new();
+    let mut previous_end = 0u64;
+    let (mut managed, mut free) = (0u64, 0u64);
+    for row in &root.rows {
+        let decoded = decode_leaf(row, image_bytes / CLUSTER, &mut allocated_ranges)?;
+        ensure!(
+            decoded.start_lcn >= previous_end,
+            "Small allocator rows overlap or are unsorted"
+        );
+        previous_end = decoded.start_lcn + decoded.clusters;
+        managed += decoded.clusters;
+        free += decoded.free_clusters;
+        rows.push(decoded);
+    }
+    Ok(SmallAllocatorObservation {
+        profile: "candidate ReFS 3.14 Small allocator root walk",
+        checkpoint_lcn: checkpoint.0,
+        checkpoint_clock: checkpoint.1,
+        root_physical_lcns: reference.lcn_slots,
+        rows,
+        managed_clusters: managed,
+        free_clusters: free,
+        allocated_clusters: managed - free,
+        allocated_ranges,
+        allocator_walk_complete: true,
+        whole_volume_ownership_verified: false,
     })
 }

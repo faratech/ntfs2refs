@@ -19,6 +19,8 @@ struct Args {
     #[arg(long)]
     query_lcn: Option<u64>,
     #[arg(long)]
+    small: bool,
+    #[arg(long)]
     output: PathBuf,
 }
 
@@ -31,6 +33,40 @@ struct Report {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.small {
+        let observation = if let Some(overlay) = &args.overlay {
+            let mut image = RefsCowOverlay::open(&args.base, overlay)?;
+            let length = image.length();
+            refs_allocator::inspect_small(&mut image, length)?
+        } else {
+            let mut image = File::open(&args.base)?;
+            let length = image.metadata()?.len();
+            refs_allocator::inspect_small(&mut image, length)?
+        };
+        let query_allocated = args.query_lcn.map(|lcn| {
+            let offset = lcn.saturating_mul(4096);
+            observation
+                .allocated_ranges
+                .iter()
+                .any(|range| range.offset <= offset && offset < range.offset + range.length)
+        });
+        let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+            "observation": observation,
+            "query_lcn": args.query_lcn,
+            "query_small_allocated": query_allocated,
+        }))?;
+        ensure!(
+            bytes.len() <= 16 * 1024 * 1024,
+            "allocator report exceeds bound"
+        );
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(args.output)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        return Ok(());
+    }
     let observation = if let Some(overlay) = &args.overlay {
         let mut image = RefsCowOverlay::open(&args.base, overlay)?;
         let length = image.length();

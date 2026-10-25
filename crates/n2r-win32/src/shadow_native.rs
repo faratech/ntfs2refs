@@ -1191,7 +1191,8 @@ fn run_role(
                 source_allocations.push((offset, run.length));
             }
             if i.directory
-                || covered != i.logical_length() / 4096 * 4096
+                || covered == 0
+                || covered > i.logical_length() / 4096 * 4096
                 || i.source_runs.len() > 1024
             {
                 return Err(invalid("fragmented source placement coverage differs"));

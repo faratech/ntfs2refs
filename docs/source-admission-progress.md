@@ -200,6 +200,10 @@ The final partial cluster is reconstructed from logical NTFS bytes in the
 shadow and recorded separately as materialized, avoiding adoption of
 uninitialized bytes beyond EOF. Native qualification of this mixed case is
 still pending.
+The same bound now uses NTFS valid-data length: only complete clusters before
+both EOF and VDL can be retained. Any partially initialized cluster and the
+uninitialized tail are read as logical bytes (zero-filled where NTFS requires)
+and materialized in ReFS. The source stream diagnostic is schema 4.
 
 The dirty-state and volume-policy questions are now separate gates. On the
 Windows 11 source, the native dirty result is false, on-disk dirty bit is

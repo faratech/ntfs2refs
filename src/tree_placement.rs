@@ -351,8 +351,8 @@ fn diagnose_impl(
                 source_allocations.push((offset, run.length));
             }
             ensure!(
-                covered == o.length / 4096 * 4096,
-                "source full-cluster coverage differs"
+                covered > 0 && covered <= o.length / 4096 * 4096,
+                "source initialized-cluster prefix differs"
             );
             source_covered = covered;
         }
@@ -652,6 +652,39 @@ mod tests {
                 .retained_ranges
                 .len(),
             1
+        );
+    }
+    #[test]
+    fn initialized_prefix_retains_while_uninitialized_tail_materializes() {
+        let (mut tree, mut mapping, mut payloads) = example(4096);
+        payloads[0].resize(16384, 0);
+        payloads[0][5000..].fill(0);
+        let digest = hex::encode(Sha256::digest(&payloads[0]));
+        tree.objects[0].source_offset = None;
+        tree.objects[0].source_extents = vec![Extent {
+            logical_offset: 0,
+            physical_offset: Some(4096),
+            length: 4096,
+        }];
+        tree.objects[0].length = 16384;
+        tree.objects[0].sha256 = Some(digest.clone());
+        tree.logical_bytes = 16384;
+        mapping.logical_sha256 = digest;
+        mapping.extents[0].length = 16384;
+        let plan = diagnose(&tree, &[mapping], &payloads, 65536).unwrap();
+        assert_eq!(
+            (
+                plan.retained_bytes,
+                plan.relocated_bytes,
+                plan.materialized_bytes
+            ),
+            (4096, 0, 12288)
+        );
+        assert_eq!(plan.ranges.len(), 2);
+        assert_eq!(plan.ranges[1].logical_offset, 4096);
+        assert_eq!(
+            plan.ranges[1].sha256,
+            Some(hex::encode(Sha256::digest(&payloads[0][4096..])))
         );
     }
     #[test]

@@ -23,8 +23,8 @@ pub struct StreamDecision {
     pub logical_bytes: u64,
     pub logical_sha256: Option<String>,
     pub source_offset: Option<u64>,
-    /// Complete physical clusters in an initialized ordinary stream. A final
-    /// partial cluster is deliberately excluded and must be materialized.
+    /// Complete physical clusters before both EOF and valid-data length.
+    /// Partial or uninitialized tail bytes must be materialized.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_extents: Vec<Extent>,
     pub disposition: Disposition,
@@ -46,8 +46,8 @@ pub struct Plan {
 
 pub fn classify(raw: &NtfsInspection) -> Plan {
     let mut plan = Plan {
-        schema_version: 3,
-        profile: "ntfs-4k-to-refs-4k-source-streams-v3",
+        schema_version: 4,
+        profile: "ntfs-4k-to-refs-4k-source-streams-v4",
         streams: Vec::new(),
         retained_candidate_bytes: 0,
         materialized_candidate_bytes: 0,
@@ -71,7 +71,7 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                 });
             let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
             let physical = single.and_then(|e| e.physical_offset);
-            let full_prefix = stream.logical_size / CLUSTER * CLUSTER;
+            let full_prefix = stream.initialized_size.min(stream.logical_size) / CLUSTER * CLUSTER;
             let rounded = stream.logical_size.checked_next_multiple_of(CLUSTER);
             let mut covered = 0u64;
             let physical_runs = !stream.extents.is_empty()
@@ -94,7 +94,7 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                 && !stream.resident
                 && stream.flags == 0
                 && full_prefix > 0
-                && stream.initialized_size == stream.logical_size
+                && stream.initialized_size <= stream.logical_size
                 && Some(stream.allocated_size) == rounded
                 && physical_runs;
             let (disposition, reason) = if u64::from(raw.geometry.cluster_size) != CLUSTER
@@ -114,7 +114,7 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
             } else if adoptable_prefix {
                 (
                     Disposition::MixedCandidate,
-                    "complete physical clusters may be retained; final partial cluster must be materialized",
+                    "complete initialized physical clusters may be retained; partial or uninitialized tail must be materialized",
                 )
             } else {
                 (

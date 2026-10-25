@@ -227,3 +227,33 @@ fn source_stream_plan_retains_full_clusters_before_a_partial_tail() {
     assert_eq!(planned.retained_candidate_bytes, 4096);
     assert_eq!(planned.materialized_candidate_bytes, 1 + 8);
 }
+
+#[test]
+fn source_stream_plan_never_adopts_uninitialized_clusters() {
+    let image = support::image();
+    let mut raw = ntfs_inspect::inspect(&mut Cursor::new(image), 2 * 1024 * 1024).unwrap();
+    let stream = raw
+        .files
+        .iter_mut()
+        .find(|f| f.record_number == 16)
+        .unwrap()
+        .streams
+        .iter_mut()
+        .find(|s| s.name_utf16.is_empty())
+        .unwrap();
+    stream.logical_size = 16384;
+    stream.initialized_size = 5000;
+    stream.allocated_size = 16384;
+    stream.extents[0].length = 16384;
+    let planned = ntfs_stream_plan::classify(&raw);
+    let candidate = planned
+        .streams
+        .iter()
+        .find(|s| s.record_number == 16 && s.name_utf16.is_empty())
+        .unwrap();
+    assert_eq!(candidate.disposition, Disposition::MixedCandidate);
+    assert_eq!(candidate.source_extents.len(), 1);
+    assert_eq!(candidate.source_extents[0].length, 4096);
+    assert_eq!(planned.retained_candidate_bytes, 4096);
+    assert_eq!(planned.materialized_candidate_bytes, 16384 - 4096 + 8);
+}

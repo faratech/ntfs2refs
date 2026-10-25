@@ -123,8 +123,8 @@ impl ExpectedTree {
                         .context("source run overflow")?;
                 }
                 ensure!(
-                    covered == object.length / 4096 * 4096,
-                    "source full-cluster coverage differs"
+                    covered > 0 && covered <= object.length / 4096 * 4096,
+                    "source initialized-cluster prefix differs"
                 );
             }
         }

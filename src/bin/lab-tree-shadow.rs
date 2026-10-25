@@ -335,12 +335,18 @@ fn main() -> anyhow::Result<()> {
         } else {
             None
         };
+        let comparison_request = frozen_shadow
+            .as_ref()
+            .map(|frozen| {
+                frozen.comparison_request(&placement, &request.source_sha256, 256 * 1024 * 1024)
+            })
+            .transpose()?;
         Ok((
             serde_json::json!({"schema_version":1,"kind":"existing-tree-shadow-v1","success":matched,
             "verify_only":args.verify_only,"finalize_security":args.finalize_security,"tree":tree,"native":native,"comparison":comparison,
             "source_before":before,"source_after":after,"source_bytes_read":source.native_bytes_read,
             "source_bytes_written":source.native_bytes_written,"placement":placement,"frozen_shadow":frozen_shadow,
-            "full_source_hash_verified":true,"source_admitted":false,"conversion_qualified":false}),
+            "full_source_hash_verified":true,"source_admitted":false,"conversion_qualified":false,"comparison_request":comparison_request}),
             matched,
         ))
     })();

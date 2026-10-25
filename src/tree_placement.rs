@@ -43,6 +43,68 @@ pub struct Plan {
     pub executable: bool,
     pub pending: Vec<&'static str>,
 }
+impl Plan {
+    /// Convert measured dispositions into byte-comparison inputs. The request
+    /// still requires complete input rehashing and grants no write authority.
+    pub fn comparison_request(
+        &self,
+        partition_bytes: u64,
+        source_sha256: &str,
+        shadow_sha256: &str,
+        max_change_bytes: u64,
+    ) -> Result<crate::retained_compare::RetainedCompareRequest> {
+        use crate::retained_compare::{RetainedCompareRequest, RetainedRangeRequest};
+        let mut retained_ranges = vec![];
+        let mut retained_bytes = 0u64;
+        let mut relocated_bytes = 0u64;
+        for range in &self.ranges {
+            ensure!(range.length > 0, "empty stream disposition");
+            match range.disposition {
+                Disposition::Retained => {
+                    ensure!(
+                        range.source_offset == range.destination_offset,
+                        "retained disposition changes physical placement"
+                    );
+                    retained_bytes = retained_bytes
+                        .checked_add(range.length)
+                        .context("retained byte count overflow")?;
+                    retained_ranges.push(RetainedRangeRequest {
+                        offset: range.source_offset,
+                        length: range.length,
+                        source_sha256: range.sha256.clone(),
+                        shadow_sha256: range.sha256.clone(),
+                    });
+                }
+                Disposition::Relocated => {
+                    ensure!(
+                        range.source_offset != range.destination_offset,
+                        "relocated disposition has unchanged placement"
+                    );
+                    relocated_bytes = relocated_bytes
+                        .checked_add(range.length)
+                        .context("relocated byte count overflow")?;
+                }
+            }
+        }
+        ensure!(
+            retained_bytes == self.retained_bytes && relocated_bytes == self.relocated_bytes,
+            "disposition totals changed"
+        );
+        retained_ranges.sort_by_key(|range| range.offset);
+        let request = RetainedCompareRequest {
+            schema_version: 2,
+            sector_size: 4096,
+            expected_length: partition_bytes,
+            source_sha256: source_sha256.into(),
+            shadow_sha256: shadow_sha256.into(),
+            retained_ranges,
+            max_change_bytes,
+            max_ranges: 65536,
+        };
+        crate::retained_compare::validate_request(&request)?;
+        Ok(request)
+    }
+}
 pub fn diagnose(
     tree: &Tree,
     mappings: &[Mapping],
@@ -202,6 +264,10 @@ mod tests {
         assert_eq!(p.relocated_bytes, 8192);
         assert_eq!(p.ranges[0].disposition, Disposition::Relocated);
         assert!(!p.executable);
+        let request = p
+            .comparison_request(65536, &"1".repeat(64), &"2".repeat(64), 65536)
+            .unwrap();
+        assert!(request.retained_ranges.is_empty());
     }
     #[test]
     fn split_stream_can_retain_one_range_and_relocate_another() {
@@ -216,6 +282,13 @@ mod tests {
         assert_eq!(p.retained_bytes, 4096);
         assert_eq!(p.relocated_bytes, 4096);
         assert_eq!(p.ranges[0].sha256, p.ranges[1].sha256);
+        let request = p
+            .comparison_request(65536, &"1".repeat(64), &"2".repeat(64), 65536)
+            .unwrap();
+        assert_eq!(request.retained_ranges.len(), 1);
+        assert_eq!(request.retained_ranges[0].offset, 4096);
+        assert_eq!(request.retained_ranges[0].length, 4096);
+        assert_eq!(request.retained_ranges[0].source_sha256, p.ranges[0].sha256);
     }
     #[test]
     fn incomplete_sparse_overlapping_and_foreign_streams_are_refused() {

@@ -24,6 +24,24 @@ pub struct FrozenShadow {
     conversion_qualified: bool,
 }
 impl FrozenShadow {
+    /// Bind comparison inputs to this actual freeze and its measured placement.
+    pub fn comparison_request(
+        &self,
+        placement: &Plan,
+        source_sha256: &str,
+        max_change_bytes: u64,
+    ) -> Result<crate::retained_compare::RetainedCompareRequest> {
+        ensure!(
+            hex::encode(Sha256::digest(serde_json::to_vec(placement)?)) == self.placement_sha256,
+            "placement differs from the actual shadow freeze"
+        );
+        placement.comparison_request(
+            self.partition_bytes,
+            source_sha256,
+            &self.sha256,
+            max_change_bytes,
+        )
+    }
     pub fn capture(
         binding: DiskBinding,
         native: &Report,

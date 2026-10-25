@@ -15,8 +15,9 @@ use windows_sys::Win32::{
     System::{
         IO::DeviceIoControl,
         Ioctl::{
-            FSCTL_IS_VOLUME_DIRTY, FSCTL_TXFS_LIST_TRANSACTIONS, FSCTL_TXFS_QUERY_RM_INFORMATION,
-            TXFS_QUERY_RM_INFORMATION,
+            FILE_FS_PERSISTENT_VOLUME_INFORMATION, FSCTL_IS_VOLUME_DIRTY,
+            FSCTL_QUERY_PERSISTENT_VOLUME_STATE, FSCTL_TXFS_LIST_TRANSACTIONS,
+            FSCTL_TXFS_QUERY_RM_INFORMATION, TXFS_QUERY_RM_INFORMATION,
         },
     },
 };
@@ -43,12 +44,23 @@ pub struct TransactionList {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PersistentState {
+    pub volume_flags: u32,
+    pub flag_mask: u32,
+    pub version: u32,
+    pub short_name_creation_disabled: bool,
+    pub reply_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Observation {
     pub schema_version: u32,
     pub kind: &'static str,
     pub binding: DiskBinding,
     pub native_dirty_before: Option<u32>,
     pub native_dirty_before_error: Option<u32>,
+    pub persistent_state_before: Option<PersistentState>,
+    pub persistent_state_before_error: Option<u32>,
     pub query_before: Option<RmQuery>,
     pub query_before_error: Option<u32>,
     pub transaction_list: Option<TransactionList>,
@@ -57,7 +69,10 @@ pub struct Observation {
     pub query_after_error: Option<u32>,
     pub native_dirty_after: Option<u32>,
     pub native_dirty_after_error: Option<u32>,
+    pub persistent_state_after: Option<PersistentState>,
+    pub persistent_state_after_error: Option<u32>,
     pub native_volume_state_stably_clear: bool,
+    pub short_name_state_stable: bool,
     pub queried_rm_stably_empty: bool,
     pub all_resource_managers_checked: bool,
     pub source_frozen: bool,
@@ -144,6 +159,58 @@ fn dirty(file: &File) -> (Option<u32>, Option<u32>) {
     }
 }
 
+fn persistent(file: &File) -> (Option<PersistentState>, Option<u32>) {
+    let input = FILE_FS_PERSISTENT_VOLUME_INFORMATION {
+        FlagMask: 1,
+        Version: 1,
+        ..Default::default()
+    };
+    let mut output = FILE_FS_PERSISTENT_VOLUME_INFORMATION::default();
+    let mut returned = 0u32;
+    // SAFETY: both repr(C) structures are initialized, aligned and live for
+    // this synchronous read-only volume query.
+    let ok = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_QUERY_PERSISTENT_VOLUME_STATE,
+            (&input as *const FILE_FS_PERSISTENT_VOLUME_INFORMATION).cast(),
+            mem::size_of_val(&input) as u32,
+            (&mut output as *mut FILE_FS_PERSISTENT_VOLUME_INFORMATION).cast(),
+            mem::size_of_val(&output) as u32,
+            &mut returned,
+            ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        // SAFETY: direct error from the preceding Win32 call.
+        return (None, Some(unsafe { GetLastError() }));
+    }
+    if returned as usize != mem::size_of::<FILE_FS_PERSISTENT_VOLUME_INFORMATION>()
+        || output.Version != 1
+        || output.FlagMask & 1 == 0
+        || output.Reserved != 0
+    {
+        return (None, Some(13));
+    }
+    let bytes = [
+        output.VolumeFlags.to_le_bytes(),
+        output.FlagMask.to_le_bytes(),
+        output.Version.to_le_bytes(),
+        output.Reserved.to_le_bytes(),
+    ]
+    .concat();
+    (
+        Some(PersistentState {
+            volume_flags: output.VolumeFlags,
+            flag_mask: output.FlagMask,
+            version: output.Version,
+            short_name_creation_disabled: output.VolumeFlags & 1 != 0,
+            reply_sha256: hex::encode(Sha256::digest(bytes)),
+        }),
+        None,
+    )
+}
+
 pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
     binding.validate()?;
     if binding.disk_number != 1 {
@@ -163,12 +230,21 @@ pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
         .share_mode(3)
         .open(binding.volume_path()?)?;
     let (native_dirty_before, native_dirty_before_error) = dirty(&volume);
+    let (persistent_state_before, persistent_state_before_error) = persistent(&volume);
     let (before, before_error) = query(&volume);
     let (transactions, list_error) = list(&volume);
     let (after, after_error) = query(&volume);
     let (native_dirty_after, native_dirty_after_error) = dirty(&volume);
+    let (persistent_state_after, persistent_state_after_error) = persistent(&volume);
     let native_volume_state_stably_clear =
         native_dirty_before == Some(0) && native_dirty_after == Some(0);
+    let short_name_state_stable = persistent_state_before
+        .as_ref()
+        .zip(persistent_state_after.as_ref())
+        .is_some_and(|(before, after)| {
+            before.short_name_creation_disabled == after.short_name_creation_disabled
+                && before.volume_flags & 1 == after.volume_flags & 1
+        });
     let queried_rm_stably_empty = before.as_ref().is_some_and(|q| q.transaction_count == 0)
         && after.as_ref().is_some_and(|q| q.transaction_count == 0)
         && transactions.as_ref().is_some_and(|l| {
@@ -184,6 +260,8 @@ pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
         binding,
         native_dirty_before,
         native_dirty_before_error,
+        persistent_state_before,
+        persistent_state_before_error,
         query_before: before,
         query_before_error: before_error,
         transaction_list: transactions,
@@ -192,10 +270,38 @@ pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
         query_after_error: after_error,
         native_dirty_after,
         native_dirty_after_error,
+        persistent_state_after,
+        persistent_state_after_error,
         native_volume_state_stably_clear,
+        short_name_state_stable,
         queried_rm_stably_empty,
         all_resource_managers_checked: false,
         source_frozen: false,
         execution_authorized: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn persistent_volume_state_uses_the_documented_aligned_wire_shape() {
+        assert_eq!(mem::size_of::<FILE_FS_PERSISTENT_VOLUME_INFORMATION>(), 16);
+        assert_eq!(
+            mem::offset_of!(FILE_FS_PERSISTENT_VOLUME_INFORMATION, VolumeFlags),
+            0
+        );
+        assert_eq!(
+            mem::offset_of!(FILE_FS_PERSISTENT_VOLUME_INFORMATION, FlagMask),
+            4
+        );
+        assert_eq!(
+            mem::offset_of!(FILE_FS_PERSISTENT_VOLUME_INFORMATION, Version),
+            8
+        );
+        assert_eq!(
+            mem::offset_of!(FILE_FS_PERSISTENT_VOLUME_INFORMATION, Reserved),
+            12
+        );
+    }
 }

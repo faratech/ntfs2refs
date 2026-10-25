@@ -176,6 +176,9 @@ transactions between the queries and recording native refusals and reply
 hashes. The dirty-state FSCTL uses a 32-bit-aligned reply buffer and records
 the entire returned flag word; [Microsoft documents the volume-dirty
 control](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/fsctl-is-volume-dirty).
+It also queries the per-volume persistent short-name flag before and after the
+TxF calls through the [documented persistent-state
+FSCTL](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_fs_persistent_volume_information).
 A zero TxF count is explicitly
 limited to the **queried RM**; secondary resource managers, clean log state and
 the final frozen source are not certified. It has compiled on the host but has

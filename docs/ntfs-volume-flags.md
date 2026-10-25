@@ -42,6 +42,18 @@ The Linux NTFS3 [on-disk header](https://github.com/torvalds/linux/blob/master/f
 
 Use only a disposable enrolled NTFS data volume inside the existing VM, protected by a checkpoint. Record `fsutil 8dot3name query` and the same query for that explicit volume; also retain native dirty-state output and identity evidence. Current capture evidence did not include the short-name query, and its unrelated `fsutil volumeinfo` call failed because of the path form, so it cannot answer this question retrospectively.
 
+A later protected existing-tree observation did record the native short-name
+query under
+`.lab/hyperv/existing-tree-attestation/win11-20261024T204728959Z/state.json`:
+global behavior was per-volume (`2`), and the enrolled NTFS data volume
+reported 8.3 creation **disabled**. The same observation reported the volume
+not dirty. This correlates the observed on-disk `0x0080` with the native
+short-name setting on this Windows build, but does not by itself prove the bit
+mapping through a controlled setting change. `lab-txf-observe` now also queries
+`FSCTL_QUERY_PERSISTENT_VOLUME_STATE` for the short-name-disable bit using the
+[documented persistent volume state structure](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_fs_persistent_volume_information).
+That new binary has not yet been run in the guest.
+
 If the global short-name setting is 2, capture the explicit per-volume setting in three states: original disabled, enabled, restored disabled. After each change, obtain consistent locked/dismounted bytes using the existing capture path. Compare the exact 12-byte `$VOLUME_INFORMATION` values, the native query output, and `$MFTMirr`. The hypothesis predicts a `0x0080 -> 0x0000 -> 0x0080` transition when no other state bits intervene. Do not strip existing short names. If the global setting differs, retain that evidence and use a separate disposable test configuration rather than silently changing unrelated volume policy.
 
 A successful differential would justify recognizing `0x0080` as a separately reported policy bit for that tested profile, while continuing to reject unknown bits and retain independent dirty/journal checks. It would not justify ignoring arbitrary nonzero flags or discarding existing DOS names. ReFS short-name compatibility and the treatment of existing names remain preservation-policy decisions.

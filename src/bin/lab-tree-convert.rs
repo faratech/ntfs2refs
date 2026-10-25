@@ -190,7 +190,7 @@ fn main() -> anyhow::Result<()> {
         "schema_version":1,"request":a.artifacts.join("request.json"),"request_sha256":saved_request_sha,
         "ticket":a.artifacts.join("ticket.json"),"ticket_sha256":ticket_sha,"journal":a.journal,
         "expectation":a.artifacts.join("expectation.json"),"expectation_sha256":expectation_sha,
-        "recovery_command":"lab-tree-reconstruct resume or rollback; supply these independently saved pins",
+        "recovery_command":"lab-tree-finalize recover resumes an activated offline target and finalizes only after success; lab-tree-reconstruct rollback remains available before handoff; supply the independently saved pins",
         "recovery_closes_at_handoff":true}),
     )?;
     println!("Activating journaled writes while keeping the original offline.");

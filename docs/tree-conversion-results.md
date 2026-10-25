@@ -47,6 +47,11 @@ Its fresh `--artifacts` directory records the independent recovery pins. Before
 handoff, `lab-tree-reconstruct resume` or `rollback` can use that ticket and
 journal. A controlled interruption exits 86 after the requested number of
 durable target writes. Native interruption recovery has not yet been qualified.
+The owning-guest `lab-tree-finalize recover` mode now combines a pinned journal
+resume with finalization: it attempts handoff only after resume succeeds and
+writes both outcomes to one durable report. This mode is for a target already
+activated and persistently offline after an interrupted apply; its native
+interruption behavior is not yet qualified.
 
 The independent shadow builder also supports `--retain-eligible`. It attempts
 placement only on the shadow, only where both allocation views permit it,

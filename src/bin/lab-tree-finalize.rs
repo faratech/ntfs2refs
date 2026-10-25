@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
     use ntfs2refs::{
         lab_reconstruct::JournalTicket,
         lab_tree_expectation::{self, Expectation},
-        lab_tree_reconstruct::{self, Request},
+        lab_tree_reconstruct::{self, Operation, Request},
     };
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -21,6 +21,7 @@ fn main() -> anyhow::Result<()> {
     enum Mode {
         Capture,
         Finish,
+        Recover,
     }
     #[derive(Parser)]
     struct Args {
@@ -153,16 +154,54 @@ fn main() -> anyhow::Result<()> {
             .open(journal_path)?;
         save(
             &a.output.with_extension("intent.json"),
-            &serde_json::json!({"mode":"finish","request_sha256":a.request_sha256,
-            "ticket_sha256":a.ticket_sha256,"expectation_sha256":a.expectation_sha256,"handoff_will_close_rollback":true}),
+            &serde_json::json!({"mode":a.mode,"request_sha256":a.request_sha256,
+            "ticket_sha256":a.ticket_sha256,"expectation_sha256":a.expectation_sha256,
+            "resume_before_handoff":a.mode == Mode::Recover,
+            "handoff_will_close_rollback":true}),
         )?;
         let mut out = OpenOptions::new()
             .write(true)
             .create_new(true)
             .share_mode(0)
             .open(&a.output)?;
-        let report = lab_tree_reconstruct::finalize(&request, &mut journal, &ticket, &expectation)?;
-        let bytes = serde_json::to_vec_pretty(&report)?;
+        let (bytes, success, error) = if a.mode == Mode::Recover {
+            let resume =
+                lab_tree_reconstruct::execute(Operation::Resume, &request, &mut journal, &ticket);
+            let mut finalization_error = None;
+            let finish = if resume.success {
+                match lab_tree_reconstruct::finalize(&request, &mut journal, &ticket, &expectation)
+                {
+                    Ok(report) => Some(report),
+                    Err(error) => {
+                        finalization_error = Some(format!("{error:#}"));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let success = finish.as_ref().is_some_and(|report| report.success);
+            let error = if resume.success {
+                finalization_error
+                    .or_else(|| finish.as_ref().and_then(|report| report.error.clone()))
+            } else {
+                resume.error.clone()
+            };
+            let rollback_closed = finish.as_ref().is_some_and(|report| report.rollback_closed);
+            let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version":1,"kind":"native-tree-recovery-and-finalize",
+                "success":success,"resume":resume,"finish":finish,
+                "rollback_closed":rollback_closed,
+                "error":error.clone()
+            }))?;
+            (bytes, success, error)
+        } else {
+            let report =
+                lab_tree_reconstruct::finalize(&request, &mut journal, &ticket, &expectation)?;
+            let success = report.success;
+            let error = report.error.clone();
+            (serde_json::to_vec_pretty(&report)?, success, error)
+        };
         ensure!(
             bytes.len() <= 16 * 1024 * 1024,
             "complete native report exceeds bound"
@@ -170,9 +209,8 @@ fn main() -> anyhow::Result<()> {
         out.write_all(&bytes)?;
         out.sync_all()?;
         ensure!(
-            report.success,
-            "native finish refused: {:?}; preserve journal, ticket and handoff",
-            report.error
+            success,
+            "native finish refused: {error:?}; preserve journal, ticket and handoff",
         );
         println!("Original partition converted and native tree verification passed.");
     }

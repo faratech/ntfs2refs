@@ -1,6 +1,7 @@
 use crate::{
     block_io::{self, SourceIdentity},
     ntfs_inspect::{self, NtfsInspection},
+    ntfs_stream_plan,
     refs_inspect::{self, RefsInspection},
 };
 use anyhow::{Result, bail, ensure};
@@ -35,6 +36,9 @@ pub struct ConversionPlan {
     pub target_build: String,
     pub boot_volume: bool,
     pub journal_budget_bytes: u64,
+    /// Read-only physical source classification; target placement and write
+    /// authority still require independent construction and qualification.
+    pub source_stream_plan: ntfs_stream_plan::Plan,
     pub required_staging_bytes: Option<u64>,
     pub required_journal_bytes: Option<u64>,
     pub executable: bool,
@@ -99,6 +103,7 @@ pub fn plan(
     let Filesystem::Ntfs(ntfs) = inspection.filesystem else {
         bail!("conversion source must be NTFS");
     };
+    let source_stream_plan = ntfs_stream_plan::classify(&ntfs);
     let mut blockers: Vec<Blocker> = ntfs
         .blockers
         .into_iter()
@@ -154,12 +159,13 @@ pub fn plan(
         );
     }
     Ok(ConversionPlan {
-        schema_version: 1,
+        schema_version: 2,
         source: inspection.source,
         target: target.into(),
         target_build: build.into(),
         boot_volume: boot,
         journal_budget_bytes: budget,
+        source_stream_plan,
         required_staging_bytes: None,
         required_journal_bytes: None,
         executable: false,

@@ -1,12 +1,12 @@
 //! Read-only source payload classification for a 4 KiB ReFS target. This is
 //! not namespace admission or a target allocation/write plan.
 use crate::ntfs_inspect::{Extent, LogicalHashStatus, MetadataRole, NtfsInspection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const CLUSTER: u64 = 4096;
 const MAX_MATERIALIZE: u64 = 256 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Disposition {
     RetainCandidate,
@@ -15,7 +15,8 @@ pub enum Disposition {
     Reject,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StreamDecision {
     pub record_number: u64,
     pub sequence_number: u16,
@@ -29,13 +30,14 @@ pub struct StreamDecision {
     pub source_extents: Vec<Extent>,
     pub disposition: Disposition,
     pub target_named_stream_support_pending: bool,
-    pub reason: &'static str,
+    pub reason: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     pub schema_version: u32,
-    pub profile: &'static str,
+    pub profile: String,
     pub streams: Vec<StreamDecision>,
     pub retained_candidate_bytes: u64,
     pub materialized_candidate_bytes: u64,
@@ -47,7 +49,7 @@ pub struct Plan {
 pub fn classify(raw: &NtfsInspection) -> Plan {
     let mut plan = Plan {
         schema_version: 4,
-        profile: "ntfs-4k-to-refs-4k-source-streams-v4",
+        profile: "ntfs-4k-to-refs-4k-source-streams-v4".into(),
         streams: Vec::new(),
         retained_candidate_bytes: 0,
         materialized_candidate_bytes: 0,
@@ -165,7 +167,7 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                 },
                 disposition,
                 target_named_stream_support_pending: named,
-                reason,
+                reason: reason.into(),
             });
         }
     }

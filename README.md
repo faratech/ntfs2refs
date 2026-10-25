@@ -59,8 +59,9 @@ converter's blocked commands.
 
 The independent shadow builder accepts `--ordinary-files` for a broader
 experimental source profile. It reads empty and resident streams from their
-checked NTFS records, materializes fragmented and partial-cluster streams as
-logical bytes, and restores inherited security descriptors on the native ReFS
+checked NTFS records, carries eligible fragmented runs and fully initialized
+cluster prefixes into the retention plan, materializes incompatible ranges
+from logical bytes, and restores inherited security descriptors on the native ReFS
 shadow. It reports inline data separately from physical extents. The versioned
 path passed native Windows qualification on the four cluster-aligned files in
 the enrolled tree; empty, resident, fragmented and partial-cluster cases still
@@ -100,6 +101,9 @@ source handle denies concurrent writers/deletion. `verify` only checks byte
 identity with its baseline; it does not certify a conversion or native mount.
 The planner deliberately leaves space requirements unknown until a qualified
 writer can calculate them. It never substitutes a guessed percentage.
+Its schema-2 plan includes a schema-4 read-only source-stream classification
+with retained and materialized byte candidates; those estimates do not grant
+write authority or predict final ReFS placement.
 
 The separate [retained-range comparator](docs/retained-range-comparison.md)
 reports every differing sector outside explicitly pinned source ranges and

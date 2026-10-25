@@ -49,6 +49,15 @@ fn inspection_plan_and_verification_are_read_only() {
     assert_eq!(plan.status.code(), Some(2));
     let plan: Value = serde_json::from_slice(&plan.stdout).unwrap();
     assert_eq!(plan["executable"], false);
+    assert_eq!(plan["schema_version"], 2);
+    assert_eq!(plan["source_stream_plan"]["schema_version"], 4);
+    assert!(
+        plan["source_stream_plan"]["streams"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 2
+    );
     assert!(plan["required_journal_bytes"].is_null());
     assert!(
         plan["blockers"]

@@ -173,6 +173,15 @@ verifies its files through native ReFS. Separate pinned request, ticket and
 expectation files are required. This path has compiled but has not run in the
 VM and does not qualify general production conversion.
 
+`lab-replay-general-from-tree` can package the previously successful pinned
+ordinary-tree freeze into this new guest experiment's request and expected-tree
+files without touching any disk. It passed locally against the archived
+eight-object freeze at
+`.lab/development/general-tree-replay-20261025T061514857Z`:
+request SHA-256 `15d5e32f88296fbd299951fef8a91be56d44bbaa9bf4f57fdb592a626bdcd8fa`,
+expected-tree SHA-256 `043eab655db6c04ba321f184ab91dc01e5a31b77a0a0f342886f2e0b4c750af8`.
+The ignored local artifacts are not a native run of the new engine.
+
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while
 general activation, handoff and recovery remain unavailable from the CLI.

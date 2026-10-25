@@ -4,7 +4,9 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::{GeneralFrozenPartition, general_layout::GeneralDiskBinding};
+    use n2r_win32::{
+        GeneralFrozenPartition, GeneralPartitionReader, general_layout::GeneralDiskBinding,
+    };
     use ntfs2refs::{lab_reconstruct, ntfs_backup, ntfs_inspect, ntfs_log};
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -64,13 +66,23 @@ fn main() -> anyhow::Result<()> {
     );
     let binding: GeneralDiskBinding = serde_json::from_slice(&bytes)?;
     binding.validate()?;
+    let mut events = Vec::new();
+    let mut online = GeneralPartitionReader::open(binding.clone(), &mut events)?;
+    let mut boot = [0u8; 512];
+    online.read_exact(&mut boot)?;
+    let geometry = ntfs_inspect::inspect_boot_sector(&boot, online.byte_len())?;
+    ensure!(
+        geometry.cluster_size == 4096 && geometry.bytes_per_sector == 512,
+        "initial general NTFS source geometry differs"
+    );
+    online.revalidate_route(&mut events)?;
+    drop(online);
     save(
         &intent,
         &serde_json::json!({"schema_version":1,"kind":"general-ntfs-freeze-intent",
             "binding_sha256":args.binding_sha256,"disk_number":binding.disk_number,
             "source_payload_writes_authorized":false,"conversion_qualified":false}),
     )?;
-    let mut events = Vec::new();
     let mut source = GeneralFrozenPartition::isolate(binding, &mut events)?;
     let before = source.state(&mut events)?;
     let length = source.byte_len();

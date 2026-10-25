@@ -229,6 +229,7 @@ impl Expectation {
                     None
                 },
                 source_offset: None,
+                source_runs: vec![],
             })
             .collect();
         let same = |a: &[u8], b: &[u8]| {

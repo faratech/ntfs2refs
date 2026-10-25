@@ -110,6 +110,15 @@ fn main() -> anyhow::Result<()> {
                 object.sha256.as_deref()
             },
             source_offset: object.source_offset,
+            source_runs: object
+                .source_extents
+                .iter()
+                .map(|run| shadow_native::SourceRun {
+                    logical_offset: run.logical_offset,
+                    physical_offset: run.physical_offset,
+                    length: run.length,
+                })
+                .collect(),
         })
         .collect();
     let same_security = |a: &[u8], b: &[u8]| {

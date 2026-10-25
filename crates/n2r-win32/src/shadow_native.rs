@@ -44,6 +44,13 @@ pub struct Input<'a> {
     pub expected_length: Option<u64>,
     pub expected_sha256: Option<&'a str>,
     pub source_offset: Option<u64>,
+    pub source_runs: Vec<SourceRun>,
+}
+#[derive(Clone, Debug)]
+pub struct SourceRun {
+    pub logical_offset: u64,
+    pub physical_offset: Option<u64>,
+    pub length: u64,
 }
 impl Input<'_> {
     fn logical_length(&self) -> u64 {
@@ -156,6 +163,7 @@ fn observed_shadow(
 #[derive(Debug, Serialize)]
 pub struct RetentionAttempt {
     pub components: Vec<String>,
+    pub starting_vcn: u64,
     pub destination_lcn: u64,
     pub clusters: u32,
     pub candidate: CandidateReport,
@@ -165,15 +173,50 @@ pub struct RetentionAttempt {
     pub mapping_after: Vec<u8>,
     pub all_clusters_at_source: bool,
 }
-fn retain_on_shadow(
+fn mapping_matches_run(
+    runs: &[stream_layout::Run],
+    starting_vcn: u64,
+    destination_lcn: u64,
+    clusters: u32,
+) -> io::Result<bool> {
+    let mut covered = starting_vcn;
+    let limit = starting_vcn
+        .checked_add(u64::from(clusters))
+        .ok_or_else(|| invalid("retention range overflow"))?;
+    for r in runs {
+        let next = r
+            .vcn
+            .checked_add(r.clusters)
+            .ok_or_else(|| invalid("retention mapping overflow"))?;
+        let begin = r.vcn.max(starting_vcn);
+        let end = next.min(limit);
+        if begin < end {
+            if begin != covered
+                || !r
+                    .lcn
+                    .and_then(|lcn| lcn.checked_add(begin - r.vcn))
+                    .is_some_and(|lcn| {
+                        destination_lcn.checked_add(begin - starting_vcn) == Some(lcn)
+                    })
+            {
+                return Ok(false);
+            }
+            covered = end;
+        }
+    }
+    Ok(covered == limit)
+}
+fn retain_run_on_shadow(
     volume: &File,
     root: &str,
     i: &Input<'_>,
     partition: u64,
+    run: &SourceRun,
 ) -> io::Result<RetentionAttempt> {
-    let offset = i
-        .source_offset
-        .ok_or_else(|| invalid("retention requires the original physical source range"))?;
+    let offset = run
+        .physical_offset
+        .ok_or_else(|| invalid("source placement hole"))?;
+    let starting_vcn = run.logical_offset / 4096;
     let h = open(&format!("{}{}", root, i.components.join("\\")), false, true)?;
     let mapping_before = ctl(
         &h,
@@ -196,37 +239,26 @@ fn retain_on_shadow(
         stream_layout::MAX_BITMAP_BYTES,
     )?;
     let candidate = CandidateReport {
-        legacy: crate::bitmap_layout::candidate(&legacy, offset, i.logical_length(), partition)?,
+        legacy: crate::bitmap_layout::candidate(&legacy, offset, run.length, partition)?,
         metadata_inclusive: crate::bitmap_layout::candidate(
-            &metadata,
-            offset,
-            i.logical_length(),
-            partition,
+            &metadata, offset, run.length, partition,
         )?,
     };
-    let clusters = u32::try_from(i.logical_length() / 4096)
-        .map_err(|_| invalid("retention cluster budget"))?;
+    let clusters =
+        u32::try_from(run.length / 4096).map_err(|_| invalid("retention cluster budget"))?;
     let destination_lcn = offset / 4096;
     let matches = |b: &[u8]| -> io::Result<bool> {
-        let runs = stream_layout::parse_retrieval(b)?;
-        let mut end = 0;
-        for r in runs {
-            if r.vcn != end
-                || !destination_lcn
-                    .checked_add(r.vcn)
-                    .is_some_and(|p| r.lcn == Some(p))
-            {
-                return Ok(false);
-            }
-            end = end
-                .checked_add(r.clusters)
-                .ok_or_else(|| invalid("retention mapping overflow"))?;
-        }
-        Ok(end == u64::from(clusters))
+        mapping_matches_run(
+            &stream_layout::parse_retrieval(b)?,
+            starting_vcn,
+            destination_lcn,
+            clusters,
+        )
     };
     let already = matches(&mapping_before)?;
     let mut r = RetentionAttempt {
         components: i.components.to_vec(),
+        starting_vcn,
         destination_lcn,
         clusters,
         candidate,
@@ -246,6 +278,7 @@ fn retain_on_shadow(
     }
     let mut input = [0; 32];
     input[..8].copy_from_slice(&(h.as_raw_handle() as usize as u64).to_le_bytes());
+    input[8..16].copy_from_slice(&starting_vcn.to_le_bytes());
     input[16..24].copy_from_slice(&destination_lcn.to_le_bytes());
     input[24..28].copy_from_slice(&clusters.to_le_bytes());
     r.submitted = true;
@@ -1118,7 +1151,49 @@ fn run_role(
         ));
     }
     let mut total = 0usize;
+    let mut source_allocations = Vec::new();
     for i in input {
+        if i.source_offset.is_some() && !i.source_runs.is_empty() {
+            return Err(invalid("mixed single and fragmented source placement"));
+        }
+        if let Some(offset) = i.source_offset {
+            if i.directory
+                || i.logical_length() == 0
+                || !i.logical_length().is_multiple_of(4096)
+                || !offset.is_multiple_of(4096)
+                || !offset
+                    .checked_add(i.logical_length())
+                    .is_some_and(|end| end <= binding.identity.partition_bytes)
+            {
+                return Err(invalid("single source placement differs"));
+            }
+            source_allocations.push((offset, i.logical_length()));
+        }
+        if !i.source_runs.is_empty() {
+            let mut covered = 0u64;
+            for run in &i.source_runs {
+                let offset = run
+                    .physical_offset
+                    .ok_or_else(|| invalid("fragmented source hole"))?;
+                if run.logical_offset != covered
+                    || run.length == 0
+                    || !run.length.is_multiple_of(4096)
+                    || !offset.is_multiple_of(4096)
+                    || !offset
+                        .checked_add(run.length)
+                        .is_some_and(|end| end <= binding.identity.partition_bytes)
+                {
+                    return Err(invalid("fragmented source placement differs"));
+                }
+                covered = covered
+                    .checked_add(run.length)
+                    .ok_or_else(|| invalid("source placement overflow"))?;
+                source_allocations.push((offset, run.length));
+            }
+            if i.directory || covered != i.logical_length() || i.source_runs.len() > 1024 {
+                return Err(invalid("fragmented source placement coverage differs"));
+            }
+        }
         let digest_only = i.expected_length.is_some() || i.expected_sha256.is_some();
         let digest_allowed = ordinary
             && !i.directory
@@ -1179,6 +1254,13 @@ fn run_role(
                 "initial tree shadow requires protected child DACLs",
             ));
         }
+    }
+    source_allocations.sort_unstable();
+    if source_allocations
+        .windows(2)
+        .any(|pair| pair[0].0 + pair[0].1 > pair[1].0)
+    {
+        return Err(invalid("source placement allocations overlap"));
     }
     if input.iter().filter(|i| i.components.is_empty()).count() != 1
         || !input[0].components.is_empty()
@@ -1355,18 +1437,32 @@ fn run_role(
             }
         }
         if mode == Mode::ConstructRetaining {
-            for i in input.iter().filter(|i| {
-                !i.directory
-                    && i.source_offset.is_some()
+            for i in input.iter().filter(|i| !i.directory) {
+                if let Some(offset) = i.source_offset
                     && i.logical_length() > 0
                     && i.logical_length().is_multiple_of(4096)
-            }) {
-                retention_attempts.push(retain_on_shadow(
-                    &volume,
-                    &root,
-                    i,
-                    binding.identity.partition_bytes,
-                )?);
+                {
+                    retention_attempts.push(retain_run_on_shadow(
+                        &volume,
+                        &root,
+                        i,
+                        binding.identity.partition_bytes,
+                        &SourceRun {
+                            logical_offset: 0,
+                            physical_offset: Some(offset),
+                            length: i.logical_length(),
+                        },
+                    )?);
+                }
+                for run in &i.source_runs {
+                    retention_attempts.push(retain_run_on_shadow(
+                        &volume,
+                        &root,
+                        i,
+                        binding.identity.partition_bytes,
+                        run,
+                    )?);
+                }
             }
         }
         // Final metadata follows every child creation. Root security has
@@ -1615,6 +1711,31 @@ fn run_role(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fragmented_retention_checks_only_the_requested_vcn_window() {
+        let runs = vec![
+            stream_layout::Run {
+                vcn: 0,
+                lcn: Some(40),
+                clusters: 2,
+            },
+            stream_layout::Run {
+                vcn: 2,
+                lcn: Some(100),
+                clusters: 3,
+            },
+            stream_layout::Run {
+                vcn: 5,
+                lcn: Some(70),
+                clusters: 2,
+            },
+        ];
+        assert!(mapping_matches_run(&runs, 2, 100, 3).unwrap());
+        assert!(mapping_matches_run(&runs, 3, 101, 2).unwrap());
+        assert!(!mapping_matches_run(&runs, 2, 101, 3).unwrap());
+        assert!(!mapping_matches_run(&runs, 1, 41, 4).unwrap());
+        assert!(!mapping_matches_run(&runs, 2, 100, 4).unwrap());
+    }
     #[test]
     fn backup_security_stream_uses_sdk_name_offset_and_keeps_descriptor_bytes() {
         use windows_sys::Win32::Storage::FileSystem::WIN32_STREAM_ID;

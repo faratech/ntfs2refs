@@ -189,6 +189,11 @@ target ReFS run at each source-run boundary, hashes the actual source range,
 and records retained versus relocated ranges separately. Existing single-run
 tree requests retain their serialized form. This has only synthetic coverage
 so far; a fragmented native conversion still needs the VM run.
+The guest shadow builder now attempts an independent native move for each
+fragmented run. It checks both ReFS allocation bitmap views before each move
+and re-reads the file's actual VCN mapping after the attempt; a refused or
+partial move remains a measured relocation in the conversion plan. No source
+NTFS extent is moved by this shadow operation.
 
 The dirty-state and volume-policy questions are now separate gates. On the
 Windows 11 source, the native dirty result is false, on-disk dirty bit is

@@ -195,6 +195,15 @@ fn main() -> anyhow::Result<()> {
                     None
                 },
                 source_offset: o.source_offset,
+                source_runs: o
+                    .source_extents
+                    .iter()
+                    .map(|run| shadow_native::SourceRun {
+                        logical_offset: run.logical_offset,
+                        physical_offset: run.physical_offset,
+                        length: run.length,
+                    })
+                    .collect(),
             })
             .collect();
         // Read-only destination refusal may precede the expensive full source

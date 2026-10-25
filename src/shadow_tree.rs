@@ -178,10 +178,7 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
                         && a.name_utf16.is_empty())
                         || (matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                             && crate::ntfs_namespace::is_i30(&a.name_utf16))
-                        || (a.type_code == 0x100
-                            && a.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
-                            && a.logical_size == 56
-                            && a.resident))),
+                        || ntfs_admission::recognized_root_txf(a))),
                 "unknown root attributes"
             );
             if f.attributes.iter().any(|a| a.type_code == 0x100) {

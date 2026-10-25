@@ -3,7 +3,7 @@
 //! backup/log and target-preservation evidence must precede that capability.
 use crate::{
     ntfs_attestation::Comparison,
-    ntfs_inspect::{self as ntfs, FileInventory, MetadataRole},
+    ntfs_inspect::{self as ntfs, AttributeInventory, FileInventory, MetadataRole},
     ntfs_namespace, ntfs_security,
 };
 use serde::Serialize;
@@ -14,6 +14,22 @@ pub const ORDINARY_PROFILE: &str = "ordinary-data-tree-v2";
 pub const MAX_FILES: usize = 128;
 pub const MAX_DIRECTORIES: usize = 32;
 pub const MAX_LOGICAL_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Windows-generated root transaction metadata is an internal replacement
+/// obligation, not an ordinary user stream. Recognition alone never admits
+/// its loss or proves an idle TxF resource manager.
+pub(crate) fn recognized_root_txf(attribute: &AttributeInventory) -> bool {
+    attribute.type_code == 0x100
+        && attribute.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+        && attribute.resident
+        && attribute.logical_size == 56
+        && attribute.initialized_size == 56
+        && attribute.allocated_size == 56
+        && attribute.flags == 0
+        && attribute.compression_unit == 0
+        && attribute.lowest_vcn == 0
+        && attribute.extents.is_empty()
+}
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -188,13 +204,23 @@ fn user_issues_profile(
             let index = f.is_directory
                 && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                 && ntfs_namespace::is_i30(&a.name_utf16);
-            !(plain || data || index)
+            let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
+            !(plain || data || index || root_txf)
                 || a.flags != 0
                 || a.compression_unit != 0
                 || a.lowest_vcn != 0
         })
     {
         issues.push("unsupported or unassembled attribute semantics".into());
+    }
+    if f.record_number == 5
+        && f.attributes
+            .iter()
+            .filter(|attribute| attribute.type_code == 0x100)
+            .count()
+            > 1
+    {
+        issues.push("duplicate root transaction metadata".into());
     }
     if f.standard_information
         .as_ref()

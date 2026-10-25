@@ -145,6 +145,13 @@ multi-file retention/relocation profile. Keep the old fixture guards and journal
 handoff boundary intact. Native interrupted reconstruction must preserve disk
 exclusion and recover exactly before the first writable ReFS mount.
 
+The root `$TXF_DATA` record now has one shared, exact structural predicate in
+the admission and shadow paths: named resident type `0x100`, 56 logical and
+allocated bytes, no extents, compression or flags. The pinned ordinary NTFS
+tree satisfies it. This removes the generic unknown-attribute label from the
+root object; `internal_replacement_state` remains unsatisfied until TxF state
+and replacement semantics are established.
+
 ## Ordinary-file admission diagnostics
 
 The admission assessor now has a separate `ordinary-data-tree-v2` path matching

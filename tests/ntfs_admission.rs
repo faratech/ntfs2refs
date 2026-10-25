@@ -122,6 +122,44 @@ fn reserved_empty_data_is_recognized_but_cannot_hide_owned_payload() {
     slot.streams.push(r.files[1].streams[0].clone());
     assert!(a::internal_role(&r, &slot).is_none());
 }
+
+#[test]
+#[ignore = "requires the pinned frozen native NTFS tree inspection"]
+fn pinned_root_txf_has_exact_internal_form_but_replacement_is_not_admitted() {
+    use sha2::{Digest, Sha256};
+    let bytes =
+        std::fs::read(".lab/hyperv/existing-tree/win11-20261024T195711446Z/freeze.inspection.json")
+            .unwrap();
+    assert_eq!(
+        hex::encode(Sha256::digest(&bytes)),
+        "29d97ef4498f33933ec3702a3e9aee6e81fc4084d60c797ff4d0018208b8ab5e"
+    );
+    let inspection: ntfs2refs::planner::Inspection = serde_json::from_slice(&bytes).unwrap();
+    let ntfs2refs::planner::Filesystem::Ntfs(raw) = inspection.filesystem else {
+        panic!("not NTFS")
+    };
+    let assessed = a::assess_ordinary_with_backups(&raw, &comparison(&raw), 5, None);
+    let root = assessed
+        .objects
+        .iter()
+        .find(|object| object.record_number == 5)
+        .unwrap();
+    assert!(
+        !root
+            .issues
+            .iter()
+            .any(|issue| issue == "unsupported or unassembled attribute semantics")
+    );
+    assert!(
+        !assessed
+            .gates
+            .iter()
+            .find(|gate| gate.code == "internal_replacement_state")
+            .unwrap()
+            .satisfied
+    );
+    assert!(!assessed.source_admitted);
+}
 #[test]
 fn older_reports_and_success_flags_cannot_supply_missing_evidence() {
     let r = fixture();

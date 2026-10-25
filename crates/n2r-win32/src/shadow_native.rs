@@ -38,8 +38,8 @@ pub struct Input<'a> {
     pub attributes: u32,
     pub security: &'a [u8],
     pub payload: &'a [u8],
-    /// Hash-only expectations are accepted only for converted-volume
-    /// verification. Construction always receives the actual payload bytes.
+    /// Hash-only expectations are accepted for ordinary shadow streaming and
+    /// verification. The source reader supplies bytes during construction.
     pub expected_length: Option<u64>,
     pub expected_sha256: Option<&'a str>,
     pub source_offset: Option<u64>,
@@ -512,6 +512,7 @@ fn repair_security_profile(
         &same,
         false,
         ordinary,
+        None,
     )?;
     validate_existing(&observed, input, &same, true)?;
     let preflight_sha = hex::encode(Sha256::digest(
@@ -567,6 +568,7 @@ fn repair_security_profile(
         &same,
         false,
         ordinary,
+        None,
     )?;
     validate_existing(&verified, input, &same, false)?;
     if observed
@@ -756,7 +758,12 @@ fn descriptor(bytes: &[u8]) -> io::Result<Vec<u64>> {
     }
     Ok(aligned)
 }
-fn create(path: &str, i: &Input<'_>) -> io::Result<()> {
+fn create(
+    path: &str,
+    i: &Input<'_>,
+    index: usize,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+) -> io::Result<()> {
     let mut sd = descriptor(i.security)?;
     let sa = SECURITY_ATTRIBUTES {
         nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -786,7 +793,11 @@ fn create(path: &str, i: &Input<'_>) -> io::Result<()> {
     let mut f = unsafe { File::from_raw_handle(h) };
     suppress_access(&f)?;
     ctl(&f, 0x9c280, &[0; 8], 0)?;
-    f.write_all(i.payload)?;
+    if let Some(writer) = payload_writer {
+        writer(index, &mut f)?;
+    } else {
+        f.write_all(i.payload)?;
+    }
     f.sync_all()?;
     Ok(())
 }
@@ -815,6 +826,7 @@ pub fn run(
         same_security,
         false,
         false,
+        None,
     )
 }
 /// Ordinary stream forms remain confined to the independent lab shadow.
@@ -833,6 +845,28 @@ pub fn run_ordinary(
         same_security,
         false,
         true,
+        None,
+    )
+}
+/// Construct an independent native ReFS shadow with bytes supplied in bounded
+/// chunks by the owning caller. The callback receives the input index and a
+/// new file handle; native readback verifies the declared EOF and SHA-256.
+pub fn run_ordinary_streaming(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    payload_writer: &mut impl FnMut(usize, &mut File) -> io::Result<()>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<Report> {
+    run_role(
+        binding,
+        source_disk,
+        input,
+        Mode::Construct,
+        same_security,
+        false,
+        true,
+        Some(payload_writer),
     )
 }
 /// Observe the enrolled converted original after durable journal handoff. All
@@ -850,7 +884,16 @@ pub fn verify_converted(
     {
         return Err(invalid("converted natural-tree enrollment differs"));
     }
-    let report = run_role(binding, 1, input, Mode::Verify, &same_security, true, false)?;
+    let report = run_role(
+        binding,
+        1,
+        input,
+        Mode::Verify,
+        &same_security,
+        true,
+        false,
+        None,
+    )?;
     validate_existing(&report, input, &same_security, false)?;
     Ok(report)
 }
@@ -863,7 +906,16 @@ pub fn verify_converted_ordinary(
     input: &[Input<'_>],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<Report> {
-    let report = run_role(binding, 1, input, Mode::Verify, &same_security, true, true)?;
+    let report = run_role(
+        binding,
+        1,
+        input,
+        Mode::Verify,
+        &same_security,
+        true,
+        true,
+        None,
+    )?;
     validate_existing(&report, input, &same_security, false)?;
     Ok(report)
 }
@@ -875,6 +927,7 @@ fn run_role(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     converted: bool,
     ordinary: bool,
+    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
 ) -> io::Result<Report> {
     binding.validate()?;
     if binding.disk_number != if converted { 1 } else { 3 }
@@ -886,14 +939,20 @@ fn run_role(
     {
         return Err(invalid("restricted tree shadow lab profile differs"));
     }
+    if payload_writer.is_some() && (!ordinary || converted || mode != Mode::Construct) {
+        return Err(invalid(
+            "streaming payload callback is restricted to ordinary shadow construction",
+        ));
+    }
     let mut total = 0usize;
     for i in input {
         let digest_only = i.expected_length.is_some() || i.expected_sha256.is_some();
+        let digest_allowed = ordinary
+            && !i.directory
+            && ((matches!(mode, Mode::Verify | Mode::ProbeRoot) && payload_writer.is_none())
+                || (!converted && mode == Mode::Construct && payload_writer.is_some()));
         if digest_only
-            && (!converted
-                || !ordinary
-                || mode != Mode::Verify
-                || i.directory
+            && (!digest_allowed
                 || i.expected_length.is_none()
                 || i.expected_sha256.is_none()
                 || !i.payload.is_empty()
@@ -904,6 +963,9 @@ fn run_role(
                 }))
         {
             return Err(invalid("invalid hash-only verification input"));
+        }
+        if payload_writer.is_some() && !i.directory && !digest_only {
+            return Err(invalid("streaming source lacks a hash-only expectation"));
         }
         if i.components.len() > 16
             || i.components.iter().any(|s| {
@@ -1109,8 +1171,13 @@ fn run_role(
                 retention_attempts,
             });
         }
-        for i in &input[1..] {
-            create(&format!("{}{}", root, i.components.join("\\")), i)?;
+        for (index, i) in input.iter().enumerate().skip(1) {
+            let path = format!("{}{}", root, i.components.join("\\"));
+            if let Some(writer) = payload_writer.as_mut() {
+                create(&path, i, index, Some(&mut **writer))?;
+            } else {
+                create(&path, i, index, None)?;
+            }
         }
         if mode == Mode::ConstructRetaining {
             for i in input.iter().filter(|i| {
@@ -1333,13 +1400,13 @@ fn run_role(
                         legacy: crate::bitmap_layout::candidate(
                             &legacy_bitmap,
                             offset,
-                            i.payload.len() as u64,
+                            i.logical_length().next_multiple_of(4096),
                             binding.identity.partition_bytes,
                         )?,
                         metadata_inclusive: crate::bitmap_layout::candidate(
                             &metadata_bitmap,
                             offset,
-                            i.payload.len() as u64,
+                            i.logical_length().next_multiple_of(4096),
                             binding.identity.partition_bytes,
                         )?,
                     })

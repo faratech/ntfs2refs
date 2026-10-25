@@ -10,7 +10,13 @@ function.
 
 The existing bounded `read_plain_stream` API uses that same checked streaming
 path and collects into memory for the small native-shadow experiment. The
-Windows shadow creator has **not** yet been converted to accept streamed
-payloads, so its 256 MiB logical-data ceiling and payload-proportional shadow
-backing remain. A direct streaming sink and its native round trip are required
-before expanding those limits.
+ordinary Windows shadow creator now accepts `--stream-payload`, which passes
+each file directly from the checked NTFS reader to a native ReFS file through
+the 64 KiB buffer. Native readback checks the declared length and SHA-256.
+The host `Build-LabExistingTreeShadow.ps1` switch `-StreamPayload` records and
+forwards this mode, and `Continue-LabExistingTreeShadow.ps1` preserves it.
+
+This path has compiled and passed focused unit tests, but has not yet run in
+the native VM. The 256 MiB logical-data ceiling and payload-proportional ReFS
+shadow backing still apply; streaming reduces process memory, not scratch disk
+use or the journal size.

@@ -4,8 +4,10 @@
 param([Parameter(Mandatory)][string]$SourceDirectory,
  [Parameter(Mandatory)][string]$BinaryPath,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256,
- [switch]$OrdinaryFiles)
+ [switch]$OrdinaryFiles,
+ [switch]$StreamPayload)
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+if($StreamPayload-and-not$OrdinaryFiles){throw 'Streaming payloads require the ordinary-files profile.'}
 $workspace=Split-Path -Parent $PSScriptRoot;Import-Module (Join-Path $workspace 'lab/Lab.psm1') -Force
 $cfg=Get-LabConfiguration;$manifest=Read-LabManifest $cfg win11;$vm=Get-OwnedLabVM $cfg $manifest
 $source=Assert-LabPath $SourceDirectory $cfg.Root
@@ -24,7 +26,7 @@ $run=[guid]::NewGuid().ToString('N');$root='C:\ntfs2refs\tree-shadow\'+$run
 $output=Assert-LabPath (Join-Path $cfg.Root ('existing-tree-shadow/win11-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))) $cfg.Root
 New-Item -ItemType Directory -Path $output|Out-Null
 function Save([string]$Name,$Value){$p=Join-Path $output $Name;$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 32));$f=[IO.File]::Open($p,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}}
-$record=[ordered]@{schemaVersion=1;kind='existing-tree-shadow-build';runId=$run;sourceDirectory=$source;sourceCheckpointId=[string]$cp.Id;sourceSha256=$validated.sourceSha256;binarySha256=$BinarySha256;ordinaryFiles=[bool]$OrdinaryFiles;status='started';operationCompletionKnown=$true;error=$null;sourceAdmitted=$false;conversionQualified=$false}
+$record=[ordered]@{schemaVersion=1;kind='existing-tree-shadow-build';runId=$run;sourceDirectory=$source;sourceCheckpointId=[string]$cp.Id;sourceSha256=$validated.sourceSha256;binarySha256=$BinarySha256;ordinaryFiles=[bool]$OrdinaryFiles;streamPayload=[bool]$StreamPayload;status='started';operationCompletionKnown=$true;error=$null;sourceAdmitted=$false;conversionQualified=$false}
 Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $output 'lab-tree-shadow.exe')
 $helpers=@('lab/guest/GuestLab.psm1','lab/guest/Register-GuestDisk.ps1','lab/guest/Prepare-GuestShadowPlatform.ps1','lab/guest/NativeShadowDisk.cs')
 $pins=@();foreach($path in @($helpers)+@('src/bin/lab-tree-shadow.rs','src/shadow_tree.rs','src/tree_placement.rs','crates/n2r-win32/src/shadow_native.rs','crates/n2r-win32/src/region_layout.rs','crates/n2r-win32/src/bitmap_layout.rs','crates/n2r-win32/src/attestation_native.rs','crates/n2r-win32/src/native.rs','src/ntfs_freeze.rs','scripts/Build-LabExistingTreeShadow.ps1','Cargo.toml','crates/n2r-win32/Cargo.toml','.cargo/config.toml','Cargo.lock')){
@@ -44,8 +46,8 @@ try{
  Copy-Item -LiteralPath $binary.FullName -Destination ($root+'\lab-tree-shadow.exe') -ToSession $session
  foreach($p in $helpers){Copy-Item -LiteralPath (Join-Path $workspace $p) -Destination ($root+'\helpers\'+[IO.Path]::GetFileName($p)) -ToSession $session}
  $record.operationCompletionKnown=$false
- $job=Invoke-Command -Session $session -AsJob -ArgumentList @($root,$run,$binding,$validated.sourceSha256,$BinarySha256,$pins,[bool]$OrdinaryFiles) -ScriptBlock {
-  param($Root,$Run,$Source,$SourceSha,$BinarySha,$Pins,$OrdinaryFiles)
+ $job=Invoke-Command -Session $session -AsJob -ArgumentList @($root,$run,$binding,$validated.sourceSha256,$BinarySha256,$pins,[bool]$OrdinaryFiles,[bool]$StreamPayload) -ScriptBlock {
+  param($Root,$Run,$Source,$SourceSha,$BinarySha,$Pins,$OrdinaryFiles,$StreamPayload)
   Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
   function CheckSource{ $d=Get-Disk -Number 1;if($d.UniqueId-cne'60022480D091C4251B5FFD619706C2B5'-or[guid]$d.Guid-ne[guid]$Source.identity.disk_guid-or$d.Size-ne64GB-or$d.IsBoot-or$d.IsSystem-or-not$d.IsReadOnly-or-not$d.IsOffline){throw 'Source exclusion or identity differs.'} }
   CheckSource
@@ -60,7 +62,7 @@ try{
   if($s.volumeGuid -cnotmatch '\A\\\\\?\\Volume\{(?<id>[0-9a-fA-F-]{36})\}\\\z'){throw 'Shadow volume GUID syntax differs.'};$volumeGuid=([guid]$Matches.id).ToString('D')
   $request=[ordered]@{schema_version=1;source=$Source;source_sha256=$SourceSha;shadow=[ordered]@{disk_number=$s.diskNumber;volume_guid=$volumeGuid;identity=[ordered]@{disk_guid=$s.diskGuid;partition_guid=$s.partitionGuid;partition_number=$s.partitionNumber;disk_bytes=64GB;partition_offset=$s.offset;partition_bytes=$s.length;logical_sector_bytes=$s.logicalSectorSize;physical_sector_bytes=$s.physicalSectorSize}}}
   $requestPath=$Root+'\request.json';$b=[Text.UTF8Encoding]::new($false).GetBytes(($request|ConvertTo-Json -Depth 8));[IO.File]::WriteAllBytes($requestPath,$b);$requestSha=(Get-FileHash $requestPath).Hash.ToLowerInvariant()
-  $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$Root+'\lab-tree-shadow.exe';$psi.Arguments='--request "'+$requestPath+'" --request-sha256 '+$requestSha+' --output "'+$Root+'\shadow.json"';if($OrdinaryFiles){$psi.Arguments+=' --ordinary-files'};$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
+  $psi=[Diagnostics.ProcessStartInfo]::new();$psi.FileName=$Root+'\lab-tree-shadow.exe';$psi.Arguments='--request "'+$requestPath+'" --request-sha256 '+$requestSha+' --output "'+$Root+'\shadow.json"';if($OrdinaryFiles){$psi.Arguments+=' --ordinary-files'};if($StreamPayload){$psi.Arguments+=' --stream-payload'};$psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
   $p=[Diagnostics.Process]::new();$p.StartInfo=$psi;if(-not$p.Start()){throw 'Shadow process failed to start.'};$stdout=$p.StandardOutput.ReadToEndAsync();$stderr=$p.StandardError.ReadToEndAsync()
   [IO.File]::WriteAllText($Root+'\process.json',([ordered]@{pid=$p.Id;executable=$psi.FileName;arguments=$psi.Arguments;startedUtc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json))
   if(-not$p.WaitForExit(900000)){throw ('Native process still live; preserve PID '+$p.Id)}

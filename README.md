@@ -67,6 +67,9 @@ the enrolled tree; empty, resident, fragmented and partial-cluster cases still
 need native conversion runs. New ordinary verification manifests store stream
 lengths and hashes, then check bytes through ReFS in bounded chunks instead of
 embedding the full payload in the recovery artifact.
+The optional `--stream-payload` path also constructs the independent shadow
+with bounded NTFS reads; it is implemented but awaits a native VM run. Its
+256 MiB logical-data and shadow-space limits still apply.
 
 The toolchain is pinned in `rust-toolchain.toml`; use the installed MSVC toolchain.
 Windows builds link the C runtime statically for fresh guests and recovery media.

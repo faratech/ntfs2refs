@@ -1,10 +1,16 @@
 //! Exact stream dispositions for a measured shadow. Diagnostic only: admission,
 //! frozen-shadow validation, capacity and recovery still precede execution.
-use crate::{ntfs_inspect::Extent, shadow_tree::Tree};
+use crate::{
+    ntfs_inspect::Extent,
+    shadow_tree::{Object, Tree},
+};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::{Read, Seek},
+};
 pub struct Mapping {
     pub record_number: u64,
     pub sequence_number: u16,
@@ -30,7 +36,7 @@ pub struct Range {
     pub source_offset: Option<u64>,
     pub destination_offset: Option<u64>,
     pub length: u64,
-    pub sha256: String,
+    pub sha256: Option<String>,
     pub disposition: Disposition,
     pub justification: &'static str,
 }
@@ -75,8 +81,14 @@ impl Plan {
                     retained_ranges.push(RetainedRangeRequest {
                         offset: range.source_offset.context("retained source absent")?,
                         length: range.length,
-                        source_sha256: range.sha256.clone(),
-                        shadow_sha256: range.sha256.clone(),
+                        source_sha256: range
+                            .sha256
+                            .clone()
+                            .context("retained range digest absent")?,
+                        shadow_sha256: range
+                            .sha256
+                            .clone()
+                            .context("retained range digest absent")?,
                     });
                 }
                 Disposition::Relocated => {
@@ -132,6 +144,70 @@ pub fn diagnose(
         payloads.len() == tree.objects.len(),
         "source payload coverage differs"
     );
+    for (object, bytes) in tree.objects.iter().zip(payloads) {
+        ensure!(
+            if object.directory {
+                bytes.is_empty()
+            } else {
+                bytes.len() as u64 == object.length
+                    && object.sha256.as_deref() == Some(&hex::encode(Sha256::digest(bytes)))
+            },
+            "source payload or digest differs from the tree"
+        );
+    }
+    diagnose_impl(
+        tree,
+        mappings,
+        partition,
+        "existing-tree-placement-v1",
+        |index, _, start, end, _| {
+            let bytes = &payloads[index];
+            Ok(Some(hex::encode(Sha256::digest(
+                &bytes[start as usize..end as usize],
+            ))))
+        },
+    )
+}
+
+/// Use the already verified full logical source/target hashes while hashing
+/// only physical ranges needed for retained-extent comparison pins. This path
+/// supports bounded native shadow construction without retaining every file's
+/// payload in memory. A materialized subrange can lack its own digest; the
+/// whole-stream native digest remains mandatory.
+pub fn diagnose_measured<R: Read + Seek>(
+    tree: &Tree,
+    mappings: &[Mapping],
+    reader: &mut R,
+    partition: u64,
+) -> Result<Plan> {
+    diagnose_impl(
+        tree,
+        mappings,
+        partition,
+        "existing-tree-placement-streamed-v2",
+        |_, object, start, end, physical| {
+            if let Some(offset) = physical {
+                Ok(Some(hex::encode(crate::lab_reconstruct::hash_range(
+                    reader,
+                    offset,
+                    end - start,
+                )?)))
+            } else if start == 0 && end == object.length {
+                Ok(object.sha256.clone())
+            } else {
+                Ok(None)
+            }
+        },
+    )
+}
+
+fn diagnose_impl(
+    tree: &Tree,
+    mappings: &[Mapping],
+    partition: u64,
+    profile: &'static str,
+    mut digest: impl FnMut(usize, &Object, u64, u64, Option<u64>) -> Result<Option<String>>,
+) -> Result<Plan> {
     let mut index = BTreeMap::new();
     let mut target_ids = BTreeSet::new();
     for m in mappings {
@@ -145,7 +221,7 @@ pub fn diagnose(
         );
     }
     let mut p = Plan {
-        profile: "existing-tree-placement-v1",
+        profile,
         ranges: vec![],
         retained_bytes: 0,
         relocated_bytes: 0,
@@ -160,9 +236,8 @@ pub fn diagnose(
         ],
     };
     let mut targets = vec![];
-    for (o, bytes) in tree.objects.iter().zip(payloads) {
+    for (object_index, o) in tree.objects.iter().enumerate() {
         if o.directory {
-            ensure!(bytes.is_empty(), "directory payload is unsupported");
             continue;
         }
         let m = index
@@ -170,9 +245,7 @@ pub fn diagnose(
             .context("missing target stream")?;
         let source = o.source_offset;
         ensure!(
-            bytes.len() as u64 == o.length
-                && Some(&m.logical_sha256) == o.sha256.as_ref()
-                && hex::encode(Sha256::digest(bytes)) == m.logical_sha256,
+            Some(&m.logical_sha256) == o.sha256.as_ref(),
             "source/target logical stream proof differs"
         );
         let mut cursor = 0u64;
@@ -195,7 +268,7 @@ pub fn diagnose(
                 source_offset: None,
                 destination_offset: None,
                 length: o.length,
-                sha256: m.logical_sha256.clone(),
+                sha256: Some(m.logical_sha256.clone()),
                 disposition: Disposition::Materialized,
                 justification: "logical source bytes stored inline in native ReFS metadata",
             });
@@ -235,9 +308,16 @@ pub fn diagnose(
             } else {
                 p.relocated_bytes += length;
             }
+            let range_sha = digest(object_index, o, cursor, end, from)?;
+            if retained && cursor == 0 && end == o.length {
+                ensure!(
+                    range_sha.as_ref() == o.sha256.as_ref(),
+                    "retained full-stream digest differs"
+                );
+            }
             p.ranges.push(Range{record_number:o.record_number,sequence_number:o.sequence_number,path:o.path.clone(),
                 stream_name:"",target_file_id:m.target_file_id,logical_offset:cursor,source_offset:from,
-                destination_offset:Some(dest),length,sha256:hex::encode(Sha256::digest(&bytes[cursor as usize..end as usize])),
+                destination_offset:Some(dest),length,sha256:range_sha,
                 disposition:if retained {Disposition::Retained} else if from.is_none() {Disposition::Materialized} else {Disposition::Relocated},
                 justification:if retained {"native target mapping resolves to the original source bytes"}
                     else if from.is_none() {"logical source bytes materialized into native ReFS storage; no single adoptable source range"}
@@ -334,7 +414,10 @@ mod tests {
         assert_eq!(request.retained_ranges.len(), 1);
         assert_eq!(request.retained_ranges[0].offset, 4096);
         assert_eq!(request.retained_ranges[0].length, 4096);
-        assert_eq!(request.retained_ranges[0].source_sha256, p.ranges[0].sha256);
+        assert_eq!(
+            request.retained_ranges[0].source_sha256,
+            p.ranges[0].sha256.as_deref().unwrap()
+        );
     }
     #[test]
     fn incomplete_sparse_overlapping_and_foreign_streams_are_refused() {
@@ -384,5 +467,24 @@ mod tests {
         assert_eq!(partial.materialized_bytes, 4097);
         assert_eq!(partial.ranges[0].length, 4097);
         assert_eq!(partial.ranges[0].destination_offset, Some(32768));
+    }
+
+    #[test]
+    fn streamed_placement_hashes_only_source_physical_ranges() {
+        let (tree, mapping, payloads) = example(4096);
+        let mut source = vec![0u8; 65536];
+        source[4096..4096 + payloads[0].len()].copy_from_slice(&payloads[0]);
+        let measured =
+            diagnose_measured(&tree, &[mapping], &mut std::io::Cursor::new(source), 65536).unwrap();
+        assert_eq!(measured.retained_bytes, 8192);
+        assert_eq!(measured.ranges[0].sha256, tree.objects[0].sha256);
+        assert_eq!(
+            measured
+                .comparison_request(65536, &"1".repeat(64), &"2".repeat(64), 65536)
+                .unwrap()
+                .retained_ranges[0]
+                .source_sha256,
+            tree.objects[0].sha256.as_deref().unwrap()
+        );
     }
 }

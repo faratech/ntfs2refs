@@ -44,6 +44,10 @@ fn main() -> anyhow::Result<()> {
         /// inherited descriptors on the independent shadow (profile v2).
         #[arg(long, conflicts_with = "root_security_experiment")]
         ordinary_files: bool,
+        /// Construct the independent shadow directly from bounded source
+        /// reads without retaining all logical payload bytes in memory.
+        #[arg(long, requires = "ordinary_files", conflicts_with_all = ["root_security_experiment", "retain_eligible"])]
+        stream_payload: bool,
     }
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
@@ -123,6 +127,7 @@ fn main() -> anyhow::Result<()> {
         "freeze_shadow":args.freeze_shadow,
         "retain_eligible":args.retain_eligible,
         "ordinary_files":args.ordinary_files,
+        "stream_payload":args.stream_payload,
         "source_writes_authorized":false,"conversion_qualified":false}),
     )?;
     let mut events = vec![];
@@ -140,7 +145,9 @@ fn main() -> anyhow::Result<()> {
         };
         let mut payloads = vec![];
         for o in &tree.objects {
-            let mut bytes = if args.ordinary_files && !o.directory {
+            let mut bytes = if args.stream_payload {
+                vec![]
+            } else if args.ordinary_files && !o.directory {
                 ntfs_inspect::read_plain_stream(
                     &mut source,
                     &raw,
@@ -173,8 +180,16 @@ fn main() -> anyhow::Result<()> {
                 attributes: o.attributes,
                 security: &o.security,
                 payload: p,
-                expected_length: None,
-                expected_sha256: None,
+                expected_length: if args.stream_payload && !o.directory {
+                    Some(o.length)
+                } else {
+                    None
+                },
+                expected_sha256: if args.stream_payload && !o.directory {
+                    o.sha256.as_deref()
+                } else {
+                    None
+                },
                 source_offset: o.source_offset,
             })
             .collect();
@@ -257,6 +272,41 @@ fn main() -> anyhow::Result<()> {
                     same_security,
                 )
             }
+        } else if args.stream_payload && !args.verify_only {
+            let mut writer = |index: usize, target: &mut std::fs::File| -> std::io::Result<()> {
+                let object = tree
+                    .objects
+                    .get(index)
+                    .ok_or_else(|| std::io::Error::other("stream index outside tree"))?;
+                if object.directory {
+                    return Err(std::io::Error::other(
+                        "directory cannot receive stream bytes",
+                    ));
+                }
+                let proof = ntfs_inspect::copy_plain_stream(
+                    &mut source,
+                    &raw,
+                    object.record_number,
+                    256 * 1024 * 1024,
+                    target,
+                )
+                .map_err(std::io::Error::other)?;
+                if proof.logical_bytes != object.length
+                    || Some(&proof.sha256) != object.sha256.as_ref()
+                {
+                    return Err(std::io::Error::other(
+                        "streamed NTFS payload differs from the tree",
+                    ));
+                }
+                Ok(())
+            };
+            shadow_native::run_ordinary_streaming(
+                request.shadow.clone(),
+                request.source.disk_number,
+                &input,
+                &mut writer,
+                same_security,
+            )
         } else {
             native_run(if args.verify_only {
                 shadow_native::Mode::Verify
@@ -362,8 +412,17 @@ fn main() -> anyhow::Result<()> {
                 })
             })
             .collect::<Result<_>>()?;
-        let placement =
-            ntfs2refs::tree_placement::diagnose(&tree, &mappings, &payloads, source.byte_len())?;
+        let partition_len = source.byte_len();
+        let placement = if args.stream_payload {
+            ntfs2refs::tree_placement::diagnose_measured(
+                &tree,
+                &mappings,
+                &mut source,
+                partition_len,
+            )?
+        } else {
+            ntfs2refs::tree_placement::diagnose(&tree, &mappings, &payloads, partition_len)?
+        };
         let matched = comparison.iter().all(|c| c["matched"] == true);
         let frozen_shadow = if args.freeze_shadow {
             ensure!(matched, "shadow semantics must match before freezing");

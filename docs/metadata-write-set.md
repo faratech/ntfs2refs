@@ -1,0 +1,26 @@
+# Candidate ReFS target write set
+
+The current journal compares every sector of a frozen NTFS partition with a
+native ReFS shadow. On a previously used volume, stale bytes in free sectors
+can make the journal much larger than the ReFS metadata and live payloads.
+
+The new `refs_write_set` planner unions the native ReFS metadata-inclusive
+allocation bitmap with observed VBR, superblock, checkpoint and physical-root
+anchors. It computes the complement as source bytes to preserve. The shadow
+collector records compact allocated intervals and the bitmap SHA-256; the
+freeze report records a diagnostic write-set candidate or the reason it could
+not be formed. `lab-refs-write-set` can also build that diagnostic from saved
+ReFS inspection and allocation evidence. It never authorizes writes.
+
+A parser smoke run on the Windows-created 3.14 corpus found 19 anchor ranges,
+coalesced into eight intervals. That run used an **artificially empty**
+allocation map solely to exercise anchor parsing; its 100 KiB write-set total
+does not describe the real volume.
+
+The native bitmap is read before shadow dismount and flush. ReFS may change its
+allocation graph during that transition. Before using this plan to omit any
+journal patch, an independent reader must reconcile the **frozen raw image**
+against the captured bitmap, all reachable metadata and data extents, and
+fixed bootstrap locations. The journal then needs a hybrid postimage hash:
+shadow bytes in target-owned ranges and original NTFS bytes in preserved
+ranges, followed by native ReFS mutation qualification.

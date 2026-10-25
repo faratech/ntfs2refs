@@ -1,6 +1,6 @@
 //! Actual-device shadow freeze. Serialized evidence cannot recreate this value
 //! or authorize writes to the original source.
-use crate::{refs_inspect, shadow_tree::Tree, tree_placement::Plan};
+use crate::{refs_inspect, refs_write_set, shadow_tree::Tree, tree_placement::Plan};
 use anyhow::{Result, ensure};
 use n2r_win32::{
     NativeEvent, OfflinePartition, PartitionSnapshot, layout::DiskBinding, shadow_native::Report,
@@ -19,6 +19,8 @@ pub struct FrozenShadow {
     tree_sha256: String,
     placement_sha256: String,
     header: refs_inspect::RefsInspection,
+    candidate_write_set: Option<refs_write_set::WriteSetPlan>,
+    candidate_write_set_error: Option<String>,
     raw_bytes_read: u64,
     raw_partition_write_requests: u64,
     conversion_qualified: bool,
@@ -75,6 +77,19 @@ impl FrozenShadow {
                 && header.backup_header_status == refs_inspect::BackupHeaderStatus::Matching,
             "frozen shadow header differs from the measured native profile"
         );
+        // The mounted bitmap predates dismount/flush. Keep this optimization
+        // diagnostic until a raw post-freeze allocator graph reconciles it.
+        let candidate = (|| -> Result<_> {
+            let allocation = native.metadata_allocation.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("native metadata-inclusive allocation map absent")
+            })?;
+            let anchors = refs_write_set::observed_anchors(&header)?;
+            refs_write_set::plan(length, 4096, allocation, &anchors)
+        })();
+        let (candidate_write_set, candidate_write_set_error) = match candidate {
+            Ok(plan) => (Some(plan), None),
+            Err(error) => (None, Some(format!("{error:#}"))),
+        };
         let sha256 = hex::encode(crate::lab_reconstruct::hash_range(&mut disk, 0, length)?);
         let after = disk.inspect(events)?;
         ensure!(
@@ -99,6 +114,8 @@ impl FrozenShadow {
             tree_sha256: hex::encode(Sha256::digest(serde_json::to_vec(tree)?)),
             placement_sha256: hex::encode(Sha256::digest(serde_json::to_vec(placement)?)),
             header,
+            candidate_write_set,
+            candidate_write_set_error,
             raw_bytes_read: disk.native_bytes_read,
             raw_partition_write_requests: 0,
             conversion_qualified: false,

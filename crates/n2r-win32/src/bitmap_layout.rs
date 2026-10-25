@@ -1,15 +1,17 @@
 //! Bounded candidate occupancy in legacy or metadata-inclusive native bitmaps.
 //! This is not a whole-volume ownership proof.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io;
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AllocatedRange {
     pub offset: u64,
     pub length: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AllocationMap {
     pub bitmap_sha256: String,
     pub cluster_count: u64,

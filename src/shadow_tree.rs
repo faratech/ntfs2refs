@@ -353,13 +353,18 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
     tree.objects.sort_by_key(|o| (o.path.len(), o.path.clone()));
     Ok(tree)
 }
-fn valid_component(s: &str) -> bool {
-    let upper = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+pub(crate) fn valid_component(s: &str) -> bool {
+    let upper = s
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
     !s.is_empty()
         && s.len() <= 100
         && !s.ends_with([' ', '.'])
         && s.bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+            .all(|c| c.is_ascii_alphanumeric() || b" ._-".contains(&c))
         && ![
             "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
             "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -372,10 +377,12 @@ mod tests {
     #[test]
     fn rejects_alias_traversal_devices_and_ambiguous_components() {
         for s in [
-            "", ".", "..", "a.", "a ", "CON.txt", "lpt9.bin", "a:b", "a\\b", "a/b", "a\0b", "é",
+            "", ".", "..", "a.", "a ", "CON.txt", "CON .txt", "lpt9.bin", "a:b", "a\\b", "a/b",
+            "a\0b", "é",
         ] {
             assert!(!valid_component(s), "{s:?}");
         }
         assert!(valid_component("doc1.bin"));
+        assert!(valid_component("Quarterly Report 1.txt"));
     }
 }

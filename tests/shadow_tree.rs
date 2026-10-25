@@ -126,6 +126,14 @@ fn expected_tree_requires_parent_before_child_and_unique_source_identity() {
     expected.objects.push(duplicate);
     assert!(expected.validate().is_err());
 }
+
+#[test]
+fn ordinary_expected_tree_accepts_internal_spaces_in_a_filename() {
+    let tree = shadow_tree::derive_ordinary(&model()).unwrap();
+    let mut expected = shadow_tree::ExpectedTree::from(&tree);
+    expected.objects[1].path = vec!["Quarterly Report 1.bin".into()];
+    expected.validate().unwrap();
+}
 #[test]
 fn inconsistent_raw_views_missing_security_and_stale_parent_are_refused() {
     let raw = model();

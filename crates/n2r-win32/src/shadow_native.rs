@@ -62,6 +62,24 @@ impl Input<'_> {
             .unwrap_or_else(|| hex::encode(Sha256::digest(self.payload)))
     }
 }
+fn valid_shadow_component(s: &str) -> bool {
+    let stem = s
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    !s.is_empty()
+        && s.len() <= 100
+        && !s.ends_with(['.', ' '])
+        && s.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b" ._-".contains(&byte))
+        && ![
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ]
+        .contains(&stem.as_str())
+}
 fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> {
     let mut hash = Sha256::new();
     let mut remaining = length;
@@ -1222,14 +1240,7 @@ fn run_role(
             return Err(invalid("streaming source lacks a hash-only expectation"));
         }
         if i.components.len() > 16
-            || i.components.iter().any(|s| {
-                s.is_empty()
-                    || s.len() > 100
-                    || s.ends_with(['.', ' '])
-                    || !s
-                        .bytes()
-                        .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
-            })
+            || i.components.iter().any(|s| !valid_shadow_component(s))
             || i.times.iter().any(|t| *t == 0 || *t >= i64::MAX as u64)
             || i.attributes & !0x2037 != 0
             || (i.attributes & 16 != 0) != i.directory
@@ -1715,6 +1726,14 @@ fn run_role(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordinary_shadow_names_allow_internal_spaces_but_refuse_devices() {
+        assert!(valid_shadow_component("Quarterly Report 1.txt"));
+        assert!(valid_shadow_component("a  b.txt"));
+        for name in ["a ", "CON.txt", "CON .txt", "COM1 .dat", "a:b", "a\\b", "é"] {
+            assert!(!valid_shadow_component(name), "{name}");
+        }
+    }
     #[test]
     fn fragmented_retention_checks_only_the_requested_vcn_window() {
         let runs = vec![

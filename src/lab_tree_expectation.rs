@@ -131,11 +131,9 @@ impl Expectation {
                     && o.path.len() <= 16
                     && (index != 0 || (o.path.is_empty() && o.directory))
                     && (index == 0 || !o.path.is_empty())
-                    && o.path.iter().all(|s| !s.is_empty()
-                        && s.len() <= 100
-                        && !s.ends_with([' ', '.'])
-                        && s.bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)))
+                    && o.path
+                        .iter()
+                        .all(|s| crate::shadow_tree::valid_component(s))
                     && o.times.iter().all(|t| *t > 0 && *t < i64::MAX as u64)
                     && o.attributes & !0x2037 == 0
                     && (o.attributes & 16 != 0) == o.directory,

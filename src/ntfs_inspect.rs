@@ -2114,6 +2114,47 @@ pub fn copy_plain_named_stream<R: Read + Seek, W: Write>(
     })
 }
 
+/// Hash a bounded logical subrange of the checked unnamed DATA stream. The
+/// range reader applies NTFS sparse and valid-data zero semantics, so its hash
+/// can describe a materialized ReFS extent even when no source LCN exists.
+pub fn hash_plain_stream_range<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    offset: u64,
+    length: u64,
+    max_bytes: u64,
+) -> Result<String> {
+    let (attribute, expected) =
+        checked_plain_attribute(reader, raw, record_number, &[], max_bytes)?;
+    ensure!(
+        offset
+            .checked_add(length)
+            .is_some_and(|end| end <= attribute.report.logical_size),
+        "requested logical stream range escapes EOF"
+    );
+    let mut hash = Sha256::new();
+    let mut copied = 0u64;
+    let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
+    while copied < length {
+        let count = (length - copied).min(buffer.len() as u64) as usize;
+        read_attribute_range(
+            reader,
+            &attribute,
+            offset + copied,
+            &mut buffer[..count],
+            &raw.geometry,
+        )?;
+        hash.update(&buffer[..count]);
+        copied += count as u64;
+    }
+    let actual = hex::encode(hash.finalize());
+    if offset == 0 && length == attribute.report.logical_size {
+        ensure!(actual == expected, "logical stream changed from inspection");
+    }
+    Ok(actual)
+}
+
 /// Materialize the same verified stream into bounded memory for the existing
 /// small laboratory shadow path.
 pub fn read_plain_stream<R: Read + Seek>(

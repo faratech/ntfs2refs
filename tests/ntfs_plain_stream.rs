@@ -4,6 +4,7 @@ use ntfs2refs::{
     ntfs_inspect::{self, LogicalHashStatus},
     ntfs_stream_plan::{self, Disposition},
 };
+use sha2::Digest;
 use std::io::Cursor;
 
 #[test]
@@ -74,6 +75,11 @@ fn logical_reader_recovers_resident_and_nonresident_bytes_and_rejects_changed_pa
     let resident = ntfs_inspect::read_plain_stream(&mut source, &raw, 6, 1024).unwrap();
     assert_eq!(resident.len(), 64);
     assert_eq!(resident[0], 0xf1);
+    assert_eq!(
+        ntfs_inspect::hash_plain_stream_range(&mut source, &raw, 16, 10, 7, 1024).unwrap(),
+        hex::encode(sha2::Sha256::digest(b"content"))
+    );
+    assert!(ntfs_inspect::hash_plain_stream_range(&mut source, &raw, 16, 17, 1, 1024).is_err());
 
     let mut changed = image;
     changed[100 * 4096] ^= 1;

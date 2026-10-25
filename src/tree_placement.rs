@@ -172,13 +172,14 @@ pub fn diagnose(
 /// Use the already verified full logical source/target hashes while hashing
 /// only physical ranges needed for retained-extent comparison pins. This path
 /// supports bounded native shadow construction without retaining every file's
-/// payload in memory. A materialized subrange can lack its own digest; the
-/// whole-stream native digest remains mandatory.
+/// payload in memory. The caller supplies a checked logical-range digest for
+/// materialized subranges; the whole-stream native digest remains mandatory.
 pub fn diagnose_measured<R: Read + Seek>(
     tree: &Tree,
     mappings: &[Mapping],
     reader: &mut R,
     partition: u64,
+    mut materialized_digest: impl FnMut(&mut R, &Object, u64, u64) -> Result<String>,
 ) -> Result<Plan> {
     diagnose_impl(
         tree,
@@ -192,10 +193,15 @@ pub fn diagnose_measured<R: Read + Seek>(
                     offset,
                     end - start,
                 )?)))
-            } else if start == 0 && end == object.length {
-                Ok(object.sha256.clone())
             } else {
-                Ok(None)
+                let actual = materialized_digest(reader, object, start, end)?;
+                if start == 0 && end == object.length {
+                    ensure!(
+                        Some(&actual) == object.sha256.as_ref(),
+                        "materialized full-stream digest differs"
+                    );
+                }
+                Ok(Some(actual))
             }
         },
     )
@@ -474,8 +480,14 @@ mod tests {
         let (tree, mapping, payloads) = example(4096);
         let mut source = vec![0u8; 65536];
         source[4096..4096 + payloads[0].len()].copy_from_slice(&payloads[0]);
-        let measured =
-            diagnose_measured(&tree, &[mapping], &mut std::io::Cursor::new(source), 65536).unwrap();
+        let measured = diagnose_measured(
+            &tree,
+            &[mapping],
+            &mut std::io::Cursor::new(source),
+            65536,
+            |_, _, _, _| anyhow::bail!("unexpected materialized range"),
+        )
+        .unwrap();
         assert_eq!(measured.retained_bytes, 8192);
         assert_eq!(measured.ranges[0].sha256, tree.objects[0].sha256);
         assert_eq!(
@@ -486,5 +498,32 @@ mod tests {
                 .source_sha256,
             tree.objects[0].sha256.as_deref().unwrap()
         );
+    }
+
+    #[test]
+    fn streamed_placement_hashes_materialized_fragments() {
+        let (mut tree, mut mapping, payloads) = example(32768);
+        tree.objects[0].source_offset = None;
+        mapping.extents[0].length = 4096;
+        mapping.extents.push(Extent {
+            logical_offset: 4096,
+            physical_offset: Some(36864),
+            length: 4096,
+        });
+        let measured = diagnose_measured(
+            &tree,
+            &[mapping],
+            &mut std::io::Cursor::new(vec![0u8; 65536]),
+            65536,
+            |_, _, start, end| {
+                Ok(hex::encode(Sha256::digest(
+                    &payloads[0][start as usize..end as usize],
+                )))
+            },
+        )
+        .unwrap();
+        assert_eq!(measured.materialized_bytes, 8192);
+        assert_eq!(measured.ranges.len(), 2);
+        assert!(measured.ranges.iter().all(|r| r.sha256.is_some()));
     }
 }

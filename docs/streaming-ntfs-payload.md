@@ -13,6 +13,11 @@ NTFS named DATA stream and records the UTF-16 stream name in its copy proof.
 The current ordinary-tree shadow still rejects ADS; this reader does not yet
 provide ReFS named-stream reconstruction or conversion admission.
 
+The streaming placement path now hashes each materialized logical subrange
+through `hash_plain_stream_range`, which applies sparse-hole and NTFS
+valid-data zero semantics. Per-range digests remain diagnostic until source
+admission and the native reconstruction path use the same frozen basis.
+
 The existing bounded `read_plain_stream` API uses that same checked streaming
 path and collects into memory for the small native-shadow experiment. The
 ordinary Windows shadow creator now accepts `--stream-payload`, which passes

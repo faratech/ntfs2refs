@@ -424,6 +424,16 @@ fn main() -> anyhow::Result<()> {
                 &mappings,
                 &mut source,
                 partition_len,
+                |reader, object, start, end| {
+                    ntfs_inspect::hash_plain_stream_range(
+                        reader,
+                        &raw,
+                        object.record_number,
+                        start,
+                        end - start,
+                        256 * 1024 * 1024,
+                    )
+                },
             )?
         } else {
             ntfs2refs::tree_placement::diagnose(&tree, &mappings, &payloads, partition_len)?

@@ -46,9 +46,40 @@ now requires the root's exact 40-byte basic-info record captured by the
 mutation workload before reboot; it does not treat arbitrary root timestamp
 changes as a pass.
 
+## Interrupted apply and native recovery
+
+A separate run from a freshly verified NTFS/shadow freeze injected process
+exit code 86 immediately after the first flushed target write. The collector
+confirmed that disk 1 was still offline, the external journal was complete,
+the handoff sector was all zero and recovery was required. The pinned `resume`
+operation then proved the exact expected ReFS postimage, completed the
+remaining journaled patches and left the handoff sector clear. A separate
+finalizer wrote `N2RHND01`, mounted ReFS and verified the original eight
+objects through `refs.sys`.
+
+The recovered VM rebooted cleanly. A strict read-only verifier of the same
+pinned eight-object tree succeeded after reboot with report SHA-256
+`b763ed7869abf5e7214567009a3838b825d972b2389d82399fbfdba755029c0b`.
+Its first scheduled launch exited before writing a report; the subsequent
+read-only invocation of the same binary and inputs succeeded. That launch
+anomaly remains in the saved evidence rather than being counted as a passed
+scheduled-task run. The recovered branch was saved as powered-off checkpoint
+`713c2e66-32b0-43e5-a6a2-a35098c3972c` and started again with disk 1
+mounted as ReFS at F:.
+
+Ignored evidence paths are:
+
+- `.lab/hyperv/general-replay/win11-20261025T135034440Z` (controlled exit),
+- `.lab/hyperv/general-recovery/win11-20261025T141452288Z` (exact resume),
+- `.lab/hyperv/general-finalize/win11-20261025T142524383Z` (handoff and ReFS),
+- `.lab/hyperv/general-recovery-reboot/win11-20261025T143305523Z` (reboot,
+  strict verifier and saved-checkpoint provenance).
+
 This is a **bounded laboratory success**. The four user payload ranges were
 relocated; this run does not demonstrate retained physical extents. Source
 admission for arbitrary NTFS volumes is still closed, including unresolved
-NTFS `0x0080` policy and TxF replacement state. Native interrupted-recovery
-qualification and a usable general conversion CLI remain unfinished. Boot
-volume conversion is a separate later objective.
+NTFS `0x0080` policy and TxF replacement state. The first-write interruption
+and resume path passed, but a broader write/flush fault matrix and the
+shadowless rollback path remain to be qualified natively. A usable general
+conversion CLI remains unfinished. Boot volume conversion is a separate later
+objective.

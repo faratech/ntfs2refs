@@ -306,6 +306,7 @@ fn diagnose_impl(
         ],
     };
     let mut targets = vec![];
+    let mut source_allocations = vec![];
     for (object_index, o) in tree.objects.iter().enumerate() {
         if o.directory {
             continue;
@@ -314,6 +315,41 @@ fn diagnose_impl(
             .remove(&(o.record_number, o.sequence_number))
             .context("missing target stream")?;
         let source = o.source_offset;
+        ensure!(
+            source.is_none() || o.source_extents.is_empty(),
+            "mixed single and fragmented source mapping"
+        );
+        if let Some(offset) = source {
+            ensure!(
+                offset.is_multiple_of(4096)
+                    && o.length.is_multiple_of(4096)
+                    && offset
+                        .checked_add(o.length)
+                        .is_some_and(|end| end <= partition),
+                "single source extent exceeds partition"
+            );
+            source_allocations.push((offset, o.length));
+        } else if !o.source_extents.is_empty() {
+            let mut covered = 0u64;
+            for run in &o.source_extents {
+                let offset = run.physical_offset.context("fragmented source hole")?;
+                ensure!(
+                    run.logical_offset == covered
+                        && run.length > 0
+                        && run.length.is_multiple_of(4096)
+                        && offset.is_multiple_of(4096)
+                        && offset
+                            .checked_add(run.length)
+                            .is_some_and(|end| end <= partition),
+                    "fragmented source run differs"
+                );
+                covered = covered
+                    .checked_add(run.length)
+                    .context("source run overflow")?;
+                source_allocations.push((offset, run.length));
+            }
+            ensure!(covered == o.length, "fragmented source coverage differs");
+        }
         ensure!(
             Some(&m.logical_sha256) == o.sha256.as_ref(),
             "source/target logical stream proof differs"
@@ -368,31 +404,70 @@ fn diagnose_impl(
             if e.logical_offset >= o.length {
                 continue;
             }
-            let from = source.map(|s| s + cursor);
-            let length = end - cursor;
-            let retained = Some(dest) == from && length.is_multiple_of(4096);
-            if retained {
-                p.retained_bytes += length;
-            } else if from.is_none() {
-                p.materialized_bytes += length;
-            } else {
-                p.relocated_bytes += length;
-            }
-            let range_sha = digest(object_index, o, cursor, end, from)?;
-            if retained && cursor == 0 && end == o.length {
+            while cursor < end {
+                let (from, segment_end) = if let Some(start) = source {
+                    (Some(start + cursor), end)
+                } else if o.source_extents.is_empty() {
+                    (None, end)
+                } else {
+                    let run = o
+                        .source_extents
+                        .iter()
+                        .find(|run| {
+                            run.logical_offset <= cursor
+                                && run
+                                    .logical_offset
+                                    .checked_add(run.length)
+                                    .is_some_and(|limit| cursor < limit)
+                        })
+                        .context("fragmented source has incomplete logical coverage")?;
+                    let start = run.physical_offset.context("fragmented source hole")?;
+                    (
+                        Some(
+                            start
+                                .checked_add(cursor - run.logical_offset)
+                                .context("source run overflow")?,
+                        ),
+                        end.min(run.logical_offset + run.length),
+                    )
+                };
+                let length = segment_end - cursor;
+                let destination = dest
+                    .checked_add(cursor - e.logical_offset)
+                    .context("target run overflow")?;
                 ensure!(
-                    range_sha.as_ref() == o.sha256.as_ref(),
-                    "retained full-stream digest differs"
+                    length > 0
+                        && from.is_none_or(|offset| {
+                            offset
+                                .checked_add(length)
+                                .is_some_and(|limit| limit <= partition)
+                        }),
+                    "source run exceeds partition"
                 );
+                let retained = Some(destination) == from && length.is_multiple_of(4096);
+                if retained {
+                    p.retained_bytes += length;
+                } else if from.is_none() {
+                    p.materialized_bytes += length;
+                } else {
+                    p.relocated_bytes += length;
+                }
+                let range_sha = digest(object_index, o, cursor, segment_end, from)?;
+                if retained && cursor == 0 && segment_end == o.length {
+                    ensure!(
+                        range_sha.as_ref() == o.sha256.as_ref(),
+                        "retained full-stream digest differs"
+                    );
+                }
+                p.ranges.push(Range{record_number:o.record_number,sequence_number:o.sequence_number,path:o.path.clone(),
+                    stream_name:"",target_file_id:m.target_file_id,logical_offset:cursor,source_offset:from,
+                    destination_offset:Some(destination),length,sha256:range_sha,
+                    disposition:if retained {Disposition::Retained} else if from.is_none() {Disposition::Materialized} else {Disposition::Relocated},
+                    justification:if retained {"native target mapping resolves to the original source bytes"}
+                        else if from.is_none() {"logical source bytes materialized into native ReFS storage; no adoptable source range"}
+                        else {"real source bytes initialized at an independent native ReFS allocation; journal must carry them to the original partition"}});
+                cursor = segment_end;
             }
-            p.ranges.push(Range{record_number:o.record_number,sequence_number:o.sequence_number,path:o.path.clone(),
-                stream_name:"",target_file_id:m.target_file_id,logical_offset:cursor,source_offset:from,
-                destination_offset:Some(dest),length,sha256:range_sha,
-                disposition:if retained {Disposition::Retained} else if from.is_none() {Disposition::Materialized} else {Disposition::Relocated},
-                justification:if retained {"native target mapping resolves to the original source bytes"}
-                    else if from.is_none() {"logical source bytes materialized into native ReFS storage; no single adoptable source range"}
-                    else {"real source bytes initialized at an independent native ReFS allocation; journal must carry them to the original partition"}});
-            cursor = end;
         }
         ensure!(
             cursor == o.length,
@@ -401,6 +476,13 @@ fn diagnose_impl(
         p.shadow_payload_initialization_bytes += o.length;
     }
     ensure!(index.is_empty(), "unexpected target stream identity");
+    source_allocations.sort_unstable();
+    ensure!(
+        source_allocations
+            .windows(2)
+            .all(|pair| pair[0].0 + pair[0].1 <= pair[1].0),
+        "source payload allocations overlap"
+    );
     targets.sort_unstable();
     ensure!(
         targets
@@ -434,6 +516,7 @@ mod tests {
                     attributes: 32,
                     security: vec![],
                     source_offset: Some(4096),
+                    source_extents: vec![],
                     length: 8192,
                     sha256: Some(sha.clone()),
                 }],
@@ -488,6 +571,87 @@ mod tests {
             request.retained_ranges[0].source_sha256,
             p.ranges[0].sha256.as_deref().unwrap()
         );
+    }
+    #[test]
+    fn fragmented_ntfs_source_splits_a_single_target_run_at_source_boundaries() {
+        let (mut tree, mapping, mut payloads) = example(4096);
+        payloads[0][4096..].fill(43);
+        let digest = hex::encode(Sha256::digest(&payloads[0]));
+        tree.objects[0].sha256 = Some(digest.clone());
+        tree.objects[0].source_offset = None;
+        tree.objects[0].source_extents = vec![
+            Extent {
+                logical_offset: 0,
+                physical_offset: Some(4096),
+                length: 4096,
+            },
+            Extent {
+                logical_offset: 4096,
+                physical_offset: Some(16384),
+                length: 4096,
+            },
+        ];
+        let mut mapping = mapping;
+        mapping.logical_sha256 = digest;
+        let plan = diagnose(&tree, &[mapping], &payloads, 65536).unwrap();
+        assert_eq!((plan.retained_bytes, plan.relocated_bytes), (4096, 4096));
+        assert_eq!(plan.ranges.len(), 2);
+        assert_eq!(plan.ranges[0].disposition, Disposition::Retained);
+        assert_eq!(plan.ranges[1].disposition, Disposition::Relocated);
+        assert_eq!(plan.ranges[1].source_offset, Some(16384));
+        assert_eq!(plan.ranges[1].destination_offset, Some(8192));
+        let comparison = plan
+            .comparison_request(65536, &"1".repeat(64), &"2".repeat(64), 65536)
+            .unwrap();
+        assert_eq!(comparison.retained_ranges.len(), 1);
+
+        tree.objects[0].source_extents[1].logical_offset = 0;
+        let (_, mut invalid_mapping, _) = example(4096);
+        invalid_mapping.logical_sha256 = tree.objects[0].sha256.clone().unwrap();
+        assert!(diagnose(&tree, &[invalid_mapping], &payloads, 65536).is_err());
+    }
+    #[test]
+    fn streamed_fragmented_source_hashes_each_original_physical_run() {
+        let (mut tree, mut mapping, payloads) = example(4096);
+        tree.objects[0].source_offset = None;
+        tree.objects[0].source_extents = vec![
+            Extent {
+                logical_offset: 0,
+                physical_offset: Some(4096),
+                length: 4096,
+            },
+            Extent {
+                logical_offset: 4096,
+                physical_offset: Some(16384),
+                length: 4096,
+            },
+        ];
+        mapping.extents = vec![
+            Extent {
+                logical_offset: 0,
+                physical_offset: Some(4096),
+                length: 4096,
+            },
+            Extent {
+                logical_offset: 4096,
+                physical_offset: Some(32768),
+                length: 4096,
+            },
+        ];
+        let mut raw = vec![0u8; 65536];
+        raw[4096..8192].copy_from_slice(&payloads[0][..4096]);
+        raw[16384..20480].copy_from_slice(&payloads[0][4096..]);
+        let plan = diagnose_measured(
+            &tree,
+            &[mapping],
+            &mut std::io::Cursor::new(raw),
+            65536,
+            |_, _, _, _| anyhow::bail!("fragmented source must use physical evidence"),
+        )
+        .unwrap();
+        assert_eq!((plan.retained_bytes, plan.relocated_bytes), (4096, 4096));
+        assert_eq!(plan.ranges[0].sha256, plan.ranges[1].sha256);
+        assert_eq!(plan.ranges[1].source_offset, Some(16384));
     }
     #[test]
     fn incomplete_sparse_overlapping_and_foreign_streams_are_refused() {

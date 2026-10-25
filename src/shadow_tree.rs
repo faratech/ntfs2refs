@@ -17,6 +17,10 @@ pub struct Object {
     pub attributes: u32,
     pub security: Vec<u8>,
     pub source_offset: Option<u64>,
+    /// Fragmented, aligned NTFS payload runs. Mutually exclusive with the
+    /// single-run source_offset; absent in older frozen tree requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_extents: Vec<ntfs::Extent>,
     pub length: u64,
     pub sha256: Option<String>,
 }
@@ -90,8 +94,37 @@ impl ExpectedTree {
                     .context("expected byte overflow")?;
             } else {
                 ensure!(
-                    object.length == 0 && object.sha256.is_none() && object.source_offset.is_none(),
+                    object.length == 0
+                        && object.sha256.is_none()
+                        && object.source_offset.is_none()
+                        && object.source_extents.is_empty(),
                     "expected directory carries stream data"
+                );
+            }
+            ensure!(
+                object.source_offset.is_none() || object.source_extents.is_empty(),
+                "expected tree mixes single and fragmented source runs"
+            );
+            if !object.source_extents.is_empty() {
+                let mut covered = 0u64;
+                for extent in &object.source_extents {
+                    ensure!(
+                        extent.logical_offset == covered
+                            && extent.length > 0
+                            && extent.length.is_multiple_of(4096)
+                            && extent.physical_offset.is_some_and(|offset| {
+                                offset.is_multiple_of(4096)
+                                    && offset.checked_add(extent.length).is_some()
+                            }),
+                        "expected fragmented source run differs"
+                    );
+                    covered = covered
+                        .checked_add(extent.length)
+                        .context("source run overflow")?;
+                }
+                ensure!(
+                    covered == object.length,
+                    "fragmented source coverage differs"
                 );
             }
         }
@@ -232,7 +265,7 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
                 && si.file_attributes & !0x2027 == 0,
             "unsupported basic metadata"
         );
-        let (source_offset, length, sha256) = match f.streams.first() {
+        let (source_offset, source_extents, length, sha256) = match f.streams.first() {
             Some(s) => {
                 let candidate = source_plan.streams.iter().find(|decision| {
                     decision.record_number == f.record_number
@@ -244,16 +277,29 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
                         decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate
                     })
                     .and_then(|decision| decision.source_offset);
+                let extents = candidate
+                    .filter(|decision| {
+                        decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate
+                    })
+                    .map(|decision| decision.source_extents.clone())
+                    .unwrap_or_default();
                 if let Some(offset) = offset {
                     source_ranges.push((offset, s.logical_size));
                 }
+                for extent in &extents {
+                    source_ranges.push((
+                        extent.physical_offset.context("missing source run")?,
+                        extent.length,
+                    ));
+                }
                 (
                     offset,
+                    extents,
                     s.logical_size,
                     Some(s.logical_sha256.clone().context("missing logical digest")?),
                 )
             }
-            None => (None, 0, None),
+            None => (None, Vec::new(), 0, None),
         };
         tree.logical_bytes = tree
             .logical_bytes
@@ -268,6 +314,7 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
             attributes: si.file_attributes | if f.is_directory { 16 } else { 0 },
             security: hex::decode(&descriptor.relative_hex)?,
             source_offset,
+            source_extents,
             length,
             sha256,
         });

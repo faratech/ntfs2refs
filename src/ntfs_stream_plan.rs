@@ -1,6 +1,6 @@
 //! Read-only source payload classification for a 4 KiB ReFS target. This is
 //! not namespace admission or a target allocation/write plan.
-use crate::ntfs_inspect::{LogicalHashStatus, MetadataRole, NtfsInspection};
+use crate::ntfs_inspect::{Extent, LogicalHashStatus, MetadataRole, NtfsInspection};
 use serde::Serialize;
 
 const CLUSTER: u64 = 4096;
@@ -22,6 +22,10 @@ pub struct StreamDecision {
     pub logical_bytes: u64,
     pub logical_sha256: Option<String>,
     pub source_offset: Option<u64>,
+    /// Physical runs for a fully initialized ordinary stream with more than
+    /// one NTFS run. Empty for single-run or materialized streams.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub source_extents: Vec<Extent>,
     pub disposition: Disposition,
     pub target_named_stream_support_pending: bool,
     pub reason: &'static str,
@@ -66,6 +70,23 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                 });
             let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
             let physical = single.and_then(|e| e.physical_offset);
+            let mut covered = 0u64;
+            let physical_runs = !stream.extents.is_empty()
+                && stream.extents.len() <= 1024
+                && stream.extents.iter().all(|extent| {
+                    let valid = extent.logical_offset == covered
+                        && extent.length > 0
+                        && extent.length.is_multiple_of(CLUSTER)
+                        && extent.physical_offset.is_some_and(|offset| {
+                            offset.is_multiple_of(CLUSTER)
+                                && offset
+                                    .checked_add(extent.length)
+                                    .is_some_and(|end| end <= raw.geometry.volume_size)
+                        });
+                    covered = covered.saturating_add(extent.length);
+                    valid
+                })
+                && covered == stream.logical_size;
             let retainable = !named
                 && !stream.resident
                 && stream.flags == 0
@@ -73,13 +94,7 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                 && stream.logical_size.is_multiple_of(CLUSTER)
                 && stream.initialized_size == stream.logical_size
                 && stream.allocated_size == stream.logical_size
-                && single.is_some_and(|e| e.logical_offset == 0 && e.length == stream.logical_size)
-                && physical.is_some_and(|offset| {
-                    offset.is_multiple_of(CLUSTER)
-                        && offset
-                            .checked_add(stream.logical_size)
-                            .is_some_and(|end| end <= raw.geometry.volume_size)
-                });
+                && physical_runs;
             let (disposition, reason) = if u64::from(raw.geometry.cluster_size) != CLUSTER
                 || stream.flags != 0
                 || !complete
@@ -92,7 +107,7 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
             } else if retainable {
                 (
                     Disposition::RetainCandidate,
-                    "single initialized aligned physical run may be adopted",
+                    "initialized aligned physical runs may be adopted",
                 )
             } else {
                 (
@@ -119,6 +134,11 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                     physical
                 } else {
                     None
+                },
+                source_extents: if disposition == Disposition::RetainCandidate && single.is_none() {
+                    stream.extents.clone()
+                } else {
+                    Vec::new()
                 },
                 disposition,
                 target_named_stream_support_pending: named,

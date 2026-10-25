@@ -127,3 +127,44 @@ fn source_stream_plan_separates_retainable_payload_from_named_materialization() 
     assert_eq!(planned.retained_candidate_bytes, 4096);
     assert!(!planned.executable);
 }
+
+#[test]
+fn source_stream_plan_keeps_complete_fragmented_ordinary_runs() {
+    let image = support::image();
+    let mut raw = ntfs_inspect::inspect(&mut Cursor::new(image), 2 * 1024 * 1024).unwrap();
+    let stream = raw
+        .files
+        .iter_mut()
+        .find(|f| f.record_number == 16)
+        .unwrap()
+        .streams
+        .iter_mut()
+        .find(|s| s.name_utf16.is_empty())
+        .unwrap();
+    stream.logical_size = 8192;
+    stream.initialized_size = 8192;
+    stream.allocated_size = 8192;
+    stream.extents = vec![
+        ntfs_inspect::Extent {
+            logical_offset: 0,
+            physical_offset: Some(100 * 4096),
+            length: 4096,
+        },
+        ntfs_inspect::Extent {
+            logical_offset: 4096,
+            physical_offset: Some(102 * 4096),
+            length: 4096,
+        },
+    ];
+    let expected_extents = stream.extents.clone();
+    let planned = ntfs_stream_plan::classify(&raw);
+    let candidate = planned
+        .streams
+        .iter()
+        .find(|s| s.record_number == 16 && s.name_utf16.is_empty())
+        .unwrap();
+    assert_eq!(candidate.disposition, Disposition::RetainCandidate);
+    assert_eq!(candidate.source_offset, None);
+    assert_eq!(candidate.source_extents, expected_extents);
+    assert_eq!(planned.retained_candidate_bytes, 8192);
+}

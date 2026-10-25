@@ -183,6 +183,13 @@ evidence. It records cached last-access changes while preserving the raw
 stored timestamps as the target authority. Replay itself does not bind a live
 frozen device or issue a certificate.
 
+The ordinary stream planner now carries multiple complete, aligned NTFS
+physical runs into the shadow tree. The measured placement planner splits a
+target ReFS run at each source-run boundary, hashes the actual source range,
+and records retained versus relocated ranges separately. Existing single-run
+tree requests retain their serialized form. This has only synthetic coverage
+so far; a fragmented native conversion still needs the VM run.
+
 The dirty-state and volume-policy questions are now separate gates. On the
 Windows 11 source, the native dirty result is false, on-disk dirty bit is
 clear, and NTFS version is 3.1, so `clean_volume` passes. The observed

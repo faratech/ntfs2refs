@@ -7,6 +7,8 @@ pub mod corpus;
 pub mod extent_adoption;
 pub mod fixed_vhd;
 #[cfg(windows)]
+pub mod general_allocation_capture;
+#[cfg(windows)]
 pub mod general_conversion;
 #[cfg(windows)]
 pub mod general_lab;
@@ -58,6 +60,9 @@ pub mod refs_containers;
 pub mod refs_cow_overlay;
 pub mod refs_inspect;
 pub mod refs_node;
+#[cfg(windows)]
+pub mod refs_reference_import;
+pub mod refs_reference_transport;
 pub mod refs_retained_allocation;
 pub mod refs_virtual_roots;
 pub mod refs_write_set;

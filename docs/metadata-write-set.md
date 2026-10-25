@@ -6,11 +6,20 @@ can make the journal much larger than the ReFS metadata and live payloads.
 
 The new `refs_write_set` planner unions the native ReFS metadata-inclusive
 allocation bitmap with observed VBR, superblock, checkpoint and physical-root
-anchors. It computes the complement as source bytes to preserve. The shadow
+anchors, plus successfully checked container-tree and translated-root pages.
+The bounded anchor profile requires the three expected superblock locations,
+two matching checkpoint locations and valid self checksums. Rejected observed
+pages prevent a candidate instead of silently disappearing from its range set.
+It computes the complement as source bytes to preserve. The shadow
 collector records compact allocated intervals and the bitmap SHA-256; the
 freeze report records a diagnostic write-set candidate or the reason it could
 not be formed. `lab-refs-write-set` can also build that diagnostic from saved
 ReFS inspection and allocation evidence. It never authorizes writes.
+
+`payload_coverage` separately checks supplied measured target retrieval ranges
+against that candidate, reports uncovered bytes and rejects overlapping,
+unaligned or out-of-volume extents. This range check proves neither that every
+payload was supplied nor that the remaining metadata graph is complete.
 
 A parser smoke run on the Windows-created 3.14 corpus found 19 anchor ranges,
 coalesced into eight intervals. That run used an **artificially empty**

@@ -14,6 +14,8 @@ pub mod logical_hash;
 pub mod namespace_layout;
 #[cfg(windows)]
 mod namespace_native;
+#[cfg(windows)]
+pub mod reference_import;
 pub mod region_layout;
 pub mod retention_layout;
 #[cfg(windows)]
@@ -30,7 +32,8 @@ pub use attestation_native::collect_file_metadata;
 mod native;
 #[cfg(windows)]
 pub use native::{
-    DriveLetterRestore, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenPartition,
+    DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
+    GeneralAllocationSnapshot, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenPartition,
     GeneralJournaledPartition, GeneralLiveNtfsObservation, GeneralLockedPartition,
     GeneralPartitionReader, GeneralProbe, LiveNtfsObservation, MountPathObservation, NativeEvent,
     OfflinePartition, PartitionSnapshot, WritePolicy, capture_mount_paths_general,

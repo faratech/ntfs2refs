@@ -10,6 +10,7 @@
 *.raw
 *.img
 *.journal
+*.n2rref
 *.dmp
 
 # Local credentials and environment configuration.

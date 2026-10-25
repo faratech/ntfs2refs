@@ -235,7 +235,7 @@ fn reject_special_metadata(metadata: &Metadata) -> Result<()> {
 
 /// Validate each existing component without following symlinks/reparse points.
 /// Reject parent traversal and Windows namespaces/alternate data streams.
-fn checked_path(path: &Path, missing_leaf_allowed: bool) -> Result<PathBuf> {
+pub(crate) fn checked_path(path: &Path, missing_leaf_allowed: bool) -> Result<PathBuf> {
     ensure!(!path.as_os_str().is_empty(), "empty path");
     #[cfg(windows)]
     {
@@ -312,7 +312,7 @@ fn checked_path(path: &Path, missing_leaf_allowed: bool) -> Result<PathBuf> {
     Ok(absolute)
 }
 
-fn open_read_only(path: &Path) -> Result<File> {
+pub(crate) fn open_read_only(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -329,7 +329,7 @@ fn open_read_only(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-fn create_new(path: &Path) -> Result<File> {
+pub(crate) fn create_new(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create_new(true);
     #[cfg(windows)]
@@ -365,13 +365,13 @@ fn hash_file(file: &mut File, expected_length: u64) -> Result<String> {
     Ok(hex::encode(digest.finalize()))
 }
 
-fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn append_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_os_string();
     name.push(suffix);
     name.into()
 }
 
-fn require_absent(path: &Path) -> Result<()> {
+pub(crate) fn require_absent(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Ok(_) => anyhow::bail!("artifact already exists: {}", path.display()),
@@ -382,7 +382,7 @@ fn require_absent(path: &Path) -> Result<()> {
 /// A new hard link fails if the destination exists. rename() may replace a
 /// concurrently created destination, so it is not used. Both names share one
 /// validated parent; any failure retains artifacts and cannot complete a report.
-fn publish_new(partial: &Path, final_path: &Path) -> Result<()> {
+pub(crate) fn publish_new(partial: &Path, final_path: &Path) -> Result<()> {
     fs::hard_link(partial, final_path)
         .context("publish without overwrite (destination filesystem must support hard links)")?;
     fs::remove_file(partial).context("remove only the published artifact's partial link")?;

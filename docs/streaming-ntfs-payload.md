@@ -34,3 +34,20 @@ This path has compiled and passed focused unit tests, but has not yet run in
 the native VM. The 256 MiB logical-data ceiling and payload-proportional ReFS
 shadow backing still apply; streaming reduces process memory, not scratch disk
 use or the journal size.
+
+## Preallocated ordinary source streams
+
+The source classifier now accepts an initialized logical prefix when NTFS has
+reserved additional physical clusters beyond EOF. Complete aligned physical
+run coverage must match the recorded allocation size, and that allocation must
+cover the rounded logical length. Only whole clusters before both logical EOF
+and initialized length are emitted as retention candidates. Unused reservation
+clusters are excluded; this does not promise preservation of preallocation.
+
+Synthetic tests cover a 4 KiB initialized file with 16 KiB allocated, and a
+fragmented 12,289-byte file with 9,000 initialized bytes and 32 KiB allocated.
+The latter emits only an 8 KiB retention candidate and materializes the
+remaining logical bytes. Missing, sparse or unaligned allocation coverage
+cannot justify retention. Actual retention still requires native target
+allocation and mapping proofs; preallocated-file native conversion remains
+unqualified.

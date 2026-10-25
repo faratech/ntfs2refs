@@ -91,13 +91,19 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                     covered = covered.saturating_add(extent.length);
                     valid
                 })
-                && Some(covered) == rounded;
+                && covered == stream.allocated_size;
             let adoptable_prefix = !named
                 && !stream.resident
                 && stream.flags == 0
                 && full_prefix > 0
                 && stream.initialized_size <= stream.logical_size
-                && Some(stream.allocated_size) == rounded
+                // NTFS may reserve clusters beyond logical EOF. Account for
+                // the complete physical allocation, but retain only full
+                // initialized logical clusters, never the unused reservation.
+                && rounded.is_some_and(|minimum| {
+                    stream.allocated_size >= minimum
+                        && stream.allocated_size.is_multiple_of(CLUSTER)
+                })
                 && physical_runs;
             let (disposition, reason) = if u64::from(raw.geometry.cluster_size) != CLUSTER
                 || stream.flags != 0

@@ -13,13 +13,15 @@ use std::{
         io::{AsRawHandle, IntoRawHandle},
     },
     ptr::{self, NonNull},
+    sync::Arc,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationW,
-    GetVolumeNameForVolumeMountPointW, GetVolumePathNamesForVolumeNameW, SetVolumeMountPointW,
+    FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationByHandleW,
+    GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNamesForVolumeNameW,
+    SetVolumeMountPointW,
 };
 use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW};
 
@@ -921,6 +923,205 @@ pub struct GeneralFrozenPartition {
     buffer: AlignedBuffer,
     native_bytes_read: u64,
     freeze_observation: Option<GeneralFreezeObservation>,
+    allocation_capture: Option<Arc<()>>,
+}
+
+/// The point at which a complete pair of native allocation maps was queried.
+/// Neither point certifies the allocation graph of the final frozen image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GeneralAllocationPhase {
+    PostLockFlush,
+    PostDismount,
+}
+
+/// Every declared cluster from complete native responses, represented as
+/// allocated ranges with hashes of the original responses. No ownership is
+/// inferred; response padding is covered by its hash, not treated as clusters.
+#[derive(Debug, Serialize)]
+pub struct GeneralAllocationSnapshot {
+    phase: GeneralAllocationPhase,
+    legacy: crate::bitmap_layout::AllocationMap,
+    metadata_inclusive: crate::bitmap_layout::AllocationMap,
+    legacy_response_bytes: usize,
+    metadata_response_bytes: usize,
+}
+impl GeneralAllocationSnapshot {
+    pub fn phase(&self) -> GeneralAllocationPhase {
+        self.phase
+    }
+    pub fn legacy(&self) -> &crate::bitmap_layout::AllocationMap {
+        &self.legacy
+    }
+    pub fn metadata_inclusive(&self) -> &crate::bitmap_layout::AllocationMap {
+        &self.metadata_inclusive
+    }
+}
+
+/// Native observations made through one retained volume handle across an
+/// actual lock, explicit flush, dismount and persistent exclusion transition.
+/// The private in-process token binds it to the returned frozen handle:
+/// reopening or deserializing an exported report cannot recreate this witness.
+/// A later raw-image proof must independently bind these observations to its
+/// image hash and establish the required relationship to its metadata graph.
+#[derive(Debug, Serialize)]
+pub struct GeneralAllocationFreezeWitness {
+    schema_version: u32,
+    binding: GeneralDiskBinding,
+    pre_lock_state: GeneralDiskState,
+    post_lock_state: GeneralDiskState,
+    frozen_state: GeneralDiskState,
+    volume_extents: Vec<u8>,
+    filesystem: String,
+    post_lock: GeneralAllocationSnapshot,
+    post_dismount: Option<GeneralAllocationSnapshot>,
+    post_dismount_error: Option<String>,
+    post_lock_equals_frozen_graph: bool,
+    raw_write_authority: bool,
+    #[serde(skip)]
+    token: Arc<()>,
+}
+impl GeneralAllocationFreezeWitness {
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        &self.binding
+    }
+    pub fn post_lock(&self) -> &GeneralAllocationSnapshot {
+        &self.post_lock
+    }
+    pub fn post_dismount(&self) -> Option<&GeneralAllocationSnapshot> {
+        self.post_dismount.as_ref()
+    }
+    pub fn post_dismount_error(&self) -> Option<&str> {
+        self.post_dismount_error.as_deref()
+    }
+    pub fn frozen_state(&self) -> &GeneralDiskState {
+        &self.frozen_state
+    }
+}
+
+const MAX_ALLOCATION_WITNESS_BYTES: usize = 8 * 1024 * 1024;
+
+fn allocation_snapshot(
+    phase: GeneralAllocationPhase,
+    legacy: &[u8],
+    metadata: &[u8],
+    partition_bytes: u64,
+) -> io::Result<GeneralAllocationSnapshot> {
+    Ok(GeneralAllocationSnapshot {
+        phase,
+        legacy: crate::bitmap_layout::allocated_ranges(legacy, partition_bytes)?,
+        metadata_inclusive: crate::bitmap_layout::allocated_ranges(metadata, partition_bytes)?,
+        legacy_response_bytes: legacy.len(),
+        metadata_response_bytes: metadata.len(),
+    })
+}
+
+/// Bitmap events explicitly retain only the actual response header. Complete
+/// successful responses are decoded without truncation and hashed in the
+/// witness, avoiding multi-megabyte duplicate JSON audit payloads.
+fn allocation_bitmap(
+    volume: &File,
+    name: &str,
+    input: &[u8],
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<Vec<u8>> {
+    if !matches!(input.len(), 8 | 16) || events.len() >= 128 {
+        return Err(invalid("allocation query audit budget exceeded"));
+    }
+    let mut output = vec![0; crate::stream_layout::MAX_BITMAP_BYTES];
+    let mut returned = 0_u32;
+    // SAFETY: the retained live handle and separately owned input/output
+    // buffers remain valid for this synchronous, read-only control call.
+    let success = unsafe {
+        DeviceIoControl(
+            volume.as_raw_handle(),
+            crate::stream_layout::GET_BITMAP,
+            input.as_ptr().cast(),
+            input.len() as u32,
+            output.as_mut_ptr().cast(),
+            output.len() as u32,
+            &mut returned,
+            ptr::null_mut(),
+        )
+    } != 0;
+    let error = (!success).then(io::Error::last_os_error);
+    events.push(NativeEvent {
+        operation: format!("{name}-header-only"),
+        control_code: crate::stream_layout::GET_BITMAP,
+        input: input.to_vec(),
+        succeeded: success,
+        native_error: error.as_ref().and_then(io::Error::raw_os_error),
+        output: output[..(returned as usize).min(output.len()).min(16)].to_vec(),
+    });
+    if let Some(error) = error {
+        // ERROR_MORE_DATA is also a refusal: no partial map is admitted.
+        return Err(io::Error::new(error.kind(), format!("{name}: {error}")));
+    }
+    if returned as usize > output.len() {
+        return Err(invalid("allocation response exceeds bounded buffer"));
+    }
+    output.truncate(returned as usize);
+    Ok(output)
+}
+
+fn capture_allocation(
+    volume: &File,
+    phase: GeneralAllocationPhase,
+    partition_bytes: u64,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralAllocationSnapshot> {
+    capture_allocation_queries(phase, partition_bytes, |name, input| {
+        allocation_bitmap(volume, name, input, events)
+    })
+}
+
+fn capture_allocation_queries(
+    phase: GeneralAllocationPhase,
+    partition_bytes: u64,
+    mut query: impl FnMut(&str, &[u8]) -> io::Result<Vec<u8>>,
+) -> io::Result<GeneralAllocationSnapshot> {
+    let (legacy_name, metadata_name) = match phase {
+        GeneralAllocationPhase::PostLockFlush => (
+            "general-post-lock-legacy-bitmap",
+            "general-post-lock-metadata-inclusive-bitmap",
+        ),
+        GeneralAllocationPhase::PostDismount => (
+            "general-post-dismount-legacy-bitmap",
+            "general-post-dismount-metadata-inclusive-bitmap",
+        ),
+    };
+    // Query the views independently. A legacy-view failure must not hide
+    // whether the metadata-inclusive operation is supported at this phase.
+    let legacy = query(legacy_name, &[0; 8]);
+    let mut extended = [0; 16];
+    extended[8] = 1; // GET_VOLUME_BITMAP_FLAG_INCLUDE_METADATA.
+    let metadata = query(metadata_name, &extended);
+    allocation_snapshot(phase, &legacy?, &metadata?, partition_bytes)
+}
+
+fn allocation_refs_handle(volume: &File) -> io::Result<()> {
+    let mut filesystem = [0u16; 32];
+    // SAFETY: the handle is retained throughout this synchronous query and
+    // filesystem is an initialized output buffer with the stated capacity.
+    let success = unsafe {
+        GetVolumeInformationByHandleW(
+            volume.as_raw_handle(),
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            filesystem.as_mut_ptr(),
+            filesystem.len() as u32,
+        )
+    } != 0;
+    if !success {
+        return Err(io::Error::last_os_error());
+    }
+    if filesystem[..5] != [b'R' as u16, b'e' as u16, b'F' as u16, b'S' as u16, 0] {
+        return Err(invalid("allocation freeze requires a mounted ReFS handle"));
+    }
+    Ok(())
 }
 
 /// Constructed only across an actual native observation, successful volume
@@ -976,6 +1177,185 @@ impl GeneralFrozenPartition {
             proof.frozen_state == self.frozen_state && proof.mounted_ntfs.binding == self.binding
         })
     }
+
+    /// Freeze a mounted ReFS data partition while retaining complete native
+    /// allocation observations from the same locked volume handle. Required
+    /// post-lock queries cannot fall back to pre-lock or partial bitmaps.
+    /// Post-dismount query failure is retained explicitly as a diagnostic.
+    /// This path grants no new raw write or graph-equivalence authority.
+    pub fn isolate_with_allocation(
+        binding: GeneralDiskBinding,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(Self, GeneralAllocationFreezeWitness)> {
+        binding.validate()?;
+        if 16 + (binding.identity.partition_bytes / 4096).div_ceil(8)
+            > crate::stream_layout::MAX_BITMAP_BYTES as u64
+        {
+            return Err(invalid("allocation capture exceeds complete bitmap budget"));
+        }
+        let before = probe_general(binding.clone(), events)?;
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            true,
+            true,
+        )?;
+        let pre_lock = general_disk_state(&management, &binding, events)?;
+        if pre_lock.disk_attributes != 0
+            || pre_lock.device != before.device
+            || pre_lock.disk_length != before.disk_length
+            || pre_lock.alignment != before.alignment
+            || pre_lock.gpt_layout != before.gpt_layout
+        {
+            return Err(invalid("allocation disk changed before lock"));
+        }
+        let volume = device_file(&binding.volume_path()?, true, false)?;
+        let volume_extents = control(
+            &volume,
+            "allocation-lock-volume-extents",
+            VOLUME_EXTENTS,
+            &[],
+            1024,
+            events,
+        )?;
+        binding.validate_volume_extent(&volume_extents)?;
+        allocation_refs_handle(&volume)?;
+        let buffer = AlignedBuffer::new()?;
+        control(&volume, "allocation-lock-volume", LOCK, &[], 0, events)?;
+        // LOCK flushes cached filesystem data; require an additional explicit
+        // successful flush before capturing either bitmap through this handle.
+        let flushed = volume.sync_all();
+        events.push(NativeEvent {
+            operation: "allocation-flush-locked-volume".into(),
+            control_code: 0,
+            input: vec![],
+            succeeded: flushed.is_ok(),
+            native_error: flushed.as_ref().err().and_then(io::Error::raw_os_error),
+            output: vec![],
+        });
+        flushed?;
+        let post_lock = capture_allocation(
+            &volume,
+            GeneralAllocationPhase::PostLockFlush,
+            binding.identity.partition_bytes,
+            events,
+        )?;
+        let post_lock_state = general_disk_state(&management, &binding, events)?;
+        if post_lock_state != pre_lock {
+            return Err(invalid("allocation disk changed across lock capture"));
+        }
+        let locked_extents = control(
+            &volume,
+            "allocation-locked-volume-extents",
+            VOLUME_EXTENTS,
+            &[],
+            1024,
+            events,
+        )?;
+        binding.validate_volume_extent(&locked_extents)?;
+        if locked_extents != volume_extents {
+            return Err(invalid("allocation volume route changed under lock"));
+        }
+        control(
+            &volume,
+            "allocation-dismount-volume",
+            DISMOUNT,
+            &[],
+            0,
+            events,
+        )?;
+        let (post_dismount, post_dismount_error) = match capture_allocation(
+            &volume,
+            GeneralAllocationPhase::PostDismount,
+            binding.identity.partition_bytes,
+            events,
+        ) {
+            Ok(snapshot) => (Some(snapshot), None),
+            Err(error) => (
+                None,
+                Some(format!("post-dismount allocation capture: {error}")),
+            ),
+        };
+        set_attributes(&management, OFFLINE | READ_ONLY, events)?;
+        close_file(volume, "close-allocation-volume-lock", events)?;
+        let frozen_state = general_disk_state(&management, &binding, events)?;
+        let mut expected_frozen = pre_lock.clone();
+        expected_frozen.disk_attributes = OFFLINE | READ_ONLY;
+        if frozen_state != expected_frozen {
+            return Err(invalid("allocation exclusion or disk identity changed"));
+        }
+        close_file(management, "close-allocation-management", events)?;
+        let file = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            false,
+            true,
+        )?;
+        if general_disk_state(&file, &binding, events)? != frozen_state {
+            return Err(invalid(
+                "allocation read-only reopen differs after exclusion",
+            ));
+        }
+        let token = Arc::new(());
+        let witness = GeneralAllocationFreezeWitness {
+            schema_version: 1,
+            binding: binding.clone(),
+            pre_lock_state: pre_lock,
+            post_lock_state,
+            frozen_state: frozen_state.clone(),
+            volume_extents,
+            filesystem: "ReFS".into(),
+            post_lock,
+            post_dismount,
+            post_dismount_error,
+            post_lock_equals_frozen_graph: false,
+            raw_write_authority: false,
+            token: Arc::clone(&token),
+        };
+        let encoded = serde_json::to_vec_pretty(&witness).map_err(io::Error::other)?;
+        if encoded.len() > MAX_ALLOCATION_WITNESS_BYTES {
+            return Err(invalid("allocation witness exceeds bounded output profile"));
+        }
+        Ok((
+            Self {
+                file,
+                binding,
+                frozen_state,
+                position: 0,
+                buffer,
+                native_bytes_read: 0,
+                freeze_observation: None,
+                allocation_capture: Some(token),
+            },
+            witness,
+        ))
+    }
+
+    fn owns_allocation_witness(&self, witness: &GeneralAllocationFreezeWitness) -> bool {
+        self.allocation_capture
+            .as_ref()
+            .is_some_and(|token| Arc::ptr_eq(token, &witness.token))
+            && self.binding == witness.binding
+            && self.frozen_state == witness.frozen_state
+            && self.frozen_state.disk_attributes == OFFLINE | READ_ONLY
+    }
+
+    /// Recheck this exact live frozen handle and the in-process capture token.
+    /// This does not prove that either captured map equals the frozen graph.
+    pub fn validate_allocation_witness(
+        &self,
+        witness: &GeneralAllocationFreezeWitness,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if !self.owns_allocation_witness(witness) {
+            return Err(invalid(
+                "allocation witness belongs to another freeze handle",
+            ));
+        }
+        if self.state(events)? != witness.frozen_state {
+            return Err(invalid("allocation witness frozen device state changed"));
+        }
+        Ok(())
+    }
+
     /// Lock/dismount and persistently exclude a bound dedicated data disk.
     /// Dropping the returned handle does not bring the disk online.
     pub fn isolate(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
@@ -1035,6 +1415,7 @@ impl GeneralFrozenPartition {
             buffer,
             native_bytes_read: 0,
             freeze_observation: None,
+            allocation_capture: None,
         })
     }
 
@@ -1062,6 +1443,7 @@ impl GeneralFrozenPartition {
             buffer: AlignedBuffer::new()?,
             native_bytes_read: 0,
             freeze_observation: None,
+            allocation_capture: None,
         })
     }
 
@@ -1386,6 +1768,7 @@ impl GeneralJournaledPartition {
         Ok(Self {
             inner: GeneralFrozenPartition {
                 freeze_observation: None,
+                allocation_capture: None,
                 file,
                 binding,
                 frozen_state,
@@ -2087,6 +2470,188 @@ mod tests {
     use super::*;
     use crate::layout::PartitionIdentity;
 
+    fn allocation_test_bitmap(bits: u16) -> Vec<u8> {
+        let mut bytes = vec![0; 18];
+        bytes[8..16].copy_from_slice(&16u64.to_le_bytes());
+        bytes[16..].copy_from_slice(&bits.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn allocation_capture_keeps_both_complete_views_and_their_phase() {
+        let legacy = allocation_test_bitmap(1);
+        let metadata = allocation_test_bitmap(0x8003);
+        let mut queries = vec![];
+        let snapshot = capture_allocation_queries(
+            GeneralAllocationPhase::PostLockFlush,
+            16 * 4096,
+            |name, input| {
+                queries.push((name.to_owned(), input.to_vec()));
+                Ok(if input.len() == 8 { &legacy } else { &metadata }.clone())
+            },
+        )
+        .unwrap();
+        assert_eq!(snapshot.phase(), GeneralAllocationPhase::PostLockFlush);
+        assert_eq!(snapshot.legacy().allocated_clusters, 1);
+        assert_eq!(snapshot.metadata_inclusive().allocated_clusters, 3);
+        assert_ne!(
+            snapshot.legacy().bitmap_sha256,
+            snapshot.metadata_inclusive().bitmap_sha256
+        );
+        assert_eq!(queries[0].1, [0; 8]);
+        let mut extended = [0; 16];
+        extended[8] = 1;
+        assert_eq!(queries[1].1, extended);
+        assert!(queries.iter().all(|(name, _)| name.contains("post-lock")));
+        let encoded = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(encoded["phase"], "post-lock-flush");
+        assert_eq!(encoded["metadata_response_bytes"], 18);
+        assert!(encoded.get("raw_write_authority").is_none());
+    }
+
+    #[test]
+    fn allocation_capture_refuses_partial_or_failed_required_queries() {
+        let complete = allocation_test_bitmap(1);
+        for (legacy, metadata) in [
+            (complete[..17].to_vec(), complete.clone()),
+            (complete.clone(), complete[..17].to_vec()),
+        ] {
+            assert!(
+                allocation_snapshot(
+                    GeneralAllocationPhase::PostLockFlush,
+                    &legacy,
+                    &metadata,
+                    16 * 4096,
+                )
+                .is_err()
+            );
+        }
+        let mut calls = 0;
+        let error = capture_allocation_queries(
+            GeneralAllocationPhase::PostLockFlush,
+            16 * 4096,
+            |_, input| {
+                calls += 1;
+                if input.len() == 16 {
+                    Err(io::Error::from_raw_os_error(5))
+                } else {
+                    Ok(complete.clone())
+                }
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 2);
+        assert_eq!(error.raw_os_error(), Some(5));
+        let mut attempted_metadata = false;
+        assert!(
+            capture_allocation_queries(
+                GeneralAllocationPhase::PostLockFlush,
+                16 * 4096,
+                |_, input| {
+                    if input.len() == 8 {
+                        Err(io::Error::from_raw_os_error(21))
+                    } else {
+                        attempted_metadata = true;
+                        Ok(complete.clone())
+                    }
+                },
+            )
+            .is_err()
+        );
+        assert!(attempted_metadata);
+        let snapshot = allocation_snapshot(
+            GeneralAllocationPhase::PostDismount,
+            &complete,
+            &complete,
+            16 * 4096,
+        )
+        .unwrap();
+        assert_eq!(snapshot.phase(), GeneralAllocationPhase::PostDismount);
+    }
+
+    #[test]
+    fn allocation_witness_cannot_attach_to_a_reopened_or_foreign_handle() {
+        let OfflinePartition {
+            file,
+            binding,
+            buffer,
+            ..
+        } = ordinary_stream();
+        let binding = GeneralDiskBinding {
+            disk_number: binding.disk_number,
+            volume_guid: binding.volume_guid,
+            identity: binding.identity,
+        };
+        let frozen_state = GeneralDiskState {
+            device: vec![],
+            disk_length: vec![],
+            alignment: vec![],
+            gpt_layout: vec![],
+            disk_attributes: OFFLINE | READ_ONLY,
+        };
+        let token = Arc::new(());
+        let complete = allocation_test_bitmap(1);
+        let witness = GeneralAllocationFreezeWitness {
+            schema_version: 1,
+            binding: binding.clone(),
+            pre_lock_state: GeneralDiskState {
+                disk_attributes: 0,
+                ..frozen_state.clone()
+            },
+            post_lock_state: GeneralDiskState {
+                disk_attributes: 0,
+                ..frozen_state.clone()
+            },
+            frozen_state: frozen_state.clone(),
+            volume_extents: vec![],
+            filesystem: "ReFS".into(),
+            post_lock: allocation_snapshot(
+                GeneralAllocationPhase::PostLockFlush,
+                &complete,
+                &complete,
+                16 * 4096,
+            )
+            .unwrap(),
+            post_dismount: None,
+            post_dismount_error: Some("post-dismount allocation capture: access denied".into()),
+            post_lock_equals_frozen_graph: false,
+            raw_write_authority: false,
+            token: Arc::clone(&token),
+        };
+        let mut frozen = GeneralFrozenPartition {
+            file,
+            binding,
+            frozen_state,
+            position: 0,
+            buffer,
+            native_bytes_read: 0,
+            freeze_observation: None,
+            allocation_capture: Some(token),
+        };
+        assert!(frozen.owns_allocation_witness(&witness));
+        frozen.allocation_capture = None;
+        assert!(!frozen.owns_allocation_witness(&witness));
+        frozen.allocation_capture = Some(Arc::new(()));
+        assert!(!frozen.owns_allocation_witness(&witness));
+        frozen.allocation_capture = Some(Arc::clone(&witness.token));
+        frozen.frozen_state.disk_attributes = OFFLINE;
+        assert!(!frozen.owns_allocation_witness(&witness));
+        frozen.frozen_state = witness.frozen_state.clone();
+        frozen.binding.disk_number += 1;
+        assert!(!frozen.owns_allocation_witness(&witness));
+        assert!(witness.post_dismount().is_none());
+        assert!(
+            witness
+                .post_dismount_error()
+                .unwrap()
+                .contains("post-dismount")
+        );
+        let encoded = serde_json::to_value(&witness).unwrap();
+        assert!(encoded.get("token").is_none());
+        assert_eq!(encoded["post_lock_equals_frozen_graph"], false);
+        assert_eq!(encoded["raw_write_authority"], false);
+    }
+
     #[test]
     fn enumerated_volume_name_must_be_a_complete_guid_root() {
         assert_eq!(
@@ -2231,6 +2796,7 @@ mod tests {
         };
         let mut reader = GeneralFrozenPartition {
             freeze_observation: None,
+            allocation_capture: None,
             file,
             binding,
             frozen_state: GeneralDiskState {
@@ -2266,6 +2832,7 @@ mod tests {
         let mut target = GeneralJournaledPartition {
             inner: GeneralFrozenPartition {
                 freeze_observation: None,
+                allocation_capture: None,
                 file,
                 binding: GeneralDiskBinding {
                     disk_number: binding.disk_number,

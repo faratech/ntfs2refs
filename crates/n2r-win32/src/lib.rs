@@ -19,6 +19,8 @@ pub mod stream_layout;
 #[cfg(windows)]
 mod stream_native;
 #[cfg(windows)]
+pub mod txf_native;
+#[cfg(windows)]
 pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]
 mod native;

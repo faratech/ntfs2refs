@@ -199,6 +199,12 @@ actual guest disk exclusion and GPT identities, absence of a journal file and
 absence of another converter before dispatch. It never restores a VM checkpoint
 or changes a guest data disk itself. The current converted VM branch does not
 meet its source-offline/read-only preflight.
+`Collect-LabGeneralReplay.ps1` observes the scheduled task without restarting
+it, exports each guest artifact with a guest-to-host SHA-256 comparison, and
+records the source/shadow disk state and journal marker. It reports a completed
+native handoff only when the full artifact set and ReFS finish report agree;
+exit 86 with a zero handoff marker and offline writable target is classified
+as requiring journal recovery.
 
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while

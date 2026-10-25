@@ -46,7 +46,11 @@ fn main() -> anyhow::Result<()> {
         ordinary_files: bool,
         /// Construct the independent shadow directly from bounded source
         /// reads without retaining all logical payload bytes in memory.
-        #[arg(long, requires = "ordinary_files", conflicts_with_all = ["root_security_experiment", "retain_eligible"])]
+        #[arg(
+            long,
+            requires = "ordinary_files",
+            conflicts_with = "root_security_experiment"
+        )]
         stream_payload: bool,
     }
     #[derive(Deserialize, Serialize)]
@@ -304,6 +308,7 @@ fn main() -> anyhow::Result<()> {
                 request.shadow.clone(),
                 request.source.disk_number,
                 &input,
+                args.retain_eligible,
                 &mut writer,
                 same_security,
             )

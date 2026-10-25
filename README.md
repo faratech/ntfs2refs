@@ -69,7 +69,9 @@ lengths and hashes, then check bytes through ReFS in bounded chunks instead of
 embedding the full payload in the recovery artifact.
 The optional `--stream-payload` path also constructs the independent shadow
 with bounded NTFS reads; it is implemented but awaits a native VM run. Its
-256 MiB logical-data and shadow-space limits still apply.
+256 MiB logical-data and shadow-space limits still apply. It can be combined
+with `--retain-eligible` so the placement attempt no longer requires keeping
+payloads in memory; measured ReFS extents determine what was retained.
 
 The toolchain is pinned in `rust-toolchain.toml`; use the installed MSVC toolchain.
 Windows builds link the C runtime statically for fresh guests and recovery media.

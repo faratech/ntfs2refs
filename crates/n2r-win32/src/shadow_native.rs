@@ -160,21 +160,16 @@ fn retain_on_shadow(
         stream_layout::MAX_BITMAP_BYTES,
     )?;
     let candidate = CandidateReport {
-        legacy: crate::bitmap_layout::candidate(
-            &legacy,
-            offset,
-            i.payload.len() as u64,
-            partition,
-        )?,
+        legacy: crate::bitmap_layout::candidate(&legacy, offset, i.logical_length(), partition)?,
         metadata_inclusive: crate::bitmap_layout::candidate(
             &metadata,
             offset,
-            i.payload.len() as u64,
+            i.logical_length(),
             partition,
         )?,
     };
-    let clusters =
-        u32::try_from(i.payload.len() / 4096).map_err(|_| invalid("retention cluster budget"))?;
+    let clusters = u32::try_from(i.logical_length() / 4096)
+        .map_err(|_| invalid("retention cluster budget"))?;
     let destination_lcn = offset / 4096;
     let matches = |b: &[u8]| -> io::Result<bool> {
         let runs = stream_layout::parse_retrieval(b)?;
@@ -855,6 +850,7 @@ pub fn run_ordinary_streaming(
     binding: DiskBinding,
     source_disk: u32,
     input: &[Input<'_>],
+    retain_eligible: bool,
     payload_writer: &mut impl FnMut(usize, &mut File) -> io::Result<()>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<Report> {
@@ -862,7 +858,11 @@ pub fn run_ordinary_streaming(
         binding,
         source_disk,
         input,
-        Mode::Construct,
+        if retain_eligible {
+            Mode::ConstructRetaining
+        } else {
+            Mode::Construct
+        },
         same_security,
         false,
         true,
@@ -939,7 +939,9 @@ fn run_role(
     {
         return Err(invalid("restricted tree shadow lab profile differs"));
     }
-    if payload_writer.is_some() && (!ordinary || converted || mode != Mode::Construct) {
+    if payload_writer.is_some()
+        && (!ordinary || converted || !matches!(mode, Mode::Construct | Mode::ConstructRetaining))
+    {
         return Err(invalid(
             "streaming payload callback is restricted to ordinary shadow construction",
         ));
@@ -950,7 +952,9 @@ fn run_role(
         let digest_allowed = ordinary
             && !i.directory
             && ((matches!(mode, Mode::Verify | Mode::ProbeRoot) && payload_writer.is_none())
-                || (!converted && mode == Mode::Construct && payload_writer.is_some()));
+                || (!converted
+                    && matches!(mode, Mode::Construct | Mode::ConstructRetaining)
+                    && payload_writer.is_some()));
         if digest_only
             && (!digest_allowed
                 || i.expected_length.is_none()
@@ -1183,8 +1187,8 @@ fn run_role(
             for i in input.iter().filter(|i| {
                 !i.directory
                     && i.source_offset.is_some()
-                    && !i.payload.is_empty()
-                    && i.payload.len().is_multiple_of(4096)
+                    && i.logical_length() > 0
+                    && i.logical_length().is_multiple_of(4096)
             }) {
                 retention_attempts.push(retain_on_shadow(
                     &volume,

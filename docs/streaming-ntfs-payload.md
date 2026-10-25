@@ -13,6 +13,10 @@ path and collects into memory for the small native-shadow experiment. The
 ordinary Windows shadow creator now accepts `--stream-payload`, which passes
 each file directly from the checked NTFS reader to a native ReFS file through
 the 64 KiB buffer. Native readback checks the declared length and SHA-256.
+It can be combined with `--retain-eligible` to ask native ReFS to place
+eligible shadow extents at their original physical offsets; the recorded
+mapping and allocation evidence still decide which ranges were actually
+retained.
 The host `Build-LabExistingTreeShadow.ps1` switch `-StreamPayload` records and
 forwards this mode, and `Continue-LabExistingTreeShadow.ps1` preserves it.
 

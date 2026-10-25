@@ -192,6 +192,14 @@ request SHA-256 `15d5e32f88296fbd299951fef8a91be56d44bbaa9bf4f57fdb592a626bdcd8f
 expected-tree SHA-256 `043eab655db6c04ba321f184ab91dc01e5a31b77a0a0f342886f2e0b4c750af8`.
 The ignored local artifacts are not a native run of the new engine.
 
+`Dispatch-LabGeneralReplay.ps1` stages those pinned files and a pinned
+`lab-general-complete.exe` into the owning VM, then launches one SYSTEM task
+that survives host-controller loss. It checks the frozen shadow checkpoint,
+actual guest disk exclusion and GPT identities, absence of a journal file and
+absence of another converter before dispatch. It never restores a VM checkpoint
+or changes a guest data disk itself. The current converted VM branch does not
+meet its source-offline/read-only preflight.
+
 This is **not** a complete general conversion command. Source admission still
 rejects unresolved Windows volume policy and filesystem-internal state, while
 general activation, handoff and recovery remain unavailable from the CLI.

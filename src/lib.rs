@@ -4,6 +4,7 @@
 //! validation establishes a complete format profile and commit protocol.
 pub mod block_io;
 pub mod corpus;
+pub mod extent_adoption;
 pub mod fixed_vhd;
 #[cfg(windows)]
 pub mod lab_native;

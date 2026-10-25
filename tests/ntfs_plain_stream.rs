@@ -28,6 +28,7 @@ fn logical_reader_recovers_resident_and_nonresident_bytes_and_rejects_changed_pa
     let proof =
         ntfs_inspect::copy_plain_stream(&mut source, &raw, 16, 1024, &mut streamed).unwrap();
     assert_eq!(streamed, b"Synthetic content");
+    assert!(proof.stream_name_utf16.is_empty());
     assert_eq!(proof.logical_bytes, 17);
     assert_eq!(
         proof.sha256,
@@ -39,6 +40,33 @@ fn logical_reader_recovers_resident_and_nonresident_bytes_and_rejects_changed_pa
             .logical_sha256
             .as_deref()
             .unwrap()
+    );
+    let mut named = Vec::new();
+    let named_proof = ntfs_inspect::copy_plain_named_stream(
+        &mut source,
+        &raw,
+        16,
+        &"note".encode_utf16().collect::<Vec<_>>(),
+        1024,
+        &mut named,
+    )
+    .unwrap();
+    assert_eq!(named, b"metadata");
+    assert_eq!(
+        named_proof.stream_name_utf16,
+        "note".encode_utf16().collect::<Vec<_>>()
+    );
+    assert_eq!(named_proof.logical_bytes, 8);
+    assert!(
+        ntfs_inspect::copy_plain_named_stream(
+            &mut source,
+            &raw,
+            16,
+            &"missing".encode_utf16().collect::<Vec<_>>(),
+            1024,
+            &mut Vec::new(),
+        )
+        .is_err()
     );
     let resident = ntfs_inspect::read_plain_stream(&mut source, &raw, 6, 1024).unwrap();
     assert_eq!(resident.len(), 64);

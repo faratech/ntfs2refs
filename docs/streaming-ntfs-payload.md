@@ -8,6 +8,11 @@ compares the streamed SHA-256 with the inspection. The caller must discard
 partial output if the copy fails. No source write is possible through this
 function.
 
+`copy_plain_named_stream` uses the same checked path for an explicitly selected
+NTFS named DATA stream and records the UTF-16 stream name in its copy proof.
+The current ordinary-tree shadow still rejects ADS; this reader does not yet
+provide ReFS named-stream reconstruction or conversion admission.
+
 The existing bounded `read_plain_stream` API uses that same checked streaming
 path and collects into memory for the small native-shadow experiment. The
 ordinary Windows shadow creator now accepts `--stream-payload`, which passes

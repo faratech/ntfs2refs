@@ -1928,6 +1928,7 @@ fn checked_plain_attribute<R: Read + Seek>(
     reader: &mut R,
     raw: &NtfsInspection,
     record_number: u64,
+    stream_name_utf16: &[u16],
     max_bytes: u64,
 ) -> Result<(Attribute, String)> {
     let file = raw
@@ -1942,11 +1943,10 @@ fn checked_plain_attribute<R: Read + Seek>(
     let stream = file
         .streams
         .iter()
-        .find(|s| s.name_utf16.is_empty())
-        .context("unnamed DATA stream absent")?;
+        .find(|s| s.name_utf16 == stream_name_utf16)
+        .context("requested DATA stream absent")?;
     ensure!(
-        stream.name_utf16.is_empty()
-            && stream.flags == 0
+        stream.flags == 0
             && stream.logical_hash_status == LogicalHashStatus::Complete
             && stream.logical_size <= max_bytes
             && max_bytes <= 256 * 1024 * 1024,
@@ -2006,11 +2006,21 @@ fn checked_plain_attribute<R: Read + Seek>(
             && !record.attributes.iter().any(|a| a.report.type_code == 0x20),
         "source file identity changed"
     );
-    let data = unnamed(&record, 0x80)?;
+    let mut candidates = record
+        .attributes
+        .iter()
+        .filter(|a| a.report.type_code == 0x80 && a.report.name_utf16 == stream_name_utf16);
+    let data = candidates
+        .next()
+        .context("requested source DATA attribute absent")?;
+    ensure!(
+        candidates.next().is_none(),
+        "duplicate requested DATA attribute"
+    );
     let expected = file
         .attributes
         .iter()
-        .find(|a| a.type_code == 0x80 && a.name_utf16.is_empty())
+        .find(|a| a.type_code == 0x80 && a.name_utf16 == stream_name_utf16)
         .context("source DATA inventory absent")?;
     ensure!(
         serde_json::to_vec(&data.report)? == serde_json::to_vec(expected)?
@@ -2039,6 +2049,7 @@ fn checked_plain_attribute<R: Read + Seek>(
 #[derive(Debug, Clone, Serialize)]
 pub struct StreamCopyProof {
     pub record_number: u64,
+    pub stream_name_utf16: Vec<u16>,
     pub logical_bytes: u64,
     pub sha256: String,
 }
@@ -2054,7 +2065,26 @@ pub fn copy_plain_stream<R: Read + Seek, W: Write>(
     max_bytes: u64,
     output: &mut W,
 ) -> Result<StreamCopyProof> {
-    let (attribute, expected) = checked_plain_attribute(reader, raw, record_number, max_bytes)?;
+    copy_plain_named_stream(reader, raw, record_number, &[], max_bytes, output)
+}
+
+/// Copy one explicitly named (or unnamed) DATA stream. The UTF-16 name must
+/// match the inspected NTFS attribute exactly; no path or stream-name lookup
+/// through the live filesystem is involved.
+pub fn copy_plain_named_stream<R: Read + Seek, W: Write>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    max_bytes: u64,
+    output: &mut W,
+) -> Result<StreamCopyProof> {
+    ensure!(
+        stream_name_utf16.len() <= 255,
+        "stream name exceeds NTFS limit"
+    );
+    let (attribute, expected) =
+        checked_plain_attribute(reader, raw, record_number, stream_name_utf16, max_bytes)?;
     let mut digest = Sha256::new();
     let mut copied = 0u64;
     let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
@@ -2078,6 +2108,7 @@ pub fn copy_plain_stream<R: Read + Seek, W: Write>(
     );
     Ok(StreamCopyProof {
         record_number,
+        stream_name_utf16: stream_name_utf16.to_vec(),
         logical_bytes: copied,
         sha256: actual,
     })

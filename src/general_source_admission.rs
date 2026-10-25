@@ -95,6 +95,7 @@ pub fn assess(
             })
             .flatten()
     });
+    ntfs_admission::bind_short_name_policy(&mut assessment, raw, observed);
     Ok(LiveAssessment {
         comparison,
         assessment,

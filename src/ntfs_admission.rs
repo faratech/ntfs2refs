@@ -116,7 +116,12 @@ fn accounted_empty_badclus_blocker(
         && bad.extents[0].length == bad.logical_size
 }
 
-fn unresolved_codes(raw: &ntfs::NtfsInspection, backups: bool, clean_log: bool) -> Vec<String> {
+fn unresolved_codes(
+    raw: &ntfs::NtfsInspection,
+    backups: bool,
+    clean_log: bool,
+    short_name_policy: bool,
+) -> Vec<String> {
     raw.blockers
         .iter()
         .filter(|blocker| {
@@ -127,6 +132,9 @@ fn unresolved_codes(raw: &ntfs::NtfsInspection, backups: bool, clean_log: bool) 
                     | "allocation_ownership_unverified"
             ) && !(blocker.code == "backup_boot_unverified" && backups)
                 && !(blocker.code == "journal_state_unverified" && clean_log)
+                && !(blocker.code == "volume_state_flags"
+                    && short_name_policy
+                    && raw.volume_flags == Some(0x80))
                 && !accounted_internal_txf_blocker(raw, blocker)
                 && !accounted_empty_badclus_blocker(raw, blocker)
         })
@@ -145,7 +153,17 @@ pub(crate) fn bind_clean_log(
     if !proof.binds(raw) || !proof.restart.candidate_clean_dismount {
         return false;
     }
-    let unresolved = unresolved_codes(raw, assessment.backup_evidence.is_some(), true);
+    let policy_bound = raw.volume_flags == Some(0x80)
+        && assessment
+            .gates
+            .iter()
+            .any(|gate| gate.code == "volume_policy_flags" && gate.satisfied);
+    let unresolved = unresolved_codes(
+        raw,
+        assessment.backup_evidence.is_some(),
+        true,
+        policy_bound,
+    );
     for gate in &mut assessment.gates {
         if gate.code == "log_restart_pages" {
             gate.satisfied = true;
@@ -154,6 +172,73 @@ pub(crate) fn bind_clean_log(
             gate.satisfied = unresolved.is_empty();
             gate.detail = format!(
                 "unresolved inspection checks after frozen log proof: {unresolved:?}; internal replacement obligations remain separate"
+            );
+        }
+    }
+    true
+}
+
+/// The controlled Windows 11 differential established 0x0080 as the
+/// short-name-disable policy. Only an opaque live observer bound to the
+/// unchanged frozen source can apply that interpretation to admission.
+#[cfg(windows)]
+pub(crate) fn bind_short_name_policy(
+    assessment: &mut Assessment,
+    raw: &ntfs::NtfsInspection,
+    observed: &n2r_win32::GeneralLiveNtfsObservation,
+) -> bool {
+    let native = observed.report();
+    let Some(policy) = observed.txf() else {
+        return false;
+    };
+    let policy = &policy.observation;
+    if raw.volume_flags != Some(0x80)
+        || raw.dirty != Some(false)
+        || raw.volume_version.as_deref() != Some("3.1")
+        || native.request.source_inspection_sha256 != assessment.source_inspection_sha256
+        || !assessment
+            .source_view
+            .as_ref()
+            .is_some_and(|view| view.binds_live(&assessment.source_inspection_sha256))
+        || !assessment
+            .gates
+            .iter()
+            .any(|gate| gate.code == "frozen_device_basis" && gate.satisfied)
+        || raw
+            .files
+            .iter()
+            .any(|file| file.names.iter().any(|name| name.namespace == 2))
+        || policy.schema_version != 2
+        || policy.windows_version != [10, 0, 26300]
+        || !policy.short_name_state_stable
+        || !policy
+            .persistent_state_before
+            .as_ref()
+            .zip(policy.persistent_state_after.as_ref())
+            .is_some_and(|(before, after)| {
+                [before, after].into_iter().all(|state| {
+                    state.queried_flags_valid
+                        && state.requested_flag_mask == 1
+                        && state.requested_version == 1
+                        && state.short_name_creation_disabled
+                })
+            })
+    {
+        return false;
+    }
+    let clean_log = assessment
+        .gates
+        .iter()
+        .any(|gate| gate.code == "log_restart_pages" && gate.satisfied);
+    let unresolved = unresolved_codes(raw, assessment.backup_evidence.is_some(), clean_log, true);
+    for gate in &mut assessment.gates {
+        if gate.code == "volume_policy_flags" {
+            gate.satisfied = true;
+            gate.detail = "raw 0x0080 agrees with stable native disabled short-name policy on the bound frozen source; no DOS-only aliases are present; other volume-state bits remain refused".into();
+        } else if gate.code == "remaining_inspection_refusals" {
+            gate.satisfied = unresolved.is_empty();
+            gate.detail = format!(
+                "unresolved inspection checks after native short-name policy binding: {unresolved:?}; internal replacement obligations remain separate"
             );
         }
     }
@@ -654,7 +739,7 @@ fn assess_source_view_profile(
         false,
         "read and reconcile both $LogFile restart pages from the frozen device; clean flags alone do not prove complete log recovery",
     );
-    let unresolved = unresolved_codes(raw, backups.is_some(), false);
+    let unresolved = unresolved_codes(raw, backups.is_some(), false, false);
     let internal_txf_count = raw
         .blockers
         .iter()

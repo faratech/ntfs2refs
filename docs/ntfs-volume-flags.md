@@ -1,12 +1,19 @@
 # Native NTFS volume flag 0x0080
 
-Investigation date: 2026-10-23. Scope: read-only source eligibility research for data-volume conversion. No source-image changes, mounts, guest changes, or eligibility-rule changes were made.
+Initial investigation: 2026-10-23. Native differential update: 2026-10-25.
+The initial byte audit below was read-only. The later [controlled per-volume
+policy experiment](research/ntfs-volume-flag-0080.md) used a disposable VM
+snapshot, confirmed `0x0080 -> 0x0000 -> 0x0080`, restored the policy, and
+returned the VM to its saved recovered ReFS branch.
 
 ## Finding
 
 The `0x0080` value in our Windows 11 native NTFS corpus is real on-disk state, not a parsing, run-list, byte-order, or attribute-layout error. Primary reverse-engineering research identifies this bit as persistent state that disables short-name creation and the tunneling cache. It is distinct from the dirty bit (`0x0001`). Our current rule blocks every nonzero volume-flags value, so it also blocks this likely ordinary policy setting.
 
-This investigation does **not** remove that blocker. The interpretation has not yet been checked with a native setting differential on our Windows build. Nor would allowing this bit establish clean journal state, complete inventory, or safe conversion.
+The native differential now confirms this mapping on the tested Windows build.
+It does not establish clean journal state, complete inventory, or safe conversion.
+Only the live frozen-source admission path may bind that policy interpretation;
+the remaining internal replacement and certification gates stay separate.
 
 ## Independent native-byte verification
 
@@ -52,7 +59,8 @@ short-name setting on this Windows build, but does not by itself prove the bit
 mapping through a controlled setting change. `lab-txf-observe` now also queries
 `FSCTL_QUERY_PERSISTENT_VOLUME_STATE` for the short-name-disable bit using the
 [documented persistent volume state structure](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_fs_persistent_volume_information).
-That new binary has not yet been run in the guest.
+The later native run and corrected handle/reply decoder are recorded in
+[source-admission progress](source-admission-progress.md).
 
 If the global short-name setting is 2, capture the explicit per-volume setting in three states: original disabled, enabled, restored disabled. After each change, obtain consistent locked/dismounted bytes using the existing capture path. Compare the exact 12-byte `$VOLUME_INFORMATION` values, the native query output, and `$MFTMirr`. The hypothesis predicts a `0x0080 -> 0x0000 -> 0x0080` transition when no other state bits intervene. Do not strip existing short names. If the global setting differs, retain that evidence and use a separate disposable test configuration rather than silently changing unrelated volume policy.
 

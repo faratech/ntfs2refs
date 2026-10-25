@@ -11,7 +11,8 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::GetLastError,
+    Foundation::{FILETIME, GetLastError},
+    Storage::FileSystem::SetFileTime,
     System::{
         IO::DeviceIoControl,
         Ioctl::{
@@ -19,10 +20,36 @@ use windows_sys::Win32::{
             FSCTL_QUERY_PERSISTENT_VOLUME_STATE, FSCTL_TXFS_LIST_TRANSACTIONS,
             FSCTL_TXFS_QUERY_RM_INFORMATION, TXFS_QUERY_RM_INFORMATION,
         },
+        SystemInformation::OSVERSIONINFOW,
     },
 };
 
 const MAX_REPLY: usize = 64 * 1024;
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn RtlGetVersion(version: *mut OSVERSIONINFOW) -> i32;
+}
+
+fn windows_version() -> io::Result<[u32; 3]> {
+    let mut version = OSVERSIONINFOW {
+        dwOSVersionInfoSize: mem::size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: initialized SDK structure with its exact size, live for the
+    // synchronous native version query.
+    let status = unsafe { RtlGetVersion(&mut version) };
+    if status != 0 {
+        return Err(io::Error::other(format!(
+            "RtlGetVersion failed: {status:#x}"
+        )));
+    }
+    Ok([
+        version.dwMajorVersion,
+        version.dwMinorVersion,
+        version.dwBuildNumber,
+    ])
+}
 
 #[derive(Debug, Serialize)]
 pub struct RmQuery {
@@ -48,6 +75,10 @@ pub struct PersistentState {
     pub volume_flags: u32,
     pub flag_mask: u32,
     pub version: u32,
+    pub reserved: u32,
+    pub requested_flag_mask: u32,
+    pub requested_version: u32,
+    pub queried_flags_valid: bool,
     pub short_name_creation_disabled: bool,
     pub reply_sha256: String,
 }
@@ -56,6 +87,8 @@ pub struct PersistentState {
 pub struct Observation {
     pub schema_version: u32,
     pub kind: &'static str,
+    pub rm_handle_profile: &'static str,
+    pub windows_version: [u32; 3],
     pub binding: DiskBinding,
     pub native_dirty_before: Option<u32>,
     pub native_dirty_before_error: Option<u32>,
@@ -191,12 +224,18 @@ fn persistent(file: &File) -> (Option<PersistentState>, Option<u32>) {
         // SAFETY: direct error from the preceding Win32 call.
         return (None, Some(unsafe { GetLastError() }));
     }
-    if returned as usize != mem::size_of::<FILE_FS_PERSISTENT_VOLUME_INFORMATION>()
-        || output.Version != 1
-        || output.FlagMask & 1 == 0
-        || output.Reserved != 0
-    {
-        return (None, Some(13));
+    match decode_persistent(&output, returned) {
+        Ok(state) => (Some(state), None),
+        Err(code) => (None, Some(code)),
+    }
+}
+
+fn decode_persistent(
+    output: &FILE_FS_PERSISTENT_VOLUME_INFORMATION,
+    returned: u32,
+) -> Result<PersistentState, u32> {
+    if returned as usize != mem::size_of::<FILE_FS_PERSISTENT_VOLUME_INFORMATION>() {
+        return Err(13);
     }
     let bytes = [
         output.VolumeFlags.to_le_bytes(),
@@ -205,16 +244,20 @@ fn persistent(file: &File) -> (Option<PersistentState>, Option<u32>) {
         output.Reserved.to_le_bytes(),
     ]
     .concat();
-    (
-        Some(PersistentState {
-            volume_flags: output.VolumeFlags,
-            flag_mask: output.FlagMask,
-            version: output.Version,
-            short_name_creation_disabled: output.VolumeFlags & 1 != 0,
-            reply_sha256: hex::encode(Sha256::digest(bytes)),
-        }),
-        None,
-    )
+    Ok(PersistentState {
+        volume_flags: output.VolumeFlags,
+        flag_mask: output.FlagMask,
+        version: output.Version,
+        reserved: output.Reserved,
+        requested_flag_mask: 1,
+        requested_version: 1,
+        // FlagMask and Version configure the input query; Windows does
+        // not echo them in this reply. Validate only requested flags and
+        // retain all returned fields for provenance.
+        queried_flags_valid: output.VolumeFlags & !1 == 0 && output.Reserved == 0,
+        short_name_creation_disabled: output.VolumeFlags & 1 != 0,
+        reply_sha256: hex::encode(Sha256::digest(bytes)),
+    })
 }
 
 pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
@@ -271,11 +314,28 @@ pub fn observe_general(binding: GeneralDiskBinding) -> io::Result<GeneralObserva
 }
 
 fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation> {
+    let windows_version = windows_version()?;
+    // TxF resource-manager controls address the RM's root directory. The
+    // direct volume handle remains separate for dirty/persistent-state FSCTLs.
+    let root = File::options()
+        .access_mode(0x181)
+        .share_mode(3)
+        .custom_flags(0x0220_0000)
+        .open(format!("{}\\", binding.volume_path()?))?;
+    let suppress = FILETIME {
+        dwLowDateTime: u32::MAX,
+        dwHighDateTime: u32::MAX,
+    };
+    // SAFETY: borrowed directory handle and documented per-handle last-access
+    // suppression sentinel; no stored timestamp value is supplied.
+    if unsafe { SetFileTime(root.as_raw_handle(), ptr::null(), &suppress, ptr::null()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
     let (native_dirty_before, native_dirty_before_error) = dirty(&volume);
     let (persistent_state_before, persistent_state_before_error) = persistent(&volume);
-    let (before, before_error) = query(&volume);
-    let (transactions, list_error) = list(&volume);
-    let (after, after_error) = query(&volume);
+    let (before, before_error) = query(&root);
+    let (transactions, list_error) = list(&root);
+    let (after, after_error) = query(&root);
     let (native_dirty_after, native_dirty_after_error) = dirty(&volume);
     let (persistent_state_after, persistent_state_after_error) = persistent(&volume);
     let native_volume_state_stably_clear =
@@ -284,7 +344,9 @@ fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation>
         .as_ref()
         .zip(persistent_state_after.as_ref())
         .is_some_and(|(before, after)| {
-            before.short_name_creation_disabled == after.short_name_creation_disabled
+            before.queried_flags_valid
+                && after.queried_flags_valid
+                && before.short_name_creation_disabled == after.short_name_creation_disabled
                 && before.volume_flags & 1 == after.volume_flags & 1
         });
     let queried_rm_stably_empty = before.as_ref().is_some_and(|q| q.transaction_count == 0)
@@ -297,8 +359,10 @@ fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation>
             .zip(after.as_ref())
             .is_some_and(|(a, b)| a.rm_state == b.rm_state && matches!(a.rm_state, 0 | 2));
     Ok(Observation {
-        schema_version: 1,
+        schema_version: 2,
         kind: "mounted-ntfs-txf-resource-manager-observation",
+        rm_handle_profile: "volume-root-directory-access-time-suppressed",
+        windows_version,
         binding,
         native_dirty_before,
         native_dirty_before_error,
@@ -326,6 +390,31 @@ fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_version_query_returns_a_build_fingerprint() {
+        let version = windows_version().unwrap();
+        assert!(version[0] >= 6 && version[2] > 0);
+    }
+    #[test]
+    fn persistent_reply_need_not_echo_input_mask_and_version() {
+        let output = FILE_FS_PERSISTENT_VOLUME_INFORMATION {
+            VolumeFlags: 1,
+            ..Default::default()
+        };
+        let state = decode_persistent(&output, 16).unwrap();
+        assert!(state.queried_flags_valid && state.short_name_creation_disabled);
+        assert_eq!((state.flag_mask, state.version), (0, 0));
+        let unexpected = FILE_FS_PERSISTENT_VOLUME_INFORMATION {
+            VolumeFlags: 2,
+            ..Default::default()
+        };
+        assert!(
+            !decode_persistent(&unexpected, 16)
+                .unwrap()
+                .queried_flags_valid
+        );
+        assert!(decode_persistent(&output, 4).is_err());
+    }
     #[test]
     fn persistent_volume_state_uses_the_documented_aligned_wire_shape() {
         assert_eq!(mem::size_of::<FILE_FS_PERSISTENT_VOLUME_INFORMATION>(), 16);

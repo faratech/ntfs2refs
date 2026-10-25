@@ -208,8 +208,10 @@ and materialized in ReFS. The source stream diagnostic is schema 4.
 The dirty-state and volume-policy questions are now separate gates. On the
 Windows 11 source, the native dirty result is false, on-disk dirty bit is
 clear, and NTFS version is 3.1, so `clean_volume` passes. The observed
-`0x0080` volume policy bit still fails `volume_policy_flags` until its exact
-native behavior is confirmed; see [the flag investigation](ntfs-volume-flags.md).
+`0x0080` volume policy bit was confirmed by a controlled native disabled /
+enabled / restored-disabled differential; see [the experiment](research/ntfs-volume-flag-0080.md).
+Its gate can now clear only on build 26300 with an actual frozen-source native
+policy witness and no DOS-only aliases. That live binding has not yet been run.
 The root's `$TXF_DATA`, NTFS log/transaction state, target preservation round
 trip and final device-bound certificate remain unfinished. [Microsoft states
 that ReFS does not support the TxF metadata FSCTL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_txfs_get_metadata_info),
@@ -226,8 +228,13 @@ TxF calls through the [documented persistent-state
 FSCTL](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_fs_persistent_volume_information).
 A zero TxF count is explicitly
 limited to the **queried RM**; secondary resource managers, clean log state and
-the final frozen source are not certified. It has compiled on the host but has
-not yet been run in the VM. [Microsoft documents the RM query's
+the final frozen source are not certified. The native experiment exposed and
+fixed two observer bugs: RM controls need the volume-root directory handle,
+and persistent-state replies do not echo the input mask/version fields. The
+corrected observer returned stable disabled short-name state and zero
+transactions in both default-RM queries and the list. The native report SHA-256
+is `9c0031bb5201b5cf63d887cb57666ee3e312488a760bae5772ce9d6b3793cd5e`.
+[Microsoft documents the RM query's
 `TransactionCount`](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-txfs_query_rm_information)
 and the transaction-list control's buffer semantics
 [separately](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_txfs_list_transactions).

@@ -77,8 +77,9 @@ Ignored evidence paths are:
 
 This is a **bounded laboratory success**. The four user payload ranges were
 relocated; this run does not demonstrate retained physical extents. Source
-admission for arbitrary NTFS volumes is still closed, including unresolved
-NTFS `0x0080` policy and TxF replacement state. The first-write interruption
+admission for arbitrary NTFS volumes is still closed. The NTFS `0x0080`
+short-name policy mapping is now confirmed, but its live frozen-source binding
+and TxF replacement state remain unfinished. The first-write interruption
 and resume path passed, but a broader write/flush fault matrix and the
 shadowless rollback path remain to be qualified natively. A usable general
 conversion CLI remains unfinished. Boot volume conversion is a separate later

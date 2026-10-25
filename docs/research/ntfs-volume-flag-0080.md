@@ -14,11 +14,36 @@ An older secondary source associates it with disabled short-name generation,
 which is consistent with the lab's native 8dot3 setting, but correlation does
 not prove the bit has no other conversion consequence.
 
-The admission gate therefore continues to refuse `0x0080`. A future change
-should be based on a controlled Windows experiment that toggles only the
-relevant per-volume policy, captures the before/after `$VOLUME_INFORMATION`
-bytes, and compares native short-name behavior on the same build. The source
-namespace also must have no DOS-only aliases to preserve.
+On 2026-10-25, a controlled differential in the enrolled Windows 11 build
+26300.9457 guest confirmed the mapping. With the global setting already at 2
+(per-volume), the experiment changed only F:'s creation policy and used the
+Rust `lab-ntfs-policy-probe` to hold a volume lock while parsing raw NTFS.
+
+| Native creation policy | Raw flags | Exact 12-byte value |
+| --- | --- | --- |
+| Disabled before | `0x0080` | `000000000000000003018000` |
+| Enabled | `0x0000` | `000000000000000003010000` |
+| Disabled restored | `0x0080` | `000000000000000003018000` |
+
+All captures were clean, passed backup boot/MFT-mirror checks and explicitly
+released the lock. The four user streams retained their names, mappings and
+complete logical hashes. No short names were stripped or global policy
+changed. The original per-volume policy was restored, and the VM returned to
+its saved recovered ReFS checkpoint afterward.
+
+Evidence is under
+`.lab/hyperv/ntfs-shortname-differential/win11-20261025T145523275Z`.
+The exported result SHA-256 is
+`d08565e8aaadfcedc8f00f9ef26a45304fcdc5671686313b6290d5e468705b2e`.
+Each of the three raw observations read 99,409,920 bytes rather than hashing
+the entire 52 GiB partition. This narrow experiment is not a full frozen-source
+certificate.
+
+The live general admission path now recognizes this policy only on native
+build 26300, with a bound unchanged frozen-source observation, stable native
+short-name-disable replies and no DOS-only aliases. Replay reports cannot
+clear the gate. The new binding still needs a native live-admission run;
+unknown bits and TxF/internal replacement remain separate refusals.
 
 Sources:
 

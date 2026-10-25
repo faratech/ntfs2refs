@@ -32,6 +32,7 @@ const SET_ATTRIBUTES: u32 = 0x0007c0f4;
 const UPDATE_PROPERTIES: u32 = 0x00070140;
 const VOLUME_EXTENTS: u32 = 0x00560000;
 const LOCK: u32 = 0x00090018;
+const UNLOCK: u32 = 0x0009001c;
 const DISMOUNT: u32 = 0x00090020;
 const OFFLINE: u64 = 1;
 const READ_ONLY: u64 = 2;
@@ -847,6 +848,66 @@ pub struct GeneralPartitionReader {
     position: u64,
     buffer: AlignedBuffer,
     pub native_bytes_read: u64,
+}
+
+/// Read-only raw partition access while a mounted data volume is locked.
+/// Closing the lock handle releases the lock; no disk attributes are changed.
+/// This is a short-lived observation primitive, not persistent conversion
+/// exclusion or a certificate that survives process death.
+pub struct GeneralLockedPartition {
+    reader: GeneralPartitionReader,
+    volume_lock: Option<File>,
+}
+
+impl GeneralLockedPartition {
+    pub fn open(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
+        let reader = GeneralPartitionReader::open(binding.clone(), events)?;
+        let volume = device_file(&binding.volume_path()?, true, false)?;
+        let extents = control(
+            &volume,
+            "policy-lock-volume-extents",
+            VOLUME_EXTENTS,
+            &[],
+            1024,
+            events,
+        )?;
+        binding.validate_volume_extent(&extents)?;
+        control(&volume, "policy-lock-volume", LOCK, &[], 0, events)?;
+        Ok(Self {
+            reader,
+            volume_lock: Some(volume),
+        })
+    }
+
+    pub fn byte_len(&self) -> u64 {
+        self.reader.byte_len()
+    }
+    pub fn native_bytes_read(&self) -> u64 {
+        self.reader.native_bytes_read
+    }
+
+    /// Explicitly release the observation lock and verify the original route.
+    /// An error also closes the local lock handle during unwinding.
+    pub fn finish(mut self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralProbe> {
+        let volume = self
+            .volume_lock
+            .take()
+            .ok_or_else(|| invalid("volume lock already released"))?;
+        control(&volume, "policy-unlock-volume", UNLOCK, &[], 0, events)?;
+        close_file(volume, "close-policy-volume-lock", events)?;
+        self.reader.revalidate_route(events)
+    }
+}
+
+impl Read for GeneralLockedPartition {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.reader.read(bytes)
+    }
+}
+impl Seek for GeneralLockedPartition {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.reader.seek(from)
+    }
 }
 
 /// Persistently excluded general data partition. This handle has no Write

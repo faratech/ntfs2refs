@@ -216,6 +216,11 @@ it across a zero-valid-data gap, truncates and renames it, then creates and
 removes 128 small files. It removes only those new test paths. A subsequent
 reboot and `lab-verify-general-converted` run must still match the original
 tree; this mutation workload has not yet run in the VM.
+`Dispatch-LabGeneralMutation.ps1` and `Collect-LabGeneralMutation.ps1` now
+launch and observe that workload only after a collected successful ReFS
+handoff. The dispatcher checks the source/shadow state, `N2RHND01` journal
+marker and host free-space reserve; collection exports the pinned report and
+requires the temporary directory to have been removed before reboot testing.
 
 The internal general finalizer now accepts the independently pinned pre-cutover
 tree, checks the full journaled ReFS postimage, durably closes rollback, brings

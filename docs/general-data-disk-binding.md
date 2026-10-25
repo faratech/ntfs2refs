@@ -62,6 +62,15 @@ types as read-only preparation inputs and a durable target. No general CLI
 currently supplies the complete source-admission, target-construction and
 recovery witnesses needed to use this write route on an actual disk.
 
+`lab-prepare-general-journal` is the first general journal command. Given two
+already excluded, read-only dedicated data disks, a pinned request, and a fresh
+file on the enrolled independent journal disk, it reads the NTFS and ReFS
+headers, compares the full partitions, writes the durable old/new journal, and
+saves its ticket as a separate file. It does not activate the target or issue
+data-disk writes. Its ReFS check covers the 3.14 VBR geometry, not the complete
+metadata graph or Windows mount behavior; the resulting preparation explicitly
+does not authorize execution.
+
 This is **not** a general conversion command. The raw writer, journal, source
 admission and ReFS target profile still use the narrower enrolled laboratory
 route. A successful read-only probe cannot authorize switching a volume's

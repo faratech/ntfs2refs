@@ -596,6 +596,10 @@ impl GeneralFrozenPartition {
         self.binding.identity.partition_bytes
     }
 
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        &self.binding
+    }
+
     pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralDiskState> {
         let state = general_disk_state(&self.file, &self.binding, events)?;
         if state != self.frozen_state {
@@ -691,6 +695,10 @@ impl GeneralJournaledPartition {
 
     pub fn byte_len(&self) -> u64 {
         self.inner.byte_len()
+    }
+
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        self.inner.binding()
     }
 
     pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralDiskState> {

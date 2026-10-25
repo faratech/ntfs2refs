@@ -7,6 +7,8 @@ pub mod corpus;
 pub mod extent_adoption;
 pub mod fixed_vhd;
 #[cfg(windows)]
+pub mod general_reconstruct;
+#[cfg(windows)]
 pub mod lab_native;
 #[cfg(windows)]
 pub mod lab_native_reconstruct;

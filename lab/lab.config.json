@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "relativeRoot": ".lab/hyperv",
-  "maximumActualBytes": 210453397504,
+  "maximumActualBytes": 216895848448,
   "minimumHostFreeBytes": 68719476736,
   "processorCount": 4,
   "memoryBytes": 4294967296,

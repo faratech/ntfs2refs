@@ -19,6 +19,7 @@ const ALIGNMENT: u32 = 0x002d1400;
 const LAYOUT: u32 = 0x00070050;
 const GET_ATTRIBUTES: u32 = 0x000700f0;
 const SET_ATTRIBUTES: u32 = 0x0007c0f4;
+const UPDATE_PROPERTIES: u32 = 0x00070140;
 const VOLUME_EXTENTS: u32 = 0x00560000;
 const LOCK: u32 = 0x00090018;
 const DISMOUNT: u32 = 0x00090020;
@@ -44,6 +45,49 @@ pub struct PartitionSnapshot {
     pub length: Vec<u8>,
     pub alignment: Vec<u8>,
     pub layout: Vec<u8>,
+}
+/// Created only by a physically read-only native observation bracketed by
+/// actual excluded-device snapshots. Exporting it cannot recreate a lease.
+#[derive(Debug, Serialize)]
+pub struct LiveNtfsObservation {
+    report: crate::attestation::Report,
+    before: PartitionSnapshot,
+    after: PartitionSnapshot,
+}
+impl LiveNtfsObservation {
+    pub fn report(&self) -> &crate::attestation::Report {
+        &self.report
+    }
+    pub fn binding(&self) -> &DiskBinding {
+        &self.after.binding
+    }
+}
+struct ReadonlyObservationLease<'a> {
+    file: &'a File,
+    events: &'a mut Vec<NativeEvent>,
+    restoration_attempted: bool,
+}
+impl ReadonlyObservationLease<'_> {
+    fn finish(&mut self) -> io::Result<()> {
+        self.restoration_attempted = true;
+        set_attributes(self.file, OFFLINE | READ_ONLY, self.events)?;
+        control(
+            self.file,
+            "refresh-excluded-source-properties",
+            UPDATE_PROPERTIES,
+            &[],
+            0,
+            self.events,
+        )?;
+        Ok(())
+    }
+}
+impl Drop for ReadonlyObservationLease<'_> {
+    fn drop(&mut self) {
+        if !self.restoration_attempted {
+            let _ = self.finish();
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -192,7 +236,7 @@ fn set_attributes(file: &File, value: u64, events: &mut Vec<NativeEvent>) -> io:
     Ok(())
 }
 
-fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<u32> {
+pub(crate) fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<u32> {
     let mut name = vec![0_u16; 512];
     // SAFETY: the output buffer contains 512 writable UTF-16 elements.
     let count = unsafe { GetWindowsDirectoryW(name.as_mut_ptr(), name.len() as u32) } as usize;
@@ -221,7 +265,7 @@ fn current_windows_disk(events: &mut Vec<NativeEvent>) -> io::Result<u32> {
     layout::u32_at(&bytes, 8)
 }
 
-fn snapshot(
+pub(crate) fn snapshot(
     file: &File,
     binding: &DiskBinding,
     events: &mut Vec<NativeEvent>,
@@ -420,6 +464,100 @@ impl OfflinePartition {
     }
     pub fn inspect(&self, events: &mut Vec<NativeEvent>) -> io::Result<PartitionSnapshot> {
         snapshot(&self.file, &self.binding, events)
+    }
+    /// Mount only an already frozen source read-only for supported NTFS API
+    /// queries, then persist exclusion again. READ_ONLY is never cleared.
+    /// A killed observer can leave a valid, write-protected NTFS mount; this
+    /// operation is forbidden after reconstruction has begun.
+    pub fn observe_ntfs_files(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<LiveNtfsObservation> {
+        request.validate()?;
+        if !self.read_only
+            || self.policy.is_some()
+            || self.native_write_bytes_requested != 0
+            || self.native_bytes_written != 0
+            || request.disk_number != self.binding.disk_number
+            || request.volume.trim_end_matches('\\') != self.binding.volume_path()?
+            || request.partition_offset != self.binding.identity.partition_offset
+            || request.partition_length != self.byte_len()
+        {
+            return Err(invalid("read-only source observation binding differs"));
+        }
+        let before = self.inspect(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid("source must already be excluded and read-only"));
+        }
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number),
+            true,
+            false,
+        )?;
+        let actual = snapshot(&management, &self.binding, events)?;
+        if actual.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid("control handle source state differs"));
+        }
+        let mut lease = ReadonlyObservationLease {
+            file: &management,
+            events,
+            restoration_attempted: false,
+        };
+        set_attributes(lease.file, READ_ONLY, lease.events)?;
+        control(
+            lease.file,
+            "refresh-readonly-source-properties",
+            UPDATE_PROPERTIES,
+            &[],
+            0,
+            lease.events,
+        )?;
+        // Disk attributes and volume-interface publication are distinct. Poll
+        // only harmless opens, never repeat a management mutation or drop RO.
+        let mut ready = false;
+        for _ in 0..60 {
+            if attributes(lease.file, lease.events)? != READ_ONLY {
+                return Err(invalid("source read-only observation state changed"));
+            }
+            match device_file(&self.binding.volume_path()?, false, false) {
+                Ok(volume) => {
+                    drop(volume);
+                    ready = true;
+                    break;
+                }
+                Err(e) if matches!(e.raw_os_error(), Some(2 | 3 | 21 | 1167)) => {
+                    std::thread::sleep(std::time::Duration::from_millis(250))
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if !ready {
+            return Err(invalid(
+                "read-only source volume interface was not published within 15 seconds",
+            ));
+        }
+        let collected = crate::attestation_native::collect_file_metadata(request);
+        let restored = lease.finish();
+        drop(lease);
+        restored?;
+        let after = self.inspect(events)?;
+        if after.disk_attributes != OFFLINE | READ_ONLY
+            || before.binding != after.binding
+            || before.device != after.device
+            || before.layout != after.layout
+            || before.length != after.length
+            || before.alignment != after.alignment
+        {
+            return Err(invalid(
+                "source identity or exclusion changed during observation",
+            ));
+        }
+        Ok(LiveNtfsObservation {
+            report: collected?,
+            before,
+            after,
+        })
     }
 
     /// Caller must finish and flush its complete journal and independently

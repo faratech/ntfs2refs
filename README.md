@@ -25,7 +25,7 @@ now matches the full control-volume bitmap and every fixture object's stream
 mapping, including ADS and sparse holes. Native [logical-stream hashing](docs/native-ntfs-logical-data.md)
 also matches every supported fixture stream without changing the protected
 source. Complete namespace reconciliation, source admission and a coherent
-freeze boundary remain unfinished.
+admission decision remain unfinished.
 The [source-admission work](docs/source-admission-progress.md) now includes
 native directory observations, explicit object dispositions and actual backup
 boot/MFT-mirror checks. It reports remaining refusals; no admission certificate
@@ -33,6 +33,11 @@ or existing-tree conversion has passed yet.
 An [existing four-file tree now has a native post-exclusion source basis](docs/native-ntfs-source-freeze.md),
 verified across restart and read-only Windows inspection. Its physical placement
 was untouched; conversion and interruption recovery for that tree remain open.
+An [independent native ReFS shadow](docs/existing-tree-shadow.md) now reproduces
+that tree's contents, all four stored timestamps, permissions and names after a
+clean restart. All four natural source locations conflict with ReFS metadata;
+the diagnostic plan explicitly records relocation of all 512 KiB. The frozen
+shadow is a construction milestone, not an existing-tree conversion.
 
 ## Build and run
 

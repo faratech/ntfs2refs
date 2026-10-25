@@ -30,6 +30,43 @@ pub struct FrozenBasis {
     inspection: Inspection,
     evidence: Evidence,
 }
+/// Actual native collection over the same protected source, bracketed by full
+/// frozen-image revalidation. A report file cannot reconstruct this witness.
+#[derive(Debug, Serialize)]
+pub struct ObservedFrozenSource {
+    source_sha256: String,
+    canonical_inspection_sha256: String,
+    native: n2r_win32::LiveNtfsObservation,
+    comparison: crate::ntfs_attestation::Comparison,
+}
+impl ObservedFrozenSource {
+    pub fn assessment(&self, basis: &FrozenBasis) -> Result<crate::ntfs_admission::Assessment> {
+        ensure!(
+            self.source_sha256 == basis.evidence.source_sha256
+                && self.canonical_inspection_sha256 == basis.evidence.canonical_inspection_sha256,
+            "live observation and frozen basis differ"
+        );
+        let Filesystem::Ntfs(raw) = &basis.inspection.filesystem else {
+            anyhow::bail!("source is not NTFS")
+        };
+        let mut assessment = crate::ntfs_admission::assess_with_backups(
+            raw,
+            &self.comparison,
+            self.native.report().schema_version,
+            Some(&basis.evidence.backups),
+        );
+        for gate in &mut assessment.gates {
+            if gate.code == "frozen_device_basis" {
+                gate.satisfied = true;
+                gate.detail="actual excluded device and complete source hash revalidated before and after a live physically read-only native observation".into();
+            }
+        }
+        Ok(assessment)
+    }
+    pub fn native(&self) -> &n2r_win32::attestation::Report {
+        self.native.report()
+    }
+}
 /// A fresh full-device hash check, constructed only from native reads.
 #[derive(Debug, Serialize)]
 pub struct Revalidation {
@@ -90,6 +127,37 @@ fn snapshot_matches(a: &PartitionSnapshot, b: &PartitionSnapshot) -> Result<()> 
     Ok(())
 }
 impl FrozenBasis {
+    pub fn observe_native(
+        &self,
+        source: &mut OfflinePartition,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<ObservedFrozenSource> {
+        self.revalidate(source, events)?;
+        let request = crate::ntfs_attestation::request_for_inspection(
+            &self.inspection,
+            &self.evidence.canonical_inspection_sha256,
+            source.binding(),
+        )?;
+        let observed = source.observe_ntfs_files(&request, events);
+        // Revalidate even after a collector refusal. If exclusion was not
+        // restored this refuses before reading, and no witness is returned.
+        self.revalidate(source, events)?;
+        let native = observed?;
+        let Filesystem::Ntfs(raw) = &self.inspection.filesystem else {
+            anyhow::bail!("source is not NTFS")
+        };
+        let comparison = crate::ntfs_attestation::compare(
+            raw,
+            &self.evidence.canonical_inspection_sha256,
+            native.report(),
+        )?;
+        Ok(ObservedFrozenSource {
+            source_sha256: self.evidence.source_sha256.clone(),
+            canonical_inspection_sha256: self.evidence.canonical_inspection_sha256.clone(),
+            native,
+            comparison,
+        })
+    }
     /// Caller supplies the actual native partition, already excluded. The
     /// constructor cannot be satisfied with an evidence JSON or boolean.
     pub fn capture(source: &mut OfflinePartition, events: &mut Vec<NativeEvent>) -> Result<Self> {

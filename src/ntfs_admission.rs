@@ -53,7 +53,7 @@ pub struct Assessment {
 fn reference(f: &FileInventory) -> u64 {
     f.record_number | (u64::from(f.sequence_number) << 48)
 }
-fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<String>> {
+pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<String>> {
     let objects: BTreeMap<_, _> = raw.files.iter().map(|f| (reference(f), f)).collect();
     let mut cursor = f;
     let mut components = vec![];
@@ -153,7 +153,7 @@ pub fn internal_role(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<St
     };
     (f.is_directory == directory).then_some(joined)
 }
-fn user_issues(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Vec<String> {
+pub(crate) fn user_issues(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Vec<String> {
     let mut issues = vec![];
     if f.metadata_role_issue.is_some()
         || !matches!(

@@ -4,6 +4,7 @@
 pub mod attestation;
 #[cfg(windows)]
 mod attestation_native;
+pub mod bitmap_layout;
 #[cfg(windows)]
 pub mod journal_file;
 pub mod layout;
@@ -11,6 +12,9 @@ pub mod logical_hash;
 pub mod namespace_layout;
 #[cfg(windows)]
 mod namespace_native;
+pub mod region_layout;
+#[cfg(windows)]
+pub mod shadow_native;
 pub mod stream_layout;
 #[cfg(windows)]
 mod stream_native;
@@ -19,4 +23,6 @@ pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
-pub use native::{NativeEvent, OfflinePartition, PartitionSnapshot, WritePolicy};
+pub use native::{
+    LiveNtfsObservation, NativeEvent, OfflinePartition, PartitionSnapshot, WritePolicy,
+};

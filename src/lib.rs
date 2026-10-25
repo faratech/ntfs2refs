@@ -30,3 +30,7 @@ pub mod refs_inspect;
 pub mod refs_node;
 pub mod refs_virtual_roots;
 pub mod retained_compare;
+#[cfg(windows)]
+pub mod shadow_freeze;
+pub mod shadow_tree;
+pub mod tree_placement;

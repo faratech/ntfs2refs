@@ -1,0 +1,1049 @@
+//! Native creation on a separately bound empty ReFS volume. Never writes the
+//! source disk, manufactures ReFS bytes or grants conversion authority.
+use crate::{
+    attestation::{PrivilegeState, Snapshot},
+    attestation_native::{Privileges, snapshot},
+    layout::{self, DiskBinding, invalid},
+    namespace_layout,
+    native::{self, NativeEvent},
+    stream_layout,
+};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::File,
+    io::{self, Read, Write},
+    mem,
+    os::windows::{
+        fs::OpenOptionsExt,
+        io::{AsRawHandle, FromRawHandle},
+    },
+    ptr,
+};
+use windows_sys::Win32::{
+    Foundation::{FILETIME, INVALID_HANDLE_VALUE},
+    Security::{GetSecurityDescriptorLength, IsValidSecurityDescriptor, SECURITY_ATTRIBUTES},
+    Storage::FileSystem::{
+        BackupWrite, CreateDirectoryW, CreateFileW, GetDiskFreeSpaceW,
+        GetFileInformationByHandleEx, GetVolumeInformationW, SetFileInformationByHandle,
+        SetFileTime,
+    },
+    System::IO::DeviceIoControl,
+};
+
+pub struct Input<'a> {
+    pub components: &'a [String],
+    pub directory: bool,
+    pub times: [u64; 4],
+    pub attributes: u32,
+    pub security: &'a [u8],
+    pub payload: &'a [u8],
+    pub source_offset: Option<u64>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    ProbeRoot,
+    RestoreRootOnly,
+    Construct,
+    Verify,
+}
+#[derive(Debug, Serialize)]
+pub struct CandidateReport {
+    pub legacy: crate::bitmap_layout::Candidate,
+    pub metadata_inclusive: crate::bitmap_layout::Candidate,
+}
+#[derive(Debug, Serialize)]
+pub struct ObjectReport {
+    pub components: Vec<String>,
+    pub before: Snapshot,
+    pub after: Snapshot,
+    pub logical_sha256: Option<String>,
+    pub retrieval: Vec<u8>,
+    pub cached_validity: Vec<u8>,
+    pub storage_validity: Vec<u8>,
+    pub integrity: Vec<u8>,
+    pub namespace: Vec<namespace_layout::Entry>,
+    pub source_candidate: Option<CandidateReport>,
+    pub streams: Vec<u8>,
+}
+#[derive(Debug, Serialize)]
+pub struct Report {
+    pub binding: DiskBinding,
+    pub before: crate::PartitionSnapshot,
+    pub after: crate::PartitionSnapshot,
+    pub objects: Vec<ObjectReport>,
+    pub base_sectors: u64,
+    pub privilege_states: Vec<PrivilegeState>,
+    pub events: Vec<NativeEvent>,
+    pub payload_bytes_written: u64,
+    pub conversion_qualified: bool,
+    pub root_security: RootSecurity,
+    pub security_restorations: Vec<ObjectSecurityRestore>,
+    pub security_repair_preflight_sha256: Option<String>,
+    pub security_repair_privileges: Vec<PrivilegeState>,
+}
+#[derive(Debug, Serialize)]
+pub struct ObjectSecurityRestore {
+    pub components: Vec<String>,
+    pub before: Snapshot,
+    pub after: Snapshot,
+    pub backup: SecurityBackup,
+}
+#[derive(Debug, Serialize)]
+pub struct RootSecurity {
+    pub before: Snapshot,
+    pub after: Snapshot,
+    pub matched_before: bool,
+    pub matched_after: bool,
+    pub backup: Option<SecurityBackup>,
+}
+#[derive(Debug, Serialize)]
+pub struct SecurityBackup {
+    pub stream_sha256: String,
+    pub submitted_bytes: u32,
+    pub accepted_bytes: u32,
+    pub context_released: bool,
+}
+fn security_stream(sd: &[u8]) -> io::Result<Vec<u8>> {
+    if !(20..=65536).contains(&sd.len()) {
+        return Err(invalid("security backup length"));
+    }
+    // WIN32_STREAM_ID ends at cStreamName (offset 20), not sizeof(struct),
+    // which includes WCHAR[1] and alignment padding. This stream is unnamed.
+    let mut stream = vec![0; 20];
+    stream[0..4].copy_from_slice(&3u32.to_le_bytes());
+    stream[4..8].copy_from_slice(&2u32.to_le_bytes());
+    stream[8..16].copy_from_slice(&(sd.len() as u64).to_le_bytes());
+    stream.extend_from_slice(sd);
+    Ok(stream)
+}
+fn backup_security(file: &File, sd: &[u8]) -> io::Result<SecurityBackup> {
+    descriptor(sd)?;
+    let stream = security_stream(sd)?;
+    let mut accepted = 0;
+    let mut context = ptr::null_mut();
+    // SAFETY: synchronous backup-semantics handle with WRITE_DAC, WRITE_OWNER
+    // and ACCESS_SYSTEM_SECURITY; bounded initialized stream; private context
+    // starts NULL and is passed unchanged to the mandatory abort/cleanup call.
+    let result = check(unsafe {
+        BackupWrite(
+            file.as_raw_handle(),
+            stream.as_ptr(),
+            stream.len() as u32,
+            &mut accepted,
+            0,
+            1,
+            &mut context,
+        )
+    });
+    let mut ignored = 0;
+    let cleanup = check(unsafe {
+        BackupWrite(
+            file.as_raw_handle(),
+            ptr::null(),
+            0,
+            &mut ignored,
+            1,
+            1,
+            &mut context,
+        )
+    });
+    result?;
+    cleanup?;
+    if accepted as usize != stream.len() {
+        return Err(invalid("partial root backup-security restoration"));
+    }
+    Ok(SecurityBackup {
+        stream_sha256: hex::encode(Sha256::digest(&stream)),
+        submitted_bytes: stream.len() as u32,
+        accepted_bytes: accepted,
+        context_released: true,
+    })
+}
+fn security_matches(
+    expected: &[u8],
+    actual: &Snapshot,
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<bool> {
+    let kernel = actual
+        .kernel_security
+        .as_ref()
+        .ok_or_else(|| invalid("root kernel security missing"))?;
+    if actual.security_error.is_some() || kernel.native_error.is_some() {
+        return Err(invalid("root security query failed"));
+    }
+    Ok(same(expected, &actual.security)? && same(expected, &kernel.bytes)?)
+}
+fn query_bytes(s: &Snapshot, class: i32, length: usize) -> io::Result<&[u8]> {
+    let q = s
+        .queries
+        .iter()
+        .find(|q| q.class == class && q.native_error.is_none() && q.bytes.len() == length)
+        .ok_or_else(|| invalid("missing native shadow metadata query"))?;
+    Ok(&q.bytes)
+}
+fn basic_bytes(i: &Input<'_>) -> Vec<u8> {
+    let mut b = Vec::with_capacity(40);
+    for t in i.times {
+        b.extend_from_slice(&t.to_le_bytes());
+    }
+    b.extend_from_slice(&i.attributes.to_le_bytes());
+    b.extend_from_slice(&[0; 4]);
+    b
+}
+// Only a pre-restoration diagnosis. Final comparisons never normalize control
+// flags: BACKUP_SECURITY_DATA must restore the exact original descriptor.
+fn creation_loss_only(
+    expected: &[u8],
+    actual: &[u8],
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<bool> {
+    if same(expected, actual)? {
+        return Ok(true);
+    }
+    if expected.len() < 20 || actual.len() < 20 {
+        return Ok(false);
+    }
+    let want = u16::from_le_bytes(expected[2..4].try_into().unwrap());
+    let got = u16::from_le_bytes(actual[2..4].try_into().unwrap());
+    if want ^ got != 0x400 || want & 0x400 == 0 {
+        return Ok(false);
+    }
+    let mut restored = actual.to_vec();
+    restored[2..4].copy_from_slice(&want.to_le_bytes());
+    same(expected, &restored)
+}
+fn validate_existing(
+    report: &Report,
+    input: &[Input<'_>],
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    before_restore: bool,
+) -> io::Result<()> {
+    use std::collections::{BTreeMap, BTreeSet};
+    if report.objects.len() != input.len() {
+        return Err(invalid("existing shadow object coverage differs"));
+    }
+    let mut identities = BTreeMap::new();
+    let mut unique = BTreeSet::new();
+    for (i, o) in input.iter().zip(&report.objects) {
+        if i.components != o.components
+            || query_bytes(&o.before, 0, 40)? != basic_bytes(i)
+            || o.before != o.after
+        {
+            return Err(invalid(
+                "existing shadow path, basic metadata or stability differs",
+            ));
+        }
+        let id = query_bytes(&o.before, 18, 24)?[8..24].to_vec();
+        if id == [0; 16]
+            || !unique.insert(id.clone())
+            || identities.insert(i.components.to_vec(), id).is_some()
+        {
+            return Err(invalid("duplicate existing shadow identity"));
+        }
+        let standard = query_bytes(&o.before, 1, 24)?;
+        if layout::u32_at(standard, 16)? != 1
+            || standard[20] != 0
+            || (standard[21] != 0) != i.directory
+            || (!i.directory && layout::u64_at(standard, 8)? != i.payload.len() as u64)
+            || o.logical_sha256 != (!i.directory).then(|| hex::encode(Sha256::digest(i.payload)))
+        {
+            return Err(invalid(
+                "existing shadow links, type, EOF or contents differ",
+            ));
+        }
+        let kernel = o
+            .before
+            .kernel_security
+            .as_ref()
+            .ok_or_else(|| invalid("existing shadow security missing"))?;
+        if o.before.security_error.is_some() || kernel.native_error.is_some() {
+            return Err(invalid("existing shadow security query failed"));
+        }
+        for actual in [&o.before.security, &kernel.bytes] {
+            let matched = if before_restore {
+                creation_loss_only(i.security, actual, same)?
+            } else {
+                same(i.security, actual)?
+            };
+            if !matched {
+                return Err(invalid(
+                    "existing shadow security differs beyond the recorded creation control-bit loss",
+                ));
+            }
+        }
+    }
+    for (i, o) in input
+        .iter()
+        .zip(&report.objects)
+        .filter(|(i, _)| i.directory)
+    {
+        let expected: BTreeMap<_, _> = input
+            .iter()
+            .filter(|c| {
+                c.components.len() == i.components.len() + 1
+                    && c.components.starts_with(i.components)
+            })
+            .map(|c| {
+                (
+                    c.components
+                        .last()
+                        .unwrap()
+                        .encode_utf16()
+                        .collect::<Vec<_>>(),
+                    c,
+                )
+            })
+            .collect();
+        let mut seen = BTreeSet::new();
+        for entry in &o.namespace {
+            if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
+                continue;
+            }
+            if i.components.is_empty()
+                && entry.name_utf16
+                    == "System Volume Information"
+                        .encode_utf16()
+                        .collect::<Vec<_>>()
+                && entry.attributes & 16 != 0
+                && entry.attributes & 0x400 == 0
+            {
+                continue;
+            }
+            let child = expected
+                .get(&entry.name_utf16)
+                .ok_or_else(|| invalid("unexpected existing shadow directory entry"))?;
+            if !seen.insert(entry.name_utf16.clone())
+                || entry.attributes != child.attributes
+                || identities
+                    .get(child.components)
+                    .is_none_or(|id| id.as_slice() != entry.file_id)
+            {
+                return Err(invalid("existing shadow namespace identity differs"));
+            }
+        }
+        if seen.len() != expected.len() {
+            return Err(invalid("missing existing shadow directory entry"));
+        }
+    }
+    Ok(())
+}
+/// Repairs only the documented creation-time loss of AUTO_INHERITED, after a
+/// fresh native read of every admitted shadow byte and namespace identity. The
+/// preflight is a live value; no serialized `success` flag is consumed.
+pub fn repair_security(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    same: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<Report> {
+    let observed = run(binding.clone(), source_disk, input, Mode::Verify, &same)?;
+    validate_existing(&observed, input, &same, true)?;
+    let preflight_sha = hex::encode(Sha256::digest(
+        serde_json::to_vec(&observed).map_err(io::Error::other)?,
+    ));
+    let mut privileges = Privileges::enable_for(&[
+        "SeBackupPrivilege",
+        "SeSecurityPrivilege",
+        "SeRestorePrivilege",
+    ])?;
+    let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
+    let mut restorations = vec![];
+    for (i, o) in input.iter().zip(&observed.objects).rev() {
+        let h = open(
+            &format!("{}{}", root, i.components.join("\\")),
+            i.directory,
+            true,
+        )?;
+        let before = snapshot(&h);
+        if before != o.before {
+            return Err(invalid("existing shadow changed after repair preflight"));
+        }
+        if !security_matches(i.security, &before, &same)? {
+            let backup = backup_security(&h, i.security)?;
+            let after = snapshot(&h);
+            if !security_matches(i.security, &after, &same)? {
+                return Err(invalid("restored shadow descriptor does not exactly match"));
+            }
+            restorations.push(ObjectSecurityRestore {
+                components: i.components.to_vec(),
+                before,
+                after,
+                backup,
+            });
+        }
+        basic(&h, i)?;
+        if !i.directory {
+            h.sync_all()?;
+        }
+    }
+    let volume = File::options()
+        .read(true)
+        .write(true)
+        .share_mode(3)
+        .open(root.trim_end_matches('\\'))?;
+    volume.sync_all()?;
+    privileges.restore()?;
+    let mut verified = run(binding, source_disk, input, Mode::Verify, &same)?;
+    validate_existing(&verified, input, &same, false)?;
+    if observed
+        .objects
+        .iter()
+        .zip(&verified.objects)
+        .any(|(a, b)| a.retrieval != b.retrieval)
+    {
+        return Err(invalid(
+            "payload allocation changed during security-only restoration",
+        ));
+    }
+    verified.security_restorations = restorations;
+    verified.security_repair_preflight_sha256 = Some(preflight_sha);
+    verified.security_repair_privileges = privileges.audit().to_vec();
+    Ok(verified)
+}
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(Some(0)).collect()
+}
+fn check(ok: i32) -> io::Result<()> {
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+fn ctl(file: &File, code: u32, input: &[u8], size: usize) -> io::Result<Vec<u8>> {
+    if size > 2 * 1024 * 1024 || input.len() > 64 {
+        return Err(invalid("shadow control bound"));
+    }
+    let mut b = vec![0; size];
+    let mut used = 0;
+    // SAFETY: borrowed handle, initialized separate buffers, synchronous call.
+    check(unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            code,
+            input.as_ptr().cast(),
+            input.len() as u32,
+            b.as_mut_ptr().cast(),
+            size as u32,
+            &mut used,
+            ptr::null_mut(),
+        )
+    })?;
+    if used as usize > size {
+        return Err(invalid("oversized shadow control response"));
+    }
+    b.truncate(used as usize);
+    Ok(b)
+}
+fn info(file: &File, class: i32, size: usize) -> io::Result<Vec<u8>> {
+    let mut b = vec![0u64; size.div_ceil(8)];
+    // SAFETY: aligned initialized storage of the exact class-specific size.
+    check(unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            class,
+            b.as_mut_ptr().cast(),
+            size as u32,
+        )
+    })?;
+    Ok(unsafe { std::slice::from_raw_parts(b.as_ptr().cast(), size) }.to_vec())
+}
+fn suppress_access(file: &File) -> io::Result<()> {
+    let no_update = FILETIME {
+        dwLowDateTime: u32::MAX,
+        dwHighDateTime: u32::MAX,
+    };
+    // SAFETY: documented per-handle suppression, no stored timestamp supplied.
+    check(unsafe { SetFileTime(file.as_raw_handle(), ptr::null(), &no_update, ptr::null()) })
+}
+fn open(path: &str, directory: bool, write: bool) -> io::Result<File> {
+    let f = File::options()
+        // Metadata handles need WRITE_DAC/WRITE_OWNER, never DELETE. Retaining
+        // the root handle must not prevent its later finalization/observation.
+        .access_mode(if write { 0x011e01ff } else { 0x01020181 })
+        .share_mode(3)
+        .custom_flags(0x02200000)
+        .open(path)?;
+    suppress_access(&f)?;
+    let attrs = info(&f, 0, 40)?;
+    let flags = u32::from_le_bytes(attrs[32..36].try_into().unwrap());
+    if flags & (0x400 | 0x800 | 0x4000) != 0 || (flags & 16 != 0) != directory {
+        return Err(invalid("shadow path type or encoding differs"));
+    }
+    Ok(f)
+}
+fn enumerate(file: &File) -> io::Result<Vec<namespace_layout::Entry>> {
+    let mut calls = vec![];
+    for i in 0..namespace_layout::MAX_CALLS {
+        let class = if i == 0 {
+            namespace_layout::RESTART
+        } else {
+            namespace_layout::CONTINUE
+        };
+        let result = info(file, class, namespace_layout::CAPACITY);
+        let q = match result {
+            Ok(b) => {
+                let (_, used) = namespace_layout::parse(&b)?;
+                crate::attestation::Query {
+                    class,
+                    bytes: b[..used].to_vec(),
+                    native_error: None,
+                }
+            }
+            Err(e) => crate::attestation::Query {
+                class,
+                bytes: vec![],
+                native_error: Some(e.raw_os_error().ok_or(e)?),
+            },
+        };
+        let terminal = q.native_error.is_some();
+        calls.push(q);
+        if terminal {
+            return namespace_layout::decode_pass(&calls);
+        }
+    }
+    Err(invalid("shadow namespace enumeration budget"))
+}
+fn descriptor(bytes: &[u8]) -> io::Result<Vec<u64>> {
+    if !(20..=65536).contains(&bytes.len()) {
+        return Err(invalid("shadow descriptor length"));
+    }
+    let mut aligned = vec![0u64; bytes.len().div_ceil(8)];
+    // SAFETY: initialized aligned allocation covers every copied byte. Validate
+    // self-relative offsets in safe code before letting Windows follow them.
+    if bytes[0] != 1
+        || u16::from_le_bytes(bytes[2..4].try_into().unwrap()) & 0x8004 != 0x8004
+        || bytes[12..16] != [0; 4]
+    {
+        return Err(invalid("shadow descriptor form or SACL differs"));
+    }
+    for at in [4, 8, 16] {
+        let p = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        if p < 20 || p > bytes.len().saturating_sub(8) || !p.is_multiple_of(4) {
+            return Err(invalid("shadow descriptor component bounds"));
+        }
+        let n = if at == 16 {
+            u16::from_le_bytes(bytes[p + 2..p + 4].try_into().unwrap()) as usize
+        } else {
+            8 + 4 * bytes[p + 1] as usize
+        };
+        if n < 8 || p + n > bytes.len() {
+            return Err(invalid("shadow descriptor component length"));
+        }
+        if at != 16 {
+            if bytes[p] != 1 || bytes[p + 1] > 15 {
+                return Err(invalid("shadow SID form"));
+            }
+        } else {
+            if bytes[p] != 2 || bytes[p + 1] != 0 {
+                return Err(invalid("initial shadow requires revision-two ACL"));
+            }
+            let count = u16::from_le_bytes(bytes[p + 4..p + 6].try_into().unwrap()) as usize;
+            let mut cursor = p + 8;
+            for _ in 0..count {
+                if cursor + 16 > p + n || ![0, 1].contains(&bytes[cursor]) {
+                    return Err(invalid("initial shadow requires bounded allow/deny ACEs"));
+                }
+                let size =
+                    u16::from_le_bytes(bytes[cursor + 2..cursor + 4].try_into().unwrap()) as usize;
+                let sid_count = bytes[cursor + 9] as usize;
+                if bytes[cursor + 8] != 1
+                    || sid_count > 15
+                    || size != 16 + 4 * sid_count
+                    || cursor + size > p + n
+                {
+                    return Err(invalid("shadow ACE or SID bounds"));
+                }
+                cursor += size;
+            }
+            if cursor > p + n {
+                return Err(invalid("shadow ACL overflow"));
+            }
+        }
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), aligned.as_mut_ptr().cast(), bytes.len());
+    }
+    let p = aligned.as_mut_ptr().cast();
+    if unsafe { IsValidSecurityDescriptor(p) } == 0
+        || unsafe { GetSecurityDescriptorLength(p) } as usize > bytes.len()
+    {
+        return Err(invalid("invalid shadow security descriptor"));
+    }
+    Ok(aligned)
+}
+fn create(path: &str, i: &Input<'_>) -> io::Result<()> {
+    let mut sd = descriptor(i.security)?;
+    let sa = SECURITY_ATTRIBUTES {
+        nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd.as_mut_ptr().cast(),
+        bInheritHandle: 0,
+    };
+    let name = wide(path);
+    if i.directory {
+        // SAFETY: NUL-terminated bounded path, live validated descriptor.
+        return check(unsafe { CreateDirectoryW(name.as_ptr(), &sa) });
+    }
+    let h = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            0x011f01ff,
+            0,
+            &sa,
+            1,
+            0x80200000,
+            ptr::null_mut(),
+        )
+    };
+    if h.is_null() || h == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: unique handle ownership is transferred to File.
+    let mut f = unsafe { File::from_raw_handle(h) };
+    suppress_access(&f)?;
+    ctl(&f, 0x9c280, &[0; 8], 0)?;
+    f.write_all(i.payload)?;
+    f.sync_all()?;
+    Ok(())
+}
+fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
+    let mut b = [0u64; 5];
+    b[..4].copy_from_slice(&i.times);
+    b[4] = i.attributes as u64;
+    // SAFETY: FILE_BASIC_INFO layout, aligned initialized forty-byte buffer.
+    check(unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0, b.as_ptr().cast(), 40) })
+}
+/// Restricted lab destination: measured disk3, not the source or Windows disk.
+/// Probe/verify have no creation or stored-metadata setters; handle access-time
+/// suppression is still required and is never substituted for expected times.
+pub fn run(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    mode: Mode,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<Report> {
+    binding.validate()?;
+    if binding.disk_number != 3
+        || source_disk != 1
+        || input.is_empty()
+        || input.len() > 160
+        || std::env::var("COMPUTERNAME").ok().as_deref() != Some("N2R-WIN11")
+    {
+        return Err(invalid("restricted tree shadow lab profile differs"));
+    }
+    let mut total = 0usize;
+    for i in input {
+        if i.components.len() > 16
+            || i.components.iter().any(|s| {
+                s.is_empty()
+                    || s.len() > 100
+                    || s.ends_with(['.', ' '])
+                    || !s
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+            })
+            || i.times.iter().any(|t| *t == 0 || *t >= i64::MAX as u64)
+            || i.attributes & !0x2037 != 0
+            || (i.attributes & 16 != 0) != i.directory
+            || (i.directory && !i.payload.is_empty())
+            || (!i.directory && (i.payload.is_empty() || !i.payload.len().is_multiple_of(65536)))
+        {
+            return Err(invalid("invalid bounded shadow input"));
+        }
+        total = total
+            .checked_add(i.payload.len())
+            .ok_or_else(|| invalid("payload overflow"))?;
+        if total > 256 * 1024 * 1024 {
+            return Err(invalid("shadow payload budget"));
+        }
+        descriptor(i.security)?;
+        if !i.components.is_empty()
+            && u16::from_le_bytes(i.security[2..4].try_into().unwrap()) & 0x1000 == 0
+        {
+            return Err(invalid(
+                "initial tree shadow requires protected child DACLs",
+            ));
+        }
+    }
+    if input.iter().filter(|i| i.components.is_empty()).count() != 1
+        || !input[0].components.is_empty()
+        || !input[0].directory
+    {
+        return Err(invalid("one first directory root required"));
+    }
+    let mut events = vec![];
+    if native::current_windows_disk(&mut events)? == binding.disk_number {
+        return Err(invalid("shadow routes to Windows disk"));
+    }
+    let disk = File::options()
+        .read(true)
+        .share_mode(3)
+        .open(format!("\\\\.\\PhysicalDrive{}", binding.disk_number))?;
+    let before = native::snapshot(&disk, &binding, &mut events)?;
+    if before.disk_attributes != 0 {
+        return Err(invalid("shadow must be online writable"));
+    }
+    let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
+    let volume = File::options()
+        .read(true)
+        .write(true)
+        .share_mode(3)
+        .open(root.trim_end_matches('\\'))?;
+    let ext = ctl(&volume, 0x560000, &[], 32)?;
+    if ext.len() != 32
+        || layout::u32_at(&ext, 0)? != 1
+        || layout::u32_at(&ext, 8)? != binding.disk_number
+        || layout::u64_at(&ext, 16)? != binding.identity.partition_offset
+        || layout::u64_at(&ext, 24)? != binding.identity.partition_bytes
+    {
+        return Err(invalid("shadow volume physical binding differs"));
+    }
+    let mut fs = [0u16; 32];
+    let mut label = [0u16; 128];
+    let (mut serial, mut component, mut flags) = (0, 0, 0);
+    let root_w = wide(&root);
+    let (mut spc, mut bps, mut free, mut clusters) = (0, 0, 0, 0);
+    // SAFETY: initialized fixed output buffers and NUL-terminated volume path.
+    unsafe {
+        check(GetVolumeInformationW(
+            root_w.as_ptr(),
+            label.as_mut_ptr(),
+            128,
+            &mut serial,
+            &mut component,
+            &mut flags,
+            fs.as_mut_ptr(),
+            32,
+        ))?;
+        check(GetDiskFreeSpaceW(
+            root_w.as_ptr(),
+            &mut spc,
+            &mut bps,
+            &mut free,
+            &mut clusters,
+        ))?;
+    }
+    let text = |b: &[u16]| {
+        String::from_utf16_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(b.len())])
+    };
+    if text(&fs) != "ReFS"
+        || text(&label) != "n2r-retained-shadow"
+        || spc != 8
+        || bps != 512
+        || flags & 0x80000 != 0
+    {
+        return Err(invalid(
+            "shadow filesystem, label, geometry or read-only flag differs",
+        ));
+    }
+    let base = ctl(&volume, stream_layout::GET_BASE, &[], 8)?;
+    if base.len() != 8 || layout::u64_at(&base, 0)? != 0 {
+        return Err(invalid("initial tree shadow requires zero retrieval base"));
+    }
+    let mut privileges = Privileges::enable_for(&[
+        "SeBackupPrivilege",
+        "SeSecurityPrivilege",
+        "SeRestorePrivilege",
+    ])?;
+    let root_handle = open(&root, true, true)?;
+    let root_state = snapshot(&root_handle);
+    let matched_before = security_matches(input[0].security, &root_state, &same_security)?;
+    let mut root_security = RootSecurity {
+        before: root_state.clone(),
+        after: root_state,
+        matched_before,
+        matched_after: matched_before,
+        backup: None,
+    };
+    let mut security_restorations = vec![];
+    if mode == Mode::Verify && !matched_before {
+        return Err(invalid("root security changed before verification"));
+    }
+    if mode == Mode::ProbeRoot {
+        let after = native::snapshot(&disk, &binding, &mut events)?;
+        privileges.restore()?;
+        return Ok(Report {
+            binding,
+            before,
+            after,
+            objects: vec![],
+            base_sectors: 0,
+            privilege_states: privileges.audit().to_vec(),
+            events,
+            payload_bytes_written: 0,
+            conversion_qualified: false,
+            root_security,
+            security_restorations,
+            security_repair_preflight_sha256: None,
+            security_repair_privileges: vec![],
+        });
+    }
+    if mode == Mode::Construct || mode == Mode::RestoreRootOnly {
+        let initial = enumerate(&root_handle)?;
+        if initial.iter().any(|e| {
+            let n = String::from_utf16_lossy(&e.name_utf16);
+            n != "."
+                && n != ".."
+                && !(n == "System Volume Information"
+                    && e.attributes & 16 != 0
+                    && e.attributes & 0x400 == 0)
+        }) {
+            return Err(invalid("independent shadow is not empty"));
+        }
+        if !matched_before {
+            root_security.backup = Some(backup_security(&root_handle, input[0].security)?);
+            root_security.after = snapshot(&root_handle);
+            root_security.matched_after =
+                security_matches(input[0].security, &root_security.after, &same_security)?;
+            if !root_security.matched_after {
+                return Err(invalid(
+                    "backup security restoration did not exactly preserve both descriptor views",
+                ));
+            }
+        }
+        if mode == Mode::RestoreRootOnly {
+            volume.sync_all()?;
+            let after = native::snapshot(&disk, &binding, &mut events)?;
+            privileges.restore()?;
+            return Ok(Report {
+                binding,
+                before,
+                after,
+                objects: vec![],
+                base_sectors: 0,
+                privilege_states: privileges.audit().to_vec(),
+                events,
+                payload_bytes_written: 0,
+                conversion_qualified: false,
+                root_security,
+                security_restorations,
+                security_repair_preflight_sha256: None,
+                security_repair_privileges: vec![],
+            });
+        }
+        for i in &input[1..] {
+            create(&format!("{}{}", root, i.components.join("\\")), i)?;
+        }
+        // Final metadata follows every child creation. Root security has
+        // already matched the source through both independent query views.
+        for i in input.iter().rev() {
+            let h = open(
+                &format!("{}{}", root, i.components.join("\\")),
+                i.directory,
+                true,
+            )?;
+            let before = snapshot(&h);
+            if !security_matches(i.security, &before, &same_security)? {
+                let backup = backup_security(&h, i.security)?;
+                let after = snapshot(&h);
+                if !security_matches(i.security, &after, &same_security)? {
+                    return Err(invalid(
+                        "object backup-security restoration differs from the source",
+                    ));
+                }
+                security_restorations.push(ObjectSecurityRestore {
+                    components: i.components.to_vec(),
+                    before,
+                    after,
+                    backup,
+                });
+            }
+            basic(&h, i)?;
+            if !i.directory {
+                h.sync_all()?;
+            }
+        }
+        volume.sync_all()?;
+    }
+    // No fallback from metadata-inclusive evidence to the legacy view.
+    let legacy_bitmap = ctl(
+        &volume,
+        stream_layout::GET_BITMAP,
+        &[0; 8],
+        stream_layout::MAX_BITMAP_BYTES,
+    )?;
+    let mut ex_input = [0; 16];
+    ex_input[8] = 1;
+    let metadata_bitmap = ctl(
+        &volume,
+        stream_layout::GET_BITMAP,
+        &ex_input,
+        stream_layout::MAX_BITMAP_BYTES,
+    )?;
+    let mut objects = vec![];
+    for i in input {
+        let mut h = open(
+            &format!("{}{}", root, i.components.join("\\")),
+            i.directory,
+            false,
+        )?;
+        let before = snapshot(&h);
+        let (logical_sha256, retrieval, cached_validity, storage_validity, integrity, namespace) =
+            if i.directory {
+                (None, vec![], vec![], vec![], vec![], enumerate(&h)?)
+            } else {
+                let retrieval = ctl(
+                    &h,
+                    stream_layout::GET_RETRIEVAL,
+                    &[0; 8],
+                    stream_layout::RETRIEVAL_CAPACITY,
+                )?;
+                let runs = stream_layout::parse_retrieval(&retrieval)?;
+                let mut end = 0u64;
+                for r in runs {
+                    if r.vcn != end
+                        || r.lcn.is_none_or(|l| {
+                            l.checked_add(r.clusters)
+                                .is_none_or(|e| e > clusters as u64)
+                        })
+                    {
+                        return Err(invalid("shadow physical mapping is invalid"));
+                    }
+                    end += r.clusters;
+                }
+                if end * 4096 != i.payload.len() as u64 {
+                    return Err(invalid(
+                        "shadow allocation differs from initialized payload",
+                    ));
+                }
+                let mut regions = vec![];
+                for usage in [1u32, 2] {
+                    let mut q = [0; 24];
+                    q[8..16].copy_from_slice(&(i.payload.len() as u64).to_le_bytes());
+                    q[16..20].copy_from_slice(&usage.to_le_bytes());
+                    let b = ctl(&h, 0x90284, &q, 16 + 24 * 1024)?;
+                    crate::region_layout::validate(&b, i.payload.len() as u64, usage)?;
+                    regions.push(b);
+                }
+                let integrity = ctl(&h, 0x9027c, &[], 16)?;
+                if integrity.len() != 16
+                    || integrity[..8] != [0; 8]
+                    || layout::u32_at(&integrity, 12)? != 4096
+                {
+                    return Err(invalid("shadow data integrity profile differs"));
+                }
+                let mut bytes = vec![];
+                (&mut h)
+                    .take(i.payload.len() as u64 + 1)
+                    .read_to_end(&mut bytes)?;
+                if bytes != i.payload {
+                    return Err(invalid("shadow logical bytes or EOF differ"));
+                }
+                (
+                    Some(hex::encode(Sha256::digest(&bytes))),
+                    retrieval,
+                    regions.remove(0),
+                    regions.remove(0),
+                    integrity,
+                    vec![],
+                )
+            };
+        let after = snapshot(&h);
+        if before != after {
+            return Err(invalid("shadow metadata changed during observation"));
+        }
+        let streams = if i.directory {
+            vec![]
+        } else {
+            let mut b = info(&h, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let (entries, used) = stream_layout::parse_streams(&b)?;
+            if entries.len() != 1
+                || !entries[0].name.is_empty()
+                || entries[0].logical_size != i.payload.len() as u64
+                || entries[0].allocated_size != i.payload.len() as u64
+            {
+                return Err(invalid("unexpected target data stream or allocation"));
+            }
+            b.truncate(used);
+            b
+        };
+        objects.push(ObjectReport {
+            components: i.components.to_vec(),
+            before,
+            after,
+            logical_sha256,
+            retrieval,
+            cached_validity,
+            storage_validity,
+            integrity,
+            namespace,
+            streams,
+            source_candidate: i
+                .source_offset
+                .map(|offset| -> io::Result<_> {
+                    Ok(CandidateReport {
+                        legacy: crate::bitmap_layout::candidate(
+                            &legacy_bitmap,
+                            offset,
+                            i.payload.len() as u64,
+                            binding.identity.partition_bytes,
+                        )?,
+                        metadata_inclusive: crate::bitmap_layout::candidate(
+                            &metadata_bitmap,
+                            offset,
+                            i.payload.len() as u64,
+                            binding.identity.partition_bytes,
+                        )?,
+                    })
+                })
+                .transpose()?,
+        });
+    }
+    let after = native::snapshot(&disk, &binding, &mut events)?;
+    if after.disk_attributes != 0 {
+        return Err(invalid("shadow disk state changed"));
+    }
+    privileges.restore()?;
+    Ok(Report {
+        binding,
+        before,
+        after,
+        objects,
+        base_sectors: 0,
+        privilege_states: privileges.audit().to_vec(),
+        events,
+        payload_bytes_written: if mode == Mode::Construct {
+            total as u64
+        } else {
+            0
+        },
+        conversion_qualified: false,
+        root_security,
+        security_restorations,
+        security_repair_preflight_sha256: None,
+        security_repair_privileges: vec![],
+    })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn backup_security_stream_uses_sdk_name_offset_and_keeps_descriptor_bytes() {
+        use windows_sys::Win32::Storage::FileSystem::WIN32_STREAM_ID;
+        assert_eq!(mem::offset_of!(WIN32_STREAM_ID, cStreamName), 20);
+        let sd = vec![42; 228];
+        let b = security_stream(&sd).unwrap();
+        assert_eq!(b.len(), 248);
+        assert_eq!(&b[20..], sd);
+        assert_eq!(u64::from_le_bytes(b[8..16].try_into().unwrap()), 228);
+        assert_eq!(&b[16..20], [0; 4]);
+    }
+    #[test]
+    fn repair_preflight_allows_only_the_measured_creation_control_bit_loss() {
+        let mut expected = vec![0; 24];
+        expected[0] = 1;
+        expected[2..4].copy_from_slice(&0x9404u16.to_le_bytes());
+        let same = |a: &[u8], b: &[u8]| Ok(a == b);
+        let mut actual = expected.clone();
+        actual[2..4].copy_from_slice(&0x9004u16.to_le_bytes());
+        assert!(creation_loss_only(&expected, &actual, &same).unwrap());
+        actual[20] = 1;
+        assert!(!creation_loss_only(&expected, &actual, &same).unwrap());
+        actual[20] = 0;
+        actual[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        assert!(!creation_loss_only(&expected, &actual, &same).unwrap());
+        assert!(!creation_loss_only(&actual, &expected, &same).unwrap());
+    }
+}

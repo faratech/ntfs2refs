@@ -9,11 +9,27 @@ backup checks. It does **not** issue an admission certificate or authorize raw
 writes. A small existing-tree conversion and native interruption/recovery are
 still the next decisive demonstrations; the prepared one-file result is unchanged.
 
-Validation: 386 workspace tests pass, five remain ignored, formatting and clippy
+The [existing-tree shadow milestone](existing-tree-shadow.md) now independently
+reconstructs the four-file nested tree through native ReFS. Data, all four stored
+timestamps, both security views and namespace identities match after a clean
+restart. The shadow is frozen, while the original NTFS partition remains
+unchanged. All four natural source placements conflict with metadata-inclusive
+ReFS allocation, so the placement diagnosis explicitly records a relocation-only
+case. This is a shadow-construction result, not same-partition tree conversion.
+
+The [integrated actual-device observation](native-ntfs-source-freeze.md#integrated-actual-device-observation)
+also passed. Complete source revalidation brackets native collection while
+physical write protection remains active. It satisfies the frozen-device gate
+in the combined assessment; namespace projection, cached timestamps and internal
+replacement/clean-state checks still prevent admission.
+
+Validation: 403 workspace tests pass, six remain ignored, formatting and clippy
 with warnings denied pass, and all 19 lab guard checks pass. New tests exercise
 directory record bounds, missing/stale/duplicate namespace entries, explicit
 enumeration failures, role recognition and refusals, and damaged/torn/incomplete
-backup cases.
+backup cases. Shadow-tree tests additionally reject unsupported attributes,
+missing security, stale parents, incomplete streams and overlapping ownership.
+The ignored pinned natural-tree replay was also run separately and passed.
 
 ## Native namespace evidence
 

@@ -1,0 +1,225 @@
+//! Semantic input for an independent, native-created ReFS shadow. This is not
+//! source admission, a conversion plan or authority to modify the NTFS source.
+use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security};
+use anyhow::{Context, Result, ensure};
+use serde::Serialize;
+use std::collections::BTreeSet;
+
+#[derive(Debug, Serialize)]
+pub struct Object {
+    pub record_number: u64,
+    pub sequence_number: u16,
+    pub path: Vec<String>,
+    pub directory: bool,
+    /// FILE_BASIC_INFO order: creation, access, write, change.
+    pub stored_times: [u64; 4],
+    pub attributes: u32,
+    pub security: Vec<u8>,
+    pub source_offset: Option<u64>,
+    pub length: u64,
+    pub sha256: Option<String>,
+}
+#[derive(Debug, Serialize)]
+pub struct Tree {
+    pub profile: &'static str,
+    pub objects: Vec<Object>,
+    pub logical_bytes: u64,
+    pub internal_replacement_pending: Vec<String>,
+}
+pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
+    ensure!(
+        raw.schema_version == 1
+            && raw.records_scanned == raw.files.len() as u64
+            && raw.geometry.cluster_size == 4096
+            && raw.geometry.bytes_per_sector == 512,
+        "incomplete record scan or unsupported source geometry"
+    );
+    ensure!(
+        matches!(
+            raw.allocation_reconciliation.as_ref().map(|a| &a.status),
+            Some(ntfs::AllocationReconciliationStatus::ConsistentRawModel)
+        ) && matches!(
+            raw.namespace_reconciliation.as_ref().map(|n| &n.status),
+            Some(crate::ntfs_namespace::Status::ConsistentRawModel)
+        ),
+        "raw ownership or namespace is unresolved"
+    );
+    let sd = raw
+        .security_reconciliation
+        .as_ref()
+        .context("no raw security model")?;
+    ensure!(
+        sd.status == ntfs_security::Status::ConsistentRawModel,
+        "raw security unresolved"
+    );
+    let mut tree = Tree {
+        profile: "native-existing-tree-shadow-v1",
+        objects: vec![],
+        logical_bytes: 0,
+        internal_replacement_pending: vec![],
+    };
+    let mut paths = BTreeSet::new();
+    let mut source_ranges = vec![];
+    for f in &raw.files {
+        if let Some(role) = ntfs_admission::internal_role(raw, f) {
+            tree.internal_replacement_pending.push(role);
+            continue;
+        }
+        let p = ntfs_admission::path(raw, f).context("unresolved source path")?;
+        ensure!(
+            p.len() <= 16 && p.iter().all(|c| valid_component(c)),
+            "unsupported Windows path"
+        );
+        ensure!(
+            paths.insert(p.join("\\").to_ascii_uppercase()),
+            "colliding destination name"
+        );
+        if f.record_number == 5 {
+            // Root is reconstructed only as a shadow experiment. Its NTFS
+            // transactional attribute is explicitly unresolved for admission.
+            ensure!(
+                p.is_empty() && f.is_directory && f.streams.is_empty(),
+                "invalid root"
+            );
+            ensure!(
+                f.attributes.iter().all(|a| a.flags == 0
+                    && a.lowest_vcn == 0
+                    && ((matches!(a.type_code, 0x10 | 0x30 | 0x50)
+                        && a.resident
+                        && a.name_utf16.is_empty())
+                        || (matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
+                            && crate::ntfs_namespace::is_i30(&a.name_utf16))
+                        || (a.type_code == 0x100
+                            && a.name_utf16 == [36, 84, 88, 70, 95, 68, 65, 84, 65]
+                            && a.logical_size == 56
+                            && a.resident))),
+                "unknown root attributes"
+            );
+            if f.attributes.iter().any(|a| a.type_code == 0x100) {
+                tree.internal_replacement_pending
+                    .push("root:$TXF_DATA (not yet admitted for replacement)".into());
+            }
+        } else {
+            let issues = ntfs_admission::user_issues(raw, f);
+            ensure!(
+                issues.is_empty(),
+                "record {} exceeds shadow profile: {issues:?}",
+                f.record_number
+            );
+        }
+        let binding = sd
+            .bindings
+            .iter()
+            .find(|b| b.record_number == f.record_number && b.sequence_number == f.sequence_number)
+            .context("missing descriptor binding")?;
+        let descriptor = &sd
+            .descriptors
+            .iter()
+            .find(|d| d.descriptor.sha256 == binding.descriptor_sha256)
+            .context("missing descriptor bytes")?
+            .descriptor;
+        ensure!(
+            descriptor.sacl.state == ntfs_security::AclState::Absent
+                && descriptor.dacl.state == ntfs_security::AclState::Present,
+            "initial shadow requires present DACL and absent SACL"
+        );
+        ensure!(
+            f.record_number == 5 || descriptor.control & 0x1000 != 0,
+            "initial shadow profile requires protected child DACLs"
+        );
+        let si = f
+            .standard_information
+            .as_ref()
+            .context("missing stored timestamps")?;
+        let times = [
+            si.creation_time,
+            si.access_time,
+            si.modification_time,
+            si.mft_change_time,
+        ];
+        ensure!(
+            times.iter().all(|t| *t > 0 && *t < i64::MAX as u64)
+                && si.file_attributes & !0x2027 == 0,
+            "unsupported basic metadata"
+        );
+        let (source_offset, length, sha256) = match f.streams.first() {
+            Some(s) => {
+                let offset = s.extents[0]
+                    .physical_offset
+                    .context("missing physical data")?;
+                ensure!(
+                    offset.is_multiple_of(4096)
+                        && offset
+                            .checked_add(s.logical_size)
+                            .is_some_and(|end| end <= raw.geometry.volume_size),
+                    "source payload bounds"
+                );
+                source_ranges.push((offset, s.logical_size));
+                (
+                    Some(offset),
+                    s.logical_size,
+                    Some(s.logical_sha256.clone().context("missing logical digest")?),
+                )
+            }
+            None => (None, 0, None),
+        };
+        tree.logical_bytes = tree
+            .logical_bytes
+            .checked_add(length)
+            .context("logical size overflow")?;
+        tree.objects.push(Object {
+            record_number: f.record_number,
+            sequence_number: f.sequence_number,
+            path: p,
+            directory: f.is_directory,
+            stored_times: times,
+            attributes: si.file_attributes | if f.is_directory { 16 } else { 0 },
+            security: hex::decode(&descriptor.relative_hex)?,
+            source_offset,
+            length,
+            sha256,
+        });
+    }
+    source_ranges.sort_unstable();
+    ensure!(
+        source_ranges.windows(2).all(|p| p[0].0 + p[0].1 <= p[1].0),
+        "overlapping user payloads"
+    );
+    let directories = tree.objects.iter().filter(|o| o.directory).count();
+    ensure!(
+        directories > 0
+            && directories <= ntfs_admission::MAX_DIRECTORIES
+            && tree.objects.len() - directories <= ntfs_admission::MAX_FILES
+            && tree.logical_bytes <= ntfs_admission::MAX_LOGICAL_BYTES
+            && tree.objects.iter().filter(|o| o.path.is_empty()).count() == 1,
+        "tree budget or root differs"
+    );
+    tree.objects.sort_by_key(|o| (o.path.len(), o.path.clone()));
+    Ok(tree)
+}
+fn valid_component(s: &str) -> bool {
+    let upper = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+    !s.is_empty()
+        && s.len() <= 100
+        && !s.ends_with([' ', '.'])
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+        && ![
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ]
+        .contains(&upper.as_str())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rejects_alias_traversal_devices_and_ambiguous_components() {
+        for s in [
+            "", ".", "..", "a.", "a ", "CON.txt", "lpt9.bin", "a:b", "a\\b", "a/b", "a\0b", "é",
+        ] {
+            assert!(!valid_component(s), "{s:?}");
+        }
+        assert!(valid_component("doc1.bin"));
+    }
+}

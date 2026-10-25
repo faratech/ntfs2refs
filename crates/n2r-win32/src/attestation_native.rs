@@ -173,7 +173,7 @@ fn security(file: &File) -> (Vec<u8>, Option<i32>) {
     }
     result
 }
-fn snapshot(file: &File) -> Snapshot {
+pub(crate) fn snapshot(file: &File) -> Snapshot {
     let queries = [(0, 40), (1, 24), (18, 24), (9, 8)]
         .into_iter()
         .map(|(c, n)| query(file, c, n))
@@ -216,7 +216,7 @@ fn snapshot(file: &File) -> Snapshot {
     }
 }
 
-struct Privileges {
+pub(crate) struct Privileges {
     token: HANDLE,
     previous: Vec<(LUID, u32)>,
     restoration_attempted: bool,
@@ -259,6 +259,9 @@ impl Privileges {
         u32le(bytes, 12 + 12 * found[0])
     }
     fn enable() -> io::Result<Self> {
+        Self::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])
+    }
+    pub(crate) fn enable_for(names: &[&str]) -> io::Result<Self> {
         let mut token = ptr::null_mut();
         // SAFETY: current process pseudo handle, one output token handle.
         if unsafe { OpenProcessToken(GetCurrentProcess(), 0x28, &mut token) } == 0 {
@@ -270,7 +273,7 @@ impl Privileges {
             restoration_attempted: false,
             audit: vec![],
         };
-        for name in ["SeBackupPrivilege", "SeSecurityPrivilege"] {
+        for &name in names {
             let mut luid = LUID::default();
             if unsafe { LookupPrivilegeValueW(ptr::null(), wide(name).as_ptr(), &mut luid) } == 0 {
                 return Err(io::Error::last_os_error());
@@ -309,7 +312,7 @@ impl Privileges {
         }
         Ok(())
     }
-    fn restore(&mut self) -> io::Result<()> {
+    pub(crate) fn restore(&mut self) -> io::Result<()> {
         self.restoration_attempted = true;
         let mut failure = None;
         for (i, &(luid, attributes)) in self.previous.iter().enumerate().rev() {
@@ -332,6 +335,9 @@ impl Privileges {
         } else {
             Ok(())
         }
+    }
+    pub(crate) fn audit(&self) -> &[PrivilegeState] {
+        &self.audit
     }
 }
 impl Drop for Privileges {

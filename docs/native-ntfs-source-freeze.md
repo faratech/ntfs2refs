@@ -110,3 +110,55 @@ Next integrate the native frozen basis with explicit timestamp, visibility and
 internal-state policies, then construct the new versioned retention/relocation
 plan and qualify native interrupted reconstruction. These source results do not
 establish target ReFS storage validity, an executable plan, or recovery success.
+
+## Integrated actual-device observation
+
+The Rust `FrozenBasis::observe_native` path now revalidates the complete actual
+source immediately before and after native collection. The platform layer
+temporarily clears only OFFLINE, retains persistent READ_ONLY throughout, and
+restores both attributes before returning. The private, serialization-only
+`LiveNtfsObservation` and `ObservedFrozenSource` values cannot be reconstructed
+from a report's success flag. Their assessment satisfies only the
+`frozen_device_basis` gate; all other source refusals remain independent.
+
+Disk attributes and volume-interface publication are separate operations on
+this build. The first integrated run restored exclusion and passed its final
+source hash check, but failed the volume open with error 2. The corrected path
+issues the documented [IOCTL_DISK_UPDATE_PROPERTIES](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-ioctl_disk_update_properties)
+after each attribute transition and polls harmless read-only opens for at most
+15 seconds. It never retries the management mutation or clears READ_ONLY.
+Both a diagnostic interface probe and the full integrated run then passed.
+The probe explicitly claims no full-image hash verification.
+
+The full corrected run requested all 35 identities, opened 16, and matched all
+four user streams and the complete native allocation bitmap. Native queries
+observed attributes 2 and `ERROR_WRITE_PROTECT` (19) before and after collection;
+the surrounding actual-device snapshots observed attributes 3. Scoped
+privileges were restored. The run read 223,437,697,024 source bytes, including
+four complete partition passes, and issued zero raw source writes. The source
+hash remained `798926b2783a747f0d046d1010c9a8d2b109a900388117fcef46449c3abddd89`.
+The exported inspection is byte-identical to the original frozen inspection.
+
+Artifacts:
+`.lab/hyperv/source-admission/win11-20261025T002322263Z/refreshed`.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Corrected native binary | `3da6989710e69d984309263d04fb7498e2744ced38c4e46ad9abd4bb348abbf3` |
+| Full basis report | `e22115e532f9be857cb24b8702ed20c7e548deb9fd4a04de977c2261aa6b389a` |
+| Native observation and assessment | `f23e946eccab739f515deaf2f989a760949f839df98eb05d7b90329f46bfbe1d` |
+| Exported inspection | `29d97ef4498f33933ec3702a3e9aee6e81fc4084d60c797ff4d0018208b8ab5e` |
+| Corrected source-pin manifest | `910909f2f17666a2c8d7ae34b199d4d6342d77f04a0ad41add352c77d947127c` |
+
+The off-state 8 GiB checkpoint is
+`existing-tree-live-source-d1309c2d58e74e5c808399aebcb6ac5d`, ID
+`69877fd7-7c5f-4515-9bfd-7d2f35277d8d`. After verifying native-process exit and
+source exclusion, the guest shut down cleanly and the host returned to
+installed-clean/off/4 GiB. The frozen source and shadow checkpoints remain.
+
+The integrated assessment still rejects the root's `$TXF_DATA` semantics and
+reserved-name visibility, four cached file access-time discrepancies, volume
+flag `0x80`, and unqualified internal/log replacement state. The successful
+target security/timestamp round trip is recorded separately in the
+[shadow milestone](existing-tree-shadow.md); no blanket normalization or
+admission certificate has been introduced.

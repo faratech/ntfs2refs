@@ -20,12 +20,16 @@ fn main() -> anyhow::Result<()> {
         request_sha256: String,
         #[arg(long)]
         output: PathBuf,
-        #[arg(long, required_unless_present = "verify_source_sha256")]
+        #[arg(long, required_unless_present_any = ["verify_source_sha256","native_interface_probe"])]
         inspection_output: Option<PathBuf>,
         #[arg(long)]
         reopen: bool,
         #[arg(long, requires = "reopen", conflicts_with = "inspection_output")]
         verify_source_sha256: Option<String>,
+        #[arg(long, requires = "reopen", conflicts_with = "verify_source_sha256")]
+        observation_output: Option<PathBuf>,
+        #[arg(long,requires="reopen",conflicts_with_all=["verify_source_sha256","observation_output","inspection_output"])]
+        native_interface_probe: bool,
     }
     #[derive(Serialize, Deserialize)]
     #[serde(deny_unknown_fields)]
@@ -79,6 +83,13 @@ fn main() -> anyhow::Result<()> {
             "distinct fresh outputs required"
         );
     }
+    if let Some(observation) = &args.observation_output {
+        path(observation, false)?;
+        ensure!(
+            *observation != args.output && args.inspection_output.as_ref() != Some(observation),
+            "distinct fresh observation output required"
+        );
+    }
     path(&args.request, true)?;
     let mut file = OpenOptions::new()
         .read(true)
@@ -110,11 +121,55 @@ fn main() -> anyhow::Result<()> {
             "schema_version":1,"kind":"ntfs-source-freeze-intent-v1","request":request,
             "request_sha256":args.request_sha256,"reopen":args.reopen,
             "source_payload_write_requests_issued":false,"persistent_exclusion_may_follow":!args.reopen,
-            "verify_source_sha256":args.verify_source_sha256
+            "verify_source_sha256":args.verify_source_sha256,
+            "native_observation_requested":args.observation_output.is_some()
+            ,"native_interface_probe":args.native_interface_probe
         }),
         65_536,
     )?;
     let mut events = vec![];
+    if args.native_interface_probe {
+        let result = (|| -> Result<_> {
+            let mut source = OfflinePartition::reopen(request.source, true, &mut events)?;
+            let length = source.byte_len();
+            let raw = ntfs2refs::ntfs_inspect::inspect(&mut source, length)?;
+            let inspection = ntfs2refs::planner::Inspection {
+                schema_version: 1,
+                source: ntfs2refs::block_io::SourceIdentity {
+                    path: source.binding().volume_path()?.into(),
+                    length,
+                    sha256: String::new(), // diagnostic probe: no full-image digest claimed
+                },
+                filesystem: ntfs2refs::planner::Filesystem::Ntfs(raw),
+            };
+            let pin = hex::encode(Sha256::digest(serde_json::to_vec(&inspection)?));
+            let request = ntfs2refs::ntfs_attestation::request_for_inspection(
+                &inspection,
+                &pin,
+                source.binding(),
+            )?;
+            source
+                .observe_ntfs_files(&request, &mut events)
+                .map_err(Into::into)
+        })();
+        let success = result.is_ok();
+        let report = match result {
+            Ok(observation) => {
+                serde_json::json!({"schema_version":1,"kind":"native-source-interface-probe-v1","success":true,
+                "observation":observation,"full_source_hash_verified":false,"source_admitted":false,"conversion_qualified":false,"events":events})
+            }
+            Err(error) => {
+                serde_json::json!({"schema_version":1,"kind":"native-source-interface-probe-v1","success":false,
+                "error":format!("{error:#}"),"full_source_hash_verified":false,"source_admitted":false,"conversion_qualified":false,"events":events})
+            }
+        };
+        save(&args.output, &report, 32 * 1024 * 1024)?;
+        ensure!(
+            success,
+            "native interface probe failed; inspect recorded source state"
+        );
+        return Ok(());
+    }
     if let Some(expected) = args.verify_source_sha256 {
         let result = (|| -> Result<_> {
             let mut source = OfflinePartition::reopen(request.source, true, &mut events)?;
@@ -149,8 +204,23 @@ fn main() -> anyhow::Result<()> {
         };
         phase = "capture-post-exclusion-basis";
         let basis = ntfs2refs::ntfs_freeze::FrozenBasis::capture(&mut source, &mut events)?;
-        phase = "revalidate-actual-source";
-        basis.revalidate(&mut source, &mut events)?;
+        let observation_hash = if let Some(output) = &args.observation_output {
+            phase = "observe-protected-source-and-revalidate";
+            let observed = basis.observe_native(&mut source, &mut events)?;
+            let assessment = observed.assessment(&basis)?;
+            phase = "persist-live-source-observation";
+            Some(save(
+                output,
+                &serde_json::json!({"schema_version":1,"kind":"live-frozen-ntfs-observation-v1",
+                "observation":observed,"assessment":assessment,"source_admitted":false,
+                "certificate_issued":false,"conversion_qualified":false}),
+                32 * 1024 * 1024,
+            )?)
+        } else {
+            phase = "revalidate-actual-source";
+            basis.revalidate(&mut source, &mut events)?;
+            None
+        };
         phase = "persist-inspection";
         let inspection_hash = save(
             args.inspection_output
@@ -160,14 +230,19 @@ fn main() -> anyhow::Result<()> {
             64 * 1024 * 1024,
         )?;
         phase = "complete-source-remains-offline-read-only";
-        Ok((basis, inspection_hash, source.native_bytes_read))
+        Ok((
+            basis,
+            inspection_hash,
+            source.native_bytes_read,
+            observation_hash,
+        ))
     })();
     let success = result.is_ok();
     let report = match result {
-        Ok((basis, hash, bytes)) => {
+        Ok((basis, hash, bytes, observation_hash)) => {
             serde_json::json!({"schema_version":1,"kind":"ntfs-source-freeze-v1",
             "success":true,"phase":phase,"basis":basis.evidence(),"inspection_sha256":hash,
-            "native_bytes_read":bytes,"native_bytes_written":0,"events":events,
+            "native_bytes_read":bytes,"native_bytes_written":0,"events":events,"observation_sha256":observation_hash,
             "source_admitted":false,"conversion_qualified":false})
         }
         Err(error) => serde_json::json!({"schema_version":1,"kind":"ntfs-source-freeze-v1",
@@ -177,7 +252,7 @@ fn main() -> anyhow::Result<()> {
     save(&args.output, &report, 1024 * 1024)?;
     ensure!(
         success,
-        "freeze/inspection failed; source exclusion is never cleared automatically"
+        "freeze/inspection failed; inspect recorded native state before continuing"
     );
     Ok(())
 }

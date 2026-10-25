@@ -27,5 +27,10 @@ tempfile = "3"
 [profile.release]
 overflow-checks = true
 
+# Keep native-lab development builds from exhausting the image reserve.
+[profile.dev]
+debug = 1
+incremental = false
+
 [lints.rust]
 unsafe_code = "forbid"

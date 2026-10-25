@@ -76,8 +76,16 @@ Windows-created ReFS data disk bound by `GeneralSourceShadowBinding`. It accepts
 bounded streamed NTFS bytes, can attempt source-relative retention through
 ReFS's native placement control, and reopens the resulting files to check
 content, namespace and security. The legacy disk-3/guest entry points keep
-their exact fixture checks. A general shadow CLI and native qualification of
-this new route are still pending.
+their exact fixture checks. Native qualification of this new route is pending.
+
+`lab-build-general-shadow` now invokes that entry point. It requires a frozen
+NTFS source, an online independent ReFS 3.14 shadow disk with 4 KiB clusters
+and the exact shadow label expected by the native adapter. It hashes the
+source partition before and after construction, streams each admitted ordinary
+file, verifies the native ReFS tree and records actual placement attempts.
+`--verify-only` reobserves the same live shadow without creating files.
+It does not freeze the shadow or authorize journal activation, and the general
+native run has not yet been performed.
 
 The library now has internal general activation and apply/resume/rollback
 functions. They rebind the separately pinned ticket to the actual GPT source,

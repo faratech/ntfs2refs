@@ -19,11 +19,11 @@ pub mod retention_layout;
 #[cfg(windows)]
 pub mod shadow_native;
 pub mod stream_layout;
-pub mod volume_label;
 #[cfg(windows)]
 mod stream_native;
 #[cfg(windows)]
 pub mod txf_native;
+pub mod volume_label;
 #[cfg(windows)]
 pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]

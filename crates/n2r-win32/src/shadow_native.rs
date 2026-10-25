@@ -1778,7 +1778,7 @@ fn run_role_with_label(
     let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
     let volume = File::options()
         .read(true)
-        .write(true)
+        .write(mode != Mode::Verify)
         .share_mode(3)
         .open(root.trim_end_matches('\\'))?;
     let ext = ctl(&volume, 0x560000, &[], 32)?;

@@ -105,6 +105,28 @@ enum Command {
     Rollback(RecoveryArgs),
     /// Complete native ReFS handoff after an exact completed apply.
     Finalize(RecoveryArgs),
+    /// Complete only the source label on a strictly verified mounted ReFS target.
+    CompleteLabel(LabelCompletionArgs),
+}
+
+#[derive(clap::Args)]
+struct LabelCompletionArgs {
+    #[arg(long)]
+    request: PathBuf,
+    #[arg(long)]
+    request_sha256: String,
+    #[arg(long)]
+    ticket: PathBuf,
+    #[arg(long)]
+    ticket_sha256: String,
+    #[arg(long)]
+    journal: PathBuf,
+    #[arg(long)]
+    expectation: PathBuf,
+    #[arg(long)]
+    expectation_sha256: String,
+    #[arg(long)]
+    output: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -379,6 +401,26 @@ fn run() -> Result<u8> {
         Command::Resume(args) => recover(args, "resume")?,
         Command::Rollback(args) => recover(args, "rollback")?,
         Command::Finalize(args) => recover(args, "finalize")?,
+        Command::CompleteLabel(args) => {
+            #[cfg(windows)]
+            ntfs2refs::general_label_completion::complete(
+                &ntfs2refs::general_label_completion::Inputs {
+                    request: args.request,
+                    request_sha256: args.request_sha256,
+                    ticket: args.ticket,
+                    ticket_sha256: args.ticket_sha256,
+                    journal: args.journal,
+                    expectation: args.expectation,
+                    expectation_sha256: args.expectation_sha256,
+                },
+                &args.output,
+            )?;
+            #[cfg(not(windows))]
+            {
+                let _ = args;
+                anyhow::bail!("native label completion requires Windows");
+            }
+        }
     }
     Ok(0)
 }

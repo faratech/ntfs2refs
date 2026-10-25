@@ -148,6 +148,33 @@ pub struct CompletedMarkerProof {
     pub shadow_exact: bool,
 }
 
+/// The journal and its irreversible handoff marker were validated. This
+/// receipt says nothing about a currently mounted target or shadow image and
+/// can never be passed to the raw replay/rollback APIs as write authority.
+#[derive(Debug, Serialize)]
+pub struct RefsHandoffReceipt {
+    scope: &'static str,
+    binding: JournalBinding,
+    comparison: RetainedCompareRequest,
+    expected_postimage_sha256: String,
+    immutable_journal_sha256: String,
+    marker_sha256: String,
+}
+impl RefsHandoffReceipt {
+    pub fn binding(&self) -> &JournalBinding {
+        &self.binding
+    }
+    pub fn comparison(&self) -> &RetainedCompareRequest {
+        &self.comparison
+    }
+    pub fn expected_length(&self) -> u64 {
+        self.comparison.expected_length
+    }
+    pub fn expected_postimage_sha256(&self) -> &str {
+        &self.expected_postimage_sha256
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct JournalPatchRange {
     pub offset: u64,
@@ -751,6 +778,258 @@ fn marker(
     let hash = digest(&bytes[..GRANULE as usize - 32]);
     bytes[GRANULE as usize - 32..].copy_from_slice(&hash);
     Ok(bytes)
+}
+
+/// Validate only a trusted completed journal and its exact ReFS handoff
+/// marker. Post-mount completion must separately verify the original device,
+/// mounted ReFS filesystem and complete native tree. No target/shadow handle
+/// is accepted here, and no current-image hash assertion is manufactured.
+pub fn verify_refs_handoff_receipt<J: ReadSeek>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<RefsHandoffReceipt> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        ticket.binding == *observed_binding,
+        "handoff receipt storage binding differs from trusted ticket"
+    );
+    let loaded = load_completed_journal(journal, ticket)?;
+    ensure!(
+        loaded.manifest.binding == *observed_binding,
+        "handoff receipt immutable binding differs"
+    );
+    let expected = marker(
+        b"N2RHND01",
+        3,
+        ticket,
+        &loaded.manifest.expected_postimage_sha256,
+    )?;
+    let mut observed = [0; GRANULE as usize];
+    read_at(journal, 0, &mut observed)?;
+    ensure!(
+        observed == expected,
+        "handoff receipt requires the exact completed ReFS marker"
+    );
+    Ok(RefsHandoffReceipt {
+        scope: "journal_marker_only",
+        binding: loaded.manifest.binding,
+        comparison: loaded.manifest.request,
+        expected_postimage_sha256: loaded.manifest.expected_postimage_sha256,
+        immutable_journal_sha256: ticket.immutable_sha256.clone(),
+        marker_sha256: hex::encode(digest(&observed)),
+    })
+}
+
+#[cfg(test)]
+mod handoff_receipt_tests {
+    use super::*;
+    #[derive(Clone)]
+    struct Memory(std::io::Cursor<Vec<u8>>);
+    impl Read for Memory {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            self.0.read(b)
+        }
+    }
+    impl Seek for Memory {
+        fn seek(&mut self, p: SeekFrom) -> io::Result<u64> {
+            self.0.seek(p)
+        }
+    }
+    impl Write for Memory {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.0.write(b)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl ReadSeek for Memory {
+        fn byte_len(&mut self) -> io::Result<u64> {
+            Ok(self.0.get_ref().len() as u64)
+        }
+    }
+    impl DurableIo for Memory {
+        fn sync_all(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    struct ReadOnlyJournal<'a>(std::io::Cursor<&'a [u8]>);
+    impl Read for ReadOnlyJournal<'_> {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            self.0.read(b)
+        }
+    }
+    impl Seek for ReadOnlyJournal<'_> {
+        fn seek(&mut self, p: SeekFrom) -> io::Result<u64> {
+            self.0.seek(p)
+        }
+    }
+    impl ReadSeek for ReadOnlyJournal<'_> {
+        fn byte_len(&mut self) -> io::Result<u64> {
+            Ok(self.0.get_ref().len() as u64)
+        }
+    }
+    fn binding() -> JournalBinding {
+        JournalBinding {
+            experiment_id: "a".repeat(32),
+            target_identity_sha256: "1".repeat(64),
+            shadow_identity_sha256: "2".repeat(64),
+            journal_identity_sha256: "3".repeat(64),
+        }
+    }
+    fn hash(bytes: &[u8]) -> String {
+        hex::encode(Sha256::digest(bytes))
+    }
+    fn completed() -> (
+        Memory,
+        Memory,
+        Memory,
+        JournalTicket,
+        RetainedCompareRequest,
+    ) {
+        let before = vec![0x31; 16384];
+        let mut after = before.clone();
+        after[..4096].fill(0x72);
+        after[8192..12288].fill(0x73);
+        let request = RetainedCompareRequest {
+            schema_version: 2,
+            sector_size: 4096,
+            expected_length: 16384,
+            source_sha256: hash(&before),
+            shadow_sha256: hash(&after),
+            retained_ranges: vec![],
+            max_change_bytes: 8192,
+            max_ranges: 2,
+        };
+        let mut source = Memory(std::io::Cursor::new(before.clone()));
+        let mut target = Memory(std::io::Cursor::new(before));
+        let mut shadow = Memory(std::io::Cursor::new(after));
+        let mut journal = Memory(std::io::Cursor::new(vec![]));
+        let prepared = prepare_journal(
+            &mut source,
+            &mut shadow,
+            &mut journal,
+            &request,
+            &binding(),
+            1024 * 1024,
+        )
+        .unwrap();
+        apply(
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &prepared.ticket,
+            &binding(),
+        )
+        .unwrap();
+        mark_handoff(
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &prepared.ticket,
+            &binding(),
+        )
+        .unwrap();
+        (target, shadow, journal, prepared.ticket, request)
+    }
+    #[test]
+    fn receipt_needs_only_readonly_journal_and_never_asserts_current_images() {
+        let (mut target, mut shadow, mut journal, ticket, request) = completed();
+        target.0.get_mut()[12288] ^= 1;
+        shadow.0.get_mut()[4096] ^= 1;
+        let bytes = journal.0.get_ref().clone();
+        let mut readonly = ReadOnlyJournal(std::io::Cursor::new(bytes.as_slice()));
+        let receipt = verify_refs_handoff_receipt(&mut readonly, &ticket, &binding()).unwrap();
+        assert_eq!(receipt.expected_length(), request.expected_length);
+        assert_eq!(receipt.expected_postimage_sha256(), request.shadow_sha256);
+        assert_eq!(receipt.binding(), &binding());
+        assert_eq!(
+            serde_json::to_vec(receipt.comparison()).unwrap(),
+            serde_json::to_vec(&request).unwrap()
+        );
+        let value = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(value["scope"], "journal_marker_only");
+        for field in [
+            "target_exact",
+            "shadow_exact",
+            "current_target_sha256",
+            "execution_authorized",
+        ] {
+            assert!(value.get(field).is_none());
+        }
+        assert_eq!(journal.0.get_ref(), &bytes);
+        assert!(
+            verify_completed_refs_marker_from_journal(
+                &mut target,
+                &mut shadow,
+                &mut journal,
+                &ticket,
+                &binding(),
+                16384
+            )
+            .is_err()
+        );
+        let original = target.0.get_ref().clone();
+        assert!(rollback(&mut target, &mut shadow, &mut journal, &ticket, &binding()).is_err());
+        assert_eq!(target.0.get_ref(), &original);
+    }
+    #[test]
+    fn receipt_rejects_zero_partial_foreign_rollback_and_retargeted_markers() {
+        let (_, _, journal, ticket, request) = completed();
+        let original = journal.0.get_ref().clone();
+        let mut invalid = vec![[0; GRANULE as usize]];
+        let mut partial = [0; GRANULE as usize];
+        partial[..8].copy_from_slice(b"N2RHND01");
+        invalid.push(partial);
+        let mut corrupt: [u8; GRANULE as usize] = original[..GRANULE as usize].try_into().unwrap();
+        corrupt[12] ^= 1;
+        invalid.push(corrupt);
+        invalid.push(marker(b"N2RABT01", 4, &ticket, &request.source_sha256).unwrap());
+        invalid.push(marker(b"N2RHND01", 3, &ticket, &"0".repeat(64)).unwrap());
+        let mut foreign = ticket.clone();
+        foreign.immutable_sha256 = "f".repeat(64);
+        invalid.push(marker(b"N2RHND01", 3, &foreign, &request.shadow_sha256).unwrap());
+        for bytes in invalid {
+            let mut changed = journal.clone();
+            changed.0.get_mut()[..GRANULE as usize].copy_from_slice(&bytes);
+            let before = changed.0.get_ref().clone();
+            assert!(verify_refs_handoff_receipt(&mut changed, &ticket, &binding()).is_err());
+            assert_eq!(changed.0.get_ref(), &before);
+        }
+    }
+    #[test]
+    fn receipt_validates_trusted_binding_complete_body_and_deep_record_digests() {
+        let (_, _, journal, ticket, request) = completed();
+        let mut foreign = binding();
+        foreign.journal_identity_sha256 = "4".repeat(64);
+        assert!(verify_refs_handoff_receipt(&mut journal.clone(), &ticket, &foreign).is_err());
+        let mut wrong_ticket = ticket.clone();
+        wrong_ticket.immutable_sha256 = "0".repeat(64);
+        assert!(
+            verify_refs_handoff_receipt(&mut journal.clone(), &wrong_ticket, &binding()).is_err()
+        );
+        let mut truncated = journal.clone();
+        truncated.0.get_mut().pop();
+        assert!(verify_refs_handoff_receipt(&mut truncated, &ticket, &binding()).is_err());
+        let mut changed = journal.clone();
+        let header = BODY_START as usize;
+        let metadata_length = u32_at(changed.0.get_ref(), header + 12) as usize;
+        let payload = header + HEADER_SIZE + metadata_length + RECORD_SIZE;
+        changed.0.get_mut()[payload] ^= 1;
+        assert!(verify_refs_handoff_receipt(&mut changed.clone(), &ticket, &binding()).is_err());
+        // Even a newly pinned outer digest and matching HND marker cannot
+        // excuse an inconsistent per-record payload inside the full journal.
+        let mut repinned = ticket.clone();
+        repinned.immutable_sha256 = hash(&changed.0.get_ref()[BODY_START as usize..]);
+        let matching = marker(b"N2RHND01", 3, &repinned, &request.shadow_sha256).unwrap();
+        changed.0.get_mut()[..GRANULE as usize].copy_from_slice(&matching);
+        let error = verify_refs_handoff_receipt(&mut changed, &repinned, &binding()).unwrap_err();
+        assert!(
+            error.to_string().contains("journal payload digest differs"),
+            "{error:#}"
+        );
+    }
 }
 
 /// Read-only proof for resuming an already durable final handoff after process

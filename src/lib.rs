@@ -11,6 +11,8 @@ pub mod general_conversion;
 #[cfg(windows)]
 pub mod general_lab;
 #[cfg(windows)]
+pub mod general_label_completion;
+#[cfg(windows)]
 pub mod general_qualification;
 #[cfg(windows)]
 pub mod general_reconstruct;

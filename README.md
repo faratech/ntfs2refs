@@ -30,6 +30,10 @@ The Windows executable now exposes an experimental
 requires live source/target qualification and an independent journal; image
 feasibility plans remain non-executable. The current profile is bounded and
 boot volumes remain excluded.
+The [source-label path](docs/source-volume-label.md) captures the frozen NTFS
+label and provides native-only post-handoff completion. Label restoration,
+repeat completion and strict verification after reboot passed on the converted
+twelve-object tree; the command does not replay the raw journal.
 The [general guest conversion result](docs/general-native-conversion-results.md)
 records a separate successful same-partition run, post-handoff mutation and
 reboot, with its current source-admission and retained-extent limits.

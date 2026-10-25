@@ -62,10 +62,35 @@ ntfs2refs resume --journal J:\ntfs2refs-shadow\EXPERIMENT\reconstruction.journal
 preimage before completing its rollback marker. `finalize` additionally
 requires `--expectation` and `--expectation-sha256`, matching the request's
 expected-tree hash. `rollback --after-marker` and `finalize --after-marker`
-complete an already durable marker after process death. Recovery never starts
+complete an already durable marker after process death only while their existing
+exact-image proof still passes. A writable ReFS mount or label update can change
+the image; the old raw-recovery/finalization path must then refuse it.
+Recovery never starts
 a fresh apply, silently clears a foreign device's exclusion, or crosses the
 closed rollback boundary. A shadow-backed recovery needs the bound shadow
 available in its required protected state.
+
+For a label-only failure after handoff and the first writable ReFS mount, use
+the separate native-only command. Its pinned request must contain
+`expected_source_label`:
+
+```powershell
+ntfs2refs complete-label --request request.json --request-sha256 REQUEST_SHA256 `
+  --ticket ticket.json --ticket-sha256 TICKET_SHA256 --journal reconstruction.journal `
+  --expectation expectation.json --expectation-sha256 TREE_SHA256 `
+  --output C:\ntfs2refs\runs\label-completion-001
+```
+
+This command reads the journal exclusively and read-only to validate its native
+file identity, full immutable contents, comparison binding and exact HND marker.
+That receipt does not assert a current raw target hash or authorize replay.
+The source must already be online/writable ReFS on the original bound hardware
+partition, with the enrollment or desired label. The full strict native tree is
+verified before and after guarded label restoration, flush and readback. It
+does not open the old shadow, issue raw source writes, change disk attributes
+or rewrite journal markers. Partial failures are saved in the fresh output
+directory. An already-desired label is flushed and verified without a second
+setter call. See [the label contract](source-volume-label.md).
 
 `capabilities` reports command availability. It does not claim a production
 qualification matrix or a standalone raw ReFS formatter/writer.

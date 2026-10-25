@@ -41,13 +41,73 @@ serialization. Finalization first verifies the enrollment-labeled native ReFS
 tree, then restores the source label. Marker-completion recovery can reach the
 enrollment/already-desired label check only after the existing exact-image
 marker proof passes. A first writable mount or label update can change that
-image; in that case the old journal remains refused. The label helper's
-idempotence does not reopen that recovery or rollback boundary. A separate
-native-only tree/label retry command would be needed after such a post-mount
-failure; it is not provided by the old-journal finalizer.
+image; in that case the old raw-recovery/exact-image finalizer remains refused.
+The same journal can still serve as a read-only handoff receipt in the separate
+native-only command; that use neither verifies the current raw image nor grants
+replay authority. The label helper's
+idempotence does not reopen that recovery or rollback boundary. The separate
+native-only completion command below handles that post-mount case.
 Later converted-source and postboot verification require the explicit desired
 label; independent shadow enrollment remains `n2r-retained-shadow`.
 
-The implementation has pure label/binding/guard tests and synthetic frozen-NTFS
-reconciliation tests. Native restoration and complete conversion/recovery
-qualification with the label field remain pending.
+The separate `ntfs2refs complete-label` command implements that native-only
+completion path. It requires separately pinned request, ticket and expected-tree
+files, the actual external journal file identity, its complete immutable body
+and the exact durable HND marker receipt. The receipt grants no replay authority
+and makes no current raw-target-image assertion. The pinned request must contain
+`expected_source_label`; a legacy absent field is refused by this command.
+The source must already be
+online/writable ReFS on its original partition; the old shadow is not opened.
+The strict expected tree is verified under the current enrollment-or-desired
+label before restoration, and again under the desired label after flush/readback.
+No raw source writes, journal mutations or disk-attribute changes are issued.
+The ordinary writable volume handle used only for metadata durability remains
+necessary for `FlushFileBuffers`.
+
+```powershell
+ntfs2refs complete-label --request request.json --request-sha256 REQUEST_SHA256 `
+  --ticket ticket.json --ticket-sha256 TICKET_SHA256 --journal reconstruction.journal `
+  --expectation expectation.json --expectation-sha256 TREE_SHA256 `
+  --output C:\ntfs2refs\label-completion-001
+```
+
+The implementation has pure label/binding/guard tests, synthetic frozen-NTFS
+reconciliation tests and marker-only receipt tests. Workspace compilation and
+release builds passed. The native-only command also passed the bounded case
+below. A fresh whole conversion exercising the new label capture and automatic
+finalization path remains separate qualification.
+
+## Native completion, repetition and reboot
+
+On October 25, 2026, `complete-label` ran against the successful twelve-object
+converted partition, including `natural-large.bin`. The old shadow was absent.
+The command verified the entire expected native tree, restored
+`n2r-retained-source`, flushed and read back that exact label, and verified the
+tree again. The first result reported setter called, flush successful, twelve
+objects and zero raw source writes. A second invocation succeeded with no
+second setter call and a successful flush. Both runs produced the same
+journal-only receipt; neither reopened replay or rollback.
+
+After a clean reboot, the strict converted-tree verifier exited 0, matched all
+twelve objects and original mount paths, and required the restored label.
+The read-only volume-handle mode used by native verification also passed these
+runs. The source remained writable ReFS on the original partition.
+
+This test deliberately backfilled the new label field into a separate pinned
+copy of the earlier run's legacy request. The desired label was independently
+observed before conversion and its 38 UTF-16LE bytes matched the frozen NTFS
+`$Volume::$VOLUME_NAME` hash
+`809c351552f69ab57e1c7ea7ba143787cf154d9bb06c0b5f4e40ae76c13c843c`.
+It qualifies native completion and idempotence, rather than claiming that the
+earlier converter binary executed the new capture/finalization integration.
+
+Ignored evidence: `.lab/hyperv/native-label-completion/win11-20261025T215220889Z`.
+
+- First `result.json` SHA-256:
+  `fa17f89c5ce7803d999ffe0557cfd7eda906d045b2b6b9199ee9ee8193cddf5f`.
+- Repeated `result.json` SHA-256:
+  `7e72d4371151b6b0fd3a5a5e108b7f6fb1c6d6c04163d6f4ca9700aadbbf6e04`.
+- Shared `handoff-receipt.json` SHA-256:
+  `d36da1a926081dba96e94f90cc5d8d3303d4dde2c94295aed270b96deb6ee36c`.
+- `postboot.json` SHA-256:
+  `26b5e1a4264948bf9900b31d18419bd4e680a33cd4aca5fad685e1e3fe08327c`.

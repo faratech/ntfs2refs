@@ -65,7 +65,7 @@ pub struct GeneralProbe {
     pub conversion_qualified: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct GeneralDiskState {
     pub device: Vec<u8>,
     pub disk_length: Vec<u8>,

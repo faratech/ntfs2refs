@@ -107,8 +107,16 @@ the shadow disk and persists its offline/read-only state. It hashes the frozen
 shadow and rehashes the source afterward. The measured stream mappings and
 logical-range hashes produce a versioned retained/relocated comparison request
 bound to those complete source and shadow hashes. A failure after exclusion
-leaves the shadow offline; its durable intent identifies the attempted transition. This
-command has not had a native run and does not authorize cutover.
+leaves the shadow offline; its durable intent identifies the attempted
+transition. This command has not had a native run and does not authorize cutover.
+
+`lab-new-general-journal-request` combines the pinned frozen-shadow report
+with a separately pinned journal-disk binding. It requires matching full-image
+hashes, stable offline/read-only source/shadow states and a distinct journal
+device, then emits the exact request consumed by
+`lab-prepare-general-journal`. The preparation command reopens and rehashes
+the actual disks; neither a copied success flag nor this request grants write
+authority.
 
 The library now has internal general activation and apply/resume/rollback
 functions. They rebind the separately pinned ticket to the actual GPT source,
@@ -118,8 +126,7 @@ excluded and do not perform handoff. These functions are intentionally not
 reachable from the general CLI while source admission and independent target
 verification remain incomplete.
 
-This is **not** a general conversion command. The raw writer, journal, source
-admission and ReFS target profile still use the narrower enrolled laboratory
-route. A successful read-only probe cannot authorize switching a volume's
-filesystem. Native qualification on a non-VM dedicated data disk has not yet
-been run.
+This is **not** a complete general conversion command. Source admission still
+rejects unresolved Windows volume policy and filesystem-internal state, while
+general activation, handoff and recovery remain unavailable from the CLI.
+Native qualification on a non-VM dedicated data disk has not yet been run.

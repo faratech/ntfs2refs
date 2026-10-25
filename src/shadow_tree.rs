@@ -3,6 +3,7 @@
 use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security, ntfs_stream_plan};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -16,6 +17,10 @@ pub struct Object {
     pub stored_times: [u64; 4],
     pub attributes: u32,
     pub security: Vec<u8>,
+    /// Measured GetSecurityInfo projection, when it differs from the stored
+    /// descriptor. Never written over the stored/kernel descriptor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_security: Option<Vec<u8>>,
     pub source_offset: Option<u64>,
     /// Fragmented, aligned NTFS payload runs. Mutually exclusive with the
     /// single-run source_offset; absent in older frozen tree requests.
@@ -30,6 +35,41 @@ pub struct Tree {
     pub objects: Vec<Object>,
     pub logical_bytes: u64,
     pub internal_replacement_pending: Vec<String>,
+}
+impl Tree {
+    pub fn bind_security_views(&mut self, views: &crate::ntfs_source_view::Analysis) -> Result<()> {
+        for object in &mut self.objects {
+            let matches: Vec<_> = views
+                .objects
+                .iter()
+                .filter(|view| {
+                    view.record_number == object.record_number
+                        && view.sequence_number == object.sequence_number
+                })
+                .collect();
+            ensure!(
+                matches.len() == 1 && matches[0].metadata.matched,
+                "source metadata view missing/refused"
+            );
+            let security = matches[0]
+                .security
+                .as_ref()
+                .context("source security views absent")?;
+            ensure!(
+                security.api_stable
+                    && security.target_must_reproduce_both_views
+                    && security.stored_sha256
+                        == hex::encode(sha2::Sha256::digest(&object.security)),
+                "source descriptor view differs from canonical tree"
+            );
+            object.api_security = if security.api_matches_stored {
+                None
+            } else {
+                Some(hex::decode(&security.api_descriptor_hex)?)
+            };
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -69,6 +109,10 @@ impl ExpectedTree {
         let mut identities = BTreeSet::new();
         let mut bytes = 0u64;
         for object in &self.objects {
+            if let Some(api) = &object.api_security {
+                ensure!(api.len() <= 65536, "API descriptor exceeds bound");
+                ntfs_security::parse_descriptor(api)?;
+            }
             let path_key = object.path.join("\\").to_ascii_uppercase();
             ensure!(
                 object.path.len() <= 16
@@ -330,6 +374,7 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
             stored_times: times,
             attributes: si.file_attributes | if f.is_directory { 16 } else { 0 },
             security: hex::decode(&descriptor.relative_hex)?,
+            api_security: None,
             source_offset,
             source_extents,
             length,

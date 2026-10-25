@@ -89,7 +89,12 @@ fn main() -> anyhow::Result<()> {
             "source_writes_authorized":false,"conversion_qualified":false}),
     )?;
     let raw = ntfs_inspect::inspect(&mut source, source_length)?;
-    let tree = shadow_tree::derive_ordinary(&raw)?;
+    let (tree, source_views) =
+        ntfs2refs::general_shadow::observed_tree(&mut source, &raw, &mut events)?;
+    save(
+        &args.output.with_extension("source-views.json"),
+        &source_views,
+    )?;
     let expectation = shadow_tree::ExpectedTree::from(&tree);
     expectation.validate()?;
     save(&expectation_path, &expectation)?;
@@ -103,6 +108,7 @@ fn main() -> anyhow::Result<()> {
             times: object.stored_times,
             attributes: object.attributes,
             security: &object.security,
+            expected_api_security: object.api_security.as_deref(),
             payload: &[],
             expected_length: if object.directory {
                 None

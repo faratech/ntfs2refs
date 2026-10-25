@@ -172,6 +172,28 @@ fn both_security_views_and_all_queries_remain_mandatory() {
         );
     }
 }
+
+#[test]
+fn stable_api_projection_is_recorded_without_changing_the_stored_descriptor() {
+    let (file, _, mut before) = fixture();
+    let stored=hex::decode("010004801400000020000000000000002c00000001010000000000051200000001010000000000051200000002001c000100000000001400ff011f00010100000000000512000000").unwrap();
+    let api=hex::decode("010004a01400000020000000000000002c00000001010000000000051200000001010000000000051200000002001c000100000000101400ff011f00010100000000000512000000").unwrap();
+    before.kernel_security.as_mut().unwrap().bytes = stored.clone();
+    before.security = api.clone();
+    let mut after = before.clone();
+    let views =
+        ntfs2refs::ntfs_source_view::check_security_views(&stored, &before, &after).unwrap();
+    assert!(!views.api_matches_stored);
+    assert!(views.api_stable && views.target_must_reproduce_both_views);
+    assert_eq!(views.api_descriptor_hex, hex::encode(&api));
+    assert_eq!(before.kernel_security.as_ref().unwrap().bytes, stored);
+    assert!(check_metadata(&file, SERIAL, &stored, &before, &after).is_ok());
+    after.security[53] ^= 0x10;
+    assert!(check_metadata(&file, SERIAL, &stored, &before, &after).is_err());
+    after = before.clone();
+    after.kernel_security.as_mut().unwrap().bytes = api;
+    assert!(check_metadata(&file, SERIAL, &stored, &before, &after).is_err());
+}
 #[test]
 #[ignore = "requires pinned live source capture; pure report replay cannot grant live admission"]
 fn pinned_source_projection_explains_only_the_observed_discrepancies() {

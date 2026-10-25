@@ -4,6 +4,33 @@ use n2r_win32::general_layout::GeneralSourceShadowBinding;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+/// Capture both descriptor views for the canonical source tree. The returned
+/// analysis is diagnostic; source admission separately binds actual image bytes.
+pub fn observed_tree(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    raw: &crate::ntfs_inspect::NtfsInspection,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<(crate::shadow_tree::Tree, crate::ntfs_source_view::Analysis)> {
+    use sha2::{Digest, Sha256};
+    let before = source.state(events)?;
+    ensure!(
+        before.disk_attributes == 3,
+        "source must remain excluded during descriptor capture"
+    );
+    let pin = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
+    let request =
+        crate::ntfs_attestation::request_for_general_inspection(raw, &pin, source.binding())?;
+    let observed = source.observe_ntfs_files(&request, events)?;
+    let views = crate::ntfs_source_view::diagnose(raw, &pin, observed.report())?;
+    let mut tree = crate::shadow_tree::derive_ordinary(raw)?;
+    tree.bind_security_views(&views)?;
+    ensure!(
+        source.state(events)? == before,
+        "source exclusion changed during descriptor capture"
+    );
+    Ok((tree, views))
+}
+
 pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_native::Input<'_>> {
     tree.objects
         .iter()
@@ -13,6 +40,7 @@ pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_n
             times: object.stored_times,
             attributes: object.attributes,
             security: &object.security,
+            expected_api_security: object.api_security.as_deref(),
             payload: &[],
             expected_length: (!object.directory).then_some(object.length),
             expected_sha256: if object.directory {

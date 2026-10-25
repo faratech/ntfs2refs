@@ -221,8 +221,10 @@ attribute and storage write-protection query confirm a physically read-only
 view. It retains last-access suppression on writable observations.
 The default-manager observed freeze now passes the bounded native
 [transaction policy](transaction-freeze-policy.md). Target preservation,
-security-view differences on newly generated Windows metadata files and a
-qualified device-bound certificate remain unfinished. [Microsoft states
+the combined device-bound certificate/cutover path remains under qualification.
+The [paired-view implementation](paired-security-and-resident-data.md) now
+accounts for the newly generated Windows metadata files without substituting
+their API projection for the stored/kernel descriptor. [Microsoft states
 that ReFS does not support the TxF metadata FSCTL](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ni-winioctl-fsctl_txfs_get_metadata_info),
 so TxF semantics cannot silently be carried across.
 

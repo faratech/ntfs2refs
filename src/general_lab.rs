@@ -88,7 +88,11 @@ fn apply_profile(
         "guest frozen NTFS source changed before activation"
     );
     let raw = ntfs_inspect::inspect(&mut source, source_length)?;
-    let derived = shadow_tree::derive_ordinary(&raw)?;
+    let derived = if expected.objects.iter().any(|o| o.api_security.is_some()) {
+        crate::general_shadow::observed_tree(&mut source, &raw, &mut events)?.0
+    } else {
+        shadow_tree::derive_ordinary(&raw)?
+    };
     ensure!(
         shadow_tree::ExpectedTree::from(&derived) == expected,
         "guest expected tree differs from the actual NTFS source"

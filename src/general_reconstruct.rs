@@ -952,6 +952,7 @@ fn verify_converted_tree(
             times: object.stored_times,
             attributes: object.attributes,
             security: &object.security,
+            expected_api_security: object.api_security.as_deref(),
             payload: &[],
             expected_length: if object.directory {
                 None

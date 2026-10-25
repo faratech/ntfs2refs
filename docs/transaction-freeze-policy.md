@@ -33,7 +33,10 @@ SHA-256 `69d5c103bb5d2d349a988f711d19593ab7c467e681fbbbf279c1c20afc3b2b9c`.
 The remount generated `System Volume Information\WPSettings.dat` and
 `System Volume Information\IndexerVolumeGuid`. Their stored and kernel
 security descriptors agree, but `GetSecurityInfo` returns a different view.
-Both objects remain refused; this run did not receive a source certificate.
+That original run refused both objects and did not receive a source certificate.
+The new [paired-view implementation](paired-security-and-resident-data.md)
+records the API projections separately and has reproduced both views on native
+ReFS. Certificate-backed cutover remains a separate qualification step.
 The complete protected native snapshots were separately captured in
 `.lab/hyperv/general-source-admission/win11-20261025T162319458Z/basis.json`,
 SHA-256 `f06c78ec217a19edf3d368eb3b463c0409d90ae9845d85b5f64c350e39da4835`.

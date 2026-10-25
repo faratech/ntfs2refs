@@ -1,0 +1,286 @@
+//! One owning-machine source/target qualification run. Keeps the actual freeze
+//! witness alive through native reconstruction and certificate issuance.
+use crate::{
+    general_shadow, general_source_admission, general_target_preservation, lab_reconstruct,
+    ntfs_attestation, ntfs_backup, ntfs_inspect, ntfs_log, shadow_tree,
+};
+use anyhow::{Context, Result, ensure};
+use n2r_win32::{
+    GeneralFrozenPartition, NativeEvent, general_layout::GeneralSourceShadowBinding, shadow_native,
+};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, OpenOptions},
+    io::{Read, Write},
+    os::windows::fs::{MetadataExt, OpenOptionsExt},
+    path::Path,
+};
+
+pub(crate) fn save(root: &Path, name: &str, value: &impl Serialize) -> Result<String> {
+    let bytes = serde_json::to_vec_pretty(value)?;
+    ensure!(
+        bytes.len() <= 64 * 1024 * 1024,
+        "qualification artifact exceeds bound"
+    );
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0)
+        .custom_flags(0x0020_0000)
+        .open(root.join(name))?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+pub fn qualify(pair: GeneralSourceShadowBinding, output: &Path) -> Result<()> {
+    prepare(pair, output, false).map(drop)
+}
+
+pub fn qualify_existing(pair: GeneralSourceShadowBinding, output: &Path) -> Result<()> {
+    prepare(pair, output, true).map(drop)
+}
+
+pub(crate) struct QualifiedTree {
+    pub source: GeneralFrozenPartition,
+    pub target: GeneralFrozenPartition,
+    pub certificate: general_source_admission::SourceCertificate,
+    pub comparison: crate::retained_compare::RetainedCompareRequest,
+    pub expected: Vec<u8>,
+    pub mount_paths: n2r_win32::MountPathObservation,
+}
+
+pub(crate) fn create_output(output: &Path) -> Result<()> {
+    let path = output
+        .to_str()
+        .context("qualification output must be Unicode")?;
+    let system_root = std::env::var("SystemRoot")?;
+    ensure!(
+        path.len() <= 512
+            && path.get(..3).is_some_and(|prefix| system_root
+                .get(..3)
+                .is_some_and(|root| prefix.eq_ignore_ascii_case(root)))
+            && !path[3..].contains(':')
+            && !path.contains(['/', '\0'])
+            && !path.contains("..")
+            && !output.exists(),
+        "fresh OS-volume output required"
+    );
+    for ancestor in output.ancestors().skip(1) {
+        let meta = fs::symlink_metadata(ancestor)?;
+        ensure!(
+            meta.is_dir() && meta.file_attributes() & 0x400 == 0,
+            "ordinary output ancestry required"
+        );
+    }
+    fs::create_dir(output)?;
+    Ok(())
+}
+
+pub(crate) fn prepare(
+    pair: GeneralSourceShadowBinding,
+    output: &Path,
+    verify_existing: bool,
+) -> Result<QualifiedTree> {
+    pair.validate()?;
+    // Qualification artifacts stay on the Windows OS volume, which both
+    // dedicated data-disk routes explicitly exclude.
+    let path = output
+        .to_str()
+        .context("qualification output must be Unicode")?;
+    let system_root = std::env::var("SystemRoot")?;
+    ensure!(
+        path.len() <= 512
+            && path.get(..3).is_some_and(|prefix| system_root
+                .get(..3)
+                .is_some_and(|root| prefix.eq_ignore_ascii_case(root)))
+            && !path[3..].contains(':')
+            && !path.contains(['/', '\0'])
+            && !path.contains("..")
+            && !output.exists(),
+        "fresh OS-volume qualification output required"
+    );
+    for ancestor in output.ancestors().skip(1) {
+        let metadata = fs::symlink_metadata(ancestor)?;
+        ensure!(
+            metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+            "ordinary output ancestry required"
+        );
+    }
+    fs::create_dir(output)?;
+    save(
+        output,
+        "intent.json",
+        &serde_json::json!({"schema_version":1,"kind":"live-general-qualification-intent",
+        "pair":pair,"verify_existing":verify_existing,"source_payload_writes_authorized":false,"source_admitted":false}),
+    )?;
+    let mut phase = "source-freeze";
+    let attempted = (|| -> Result<QualifiedTree> {
+        let mut events = Vec::<NativeEvent>::new();
+        let mut online = n2r_win32::GeneralPartitionReader::open(pair.source.clone(), &mut events)?;
+        let mut boot = [0; 512];
+        online.read_exact(&mut boot)?;
+        let geometry = ntfs_inspect::inspect_boot_sector(&boot, online.byte_len())?;
+        ensure!(
+            geometry.bytes_per_sector == 512
+                && geometry.cluster_size == 4096
+                && geometry.file_record_size == 1024,
+            "source geometry exceeds the supported qualification profile"
+        );
+        online.revalidate_route(&mut events)?;
+        drop(online);
+        let mount_paths = n2r_win32::capture_mount_paths_general(pair.source.clone(), &mut events)?;
+        save(output, "source-mount-paths.json", &mount_paths)?;
+        save(output, "preflight-events.json", &events)?;
+        events.clear();
+        let mut source =
+            GeneralFrozenPartition::isolate_observed_ntfs(pair.source.clone(), &mut events)?;
+        let length = source.byte_len();
+        let source_hash = hex::encode(lab_reconstruct::hash_range(&mut source, 0, length)?);
+        save(
+            output,
+            "source-frozen.json",
+            &serde_json::json!({"schema_version":1,
+            "kind":"observed-frozen-source-identity","binding":source.binding(),"source_sha256":source_hash,
+            "state":source.state(&mut events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
+        )?;
+        let raw = ntfs_inspect::inspect(&mut source, length)?;
+        let pin = hex::encode(Sha256::digest(serde_json::to_vec(&raw)?));
+        let backups = ntfs_backup::verify(&mut source, length, &raw)?;
+        let log = ntfs_log::verify(&mut source, &raw)?;
+        save(
+            output,
+            "source-basis.json",
+            &serde_json::json!({"source_sha256":source_hash,
+            "canonical_inspection_sha256":pin,"ntfs":raw,"backups":backups,"log_restart":log,
+            "freeze_observation":source.freeze_observation(),"events":events}),
+        )?;
+        phase = "source-observation";
+        let request =
+            ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?;
+        let observed = source.observe_ntfs_files(&request, &mut events)?;
+        save(output, "native-source.json", observed.report())?;
+        let mut assessment = general_source_admission::assess(
+            &mut source,
+            &raw,
+            &pin,
+            &source_hash,
+            &backups,
+            Some(&log),
+            &observed,
+            &mut events,
+        )?;
+        save(output, "source-assessment.json", &assessment)?;
+        save(output, "source-events.json", &events)?;
+        events.clear();
+        let refusals: Vec<_> = assessment
+            .assessment
+            .gates
+            .iter()
+            .filter(|g| g.code != "security_timestamp_preservation" && !g.satisfied)
+            .map(|g| g.code.clone())
+            .collect();
+        ensure!(
+            refusals.is_empty(),
+            "source is not eligible for target qualification: {refusals:?}"
+        );
+        let views = assessment
+            .assessment
+            .source_view
+            .as_ref()
+            .context("live source views absent")?;
+        let mut tree = shadow_tree::derive_ordinary(&raw)?;
+        tree.bind_security_views(views)?;
+        let expected = shadow_tree::ExpectedTree::from(&tree);
+        expected.validate()?;
+        let expected_sha256 = save(output, "expectation.json", &expected)?;
+        phase = "native-shadow-construction";
+        let input = general_shadow::native_inputs(&tree);
+        let mut writer = |index: usize, target: &mut fs::File| -> std::io::Result<()> {
+            let object = tree
+                .objects
+                .get(index)
+                .ok_or_else(|| std::io::Error::other("source object index differs"))?;
+            let copied = ntfs_inspect::copy_plain_stream(
+                &mut source,
+                &raw,
+                object.record_number,
+                256 * 1024 * 1024,
+                target,
+            )
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+            if copied.logical_bytes != object.length
+                || Some(&copied.sha256) != object.sha256.as_ref()
+            {
+                return Err(std::io::Error::other(
+                    "source stream changed during construction",
+                ));
+            }
+            Ok(())
+        };
+        let same = |a: &[u8], b: &[u8]| {
+            ntfs_attestation::same_security(a, b).map_err(|e| std::io::Error::other(e.to_string()))
+        };
+        let native = if verify_existing {
+            shadow_native::verify_general_ordinary(pair.clone(), &input, same)?
+        } else {
+            shadow_native::run_general_ordinary_streaming(
+                pair.clone(),
+                &input,
+                true,
+                &mut writer,
+                |a, b| {
+                    ntfs_attestation::same_security(a, b)
+                        .map_err(|e| std::io::Error::other(e.to_string()))
+                },
+            )?
+        };
+        save(output, "native-shadow.json", &native)?;
+        phase = "target-preservation-freeze";
+        let (target, proof) = general_target_preservation::verify_and_freeze(
+            &mut source,
+            &raw,
+            &source_hash,
+            views,
+            pair.clone(),
+            256 * 1024 * 1024,
+            &mut events,
+        )?;
+        save(output, "target-preservation.json", &proof)?;
+        save(output, "target-events.json", &events)?;
+        phase = "source-certificate";
+        let certificate = assessment.qualify_target(&raw, &proof)?;
+        let certificate_sha256 = save(output, "certificate.json", &certificate)?;
+        save(output, "admitted-assessment.json", &assessment)?;
+        save(
+            output,
+            "result.json",
+            &serde_json::json!({"schema_version":1,"kind":"live-general-tree-qualification",
+            "success":true,"source_admitted":true,"execution_authorized":false,"source_payload_writes":0,
+            "source_sha256":source_hash,"expected_tree_sha256":expected_sha256,"certificate_sha256":certificate_sha256,
+            "objects":tree.objects.len(),"comparison":proof.comparison(),"source_after":source.state(&mut events)?,
+            "target_after":target.state(&mut events)?,"events":events}),
+        )?;
+        Ok(QualifiedTree {
+            source,
+            target,
+            certificate,
+            comparison: proof.comparison().clone(),
+            expected: serde_json::to_vec_pretty(&expected)?,
+            mount_paths,
+        })
+    })();
+    match attempted {
+        Ok(qualified) => Ok(qualified),
+        Err(error) => {
+            save(
+                output,
+                "failed.json",
+                &serde_json::json!({"schema_version":1,"kind":"live-general-qualification-failure",
+            "phase":phase,"error":format!("{error:#}"),"source_payload_writes":0,"execution_authorized":false}),
+            )?;
+            Err(error)
+        }
+    }
+}

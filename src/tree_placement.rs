@@ -46,7 +46,16 @@ pub fn mappings_from_native(
                 .iter()
                 .find(|q| q.class == 18 && q.native_error.is_none() && q.bytes.len() == 24)
                 .context("missing target file identity")?;
-            let runs = if object.length == 0 && measured.retrieval.is_empty() {
+            let runs = if measured.resident_data {
+                ensure!(
+                    object.length <= 4096
+                        && measured.retrieval.is_empty()
+                        && measured.cached_validity.is_empty()
+                        && measured.storage_validity.is_empty(),
+                    "resident target unexpectedly carries physical data mappings"
+                );
+                vec![]
+            } else if object.length == 0 && measured.retrieval.is_empty() {
                 vec![]
             } else {
                 n2r_win32::stream_layout::parse_retrieval(&measured.retrieval)?
@@ -521,6 +530,7 @@ mod tests {
                     stored_times: [1; 4],
                     attributes: 32,
                     security: vec![],
+                    api_security: None,
                     source_offset: Some(4096),
                     source_extents: vec![],
                     length: 8192,

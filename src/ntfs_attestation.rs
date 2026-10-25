@@ -189,6 +189,26 @@ pub(crate) fn check_non_time_snapshot(
     sd: &[u8],
     s: &Snapshot,
 ) -> Result<[u64; 4]> {
+    let times = check_non_security_snapshot(file, serial, s)?;
+    ensure!(
+        s.security_error.is_none(),
+        "native security query failed: {:?}",
+        s.security_error
+    );
+    ensure!(
+        same_security(sd, &s.security)?,
+        "native security semantics differ"
+    );
+    Ok(times)
+}
+
+/// The frozen-source policy checks both descriptor views separately. Keep
+/// identity/type/size/attribute validation independent of API SD projection.
+pub(crate) fn check_non_security_snapshot(
+    file: &FileInventory,
+    serial: u64,
+    s: &Snapshot,
+) -> Result<[u64; 4]> {
     ensure!(s.queries.len() == 4, "unexpected native query count");
     let id = buffer(s, 18, 24)?;
     ensure!(
@@ -230,15 +250,6 @@ pub(crate) fn check_non_time_snapshot(
             "native unnamed stream EOF differs"
         );
     }
-    ensure!(
-        s.security_error.is_none(),
-        "native security query failed: {:?}",
-        s.security_error
-    );
-    ensure!(
-        same_security(sd, &s.security)?,
-        "native security semantics differ"
-    );
     Ok([
         u64le(basic, 0),
         u64le(basic, 8),

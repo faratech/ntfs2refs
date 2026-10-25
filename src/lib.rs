@@ -7,7 +7,11 @@ pub mod corpus;
 pub mod extent_adoption;
 pub mod fixed_vhd;
 #[cfg(windows)]
+pub mod general_conversion;
+#[cfg(windows)]
 pub mod general_lab;
+#[cfg(windows)]
+pub mod general_qualification;
 #[cfg(windows)]
 pub mod general_reconstruct;
 #[cfg(windows)]

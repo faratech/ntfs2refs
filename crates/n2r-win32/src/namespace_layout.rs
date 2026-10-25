@@ -9,6 +9,7 @@ pub const MAX_EVIDENCE: usize = 2 * 1024 * 1024;
 pub const RESTART: i32 = 20;
 pub const CONTINUE: i32 = 19;
 pub const END: i32 = 18;
+pub const FIRST_EMPTY: i32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -74,6 +75,23 @@ pub fn parse(bytes: &[u8]) -> io::Result<(Vec<Entry>, usize)> {
 pub fn decode_pass(queries: &[crate::attestation::Query]) -> io::Result<Vec<Entry>> {
     if queries.is_empty() || queries.len() > MAX_CALLS {
         return Err(invalid("missing or excessive directory calls"));
+    }
+    // ReFS can report NO_SUCH_FILE for the initial unfiltered query on an
+    // empty directory. Require a separate continuation EOF, never treat an
+    // arbitrary missing-file/error response as a complete empty namespace.
+    if queries[0].native_error == Some(FIRST_EMPTY) {
+        if queries.len() == 2
+            && queries[0].class == RESTART
+            && queries[0].bytes.is_empty()
+            && queries[1].class == CONTINUE
+            && queries[1].native_error == Some(END)
+            && queries[1].bytes.is_empty()
+        {
+            return Ok(vec![]);
+        }
+        return Err(invalid(
+            "initial empty directory response lacks confirmed continuation EOF",
+        ));
     }
     let mut entries = vec![];
     let mut eof = false;

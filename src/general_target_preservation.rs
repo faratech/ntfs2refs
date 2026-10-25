@@ -27,6 +27,7 @@ pub struct FrozenTargetPreservation {
     comparison: crate::retained_compare::RetainedCompareRequest,
     refs: refs_inspect::RefsInspection,
     retained_allocation: Option<refs_retained_allocation::Coverage>,
+    source_views_sha256: String,
 }
 
 impl FrozenTargetPreservation {
@@ -44,12 +45,16 @@ impl FrozenTargetPreservation {
     pub fn pair(&self) -> &GeneralSourceShadowBinding {
         &self.pair
     }
+    pub(crate) fn source_views_sha256(&self) -> &str {
+        &self.source_views_sha256
+    }
 }
 
 pub fn verify_and_freeze(
     source: &mut GeneralFrozenPartition,
     raw: &ntfs_inspect::NtfsInspection,
     source_sha256: &str,
+    source_views: &crate::ntfs_source_view::Analysis,
     pair: GeneralSourceShadowBinding,
     max_change_bytes: u64,
     events: &mut Vec<NativeEvent>,
@@ -78,7 +83,12 @@ pub fn verify_and_freeze(
         hex::encode(Sha256::digest(serde_json::to_vec(&actual_raw)?)) == inspection_sha256,
         "source inventory changed before target verification"
     );
-    let tree = shadow_tree::derive_ordinary(raw)?;
+    ensure!(
+        source_views.binds_live_source(&inspection_sha256, source_sha256),
+        "target requires the bound live source views"
+    );
+    let mut tree = shadow_tree::derive_ordinary(raw)?;
+    tree.bind_security_views(source_views)?;
     let expected = shadow_tree::ExpectedTree::from(&tree);
     expected.validate()?;
     let input = general_shadow::native_inputs(&tree);
@@ -150,6 +160,7 @@ pub fn verify_and_freeze(
         comparison,
         refs,
         retained_allocation,
+        source_views_sha256: hex::encode(Sha256::digest(serde_json::to_vec(source_views)?)),
     };
     Ok((target, proof))
 }

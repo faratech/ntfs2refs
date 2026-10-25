@@ -69,6 +69,35 @@ fn empty_directory_requires_native_end_of_enumeration() {
         assert!(n::decode_pass(&[query(vec![], n::RESTART, error)]).is_err());
     }
 }
+
+#[test]
+fn initial_empty_refs_query_requires_a_separate_exact_continuation_eof() {
+    let first = query(vec![], n::RESTART, Some(n::FIRST_EMPTY));
+    let end = query(vec![], n::CONTINUE, Some(n::END));
+    assert!(
+        n::decode_pass(&[first.clone(), end.clone()])
+            .unwrap()
+            .is_empty()
+    );
+    for calls in [
+        vec![first.clone()],
+        vec![first.clone(), query(vec![], n::CONTINUE, Some(5))],
+        vec![first.clone(), query(row(&[65]), n::CONTINUE, None)],
+        vec![first.clone(), end.clone(), end.clone()],
+        vec![first.clone(), query(vec![0], n::CONTINUE, Some(n::END))],
+        vec![
+            query(vec![0], n::RESTART, Some(n::FIRST_EMPTY)),
+            end.clone(),
+        ],
+        vec![first, query(vec![], n::RESTART, Some(n::END))],
+        vec![
+            query(row(&[65]), n::RESTART, None),
+            query(vec![], n::CONTINUE, Some(n::FIRST_EMPTY)),
+        ],
+    ] {
+        assert!(n::decode_pass(&calls).is_err());
+    }
+}
 #[test]
 fn partial_enumeration_and_failure_after_some_entries_are_refused() {
     let first = query(row(&[65]), n::RESTART, None);

@@ -39,6 +39,7 @@ struct AdmissionContext {
     source_sha256: String,
     inspection_sha256: String,
     source_gates_satisfied: bool,
+    source_views_sha256: String,
 }
 
 /// Issued only after live source admission and same-tree native target
@@ -73,12 +74,15 @@ impl LiveAssessment {
                 && self.source_sha256 == self.context.source_sha256
                 && self.canonical_inspection_sha256 == self.context.inspection_sha256
                 && target.binds(raw, &self.source_sha256)
+                && target.source_views_sha256() == self.context.source_views_sha256
                 && self.canonical_inspection_sha256 == self.assessment.source_inspection_sha256
-                && self
-                    .assessment
-                    .source_view
-                    .as_ref()
-                    .is_some_and(|view| view.binds_live(&self.canonical_inspection_sha256)),
+                && self.assessment.source_view.as_ref().is_some_and(|view| view
+                    .binds_live_source(&self.canonical_inspection_sha256, &self.source_sha256)
+                    && serde_json::to_vec(view).is_ok_and(|bytes| hex::encode(Sha256::digest(
+                        bytes
+                    )) == self
+                        .context
+                        .source_views_sha256)),
             "source admission is refused or target preservation differs from the original live device context"
         );
         for gate in &mut self.assessment.gates {
@@ -215,6 +219,9 @@ pub fn assess(
         _ => None,
     };
     let context = AdmissionContext {
+        source_views_sha256: hex::encode(Sha256::digest(serde_json::to_vec(
+            &assessment.source_view,
+        )?)),
         source_binding: source.binding().clone(),
         source_sha256: source_sha256.clone(),
         inspection_sha256: canonical_inspection_sha256.into(),

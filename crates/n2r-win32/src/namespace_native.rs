@@ -75,6 +75,7 @@ fn pass(file: &File, budget: &mut usize) -> DirectoryCapture {
             layout::CAPACITY,
         );
         let end = q.native_error.is_some();
+        let confirm_empty = i == 0 && q.native_error == Some(layout::FIRST_EMPTY);
         if !end {
             match layout::parse(&q.bytes) {
                 Ok((_, used)) => q.bytes.truncate(used),
@@ -87,7 +88,7 @@ fn pass(file: &File, budget: &mut usize) -> DirectoryCapture {
         q.bytes.shrink_to_fit();
         *budget -= q.bytes.len();
         out.calls.push(q);
-        if end {
+        if end && !confirm_empty {
             return out;
         }
     }

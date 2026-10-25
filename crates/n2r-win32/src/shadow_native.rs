@@ -13,7 +13,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     mem,
     os::windows::{
         fs::OpenOptionsExt,
@@ -38,6 +38,7 @@ pub struct Input<'a> {
     pub times: [u64; 4],
     pub attributes: u32,
     pub security: &'a [u8],
+    pub expected_api_security: Option<&'a [u8]>,
     pub payload: &'a [u8],
     /// Hash-only expectations are accepted for ordinary shadow streaming and
     /// verification. The source reader supplies bytes during construction.
@@ -97,6 +98,10 @@ fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> 
     }
     Ok(hex::encode(hash.finalize()))
 }
+
+fn resident_allocation(logical: u64, allocated: u64) -> bool {
+    logical <= 4096 && allocated < 4096 && allocated >= logical
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     ProbeRoot,
@@ -117,6 +122,7 @@ pub struct ObjectReport {
     pub after: Snapshot,
     pub logical_sha256: Option<String>,
     pub retrieval: Vec<u8>,
+    pub resident_data: bool,
     pub cached_validity: Vec<u8>,
     pub storage_validity: Vec<u8>,
     pub integrity: Vec<u8>,
@@ -157,6 +163,140 @@ pub struct GeneralConvertedReport {
     pub pair: GeneralSourceShadowBinding,
     pub native: Report,
     pub conversion_qualified: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SecurityProjectionProbe {
+    pub binding: GeneralDiskBinding,
+    pub fresh_parent: String,
+    pub parent_before: Snapshot,
+    pub parent_after: Snapshot,
+    pub child_before: Snapshot,
+    pub child_after: Snapshot,
+    pub parent_matches_both_views: bool,
+    pub child_matches_both_views: bool,
+    pub before: crate::GeneralProbe,
+    pub after: crate::GeneralProbe,
+    pub privilege_states: Vec<PrivilegeState>,
+    pub success: bool,
+}
+
+pub fn observe_system_directory(
+    binding: GeneralDiskBinding,
+    volume_root: bool,
+) -> io::Result<Vec<crate::attestation::Query>> {
+    let mut events = Vec::new();
+    native::probe_general(binding.clone(), &mut events)?;
+    if native::mounted_filesystem_general(binding.clone(), &mut events)? != "ReFS" {
+        return Err(invalid("system-directory probe requires ReFS"));
+    }
+    let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
+    let file = open(
+        &format!(
+            "{}\\{}",
+            binding.volume_path()?,
+            if volume_root {
+                ""
+            } else {
+                "System Volume Information"
+            }
+        ),
+        true,
+        false,
+    )?;
+    let mut calls = Vec::new();
+    for class in [namespace_layout::RESTART, namespace_layout::CONTINUE] {
+        let query = match info(&file, class, namespace_layout::CAPACITY) {
+            Ok(bytes) => {
+                let (_, used) = namespace_layout::parse(&bytes)?;
+                crate::attestation::Query {
+                    class,
+                    bytes: bytes[..used].to_vec(),
+                    native_error: None,
+                }
+            }
+            Err(error) => crate::attestation::Query {
+                class,
+                bytes: vec![],
+                native_error: Some(error.raw_os_error().ok_or(error)?),
+            },
+        };
+        calls.push(query);
+    }
+    privileges.restore()?;
+    Ok(calls)
+}
+
+/// Exercise descriptor reconstruction in a newly created scratch directory on
+/// a bound ReFS data disk. Never changes the volume root or existing files.
+pub fn probe_security_projection(
+    binding: GeneralDiskBinding,
+    fresh_parent: &str,
+    parent: &Input<'_>,
+    child: &Input<'_>,
+    same: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<SecurityProjectionProbe> {
+    if !valid_shadow_component(fresh_parent)
+        || !fresh_parent.starts_with("N2R-SECURITY-")
+        || fresh_parent.len() != 45
+        || !parent.directory
+        || child.directory
+    {
+        return Err(invalid("fresh security-probe directory profile differs"));
+    }
+    descriptor(parent.security)?;
+    descriptor(child.security)?;
+    let mut events = Vec::new();
+    let before = native::probe_general(binding.clone(), &mut events)?;
+    if native::mounted_filesystem_general(binding.clone(), &mut events)? != "ReFS" {
+        return Err(invalid("security projection probe requires mounted ReFS"));
+    }
+    let root = format!("{}\\", binding.volume_path()?);
+    let parent_path = format!("{root}{fresh_parent}");
+    let child_path = format!("{parent_path}\\probe.bin");
+    let mut privileges = Privileges::enable_for(&[
+        "SeBackupPrivilege",
+        "SeSecurityPrivilege",
+        "SeRestorePrivilege",
+    ])?;
+    create(&parent_path, parent, 0, None)?;
+    let parent_handle = open(&parent_path, true, true)?;
+    let parent_before = snapshot(&parent_handle);
+    backup_security(&parent_handle, parent.security)?;
+    create(&child_path, child, 1, None)?;
+    let child_handle = open(&child_path, false, true)?;
+    let child_before = snapshot(&child_handle);
+    backup_security(&child_handle, child.security)?;
+    basic(&child_handle, child)?;
+    child_handle.sync_all()?;
+    basic(&parent_handle, parent)?;
+    let child_after = snapshot(&child_handle);
+    let parent_after = snapshot(&parent_handle);
+    let parent_matches_both_views = security_matches(parent, &parent_after, &same)?;
+    let child_matches_both_views = security_matches(child, &child_after, &same)?;
+    privileges.restore()?;
+    let privilege_states = privileges.audit().to_vec();
+    let after = native::probe_general(binding.clone(), &mut events)?;
+    let success = parent_matches_both_views
+        && child_matches_both_views
+        && before.disk_attributes_before == 0
+        && after.disk_attributes_after == 0
+        && before.gpt_layout == after.gpt_layout
+        && before.device == after.device;
+    Ok(SecurityProjectionProbe {
+        binding,
+        fresh_parent: fresh_parent.into(),
+        parent_before,
+        parent_after,
+        child_before,
+        child_after,
+        parent_matches_both_views,
+        child_matches_both_views,
+        before,
+        after,
+        privilege_states,
+        success,
+    })
 }
 
 fn observed_shadow(
@@ -394,7 +534,7 @@ fn backup_security(file: &File, sd: &[u8]) -> io::Result<SecurityBackup> {
     })
 }
 fn security_matches(
-    expected: &[u8],
+    input: &Input<'_>,
     actual: &Snapshot,
     same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<bool> {
@@ -405,7 +545,10 @@ fn security_matches(
     if actual.security_error.is_some() || kernel.native_error.is_some() {
         return Err(invalid("root security query failed"));
     }
-    Ok(same(expected, &actual.security)? && same(expected, &kernel.bytes)?)
+    Ok(same(
+        input.expected_api_security.unwrap_or(input.security),
+        &actual.security,
+    )? && same(input.security, &kernel.bytes)?)
 }
 fn query_bytes(s: &Snapshot, class: i32, length: usize) -> io::Result<&[u8]> {
     let q = s
@@ -500,11 +643,17 @@ fn validate_existing(
         if o.before.security_error.is_some() || kernel.native_error.is_some() {
             return Err(invalid("existing shadow security query failed"));
         }
-        for actual in [&o.before.security, &kernel.bytes] {
+        for (expected, actual) in [
+            (
+                i.expected_api_security.unwrap_or(i.security),
+                o.before.security.as_slice(),
+            ),
+            (i.security, kernel.bytes.as_slice()),
+        ] {
             let matched = if before_restore {
-                creation_loss_only(i.security, actual, same)?
+                creation_loss_only(expected, actual, same)?
             } else {
-                same(i.security, actual)?
+                same(expected, actual)?
             };
             if !matched {
                 return Err(invalid(
@@ -627,10 +776,10 @@ fn repair_security_profile(
         if before != o.before {
             return Err(invalid("existing shadow changed after repair preflight"));
         }
-        if !security_matches(i.security, &before, &same)? {
+        if !security_matches(i, &before, &same)? {
             let backup = backup_security(&h, i.security)?;
             let after = snapshot(&h);
-            if !security_matches(i.security, &after, &same)? {
+            if !security_matches(i, &after, &same)? {
                 return Err(invalid("restored shadow descriptor does not exactly match"));
             }
             restorations.push(ObjectSecurityRestore {
@@ -776,12 +925,80 @@ fn enumerate(file: &File) -> io::Result<Vec<namespace_layout::Entry>> {
             },
         };
         let terminal = q.native_error.is_some();
+        let confirm_empty = i == 0 && q.native_error == Some(namespace_layout::FIRST_EMPTY);
         calls.push(q);
-        if terminal {
+        if terminal && !confirm_empty {
             return namespace_layout::decode_pass(&calls);
         }
     }
     Err(invalid("shadow namespace enumeration budget"))
+}
+
+fn existing_system_entries(
+    root: &str,
+    initial: &[namespace_layout::Entry],
+    input: &[Input<'_>],
+) -> io::Result<std::collections::BTreeMap<Vec<String>, Vec<u8>>> {
+    let system = "System Volume Information";
+    let mut existing = std::collections::BTreeMap::new();
+    if !input
+        .iter()
+        .any(|i| i.components == [system] && i.directory)
+    {
+        return Ok(existing);
+    }
+    for i in input
+        .iter()
+        .filter(|i| i.components.first().is_some_and(|part| part == system))
+    {
+        if !(i.components.len() == 1 && i.directory
+            || i.components.len() == 2
+                && !i.directory
+                && i.logical_length() <= 1024 * 1024
+                && matches!(
+                    i.components[1].as_str(),
+                    "WPSettings.dat" | "IndexerVolumeGuid"
+                ))
+        {
+            return Err(invalid(
+                "source system-volume namespace exceeds known cache-file profile",
+            ));
+        }
+    }
+    if !initial
+        .iter()
+        .any(|e| e.name_utf16 == system.encode_utf16().collect::<Vec<_>>())
+    {
+        return Ok(existing);
+    }
+    let parent = open(&format!("{root}{system}"), true, false)?;
+    existing.insert(
+        vec![system.into()],
+        query_bytes(&snapshot(&parent), 18, 24)?[8..24].to_vec(),
+    );
+    for entry in enumerate(&parent)? {
+        if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
+            continue;
+        }
+        let name = String::from_utf16(&entry.name_utf16)
+            .map_err(|_| invalid("invalid target system filename"))?;
+        let path = vec![system.into(), name.clone()];
+        if !matches!(name.as_str(), "WPSettings.dat" | "IndexerVolumeGuid")
+            || entry.attributes & (16 | 0x400 | 0x800 | 0x4000) != 0
+            || !input.iter().any(|i| i.components == path && !i.directory)
+        {
+            return Err(invalid(
+                "target system-volume namespace contains unknown or unexpected data",
+            ));
+        }
+        let file = open(&format!("{root}{system}\\{name}"), false, false)?;
+        let state = snapshot(&file);
+        if layout::u64_at(query_bytes(&state, 1, 24)?, 8)? > 1024 * 1024 {
+            return Err(invalid("target system cache exceeds bounded profile"));
+        }
+        existing.insert(path, query_bytes(&state, 18, 24)?[8..24].to_vec());
+    }
+    Ok(existing)
 }
 fn descriptor(bytes: &[u8]) -> io::Result<Vec<u64>> {
     if !(20..=65536).contains(&bytes.len()) {
@@ -1443,7 +1660,7 @@ fn run_role(
     let mut privileges = Privileges::enable_for(&names)?;
     let root_handle = open(&root, true, true)?;
     let root_state = snapshot(&root_handle);
-    let matched_before = security_matches(input[0].security, &root_state, &same_security)?;
+    let matched_before = security_matches(&input[0], &root_state, &same_security)?;
     let mut root_security = RootSecurity {
         before: root_state.clone(),
         after: root_state,
@@ -1490,11 +1707,16 @@ fn run_role(
         }) {
             return Err(invalid("independent shadow is not empty"));
         }
+        let existing_system = if constructing {
+            existing_system_entries(&root, &initial, input)?
+        } else {
+            std::collections::BTreeMap::new()
+        };
         if !matched_before {
             root_security.backup = Some(backup_security(&root_handle, input[0].security)?);
             root_security.after = snapshot(&root_handle);
             root_security.matched_after =
-                security_matches(input[0].security, &root_security.after, &same_security)?;
+                security_matches(&input[0], &root_security.after, &same_security)?;
             if !root_security.matched_after {
                 return Err(invalid(
                     "backup security restoration did not exactly preserve both descriptor views",
@@ -1525,7 +1747,32 @@ fn run_role(
         }
         for (index, i) in input.iter().enumerate().skip(1) {
             let path = format!("{}{}", root, i.components.join("\\"));
-            if let Some(writer) = payload_writer.as_mut() {
+            if let Some(expected_id) = existing_system.get(i.components) {
+                let mut file = open(&path, i.directory, true)?;
+                if &query_bytes(&snapshot(&file), 18, 24)?[8..24] != expected_id {
+                    return Err(invalid(
+                        "target system cache identity changed after preflight",
+                    ));
+                }
+                if !i.directory {
+                    file.set_len(0)?;
+                    file.seek(SeekFrom::Start(0))?;
+                    if let Some(writer) = payload_writer.as_mut() {
+                        writer(index, &mut file)?;
+                    } else {
+                        file.write_all(i.payload)?;
+                    }
+                    file.sync_all()?;
+                }
+                events.push(NativeEvent {
+                    operation: "reconstruct-known-formatter-system-cache".into(),
+                    control_code: 0,
+                    input: path.as_bytes().to_vec(),
+                    succeeded: true,
+                    native_error: None,
+                    output: expected_id.clone(),
+                });
+            } else if let Some(writer) = payload_writer.as_mut() {
                 create(&path, i, index, Some(&mut **writer))?;
             } else {
                 create(&path, i, index, None)?;
@@ -1569,10 +1816,10 @@ fn run_role(
                 true,
             )?;
             let before = snapshot(&h);
-            if !security_matches(i.security, &before, &same_security)? {
+            if !security_matches(i, &before, &same_security)? {
                 let backup = backup_security(&h, i.security)?;
                 let after = snapshot(&h);
-                if !security_matches(i.security, &after, &same_security)? {
+                if !security_matches(i, &after, &same_security)? {
                     return Err(invalid(
                         "object backup-security restoration differs from the source",
                     ));
@@ -1617,6 +1864,7 @@ fn run_role(
         )?;
         let before = snapshot(&h);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
+        let mut resident_data = false;
         let (logical_sha256, retrieval, cached_validity, storage_validity, integrity, namespace) =
             if i.directory {
                 (None, vec![], vec![], vec![], vec![], enumerate(&h)?)
@@ -1639,11 +1887,20 @@ fn run_role(
                     }
                     Ok(bytes) => bytes,
                     Err(e)
-                        if ordinary && expected_allocation == 0 && e.raw_os_error() == Some(38) =>
+                        if ordinary
+                            && resident_allocation(i.logical_length(), expected_allocation)
+                            && e.raw_os_error() == Some(38) =>
                     {
+                        resident_data = true;
                         vec![]
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => {
+                        return Err(io::Error::other(format!(
+                            "retrieval pointers for {:?}, allocation={expected_allocation}, logical={}: {e}",
+                            i.components,
+                            i.logical_length()
+                        )));
+                    }
                 };
                 let runs = if retrieval.is_empty() {
                     vec![]
@@ -1664,6 +1921,7 @@ fn run_role(
                 }
                 if (!ordinary && end * 4096 != i.logical_length())
                     || (ordinary
+                        && !resident_data
                         && (end * 4096 != expected_allocation
                             || (expected_allocation == 0 && i.logical_length() > 4096)
                             || (expected_allocation != 0
@@ -1677,14 +1935,14 @@ fn run_role(
                 }
                 let mut regions = vec![];
                 for usage in [1u32, 2] {
-                    if ordinary && expected_allocation == 0 {
+                    if ordinary && (expected_allocation == 0 || resident_data) {
                         regions.push(vec![]);
                         continue;
                     }
                     let mut q = [0; 24];
                     q[8..16].copy_from_slice(&i.logical_length().to_le_bytes());
                     q[16..20].copy_from_slice(&usage.to_le_bytes());
-                    let b = ctl(&h, 0x90284, &q, 16 + 24 * 1024)?;
+                    let b = ctl(&h, 0x90284, &q, 16 + 24 * 1024).map_err(|e|io::Error::other(format!("file regions for {:?}, usage={usage}, allocation={expected_allocation}: {e}",i.components)))?;
                     if ordinary {
                         crate::region_layout::validate_logical(&b, i.logical_length(), usage)?;
                     } else {
@@ -1692,7 +1950,9 @@ fn run_role(
                     }
                     regions.push(b);
                 }
-                let integrity = ctl(&h, 0x9027c, &[], 16)?;
+                let integrity = ctl(&h, 0x9027c, &[], 16).map_err(|e| {
+                    io::Error::other(format!("integrity for {:?}: {e}", i.components))
+                })?;
                 if integrity.len() != 16
                     || integrity[..8] != [0; 8]
                     || layout::u32_at(&integrity, 12)? != 4096
@@ -1754,6 +2014,7 @@ fn run_role(
             after,
             logical_sha256,
             retrieval,
+            resident_data,
             cached_validity,
             storage_validity,
             integrity,
@@ -1806,6 +2067,47 @@ fn run_role(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resident_metadata_allocation_cannot_be_a_physical_data_cluster() {
+        assert!(resident_allocation(76, 80));
+        assert!(resident_allocation(12, 16));
+        assert!(resident_allocation(0, 0));
+        for (logical, allocated) in [(76, 0), (76, 64), (4096, 4096), (1, 4096), (4097, 8192)] {
+            assert!(!resident_allocation(logical, allocated));
+        }
+    }
+    #[test]
+    fn api_projection_never_substitutes_for_the_stored_kernel_descriptor() {
+        let input = Input {
+            components: &[],
+            directory: false,
+            times: [1; 4],
+            attributes: 32,
+            security: &[1],
+            expected_api_security: Some(&[2]),
+            payload: &[],
+            expected_length: None,
+            expected_sha256: None,
+            source_offset: None,
+            source_runs: vec![],
+        };
+        let mut actual = Snapshot {
+            queries: vec![],
+            security: vec![2],
+            security_error: None,
+            kernel_security: Some(crate::attestation::SecurityQuery {
+                bytes: vec![1],
+                native_error: None,
+            }),
+        };
+        let same = |a: &[u8], b: &[u8]| Ok(a == b);
+        assert!(security_matches(&input, &actual, &same).unwrap());
+        actual.kernel_security.as_mut().unwrap().bytes = vec![2];
+        assert!(!security_matches(&input, &actual, &same).unwrap());
+        actual.kernel_security.as_mut().unwrap().bytes = vec![1];
+        actual.security = vec![1];
+        assert!(!security_matches(&input, &actual, &same).unwrap());
+    }
     #[test]
     fn ordinary_shadow_names_allow_internal_spaces_but_refuse_devices() {
         assert!(valid_shadow_component("Quarterly Report 1.txt"));

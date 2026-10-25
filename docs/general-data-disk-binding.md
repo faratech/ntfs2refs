@@ -31,6 +31,10 @@ used by native ReFS shadow construction. Unsupported source semantics produce
 an `ordinary_tree_refusal` in the report. This projection uses the mounted
 read-only view and remains diagnostic until a frozen source certificate binds
 the same model to an excluded device.
+With `--stream-plan`, it also classifies each user DATA stream as a physical
+retention candidate, a logical materialization candidate, or rejected. Named
+streams are identified but remain pending target reconstruction. These
+classifications do not authorize writes.
 
 An internal `GeneralFrozenPartition` now implements the next source-only step:
 after an exact online probe it locks and dismounts the bound volume, persists

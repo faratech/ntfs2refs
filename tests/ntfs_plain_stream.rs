@@ -1,6 +1,9 @@
 #[allow(dead_code, reason = "Shared synthetic parser fixture")]
 mod support;
-use ntfs2refs::ntfs_inspect::{self, LogicalHashStatus};
+use ntfs2refs::{
+    ntfs_inspect::{self, LogicalHashStatus},
+    ntfs_stream_plan::{self, Disposition},
+};
 use std::io::Cursor;
 
 #[test]
@@ -75,4 +78,46 @@ fn logical_reader_recovers_resident_and_nonresident_bytes_and_rejects_changed_pa
     let mut changed = image;
     changed[100 * 4096] ^= 1;
     assert!(ntfs_inspect::read_plain_stream(&mut Cursor::new(changed), &raw, 16, 1024).is_err());
+}
+
+#[test]
+fn source_stream_plan_separates_retainable_payload_from_named_materialization() {
+    let image = support::image();
+    let mut raw = ntfs_inspect::inspect(&mut Cursor::new(image), 2 * 1024 * 1024).unwrap();
+    let initial = ntfs_stream_plan::classify(&raw);
+    let user: Vec<_> = initial
+        .streams
+        .iter()
+        .filter(|s| s.record_number == 16)
+        .collect();
+    assert_eq!(user.len(), 2);
+    assert!(
+        user.iter()
+            .all(|s| s.disposition == Disposition::MaterializeCandidate)
+    );
+    assert!(user.iter().any(|s| s.target_named_stream_support_pending));
+    let file = raw
+        .files
+        .iter_mut()
+        .find(|f| f.record_number == 16)
+        .unwrap();
+    let stream = file
+        .streams
+        .iter_mut()
+        .find(|s| s.name_utf16.is_empty())
+        .unwrap();
+    stream.logical_size = 4096;
+    stream.initialized_size = 4096;
+    stream.allocated_size = 4096;
+    stream.extents[0].length = 4096;
+    let planned = ntfs_stream_plan::classify(&raw);
+    let retained = planned
+        .streams
+        .iter()
+        .find(|s| s.record_number == 16 && s.name_utf16.is_empty())
+        .unwrap();
+    assert_eq!(retained.disposition, Disposition::RetainCandidate);
+    assert_eq!(retained.source_offset, Some(100 * 4096));
+    assert_eq!(planned.retained_candidate_bytes, 4096);
+    assert!(!planned.executable);
 }

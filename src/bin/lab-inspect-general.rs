@@ -5,7 +5,7 @@ fn main() -> anyhow::Result<()> {
     use anyhow::ensure;
     use clap::Parser;
     use n2r_win32::{GeneralPartitionReader, general_layout::GeneralDiskBinding};
-    use ntfs2refs::{ntfs_inspect, shadow_tree};
+    use ntfs2refs::{ntfs_inspect, ntfs_stream_plan, shadow_tree};
     use serde::Serialize;
     use sha2::{Digest, Sha256};
     use std::{
@@ -26,6 +26,9 @@ fn main() -> anyhow::Result<()> {
         /// builder. A refusal is recorded without granting source admission.
         #[arg(long)]
         ordinary_tree: bool,
+        /// Report per-stream physical retention and materialization candidates.
+        #[arg(long)]
+        stream_plan: bool,
     }
     #[derive(Serialize)]
     struct Report {
@@ -37,6 +40,7 @@ fn main() -> anyhow::Result<()> {
         ntfs: ntfs_inspect::NtfsInspection,
         ordinary_tree: Option<shadow_tree::Tree>,
         ordinary_tree_refusal: Option<String>,
+        stream_plan: Option<ntfs_stream_plan::Plan>,
         native_bytes_read: u64,
         events: Vec<n2r_win32::NativeEvent>,
         source_frozen: bool,
@@ -69,6 +73,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         (None, None)
     };
+    let stream_plan = args.stream_plan.then(|| ntfs_stream_plan::classify(&ntfs));
     let after = reader.revalidate_route(&mut events)?;
     let report = Report {
         schema_version: 1,
@@ -79,6 +84,7 @@ fn main() -> anyhow::Result<()> {
         ntfs,
         ordinary_tree,
         ordinary_tree_refusal,
+        stream_plan,
         native_bytes_read: reader.native_bytes_read,
         events,
         source_frozen: false,

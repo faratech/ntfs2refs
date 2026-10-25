@@ -40,6 +40,27 @@ impl DurableIo for File {
     }
 }
 
+#[cfg(windows)]
+impl ReadSeek for n2r_win32::GeneralFrozenPartition {
+    fn byte_len(&mut self) -> io::Result<u64> {
+        Ok(n2r_win32::GeneralFrozenPartition::byte_len(self))
+    }
+}
+
+#[cfg(windows)]
+impl ReadSeek for n2r_win32::GeneralJournaledPartition {
+    fn byte_len(&mut self) -> io::Result<u64> {
+        Ok(n2r_win32::GeneralJournaledPartition::byte_len(self))
+    }
+}
+
+#[cfg(windows)]
+impl DurableIo for n2r_win32::GeneralJournaledPartition {
+    fn sync_all(&mut self) -> io::Result<()> {
+        n2r_win32::GeneralJournaledPartition::sync_all(self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournalBinding {

@@ -53,6 +53,15 @@ or bring a disk online and never supplies a write handle. Its report explicitly
 keeps source admission and conversion qualification false. The initial
 lock/dismount transition remains internal until general recovery is implemented.
 
+The general native I/O layer now also has a separate `GeneralJournaledPartition`
+type. It can activate an unchanged offline/read-only handle while retaining
+offline exclusion, reopen an already activated offline target after interruption,
+and issue only aligned writes in an exact armed `WritePolicy`. Failed or short
+writes poison that handle. The generic old/new journal engine accepts these
+types as read-only preparation inputs and a durable target. No general CLI
+currently supplies the complete source-admission, target-construction and
+recovery witnesses needed to use this write route on an actual disk.
+
 This is **not** a general conversion command. The raw writer, journal, source
 admission and ReFS target profile still use the narrower enrolled laboratory
 route. A successful read-only probe cannot authorize switching a volume's

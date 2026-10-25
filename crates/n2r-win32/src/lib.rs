@@ -27,7 +27,7 @@ pub use attestation_native::collect_file_metadata;
 mod native;
 #[cfg(windows)]
 pub use native::{
-    GeneralDiskState, GeneralFrozenPartition, GeneralPartitionReader, GeneralProbe,
-    LiveNtfsObservation, NativeEvent, OfflinePartition, PartitionSnapshot, WritePolicy,
-    probe_general,
+    GeneralDiskState, GeneralFrozenPartition, GeneralJournaledPartition, GeneralPartitionReader,
+    GeneralProbe, LiveNtfsObservation, NativeEvent, OfflinePartition, PartitionSnapshot,
+    WritePolicy, probe_general,
 };

@@ -473,9 +473,8 @@ pub struct GeneralPartitionReader {
     pub native_bytes_read: u64,
 }
 
-/// Persistently excluded general data partition. No Write implementation or
-/// online transition is exposed in this phase; a separate journaled recovery
-/// workflow is required before using this on a real disk.
+/// Persistently excluded general data partition. This handle has no Write
+/// implementation and cannot make the disk mountable.
 pub struct GeneralFrozenPartition {
     file: File,
     binding: GeneralDiskBinding,
@@ -483,6 +482,17 @@ pub struct GeneralFrozenPartition {
     position: u64,
     buffer: AlignedBuffer,
     native_bytes_read: u64,
+}
+
+/// Activated, persistently offline general target. Writes remain unavailable
+/// until the caller arms the exact patch set of a durable external journal.
+/// Dropping this handle never clears OFFLINE.
+pub struct GeneralJournaledPartition {
+    inner: GeneralFrozenPartition,
+    policy: Option<WritePolicy>,
+    write_poisoned: bool,
+    pub native_bytes_written: u64,
+    pub native_write_bytes_requested: u64,
 }
 
 impl GeneralFrozenPartition {
@@ -596,6 +606,211 @@ impl GeneralFrozenPartition {
 
     pub fn native_bytes_read(&self) -> u64 {
         self.native_bytes_read
+    }
+
+    /// Transition only an unchanged OFFLINE|READ_ONLY source to OFFLINE. The
+    /// caller must first persist and verify its external recovery journal.
+    pub fn activate_for_journal(
+        mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralJournaledPartition> {
+        self.state(events)?;
+        if self.frozen_state.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "general journal activation requires frozen read-only disk",
+            ));
+        }
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number),
+            true,
+            false,
+        )?;
+        if general_disk_state(&management, &self.binding, events)? != self.frozen_state {
+            return Err(invalid("general activation control-handle route differs"));
+        }
+        set_attributes(&management, OFFLINE, events)?;
+        let writable = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number),
+            true,
+            true,
+        )?;
+        let mut expected = self.frozen_state.clone();
+        expected.disk_attributes = OFFLINE;
+        if general_disk_state(&writable, &self.binding, events)? != expected {
+            return Err(invalid(
+                "general journal activation lost persistent exclusion",
+            ));
+        }
+        close_file(management, "close-general-activation-management", events)?;
+        self.file = writable;
+        self.frozen_state = expected;
+        Ok(GeneralJournaledPartition {
+            inner: self,
+            policy: None,
+            write_poisoned: false,
+            native_bytes_written: 0,
+            native_write_bytes_requested: 0,
+        })
+    }
+}
+
+impl GeneralJournaledPartition {
+    /// Reopen an already activated target after an interruption. A missing
+    /// OFFLINE attribute is a hard refusal; no attribute repair is attempted.
+    pub fn reopen(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
+        binding.validate()?;
+        if current_windows_disk(events)? == binding.disk_number {
+            return Err(invalid("current Windows disk is excluded"));
+        }
+        let file = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            true,
+            true,
+        )?;
+        let frozen_state = general_disk_state(&file, &binding, events)?;
+        if frozen_state.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "general journal target is not persistently offline",
+            ));
+        }
+        Ok(Self {
+            inner: GeneralFrozenPartition {
+                file,
+                binding,
+                frozen_state,
+                position: 0,
+                buffer: AlignedBuffer::new()?,
+                native_bytes_read: 0,
+            },
+            policy: None,
+            write_poisoned: false,
+            native_bytes_written: 0,
+            native_write_bytes_requested: 0,
+        })
+    }
+
+    pub fn byte_len(&self) -> u64 {
+        self.inner.byte_len()
+    }
+
+    pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralDiskState> {
+        self.inner.state(events)
+    }
+
+    pub fn arm_writes(
+        &mut self,
+        policy: WritePolicy,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if self.policy.is_some() || self.write_poisoned || self.native_write_bytes_requested != 0 {
+            return Err(invalid("general journal write policy is already consumed"));
+        }
+        policy.validate(self.byte_len())?;
+        if self.state(events)?.disk_attributes != OFFLINE {
+            return Err(invalid("general target is not excluded from mounting"));
+        }
+        self.policy = Some(policy);
+        Ok(())
+    }
+
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        if let Err(error) = self.inner.file.sync_all() {
+            self.write_poisoned = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Call only after a durable journal handoff or verified rollback. This
+    /// consumes the handle and is the sole general target mount transition.
+    pub fn bring_online(mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        if self.write_poisoned {
+            return Err(invalid("cannot expose a failed general target"));
+        }
+        self.policy = None;
+        self.sync_all()?;
+        self.state(events)?;
+        set_attributes(&self.inner.file, 0, events)?;
+        control(
+            &self.inner.file,
+            "refresh-online-general-target-properties",
+            UPDATE_PROPERTIES,
+            &[],
+            0,
+            events,
+        )?;
+        close_file(self.inner.file, "close-online-general-target", events)
+    }
+}
+
+impl Read for GeneralJournaledPartition {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(output)
+    }
+}
+
+impl Seek for GeneralJournaledPartition {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(from)
+    }
+}
+
+impl Write for GeneralJournaledPartition {
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        if input.is_empty() {
+            return Ok(0);
+        }
+        let policy = self.policy.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "general raw writes are not armed",
+            )
+        })?;
+        let attempted = self
+            .native_write_bytes_requested
+            .checked_add(input.len() as u64)
+            .ok_or_else(|| invalid("general write accounting overflow"))?;
+        if self.write_poisoned
+            || input.len() > MAX_IO
+            || !policy.permits(self.inner.position, input.len() as u64)
+            || attempted > policy.maximum_bytes
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "general native write violates bounded journal policy",
+            ));
+        }
+        self.inner.file.seek(SeekFrom::Start(
+            self.inner.binding.identity.partition_offset + self.inner.position,
+        ))?;
+        self.inner.buffer.bytes_mut()[..input.len()].copy_from_slice(input);
+        self.native_write_bytes_requested = attempted;
+        let result = self
+            .inner
+            .file
+            .write(&self.inner.buffer.bytes_mut()[..input.len()]);
+        match result {
+            Ok(count) => {
+                self.native_bytes_written += count as u64;
+                if count != input.len() {
+                    self.write_poisoned = true;
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "short general native write; reopen through recovery",
+                    ));
+                }
+                self.inner.position += count as u64;
+                Ok(count)
+            }
+            Err(error) => {
+                self.write_poisoned = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.sync_all()
     }
 }
 
@@ -1288,6 +1503,57 @@ mod tests {
         assert!(reader.seek(SeekFrom::Start(65537)).is_err());
         reader.seek(SeekFrom::End(0)).unwrap();
         assert_eq!(reader.read(&mut bytes).unwrap(), 0);
+    }
+
+    #[test]
+    fn general_journal_target_requires_an_exact_armed_write_set() {
+        let OfflinePartition {
+            file,
+            binding,
+            buffer,
+            ..
+        } = ordinary_stream();
+        let mut target = GeneralJournaledPartition {
+            inner: GeneralFrozenPartition {
+                file,
+                binding: GeneralDiskBinding {
+                    disk_number: binding.disk_number,
+                    volume_guid: binding.volume_guid,
+                    identity: binding.identity,
+                },
+                frozen_state: GeneralDiskState {
+                    device: vec![],
+                    disk_length: vec![],
+                    alignment: vec![],
+                    gpt_layout: vec![],
+                    disk_attributes: OFFLINE,
+                },
+                position: 0,
+                buffer,
+                native_bytes_read: 0,
+            },
+            policy: None,
+            write_poisoned: false,
+            native_bytes_written: 0,
+            native_write_bytes_requested: 0,
+        };
+        let block = vec![0xa7; 4096];
+        assert!(target.write(&block).is_err());
+        target.policy = Some(WritePolicy {
+            allowed: vec![(0, 4096)],
+            retained: vec![(4096, 4096)],
+            maximum_bytes: 4096,
+        });
+        target.write_all(&block).unwrap();
+        assert_eq!(target.native_bytes_written, 4096);
+        assert_eq!(target.native_write_bytes_requested, 4096);
+        assert!(target.write(&block).is_err());
+        target.seek(SeekFrom::Start(4096)).unwrap();
+        assert!(target.write(&block).is_err());
+        target.seek(SeekFrom::Start(0)).unwrap();
+        let mut readback = vec![0; 4096];
+        target.read_exact(&mut readback).unwrap();
+        assert_eq!(readback, block);
     }
 
     #[test]

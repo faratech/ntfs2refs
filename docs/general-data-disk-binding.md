@@ -189,6 +189,9 @@ the GPT identity before using the discovered path. Zero or multiple matches
 refuse; the old NTFS volume path is not assumed to survive cutover. See
 [Microsoft's volume naming guidance](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-volume)
 and [volume enumeration API](https://learn.microsoft.com/en-us/windows/win32/fileio/enumerating-volumes).
+After an online transition, only temporary absence of the bound volume path
+is retried, for at most 15 seconds. An identity mismatch or ambiguous match
+remains an immediate refusal.
 The guest-only `lab-general-refs-mutation` workload creates a fresh temporary
 directory on the converted ReFS disk, writes and hashes a 50 MiB file, grows
 it across a zero-valid-data gap, truncates and renames it, then creates and

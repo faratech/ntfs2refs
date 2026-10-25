@@ -4,7 +4,7 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume};
+    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume_wait};
     use ntfs2refs::general_reconstruct;
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -89,7 +89,7 @@ fn main() -> anyhow::Result<()> {
         "mutation workload is restricted to the disposable owning guest"
     );
     let mut events = Vec::new();
-    let mounted = rediscover_general_volume(request.pair.source.clone(), &mut events)?;
+    let mounted = rediscover_general_volume_wait(request.pair.source.clone(), &mut events)?;
     ensure!(
         mounted_filesystem_general(mounted.clone(), &mut events)? == "ReFS",
         "converted source is not mounted as ReFS"

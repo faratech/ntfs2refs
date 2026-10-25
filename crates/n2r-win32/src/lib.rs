@@ -30,5 +30,5 @@ pub use native::{
     GeneralDiskState, GeneralFrozenPartition, GeneralJournaledPartition,
     GeneralLiveNtfsObservation, GeneralPartitionReader, GeneralProbe, LiveNtfsObservation,
     NativeEvent, OfflinePartition, PartitionSnapshot, WritePolicy, mounted_filesystem_general,
-    probe_general, rediscover_general_volume,
+    probe_general, rediscover_general_volume, rediscover_general_volume_wait,
 };

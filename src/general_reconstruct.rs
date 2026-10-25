@@ -17,7 +17,7 @@ use n2r_win32::{
         observe_general_journal_file,
     },
     layout::guid_bytes,
-    mounted_filesystem_general, rediscover_general_volume, shadow_native,
+    mounted_filesystem_general, rediscover_general_volume_wait, shadow_native,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -590,8 +590,7 @@ pub fn complete_rollback(
         report.error = Some(error.to_string());
         return Ok(report);
     }
-    std::thread::sleep(std::time::Duration::from_millis(1000));
-    let mounted = rediscover_general_volume(request.pair.source.clone(), &mut report.events)
+    let mounted = rediscover_general_volume_wait(request.pair.source.clone(), &mut report.events)
         .and_then(|binding| mounted_filesystem_general(binding, &mut report.events));
     match mounted {
         Ok(name) if name == "NTFS" => {
@@ -658,8 +657,7 @@ pub fn resume_completed_rollback(
         report.error = Some(error.to_string());
         return Ok(report);
     }
-    std::thread::sleep(std::time::Duration::from_millis(1000));
-    let mounted = rediscover_general_volume(request.pair.source.clone(), &mut report.events)
+    let mounted = rediscover_general_volume_wait(request.pair.source.clone(), &mut report.events)
         .and_then(|binding| mounted_filesystem_general(binding, &mut report.events));
     match mounted {
         Ok(name) if name == "NTFS" => {
@@ -682,7 +680,7 @@ fn verify_converted_tree(
     events: &mut Vec<NativeEvent>,
 ) -> std::io::Result<shadow_native::GeneralConvertedReport> {
     let mut pair = request.pair.clone();
-    pair.source = rediscover_general_volume(pair.source, events)?;
+    pair.source = rediscover_general_volume_wait(pair.source, events)?;
     let input: Vec<_> = expectation
         .objects
         .iter()
@@ -780,7 +778,6 @@ pub(crate) fn finalize(
         report.error = Some(error.to_string());
         return Ok(report);
     }
-    std::thread::sleep(std::time::Duration::from_millis(1000));
     match verify_converted_tree(request, &expectation, &mut report.events) {
         Ok(native) => {
             report.native = Some(native);
@@ -845,7 +842,6 @@ pub fn finalize_after_marker(
         report.error = Some(error.to_string());
         return Ok(report);
     }
-    std::thread::sleep(std::time::Duration::from_millis(1000));
     match verify_converted_tree(request, &expectation, &mut report.events) {
         Ok(native) => {
             report.native = Some(native);

@@ -563,13 +563,41 @@ pub fn rediscover_general_volume(
             break;
         }
     }
-    if !finished || matches.len() != 1 {
-        return Err(invalid("physical partition has no unique volume-GUID path"));
+    if !finished {
+        return Err(invalid("volume enumeration exceeded its bounded scan"));
+    }
+    if matches.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "bound physical partition has no published volume-GUID path",
+        ));
+    }
+    if matches.len() != 1 {
+        return Err(invalid("physical partition has multiple volume-GUID paths"));
     }
     let mut updated = binding;
     updated.volume_guid = matches.remove(0);
     probe_general(updated.clone(), events)?;
     Ok(updated)
+}
+
+/// Wait at most 15 seconds for a newly online volume interface to appear.
+/// Only absence is retried; identity, geometry and duplicate-route failures
+/// remain immediate hard refusals.
+pub fn rediscover_general_volume_wait(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralDiskBinding> {
+    for attempt in 0..60 {
+        match rediscover_general_volume(binding.clone(), events) {
+            Ok(found) => return Ok(found),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && attempt < 59 => {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(invalid("volume publication retry bound exhausted"))
 }
 
 struct AlignedBuffer {

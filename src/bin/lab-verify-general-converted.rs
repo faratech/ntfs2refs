@@ -4,7 +4,7 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
-    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume, shadow_native};
+    use n2r_win32::{mounted_filesystem_general, rediscover_general_volume_wait, shadow_native};
     use ntfs2refs::{general_reconstruct, ntfs_attestation, shadow_tree};
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -78,7 +78,7 @@ fn main() -> anyhow::Result<()> {
     expected.validate()?;
     let mut events = Vec::new();
     let mut pair = request.pair.clone();
-    pair.source = rediscover_general_volume(pair.source, &mut events)?;
+    pair.source = rediscover_general_volume_wait(pair.source, &mut events)?;
     let filesystem = mounted_filesystem_general(pair.source.clone(), &mut events)?;
     let input: Vec<_> = expected
         .objects

@@ -17,6 +17,7 @@ pub struct Mapping {
 pub enum Disposition {
     Retained,
     Relocated,
+    Materialized,
 }
 #[derive(Debug, Serialize)]
 pub struct Range {
@@ -26,8 +27,8 @@ pub struct Range {
     pub stream_name: &'static str,
     pub target_file_id: [u8; 16],
     pub logical_offset: u64,
-    pub source_offset: u64,
-    pub destination_offset: u64,
+    pub source_offset: Option<u64>,
+    pub destination_offset: Option<u64>,
     pub length: u64,
     pub sha256: String,
     pub disposition: Disposition,
@@ -39,6 +40,7 @@ pub struct Plan {
     pub ranges: Vec<Range>,
     pub retained_bytes: u64,
     pub relocated_bytes: u64,
+    pub materialized_bytes: u64,
     pub shadow_payload_initialization_bytes: u64,
     pub executable: bool,
     pub pending: Vec<&'static str>,
@@ -57,19 +59,21 @@ impl Plan {
         let mut retained_ranges = vec![];
         let mut retained_bytes = 0u64;
         let mut relocated_bytes = 0u64;
+        let mut materialized_bytes = 0u64;
         for range in &self.ranges {
             ensure!(range.length > 0, "empty stream disposition");
             match range.disposition {
                 Disposition::Retained => {
                     ensure!(
-                        range.source_offset == range.destination_offset,
+                        range.source_offset == range.destination_offset
+                            && range.destination_offset.is_some(),
                         "retained disposition changes physical placement"
                     );
                     retained_bytes = retained_bytes
                         .checked_add(range.length)
                         .context("retained byte count overflow")?;
                     retained_ranges.push(RetainedRangeRequest {
-                        offset: range.source_offset,
+                        offset: range.source_offset.context("retained source absent")?,
                         length: range.length,
                         source_sha256: range.sha256.clone(),
                         shadow_sha256: range.sha256.clone(),
@@ -77,17 +81,30 @@ impl Plan {
                 }
                 Disposition::Relocated => {
                     ensure!(
-                        range.source_offset != range.destination_offset,
+                        range.source_offset.is_some()
+                            && range.destination_offset.is_some()
+                            && range.source_offset != range.destination_offset,
                         "relocated disposition has unchanged placement"
                     );
                     relocated_bytes = relocated_bytes
                         .checked_add(range.length)
                         .context("relocated byte count overflow")?;
                 }
+                Disposition::Materialized => {
+                    ensure!(
+                        range.source_offset.is_none(),
+                        "materialized range invents a source extent"
+                    );
+                    materialized_bytes = materialized_bytes
+                        .checked_add(range.length)
+                        .context("materialized byte count overflow")?;
+                }
             }
         }
         ensure!(
-            retained_bytes == self.retained_bytes && relocated_bytes == self.relocated_bytes,
+            retained_bytes == self.retained_bytes
+                && relocated_bytes == self.relocated_bytes
+                && materialized_bytes == self.materialized_bytes,
             "disposition totals changed"
         );
         retained_ranges.sort_by_key(|range| range.offset);
@@ -132,6 +149,7 @@ pub fn diagnose(
         ranges: vec![],
         retained_bytes: 0,
         relocated_bytes: 0,
+        materialized_bytes: 0,
         shadow_payload_initialization_bytes: 0,
         executable: false,
         pending: vec![
@@ -141,6 +159,7 @@ pub fn diagnose(
             "native interruption/recovery qualification",
         ],
     };
+    let mut targets = vec![];
     for (o, bytes) in tree.objects.iter().zip(payloads) {
         if o.directory {
             ensure!(bytes.is_empty(), "directory payload is unsupported");
@@ -149,7 +168,7 @@ pub fn diagnose(
         let m = index
             .remove(&(o.record_number, o.sequence_number))
             .context("missing target stream")?;
-        let source = o.source_offset.context("missing source physical extent")?;
+        let source = o.source_offset;
         ensure!(
             bytes.len() as u64 == o.length
                 && Some(&m.logical_sha256) == o.sha256.as_ref()
@@ -157,39 +176,71 @@ pub fn diagnose(
             "source/target logical stream proof differs"
         );
         let mut cursor = 0u64;
+        let mut physical_cursor = 0u64;
         ensure!(
-            !m.extents.is_empty() && m.extents.len() <= 1024,
+            (!m.extents.is_empty() || o.length == 0 || (source.is_none() && o.length <= 4096))
+                && m.extents.len() <= 1024,
             "target extent budget"
         );
+        if m.extents.is_empty() && o.length > 0 {
+            p.materialized_bytes += o.length;
+            p.shadow_payload_initialization_bytes += o.length;
+            p.ranges.push(Range {
+                record_number: o.record_number,
+                sequence_number: o.sequence_number,
+                path: o.path.clone(),
+                stream_name: "",
+                target_file_id: m.target_file_id,
+                logical_offset: 0,
+                source_offset: None,
+                destination_offset: None,
+                length: o.length,
+                sha256: m.logical_sha256.clone(),
+                disposition: Disposition::Materialized,
+                justification: "logical source bytes stored inline in native ReFS metadata",
+            });
+            continue;
+        }
         for e in &m.extents {
             let dest = e.physical_offset.context("target hole is unsupported")?;
-            let end = cursor
+            let physical_end = physical_cursor
                 .checked_add(e.length)
                 .context("logical extent overflow")?;
+            let end = physical_end.min(o.length);
             ensure!(
-                e.logical_offset == cursor
+                e.logical_offset == physical_cursor
                     && e.length > 0
                     && e.length.is_multiple_of(4096)
                     && dest.is_multiple_of(4096)
-                    && end <= o.length
+                    && physical_end <= o.length.next_multiple_of(65536)
                     && dest
                         .checked_add(e.length)
                         .is_some_and(|end| end <= partition)
-                    && source.checked_add(end).is_some_and(|end| end <= partition),
+                    && source
+                        .is_none_or(|s| s.checked_add(end).is_some_and(|end| end <= partition)),
                 "invalid target extent coverage or bounds"
             );
-            let from = source + cursor;
-            let retained = dest == from;
+            targets.push((dest, e.length));
+            physical_cursor = physical_end;
+            if e.logical_offset >= o.length {
+                continue;
+            }
+            let from = source.map(|s| s + cursor);
+            let length = end - cursor;
+            let retained = Some(dest) == from && length.is_multiple_of(4096);
             if retained {
-                p.retained_bytes += e.length;
+                p.retained_bytes += length;
+            } else if from.is_none() {
+                p.materialized_bytes += length;
             } else {
-                p.relocated_bytes += e.length;
+                p.relocated_bytes += length;
             }
             p.ranges.push(Range{record_number:o.record_number,sequence_number:o.sequence_number,path:o.path.clone(),
                 stream_name:"",target_file_id:m.target_file_id,logical_offset:cursor,source_offset:from,
-                destination_offset:dest,length:e.length,sha256:hex::encode(Sha256::digest(&bytes[cursor as usize..end as usize])),
-                disposition:if retained {Disposition::Retained} else {Disposition::Relocated},
+                destination_offset:Some(dest),length,sha256:hex::encode(Sha256::digest(&bytes[cursor as usize..end as usize])),
+                disposition:if retained {Disposition::Retained} else if from.is_none() {Disposition::Materialized} else {Disposition::Relocated},
                 justification:if retained {"native target mapping resolves to the original source bytes"}
+                    else if from.is_none() {"logical source bytes materialized into native ReFS storage; no single adoptable source range"}
                     else {"real source bytes initialized at an independent native ReFS allocation; journal must carry them to the original partition"}});
             cursor = end;
         }
@@ -200,11 +251,6 @@ pub fn diagnose(
         p.shadow_payload_initialization_bytes += o.length;
     }
     ensure!(index.is_empty(), "unexpected target stream identity");
-    let mut targets: Vec<_> = p
-        .ranges
-        .iter()
-        .map(|r| (r.destination_offset, r.length))
-        .collect();
     targets.sort_unstable();
     ensure!(
         targets
@@ -213,7 +259,7 @@ pub fn diagnose(
         "exclusive target allocations overlap"
     );
     ensure!(
-        p.retained_bytes + p.relocated_bytes == tree.logical_bytes,
+        p.retained_bytes + p.relocated_bytes + p.materialized_bytes == tree.logical_bytes,
         "stream disposition coverage differs"
     );
     Ok(p)
@@ -303,5 +349,40 @@ mod tests {
             }
             assert!(diagnose(&t, &[m], &b, 65536).is_err());
         }
+    }
+    #[test]
+    fn materialized_inline_and_partial_cluster_streams_need_no_fake_source_extent() {
+        let (mut tree, mut mapping, mut payloads) = example(32768);
+        payloads[0].truncate(512);
+        let sha = hex::encode(Sha256::digest(&payloads[0]));
+        tree.objects[0].source_offset = None;
+        tree.objects[0].length = 512;
+        tree.objects[0].sha256 = Some(sha.clone());
+        tree.logical_bytes = 512;
+        mapping.logical_sha256 = sha;
+        mapping.extents.clear();
+        let inline = diagnose(&tree, &[mapping], &payloads, 65536).unwrap();
+        assert_eq!(inline.materialized_bytes, 512);
+        assert_eq!(inline.ranges[0].destination_offset, None);
+        assert!(
+            inline
+                .comparison_request(65536, &"1".repeat(64), &"2".repeat(64), 65536)
+                .unwrap()
+                .retained_ranges
+                .is_empty()
+        );
+
+        let (mut tree, mut mapping, mut payloads) = example(32768);
+        payloads[0].truncate(4097);
+        let sha = hex::encode(Sha256::digest(&payloads[0]));
+        tree.objects[0].source_offset = None;
+        tree.objects[0].length = 4097;
+        tree.objects[0].sha256 = Some(sha.clone());
+        tree.logical_bytes = 4097;
+        mapping.logical_sha256 = sha;
+        let partial = diagnose(&tree, &[mapping], &payloads, 65536).unwrap();
+        assert_eq!(partial.materialized_bytes, 4097);
+        assert_eq!(partial.ranges[0].length, 4097);
+        assert_eq!(partial.ranges[0].destination_offset, Some(32768));
     }
 }

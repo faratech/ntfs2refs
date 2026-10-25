@@ -155,6 +155,16 @@ pub fn internal_role(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<St
     (f.is_directory == directory).then_some(joined)
 }
 pub(crate) fn user_issues(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Vec<String> {
+    user_issues_profile(raw, f, false)
+}
+pub(crate) fn ordinary_user_issues(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Vec<String> {
+    user_issues_profile(raw, f, true)
+}
+fn user_issues_profile(
+    raw: &ntfs::NtfsInspection,
+    f: &FileInventory,
+    ordinary: bool,
+) -> Vec<String> {
     let mut issues = vec![];
     if f.metadata_role_issue.is_some()
         || !matches!(
@@ -208,17 +218,19 @@ pub(crate) fn user_issues(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Vec<
         }
     } else if f.streams.len() != 1
         || f.streams.iter().any(|s| {
-            s.resident
-                || !s.name_utf16.is_empty()
+            !s.name_utf16.is_empty()
                 || s.flags != 0
-                || s.logical_size == 0
-                || !s.logical_size.is_multiple_of(65536)
-                || s.logical_size != s.initialized_size
-                || s.logical_size != s.allocated_size
-                || s.extents.len() != 1
-                || s.extents[0].logical_offset != 0
-                || s.extents[0].physical_offset.is_none()
-                || s.extents[0].length != s.logical_size
+                || s.initialized_size > s.logical_size
+                || (!ordinary
+                    && (s.resident
+                        || s.logical_size == 0
+                        || !s.logical_size.is_multiple_of(65536)
+                        || s.logical_size != s.initialized_size
+                        || s.logical_size != s.allocated_size
+                        || s.extents.len() != 1
+                        || s.extents[0].logical_offset != 0
+                        || s.extents[0].physical_offset.is_none()
+                        || s.extents[0].length != s.logical_size))
                 || s.logical_hash_status != ntfs::LogicalHashStatus::Complete
         })
     {

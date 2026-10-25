@@ -454,7 +454,32 @@ pub fn repair_security(
     input: &[Input<'_>],
     same: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<Report> {
-    let observed = run(binding.clone(), source_disk, input, Mode::Verify, &same)?;
+    repair_security_profile(binding, source_disk, input, same, false)
+}
+pub fn repair_security_ordinary(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    same: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<Report> {
+    repair_security_profile(binding, source_disk, input, same, true)
+}
+fn repair_security_profile(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    same: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    ordinary: bool,
+) -> io::Result<Report> {
+    let observed = run_role(
+        binding.clone(),
+        source_disk,
+        input,
+        Mode::Verify,
+        &same,
+        false,
+        ordinary,
+    )?;
     validate_existing(&observed, input, &same, true)?;
     let preflight_sha = hex::encode(Sha256::digest(
         serde_json::to_vec(&observed).map_err(io::Error::other)?,
@@ -501,7 +526,15 @@ pub fn repair_security(
         .open(root.trim_end_matches('\\'))?;
     volume.sync_all()?;
     privileges.restore()?;
-    let mut verified = run(binding, source_disk, input, Mode::Verify, &same)?;
+    let mut verified = run_role(
+        binding,
+        source_disk,
+        input,
+        Mode::Verify,
+        &same,
+        false,
+        ordinary,
+    )?;
     validate_existing(&verified, input, &same, false)?;
     if observed
         .objects
@@ -741,7 +774,33 @@ pub fn run(
     mode: Mode,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<Report> {
-    run_role(binding, source_disk, input, mode, same_security, false)
+    run_role(
+        binding,
+        source_disk,
+        input,
+        mode,
+        same_security,
+        false,
+        false,
+    )
+}
+/// Ordinary stream forms remain confined to the independent lab shadow.
+pub fn run_ordinary(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    mode: Mode,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<Report> {
+    run_role(
+        binding,
+        source_disk,
+        input,
+        mode,
+        same_security,
+        false,
+        true,
+    )
 }
 /// Observe the enrolled converted original after durable journal handoff. All
 /// original shadow creation/repair entry points retain the disk3 restriction.
@@ -758,7 +817,7 @@ pub fn verify_converted(
     {
         return Err(invalid("converted natural-tree enrollment differs"));
     }
-    let report = run_role(binding, 1, input, Mode::Verify, &same_security, true)?;
+    let report = run_role(binding, 1, input, Mode::Verify, &same_security, true, false)?;
     validate_existing(&report, input, &same_security, false)?;
     Ok(report)
 }
@@ -769,6 +828,7 @@ fn run_role(
     mode: Mode,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     converted: bool,
+    ordinary: bool,
 ) -> io::Result<Report> {
     binding.validate()?;
     if binding.disk_number != if converted { 1 } else { 3 }
@@ -795,7 +855,9 @@ fn run_role(
             || i.attributes & !0x2037 != 0
             || (i.attributes & 16 != 0) != i.directory
             || (i.directory && !i.payload.is_empty())
-            || (!i.directory && (i.payload.is_empty() || !i.payload.len().is_multiple_of(65536)))
+            || (!ordinary
+                && !i.directory
+                && (i.payload.is_empty() || !i.payload.len().is_multiple_of(65536)))
         {
             return Err(invalid("invalid bounded shadow input"));
         }
@@ -806,7 +868,8 @@ fn run_role(
             return Err(invalid("shadow payload budget"));
         }
         descriptor(i.security)?;
-        if !i.components.is_empty()
+        if !ordinary
+            && !i.components.is_empty()
             && u16::from_le_bytes(i.security[2..4].try_into().unwrap()) & 0x1000 == 0
         {
             return Err(invalid(
@@ -982,7 +1045,12 @@ fn run_role(
             create(&format!("{}{}", root, i.components.join("\\")), i)?;
         }
         if mode == Mode::ConstructRetaining {
-            for i in input.iter().filter(|i| !i.directory) {
+            for i in input.iter().filter(|i| {
+                !i.directory
+                    && i.source_offset.is_some()
+                    && !i.payload.is_empty()
+                    && i.payload.len().is_multiple_of(4096)
+            }) {
                 retention_attempts.push(retain_on_shadow(
                     &volume,
                     &root,
@@ -1045,17 +1113,40 @@ fn run_role(
             false,
         )?;
         let before = snapshot(&h);
+        let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let (logical_sha256, retrieval, cached_validity, storage_validity, integrity, namespace) =
             if i.directory {
                 (None, vec![], vec![], vec![], vec![], enumerate(&h)?)
             } else {
-                let retrieval = ctl(
+                let retrieval = match ctl(
                     &h,
                     stream_layout::GET_RETRIEVAL,
                     &[0; 8],
                     stream_layout::RETRIEVAL_CAPACITY,
-                )?;
-                let runs = stream_layout::parse_retrieval(&retrieval)?;
+                ) {
+                    Ok(bytes)
+                        if ordinary
+                            && i.payload.is_empty()
+                            && expected_allocation == 0
+                            && bytes.len() == 16
+                            && layout::u32_at(&bytes, 0)? == 0
+                            && layout::u64_at(&bytes, 8)? == 0 =>
+                    {
+                        vec![]
+                    }
+                    Ok(bytes) => bytes,
+                    Err(e)
+                        if ordinary && expected_allocation == 0 && e.raw_os_error() == Some(38) =>
+                    {
+                        vec![]
+                    }
+                    Err(e) => return Err(e),
+                };
+                let runs = if retrieval.is_empty() {
+                    vec![]
+                } else {
+                    stream_layout::parse_retrieval(&retrieval)?
+                };
                 let mut end = 0u64;
                 for r in runs {
                     if r.vcn != end
@@ -1068,18 +1159,35 @@ fn run_role(
                     }
                     end += r.clusters;
                 }
-                if end * 4096 != i.payload.len() as u64 {
+                if (!ordinary && end * 4096 != i.payload.len() as u64)
+                    || (ordinary
+                        && (end * 4096 != expected_allocation
+                            || (expected_allocation == 0 && i.payload.len() > 4096)
+                            || (expected_allocation != 0
+                                && expected_allocation
+                                    < (i.payload.len() as u64).next_multiple_of(4096))
+                            || expected_allocation
+                                > (i.payload.len() as u64).next_multiple_of(65536)))
+                {
                     return Err(invalid(
                         "shadow allocation differs from initialized payload",
                     ));
                 }
                 let mut regions = vec![];
                 for usage in [1u32, 2] {
+                    if ordinary && expected_allocation == 0 {
+                        regions.push(vec![]);
+                        continue;
+                    }
                     let mut q = [0; 24];
                     q[8..16].copy_from_slice(&(i.payload.len() as u64).to_le_bytes());
                     q[16..20].copy_from_slice(&usage.to_le_bytes());
                     let b = ctl(&h, 0x90284, &q, 16 + 24 * 1024)?;
-                    crate::region_layout::validate(&b, i.payload.len() as u64, usage)?;
+                    if ordinary {
+                        crate::region_layout::validate_logical(&b, i.payload.len() as u64, usage)?;
+                    } else {
+                        crate::region_layout::validate(&b, i.payload.len() as u64, usage)?;
+                    }
                     regions.push(b);
                 }
                 let integrity = ctl(&h, 0x9027c, &[], 16)?;
@@ -1117,7 +1225,12 @@ fn run_role(
             if entries.len() != 1
                 || !entries[0].name.is_empty()
                 || entries[0].logical_size != i.payload.len() as u64
-                || entries[0].allocated_size != i.payload.len() as u64
+                || entries[0].allocated_size
+                    != if ordinary {
+                        expected_allocation
+                    } else {
+                        i.payload.len() as u64
+                    }
             {
                 return Err(invalid("unexpected target data stream or allocation"));
             }

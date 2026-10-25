@@ -27,6 +27,14 @@ pub struct Tree {
     pub internal_replacement_pending: Vec<String>,
 }
 pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
+    derive_profile(raw, false)
+}
+/// Additional ordinary stream forms are materialized from logical bytes. This
+/// constructs an independent shadow; it does not admit source-device writes.
+pub fn derive_ordinary(raw: &ntfs::NtfsInspection) -> Result<Tree> {
+    derive_profile(raw, true)
+}
+fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
     ensure!(
         raw.schema_version == 1
             && raw.records_scanned == raw.files.len() as u64
@@ -53,7 +61,11 @@ pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
         "raw security unresolved"
     );
     let mut tree = Tree {
-        profile: "native-existing-tree-shadow-v1",
+        profile: if ordinary {
+            "native-ordinary-tree-shadow-v2"
+        } else {
+            "native-existing-tree-shadow-v1"
+        },
         objects: vec![],
         logical_bytes: 0,
         internal_replacement_pending: vec![],
@@ -100,7 +112,11 @@ pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
                     .push("root:$TXF_DATA (not yet admitted for replacement)".into());
             }
         } else {
-            let issues = ntfs_admission::user_issues(raw, f);
+            let issues = if ordinary {
+                ntfs_admission::ordinary_user_issues(raw, f)
+            } else {
+                ntfs_admission::user_issues(raw, f)
+            };
             ensure!(
                 issues.is_empty(),
                 "record {} exceeds shadow profile: {issues:?}",
@@ -124,7 +140,7 @@ pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
             "initial shadow requires present DACL and absent SACL"
         );
         ensure!(
-            f.record_number == 5 || descriptor.control & 0x1000 != 0,
+            ordinary || f.record_number == 5 || descriptor.control & 0x1000 != 0,
             "initial shadow profile requires protected child DACLs"
         );
         let si = f
@@ -143,7 +159,14 @@ pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
             "unsupported basic metadata"
         );
         let (source_offset, length, sha256) = match f.streams.first() {
-            Some(s) => {
+            Some(s)
+                if !s.resident
+                    && s.extents.len() == 1
+                    && s.logical_size > 0
+                    && s.logical_size.is_multiple_of(4096)
+                    && s.logical_size == s.initialized_size
+                    && s.logical_size == s.allocated_size =>
+            {
                 let offset = s.extents[0]
                     .physical_offset
                     .context("missing physical data")?;
@@ -161,6 +184,15 @@ pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
                     Some(s.logical_sha256.clone().context("missing logical digest")?),
                 )
             }
+            Some(s) => (
+                None,
+                s.logical_size,
+                Some(
+                    s.logical_sha256
+                        .clone()
+                        .context("missing materialized logical digest")?,
+                ),
+            ),
             None => (None, 0, None),
         };
         tree.logical_bytes = tree

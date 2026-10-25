@@ -1,6 +1,14 @@
 //! Complete FILE_REGION_OUTPUT coverage; cached and storage VDL are distinct.
 use std::io;
 pub fn validate(bytes: &[u8], length: u64, usage: u32) -> io::Result<()> {
+    validate_coverage(bytes, length, usage, false)
+}
+/// Native regions may describe the complete final allocation cluster. Only
+/// coverage through logical EOF is required; cached/storage flags stay distinct.
+pub fn validate_logical(bytes: &[u8], length: u64, usage: u32) -> io::Result<()> {
+    validate_coverage(bytes, length, usage, true)
+}
+fn validate_coverage(bytes: &[u8], length: u64, usage: u32, tail: bool) -> io::Result<()> {
     let bad = || {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -29,11 +37,17 @@ pub fn validate(bytes: &[u8], length: u64, usage: u32) -> io::Result<()> {
             return Err(bad());
         }
         end = end.checked_add(count as u64).ok_or_else(bad)?;
-        if end > length {
+        if end
+            > if tail {
+                length.next_multiple_of(4096)
+            } else {
+                length
+            }
+        {
             return Err(bad());
         }
     }
-    if end != length {
+    if end < length || (!tail && end != length) {
         return Err(bad());
     }
     Ok(())
@@ -69,5 +83,14 @@ mod tests {
         let mut b = reply();
         b[32] = 32;
         assert!(validate(&b, 65536, 1).is_err());
+    }
+    #[test]
+    fn logical_tail_accepts_only_one_cluster_of_padded_valid_storage() {
+        let mut b = reply();
+        b[24..32].copy_from_slice(&4096u64.to_le_bytes());
+        assert!(validate_logical(&b, 1, 1).is_ok());
+        assert!(validate_logical(&b, 1, 2).is_err());
+        b[24..32].copy_from_slice(&8192u64.to_le_bytes());
+        assert!(validate_logical(&b, 1, 1).is_err());
     }
 }

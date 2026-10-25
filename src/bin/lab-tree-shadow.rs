@@ -40,6 +40,10 @@ fn main() -> anyhow::Result<()> {
         /// allocations and are counted as journaled relocations.
         #[arg(long,conflicts_with_all=["verify_only","finalize_security","root_security_experiment"])]
         retain_eligible: bool,
+        /// Materialize empty/resident/fragmented/tail streams and restore
+        /// inherited descriptors on the independent shadow (profile v2).
+        #[arg(long, conflicts_with = "root_security_experiment")]
+        ordinary_files: bool,
     }
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
@@ -118,6 +122,7 @@ fn main() -> anyhow::Result<()> {
         "finalize_security":args.finalize_security,
         "freeze_shadow":args.freeze_shadow,
         "retain_eligible":args.retain_eligible,
+        "ordinary_files":args.ordinary_files,
         "source_writes_authorized":false,"conversion_qualified":false}),
     )?;
     let mut events = vec![];
@@ -128,11 +133,26 @@ fn main() -> anyhow::Result<()> {
         phase = "derive-tree-from-actual-device";
         let length = source.byte_len();
         let raw = ntfs_inspect::inspect(&mut source, length)?;
-        let tree = shadow_tree::derive(&raw)?;
+        let tree = if args.ordinary_files {
+            shadow_tree::derive_ordinary(&raw)?
+        } else {
+            shadow_tree::derive(&raw)?
+        };
         let mut payloads = vec![];
         for o in &tree.objects {
-            let mut bytes = vec![0; o.length as usize];
-            if let Some(offset) = o.source_offset {
+            let mut bytes = if args.ordinary_files && !o.directory {
+                ntfs_inspect::read_plain_stream(
+                    &mut source,
+                    &raw,
+                    o.record_number,
+                    256 * 1024 * 1024,
+                )?
+            } else {
+                vec![0; o.length as usize]
+            };
+            if !args.ordinary_files
+                && let Some(offset) = o.source_offset
+            {
                 source.seek(SeekFrom::Start(offset))?;
                 source.read_exact(&mut bytes)?;
                 ensure!(
@@ -161,6 +181,25 @@ fn main() -> anyhow::Result<()> {
         // has been checked; all metadata still comes from raw device reads.
         let same_security = |a: &[u8], b: &[u8]| {
             ntfs_attestation::same_security(a, b).map_err(|e| std::io::Error::other(e.to_string()))
+        };
+        let native_run = |mode| {
+            if args.ordinary_files {
+                shadow_native::run_ordinary(
+                    request.shadow.clone(),
+                    request.source.disk_number,
+                    &input,
+                    mode,
+                    same_security,
+                )
+            } else {
+                shadow_native::run(
+                    request.shadow.clone(),
+                    request.source.disk_number,
+                    &input,
+                    mode,
+                    same_security,
+                )
+            }
         };
         if args.root_security_experiment {
             phase = "root-security-interop-only";
@@ -196,37 +235,34 @@ fn main() -> anyhow::Result<()> {
             ));
         }
         phase = "probe-native-shadow-root";
-        let _probe = shadow_native::run(
-            request.shadow.clone(),
-            request.source.disk_number,
-            &input,
-            shadow_native::Mode::ProbeRoot,
-            same_security,
-        )?;
+        let _probe = native_run(shadow_native::Mode::ProbeRoot)?;
         phase = "revalidate-actual-source-before";
         let before = ntfs_freeze::revalidate_pin(&mut source, &request.source_sha256, &mut events)?;
         phase = "native-independent-shadow";
         let native_result = if args.finalize_security {
-            shadow_native::repair_security(
-                request.shadow.clone(),
-                request.source.disk_number,
-                &input,
-                same_security,
-            )
+            if args.ordinary_files {
+                shadow_native::repair_security_ordinary(
+                    request.shadow.clone(),
+                    request.source.disk_number,
+                    &input,
+                    same_security,
+                )
+            } else {
+                shadow_native::repair_security(
+                    request.shadow.clone(),
+                    request.source.disk_number,
+                    &input,
+                    same_security,
+                )
+            }
         } else {
-            shadow_native::run(
-                request.shadow.clone(),
-                request.source.disk_number,
-                &input,
-                if args.verify_only {
-                    shadow_native::Mode::Verify
-                } else if args.retain_eligible {
-                    shadow_native::Mode::ConstructRetaining
-                } else {
-                    shadow_native::Mode::Construct
-                },
-                same_security,
-            )
+            native_run(if args.verify_only {
+                shadow_native::Mode::Verify
+            } else if args.retain_eligible {
+                shadow_native::Mode::ConstructRetaining
+            } else {
+                shadow_native::Mode::Construct
+            })
         };
         phase = "revalidate-actual-source-after";
         let after = ntfs_freeze::revalidate_pin(&mut source, &request.source_sha256, &mut events)?;
@@ -289,7 +325,12 @@ fn main() -> anyhow::Result<()> {
                     .iter()
                     .find(|q| q.class == 18 && q.native_error.is_none() && q.bytes.len() == 24)
                     .context("missing target file identity")?;
-                let extents = n2r_win32::stream_layout::parse_retrieval(&n.retrieval)?
+                let runs = if o.length == 0 && n.retrieval.is_empty() {
+                    vec![]
+                } else {
+                    n2r_win32::stream_layout::parse_retrieval(&n.retrieval)?
+                };
+                let extents = runs
                     .into_iter()
                     .map(|r| -> Result<_> {
                         Ok(ntfs_inspect::Extent {

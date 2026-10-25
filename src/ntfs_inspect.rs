@@ -1923,6 +1923,116 @@ pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<NtfsInspec
     inspect_with_limits(reader, length, InspectionLimits::default())
 }
 
+/// Materialize one bounded, plain unnamed stream from the actual source.
+/// Re-read its MFT record (including USA fixups) and bind it to the inspected
+/// identity and attribute before returning logical bytes. Never expose bytes
+/// beyond initialized length as valid data.
+pub fn read_plain_stream<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
+    let file = raw
+        .files
+        .iter()
+        .find(|f| f.record_number == record_number)
+        .context("source file missing from inventory")?;
+    ensure!(
+        !file.is_directory && file.base_file_reference == 0,
+        "plain standalone file required"
+    );
+    let stream = file
+        .streams
+        .iter()
+        .find(|s| s.name_utf16.is_empty())
+        .context("unnamed DATA stream absent")?;
+    ensure!(
+        stream.name_utf16.is_empty()
+            && stream.flags == 0
+            && stream.logical_hash_status == LogicalHashStatus::Complete
+            && stream.logical_size <= max_bytes
+            && max_bytes <= 256 * 1024 * 1024,
+        "unsupported stream or materialization budget"
+    );
+    let geometry = &raw.geometry;
+    let mut boot = [0; 512];
+    read_at(reader, 0, &mut boot, geometry.volume_size)?;
+    ensure!(
+        serde_json::to_vec(&inspect_boot_sector(&boot, geometry.volume_size)?)?
+            == serde_json::to_vec(geometry)?,
+        "source geometry changed"
+    );
+    let mut bytes = vec![0; geometry.file_record_size as usize];
+    read_at(
+        reader,
+        geometry
+            .mft_lcn
+            .checked_mul(u64::from(geometry.cluster_size))
+            .context("MFT bootstrap offset overflow")?,
+        &mut bytes,
+        geometry.volume_size,
+    )?;
+    let bootstrap = parse_record(bytes, geometry)?;
+    ensure!(
+        bootstrap.flags & 1 != 0
+            && bootstrap.base == 0
+            && !bootstrap
+                .attributes
+                .iter()
+                .any(|a| a.report.type_code == 0x20),
+        "unsupported MFT bootstrap"
+    );
+    let mft = unnamed(&bootstrap, 0x80)?;
+    ensure!(
+        !mft.report.resident && mft.report.flags == 0,
+        "invalid MFT storage"
+    );
+    validate_stream_mapping(&mft.report, geometry)?;
+    let mut bytes = vec![0; geometry.file_record_size as usize];
+    read_attribute_range(
+        reader,
+        mft,
+        record_number
+            .checked_mul(u64::from(geometry.file_record_size))
+            .context("MFT record offset overflow")?,
+        &mut bytes,
+        geometry,
+    )?;
+    let record = parse_record(bytes, geometry)?;
+    ensure!(
+        record.flags & 1 != 0
+            && record.flags & 2 == 0
+            && record.base == 0
+            && record.sequence == file.sequence_number
+            && record.links == file.hard_link_count
+            && !record.attributes.iter().any(|a| a.report.type_code == 0x20),
+        "source file identity changed"
+    );
+    let data = unnamed(&record, 0x80)?;
+    let expected = file
+        .attributes
+        .iter()
+        .find(|a| a.type_code == 0x80 && a.name_utf16.is_empty())
+        .context("source DATA inventory absent")?;
+    ensure!(
+        serde_json::to_vec(&data.report)? == serde_json::to_vec(expected)?
+            && data.report.flags == 0
+            && data.report.compression_unit == 0
+            && data.report.logical_size == stream.logical_size,
+        "source DATA attribute changed"
+    );
+    if !data.report.resident {
+        validate_stream_mapping(&data.report, geometry)?;
+    }
+    let payload = read_small_attribute(reader, data, geometry, max_bytes)?;
+    ensure!(
+        stream.logical_sha256.as_deref() == Some(&hex::encode(Sha256::digest(&payload))),
+        "materialized logical stream differs from inspected hash"
+    );
+    Ok(payload)
+}
+
 /// The report limit bounds retained inventory data, not the entire process's
 /// resident set. Bitmap reads are separately capped at 128 MiB; parser working
 /// storage is limited to one 64 KiB-or-smaller file record and its attributes.

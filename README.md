@@ -54,6 +54,14 @@ verification. It saves recovery paths and pins under `--artifacts`; native
 This laboratory command uses the separately enrolled four-file source/shadow
 profile. It does not enable the general converter's blocked commands.
 
+The independent shadow builder accepts `--ordinary-files` for a broader
+experimental source profile. It reads empty and resident streams from their
+checked NTFS records, materializes fragmented and partial-cluster streams as
+logical bytes, and restores inherited security descriptors on the native ReFS
+shadow. It reports inline data separately from physical extents. This profile
+builds and passes focused parser/planner checks; native Windows qualification
+and connection to a general conversion request remain open.
+
 The toolchain is pinned in `rust-toolchain.toml`; use the installed MSVC toolchain.
 Windows builds link the C runtime statically for fresh guests and recovery media.
 

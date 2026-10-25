@@ -26,7 +26,7 @@ reports are under `.lab/development/ordinary-adoption-plan*.json`.
 
 The target occupancy input must ultimately come from an independent complete
 ReFS allocator and metadata-ownership graph. A Medium-allocator free bit alone
-is insufficient: the isolated REFSNT experiment found an early `MSB+` page
-that its Medium-only `RfsClusterFree` query considered free. The current
+is insufficient: the isolated REFSNT experiment found an early `MSB+` signature
+at a Medium-free cluster, but that page may be stale metadata. The current
 planner also does not serialize ReFS metadata, reserve physical ranges through
 the writer, handle named streams, or issue a source-admission certificate.

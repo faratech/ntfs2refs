@@ -76,11 +76,11 @@ try{
   $psi.UseShellExecute=$false;$psi.CreateNoWindow=$true;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true
   $p=[Diagnostics.Process]::new();$p.StartInfo=$psi;if(-not$p.Start()){throw 'Native process failed to start.'};$out=$p.StandardOutput.ReadToEndAsync();$err=$p.StandardError.ReadToEndAsync()
   [IO.File]::WriteAllText($Root+'\'+$Step+'.process.json',([ordered]@{pid=$p.Id;executable=$exe;arguments=$psi.Arguments;startedUtc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json))
-  if(-not$p.WaitForExit(900000)){throw ('Native operation still live; preserve PID '+$p.Id)}
+  if(-not$p.WaitForExit(1800000)){throw ('Native operation still live; preserve PID '+$p.Id)}
   [IO.File]::WriteAllText($Root+'\'+$Step+'.stdout',$out.Result);[IO.File]::WriteAllText($Root+'\'+$Step+'.stderr',$err.Result);CheckSource
   [pscustomobject]@{status='native-exit-observed';exitCode=$p.ExitCode;reportSha256=(Get-FileHash ($Root+'\'+$Step+'.json')).Hash.ToLowerInvariant()}
  }
- if(-not(Wait-Job $job -Timeout 1200)){throw 'Native operation live/unknown; preserve branch.'}
+ if(-not(Wait-Job $job -Timeout 2100)){throw 'Native operation live/unknown; preserve branch.'}
  $reply=@(Receive-Job $job -ErrorAction Stop);if($job.State-ne'Completed'-or$reply.Count-ne1-or$reply[0].status-cne'native-exit-observed'){throw 'Native completion unknown.'}
  $record.operationCompletionKnown=$true;Save 'guest-reply.json' $reply[0]
  foreach($pair in @(@('.json','report.json'),@('.intent.json','intent.json'),@('.process.json','process.json'),@('.stdout','stdout'),@('.stderr','stderr'))){Copy-Item -LiteralPath ($root+'\'+$step+$pair[0]) -Destination (Join-Path $output $pair[1]) -FromSession $session}

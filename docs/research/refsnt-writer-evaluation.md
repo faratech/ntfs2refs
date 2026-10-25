@@ -79,7 +79,8 @@ The resulting executable SHA-256 is
 This is an adapted userspace build, not an installed filesystem driver.
 
 The input was our captured Windows-created ReFS data partition:
-`.lab/hyperv/corpus/devdrive-20261023T231918797Z/devdrive.raw`,
+`C:\Users\mfara\ntfs2refs-archive\corpus\devdrive-20261023T231918797Z\devdrive.raw`
+(archived from `.lab/hyperv/corpus/devdrive-20261023T231918797Z/devdrive.raw`),
 55,834,574,848 bytes. Its earlier verified full-image SHA-256 is
 `805eecc9f17436bac644b2b774e96896ace8af2aec8c66dcaf6c3bbb8e4be0c9`;
 this experiment did not repeat the complete image hash. Each invocation used a

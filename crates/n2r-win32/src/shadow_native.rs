@@ -72,8 +72,9 @@ fn valid_shadow_component(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 100
         && !s.ends_with(['.', ' '])
-        && s.bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b" ._-".contains(&byte))
+        && s.bytes().all(|byte| {
+            (byte == b' ' || byte.is_ascii_graphic()) && !b"<>:\"/\\|?*".contains(&byte)
+        })
         && ![
             "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
             "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
@@ -1730,7 +1731,18 @@ mod tests {
     fn ordinary_shadow_names_allow_internal_spaces_but_refuse_devices() {
         assert!(valid_shadow_component("Quarterly Report 1.txt"));
         assert!(valid_shadow_component("a  b.txt"));
-        for name in ["a ", "CON.txt", "CON .txt", "COM1 .dat", "a:b", "a\\b", "é"] {
+        assert!(valid_shadow_component("Q4 (final) #1 & notes.txt"));
+        for name in [
+            "a ",
+            "CON.txt",
+            "CON .txt",
+            "COM1 .dat",
+            "a:b",
+            "a\\b",
+            "a?b",
+            "a*b",
+            "é",
+        ] {
             assert!(!valid_shadow_component(name), "{name}");
         }
     }

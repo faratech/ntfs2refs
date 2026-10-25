@@ -182,6 +182,12 @@ separately pinned pre-cutover tree, including logical bytes, names, stored
 timestamps and both security views, and saves an explicit failure report.
 It is intended to run again after reboots and ordinary ReFS mutation workloads;
 it does not reopen NTFS rollback.
+The guest-only `lab-general-refs-mutation` workload creates a fresh temporary
+directory on the converted ReFS disk, writes and hashes a 50 MiB file, grows
+it across a zero-valid-data gap, truncates and renames it, then creates and
+removes 128 small files. It removes only those new test paths. A subsequent
+reboot and `lab-verify-general-converted` run must still match the original
+tree; this mutation workload has not yet run in the VM.
 
 The internal general finalizer now accepts the independently pinned pre-cutover
 tree, checks the full journaled ReFS postimage, durably closes rollback, brings

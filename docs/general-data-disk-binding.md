@@ -18,6 +18,15 @@ An optional independently pinned shadow binding probes a second dedicated disk
 and requires distinct disk/partition/volume identities and matching source and
 shadow partition geometry within the current 128 GiB comparison limit.
 
+`lab-freeze-general-source` now performs the first source transition itself:
+it locks and dismounts the bound non-system NTFS data disk, persists
+offline/read-only attributes, then hashes and inventories the post-flush
+partition. Its intent is durable before changing disk attributes. Before
+journal activation, `lab-abort-general-source` can return that exact original
+NTFS image online only after a complete hash matches a pinned frozen-source
+report. It refuses a target that is already activated offline but writable.
+These disk transitions have not yet had a native general-disk run.
+
 `GeneralPartitionReader` now adds a partition-relative, 4 KiB-aligned,
 read-only `Read + Seek` view over the same bound physical disk. The
 `lab-inspect-general` command feeds that view to the existing raw NTFS
@@ -40,9 +49,9 @@ classifications do not authorize writes.
 after an exact online probe it locks and dismounts the bound volume, persists
 offline/read-only disk attributes, closes the lock owner, reopens the physical
 disk read-only, and checks identity again. It also has an explicit read-only
-reopen path after interruption. The initial isolate transition is exposed only
-for the independent shadow; source isolation remains outside the general CLI
-until recovery/handoff is complete. Synthetic tests cover its aligned reads;
+reopen path after interruption. The general CLI now uses this transition for
+both the source and independent shadow, with a hash-checked abort route for
+the unchanged source before activation. Synthetic tests cover aligned reads;
 a real-device freeze has not been attempted.
 
 The already-excluded read-only reopen is now public. `lab-inspect-frozen-general`

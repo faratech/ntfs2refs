@@ -3,6 +3,7 @@ use crate::{
     layout::{self, DiskBinding, GRANULE, invalid},
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     alloc::{Layout, alloc_zeroed, dealloc},
     fs::{File, OpenOptions},
@@ -689,6 +690,71 @@ impl GeneralFrozenPartition {
 
     pub fn native_bytes_read(&self) -> u64 {
         self.native_bytes_read
+    }
+
+    /// Abort before journal activation. A complete hash of the unchanged
+    /// offline/read-only partition is required before the original NTFS disk
+    /// can be made writable and mountable again.
+    pub fn bring_original_online_unchanged(
+        mut self,
+        expected_sha256: &str,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if expected_sha256.len() != 64
+            || !expected_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(invalid("invalid original NTFS SHA-256 pin"));
+        }
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid("original source is not offline and read-only"));
+        }
+        self.seek(SeekFrom::Start(0))?;
+        let mut hash = Sha256::new();
+        let mut buffer = vec![0u8; MAX_IO];
+        let mut left = self.byte_len();
+        while left != 0 {
+            let count = left.min(MAX_IO as u64) as usize;
+            self.read_exact(&mut buffer[..count])?;
+            hash.update(&buffer[..count]);
+            left -= count as u64;
+        }
+        if hex::encode(hash.finalize()) != expected_sha256 || self.state(events)? != before {
+            return Err(invalid("original source bytes or exclusion changed"));
+        }
+        let binding = self.binding.clone();
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+            true,
+            false,
+        )?;
+        if general_disk_state(&management, &binding, events)? != before {
+            return Err(invalid("original source control-handle route differs"));
+        }
+        close_file(self.file, "close-original-source-before-online", events)?;
+        set_attributes(&management, 0, events)?;
+        control(
+            &management,
+            "refresh-original-source-online-properties",
+            UPDATE_PROPERTIES,
+            &[],
+            0,
+            events,
+        )?;
+        let mut expected = before;
+        expected.disk_attributes = 0;
+        if general_disk_state(&management, &binding, events)? != expected {
+            return Err(invalid(
+                "original NTFS online transition changed storage identity",
+            ));
+        }
+        close_file(
+            management,
+            "close-original-source-online-management",
+            events,
+        )
     }
 
     /// Temporarily publish only a READ_ONLY NTFS view for native semantic

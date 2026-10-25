@@ -19,7 +19,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationW,
-    GetVolumeNameForVolumeMountPointW, GetVolumePathNamesForVolumeNameW,
+    GetVolumeNameForVolumeMountPointW, GetVolumePathNamesForVolumeNameW, SetVolumeMountPointW,
 };
 use windows_sys::Win32::System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW};
 
@@ -77,6 +77,15 @@ pub struct MountPathObservation {
     pub binding: GeneralDiskBinding,
     pub paths: Vec<String>,
     pub all_paths_resolve_to_bound_volume: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DriveLetterRestore {
+    pub requested: String,
+    pub before: MountPathObservation,
+    pub after: MountPathObservation,
+    pub changed: bool,
+    pub target_filesystem: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -573,6 +582,97 @@ pub fn capture_mount_paths_general(
         binding,
         paths,
         all_paths_resolve_to_bound_volume: true,
+    })
+}
+
+/// Add one original drive letter to a converted ReFS data volume only when
+/// the letter is unbound and the volume has no different drive letter. No
+/// existing mount point is deleted or reassigned by this operation.
+pub fn restore_drive_letter_general(
+    binding: GeneralDiskBinding,
+    requested: &str,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<DriveLetterRestore> {
+    let bytes = requested.as_bytes();
+    if bytes.len() != 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\'
+    {
+        return Err(invalid("requested mount point is not a drive-letter root"));
+    }
+    let bound = rediscover_general_volume_wait(binding, events)?;
+    let filesystem = mounted_filesystem_general(bound.clone(), events)?;
+    if filesystem != "ReFS" {
+        return Err(invalid("drive-letter restoration requires converted ReFS"));
+    }
+    let before = capture_mount_paths_general(bound.clone(), events)?;
+    if before
+        .paths
+        .iter()
+        .any(|path| path.eq_ignore_ascii_case(requested))
+    {
+        return Ok(DriveLetterRestore {
+            requested: requested.into(),
+            after: before.clone(),
+            before,
+            changed: false,
+            target_filesystem: filesystem,
+        });
+    }
+    if before.paths.iter().any(|path| {
+        let bytes = path.as_bytes();
+        bytes.len() == 3 && bytes[1] == b':' && bytes[2] == b'\\'
+    }) {
+        return Err(invalid(
+            "converted ReFS volume already has another drive letter",
+        ));
+    }
+    let mut mount_wide: Vec<u16> = requested.encode_utf16().collect();
+    mount_wide.push(0);
+    let mut existing = [0u16; 1024];
+    // SAFETY: bounded NUL-terminated path and initialized output buffer.
+    if unsafe {
+        GetVolumeNameForVolumeMountPointW(
+            mount_wide.as_ptr(),
+            existing.as_mut_ptr(),
+            existing.len() as u32,
+        )
+    } != 0
+    {
+        let end = existing
+            .iter()
+            .position(|unit| *unit == 0)
+            .ok_or_else(|| invalid("occupied drive volume name is unterminated"))?;
+        let name = String::from_utf16(&existing[..end])
+            .map_err(|_| invalid("occupied drive volume name is invalid UTF-16"))?;
+        if layout::guid_bytes(&enumerated_guid(&name)?)? != layout::guid_bytes(&bound.volume_guid)?
+        {
+            return Err(invalid("requested drive letter belongs to another volume"));
+        }
+        return Err(invalid(
+            "drive letter maps to target but was absent from mount-path enumeration",
+        ));
+    }
+    let volume_root = format!("{}\\", bound.volume_path()?);
+    let mut volume_wide: Vec<u16> = volume_root.encode_utf16().collect();
+    volume_wide.push(0);
+    // SAFETY: both paths are NUL-terminated and the synchronous API retains
+    // no pointer. The Windows mount manager refuses occupied drive letters.
+    if unsafe { SetVolumeMountPointW(mount_wide.as_ptr(), volume_wide.as_ptr()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let after = capture_mount_paths_general(bound, events)?;
+    if !after
+        .paths
+        .iter()
+        .any(|path| path.eq_ignore_ascii_case(requested))
+    {
+        return Err(invalid("new drive-letter mount point was not observed"));
+    }
+    Ok(DriveLetterRestore {
+        requested: requested.into(),
+        before,
+        after,
+        changed: true,
+        target_filesystem: filesystem,
     })
 }
 

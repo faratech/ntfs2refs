@@ -203,6 +203,13 @@ freeze and journal-request assembly retain that optional set. When it is
 present, final ReFS verification requires the same paths; the older archived
 four-file replay records the path set as unknown rather than asserting an
 empty set.
+`lab-restore-general-drive-letter` handles the narrow case of exactly one
+original drive-letter root after a successful ReFS handoff. It uses the
+rediscovered GPT-bound ReFS volume, refuses a letter held by another volume or
+a different letter already assigned to the target, and adds only the missing
+letter through `SetVolumeMountPointW`. It never deletes an existing mount point
+or silently changes mounted folders. Microsoft documents the one-drive-letter
+limit and the [mount-point API](https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-setvolumemountpointw).
 The guest-only `lab-general-refs-mutation` workload creates a fresh temporary
 directory on the converted ReFS disk, writes and hashes a 50 MiB file, grows
 it across a zero-valid-data gap, truncates and renames it, then creates and

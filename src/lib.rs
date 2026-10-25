@@ -44,6 +44,7 @@ pub mod refs_containers;
 pub mod refs_cow_overlay;
 pub mod refs_inspect;
 pub mod refs_node;
+pub mod refs_retained_allocation;
 pub mod refs_virtual_roots;
 pub mod refs_write_set;
 pub mod retained_compare;

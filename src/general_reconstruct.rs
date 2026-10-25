@@ -4,7 +4,7 @@
 use crate::{
     lab_native_reconstruct::{identity_hash, partition_hash},
     lab_reconstruct::{self, JournalBinding, JournalDescriptor, JournalSummary, JournalTicket},
-    ntfs_inspect, refs_inspect,
+    ntfs_inspect, refs_inspect, refs_retained_allocation,
     retained_compare::{self, RetainedCompareRequest},
 };
 use anyhow::{Result, ensure};
@@ -117,6 +117,7 @@ pub struct Preparation {
     pub source_ntfs_dirty: Option<bool>,
     pub source_ntfs_volume_flags: Option<u16>,
     pub shadow_refs_version: String,
+    pub retained_allocation: Option<refs_retained_allocation::Coverage>,
     pub journal: JournalSummary,
     pub events: Vec<NativeEvent>,
     pub source_admitted: bool,
@@ -156,6 +157,18 @@ pub fn prepare(
             && refs.geometry.volume_bytes == shadow.byte_len(),
         "initial NTFS/ReFS format geometry differs"
     );
+    let retained_allocation = if request.comparison.retained_ranges.is_empty() {
+        None
+    } else {
+        let shadow_length = shadow.byte_len();
+        let observed =
+            refs_retained_allocation::inspect(shadow, shadow_length, &request.comparison)?;
+        ensure!(
+            observed.retained_allocator_coverage_verified,
+            "retained data lacks unambiguous ReFS allocator coverage"
+        );
+        Some(observed)
+    };
     let observed_binding = binding(request, &journal_before.identity)?;
     let summary = lab_reconstruct::prepare_journal(
         source,
@@ -194,6 +207,7 @@ pub fn prepare(
             "{}.{}",
             refs.geometry.major_version, refs.geometry.minor_version
         ),
+        retained_allocation,
         journal: summary,
         events,
         source_admitted: false,

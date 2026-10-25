@@ -45,6 +45,7 @@ fn main() -> anyhow::Result<()> {
         shadow_before: GeneralDiskState,
         shadow_after: GeneralDiskState,
         comparison_request: RetainedCompareRequest,
+        retained_allocator_coverage_verified: bool,
     }
     fn pinned(path: &PathBuf, sha256: &str, limit: u64) -> anyhow::Result<Vec<u8>> {
         let metadata = fs::symlink_metadata(path)?;
@@ -91,7 +92,9 @@ fn main() -> anyhow::Result<()> {
             && freeze.source_before == freeze.source_after
             && freeze.shadow_before == freeze.shadow_after
             && freeze.source_after.disk_attributes == 3
-            && freeze.shadow_after.disk_attributes == 3,
+            && freeze.shadow_after.disk_attributes == 3
+            && (freeze.comparison_request.retained_ranges.is_empty()
+                || freeze.retained_allocator_coverage_verified),
         "frozen source/shadow request or exclusion differs"
     );
     let request = general_reconstruct::Request {

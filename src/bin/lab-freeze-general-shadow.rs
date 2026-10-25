@@ -7,7 +7,7 @@ fn main() -> anyhow::Result<()> {
     use n2r_win32::{GeneralFrozenPartition, shadow_native};
     use ntfs2refs::{
         general_shadow::Request, lab_reconstruct, ntfs_attestation, ntfs_inspect, refs_inspect,
-        shadow_tree, tree_placement,
+        refs_retained_allocation, shadow_tree, tree_placement,
     };
     use serde::Serialize;
     use sha2::{Digest, Sha256};
@@ -149,12 +149,9 @@ fn main() -> anyhow::Result<()> {
     let source_after_hash =
         hex::encode(lab_reconstruct::hash_range(&mut source, 0, source_length)?);
     let source_after = source.state(&mut events)?;
-    let shadow_after = shadow.state(&mut events)?;
     ensure!(
-        source_after_hash == source_hash
-            && source_before == source_after
-            && shadow_before == shadow_after,
-        "source or shadow changed during freeze"
+        source_after_hash == source_hash && source_before == source_after,
+        "source changed during shadow freeze"
     );
     let comparison = placement.comparison_request(
         shadow_length,
@@ -162,6 +159,24 @@ fn main() -> anyhow::Result<()> {
         &shadow_hash,
         256 * 1024 * 1024,
     )?;
+    let (retained_allocation, retained_allocation_error) = if comparison.retained_ranges.is_empty()
+    {
+        (None, None)
+    } else {
+        match refs_retained_allocation::inspect(&mut shadow, shadow_length, &comparison) {
+            Ok(observation) => (Some(observation), None),
+            Err(error) => (None, Some(format!("{error:#}"))),
+        }
+    };
+    let retained_allocator_coverage_verified = comparison.retained_ranges.is_empty()
+        || retained_allocation
+            .as_ref()
+            .is_some_and(|observation| observation.retained_allocator_coverage_verified);
+    let shadow_after = shadow.state(&mut events)?;
+    ensure!(
+        shadow_before == shadow_after,
+        "shadow exclusion changed during freeze"
+    );
     save(
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"general-frozen-refs-shadow",
@@ -169,7 +184,11 @@ fn main() -> anyhow::Result<()> {
             "source_before":source_before,"source_after":source_after,
             "shadow_before":shadow_before,"shadow_after":shadow_after,
             "refs":refs,"native_evidence_sha256":native_sha256,
-            "placement":placement,"comparison_request":comparison,"events":events,
+            "placement":placement,"comparison_request":comparison,
+            "retained_allocation":retained_allocation,
+            "retained_allocation_error":retained_allocation_error,
+            "retained_allocator_coverage_verified":retained_allocator_coverage_verified,
+            "events":events,
             "source_writes":0,"shadow_payload_writes":0,
             "source_admitted":false,"conversion_qualified":false}),
     )?;

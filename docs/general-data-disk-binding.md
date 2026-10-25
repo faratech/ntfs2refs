@@ -109,6 +109,13 @@ logical-range hashes produce a versioned retained/relocated comparison request
 bound to those complete source and shadow hashes. A failure after exclusion
 leaves the shadow offline; its durable intent identifies the attempted
 transition. This command has not had a native run and does not authorize cutover.
+For a nonempty retained set, the frozen-shadow report also checks every retained
+cluster against the ReFS Medium and Small allocator trees at the same candidate
+checkpoint. The journal-request assembler refuses retained ranges unless that
+coverage succeeds. This is a local allocation check, not proof of unique
+ownership, valid refcounts or complete ReFS metadata reachability.
+Journal preparation repeats the allocator check on the actual frozen shadow
+instead of trusting the report's serialized coverage field.
 
 `lab-new-general-journal-request` combines the pinned frozen-shadow report
 with a separately pinned journal-disk binding. It requires matching full-image

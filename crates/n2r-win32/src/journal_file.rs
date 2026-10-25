@@ -34,6 +34,10 @@ pub struct JournalStorageBinding {
 pub struct GeneralJournalStorageBinding {
     pub disk: GeneralDiskBinding,
     pub externally_enrolled_disk_unique_id: String,
+    /// A journal may live on a separate OS disk with EFI/recovery partitions.
+    /// Every GPT entry is still checked for identity, bounds and overlap.
+    #[serde(default)]
+    pub allow_additional_partitions: bool,
 }
 
 impl GeneralJournalStorageBinding {
@@ -387,7 +391,11 @@ fn validate_general_evidence(
         "general journal disk length differs",
     )?;
     binding.validate_volume_extent(&evidence.volume_extents)?;
-    binding.validate_layout(&evidence.disk_layout)?;
+    if expected.allow_additional_partitions {
+        validate_external_journal_layout(&evidence.disk_layout, binding)?;
+    } else {
+        binding.validate_layout(&evidence.disk_layout)?;
+    }
     let p = &binding.identity;
     Ok(JournalFileSnapshot {
         schema_version: 1,
@@ -419,6 +427,78 @@ fn validate_general_evidence(
         conversion_qualified: false,
         evidence,
     })
+}
+
+fn validate_external_journal_layout(raw: &[u8], binding: &GeneralDiskBinding) -> io::Result<()> {
+    let p = &binding.identity;
+    require(
+        (48..=65536).contains(&raw.len())
+            && u32_at(raw, 0)? == 1
+            && raw[8..24] == guid_bytes(&p.disk_guid)?,
+        "external journal GPT header or disk identity differs",
+    )?;
+    let count = u32_at(raw, 4)? as usize;
+    require(
+        (1..=128).contains(&count) && raw.len() == 48 + count * 144,
+        "external journal GPT entries are incomplete",
+    )?;
+    let first = u64_at(raw, 24)?;
+    let usable = u64_at(raw, 32)?;
+    let last = first
+        .checked_add(usable)
+        .ok_or_else(|| invalid("external journal GPT usable-range overflow"))?;
+    require(
+        first >= 512
+            && first.is_multiple_of(512)
+            && usable > 0
+            && usable.is_multiple_of(512)
+            && last <= p.disk_bytes,
+        "external journal GPT usable range differs",
+    )?;
+    let basic = guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?;
+    let mut seen = Vec::<(u32, u64, u64, [u8; 16])>::new();
+    let mut target = 0;
+    for index in 0..count {
+        let at = 48 + index * 144;
+        let number = u32_at(raw, at + 24)?;
+        let offset = u64_at(raw, at + 8)?;
+        let length = u64_at(raw, at + 16)?;
+        let kind = &raw[at + 32..at + 48];
+        if number == 0 && length == 0 && kind == [0; 16] {
+            continue;
+        }
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| invalid("external journal GPT partition overflow"))?;
+        let id: [u8; 16] = raw[at + 48..at + 64].try_into().unwrap();
+        require(
+            u32_at(raw, at)? == 1
+                && number > 0
+                && offset >= first
+                && length > 0
+                && end <= last
+                && offset.is_multiple_of(512)
+                && length.is_multiple_of(512)
+                && kind != [0; 16]
+                && id != [0; 16]
+                && !seen.iter().any(|(n, lo, hi, other_id)| {
+                    number == *n || (offset < *hi && *lo < end) || id == *other_id
+                }),
+            "external journal GPT entry is duplicate, overlapping or malformed",
+        )?;
+        seen.push((number, offset, end, id));
+        if number == p.partition_number {
+            require(
+                kind == basic
+                    && offset == p.partition_offset
+                    && length == p.partition_bytes
+                    && id == guid_bytes(&p.partition_guid)?,
+                "external journal file partition differs",
+            )?;
+            target += 1;
+        }
+    }
+    require(target == 1, "external journal file partition is absent")
 }
 
 fn finish_observation(

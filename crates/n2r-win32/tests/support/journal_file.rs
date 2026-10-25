@@ -107,10 +107,48 @@ fn general_journal_binding_accepts_distinct_dedicated_disk_geometry() {
     let general = GeneralJournalStorageBinding {
         disk,
         externally_enrolled_disk_unique_id: fixed.externally_enrolled_disk_unique_id.clone(),
+        allow_additional_partitions: false,
     };
     let observed = validate_general_evidence(&general, &path(&fixed), evidence).unwrap();
     assert_eq!(observed.identity.disk_bytes, 12 * 1024 * 1024 * 1024);
     assert_eq!(observed.identity.partition_bytes, JOURNAL_PARTITION_BYTES);
+}
+
+#[test]
+fn external_journal_layout_allows_a_separate_system_disk_partition_set() {
+    let fixed = binding();
+    let mut evidence = fixture(&fixed);
+    let mut disk = GeneralDiskBinding {
+        disk_number: fixed.disk_number,
+        volume_guid: fixed.volume_guid.clone(),
+        identity: fixed.identity.clone(),
+    };
+    disk.identity.disk_bytes = 12 * 1024 * 1024 * 1024;
+    put64(&mut evidence.disk_length, 0, disk.identity.disk_bytes);
+    evidence.disk_layout.resize(48 + 3 * 144, 0);
+    put32(&mut evidence.disk_layout, 4, 3);
+    put64(
+        &mut evidence.disk_layout,
+        32,
+        disk.identity.disk_bytes - 17408 - 16896,
+    );
+    let at = 48 + 2 * 144;
+    put32(&mut evidence.disk_layout, at, 1);
+    put64(&mut evidence.disk_layout, at + 8, 9 * 1024 * 1024 * 1024);
+    put64(&mut evidence.disk_layout, at + 16, 100 * 1024 * 1024);
+    put32(&mut evidence.disk_layout, at + 24, 3);
+    evidence.disk_layout[at + 32..at + 48]
+        .copy_from_slice(&guid_bytes("c12a7328-f81f-11d2-ba4b-00a0c93ec93b").unwrap());
+    evidence.disk_layout[at + 48..at + 64]
+        .copy_from_slice(&guid_bytes("abcdefab-1234-1234-1234-abcdefabcdef").unwrap());
+    let mut binding = GeneralJournalStorageBinding {
+        disk,
+        externally_enrolled_disk_unique_id: fixed.externally_enrolled_disk_unique_id.clone(),
+        allow_additional_partitions: false,
+    };
+    assert!(validate_general_evidence(&binding, &path(&fixed), evidence.clone()).is_err());
+    binding.allow_additional_partitions = true;
+    validate_general_evidence(&binding, &path(&fixed), evidence).unwrap();
 }
 
 #[test]

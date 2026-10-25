@@ -101,6 +101,11 @@ does not authorize execution.
 The general journal binding accepts independently measured GPT geometry and
 file identity instead of the original disk-2/8 GiB fixture, while retaining a
 768 MiB journal-file ceiling and a minimum 1 GiB journal partition.
+Its optional additional-partitions profile permits the journal file on a
+different physical Windows system disk. It still verifies the complete GPT
+table for overlap and unique identities, requires the file's partition to be
+the bound basic-data volume, and rejects reuse of the NTFS source or ReFS
+shadow disk. The dedicated-disk profile remains the default.
 
 The native shadow engine now has a separate general entry point for a
 Windows-created ReFS data disk bound by `GeneralSourceShadowBinding`. It accepts

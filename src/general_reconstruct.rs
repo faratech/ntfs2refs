@@ -683,6 +683,7 @@ mod tests {
             },
             journal: GeneralJournalStorageBinding {
                 externally_enrolled_disk_unique_id: "JOURNAL-TEST".into(),
+                allow_additional_partitions: false,
                 disk: GeneralDiskBinding {
                     disk_number: 2,
                     volume_guid: "77777777-7777-7777-7777-777777777777".into(),

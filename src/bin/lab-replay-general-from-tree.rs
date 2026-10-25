@@ -117,6 +117,7 @@ fn main() -> anyhow::Result<()> {
                 identity: old.journal.identity,
             },
             externally_enrolled_disk_unique_id: old.journal.externally_enrolled_disk_unique_id,
+            allow_additional_partitions: false,
         },
         max_journal_bytes: old.max_journal_bytes,
     };

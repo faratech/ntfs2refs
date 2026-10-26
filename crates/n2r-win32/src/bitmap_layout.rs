@@ -26,7 +26,7 @@ pub fn allocated_ranges(bytes: &[u8], partition: u64) -> io::Result<AllocationMa
     let bad = |message| io::Error::new(io::ErrorKind::InvalidData, message);
     if !partition.is_multiple_of(4096)
         || bytes.len() < 16
-        || bytes.len() > 2 * 1024 * 1024
+        || bytes.len() > crate::bitmap_paging::MAX_COMPLETE_BYTES
         || bytes[..8] != [0; 8]
     {
         return Err(bad("invalid metadata-inclusive bitmap header or geometry"));
@@ -90,7 +90,7 @@ pub fn candidate(bytes: &[u8], offset: u64, length: u64, partition: u64) -> io::
         )
     };
     if bytes.len() < 16
-        || bytes.len() > 2 * 1024 * 1024
+        || bytes.len() > crate::bitmap_paging::MAX_COMPLETE_BYTES
         || bytes[..8] != [0; 8]
         || !offset.is_multiple_of(4096)
         || length == 0

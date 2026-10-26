@@ -265,9 +265,10 @@ pub fn compare(
 ) -> Result<Comparison> {
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2..=5) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=6) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
+    crate::ntfs_stream_attestation::validate_bitmap_schema(native)?;
     ensure!(
         native.request.source_inspection_sha256 == inspection_sha256,
         "native/source report binding differs"
@@ -466,7 +467,7 @@ pub fn compare(
     } else {
         None
     };
-    let native_namespace = if native.schema_version == 5 {
+    let native_namespace = if native.schema_version >= 5 {
         Some(crate::ntfs_namespace_attestation::reconcile(raw, native)?)
     } else {
         None

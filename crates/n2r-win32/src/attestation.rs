@@ -6,6 +6,8 @@ pub const MAX_FILES: usize = 256;
 pub const MAX_SECURITY_BYTES: usize = 65_536;
 pub const MAX_TOTAL_SECURITY_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_TOTAL_STREAM_BYTES: usize = 8 * 1024 * 1024;
+/// Volume pages are budgeted separately from file/stream observations.
+pub const MAX_TOTAL_BITMAP_BYTES: usize = 2 * crate::bitmap_paging::MAX_RETURNED_BYTES + 4096;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -201,7 +203,7 @@ pub struct IoctlQuery {
 }
 mod ioctl_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
-    const MAX: usize = 2 * 1024 * 1024 + 16;
+    const MAX: usize = crate::bitmap_paging::PAGE_BYTES;
     pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
         if bytes.len() > MAX {
             return Err(serde::ser::Error::custom("native IOCTL blob exceeds bound"));
@@ -277,6 +279,10 @@ pub struct VolumeAllocation {
     pub base_after: IoctlQuery,
     pub bitmap_before: IoctlQuery,
     pub bitmap_after: IoctlQuery,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bitmap_before_continuation: Vec<IoctlQuery>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bitmap_after_continuation: Vec<IoctlQuery>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PrivilegeState {

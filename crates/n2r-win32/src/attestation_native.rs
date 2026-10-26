@@ -358,8 +358,15 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     let before = route(&volume, &disk, request)?;
     let mut privileges = Privileges::enable()?;
     let base_before = crate::stream_native::base(&volume);
-    let bitmap_before = crate::stream_native::bitmap(&volume);
-    let mut stream_bytes = base_before.bytes.capacity() + bitmap_before.bytes.capacity();
+    let (bitmap_before, bitmap_before_continuation) = crate::stream_native::bitmap(&volume)?;
+    let bitmap_bytes = |first: &IoctlQuery, continuation: &Vec<IoctlQuery>| {
+        std::iter::once(first).chain(continuation).fold(
+            continuation.capacity() * std::mem::size_of::<IoctlQuery>(),
+            |sum, q| sum.saturating_add(q.bytes.capacity() + q.input.capacity()),
+        )
+    };
+    let bitmap_before_bytes = bitmap_bytes(&bitmap_before, &bitmap_before_continuation);
+    let mut stream_bytes = base_before.bytes.capacity();
     let mut files = vec![];
     let mut logical_files = vec![];
     let mut read_budget = crate::logical_hash::Budget::new(crate::logical_hash::DEFAULT_LIMIT);
@@ -437,9 +444,13 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
         logical_files.push(logical);
     }
     let base_after = crate::stream_native::base(&volume);
-    let bitmap_after = crate::stream_native::bitmap(&volume);
-    stream_bytes =
-        stream_bytes.saturating_add(base_after.bytes.capacity() + bitmap_after.bytes.capacity());
+    let (bitmap_after, bitmap_after_continuation) = crate::stream_native::bitmap(&volume)?;
+    if bitmap_before_bytes.saturating_add(bitmap_bytes(&bitmap_after, &bitmap_after_continuation))
+        > MAX_TOTAL_BITMAP_BYTES
+    {
+        return Err(invalid("native bitmap page evidence budget exhausted"));
+    }
+    stream_bytes = stream_bytes.saturating_add(base_after.bytes.capacity());
     if stream_bytes > MAX_TOTAL_STREAM_BYTES {
         return Err(invalid("native allocation evidence budget exhausted"));
     }
@@ -447,7 +458,7 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     privileges.restore()?;
     let after = route(&volume, &disk, request)?;
     Ok(Report {
-        schema_version: 5,
+        schema_version: 6,
         request: request.clone(),
         volume_extents_before: before.0,
         volume_extents_after: after.0,
@@ -466,6 +477,8 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             base_after,
             bitmap_before,
             bitmap_after,
+            bitmap_before_continuation,
+            bitmap_after_continuation,
         }),
         logical_data: Some(LogicalData {
             audit: read_budget.audit(),

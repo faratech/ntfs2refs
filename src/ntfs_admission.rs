@@ -829,7 +829,7 @@ fn assess_source_view_profile(
     );
     gate(
         "native_profile",
-        native_schema == 5
+        matches!(native_schema, 5..=6)
             && comparison.native_namespace.is_some()
             && comparison.native_logical_data.is_some(),
         "older replay reports do not supply complete native namespace/logical-data evidence",

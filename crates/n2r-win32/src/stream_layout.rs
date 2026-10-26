@@ -4,6 +4,7 @@ pub const MAX_STREAMS: usize = 64;
 pub const MAX_STREAM_BUFFER: usize = 65_536;
 pub const MAX_EXTENTS: usize = 1024;
 pub const RETRIEVAL_CAPACITY: usize = 16 + 16 * MAX_EXTENTS;
+/// Per-call bitmap payload; complete assembled maps have a separate bound.
 pub const MAX_BITMAP_BYTES: usize = 2 * 1024 * 1024;
 pub const GET_RETRIEVAL: u32 = 0x00090073;
 pub const GET_BASE: u32 = 0x00090234;

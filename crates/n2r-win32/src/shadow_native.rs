@@ -126,6 +126,8 @@ pub enum Mode {
 pub struct CandidateReport {
     pub legacy: crate::bitmap_layout::Candidate,
     pub metadata_inclusive: crate::bitmap_layout::Candidate,
+    pub legacy_page_proof: crate::bitmap_paging::Proof,
+    pub metadata_page_proof: crate::bitmap_paging::Proof,
 }
 #[derive(Debug, Serialize)]
 pub struct ObjectReport {
@@ -151,6 +153,7 @@ pub struct Report {
     /// Complete metadata-inclusive allocation intervals observed through
     /// refs.sys on this mounted shadow. Not a stand-alone ownership proof.
     pub metadata_allocation: Option<crate::bitmap_layout::AllocationMap>,
+    pub metadata_allocation_page_proof: Option<crate::bitmap_paging::Proof>,
     pub base_sectors: u64,
     pub privilege_states: Vec<PrivilegeState>,
     pub events: Vec<NativeEvent>,
@@ -409,25 +412,20 @@ fn retain_run_on_shadow(
         &[0; 8],
         stream_layout::RETRIEVAL_CAPACITY,
     )?;
-    let legacy = ctl(
-        volume,
-        stream_layout::GET_BITMAP,
-        &[0; 8],
-        stream_layout::MAX_BITMAP_BYTES,
-    )?;
+    let legacy = crate::stream_native::bitmap_capture(volume, &[0; 8])?;
     let mut ex = [0; 16];
     ex[8] = 1;
-    let metadata = ctl(
-        volume,
-        stream_layout::GET_BITMAP,
-        &ex,
-        stream_layout::MAX_BITMAP_BYTES,
-    )?;
+    let metadata = crate::stream_native::bitmap_capture(volume, &ex)?;
     let candidate = CandidateReport {
-        legacy: crate::bitmap_layout::candidate(&legacy, offset, run.length, partition)?,
+        legacy: crate::bitmap_layout::candidate(&legacy.bitmap, offset, run.length, partition)?,
         metadata_inclusive: crate::bitmap_layout::candidate(
-            &metadata, offset, run.length, partition,
+            &metadata.bitmap,
+            offset,
+            run.length,
+            partition,
         )?,
+        legacy_page_proof: legacy.proof,
+        metadata_page_proof: metadata.proof,
     };
     if candidate.legacy.declared_clusters != partition / 4096
         || candidate.metadata_inclusive.declared_clusters != partition / 4096
@@ -506,23 +504,13 @@ fn retain_source_run_on_shadow(
     let physical_offset = run
         .physical_offset
         .ok_or_else(|| invalid("source placement hole"))?;
-    let legacy = ctl(
-        volume,
-        stream_layout::GET_BITMAP,
-        &[0; 8],
-        stream_layout::MAX_BITMAP_BYTES,
-    )?;
+    let legacy = crate::stream_native::bitmap_capture(volume, &[0; 8])?;
     let mut ex = [0; 16];
     ex[8] = 1;
-    let metadata = ctl(
-        volume,
-        stream_layout::GET_BITMAP,
-        &ex,
-        stream_layout::MAX_BITMAP_BYTES,
-    )?;
+    let metadata = crate::stream_native::bitmap_capture(volume, &ex)?;
     let plan = crate::retention_layout::plan_free_subruns(
-        &legacy,
-        &metadata,
+        &legacy.bitmap,
+        &metadata.bitmap,
         crate::retention_layout::SourceRun {
             logical_offset: run.logical_offset,
             physical_offset,
@@ -2068,6 +2056,7 @@ fn run_role_profile(
             after,
             objects: vec![],
             metadata_allocation: None,
+            metadata_allocation_page_proof: None,
             base_sectors: 0,
             privilege_states: privileges.audit().to_vec(),
             events,
@@ -2118,6 +2107,7 @@ fn run_role_profile(
                 after,
                 objects: vec![],
                 metadata_allocation: None,
+                metadata_allocation_page_proof: None,
                 base_sectors: 0,
                 privilege_states: privileges.audit().to_vec(),
                 events,
@@ -2226,22 +2216,14 @@ fn run_role_profile(
         volume.sync_all()?;
     }
     // No fallback from metadata-inclusive evidence to the legacy view.
-    let legacy_bitmap = ctl(
-        &volume,
-        stream_layout::GET_BITMAP,
-        &[0; 8],
-        stream_layout::MAX_BITMAP_BYTES,
-    )?;
+    let legacy_bitmap = crate::stream_native::bitmap_capture(volume, &[0; 8])?;
     let mut ex_input = [0; 16];
     ex_input[8] = 1;
-    let metadata_bitmap = ctl(
-        &volume,
-        stream_layout::GET_BITMAP,
-        &ex_input,
-        stream_layout::MAX_BITMAP_BYTES,
+    let metadata_bitmap = crate::stream_native::bitmap_capture(volume, &ex_input)?;
+    let metadata_allocation = crate::bitmap_layout::allocated_ranges(
+        &metadata_bitmap.bitmap,
+        binding.identity.partition_bytes,
     )?;
-    let metadata_allocation =
-        crate::bitmap_layout::allocated_ranges(&metadata_bitmap, binding.identity.partition_bytes)?;
     let mut objects = vec![];
     for i in input {
         let path = format!("{}{}", root, i.components.join("\\"));
@@ -2413,17 +2395,19 @@ fn run_role_profile(
                 .map(|offset| -> io::Result<_> {
                     Ok(CandidateReport {
                         legacy: crate::bitmap_layout::candidate(
-                            &legacy_bitmap,
+                            &legacy_bitmap.bitmap,
                             offset,
                             i.logical_length().next_multiple_of(4096),
                             binding.identity.partition_bytes,
                         )?,
                         metadata_inclusive: crate::bitmap_layout::candidate(
-                            &metadata_bitmap,
+                            &metadata_bitmap.bitmap,
                             offset,
                             i.logical_length().next_multiple_of(4096),
                             binding.identity.partition_bytes,
                         )?,
+                        legacy_page_proof: legacy_bitmap.proof.clone(),
+                        metadata_page_proof: metadata_bitmap.proof.clone(),
                     })
                 })
                 .transpose()?,
@@ -2438,6 +2422,7 @@ fn run_role_profile(
         after,
         objects,
         metadata_allocation: Some(metadata_allocation),
+        metadata_allocation_page_proof: Some(metadata_bitmap.proof),
         base_sectors: 0,
         privilege_states: privileges.audit().to_vec(),
         events,

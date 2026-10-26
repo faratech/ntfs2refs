@@ -87,7 +87,7 @@ fn pinned(path: &Path, hash: &str, limit: u64) -> Result<Vec<u8>> {
 }
 fn save(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     let b = serde_json::to_vec_pretty(value)?;
-    ensure!(b.len() <= 16 * 1024 * 1024, "report exceeds bound");
+    ensure!(b.len() <= 64 * 1024 * 1024, "report exceeds bound");
     let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;
     f.write_all(&b)?;
     f.sync_all()?;
@@ -165,7 +165,7 @@ fn main() -> Result<()> {
                     .clone(),
             )?;
             let report: Report =
-                serde_json::from_slice(&pinned(&native, &native_sha256, 16 * 1024 * 1024)?)?;
+                serde_json::from_slice(&pinned(&native, &native_sha256, 64 * 1024 * 1024)?)?;
             let comparison = ntfs_attestation::compare(&ntfs, &inspection_sha256, &report)?;
             let backups = if let Some(path) = source_image {
                 let expected: ntfs2refs::block_io::SourceIdentity = serde_json::from_value(

@@ -54,13 +54,41 @@ pub(crate) fn ioctl(file: &File, code: u32, input: &[u8], capacity: usize) -> Io
 pub(crate) fn base(file: &File) -> IoctlQuery {
     ioctl(file, layout::GET_BASE, &[], 8)
 }
-pub(crate) fn bitmap(file: &File) -> IoctlQuery {
-    ioctl(
-        file,
-        layout::GET_BITMAP,
-        &[0; 8],
-        16 + layout::MAX_BITMAP_BYTES,
-    )
+pub(crate) fn bitmap(file: &File) -> io::Result<(IoctlQuery, Vec<IoctlQuery>)> {
+    bitmap_queries(file, &[0; 8])
+}
+pub(crate) fn bitmap_queries(
+    file: &File,
+    template: &[u8],
+) -> io::Result<(IoctlQuery, Vec<IoctlQuery>)> {
+    crate::bitmap_paging::page_input(template, 0)?;
+    let mut assembler = crate::bitmap_paging::Assembler::default();
+    let mut queries = Vec::new();
+    while assembler.response_capacity() != 0 {
+        let input = crate::bitmap_paging::page_input(template, assembler.next_lcn())?;
+        let query = ioctl(
+            file,
+            layout::GET_BITMAP,
+            &input,
+            assembler.response_capacity(),
+        );
+        let result = assembler.push(&query, template);
+        queries.push(query);
+        if !matches!(result, Ok(false)) {
+            break;
+        }
+    }
+    // Keep refused/truncated responses for diagnostic replay. Only the shared
+    // assembler, not this tuple, can establish complete bitmap coverage.
+    let first = queries.remove(0);
+    Ok((first, queries))
+}
+pub(crate) fn bitmap_capture(
+    file: &File,
+    template: &[u8],
+) -> io::Result<crate::bitmap_paging::Capture> {
+    let (first, continuation) = bitmap_queries(file, template)?;
+    crate::bitmap_paging::assemble_queries(&first, &continuation, template)
 }
 fn info(file: &File, class: i32, length: usize) -> Query {
     let mut storage = vec![0u64; length.div_ceil(8)];

@@ -95,6 +95,12 @@ Parser support for a feature is not evidence that conversion preserves it.
   reconcile the exact frozen NTFS UTF-16 label and restore it through Windows.
 - `crates/n2r-win32/src/shadow_native.rs`: native shadow construction, measured
   retention attempts and strict tree verification.
+- `crates/n2r-win32/src/bitmap_paging.rs`: bounded complete bitmap assembly,
+  shared by live source, shadow and frozen allocation collection. Native report
+  schema 6 replays original page responses; legacy reports reject continuations.
+  Complete-map/page hashes have distinct contracts. See
+  [native bitmap pagination](docs/native-bitmap-pagination.md). This source work
+  has no native paging qualification and does not widen conversion authority.
 
 Preserve these distinctions:
 

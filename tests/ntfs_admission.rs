@@ -181,7 +181,7 @@ fn pinned_root_txf_has_exact_internal_form_but_replacement_is_not_admitted() {
 fn older_reports_and_success_flags_cannot_supply_missing_evidence() {
     let r = fixture();
     let c = comparison(&r);
-    for schema in [2, 3, 4, 5] {
+    for schema in [2, 3, 4, 5, 6] {
         let result = a::assess(&r, &c, schema);
         assert!(
             !result

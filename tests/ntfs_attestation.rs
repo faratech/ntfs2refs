@@ -233,6 +233,36 @@ fn matched_native_metadata_is_still_diagnostic() {
     assert!(!c.conversion_qualified);
 }
 
+#[test]
+fn legacy_report_schemas_cannot_smuggle_bitmap_continuations() {
+    use n2r_win32::attestation::{IoctlQuery, VolumeAllocation};
+    let (raw, report) = fixture();
+    let query = IoctlQuery {
+        code: n2r_win32::stream_layout::GET_BITMAP,
+        input: vec![0; 8],
+        bytes: vec![],
+        native_error: None,
+    };
+    for schema in 2..=5 {
+        for before in [false, true] {
+            let mut altered = report.clone();
+            altered.schema_version = schema;
+            altered.allocation = Some(VolumeAllocation {
+                base_before: query.clone(),
+                base_after: query.clone(),
+                bitmap_before: query.clone(),
+                bitmap_after: query.clone(),
+                bitmap_before_continuation: if before { vec![query.clone()] } else { vec![] },
+                bitmap_after_continuation: if before { vec![] } else { vec![query.clone()] },
+            });
+            let error = compare(&raw, &"a".repeat(64), &altered)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("paged bitmap transcripts require native schema 6"));
+        }
+    }
+}
+
 fn request_inputs() -> (
     ntfs2refs::planner::Inspection,
     n2r_win32::layout::DiskBinding,

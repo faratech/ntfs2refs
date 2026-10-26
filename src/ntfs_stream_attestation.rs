@@ -3,7 +3,7 @@ use crate::ntfs_inspect::{AllocationReconciliationStatus, Extent, FileInventory,
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     attestation::{IoctlQuery, Report, StreamCapture},
-    stream_layout as layout,
+    bitmap_paging, stream_layout as layout,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -70,11 +70,31 @@ pub fn base(q: &IoctlQuery) -> Result<u64> {
     ensure!(n <= i64::MAX as u64, "negative native retrieval base");
     Ok(n)
 }
+pub(crate) fn validate_bitmap_schema(native: &Report) -> Result<()> {
+    ensure!(
+        native.schema_version >= 6
+            || native.allocation.as_ref().is_none_or(|a| {
+                a.bitmap_before_continuation.is_empty() && a.bitmap_after_continuation.is_empty()
+            }),
+        "paged bitmap transcripts require native schema 6"
+    );
+    Ok(())
+}
 pub fn check_bitmap(raw: &NtfsInspection, q: &IoctlQuery) -> Result<()> {
-    let b = bytes(q, layout::GET_BITMAP, &[0; 8])?;
+    check_bitmap_pages(raw, q, &[])
+}
+/// Reconstruct the complete bitmap from the recorded native queries. A supplied
+/// canonical map or page-summary success flag is never allocation evidence.
+pub fn check_bitmap_pages(
+    raw: &NtfsInspection,
+    first: &IoctlQuery,
+    continuation: &[IoctlQuery],
+) -> Result<()> {
+    let capture = bitmap_paging::assemble_queries(first, continuation, &[0; 8])?;
+    let b = &capture.bitmap;
     let count = raw.geometry.total_clusters;
     ensure!(
-        count > 0 && count <= 16 * 1024 * 1024,
+        count > 0 && count <= bitmap_paging::MAX_DATA_BYTES as u64 * 8,
         "bitmap domain exceeds profile"
     );
     ensure!(
@@ -87,7 +107,7 @@ pub fn check_bitmap(raw: &NtfsInspection, q: &IoctlQuery) -> Result<()> {
         bits >= count
             && bits <= count.div_ceil(8) * 8
             && b.len() >= 16 + need
-            && b.len() <= 16 + layout::MAX_BITMAP_BYTES,
+            && b.len() <= bitmap_paging::MAX_COMPLETE_BYTES,
         "native bitmap is incomplete or outside domain"
     );
     let source = raw
@@ -312,18 +332,24 @@ pub fn check_file(
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     ensure!(
-        matches!(native.schema_version, 3..=5),
+        matches!(native.schema_version, 3..=6),
         "native stream profile missing"
     );
+    validate_bitmap_schema(native)?;
     let volume = native
         .allocation
         .as_ref()
         .context("missing native volume allocation observations")?;
     let bitmap = Check::from((|| {
-        check_bitmap(raw, &volume.bitmap_before)?;
-        check_bitmap(raw, &volume.bitmap_after)?;
+        check_bitmap_pages(
+            raw,
+            &volume.bitmap_before,
+            &volume.bitmap_before_continuation,
+        )?;
+        check_bitmap_pages(raw, &volume.bitmap_after, &volume.bitmap_after_continuation)?;
         ensure!(
-            volume.bitmap_before == volume.bitmap_after,
+            volume.bitmap_before == volume.bitmap_after
+                && volume.bitmap_before_continuation == volume.bitmap_after_continuation,
             "native bitmap changed"
         );
         Ok(())

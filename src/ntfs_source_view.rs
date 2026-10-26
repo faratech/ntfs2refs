@@ -197,8 +197,8 @@ pub fn diagnose(raw: &NtfsInspection, inspection_pin: &str, native: &Report) -> 
     // Per-object strict failures remain in this independent comparison.
     let _strict = ntfs_attestation::compare(raw, inspection_pin, native)?;
     ensure!(
-        native.schema_version == 5,
-        "source-view policy requires native schema 5"
+        matches!(native.schema_version, 5..=6),
+        "source-view policy requires native schema 5 or 6"
     );
     let security = raw
         .security_reconciliation

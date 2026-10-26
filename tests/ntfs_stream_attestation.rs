@@ -1,15 +1,17 @@
 #[allow(dead_code, reason = "Shared synthetic parser fixture")]
 mod support;
 use n2r_win32::{
-    attestation::{IoctlQuery, Query, StreamCapture, StreamQuery},
-    stream_layout as layout,
+    attestation::{
+        IoctlQuery, Query, Report, Request, StreamCapture, StreamQuery, VolumeAllocation,
+    },
+    bitmap_paging, stream_layout as layout,
 };
 use ntfs2refs::{
     ntfs_inspect::{
         self, AllocationReconciliation, AllocationReconciliationStatus, Extent, FileInventory,
         NtfsInspection,
     },
-    ntfs_stream_attestation::{check_bitmap, check_file},
+    ntfs_stream_attestation::{check_bitmap, check_bitmap_pages, check_file, reconcile},
 };
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
@@ -313,4 +315,194 @@ fn maximum_bitmaps_fit_the_existing_report_budget() {
     };
     let bytes = serde_json::to_vec_pretty(&vec![q.clone(), q]).unwrap();
     assert!(bytes.len() < 9 * 1024 * 1024);
+}
+
+fn bitmap_queries(data: &[u8], domain: u64, page_bytes: usize) -> Vec<IoctlQuery> {
+    data.chunks(page_bytes)
+        .enumerate()
+        .map(|(index, bytes)| {
+            let start = (index * page_bytes * 8) as u64;
+            let mut response = vec![0; 16];
+            p64(&mut response, 0, start);
+            p64(&mut response, 8, domain - start);
+            response.extend_from_slice(bytes);
+            IoctlQuery {
+                code: layout::GET_BITMAP,
+                input: start.to_le_bytes().to_vec(),
+                bytes: response,
+                native_error: (start + bytes.len() as u64 * 8 < domain)
+                    .then_some(bitmap_paging::MORE_DATA),
+            }
+        })
+        .collect()
+}
+
+fn bitmap_report(raw: &NtfsInspection, before: &[IoctlQuery], after: &[IoctlQuery]) -> Report {
+    let base = IoctlQuery {
+        code: layout::GET_BASE,
+        input: vec![],
+        bytes: vec![0; 8],
+        native_error: None,
+    };
+    Report {
+        schema_version: 6,
+        request: Request {
+            schema_version: 1,
+            source_inspection_sha256: "a".repeat(64),
+            volume: "\\\\?\\Volume{12345678-1234-5678-1234-567812345678}\\".into(),
+            disk_number: 1,
+            partition_offset: 16 * 1024 * 1024,
+            partition_length: raw.geometry.volume_size,
+            ntfs_serial: raw.geometry.serial_number,
+            files: vec![],
+        },
+        volume_extents_before: vec![],
+        volume_extents_after: vec![],
+        ntfs_data_before: vec![],
+        ntfs_data_after: vec![],
+        disk_attributes_before: vec![],
+        disk_attributes_after: vec![],
+        write_protect_error_before: 19,
+        write_protect_error_after: 19,
+        privileges_restored: true,
+        privilege_states: vec![],
+        files: vec![],
+        conversion_qualified: false,
+        allocation: Some(VolumeAllocation {
+            base_before: base.clone(),
+            base_after: base,
+            bitmap_before: before[0].clone(),
+            bitmap_after: after[0].clone(),
+            bitmap_before_continuation: before[1..].to_vec(),
+            bitmap_after_continuation: after[1..].to_vec(),
+        }),
+        logical_data: None,
+        namespace: None,
+    }
+}
+
+#[test]
+fn paged_bitmap_above_64_gib_preserves_the_raw_ntfs_tail_byte() {
+    let (mut raw, _) = bitmap_fixture();
+    // Only the supplied bitmap model grows; no large image or device is used.
+    let count = 16 * 1024 * 1024 + 1;
+    let mut data = vec![0xa5; (count as usize).div_ceil(8)];
+    *data.last_mut().unwrap() = 0xe5;
+    raw.geometry.total_clusters = count;
+    let allocation = raw.allocation_reconciliation.as_mut().unwrap();
+    allocation.domain_clusters = count;
+    allocation.bitmap_sha256 = hex::encode(Sha256::digest(&data));
+    // NTFS may report its byte-rounded domain. Unused tail bits still belong
+    // to the raw initialized $Bitmap bytes and must not be cleared by replay.
+    let mut pages = bitmap_queries(&data, count.div_ceil(8) * 8, 2 * 1024 * 1024);
+    assert_eq!(pages.len(), 2);
+    check_bitmap_pages(&raw, &pages[0], &pages[1..]).unwrap();
+    assert!(check_bitmap(&raw, &pages[0]).is_err());
+    *pages[1].bytes.last_mut().unwrap() ^= 0x80;
+    assert!(check_bitmap_pages(&raw, &pages[0], &pages[1..]).is_err());
+}
+
+#[test]
+fn paged_replay_rejects_missing_changed_foreign_and_gapped_continuations() {
+    let (raw, q) = bitmap_fixture();
+    let pages = bitmap_queries(&q.bytes[16..], 512, 32);
+    check_bitmap_pages(&raw, &pages[0], &pages[1..]).unwrap();
+    assert!(check_bitmap_pages(&raw, &pages[0], &[]).is_err());
+    for changed in 0..5 {
+        let mut bad = pages.clone();
+        match changed {
+            0 => bad[1].bytes[16] ^= 1,
+            1 => bad[1].input = 264u64.to_le_bytes().to_vec(),
+            2 => p64(&mut bad[1].bytes, 0, 264),
+            3 => bad[1].native_error = Some(5),
+            4 => bad[1].code ^= 1,
+            _ => unreachable!(),
+        }
+        assert!(check_bitmap_pages(&raw, &bad[0], &bad[1..]).is_err());
+    }
+    let mut extra = pages.clone();
+    extra.push(pages[1].clone());
+    assert!(check_bitmap_pages(&raw, &extra[0], &extra[1..]).is_err());
+}
+
+#[test]
+fn schema_6_requires_identical_before_and_after_raw_page_transcripts() {
+    let (mut raw, q) = bitmap_fixture();
+    raw.files.clear();
+    let before = bitmap_queries(&q.bytes[16..], 512, 16);
+    let after = bitmap_queries(&q.bytes[16..], 512, 32);
+    check_bitmap_pages(&raw, &before[0], &before[1..]).unwrap();
+    check_bitmap_pages(&raw, &after[0], &after[1..]).unwrap();
+    let stable = reconcile(&raw, &bitmap_report(&raw, &before, &before)).unwrap();
+    assert!(stable.bitmap.matched);
+    assert!(stable.all_mappings_matched);
+    assert!(!stable.conversion_qualified);
+    let changed = reconcile(&raw, &bitmap_report(&raw, &before, &after)).unwrap();
+    assert!(!changed.bitmap.matched);
+    assert!(changed.bitmap.detail.contains("native bitmap changed"));
+    assert!(!changed.all_mappings_matched);
+    assert!(!changed.conversion_qualified);
+}
+
+#[test]
+fn older_stream_schemas_only_accept_the_legacy_single_response_shape() {
+    let (mut raw, q) = bitmap_fixture();
+    raw.files.clear();
+    let pages = bitmap_queries(&q.bytes[16..], 512, 32);
+    for schema in 3..=5 {
+        let mut legacy = bitmap_report(&raw, std::slice::from_ref(&q), std::slice::from_ref(&q));
+        legacy.schema_version = schema;
+        let encoded = serde_json::to_value(&legacy).unwrap();
+        assert!(
+            encoded["allocation"]
+                .get("bitmap_before_continuation")
+                .is_none()
+        );
+        assert!(
+            encoded["allocation"]
+                .get("bitmap_after_continuation")
+                .is_none()
+        );
+        let decoded: Report = serde_json::from_value(encoded).unwrap();
+        assert!(reconcile(&raw, &decoded).unwrap().all_mappings_matched);
+        let mut paged = bitmap_report(&raw, &pages, &pages);
+        paged.schema_version = schema;
+        let error = reconcile(&raw, &paged).unwrap_err().to_string();
+        assert!(error.contains("paged bitmap transcripts require native schema 6"));
+    }
+}
+
+#[test]
+fn schema_6_does_not_make_namespace_evidence_optional() {
+    let (raw, q) = bitmap_fixture();
+    let report = bitmap_report(&raw, std::slice::from_ref(&q), std::slice::from_ref(&q));
+    let error = ntfs2refs::ntfs_namespace_attestation::reconcile(&raw, &report)
+        .unwrap_err()
+        .to_string();
+    assert!(!error.contains("native namespace evidence profile absent"));
+    assert!(
+        error.contains("raw namespace is incomplete")
+            || error.contains("missing native namespace evidence")
+    );
+}
+
+#[test]
+fn two_128_gib_bitmap_transcripts_fit_the_expanded_report_bound() {
+    let (mut raw, _) = bitmap_fixture();
+    raw.files.clear();
+    let data = vec![0xa5; bitmap_paging::MAX_DATA_BYTES];
+    let count = data.len() as u64 * 8;
+    raw.geometry.total_clusters = count;
+    let allocation = raw.allocation_reconciliation.as_mut().unwrap();
+    allocation.domain_clusters = count;
+    allocation.bitmap_sha256 = hex::encode(Sha256::digest(&data));
+    let pages = bitmap_queries(&data, count, 2 * 1024 * 1024);
+    check_bitmap_pages(&raw, &pages[0], &pages[1..]).unwrap();
+    let encoded = serde_json::to_vec(&bitmap_report(&raw, &pages, &pages)).unwrap();
+    assert!(encoded.len() > 16 * 1024 * 1024);
+    assert!(encoded.len() < 64 * 1024 * 1024);
+    let decoded: Report = serde_json::from_slice(&encoded).unwrap();
+    let result = reconcile(&raw, &decoded).unwrap();
+    assert!(result.all_mappings_matched);
+    assert!(!result.conversion_qualified);
 }

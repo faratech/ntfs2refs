@@ -1042,8 +1042,8 @@ pub enum GeneralAllocationPhase {
 }
 
 /// Every declared cluster from complete native responses, represented as
-/// allocated ranges with hashes of the original responses. No ownership is
-/// inferred; response padding is covered by its hash, not treated as clusters.
+/// allocated ranges over the explicit assembled bitmap. Page proofs retain
+/// original response hashes/padding separately. No ownership is inferred.
 #[derive(Debug, Serialize)]
 pub struct GeneralAllocationSnapshot {
     phase: GeneralAllocationPhase,
@@ -1051,6 +1051,10 @@ pub struct GeneralAllocationSnapshot {
     metadata_inclusive: crate::bitmap_layout::AllocationMap,
     legacy_response_bytes: usize,
     metadata_response_bytes: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    legacy_page_proof: Option<crate::bitmap_paging::Proof>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata_page_proof: Option<crate::bitmap_paging::Proof>,
 }
 impl GeneralAllocationSnapshot {
     pub fn phase(&self) -> GeneralAllocationPhase {
@@ -1119,55 +1123,52 @@ fn allocation_snapshot(
         metadata_inclusive: crate::bitmap_layout::allocated_ranges(metadata, partition_bytes)?,
         legacy_response_bytes: legacy.len(),
         metadata_response_bytes: metadata.len(),
+        legacy_page_proof: None,
+        metadata_page_proof: None,
     })
 }
 
-/// Bitmap events explicitly retain only the actual response header. Complete
-/// successful responses are decoded without truncation and hashed in the
-/// witness, avoiding multi-megabyte duplicate JSON audit payloads.
+/// Per-page events retain actual headers/status. The witness binds those pages'
+/// complete response hashes to its separately identified assembled bitmap.
 fn allocation_bitmap(
     volume: &File,
     name: &str,
     input: &[u8],
     events: &mut Vec<NativeEvent>,
-) -> io::Result<Vec<u8>> {
-    if !matches!(input.len(), 8 | 16) || events.len() >= 128 {
-        return Err(invalid("allocation query audit budget exceeded"));
-    }
-    let mut output = vec![0; crate::stream_layout::MAX_BITMAP_BYTES];
-    let mut returned = 0_u32;
-    // SAFETY: the retained live handle and separately owned input/output
-    // buffers remain valid for this synchronous, read-only control call.
-    let success = unsafe {
-        DeviceIoControl(
-            volume.as_raw_handle(),
+) -> io::Result<crate::bitmap_paging::Capture> {
+    let mut assembler = crate::bitmap_paging::Assembler::default();
+    let mut page = 0;
+    while assembler.response_capacity() != 0 {
+        if events.len() >= 128 {
+            return Err(invalid("allocation query audit budget exceeded"));
+        }
+        let page_input = crate::bitmap_paging::page_input(input, assembler.next_lcn())?;
+        let query = crate::stream_native::ioctl(
+            volume,
             crate::stream_layout::GET_BITMAP,
-            input.as_ptr().cast(),
-            input.len() as u32,
-            output.as_mut_ptr().cast(),
-            output.len() as u32,
-            &mut returned,
-            ptr::null_mut(),
-        )
-    } != 0;
-    let error = (!success).then(io::Error::last_os_error);
-    events.push(NativeEvent {
-        operation: format!("{name}-header-only"),
-        control_code: crate::stream_layout::GET_BITMAP,
-        input: input.to_vec(),
-        succeeded: success,
-        native_error: error.as_ref().and_then(io::Error::raw_os_error),
-        output: output[..(returned as usize).min(output.len()).min(16)].to_vec(),
-    });
-    if let Some(error) = error {
-        // ERROR_MORE_DATA is also a refusal: no partial map is admitted.
-        return Err(io::Error::new(error.kind(), format!("{name}: {error}")));
+            &page_input,
+            assembler.response_capacity(),
+        );
+        events.push(NativeEvent {
+            operation: format!("{name}-page-{page}-header-only"),
+            control_code: query.code,
+            input: query.input.clone(),
+            succeeded: query.native_error.is_none(),
+            native_error: query.native_error,
+            output: query.bytes[..query.bytes.len().min(16)].to_vec(),
+        });
+        if let Some(error) = query
+            .native_error
+            .filter(|e| *e != crate::bitmap_paging::MORE_DATA)
+        {
+            return Err(io::Error::from_raw_os_error(error));
+        }
+        if assembler.push(&query, input)? {
+            break;
+        }
+        page += 1;
     }
-    if returned as usize > output.len() {
-        return Err(invalid("allocation response exceeds bounded buffer"));
-    }
-    output.truncate(returned as usize);
-    Ok(output)
+    assembler.finish()
 }
 
 fn capture_allocation(
@@ -1184,7 +1185,7 @@ fn capture_allocation(
 fn capture_allocation_queries(
     phase: GeneralAllocationPhase,
     partition_bytes: u64,
-    mut query: impl FnMut(&str, &[u8]) -> io::Result<Vec<u8>>,
+    mut query: impl FnMut(&str, &[u8]) -> io::Result<crate::bitmap_paging::Capture>,
 ) -> io::Result<GeneralAllocationSnapshot> {
     let (legacy_name, metadata_name) = match phase {
         GeneralAllocationPhase::PostLockFlush => (
@@ -1200,9 +1201,17 @@ fn capture_allocation_queries(
     // whether the metadata-inclusive operation is supported at this phase.
     let legacy = query(legacy_name, &[0; 8]);
     let mut extended = [0; 16];
-    extended[8] = 1; // GET_VOLUME_BITMAP_FLAG_INCLUDE_METADATA.
+    extended[8] = 1; // GET_VOLUME_BITMAP_FLAG_MASK_METADATA includes metadata.
     let metadata = query(metadata_name, &extended);
-    allocation_snapshot(phase, &legacy?, &metadata?, partition_bytes)
+    let legacy = legacy?;
+    let metadata = metadata?;
+    let mut snapshot =
+        allocation_snapshot(phase, &legacy.bitmap, &metadata.bitmap, partition_bytes)?;
+    snapshot.legacy_response_bytes = legacy.proof.pages.iter().map(|p| p.response_bytes).sum();
+    snapshot.metadata_response_bytes = metadata.proof.pages.iter().map(|p| p.response_bytes).sum();
+    snapshot.legacy_page_proof = Some(legacy.proof);
+    snapshot.metadata_page_proof = Some(metadata.proof);
+    Ok(snapshot)
 }
 
 fn allocation_refs_handle(volume: &File) -> io::Result<()> {
@@ -1295,7 +1304,7 @@ impl GeneralFrozenPartition {
     ) -> io::Result<(Self, GeneralAllocationFreezeWitness)> {
         binding.validate()?;
         if 16 + (binding.identity.partition_bytes / 4096).div_ceil(8)
-            > crate::stream_layout::MAX_BITMAP_BYTES as u64
+            > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
         {
             return Err(invalid("allocation capture exceeds complete bitmap budget"));
         }
@@ -2705,6 +2714,19 @@ mod tests {
         bytes[16..].copy_from_slice(&bits.to_le_bytes());
         bytes
     }
+    fn allocation_test_capture(bytes: &[u8], input: &[u8]) -> crate::bitmap_paging::Capture {
+        crate::bitmap_paging::assemble_queries(
+            &crate::attestation::IoctlQuery {
+                code: crate::stream_layout::GET_BITMAP,
+                input: input.to_vec(),
+                bytes: bytes.to_vec(),
+                native_error: None,
+            },
+            &[],
+            input,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn allocation_capture_keeps_both_complete_views_and_their_phase() {
@@ -2716,7 +2738,10 @@ mod tests {
             16 * 4096,
             |name, input| {
                 queries.push((name.to_owned(), input.to_vec()));
-                Ok(if input.len() == 8 { &legacy } else { &metadata }.clone())
+                Ok(allocation_test_capture(
+                    if input.len() == 8 { &legacy } else { &metadata },
+                    input,
+                ))
             },
         )
         .unwrap();
@@ -2735,6 +2760,17 @@ mod tests {
         let encoded = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(encoded["phase"], "post-lock-flush");
         assert_eq!(encoded["metadata_response_bytes"], 18);
+        assert_eq!(
+            encoded["metadata_page_proof"]["encoding"],
+            crate::bitmap_paging::ENCODING
+        );
+        assert_eq!(
+            encoded["metadata_page_proof"]["pages"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(encoded.get("raw_write_authority").is_none());
     }
 
@@ -2764,7 +2800,7 @@ mod tests {
                 if input.len() == 16 {
                     Err(io::Error::from_raw_os_error(5))
                 } else {
-                    Ok(complete.clone())
+                    Ok(allocation_test_capture(&complete, input))
                 }
             },
         )
@@ -2781,7 +2817,7 @@ mod tests {
                         Err(io::Error::from_raw_os_error(21))
                     } else {
                         attempted_metadata = true;
-                        Ok(complete.clone())
+                        Ok(allocation_test_capture(&complete, input))
                     }
                 },
             )
@@ -2798,6 +2834,54 @@ mod tests {
         assert_eq!(snapshot.phase(), GeneralAllocationPhase::PostDismount);
     }
 
+    #[test]
+    fn allocation_capture_preserves_page_proofs_and_coalesces_across_pages() {
+        let snapshot = capture_allocation_queries(
+            GeneralAllocationPhase::PostLockFlush,
+            16 * 4096,
+            |_, template| {
+                let mut first = vec![0; 17];
+                first[8..16].copy_from_slice(&16_u64.to_le_bytes());
+                first[16] = 0xff;
+                let mut last = vec![0; 17];
+                last[..8].copy_from_slice(&8_u64.to_le_bytes());
+                last[8..16].copy_from_slice(&8_u64.to_le_bytes());
+                last[16] = 0xff;
+                let first = crate::attestation::IoctlQuery {
+                    code: crate::stream_layout::GET_BITMAP,
+                    input: template.to_vec(),
+                    bytes: first,
+                    native_error: Some(crate::bitmap_paging::MORE_DATA),
+                };
+                let last = crate::attestation::IoctlQuery {
+                    code: crate::stream_layout::GET_BITMAP,
+                    input: crate::bitmap_paging::page_input(template, 8)?,
+                    bytes: last,
+                    native_error: None,
+                };
+                crate::bitmap_paging::assemble_queries(&first, &[last], template)
+            },
+        )
+        .unwrap();
+        assert_eq!(snapshot.metadata_inclusive().ranges.len(), 1);
+        assert_eq!(snapshot.metadata_inclusive().ranges[0].length, 16 * 4096);
+        assert_eq!(snapshot.metadata_response_bytes, 34);
+        let proof = snapshot.metadata_page_proof.as_ref().unwrap();
+        assert_eq!(proof.pages.len(), 2);
+        assert_eq!(
+            proof.pages[0].native_error,
+            Some(crate::bitmap_paging::MORE_DATA)
+        );
+        assert_eq!(proof.pages[1].input[8], 1);
+        assert_eq!(
+            proof.canonical_bitmap_sha256,
+            snapshot.metadata_inclusive().bitmap_sha256
+        );
+        assert_ne!(
+            proof.pages[0].response_sha256,
+            proof.canonical_bitmap_sha256
+        );
+    }
     #[test]
     fn allocation_witness_cannot_attach_to_a_reopened_or_foreign_handle() {
         let OfflinePartition {

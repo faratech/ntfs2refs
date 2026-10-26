@@ -44,3 +44,12 @@ Tests use small ordinary fixtures and synthetic large-file metadata. They cover
 content/length/pin failures, malformed packets, I/O failures, reparse/device
 refusal, sharing exclusion and the unchanged journal bound. No giant or sparse
 test image is generated.
+
+For a fresh current-file recheck, `--reuse-reconstruction-proof <verification.json>`
+accepts only the recorded full proof with SHA-256
+`97e0963d5eed9a642f82a1ff8a4edfed9e9134bac7dd201b24b58bbf7d66d5b7`.
+It freshly checks the packet hash/grammar and the entire current VHD hash/footer,
+and requires both input identities to equal that full proof. It does not repeat
+the virtual reconstruction scan. Reports explicitly distinguish this reuse from
+reconstruction in the current run. Reused proofs cannot be chained. This mode
+still grants no cleanup authority.

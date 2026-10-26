@@ -16,6 +16,14 @@ pub const FIXED_VHD_SHA256: &str =
     "b671d327fba46dc371b65a0e20d631525db13af02fa85e9c797412cba58269b7";
 const PACKET_BYTES: u64 = 68_162_693;
 const FIXED_BYTES: u64 = (64_u64 << 30) + 512;
+const PRIOR_RECONSTRUCTION_PROOF_SHA256: &str =
+    "97e0963d5eed9a642f82a1ff8a4edfed9e9134bac7dd201b24b58bbf7d66d5b7";
+
+#[derive(Serialize)]
+pub struct ReusedReconstructionProof {
+    pub path: PathBuf,
+    pub sha256: String,
+}
 
 #[derive(Serialize)]
 pub struct VerificationReport {
@@ -39,6 +47,9 @@ pub struct VerificationReport {
     pub reconstructed_output_bytes_written: u64,
     pub devices_opened: u64,
     pub cleanup_authorized: bool,
+    pub reconstruction_verified_in_this_run: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reused_reconstruction_proof: Option<ReusedReconstructionProof>,
     pub limitations: [&'static str; 3],
 }
 
@@ -112,7 +123,77 @@ pub fn verify_pinned_files(packet: &Path, source: &Path) -> Result<VerificationR
         FIXED_VHD_SHA256,
         PACKET_BYTES,
         FIXED_BYTES,
+        None,
     )
+}
+
+/// Reuse only the exact recorded successful reconstruction. Packet and current
+/// source contents are still freshly hashed, and identities must match that proof.
+pub fn recheck_pinned_files(
+    packet: &Path,
+    source: &Path,
+    proof: &Path,
+) -> Result<VerificationReport> {
+    verify_files(
+        packet,
+        source,
+        PACKET_SHA256,
+        FIXED_VHD_SHA256,
+        PACKET_BYTES,
+        FIXED_BYTES,
+        Some((proof, PRIOR_RECONSTRUCTION_PROOF_SHA256)),
+    )
+}
+
+fn reuse_proof(
+    path: &Path,
+    pin: &str,
+    packet_pin: &str,
+    fixed_pin: &str,
+    packet: &ReferenceFileSnapshot,
+    source: &ReferenceFileSnapshot,
+) -> Result<ReusedReconstructionProof> {
+    let mut proof = HeldFile::open(path)?;
+    ensure!(
+        proof.before.file_bytes > 0 && proof.before.file_bytes <= 65536,
+        "reconstruction proof exceeds small-report bound"
+    );
+    let mut bytes = vec![];
+    (&mut proof.file).take(65537).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 == proof.before.file_bytes,
+        "reconstruction proof length changed"
+    );
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    ensure!(
+        sha256 == pin,
+        "reconstruction proof SHA-256 differs from exact recorded pin"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    ensure!(
+        value["kind"] == "read-only-reference-reproducibility"
+            && value["status"] == "verified"
+            && value["packet_sha256"] == packet_pin
+            && value["current_fixed_vhd_sha256"] == fixed_pin
+            && value["reconstructed_fixed_vhd_sha256"] == fixed_pin
+            && value["footer_matches_current_file"] == true
+            && value["input_handles_read_only"] == true
+            && value["windows_write_delete_sharing_excluded"] == true
+            && value["source_before"] == serde_json::to_value(source)?
+            && value["source_after"] == value["source_before"]
+            && value["packet_before"] == serde_json::to_value(packet)?
+            && value["packet_after"] == value["packet_before"]
+            && value.get("reused_reconstruction_proof").is_none()
+            && value
+                .get("reconstruction_verified_in_this_run")
+                .is_none_or(|v| v == true),
+        "recorded proof lacks complete reconstruction or exact unchanged identities"
+    );
+    proof.unchanged()?;
+    Ok(ReusedReconstructionProof {
+        path: proof.path,
+        sha256,
+    })
 }
 
 fn verify_files(
@@ -122,6 +203,7 @@ fn verify_files(
     fixed_pin: &str,
     packet_length: u64,
     source_length: u64,
+    prior_proof: Option<(&Path, &str)>,
 ) -> Result<VerificationReport> {
     let started = Instant::now();
     let mut packet_file = HeldFile::open(packet_path)?;
@@ -163,10 +245,25 @@ fn verify_files(
     );
     packet_file.unchanged()?;
     source_file.unchanged()?;
-    eprintln!("verifying complete packet reconstruction, including stored fixed-VHD footer");
-    // This existing verifier hashes every reconstructed byte, including zero
-    // gaps, then the exact footer; it also verifies partition and payload pins.
-    packet.verify_reconstructed_contents()?;
+    let reused_reconstruction_proof = if let Some((path, pin)) = prior_proof {
+        let proof = reuse_proof(
+            path,
+            pin,
+            packet_pin,
+            fixed_pin,
+            &packet_file.before,
+            &source_file.before,
+        )?;
+        eprintln!(
+            "reusing exact pinned complete reconstruction; packet and current VHD are freshly checked"
+        );
+        Some(proof)
+    } else {
+        eprintln!("verifying complete packet reconstruction, including stored fixed-VHD footer");
+        // Hash every reconstructed byte, zero gaps, footer and source subrange pins.
+        packet.verify_reconstructed_contents()?;
+        None
+    };
     eprintln!("hashing current fixed VHD through held read-only handle");
     source_file.file.seek(SeekFrom::Start(0))?;
     let current_fixed_vhd_sha256 = hash_exact(&mut source_file.file, source_length)?;
@@ -204,6 +301,8 @@ fn verify_files(
         reconstructed_output_bytes_written: 0,
         devices_opened: 0,
         cleanup_authorized: false,
+        reconstruction_verified_in_this_run: reused_reconstruction_proof.is_none(),
+        reused_reconstruction_proof,
         limitations: [
             "Point-in-time same-handle content/identity proof; not future deletion authority.",
             "Sharing excludes ordinary conflicting opens, not pre-existing writable mappings, kernel/storage actors or a hostile administrator.",
@@ -283,6 +382,7 @@ mod tests {
                 &self.fixed_pin,
                 self.packet_len,
                 self.source_len,
+                None,
             )
         }
     }
@@ -326,6 +426,37 @@ mod tests {
         let f = Fixture::new();
         fs::write(&f.source, b"short").unwrap();
         assert!(f.run().is_err());
+    }
+    #[test]
+    fn reuse_requires_exact_full_proof_pin_and_unchanged_input_identities() {
+        let f = Fixture::new();
+        let report = f.run().unwrap();
+        let proof = f._dir.path().join("proof.json");
+        let bytes = serde_json::to_vec(&report).unwrap();
+        let pin = hex::encode(Sha256::digest(&bytes));
+        fs::write(&proof, &bytes).unwrap();
+        let run = || {
+            verify_files(
+                &f.packet,
+                &f.source,
+                &f.packet_pin,
+                &f.fixed_pin,
+                f.packet_len,
+                f.source_len,
+                Some((&proof, &pin)),
+            )
+        };
+        let reused = run().unwrap();
+        assert!(!reused.reconstruction_verified_in_this_run);
+        assert!(!reused.cleanup_authorized);
+        assert_eq!(reused.reused_reconstruction_proof.unwrap().sha256, pin);
+        fs::write(&proof, b"foreign").unwrap();
+        assert!(run().is_err());
+        fs::write(&proof, &bytes).unwrap();
+        let old = f._dir.path().join("old.vhd");
+        fs::rename(&f.source, &old).unwrap();
+        fs::copy(&old, &f.source).unwrap();
+        assert!(run().is_err());
     }
     #[test]
     fn exact_reader_refuses_early_eof_extra_bytes_and_read_errors() {

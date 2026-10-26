@@ -1,27 +1,38 @@
-<# One public status/cancel task after collected exit87; no disk setters/retry. #>
+<# One public status/cancel task after a collected freeze stop or explicitly
+   selected shadow-construction refusal; no disk setters/retry. #>
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$InterruptedDirectory,[Parameter(Mandatory)][string]$BinaryPath,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256,
  [Parameter(Mandatory)][string]$FixtureBeforePath,
- [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$FixtureBeforeSha256)
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$FixtureBeforeSha256,
+ [ValidateSet('ControlledFreeze','QualificationFailure')][string]$Mode='ControlledFreeze')
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $workspace=Split-Path -Parent $PSScriptRoot;Import-Module (Join-Path $workspace 'lab/Lab.psm1') -Force
 $cfg=Get-LabConfiguration;$vm=Get-OwnedLabVM $cfg (Read-LabManifest $cfg win11)
 $origin=Assert-LabPath $InterruptedDirectory $cfg.Root
 $old=Get-Content (Join-Path $origin 'dispatch.json') -Raw|ConvertFrom-Json
 $terminal=Get-Content (Join-Path $origin 'collected.json') -Raw|ConvertFrom-Json
-if($old.kind-cne'certificate-backed-conversion-dispatch'-or$old.entrypoint-cne'lab-source-freeze-interruption'-or$old.expectedExitCode-ne87-or$old.runId-cnotmatch'\A[0-9a-f]{32}\z'-or$old.taskName-cne('N2R-AdmittedConvert-'+$old.runId)-or$old.guestOutput-cne('C:\ntfs2refs\conversions\'+$old.runId)-or$terminal.kind-cne'certificate-backed-conversion-observation'-or$terminal.runId-cne$old.runId-or$terminal.exitCode-ne87-or$terminal.success-or-not$terminal.sourceOffline-or-not$terminal.sourceReadOnly-or$vm.State-ne'Running'-or[guid]$vm.Id-ne[guid]$old.vmId-or[guid]$vm.ParentSnapshotId-ne[guid]$old.checkpointId){throw 'Collected exit87 and exact owned branch required.'}
+$qualificationFailure=$Mode-ceq'QualificationFailure'
+$originalExitCode=if($qualificationFailure){1}else{87}
+if($old.kind-cne'certificate-backed-conversion-dispatch'-or$old.runId-cnotmatch'\A[0-9a-f]{32}\z'-or$old.taskName-cne('N2R-AdmittedConvert-'+$old.runId)-or$old.guestOutput-cne('C:\ntfs2refs\conversions\'+$old.runId)-or$terminal.kind-cne'certificate-backed-conversion-observation'-or$terminal.runId-cne$old.runId-or$terminal.exitCode-ne$originalExitCode-or$terminal.success-or-not$terminal.sourceOffline-or-not$terminal.sourceReadOnly-or$vm.State-ne'Running'-or[guid]$vm.Id-ne[guid]$old.vmId-or[guid]$vm.ParentSnapshotId-ne[guid]$old.checkpointId){throw 'Collected preactivation outcome and exact owned branch required.'}
+if(-not$qualificationFailure-and($old.entrypoint-cne'lab-source-freeze-interruption'-or$old.expectedExitCode-ne87)){throw 'Controlled source-freeze dispatch required.'}
 function Read-Pin([string]$Path,[string]$Pin,[long]$Limit){$f=Get-Item -LiteralPath $Path -Force;if($Pin-cnotmatch'\A[0-9a-f]{64}\z'-or$f.PSIsContainer-or($f.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$f.Length-lt1-or$f.Length-gt$Limit-or(Get-FileHash -LiteralPath $Path).Hash.ToLowerInvariant()-cne$Pin){throw ('Bounded ordinary pin differs: '+$Path)};Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json}
 function Origin-Pin([string]$Name,[long]$Limit){$p=@($terminal.files|Where-Object {$_.name-ceq$Name});if($p.Count-ne1){throw ('Origin pin absent/duplicate: '+$Name)};$path=Join-Path $origin $Name;$v=Read-Pin $path $p[0].sha256 $Limit;if((Get-Item $path).Length-ne$p[0].length){throw 'Artifact length differs.'};[pscustomobject]@{name=$Name;sha256=$p[0].sha256;limit=$Limit;value=$v}}
 function Assert-Source($b){if($b.disk_number-ne1-or[guid]$b.volume_guid-ne[guid]'79eaccdf-38d3-4561-97cc-9276af5d223a'-or[guid]$b.identity.disk_guid-ne[guid]'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa'-or[guid]$b.identity.partition_guid-ne[guid]'79eaccdf-38d3-4561-97cc-9276af5d223a'-or$b.identity.partition_number-ne2-or$b.identity.disk_bytes-ne64GB-or$b.identity.partition_offset-ne16MB-or$b.identity.partition_bytes-ne52GB-or$b.identity.logical_sector_bytes-ne512-or$b.identity.physical_sector_bytes-ne4096){throw 'Exact enrolled source binding required.'}}
 $intent=Origin-Pin 'conversion-intent.json' 16384;$frozen=Origin-Pin 'qualification/source-frozen.json' 16MB
-$mounts=Origin-Pin 'qualification/source-mount-paths.json' 65536;$stop=Origin-Pin 'preactivation-interruption-intent.json' 16384
-Assert-Source $intent.value.pair.source;Assert-Source $frozen.value.binding;Assert-Source $mounts.value.binding;Assert-Source $stop.value.binding
+$mounts=Origin-Pin 'qualification/source-mount-paths.json' 65536
+$stop=$null;$failures=@()
+if($qualificationFailure){
+ $failures=@((Origin-Pin 'failed.json' 16384),(Origin-Pin 'qualification/failed.json' 16384))
+ if($failures[0].value.phase-cne'qualification'-or$failures[0].value.automatic_rollback_attempted-or$failures[1].value.kind-cne'live-general-qualification-failure'-or$failures[1].value.phase-cne'native-shadow-construction'-or$failures[1].value.execution_authorized-or$failures[1].value.source_payload_writes-ne0){throw 'Pinned source-unchanged shadow-construction refusal required.'}
+}else{$stop=Origin-Pin 'preactivation-interruption-intent.json' 16384;Assert-Source $stop.value.binding}
+Assert-Source $intent.value.pair.source;Assert-Source $frozen.value.binding;Assert-Source $mounts.value.binding
 $blocked=@('request.json','ticket.json','journal-location.json','prepare.json','interruption-intent.json','apply.json','finalization.json','result.json','qualification/native-shadow.json','qualification/certificate.json')
 foreach($name in $blocked){if(@($terminal.files|Where-Object {$_.name-ceq$name}).Count-or(Test-Path -LiteralPath (Join-Path $origin $name))){throw ('Later lifecycle artifact prevents controlled test: '+$name)}}
 if($intent.value.experiment_id-cne$old.runId-or$frozen.value.kind-cne'observed-frozen-source-identity'-or$frozen.value.state.disk_attributes-ne3-or$frozen.value.source_payload_writes-ne0-or$frozen.value.source_sha256-cnotmatch'\A[0-9a-f]{64}\z'-or-not$mounts.value.all_paths_resolve_to_bound_volume-or@($mounts.value.paths).Count-ne1-or$mounts.value.paths[0]-cne'F:\'){throw 'Frozen identity or original mount differs.'}
-$s=$stop.value
-if($s.kind-cne'controlled-preactivation-interruption-intent'-or$s.experiment_id-cne$old.runId-or$s.phase-cne'source-frozen-artifact-durable'-or$s.expected_process_exit_code-ne87-or$s.disk_attributes-ne3-or$s.source_frozen_artifact-cne'qualification/source-frozen.json'-or$s.source_frozen_artifact_sha256-cne$frozen.sha256-or$s.source_sha256-cne$frozen.value.source_sha256-or$s.target_construction_started-or$s.journal_prepared-or$s.reconstruction_activated-or$s.handoff_authorized-or$s.source_payload_writes-ne0){throw 'Durable source-freeze interruption differs.'}
+if($stop){$s=$stop.value
+ if($s.kind-cne'controlled-preactivation-interruption-intent'-or$s.experiment_id-cne$old.runId-or$s.phase-cne'source-frozen-artifact-durable'-or$s.expected_process_exit_code-ne87-or$s.disk_attributes-ne3-or$s.source_frozen_artifact-cne'qualification/source-frozen.json'-or$s.source_frozen_artifact_sha256-cne$frozen.sha256-or$s.source_sha256-cne$frozen.value.source_sha256-or$s.target_construction_started-or$s.journal_prepared-or$s.reconstruction_activated-or$s.handoff_authorized-or$s.source_payload_writes-ne0){throw 'Durable source-freeze interruption differs.'}
+}
 $fixturePath=Assert-LabPath $FixtureBeforePath $cfg.Root;$fixture=Read-Pin $fixturePath $FixtureBeforeSha256 65536
 if([guid]$fixture.sourceGuid-ne[guid]'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa'-or[guid]$fixture.partitionGuid-ne[guid]'79eaccdf-38d3-4561-97cc-9276af5d223a'-or$fixture.fileSystem-cne'NTFS'-or$fixture.label-cne'n2r-retained-source'-or$fixture.mount-cne'F:\'-or@($fixture.files).Count-ne4-or([DateTime]$fixture.capturedUtc).ToUniversalTime().Ticks-gt([DateTime]$old.startedUtc).ToUniversalTime().Ticks){throw 'Original prefreeze fixture differs.'}
 foreach($path in @('source0.bin','archive\doc1.bin','archive\nested\doc2.bin','notes\doc3.bin')){$f=@($fixture.files|Where-Object {$_.path-ceq$path});if($f.Count-ne1-or$f[0].length-lt1-or$f[0].length-gt1MB-or$f[0].sha256-cnotmatch'\A[0-9a-f]{64}\z'){throw 'Fixture path/length/hash differs.'}}
@@ -42,7 +53,7 @@ if($env:COMPUTERNAME-cne'N2R-WIN11'-or$env:SystemDrive-cne'C:'-or(Test-Path -Lit
 New-Item -ItemType Directory -Path $c.output|Out-Null;$phase='preflight'
 try{
  $t=Get-ScheduledTask -TaskName $c.originalTask;$i=Get-ScheduledTaskInfo -TaskName $c.originalTask
- if($t.State-in@('Running','Queued')-or$i.LastRunTime.Year-lt2000-or$i.LastTaskResult-ne87-or@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.TaskName-cne$c.taskName-and$_.State-in@('Running','Queued')}).Count){throw 'Original/other operation may be live.'}
+ if($t.State-in@('Running','Queued')-or$i.LastRunTime.Year-lt2000-or$i.LastTaskResult-ne$c.originalExitCode-or@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.TaskName-cne$c.taskName-and$_.State-in@('Running','Queued')}).Count){throw 'Original/other operation may be live.'}
  $d=Get-Disk -Number 1;$p=Get-Partition -DiskNumber 1 -PartitionNumber 2
  if([guid]$d.Guid-ne[guid]'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa'-or[guid]$p.Guid-ne[guid]'79eaccdf-38d3-4561-97cc-9276af5d223a'-or-not$d.IsOffline-or-not$d.IsReadOnly-or$d.IsBoot-or$d.IsSystem-or$p.IsBoot-or$p.IsSystem-or$d.Size-ne64GB-or$p.Size-ne52GB-or$p.Offset-ne16MB){throw 'Source identity/exclusion differs.'}
  foreach($name in $c.blockedArtifacts){if(Test-Path -LiteralPath (Join-Path $c.runDirectory $name)){throw 'Activation or construction artifact appeared.'}}
@@ -77,18 +88,19 @@ public sealed class N2RPublicCancelCapture {
 }catch{Save 'runner-failed.json' ([ordered]@{kind='public-cancel-runner-failure';phase=$phase;error=$_.Exception.ToString();automaticRetry=$false;capturedUtc=[DateTime]::UtcNow.ToString('o')});exit 1}
 '@
 $runnerPath=Join-Path $output 'runner.ps1';[IO.File]::WriteAllText($runnerPath,$runner,[Text.UTF8Encoding]::new($false));$runnerSha=(Get-FileHash -LiteralPath $runnerPath).Hash.ToLowerInvariant()
-$pins=@($intent,$frozen,$mounts,$stop)|ForEach-Object {[ordered]@{name=$_.name;sha256=$_.sha256;limit=$_.limit}}
-$config=[ordered]@{schemaVersion=1;kind='public-cancel-runner-config';stepId=$step;taskName=$task;originalTask=$old.taskName;runDirectory=$old.guestOutput;output=$result;cli=$root+'\public-cli.exe';binarySha256=$BinarySha256;fixture=$root+'\fixture-before.json';fixtureSha256=$FixtureBeforeSha256;runnerSha256=$runnerSha;pins=@($pins);blockedArtifacts=$blocked;intentSha256=$intent.sha256;frozenSha256=$frozen.sha256;mountsSha256=$mounts.sha256;sourceSha256=$frozen.value.source_sha256}
+$proofs=if($stop){@($stop)}else{$failures}
+$pins=@($intent,$frozen,$mounts)+$proofs|ForEach-Object {[ordered]@{name=$_.name;sha256=$_.sha256;limit=$_.limit}}
+$config=[ordered]@{schemaVersion=1;kind='public-cancel-runner-config';mode=$Mode;originalExitCode=$originalExitCode;stepId=$step;taskName=$task;originalTask=$old.taskName;runDirectory=$old.guestOutput;output=$result;cli=$root+'\public-cli.exe';binarySha256=$BinarySha256;fixture=$root+'\fixture-before.json';fixtureSha256=$FixtureBeforeSha256;runnerSha256=$runnerSha;pins=@($pins);blockedArtifacts=$blocked;intentSha256=$intent.sha256;frozenSha256=$frozen.sha256;mountsSha256=$mounts.sha256;sourceSha256=$frozen.value.source_sha256}
 Save-New (Join-Path $output 'config.json') $config;$configSha=(Get-FileHash -LiteralPath (Join-Path $output 'config.json')).Hash.ToLowerInvariant()
 Copy-Item -LiteralPath $fixturePath -Destination (Join-Path $output 'fixture-before.json')
-Save-New (Join-Path $output 'dispatch.json') ([ordered]@{schemaVersion=1;kind='public-cancel-dispatch';stepId=$step;originRunId=$old.runId;originDirectory=$origin;taskName=$task;guestRoot=$root;guestOutput=$result;vmId=[string]$vm.Id;checkpointId=[string]$vm.ParentSnapshotId;binarySha256=$BinarySha256;runnerSha256=$runnerSha;configSha256=$configSha;fixtureBeforeSha256=$FixtureBeforeSha256;sourceSha256=$frozen.value.source_sha256;intentSha256=$intent.sha256;frozenSha256=$frozen.sha256;mountsSha256=$mounts.sha256;interruptionSha256=$stop.sha256;startedUtc=[DateTime]::UtcNow.ToString('o')})
+Save-New (Join-Path $output 'dispatch.json') ([ordered]@{schemaVersion=1;kind='public-cancel-dispatch';mode=$Mode;originalExitCode=$originalExitCode;stepId=$step;originRunId=$old.runId;originDirectory=$origin;taskName=$task;guestRoot=$root;guestOutput=$result;vmId=[string]$vm.Id;checkpointId=[string]$vm.ParentSnapshotId;binarySha256=$BinarySha256;runnerSha256=$runnerSha;configSha256=$configSha;fixtureBeforeSha256=$FixtureBeforeSha256;sourceSha256=$frozen.value.source_sha256;intentSha256=$intent.sha256;frozenSha256=$frozen.sha256;mountsSha256=$mounts.sha256;interruptionSha256=if($stop){$stop.sha256}else{$null};startedUtc=[DateTime]::UtcNow.ToString('o')})
 $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null
 try{
  $session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop
- $preflight=Invoke-Command -Session $session -ArgumentList @($old.taskName,$old.guestOutput,$pins,$blocked,$root,$result) -ScriptBlock {
-  param($Task,$Artifacts,$Pins,$Blocked,$Root,$Output);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+ $preflight=Invoke-Command -Session $session -ArgumentList @($old.taskName,$old.guestOutput,$pins,$blocked,$root,$result,$originalExitCode) -ScriptBlock {
+  param($Task,$Artifacts,$Pins,$Blocked,$Root,$Output,$OriginalExitCode);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
   $t=Get-ScheduledTask -TaskName $Task;$i=Get-ScheduledTaskInfo -TaskName $Task
-  if($t.State-in@('Running','Queued')-or$i.LastRunTime.Year-lt2000-or$i.LastTaskResult-ne87-or@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.State-in@('Running','Queued')}).Count){throw 'Original operation is live/unknown or not exit87.'}
+  if($t.State-in@('Running','Queued')-or$i.LastRunTime.Year-lt2000-or$i.LastTaskResult-ne$OriginalExitCode-or@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.State-in@('Running','Queued')}).Count){throw 'Original operation is live/unknown or not exit87.'}
   $d=Get-Disk -Number 1;$p=Get-Partition -DiskNumber 1 -PartitionNumber 2
   if($env:COMPUTERNAME-cne'N2R-WIN11'-or$d.Size-ne64GB-or$p.Size-ne52GB-or$p.Offset-ne16MB-or[guid]$d.Guid-ne[guid]'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa'-or[guid]$p.Guid-ne[guid]'79eaccdf-38d3-4561-97cc-9276af5d223a'-or-not$d.IsOffline-or-not$d.IsReadOnly-or$d.IsBoot-or$d.IsSystem-or$p.IsBoot-or$p.IsSystem-or$d.LogicalSectorSize-ne512-or$d.PhysicalSectorSize-ne4096){throw 'Source exclusion/hardware/geometry differs.'}
   foreach($pin in $Pins){$path=Join-Path $Artifacts $pin.name;$f=Get-Item -LiteralPath $path -Force;if($f.PSIsContainer-or($f.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$f.Length-gt$pin.limit-or(Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant()-cne$pin.sha256){throw 'Actual guest artifact pin differs.'}}

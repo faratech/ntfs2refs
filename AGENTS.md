@@ -30,10 +30,20 @@ On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
   after reboot. The shadow was absent. This test used an explicitly backfilled,
   separately pinned legacy request; a fresh whole conversion exercising the
   new capture-to-automatic-label path remains to be qualified.
+- Exact-frozen target semantics passed a protected twelve-object native check
+  with equal complete before/after image hashes. The integrated conversion
+  path now requires that protected observation; a fresh complete conversion
+  through this addition remains to be qualified.
+- Public preactivation cancellation passed on the 52 GiB fixture, including
+  the complete frozen source hash, original NTFS mount and four user-file
+  hashes. Explicit public shadowless rollback is implemented but its native
+  interruption/recovery test remains pending.
 - The separate REFSNT experiment adopted one existing 4 KiB physical cluster
   with eight metadata writes totaling 131,072 bytes and three real image
-  flushes. The payload was unchanged and the small overlay passed independent
-  Rust inspection. Microsoft acceptance of this writer output is unqualified.
+  flushes. The payload stayed unchanged and independent Rust checks passed.
+  Microsoft rejected the imported writer candidate with a Medium Allocator
+  structural error. A clean, unmodified reference import is the next control;
+  neither the transport nor a specific writer defect has yet been isolated.
 
 Use the detailed reports rather than inferring broader support:
 
@@ -145,6 +155,11 @@ The toolchain is pinned to Rust 1.98.1. If Cargo is not on PATH, use
 tests and appropriate release builds. Use the workspace suite for changes
 spanning shared contracts. Inspect `$LASTEXITCODE` in PowerShell. Documentation
 and guidance changes do not need another native conversion run.
+
+Windows CI passed at `381a8c1` (run `40264890298`): format, Clippy, workspace
+tests and release builds. Do not transfer that result to later changes.
+`evidence/qualification-registry.json` records bounded implementation/native
+claims and their exact evidence pins; it never grants execution authority.
 
 Next work should improve retention on independently populated volumes, qualify
 the restricted writer through Microsoft's driver once capacity permits, finish

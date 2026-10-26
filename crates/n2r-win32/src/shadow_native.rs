@@ -1051,6 +1051,31 @@ fn enumerate(file: &File) -> io::Result<Vec<namespace_layout::Entry>> {
     Err(invalid("shadow namespace enumeration budget"))
 }
 
+fn formatter_cache_name(name: &str) -> bool {
+    matches!(name, "WPSettings.dat" | "IndexerVolumeGuid")
+}
+
+fn source_formatter_cache_bounds(input: &[Input<'_>]) -> io::Result<()> {
+    // Source objects already passed the complete ordinary-tree admission and
+    // bounded Input checks. Only formatter-cache replacement has this extra
+    // bound; another admitted SVI file is created normally, never ignored.
+    for i in input.iter().filter(|i| {
+        i.components.len() == 2
+            && i.components[0] == "System Volume Information"
+            && !i.directory
+            && formatter_cache_name(&i.components[1])
+    }) {
+        if i.logical_length() > 1024 * 1024 {
+            return Err(invalid("source formatter cache exceeds bounded profile"));
+        }
+    }
+    Ok(())
+}
+
+fn formatter_target_reusable(name: &str, attributes: u32, source_expected: bool) -> bool {
+    formatter_cache_name(name) && attributes & (16 | 0x400 | 0x800 | 0x4000) == 0 && source_expected
+}
+
 fn existing_system_entries(
     root: &str,
     initial: &[namespace_layout::Entry],
@@ -1064,24 +1089,7 @@ fn existing_system_entries(
     {
         return Ok(existing);
     }
-    for i in input
-        .iter()
-        .filter(|i| i.components.first().is_some_and(|part| part == system))
-    {
-        if !(i.components.len() == 1 && i.directory
-            || i.components.len() == 2
-                && !i.directory
-                && i.logical_length() <= 1024 * 1024
-                && matches!(
-                    i.components[1].as_str(),
-                    "WPSettings.dat" | "IndexerVolumeGuid"
-                ))
-        {
-            return Err(invalid(
-                "source system-volume namespace exceeds known cache-file profile",
-            ));
-        }
-    }
+    source_formatter_cache_bounds(input)?;
     if !initial
         .iter()
         .any(|e| e.name_utf16 == system.encode_utf16().collect::<Vec<_>>())
@@ -1100,10 +1108,11 @@ fn existing_system_entries(
         let name = String::from_utf16(&entry.name_utf16)
             .map_err(|_| invalid("invalid target system filename"))?;
         let path = vec![system.into(), name.clone()];
-        if !matches!(name.as_str(), "WPSettings.dat" | "IndexerVolumeGuid")
-            || entry.attributes & (16 | 0x400 | 0x800 | 0x4000) != 0
-            || !input.iter().any(|i| i.components == path && !i.directory)
-        {
+        if !formatter_target_reusable(
+            &name,
+            entry.attributes,
+            input.iter().any(|i| i.components == path && !i.directory),
+        ) {
             return Err(invalid(
                 "target system-volume namespace contains unknown or unexpected data",
             ));
@@ -2444,6 +2453,57 @@ fn run_role_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn admitted_tracking_log_is_not_a_formatter_cache_replacement() {
+        let path = vec!["System Volume Information".into(), "tracking.log".into()];
+        let digest = "1fb89041274dbd08edef3d324be87aebfc4e303c7e87d01c7a29d8b547b124b1";
+        let source = Input {
+            components: &path,
+            directory: false,
+            times: [134374560922807180; 4],
+            attributes: 0x26,
+            security: &[],
+            expected_api_security: None,
+            payload: &[],
+            expected_length: Some(20480),
+            expected_sha256: Some(digest),
+            source_offset: Some(25853952),
+            source_runs: vec![],
+        };
+        source_formatter_cache_bounds(&[source]).unwrap();
+        assert!(valid_shadow_component(&path[1]));
+        // Even an admitted source with this name cannot authorize reuse of a
+        // preexisting target entry. If absent, it follows normal CREATE_NEW.
+        assert!(!formatter_target_reusable("tracking.log", 0x26, true));
+        assert!(!formatter_target_reusable("unknown.bin", 0x20, true));
+    }
+
+    #[test]
+    fn formatter_target_reuse_stays_explicit_bounded_and_source_matched() {
+        for name in ["WPSettings.dat", "IndexerVolumeGuid"] {
+            assert!(formatter_target_reusable(name, 0x20, true));
+            assert!(!formatter_target_reusable(name, 0x20, false));
+            for flag in [16, 0x400, 0x800, 0x4000] {
+                assert!(!formatter_target_reusable(name, 0x20 | flag, true));
+            }
+            let path = vec!["System Volume Information".into(), name.into()];
+            let make_source = |length| Input {
+                components: &path,
+                directory: false,
+                times: [1; 4],
+                attributes: 0x20,
+                security: &[],
+                expected_api_security: None,
+                payload: &[],
+                expected_length: Some(length),
+                expected_sha256: None,
+                source_offset: None,
+                source_runs: vec![],
+            };
+            source_formatter_cache_bounds(&[make_source(1024 * 1024)]).unwrap();
+            assert!(source_formatter_cache_bounds(&[make_source(1024 * 1024 + 1)]).is_err());
+        }
+    }
     #[test]
     fn protected_verification_rejects_writable_flags_and_mutation_modes() {
         validate_observation_access(0, 0, false).unwrap();

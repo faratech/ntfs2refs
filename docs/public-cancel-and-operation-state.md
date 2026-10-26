@@ -119,3 +119,28 @@ specific task identity, source state, original mount paths and the four-file
 manifest for repetition. The run above used a separately recorded manual
 dispatch; it is not retroactively claimed as a run of the new scripts.
 Native shadowless rollback remains the next recovery gate.
+
+## Cancellation after a real qualification refusal
+
+The dispatch harness also accepts explicit `-Mode QualificationFailure` for a
+collected shadow-construction refusal with a pinned zero-source-write report.
+The default remains the exit87 source-freeze test. Both modes refuse any
+derived request, journal, ticket, certificate or activation artifact, recheck
+the original terminal task and use the ordinary public status/cancel commands.
+
+This harness mode passed against the actual `tracking.log` source-profile
+refusal from run `f912011005344294b2c9608990d9eb73`. Cancellation verified all
+55,834,574,848 bytes against frozen SHA-256
+`c777e66173998fba77dc588329a896edac5700d2a19889ed19febee3ef26c35e`
+before restoring writable NTFS, `F:\`, the original label and all four user
+file hashes. It did not modify the ReFS shadow or perform raw reconstruction.
+
+Ignored evidence is
+`.lab/hyperv/public-cancel/win11-20261026T035306614Z`:
+
+- `collected.json`: `35f623aca9df8af398eecb67a797c67fa2b216ba29c30bbde23b05d3cabb29cf`.
+- `cancel/result.json`: `3b0b9e0ebf6b5eb68f67baefd3883a57578dc8b6a3b320f35dbd2a2fbd5ddd23`.
+- `cancel/source-restored.json`: `e2336640a193669a82d1b6f9b5768d09227d580e5e8f8b6ef26e5982562caf8d`.
+
+Whole-image equality after the writable mount and native missing-shadow
+rollback remain separate claims.

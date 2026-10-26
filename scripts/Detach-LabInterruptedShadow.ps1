@@ -1,5 +1,5 @@
 <# Detach only the enrolled guest shadow after a collected controlled exit86.
-   Keeps the target offline/writable, the journal and backing file unchanged.
+   Keeps the target offline/writable and preserves the journal/backing file.
    No checkpoint, restart, mount, payload write, privilege change or retry. #>
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$InterruptedDirectory)

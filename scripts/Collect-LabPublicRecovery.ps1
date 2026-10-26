@@ -19,8 +19,8 @@ if(Test-Path (Join-Path $directory 'collected.json')){throw 'Terminal recovery a
 $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null
 try{
  $session=New-PSSession -VMId $vm.Id -Credential $credential -ErrorAction Stop
- $observed=Invoke-Command -Session $session -ArgumentList @($dispatch.taskName,$dispatch.guestOutput,$dispatch.journal,$withoutShadow,$sourceSha,$immutableSha) -ScriptBlock {
-  param($TaskName,$Output,$Journal,$WithoutShadow,$SourceSha,$ImmutableSha);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+ $observed=Invoke-Command -Session $session -ArgumentList @($dispatch.taskName,$dispatch.guestOutput,$dispatch.journal,$withoutShadow,$sourceSha,$immutableSha,$dispatch.guestRoot) -ScriptBlock {
+  param($TaskName,$Output,$Journal,$WithoutShadow,$SourceSha,$ImmutableSha,$Root);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
   function Test-ExpectedRollbackMarker([byte[]]$Marker,[string]$SourceHash,[string]$ImmutableHash){
    if($Marker.Length-ne4096-or$SourceHash-cnotmatch'\A[0-9a-f]{64}\z'-or$ImmutableHash-cnotmatch'\A[0-9a-f]{64}\z'){return $false}
    $expected=[byte[]]::new(4096);[Text.Encoding]::ASCII.GetBytes('N2RABT01').CopyTo($expected,0);$expected[8]=4
@@ -31,7 +31,12 @@ try{
   $task=Get-ScheduledTask -TaskName $TaskName;$info=Get-ScheduledTaskInfo -TaskName $TaskName
   $names=@('request.json','ticket.json','expectation.json','intent.json','journal-identity.json','preflight-events.json','execution.json','execution-events.json','completion-events.json','completion.json','result.json','failed.json')
   $present=@($names|Where-Object {Test-Path -LiteralPath (Join-Path $Output $_)})
-  if($task.State-in@('Running','Queued')-or$info.LastRunTime.Year-lt2000){return [pscustomobject]@{terminal=$false;state=[string]$task.State;artifacts=$present}}
+  if($task.State-in@('Running','Queued')-or$info.LastRunTime.Year-lt2000){
+   # Exact enrolled process counters are observational, never progress or
+   # recovery authority. Do not mistake repeated full reads for a percentage.
+   $activity=@(Get-CimInstance Win32_Process -Filter "Name='public-cli.exe'"|Where-Object {$_.ExecutablePath-ceq($Root+'\public-cli.exe')}|ForEach-Object {[pscustomobject]@{processId=$_.ProcessId;readBytes=[uint64]$_.ReadTransferCount;writtenBytes=[uint64]$_.WriteTransferCount;cpuSeconds=([double]$_.KernelModeTime+[double]$_.UserModeTime)/10000000}})
+   return [pscustomobject]@{terminal=$false;state=[string]$task.State;artifacts=$present;activity=$activity}
+  }
   $files=@(foreach($name in $present){$path=Join-Path $Output $name;$file=Get-Item -LiteralPath $path -Force;if($file.PSIsContainer-or($file.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$file.Length-gt64MB){throw 'Recovery artifact is not bounded ordinary output.'};[pscustomobject]@{name=$name;length=$file.Length;sha256=(Get-FileHash $path).Hash.ToLowerInvariant()}})
   $source=Get-Disk -Number 1;$journalDisk=Get-Disk -Number 2
   $disks=@(Get-Disk);$shadows=@($disks|Where-Object {$_.Number-eq3-or[guid]$_.Guid-eq[guid]'49dbc2d2-4120-4fbf-911d-0f8d58153598'})
@@ -49,7 +54,7 @@ try{
    rollbackMarkerExact=if($WithoutShadow){Test-ExpectedRollbackMarker $marker $SourceSha $ImmutableSha}else{$null};
    handoffClear=@($marker|Where-Object {$_-ne0}).Count-eq0;handoffMagic=[Text.Encoding]::ASCII.GetString($marker,0,8);handoffSectorSha256=$markerSha}
  }
- if(-not$observed.terminal){[pscustomobject]@{status='public-recovery-still-running';taskName=$dispatch.taskName;state=$observed.state;artifacts=$observed.artifacts};return}
+ if(-not$observed.terminal){[pscustomobject]@{status='public-recovery-still-running';taskName=$dispatch.taskName;state=$observed.state;artifacts=$observed.artifacts;activity=$observed.activity};return}
  foreach($file in $observed.files){$destination=Join-Path $directory $file.name
   if(-not(Test-Path $destination)){Copy-Item -LiteralPath (Join-Path $dispatch.guestOutput $file.name) -Destination $destination -FromSession $session}
   if((Get-Item $destination).Length-ne$file.length-or(Get-FileHash $destination).Hash.ToLowerInvariant()-cne$file.sha256){throw 'Recovery artifact changed or existing export differs.'}

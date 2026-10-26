@@ -1,3 +1,21 @@
+# Aged allocation-history fixture helper
+
+`lab/guest/Add-AgedRetentionProbe.ps1` prepares a separate retention test on the
+enrolled writable NTFS laboratory source. It reserves 8 GiB through ordinary
+file allocation at EOF zero, writes and verifies an 8 MiB probe, then removes
+only that temporary reservation through its original exclusive handle. It
+records native file identities and complete bounded retrieval mappings.
+
+A positive placement result requires every probe extent to start at or above
+8 GiB relative to the partition. Unsuitable placement is reported explicitly;
+the helper never moves source extents or deletes the probe to force success.
+Failures preserve the created files and evidence for inspection. Live
+conversion/recovery workers prevent execution.
+
+This is code and pure-check coverage only. A native run and subsequent measured
+conversion remain pending. A future success would qualify an aged-layout
+fixture, not arbitrary source placement or low-LCN retention.
+
 # Next milestone: one retained NTFS extent under native ReFS metadata
 
 This is a bounded lab design, not a writer or conversion qualification. The

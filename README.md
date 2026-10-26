@@ -39,7 +39,9 @@ on the exact frozen image. That helper passed a native twelve-object check with
 unchanged full-image hashes across a read-only observation. Public
 [operation state and preactivation cancel](docs/public-cancel-and-operation-state.md)
 and explicit shadowless rollback are implemented; positive native recovery
-qualification remains separate from their unit and refusal tests.
+qualification is recorded separately from unit tests. Public preactivation
+cancellation passed on the 52 GiB fixture with exact source-hash and original
+mount restoration; native shadowless rollback remains pending.
 The [general guest conversion result](docs/general-native-conversion-results.md)
 records a separate successful same-partition run, post-handoff mutation and
 reboot, with its current source-admission and retained-extent limits.

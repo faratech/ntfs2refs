@@ -62,3 +62,60 @@ Ignored evidence is
 Future native cancellation tests must preserve before/after source hashes and
 availability, and separately exercise wrong-device and activated-handoff
 refusals on identified disposable fixtures.
+
+## Positive native preactivation cancellation
+
+On October 25, 2026, the enrolled 52 GiB NTFS fixture was exercised through the
+current conversion core. A lab-only `--interrupt-after-source-freeze` worker
+saved and flushed the actual public freeze artifact and interruption intent,
+then exited87 before inspection, target construction, journal preparation or
+activation. This is process-interruption qualification, not arbitrary storage
+power-loss qualification. The production conversion command exposes no such
+fault switch.
+
+The exact task was observed terminal with no remaining process. Source disk
+`a01574d5-2a5c-4136-958a-dcf0d0e0f7aa`, partition
+`79eaccdf-38d3-4561-97cc-9276af5d223a`, remained attributes3. The frozen artifact
+was the public `observed-frozen-source-identity` schema. There was no derived
+request, ticket, journal-location, apply or handoff artifact; the shadow was
+absent. Public status classified `frozen_before_activation` and allowed a
+request for cancellation subject to its remaining checks.
+
+The actual public `ntfs2refs cancel` command exited0. It acquired the exclusive
+source lease, read all 55,834,574,848 partition bytes and matched the frozen
+source SHA-256:
+
+`27a9fec374c60679c7272b7f9aa3679603c0ceb10e9a3a6b730434e8ef71f348`.
+
+It restored attributes3 to0, closed the source handle and verified the original
+NTFS mount `F:\` and label `n2r-retained-source`. All four known user-file
+lengths and logical hashes matched their pre-freeze manifest after writable
+mounting. The whole-source hash scope is immediately before returning the
+partition to writable NTFS; no whole-image-equality claim is made after NTFS
+resumes its normal metadata writes.
+
+A separate negative case changed the expected disk identity in clearly labeled
+test artifacts while selecting the same owned source disk. The public command
+exited1 with `GPT header or disk identity differs`; actual source attributes
+remained3. Those altered artifacts are not producer evidence. The activated
+handoff cancellation refusal recorded above remains a distinct tested case.
+
+Ignored evidence:
+
+- Original worker and durable exit87:
+  `.lab/hyperv/certificate-conversion/win11-20261026T015735035Z`.
+- Public cancellation and before/after logical-file comparison:
+  `.lab/hyperv/public-cancel/win11-20261026T022520948Z`.
+- Wrong-identity negative case:
+  `.lab/hyperv/certificate-conversion/win11-20261026T015735035Z/wrong-identity-7b8a3c5b74dd42dcb7355c21217cc72a`.
+
+`cancel/result.json` SHA-256 is
+`4e8b7aafc6ce8309d1374d18a6c7d5d5d02d351224dd400ca81ed2fde11ebf93`;
+`cancel/source-restored.json` SHA-256 is
+`2a3a1bb47ba7ec6de821b3329c64e79d49cd4f1177ec69541cbefebabe9a243f`.
+
+The public-cancel dispatch/collect scripts preserve exact artifact pins,
+specific task identity, source state, original mount paths and the four-file
+manifest for repetition. The run above used a separately recorded manual
+dispatch; it is not retroactively claimed as a run of the new scripts.
+Native shadowless rollback remains the next recovery gate.

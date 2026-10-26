@@ -1,4 +1,4 @@
-# Native-shadow alpha: bounded normal path passed
+# Native-shadow alpha results
 
 Frozen engine `96720eff89c7e808983c8d5c9800d475fe62515c`, executable SHA-256
 `714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841`,
@@ -64,7 +64,41 @@ guest. Two preservation harness preflights needed correction/metadata
 re-observation; neither retried a converter, reboot or restore operation, and
 their original receipts remain preserved.
 
-Interruption/resume and shadowless rollback use further separate baseline
-branches; their outcomes are not inferred from the earlier results. Power-loss safety,
+The separate first-flushed-write interruption/resume case
+`c2939b18b2fb4ee8836f859dcf1d13b8` passed. The producer exited 86, with the
+source still offline/writable, shadow offline/read-only and complete handoff
+marker region zero. Public `resume` exited zero and wrote 132 patch ranges,
+231,374,848 bytes, proving exact postimage
+`426d3dcadf01c9ae6ac879fb080e0587d2362c5e40eba473024f74088ffa25dd`.
+The 128 MiB retained range stayed unchanged; raw replay remained open until
+public `finalize` exited zero and recorded handoff before native ReFS use.
+Strict verification of all 15 objects passed before and after the bounded
+mutation workload, and after a clean reboot with greater UTC boot ticks.
+The branch is preserved OFF as checkpoint
+`072a065e-7f91-457f-ad27-709271b07014`; all prior checkpoints remained present.
+
+This case's pins are separate from the normal run:
+
+- Frozen NTFS image: `073500e7eafcb308f8dcb52d446db50192bc8fd02654c2f7836a0d4f230f0aec`.
+- Derived recovery request: `6657ba2480ff5258c46b74812c520c1cbca85807a07f82ca1c75309ad7e79e95`.
+- Ticket file: `98be15852cbda5f2f8007b6b9454a46a94f84da4a98fa666abbb775e64e312ce`.
+- Semantic expectation: `5eb30e43c400cac1308a88eb25eaac89865f8bd5967add696d900a230d97c793`.
+- Resume result: `e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a`.
+- Finalize result: `4251ad39812f8815274456e3d53609b93fff2c1add7c74281859741aea54c057`.
+- Mutation report: `8ad16a6bc59e1a8c47ad301ca1f0fe11fdfdbfb16cf85a5797fd70e0ea78b830`.
+- Strict post-reboot report: `3e7aaf6f83b7cf629d488a9fd9d373c18134add7a7f26a12530982a182052878`.
+
+Its journal length is 462,780,240 bytes. Host evidence is under
+`fault-cases/c2939b18b2fb4ee8836f859dcf1d13b8`, with controller
+`b5d5cc65c3ee437b96dfed9460fa72de`. The journal remains in the preserved branch.
+The subsequent normal-branch restore completed, but the original management
+process did not observe it within its timeout. Its failure receipt is preserved;
+a fresh management observation confirmed the actual OFF normal branch before a
+guarded continuation dispatched the separate rollback case. The restore and
+successful resume operations were not repeated.
+
+Shadowless rollback uses another separate baseline branch; its outcome remains
+pending and is not inferred from resume. Standalone observed marker digests have
+not yet been collected. Power-loss safety,
 boot conversion, advanced source features and broader Windows compatibility
 remain unqualified. Independent-writer research remains off the alpha path.

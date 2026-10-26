@@ -31,8 +31,10 @@ On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
   of 15 admitted objects, 128 MiB retained, strict native verification, mutation
   and reboot passed. Its independent preactivation cancellation branch also
   passed complete frozen-image verification, seven user-file checks and reboot.
-  Preserve both OFF checkpoints. Resume after raw-write interruption and a
-  separate shadowless rollback remain distinct pending qualification cases.
+  Resume after the first-flushed-write process interruption also passed public
+  resume/finalize, strict verification, mutation and reboot, and is saved OFF as
+  checkpoint `072a065e-7f91-457f-ad27-709271b07014`. Preserve all three branches.
+  The separate shadowless rollback remains a pending qualification case.
   Use the exact frozen executable pins and fresh alpha dispatchers; no engine
   or independent-writer feature work belongs on this critical path.
 - Public `ntfs2refs convert --request` completed a fourteen-object tree on the

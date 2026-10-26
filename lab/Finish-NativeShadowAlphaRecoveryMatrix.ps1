@@ -1,6 +1,7 @@
 # Continue the already dispatched resume case, preserve it, then qualify one
 # separate shadowless rollback branch. No worker/restore is retried on failure.
-[CmdletBinding()]param([ValidateRange(1,240)][int]$MaximumWaitMinutes=180)
+[CmdletBinding()]param([ValidateRange(1,240)][int]$MaximumWaitMinutes=180,
+ [switch]$ResumeAfterObservedNormalRestore)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop
@@ -30,11 +31,35 @@ foreach($name in @('Preserve-NativeShadowAlphaResume.ps1','Dispatch-NativeShadow
 function Assert-HelperPin([string]$Name){
  if((Get-FileHash -LiteralPath (Join-Path $PSScriptRoot $Name) -Algorithm SHA256).Hash.ToLowerInvariant()-cne$helperPins[$Name]){throw 'Matrix helper changed after dispatch; preserve without action.'}
 }
-Save 'recovery-matrix-intent.json' @{schema_version=1;vm_id=$vmId.ToString('D');resume_case=$resumeCase;rollback_case=$rollbackCase;
+if($ResumeAfterObservedNormalRestore){
+ $original=Get-Content -LiteralPath (Join-Path $alpha 'recovery-matrix-intent.json') -Raw|ConvertFrom-Json
+ $failure=Get-Content -LiteralPath (Join-Path $alpha 'recovery-matrix-failed-preserved.json') -Raw|ConvertFrom-Json
+ $restore=Get-Content -LiteralPath (Join-Path $alpha 'recovery-matrix-restore-intent.json') -Raw|ConvertFrom-Json
+ $passed=Get-Content -LiteralPath (Join-Path $resumeRoot 'resume-preserved-checkpoint.json') -Raw|ConvertFrom-Json
+ $vm=Get-VM -Id $vmId
+ if([guid]$original.vm_id-ne$vmId-or$original.resume_case-cne$resumeCase-or$original.rollback_case-cne$rollbackCase-or
+  $original.engine_commit-cne$controller.engine_commit-or$original.resume_controller_id-cne$controller.controller_id-or
+  $failure.phase-cne'restore-normal-before-separate-rollback-case'-or$failure.restore_retry-or$failure.automatic_recovery_retry-or
+  [guid]$restore.vm_id-ne$vmId-or[guid]$restore.restore_only-ne$normalId-or[guid]$restore.from_preserved_resume-ne[guid]$passed.checkpoint_id-or$restore.force-or
+  $passed.case_id-cne$resumeCase-or[guid]$passed.vm_id-ne$vmId-or[guid]$passed.parent_checkpoint-ne$baseId-or$passed.state-cne'Off'-or
+  -not$passed.native_verified-or-not$passed.mutation_verified-or-not$passed.reboot_verified-or-not$passed.all_prior_checkpoints_preserved-or
+  $vm.Name-cne'ntfs2refs-shadow-alpha-20261026'-or-not$vm.Path.StartsWith($alpha+'\',[StringComparison]::OrdinalIgnoreCase)-or
+  $vm.State.ToString()-cne'Off'-or[guid]$vm.ParentSnapshotId-ne$normalId-or
+  (Test-Path -LiteralPath (Join-Path $alpha ('fault-cases\'+$rollbackCase)))-or
+  (Test-Path -LiteralPath (Join-Path $alpha 'recovery-matrix-restored-normal.json'))){throw 'Only the completed normal restore before rollback dispatch may continue.'}
+ foreach($name in $helperPins.Keys){if($helperPins[$name]-cne$original.helper_file_pins.$name){throw 'Originally pinned matrix helper differs.'}}
+ $snapshots=@(Get-VMSnapshot -VM $vm)
+ foreach($id in @($normalId,$baseId,[guid]$passed.checkpoint_id,[guid]'1cd601b8-c87d-42a8-a105-b1771fdf2b38')){
+  if(@($snapshots|Where-Object Id -EQ $id).Count-ne1){throw 'Preserved alpha branch is missing.'}
+ }
+ Save ('recovery-matrix-continuation-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')+'.json') @{vm_id=$vmId.ToString('D');state='Off';observed_parent=$normalId.ToString('D');
+  preserved_resume=$passed.checkpoint_id;restore_repeated=$false;rollback_previously_dispatched=$false;original_failure_sha256=(Get-FileHash -LiteralPath (Join-Path $alpha 'recovery-matrix-failed-preserved.json')).Hash.ToLowerInvariant()}
+}else{Save 'recovery-matrix-intent.json' @{schema_version=1;vm_id=$vmId.ToString('D');resume_case=$resumeCase;rollback_case=$rollbackCase;
  resume_controller_id=$controller.controller_id;preserved_normal_checkpoint=$normalId.ToString('D');baseline_checkpoint=$baseId.ToString('D');
- engine_commit=$controller.engine_commit;helper_file_pins=$helperPins;no_worker_retry=$true;no_evidence_deletion=$true;created_utc=[DateTime]::UtcNow.ToString('o')}
+ engine_commit=$controller.engine_commit;helper_file_pins=$helperPins;no_worker_retry=$true;no_evidence_deletion=$true;created_utc=[DateTime]::UtcNow.ToString('o')}}
 $phase='wait-existing-resume-controller'
 try{
+ if(-not$ResumeAfterObservedNormalRestore){
  $deadline=[DateTime]::UtcNow.AddMinutes($MaximumWaitMinutes)
  while(-not(Test-Path -LiteralPath (Join-Path $postRoot 'result.json'))){
   if(Test-Path -LiteralPath (Join-Path $postRoot 'failed-preserved.json')){throw 'Existing resume controller failed; inspect its exact phase without replay.'}
@@ -67,6 +92,7 @@ try{
   if($vm.State.ToString()-ceq'Off'-and[guid]$vm.ParentSnapshotId-eq$normalId){break};Start-Sleep -Seconds 2
  }while([DateTime]::UtcNow-lt$metadataDeadline)
  if($vm.State.ToString()-cne'Off'-or[guid]$vm.ParentSnapshotId-ne$normalId){throw 'Restore not observed; do not repeat it.'}
+ }
  Save 'recovery-matrix-restored-normal.json' @{vm_id=$vmId.ToString('D');parent=$normalId.ToString('D');state='Off';restore_repeated=$false}
  $phase='dispatch-separate-shadowless-rollback-producer'
  Assert-HelperPin 'Dispatch-NativeShadowAlphaFault.ps1'
@@ -112,7 +138,8 @@ try{
   vm_id=$vmId.ToString('D');resume_case=$resumeCase;rollback_without_shadow_case=$rollbackCase;
   controlled_process_fault_only=$true;power_loss_qualified=$false;completed_utc=[DateTime]::UtcNow.ToString('o')}
 }catch{
- Save 'recovery-matrix-failed-preserved.json' @{phase=$phase;error=$_.Exception.ToString();worker_termination_inferred=$false;
+ $failureName=if($ResumeAfterObservedNormalRestore){'recovery-matrix-continuation-failed-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')+'.json'}else{'recovery-matrix-failed-preserved.json'}
+ Save $failureName @{phase=$phase;error=$_.Exception.ToString();worker_termination_inferred=$false;
   automatic_recovery_retry=$false;restore_retry=$false;observed_utc=[DateTime]::UtcNow.ToString('o')}
  throw
 }

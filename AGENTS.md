@@ -101,6 +101,11 @@ Parser support for a feature is not evidence that conversion preserves it.
   Complete-map/page hashes have distinct contracts. See
   [native bitmap pagination](docs/native-bitmap-pagination.md). This source work
   has no native paging qualification and does not widen conversion authority.
+- `crates/n2r-win32/src/retrieval_paging.rs`: bounded complete stream mappings
+  and raw-page provenance. Report schema 7 replays retrieval continuations;
+  legacy schemas retain their single-response rules. Shadow placement verifies
+  the explicitly assembled map. See [retrieval pagination](docs/native-retrieval-pagination.md).
+  This does not add NTFS attribute-list support or native conversion qualification.
 
 Preserve these distinctions:
 

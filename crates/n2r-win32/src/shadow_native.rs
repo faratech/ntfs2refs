@@ -135,7 +135,11 @@ pub struct ObjectReport {
     pub before: Snapshot,
     pub after: Snapshot,
     pub logical_sha256: Option<String>,
+    /// Explicit complete-map encoding when page proof is present; empty for
+    /// the separately checked resident/empty cases.
     pub retrieval: Vec<u8>,
+    /// Present for an assembled allocated map; raw page digests are separate.
+    pub retrieval_page_proof: Option<crate::retrieval_paging::Proof>,
     pub resident_data: bool,
     pub cached_validity: Vec<u8>,
     pub storage_validity: Vec<u8>,
@@ -356,9 +360,107 @@ pub struct RetentionAttempt {
     pub candidate: CandidateReport,
     pub submitted: bool,
     pub native_error: Option<i32>,
+    /// Canonical mappings, not individual native response buffers.
     pub mapping_before: Vec<u8>,
     pub mapping_after: Vec<u8>,
+    pub mapping_before_page_proof: crate::retrieval_paging::Proof,
+    pub mapping_after_page_proof: crate::retrieval_paging::Proof,
     pub all_clusters_at_source: bool,
+}
+const MAX_RETENTION_EVIDENCE_BYTES: usize = 8 * 1024 * 1024;
+fn bitmap_proof_heap(proof: &crate::bitmap_paging::Proof) -> usize {
+    proof.pages.iter().fold(
+        proof
+            .encoding
+            .capacity()
+            .saturating_add(proof.canonical_bitmap_sha256.capacity())
+            .saturating_add(
+                proof
+                    .pages
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<crate::bitmap_paging::PageProof>()),
+            ),
+        |n, p| {
+            n.saturating_add(p.input.capacity())
+                .saturating_add(p.response_sha256.capacity())
+        },
+    )
+}
+fn retrieval_proof_heap(proof: &crate::retrieval_paging::Proof) -> usize {
+    proof.pages.iter().fold(
+        proof
+            .encoding
+            .capacity()
+            .saturating_add(proof.canonical_sha256.capacity())
+            .saturating_add(
+                proof
+                    .pages
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<crate::retrieval_paging::PageProof>()),
+            ),
+        |n, p| {
+            n.saturating_add(p.input.capacity())
+                .saturating_add(p.response_sha256.capacity())
+        },
+    )
+}
+fn retention_attempt_heap(attempt: &RetentionAttempt) -> usize {
+    attempt
+        .components
+        .iter()
+        .fold(
+            attempt
+                .components
+                .capacity()
+                .saturating_mul(std::mem::size_of::<String>()),
+            |n, s| n.saturating_add(s.capacity()),
+        )
+        .saturating_add(attempt.mapping_before.capacity())
+        .saturating_add(attempt.mapping_after.capacity())
+        .saturating_add(attempt.candidate.legacy.bitmap_sha256.capacity())
+        .saturating_add(
+            attempt
+                .candidate
+                .metadata_inclusive
+                .bitmap_sha256
+                .capacity(),
+        )
+        .saturating_add(bitmap_proof_heap(&attempt.candidate.legacy_page_proof))
+        .saturating_add(bitmap_proof_heap(&attempt.candidate.metadata_page_proof))
+        .saturating_add(retrieval_proof_heap(&attempt.mapping_before_page_proof))
+        .saturating_add(retrieval_proof_heap(&attempt.mapping_after_page_proof))
+}
+fn remaining_retention_evidence(attempts: &mut Vec<RetentionAttempt>) -> io::Result<usize> {
+    if attempts.len() >= crate::retention_layout::MAX_SUBRUNS {
+        return Err(invalid("tree retention-attempt budget exceeded"));
+    }
+    // Reserve the actual next slot before accounting; include spare capacity,
+    // not just initialized bytes. No unbounded series of full maps is retained.
+    attempts
+        .try_reserve_exact(1)
+        .map_err(|_| invalid("retention evidence allocation failed"))?;
+    let used = attempts.iter().fold(
+        attempts
+            .capacity()
+            .saturating_mul(std::mem::size_of::<RetentionAttempt>()),
+        |n, a| n.saturating_add(retention_attempt_heap(a)),
+    );
+    MAX_RETENTION_EVIDENCE_BYTES
+        .checked_sub(used)
+        .filter(|n| *n > 0)
+        .ok_or_else(|| invalid("cumulative retention evidence budget exceeded"))
+}
+fn append_retention_attempt(
+    attempts: &mut Vec<RetentionAttempt>,
+    attempt: RetentionAttempt,
+) -> io::Result<()> {
+    if retention_attempt_heap(&attempt) > remaining_retention_evidence(attempts)? {
+        return Err(invalid(
+            "cumulative retention evidence budget exceeded; preserve shadow for inspection",
+        ));
+    }
+    attempts.push(attempt);
+    Ok(())
 }
 fn mapping_matches_run(
     runs: &[stream_layout::Run],
@@ -400,18 +502,15 @@ fn retain_run_on_shadow(
     partition: u64,
     run: &SourceRun,
     submit_if_free: bool,
+    evidence_budget: usize,
 ) -> io::Result<RetentionAttempt> {
     let offset = run
         .physical_offset
         .ok_or_else(|| invalid("source placement hole"))?;
     let starting_vcn = run.logical_offset / 4096;
     let h = open(&format!("{}{}", root, i.components.join("\\")), false, true)?;
-    let mapping_before = ctl(
-        &h,
-        stream_layout::GET_RETRIEVAL,
-        &[0; 8],
-        stream_layout::RETRIEVAL_CAPACITY,
-    )?;
+    let before_capture = crate::stream_native::retrieval_capture(&h)?;
+    let mapping_before = before_capture.canonical;
     let legacy = crate::stream_native::bitmap_capture(volume, &[0; 8])?;
     let mut ex = [0; 16];
     ex[8] = 1;
@@ -437,7 +536,7 @@ fn retain_run_on_shadow(
     let destination_lcn = offset / 4096;
     let matches = |b: &[u8]| -> io::Result<bool> {
         mapping_matches_run(
-            &stream_layout::parse_retrieval(b)?,
+            &stream_layout::parse_complete_retrieval(b)?,
             starting_vcn,
             destination_lcn,
             clusters,
@@ -454,8 +553,13 @@ fn retain_run_on_shadow(
         native_error: None,
         mapping_after: mapping_before.clone(),
         mapping_before,
+        mapping_after_page_proof: before_capture.proof.clone(),
+        mapping_before_page_proof: before_capture.proof,
         all_clusters_at_source: already,
     };
+    if retention_attempt_heap(&r) > evidence_budget {
+        return Err(invalid("retention evidence budget exceeded before move"));
+    }
     // Include the independent metadata view. Never force a move into an
     // occupied bootstrap/container range or relocate the NTFS source itself.
     if !submit_if_free
@@ -476,13 +580,15 @@ fn retain_run_on_shadow(
     }
     // A refusal can have partial completion. Do not retry; measure its actual
     // mapping and let the ordinary content/storage checks qualify the shadow.
-    r.mapping_after = ctl(
-        &h,
-        stream_layout::GET_RETRIEVAL,
-        &[0; 8],
-        stream_layout::RETRIEVAL_CAPACITY,
-    )?;
+    let after_capture = crate::stream_native::retrieval_capture(&h)?;
+    r.mapping_after = after_capture.canonical;
+    r.mapping_after_page_proof = after_capture.proof;
     r.all_clusters_at_source = matches(&r.mapping_after)?;
+    if retention_attempt_heap(&r) > evidence_budget {
+        return Err(invalid(
+            "post-move evidence exceeds budget; preserve shadow and do not retry",
+        ));
+    }
     Ok(r)
 }
 
@@ -496,6 +602,7 @@ fn retain_source_run_on_shadow(
     run: &SourceRun,
     attempts: &mut Vec<RetentionAttempt>,
 ) -> io::Result<()> {
+    remaining_retention_evidence(attempts)?;
     // Bound the complete tree, including non-submitted collision diagnostics.
     let remaining = crate::retention_layout::MAX_SUBRUNS
         .checked_sub(attempts.len())
@@ -522,9 +629,9 @@ fn retain_source_run_on_shadow(
     if plan.subruns.is_empty() {
         // A later free-space change must not turn this diagnostic into an
         // unplanned move. Already-correct placement is still recorded.
-        attempts.push(retain_run_on_shadow(
-            volume, root, input, partition, run, false,
-        )?);
+        let budget = remaining_retention_evidence(attempts)?;
+        let attempt = retain_run_on_shadow(volume, root, input, partition, run, false, budget)?;
+        append_retention_attempt(attempts, attempt)?;
     } else {
         for candidate in plan.subruns {
             let subrun = SourceRun {
@@ -532,9 +639,10 @@ fn retain_source_run_on_shadow(
                 physical_offset: Some(candidate.physical_offset),
                 length: candidate.length,
             };
-            attempts.push(retain_run_on_shadow(
-                volume, root, input, partition, &subrun, true,
-            )?);
+            let budget = remaining_retention_evidence(attempts)?;
+            let attempt =
+                retain_run_on_shadow(volume, root, input, partition, &subrun, true, budget)?;
+            append_retention_attempt(attempts, attempt)?;
         }
     }
     Ok(())
@@ -2235,47 +2343,43 @@ fn run_role_profile(
         let before = snapshot(&h);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
+        let mut retrieval_page_proof = None;
         let (logical_sha256, retrieval, cached_validity, storage_validity, integrity, namespace) =
             if i.directory {
                 (None, vec![], vec![], vec![], vec![], enumerate(&h)?)
             } else {
-                let retrieval = match ctl(
-                    &h,
-                    stream_layout::GET_RETRIEVAL,
-                    &[0; 8],
-                    stream_layout::RETRIEVAL_CAPACITY,
-                ) {
-                    Ok(bytes)
-                        if ordinary
-                            && i.logical_length() == 0
-                            && expected_allocation == 0
-                            && bytes.len() == 16
-                            && layout::u32_at(&bytes, 0)? == 0
-                            && layout::u64_at(&bytes, 8)? == 0 =>
-                    {
-                        vec![]
-                    }
-                    Ok(bytes) => bytes,
-                    Err(e)
-                        if ordinary
-                            && resident_allocation(i.logical_length(), expected_allocation)
-                            && e.raw_os_error() == Some(38) =>
-                    {
-                        resident_data = true;
-                        vec![]
-                    }
-                    Err(e) => {
-                        return Err(io::Error::other(format!(
+                let (first, continuation) = crate::stream_native::retrieval_queries(&h);
+                let retrieval = if first.native_error.is_none()
+                    && continuation.is_empty()
+                    && ordinary
+                    && i.logical_length() == 0
+                    && expected_allocation == 0
+                    && first.bytes.len() == 16
+                    && layout::u32_at(&first.bytes, 0)? == 0
+                    && layout::u64_at(&first.bytes, 8)? == 0
+                {
+                    vec![]
+                } else if ordinary
+                    && resident_allocation(i.logical_length(), expected_allocation)
+                    && first.native_error == Some(38)
+                    && first.bytes.is_empty()
+                    && continuation.is_empty()
+                {
+                    resident_data = true;
+                    vec![]
+                } else {
+                    let capture=crate::retrieval_paging::assemble_queries(&first,&continuation).map_err(|e|io::Error::other(format!(
                             "retrieval pointers for {:?}, allocation={expected_allocation}, logical={}: {e}",
                             i.components,
                             i.logical_length()
-                        )));
-                    }
+                        )))?;
+                    retrieval_page_proof = Some(capture.proof);
+                    capture.canonical
                 };
                 let runs = if retrieval.is_empty() {
                     vec![]
                 } else {
-                    stream_layout::parse_retrieval(&retrieval)?
+                    stream_layout::parse_complete_retrieval(&retrieval)?
                 };
                 let mut end = 0u64;
                 for r in runs {
@@ -2384,6 +2488,7 @@ fn run_role_profile(
             after,
             logical_sha256,
             retrieval,
+            retrieval_page_proof,
             resident_data,
             cached_validity,
             storage_validity,
@@ -2438,6 +2543,94 @@ fn run_role_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn retention_budget_fixture() -> RetentionAttempt {
+        let mut bitmap = vec![0; 17];
+        bitmap[8..16].copy_from_slice(&1_u64.to_le_bytes());
+        let bitmap_capture = crate::bitmap_paging::assemble_queries(
+            &crate::attestation::IoctlQuery {
+                code: stream_layout::GET_BITMAP,
+                input: vec![0; 8],
+                bytes: bitmap.clone(),
+                native_error: None,
+            },
+            &[],
+            &[0; 8],
+        )
+        .unwrap();
+        let mut retrieval = vec![0; 32];
+        retrieval[..4].copy_from_slice(&1_u32.to_le_bytes());
+        retrieval[16..24].copy_from_slice(&1_u64.to_le_bytes());
+        let mapping = crate::retrieval_paging::assemble_queries(
+            &crate::attestation::IoctlQuery {
+                code: stream_layout::GET_RETRIEVAL,
+                input: vec![0; 8],
+                bytes: retrieval,
+                native_error: None,
+            },
+            &[],
+        )
+        .unwrap();
+        RetentionAttempt {
+            components: vec!["fixture.bin".into()],
+            starting_vcn: 0,
+            destination_lcn: 0,
+            clusters: 1,
+            candidate: CandidateReport {
+                legacy: crate::bitmap_layout::candidate(&bitmap, 0, 4096, 4096).unwrap(),
+                metadata_inclusive: crate::bitmap_layout::candidate(&bitmap, 0, 4096, 4096)
+                    .unwrap(),
+                legacy_page_proof: bitmap_capture.proof.clone(),
+                metadata_page_proof: bitmap_capture.proof,
+            },
+            submitted: false,
+            native_error: None,
+            mapping_before: mapping.canonical.clone(),
+            mapping_after: mapping.canonical,
+            mapping_before_page_proof: mapping.proof.clone(),
+            mapping_after_page_proof: mapping.proof,
+            all_clusters_at_source: true,
+        }
+    }
+    #[test]
+    fn retention_evidence_budget_counts_capacity_and_refuses_without_appending() {
+        let mut attempts = vec![];
+        let mut attempt = retention_budget_fixture();
+        attempt
+            .mapping_before
+            .reserve_exact(MAX_RETENTION_EVIDENCE_BYTES);
+        assert!(retention_attempt_heap(&attempt) > MAX_RETENTION_EVIDENCE_BYTES);
+        assert!(append_retention_attempt(&mut attempts, attempt).is_err());
+        assert!(attempts.is_empty());
+    }
+    #[test]
+    fn retention_evidence_budget_is_cumulative_across_complete_maps_and_proofs() {
+        let mut attempts = vec![];
+        for index in 0..2 {
+            let mut attempt = retention_budget_fixture();
+            attempt
+                .mapping_before
+                .reserve_exact(MAX_RETENTION_EVIDENCE_BYTES / 4);
+            attempt
+                .mapping_after
+                .reserve_exact(MAX_RETENTION_EVIDENCE_BYTES / 4);
+            let result = append_retention_attempt(&mut attempts, attempt);
+            if index == 0 {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.is_err());
+            }
+        }
+        assert_eq!(attempts.len(), 1);
+        assert!(
+            remaining_retention_evidence(&mut attempts).unwrap() < MAX_RETENTION_EVIDENCE_BYTES / 2
+        );
+        let mut attempt = retention_budget_fixture();
+        let before = retention_attempt_heap(&attempt);
+        attempt.mapping_after_page_proof.pages[0]
+            .response_sha256
+            .reserve_exact(4096);
+        assert!(retention_attempt_heap(&attempt) >= before + 4096);
+    }
     #[test]
     fn admitted_tracking_log_is_not_a_formatter_cache_replacement() {
         let path = vec!["System Volume Information".into(), "tracking.log".into()];

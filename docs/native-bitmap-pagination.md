@@ -23,11 +23,13 @@ budgets. A failed page poisons the assembler. The final partial byte is preserve
 for NTFS's existing initialized-bitmap hash comparison. Legacy and metadata-inclusive
 views are collected independently and never substituted for one another.
 
-Native attestation report schema 6 retains each original query and response;
+Native attestation report schemas 6 and later retain each original bitmap query and response;
 replay reconstructs the complete map from those bytes and requires exact before/
 after transcript equality. Schemas 2–5 retain their existing rules and reject
 nonempty continuation transcripts. File/stream evidence keeps its original budget, while bitmap
 pages have their own bounded budget. Saved native reports are capped at 64 MiB.
+Schema 7 additionally carries [retrieval-pointer continuations](native-retrieval-pagination.md);
+it does not weaken any bitmap completeness rule.
 
 The flat map is explicitly identified as `assembled-zero-lcn-bitmap-v1`. Its
 digest covers the zero-LCN header and assembled bitmap bytes. Page proofs retain

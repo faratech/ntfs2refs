@@ -19,6 +19,43 @@ pub struct Mapping {
     pub extents: Vec<Extent>,
 }
 
+#[cfg(any(windows, test))]
+fn checked_target_runs(
+    length: u64,
+    resident: bool,
+    retrieval: &[u8],
+    page_proof: Option<&n2r_win32::retrieval_paging::Proof>,
+) -> Result<Vec<n2r_win32::stream_layout::Run>> {
+    if resident || length == 0 {
+        ensure!(
+            (!resident || length <= 4096) && retrieval.is_empty() && page_proof.is_none(),
+            "resident or empty target unexpectedly carries physical retrieval evidence"
+        );
+        return Ok(vec![]);
+    }
+    if let Some(proof) = page_proof {
+        ensure!(
+            proof.encoding == n2r_win32::retrieval_paging::ENCODING
+                && proof.canonical_sha256 == hex::encode(Sha256::digest(retrieval)),
+            "target retrieval page proof encoding or canonical digest differs"
+        );
+        let runs = n2r_win32::stream_layout::parse_complete_retrieval(retrieval)?;
+        ensure!(
+            proof.extent_count == runs.len()
+                && runs.last().is_some_and(|run| {
+                    run.vcn.checked_add(run.clusters) == Some(proof.virtual_clusters)
+                })
+                && !proof.pages.is_empty()
+                && proof.pages.len() <= n2r_win32::retrieval_paging::MAX_PAGES,
+            "target retrieval page proof coverage differs"
+        );
+        Ok(runs)
+    } else {
+        // Old reports have no assembly proof. Preserve their one-response bound.
+        Ok(n2r_win32::stream_layout::parse_retrieval(retrieval)?)
+    }
+}
+
 /// Convert the actual native ReFS observation into stream mappings. This
 /// rejects missing identities, holes and malformed retrieval extents before
 /// any source/shadow comparison request is constructed.
@@ -46,20 +83,18 @@ pub fn mappings_from_native(
                 .iter()
                 .find(|q| q.class == 18 && q.native_error.is_none() && q.bytes.len() == 24)
                 .context("missing target file identity")?;
-            let runs = if measured.resident_data {
+            if measured.resident_data {
                 ensure!(
-                    object.length <= 4096
-                        && measured.retrieval.is_empty()
-                        && measured.cached_validity.is_empty()
-                        && measured.storage_validity.is_empty(),
+                    measured.cached_validity.is_empty() && measured.storage_validity.is_empty(),
                     "resident target unexpectedly carries physical data mappings"
                 );
-                vec![]
-            } else if object.length == 0 && measured.retrieval.is_empty() {
-                vec![]
-            } else {
-                n2r_win32::stream_layout::parse_retrieval(&measured.retrieval)?
-            };
+            }
+            let runs = checked_target_runs(
+                object.length,
+                measured.resident_data,
+                &measured.retrieval,
+                measured.retrieval_page_proof.as_ref(),
+            )?;
             let extents = runs
                 .into_iter()
                 .map(|run| -> Result<_> {
@@ -514,6 +549,83 @@ fn diagnose_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn paged_retrieval(extents: usize) -> n2r_win32::retrieval_paging::Capture {
+        use n2r_win32::{attestation::IoctlQuery, retrieval_paging, stream_layout};
+        let mut pages = vec![];
+        for start in (0..extents).step_by(stream_layout::MAX_EXTENTS) {
+            let end = (start + stream_layout::MAX_EXTENTS).min(extents);
+            let mut bytes = vec![0; 16];
+            bytes[..4].copy_from_slice(&((end - start) as u32).to_le_bytes());
+            bytes[8..16].copy_from_slice(&(start as u64).to_le_bytes());
+            for index in start..end {
+                bytes.extend_from_slice(&(index as u64 + 1).to_le_bytes());
+                bytes.extend_from_slice(&(100 + index as u64 * 2).to_le_bytes());
+            }
+            pages.push(IoctlQuery {
+                code: stream_layout::GET_RETRIEVAL,
+                input: (start as u64).to_le_bytes().to_vec(),
+                bytes,
+                native_error: (end < extents).then_some(retrieval_paging::MORE_DATA),
+            });
+        }
+        retrieval_paging::assemble_queries(&pages[0], &pages[1..]).unwrap()
+    }
+    #[test]
+    fn target_complete_retrieval_requires_its_digest_bound_assembly_proof() {
+        let capture = paged_retrieval(n2r_win32::stream_layout::MAX_EXTENTS + 1);
+        let length = n2r_win32::stream_layout::MAX_EXTENTS as u64 * 4096 + 1;
+        assert!(checked_target_runs(length, false, &capture.canonical, None).is_err());
+        let runs =
+            checked_target_runs(length, false, &capture.canonical, Some(&capture.proof)).unwrap();
+        assert_eq!(runs.len(), 1025);
+        assert_eq!(runs.last().unwrap().vcn, 1024);
+        assert_eq!(runs.last().unwrap().lcn, Some(2148));
+        for kind in 0..5 {
+            let mut proof = capture.proof.clone();
+            match kind {
+                0 => proof.encoding.push_str("-foreign"),
+                1 => proof.canonical_sha256 = "0".repeat(64),
+                2 => proof.extent_count -= 1,
+                3 => proof.virtual_clusters -= 1,
+                4 => proof.pages.clear(),
+                _ => unreachable!(),
+            }
+            assert!(checked_target_runs(length, false, &capture.canonical, Some(&proof)).is_err());
+        }
+    }
+    #[test]
+    fn target_legacy_retrieval_stays_bounded_and_malformed_canonical_is_refused() {
+        let capture = paged_retrieval(2);
+        assert_eq!(
+            checked_target_runs(4097, false, &capture.canonical, None)
+                .unwrap()
+                .len(),
+            2
+        );
+        let mut malformed = capture.canonical.clone();
+        malformed[16..24].copy_from_slice(&0u64.to_le_bytes());
+        let mut proof = capture.proof;
+        proof.canonical_sha256 = hex::encode(Sha256::digest(&malformed));
+        assert!(checked_target_runs(4097, false, &malformed, Some(&proof)).is_err());
+    }
+    #[test]
+    fn resident_and_empty_targets_require_no_mapping_or_page_proof() {
+        let capture = paged_retrieval(1);
+        for (length, resident) in [(0, false), (0, true), (1, true), (4096, true)] {
+            assert!(
+                checked_target_runs(length, resident, &[], None)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(checked_target_runs(length, resident, &[], Some(&capture.proof)).is_err());
+            assert!(checked_target_runs(length, resident, &capture.canonical, None).is_err());
+            assert!(
+                checked_target_runs(length, resident, &capture.canonical, Some(&capture.proof))
+                    .is_err()
+            );
+        }
+        assert!(checked_target_runs(4097, true, &[], None).is_err());
+    }
     fn example(destination: u64) -> (Tree, Mapping, Vec<Vec<u8>>) {
         let bytes = vec![42; 8192];
         let sha = hex::encode(Sha256::digest(&bytes));

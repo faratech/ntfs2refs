@@ -132,10 +132,10 @@ pub fn check_file(file: &FileInventory, native: &LogicalFile, serial: u64) -> Re
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     ensure!(
-        matches!(native.schema_version, 4..=6),
+        matches!(native.schema_version, 4..=7),
         "native logical-data profile absent"
     );
-    crate::ntfs_stream_attestation::validate_bitmap_schema(native)?;
+    crate::ntfs_stream_attestation::validate_paging_schema(native)?;
     let data = native
         .logical_data
         .as_ref()

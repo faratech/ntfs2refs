@@ -458,7 +458,7 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     privileges.restore()?;
     let after = route(&volume, &disk, request)?;
     Ok(Report {
-        schema_version: 6,
+        schema_version: 7,
         request: request.clone(),
         volume_extents_before: before.0,
         volume_extents_after: after.0,

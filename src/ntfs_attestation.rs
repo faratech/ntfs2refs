@@ -265,10 +265,10 @@ pub fn compare(
 ) -> Result<Comparison> {
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2..=6) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=7) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
-    crate::ntfs_stream_attestation::validate_bitmap_schema(native)?;
+    crate::ntfs_stream_attestation::validate_paging_schema(native)?;
     ensure!(
         native.request.source_inspection_sha256 == inspection_sha256,
         "native/source report binding differs"

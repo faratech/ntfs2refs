@@ -243,6 +243,8 @@ pub struct StreamQuery {
     pub identity_before: Option<Query>,
     pub identity_after: Option<Query>,
     pub retrieval: Option<IoctlQuery>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retrieval_continuation: Vec<IoctlQuery>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StreamCapture {
@@ -267,6 +269,12 @@ impl StreamCapture {
                 n = n.saturating_add(id.bytes.capacity());
             }
             if let Some(r) = &q.retrieval {
+                n = n.saturating_add(r.bytes.capacity() + r.input.capacity());
+            }
+            n = n.saturating_add(
+                q.retrieval_continuation.capacity() * std::mem::size_of::<IoctlQuery>(),
+            );
+            for r in &q.retrieval_continuation {
                 n = n.saturating_add(r.bytes.capacity() + r.input.capacity());
             }
         }

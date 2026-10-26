@@ -90,6 +90,29 @@ pub(crate) fn bitmap_capture(
     let (first, continuation) = bitmap_queries(file, template)?;
     crate::bitmap_paging::assemble_queries(&first, &continuation, template)
 }
+pub(crate) fn retrieval_queries(file: &File) -> (IoctlQuery, Vec<IoctlQuery>) {
+    let mut assembler = crate::retrieval_paging::Assembler::default();
+    let mut queries = Vec::new();
+    while assembler.response_capacity() != 0 {
+        let query = ioctl(
+            file,
+            layout::GET_RETRIEVAL,
+            &assembler.next_vcn().to_le_bytes(),
+            assembler.response_capacity(),
+        );
+        let result = assembler.push(&query);
+        queries.push(query);
+        if !matches!(result, Ok(false)) {
+            break;
+        };
+    }
+    let first = queries.remove(0);
+    (first, queries)
+}
+pub(crate) fn retrieval_capture(file: &File) -> io::Result<crate::retrieval_paging::Capture> {
+    let (first, continuation) = retrieval_queries(file);
+    crate::retrieval_paging::assemble_queries(&first, &continuation)
+}
 fn info(file: &File, class: i32, length: usize) -> Query {
     let mut storage = vec![0u64; length.div_ceil(8)];
     // SAFETY: aligned fixed-size output and a live borrowed handle.
@@ -308,6 +331,7 @@ pub(crate) fn capture(
             identity_before: None,
             identity_after: None,
             retrieval: None,
+            retrieval_continuation: vec![],
         };
         let owned = if entry.name.is_empty() {
             None
@@ -331,12 +355,9 @@ pub(crate) fn capture(
             continue;
         }
         q.identity_before = Some(before);
-        q.retrieval = Some(ioctl(
-            f,
-            layout::GET_RETRIEVAL,
-            &[0; 8],
-            layout::RETRIEVAL_CAPACITY,
-        ));
+        let (first, continuation) = retrieval_queries(f);
+        q.retrieval = Some(first);
+        q.retrieval_continuation = continuation;
         hashes.push(hash_stream(
             f,
             r,
@@ -351,6 +372,10 @@ pub(crate) fn capture(
         }
         q.identity_after = Some(after);
         result.streams.push(q);
+        if result.retained_bytes() > MAX_TOTAL_STREAM_BYTES {
+            result.parse_error = Some("native stream page evidence budget exhausted".into());
+            break;
+        }
     }
     (result, hashes)
 }

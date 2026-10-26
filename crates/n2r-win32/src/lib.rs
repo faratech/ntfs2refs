@@ -20,6 +20,7 @@ pub mod reference_file;
 pub mod reference_import;
 pub mod region_layout;
 pub mod retention_layout;
+pub mod retrieval_paging;
 #[cfg(windows)]
 pub mod shadow_native;
 #[cfg(windows)]

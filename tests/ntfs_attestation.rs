@@ -263,6 +263,51 @@ fn legacy_report_schemas_cannot_smuggle_bitmap_continuations() {
     }
 }
 
+#[test]
+fn legacy_report_schemas_cannot_smuggle_retrieval_continuations() {
+    use n2r_win32::attestation::{IoctlQuery, StreamCapture, StreamQuery};
+    let (raw, report) = fixture();
+    let stream = StreamCapture {
+        enumeration: Query {
+            class: 7,
+            bytes: vec![],
+            native_error: None,
+        },
+        parse_error: None,
+        streams: vec![StreamQuery {
+            name_utf16: vec![],
+            logical_size: 0,
+            allocated_size: 0,
+            open_error: None,
+            binding_error: None,
+            identity_before: None,
+            identity_after: None,
+            retrieval: None,
+            retrieval_continuation: vec![IoctlQuery {
+                code: n2r_win32::stream_layout::GET_RETRIEVAL,
+                input: vec![0; 8],
+                bytes: vec![],
+                native_error: None,
+            }],
+        }],
+    };
+    for schema in 2..=6 {
+        for before in [false, true] {
+            let mut altered = report.clone();
+            altered.schema_version = schema;
+            if before {
+                altered.files[0].streams_before = Some(stream.clone());
+            } else {
+                altered.files[0].streams_after = Some(stream.clone());
+            }
+            let error = compare(&raw, &"a".repeat(64), &altered)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("paged retrieval transcripts require native schema 7"));
+        }
+    }
+}
+
 fn request_inputs() -> (
     ntfs2refs::planner::Inspection,
     n2r_win32::layout::DiskBinding,

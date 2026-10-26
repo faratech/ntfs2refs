@@ -3,7 +3,7 @@ use crate::ntfs_inspect::{AllocationReconciliationStatus, Extent, FileInventory,
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     attestation::{IoctlQuery, Report, StreamCapture},
-    bitmap_paging, stream_layout as layout,
+    bitmap_paging, retrieval_paging, stream_layout as layout,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -70,13 +70,23 @@ pub fn base(q: &IoctlQuery) -> Result<u64> {
     ensure!(n <= i64::MAX as u64, "negative native retrieval base");
     Ok(n)
 }
-pub(crate) fn validate_bitmap_schema(native: &Report) -> Result<()> {
+pub(crate) fn validate_paging_schema(native: &Report) -> Result<()> {
     ensure!(
         native.schema_version >= 6
             || native.allocation.as_ref().is_none_or(|a| {
                 a.bitmap_before_continuation.is_empty() && a.bitmap_after_continuation.is_empty()
             }),
         "paged bitmap transcripts require native schema 6"
+    );
+    ensure!(
+        native.schema_version >= 7
+            || native
+                .files
+                .iter()
+                .flat_map(|file| file.streams_before.iter().chain(file.streams_after.iter()))
+                .flat_map(|capture| capture.streams.iter())
+                .all(|stream| stream.retrieval_continuation.is_empty()),
+        "paged retrieval transcripts require native schema 7"
     );
     Ok(())
 }
@@ -129,7 +139,7 @@ fn normalized(items: &[Extent], volume: u64, cluster: u64) -> Result<Vec<Extent>
     let mut out: Vec<Extent> = vec![];
     let mut next = 0;
     ensure!(
-        items.len() <= layout::MAX_EXTENTS,
+        items.len() <= retrieval_paging::MAX_COMPLETE_EXTENTS,
         "extent count exceeds profile"
     );
     for e in items {
@@ -283,12 +293,15 @@ pub fn check_file(
         );
         if s.resident {
             ensure!(
-                s.extents.is_empty() && r.native_error == Some(38) && r.bytes.is_empty(),
+                s.extents.is_empty()
+                    && r.native_error == Some(38)
+                    && r.bytes.is_empty()
+                    && q.retrieval_continuation.is_empty(),
                 "resident stream has unexpected physical retrieval evidence"
             );
             continue;
         }
-        let runs = layout::parse_retrieval(bytes(r, layout::GET_RETRIEVAL, &[0; 8])?)?;
+        let runs = retrieval_paging::assemble_queries(r, &q.retrieval_continuation)?.runs;
         let mut extents = vec![];
         for run in runs {
             extents.push(Extent {
@@ -332,10 +345,10 @@ pub fn check_file(
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     ensure!(
-        matches!(native.schema_version, 3..=6),
+        matches!(native.schema_version, 3..=7),
         "native stream profile missing"
     );
-    validate_bitmap_schema(native)?;
+    validate_paging_schema(native)?;
     let volume = native
         .allocation
         .as_ref()

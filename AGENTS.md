@@ -195,6 +195,16 @@ Do not dispatch helpers bound to the old `win11` manifest against this new VM.
 The recorded later explicit approval covers normal boot/read-only guest readiness,
 not formatting, reference import, a writer experiment, conversion or further cleanup.
 
+Source-only baseline prerequisites are in `lab/IsolatedBaselineGuards.psm1` and
+`lab/guest/IsolatedJournalZero.cs`; see
+[the source boundary](docs/isolated-baseline-prerequisites.md). They validate
+structural observations and a complete same-stream zero receipt, and return
+review plans only. They neither attest a live native source nor grant write
+authority. No journal initialization/import runner or live device scan has run.
+Do not substitute these JSON plans for live ownership/handle acquisition. Their
+fresh C: staging proposal preserves the old importer's C:-only guard and still
+needs execution review. No old helper route constants were changed.
+
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those
 counters are not a completion percentage. The current full-image workflow can

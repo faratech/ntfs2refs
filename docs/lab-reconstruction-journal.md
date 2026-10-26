@@ -79,3 +79,26 @@ writes, flush failures, journal truncation/corruption, foreign bytes and damaged
 handoff records. A parent test also starts a separate test process to resume and
 roll back interrupted operations using only the reopened files and saved ticket.
 These checks do not enable any production writer capability flag.
+
+## In-memory NTFS rollback-complete publication faults
+
+`tests/rollback_completion_faults.rs` exercises the actual
+`mark_rollback_complete_without_shadow` API with immediately visible memory
+buffers and recorded sync calls. It covers every marker write-error prefix
+from 0 through 4096 bytes, zero/nonzero short writes followed by failure,
+full-write sync failure, and readback error/mismatch armed only after
+publication and a successful journal sync. A target-sync failure is also
+checked before publication. Failed calls must return errors, leave the target
+preimage and immutable journal body unchanged, and preserve target-flush-before-
+marker ordering.
+
+Reopening uses new memory handles without injected faults. A zero marker stays
+retryable; any nonzero marker blocks normal apply/resume/rollback, including
+shadowless rollback. Separate completed-marker inspection accepts only exact
+stored ABT bytes with the correct target hash and binding. A full marker left
+by an errored publication can pass that separate inspection in this memory
+model; this does not establish physical persistence or native mount eligibility.
+
+The existing completed/corrupt-marker tests remain separate. No production
+behavior changes or stable/volatile crash model are introduced. Storage
+power-loss qualification and repeated native interruptions remain open.

@@ -139,7 +139,7 @@ fn rejects_non_progressing_attribute() {
 }
 
 #[test]
-fn refuses_mft_attribute_lists_instead_of_returning_partial_inventory() {
+fn refuses_unsupported_mft_list_profiles_instead_of_returning_partial_inventory() {
     let mut b = support::image();
     let at = 4 * 4096 + 56 + 72;
     b[at..at + 4].copy_from_slice(&0x20u32.to_le_bytes());

@@ -50,6 +50,7 @@ pub fn verify<R: Read + Seek>(
     length: u64,
     raw: &NtfsInspection,
 ) -> Result<VerifiedBackups> {
+    ntfs::revalidate_mft_mapping(reader, raw)?;
     let g = &raw.geometry;
     ensure!(
         g.bytes_per_sector == 512 && g.cluster_size == 4096 && g.file_record_size == 1024,

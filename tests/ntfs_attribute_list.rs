@@ -537,3 +537,89 @@ fn nonresident_list_refuses_synthetic_zeroes_incomplete_storage_and_payload_over
         );
     }
 }
+
+fn mft_fixture() -> (
+    RecordEvidence,
+    Vec<RecordEvidence>,
+    Vec<u8>,
+    Vec<u8>,
+    NtfsGeometry,
+) {
+    let (mut base, mut extensions, _, geometry) = fixture(false);
+    base.record_number = 0;
+    let data = &mut base.attributes[3];
+    data.logical_size = 7 * 4096;
+    data.initialized_size = data.logical_size;
+    data.allocated_size = data.logical_size;
+    data.extents[0].physical_offset = Some(4 * 4096);
+    data.extents[0].length = 5 * 4096;
+    for (index, extension) in extensions.iter_mut().enumerate() {
+        extension.base_file_reference = 1 << 48;
+        let data = &mut extension.attributes[0];
+        data.lowest_vcn = 5 + index as u64;
+        data.extents[0].logical_offset = data.lowest_vcn * 4096;
+    }
+    let bitmap = vec![1, 0, 6, 0];
+    let mut attribute = resident(0xb0, 4);
+    attribute.logical_size = bitmap.len() as u64;
+    attribute.initialized_size = attribute.logical_size;
+    attribute.allocated_size = attribute.logical_size;
+    attribute.resident_sha256 = Some(hash(&bitmap));
+    base.attributes.push(attribute);
+    let bytes = encode(&[
+        entry(0x10, 0, 0, 1, 0),
+        entry(0x30, 0, 0, 1, 1),
+        entry(0x80, 0, 0, 1, 3),
+        entry(0x80, 5, 17, 2, 0),
+        entry(0x80, 6, 18, 3, 0),
+        entry(0xb0, 0, 0, 1, 4),
+    ]);
+    bind_list(&mut base, &bytes);
+    (base, extensions, bytes, bitmap, geometry)
+}
+
+#[test]
+fn mft_profile_keeps_its_bitmap_and_never_relaxes_ordinary_record_identity() {
+    let (base, extensions, bytes, bitmap, geometry) = mft_fixture();
+    let (canonical, ledger) =
+        list::assemble_mft(base.clone(), extensions.clone(), &bytes, &bitmap, &geometry).unwrap();
+    assert_eq!(ledger.schema_version, 3);
+    assert_eq!(
+        ledger.mft_bitmap_hex.as_deref(),
+        Some(hex::encode(&bitmap).as_str())
+    );
+    assert_eq!(
+        canonical
+            .iter()
+            .find(|a| a.type_code == 0x80)
+            .unwrap()
+            .extents
+            .len(),
+        3
+    );
+    assert!(list::assemble(base, extensions, &bytes, &geometry).is_err());
+}
+
+#[test]
+fn mft_profile_refuses_stale_bitmap_auxiliary_layout_and_foreign_boot_locations() {
+    for case in 0..10 {
+        let (mut base, mut extensions, bytes, mut bitmap, geometry) = mft_fixture();
+        match case {
+            0 => bitmap[0] = 0,
+            1 => bitmap[2] &= !2,
+            2 => bitmap.push(0),
+            3 => bitmap[3] |= 0x80,
+            4 => base.attributes[3].logical_size -= 1,
+            5 => base.attributes[4].initialized_size = 0,
+            6 => base.attributes[3].extents[0].physical_offset = Some(5 * 4096),
+            7 => extensions[0].base_file_reference = 16 | (1 << 48),
+            8 => base.attributes[4].type_code = 0x50,
+            9 => base.record_number = 16,
+            _ => unreachable!(),
+        }
+        assert!(
+            list::assemble_mft(base, extensions, &bytes, &bitmap, &geometry).is_err(),
+            "MFT case {case}"
+        );
+    }
+}

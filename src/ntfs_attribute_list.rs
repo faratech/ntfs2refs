@@ -1,4 +1,4 @@
-//! Bounded assembly of ordinary NTFS DATA attribute segments. Inputs are raw
+//! Bounded assembly of NTFS DATA segments and MFT bootstrap evidence. Inputs are raw
 //! record observations, not permission flags. The caller must acquire/recheck
 //! the actual allocated MFT records and conserve all physical record identities.
 //! Layout follows Microsoft's ATTRIBUTE_LIST_ENTRY fields: the attribute
@@ -42,6 +42,10 @@ pub struct Assembly {
     pub base: RecordEvidence,
     pub extensions: Vec<RecordEvidence>,
     pub list_value_hex: String,
+    /// Present only for the MFT bootstrap profiles. Exact initialized bitmap
+    /// bytes are needed to replay allocated-record checks, not a success flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mft_bitmap_hex: Option<String>,
 }
 
 /// Decode a complete unnamed list. Padding within each entry is retained by
@@ -101,9 +105,11 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Entry>> {
     Ok(entries)
 }
 
-fn record_identity(record: &RecordEvidence) -> Result<()> {
+fn record_identity(record: &RecordEvidence, mft_base: bool) -> Result<()> {
     ensure!(
-        (16..=RECORD_MASK).contains(&record.record_number) && record.sequence_number != 0,
+        ((mft_base && record.record_number == 0)
+            || (16..=RECORD_MASK).contains(&record.record_number))
+            && record.sequence_number != 0,
         "unsupported attribute-list record identity"
     );
     ensure!(
@@ -144,13 +150,44 @@ fn plain_data(attribute: &AttributeInventory) -> Result<()> {
 
 /// Establish complete initialized metadata coverage before reading a list. A
 /// nonresident list must fit in this one attribute's own mapping; assembling a
-/// list from further list segments (including MFT bootstrap) is a separate gate.
+/// list from further list segments is a separate gate.
 pub fn validate_list_storage(
     attribute: &AttributeInventory,
     geometry: &NtfsGeometry,
 ) -> Result<()> {
+    validate_initialized_metadata(attribute, geometry, 0x20, MAX_LIST_BYTES as u64)
+}
+
+pub fn validate_mft_bitmap_storage(
+    attribute: &AttributeInventory,
+    geometry: &NtfsGeometry,
+    records: u64,
+) -> Result<()> {
     ensure!(
-        attribute.type_code == 0x20
+        records > 6 && records <= crate::ntfs_inspect::MAX_MFT_RECORDS,
+        "MFT record count exceeds bootstrap bounds"
+    );
+    validate_initialized_metadata(
+        attribute,
+        geometry,
+        0xb0,
+        crate::ntfs_inspect::MAX_MFT_RECORDS.div_ceil(8),
+    )?;
+    ensure!(
+        attribute.logical_size >= records.div_ceil(8),
+        "MFT bitmap cannot cover the record domain"
+    );
+    Ok(())
+}
+
+fn validate_initialized_metadata(
+    attribute: &AttributeInventory,
+    geometry: &NtfsGeometry,
+    kind: u32,
+    maximum: u64,
+) -> Result<()> {
+    ensure!(
+        attribute.type_code == kind
             && attribute.name_utf16.is_empty()
             && attribute.flags == 0
             && attribute.compression_unit == 0
@@ -159,7 +196,7 @@ pub fn validate_list_storage(
     );
     ensure!(
         attribute.logical_size > 0
-            && attribute.logical_size <= MAX_LIST_BYTES as u64
+            && attribute.logical_size <= maximum
             && attribute.initialized_size == attribute.logical_size,
         "attribute-list bytes must be completely initialized and bounded"
     );
@@ -238,18 +275,46 @@ pub fn assemble(
     list_value: &[u8],
     geometry: &NtfsGeometry,
 ) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    assemble_profile(base, extensions, list_value, geometry, None)
+}
+
+pub fn assemble_mft(
+    base: RecordEvidence,
+    extensions: Vec<RecordEvidence>,
+    list_value: &[u8],
+    bitmap: &[u8],
+    geometry: &NtfsGeometry,
+) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    assemble_profile(base, extensions, list_value, geometry, Some(bitmap))
+}
+
+fn assemble_profile(
+    base: RecordEvidence,
+    extensions: Vec<RecordEvidence>,
+    list_value: &[u8],
+    geometry: &NtfsGeometry,
+    mft_bitmap: Option<&[u8]>,
+) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    let mft = mft_bitmap.is_some();
     ensure!(
         !extensions.is_empty() && extensions.len() <= MAX_EXTENSION_RECORDS,
         "extension record count is empty or exceeds bound"
     );
     let entries = parse(list_value)?;
     ensure!(
-        (4..=5).contains(&base.attributes.len()),
+        if mft {
+            base.attributes.len() == 5
+        } else {
+            (4..=5).contains(&base.attributes.len())
+        },
         "unsupported base attribute count"
     );
-    record_identity(&base)?;
+    record_identity(&base, mft)?;
     ensure!(
-        !base.is_directory && base.base_file_reference == 0 && base.hard_link_count == 1,
+        !base.is_directory
+            && base.base_file_reference == 0
+            && base.hard_link_count == 1
+            && (!mft || base.record_number == 0),
         "ordinary standalone base file with one link required"
     );
     let mut types = BTreeMap::new();
@@ -259,10 +324,15 @@ pub fn assemble(
             "duplicate base attribute type"
         );
         match attribute.type_code {
-            0x10 | 0x30 | 0x50 => ensure!(
+            0x10 | 0x30 => ensure!(
                 attribute.resident && attribute.lowest_vcn == 0 && attribute.extents.is_empty(),
                 "base metadata must be resident and standalone"
             ),
+            0x50 if !mft => ensure!(
+                attribute.resident && attribute.lowest_vcn == 0 && attribute.extents.is_empty(),
+                "legacy security must be resident and standalone"
+            ),
+            0xb0 if mft => {} // Validated against the actual MFT domain below.
             0x20 => validate_list_storage(attribute, geometry)?,
             0x80 => plain_data(attribute)?,
             _ => anyhow::bail!("unsupported extra base attribute"),
@@ -275,6 +345,52 @@ pub fn assemble(
     let list = types.get(&0x20).context("base attribute list absent")?;
     let data = *types.get(&0x80).context("base DATA attribute absent")?;
     ensure!(data.lowest_vcn == 0, "base DATA does not begin at VCN zero");
+    if let Some(bitmap) = mft_bitmap {
+        let boot = geometry
+            .mft_lcn
+            .checked_mul(u64::from(geometry.cluster_size))
+            .context("MFT boot location overflow")?;
+        ensure!(
+            data.extents
+                .first()
+                .is_some_and(|run| run.logical_offset == 0 && run.physical_offset == Some(boot)),
+            "MFT DATA does not begin at its boot location"
+        );
+        ensure!(
+            geometry.file_record_size > 0
+                && data
+                    .logical_size
+                    .is_multiple_of(u64::from(geometry.file_record_size)),
+            "MFT DATA ends in a partial record"
+        );
+        let records = data.logical_size / u64::from(geometry.file_record_size);
+        let attribute = types.get(&0xb0).context("MFT base bitmap missing")?;
+        validate_mft_bitmap_storage(attribute, geometry, records)?;
+        ensure!(
+            bitmap.len() as u64 == attribute.logical_size && bitmap[0] & 1 != 0,
+            "MFT bitmap length or base allocation differs"
+        );
+        ensure!(
+            (records as usize..bitmap.len() * 8).all(|bit| bitmap[bit / 8] & (1 << (bit % 8)) == 0),
+            "MFT bitmap allocates records beyond EOF"
+        );
+        if attribute.resident {
+            ensure!(
+                attribute.resident_sha256.as_deref()
+                    == Some(hex::encode(Sha256::digest(bitmap)).as_str()),
+                "MFT resident bitmap bytes changed"
+            );
+        }
+        for extension in &extensions {
+            ensure!(
+                extension.record_number < records
+                    && bitmap[extension.record_number as usize / 8]
+                        & (1 << (extension.record_number % 8))
+                        != 0,
+                "MFT extension record is unallocated"
+            );
+        }
+    }
     ensure!(
         list.logical_size == list_value.len() as u64
             && (!list.resident
@@ -295,7 +411,7 @@ pub fn assemble(
             extension.attributes.len() == 1,
             "extension must contain exactly one DATA attribute"
         );
-        record_identity(extension)?;
+        record_identity(extension, false)?;
         ensure!(
             records.insert(extension.record_number),
             "duplicate or self extension record"
@@ -416,6 +532,20 @@ pub fn assemble(
                 .context("list physical overflow")?,
         ));
     }
+    if mft {
+        let bitmap = types.get(&0xb0).context("MFT bitmap absent")?;
+        for extent in &bitmap.extents {
+            let start = extent
+                .physical_offset
+                .context("MFT bitmap has no physical owner")?;
+            physical.push((
+                start,
+                start
+                    .checked_add(extent.length)
+                    .context("MFT bitmap range overflow")?,
+            ));
+        }
+    }
     physical.sort_unstable();
     ensure!(
         physical.windows(2).all(|pair| pair[0].1 <= pair[1].0),
@@ -435,10 +565,17 @@ pub fn assemble(
     Ok((
         canonical,
         Assembly {
-            schema_version: if list.resident { 1 } else { 2 },
+            schema_version: if mft {
+                if list.resident { 3 } else { 4 }
+            } else if list.resident {
+                1
+            } else {
+                2
+            },
             base,
             extensions,
             list_value_hex: hex::encode(list_value),
+            mft_bitmap_hex: mft_bitmap.map(hex::encode),
         },
     ))
 }

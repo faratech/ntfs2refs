@@ -117,7 +117,14 @@ counts. Checked stream reads rebuild and compare the actual list/segments and
 MFT allocation bits. Ledger version 1 retains resident lists; version 2 covers
 fully initialized nonresident lists whose entire mapping is in the base record.
 Their physical storage is separately claimed during allocation reconciliation.
-MFT bootstrap, system/directory lists, lists needing further segment assembly,
+The later `src/ntfs_mft_bootstrap.rs` loader supports bounded MFT DATA self-mapping
+with complete base-record LIST/BITMAP storage. Assembly versions 3/4 retain the
+actual MFT bitmap bytes and conserve its full allocated-record domain. It loads
+only reachable initialized record ranges, including learned noncontiguous islands;
+no-progress/unreachable graphs refuse. Stream, resident-metadata, backup, log and
+internal-index rereads rebuild the actual bootstrap. See
+[MFT bootstrap](docs/ntfs-mft-bootstrap.md). This has synthetic source coverage only.
+Other system/directory lists, auxiliary lists/bitmaps needing further assembly,
 named or encoded segments and unsupported forms remain refused. Existing file/data/run
 bounds remain. This is source/test coverage, with no new native qualification.
 

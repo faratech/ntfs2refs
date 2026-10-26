@@ -2,7 +2,7 @@
 //!
 //! `ntfs` validates the standard geometry. The bounded record/run-list reader below
 //! also retains raw UTF-16 names and metadata that its high-level API does not yet
-//! expose. Ordinary unnamed DATA can be assembled from a bounded resident list;
+//! expose. Complete ordinary DATA lists and bounded MFT self-mapping are supported;
 //! unsupported list forms remain explicit refusals. Raw reconciliation alone
 //! never replaces native namespace/security evidence or source admission.
 
@@ -14,9 +14,11 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 #[path = "ntfs_assembled_io.rs"]
 mod assembled_io;
+#[path = "ntfs_mft_bootstrap.rs"]
+mod mft_bootstrap;
 pub use assembled_io::validate_record_coverage;
 
-const MAX_MFT_RECORDS: u64 = 1_000_000;
+pub(crate) const MAX_MFT_RECORDS: u64 = 1_000_000;
 const MAX_BITMAP_BYTES: u64 = 128 * 1024 * 1024;
 const STREAM_HASH_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -867,26 +869,20 @@ pub(crate) fn read_resident_inventory_attribute<R: Read + Seek>(
         attribute.resident && attribute.logical_size <= 4096,
         "bounded resident source attribute required"
     );
-    let mft = raw
-        .files
-        .iter()
-        .find(|f| f.record_number == 0)
-        .context("missing MFT inventory")?;
-    let maps: Vec<_> = mft
-        .attributes
-        .iter()
-        .filter(|a| a.type_code == 0x80 && a.name_utf16.is_empty())
-        .collect();
-    ensure!(
-        maps.len() == 1 && mft.base_file_reference == 0,
-        "unassembled MFT source mapping"
-    );
+    let bootstrap = mft_bootstrap::read(reader, &raw.geometry)?;
+    bootstrap.verify_inventory(raw)?;
     let mut bytes = vec![0; raw.geometry.file_record_size as usize];
     let offset = file
         .record_number
         .checked_mul(u64::from(raw.geometry.file_record_size))
         .context("MFT source record offset overflow")?;
-    read_nonresident_inventory_range(reader, maps[0], offset, &mut bytes, &raw.geometry)?;
+    read_nonresident_inventory_range(
+        reader,
+        &bootstrap.data.report,
+        offset,
+        &mut bytes,
+        &raw.geometry,
+    )?;
     let record = parse_record(bytes, &raw.geometry)?;
     ensure!(
         record.sequence == file.sequence_number
@@ -908,6 +904,15 @@ pub(crate) fn read_resident_inventory_attribute<R: Read + Seek>(
         .resident_value
         .clone()
         .context("resident attribute bytes absent")
+}
+
+/// Source-state checks must bind an assembled MFT through actual bootstrap and
+/// bitmap reads before trusting its canonical inventory mapping.
+pub(crate) fn revalidate_mft_mapping<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+) -> Result<()> {
+    mft_bootstrap::read(reader, &raw.geometry)?.verify_inventory(raw)
 }
 pub(crate) fn read_nonresident_inventory_range<R: Read + Seek>(
     reader: &mut R,
@@ -2045,32 +2050,9 @@ fn checked_plain_attribute<R: Read + Seek>(
             == serde_json::to_vec(geometry)?,
         "source geometry changed"
     );
-    let mut bytes = vec![0; geometry.file_record_size as usize];
-    read_at(
-        reader,
-        geometry
-            .mft_lcn
-            .checked_mul(u64::from(geometry.cluster_size))
-            .context("MFT bootstrap offset overflow")?,
-        &mut bytes,
-        geometry.volume_size,
-    )?;
-    let bootstrap = parse_record(bytes, geometry)?;
-    ensure!(
-        bootstrap.flags & 1 != 0
-            && bootstrap.base == 0
-            && !bootstrap
-                .attributes
-                .iter()
-                .any(|a| a.report.type_code == 0x20),
-        "unsupported MFT bootstrap"
-    );
-    let mft = unnamed(&bootstrap, 0x80)?;
-    ensure!(
-        !mft.report.resident && mft.report.flags == 0,
-        "invalid MFT storage"
-    );
-    validate_stream_mapping(&mft.report, geometry)?;
+    let bootstrap = mft_bootstrap::read(reader, geometry)?;
+    bootstrap.verify_inventory(raw)?;
+    let mft = &bootstrap.data;
     let mut bytes = vec![0; geometry.file_record_size as usize];
     read_attribute_range(
         reader,
@@ -2082,27 +2064,25 @@ fn checked_plain_attribute<R: Read + Seek>(
         geometry,
     )?;
     let mut record = parse_record(bytes.clone(), geometry)?;
+    if record_number == 0
+        && let Some(assembly) = &bootstrap.assembly
+    {
+        ensure!(
+            assembly.base.raw_record_sha256 == hex::encode(Sha256::digest(&bytes)),
+            "MFT base changed while rereading its DATA"
+        );
+        record.attributes = bootstrap.record.attributes.clone();
+    }
     if let Some(expected) = raw
         .attribute_assemblies
         .iter()
-        .find(|a| a.base.record_number == record_number)
+        .find(|a| a.base.record_number == record_number && matches!(a.schema_version, 1 | 2))
     {
-        let bitmap_attribute = unnamed(&bootstrap, 0xb0)?;
-        require_bitmap_bytes(
-            &bitmap_attribute.report,
-            bitmap_attribute.report.logical_size,
-        )?;
-        let bitmap = read_small_attribute(
-            reader,
-            bitmap_attribute,
-            geometry,
-            MAX_MFT_RECORDS.div_ceil(8),
-        )?;
         let context = assembled_io::MftContext {
             data: mft,
-            bitmap: &bitmap,
+            bitmap: &bootstrap.bitmap,
             geometry,
-            record_count: mft.report.logical_size / u64::from(geometry.file_record_size),
+            record_count: bootstrap.record_count,
         };
         let actual = context
             .resolve(reader, record_number, &bytes, &mut record)?
@@ -2313,60 +2293,18 @@ pub fn inspect_with_limits<R: Read + Seek>(
             && native_parser.file_record_size() == geometry.file_record_size,
         "independent NTFS geometry interpretations disagree"
     );
-    let mut record_bytes = vec![0; geometry.file_record_size as usize];
-    read_at(
-        reader,
-        geometry.mft_lcn * u64::from(geometry.cluster_size),
-        &mut record_bytes,
-        geometry.volume_size,
-    )?;
-    let bootstrap =
-        parse_record(record_bytes, &geometry).context("invalid MFT bootstrap record")?;
-    ensure!(
-        bootstrap.flags & 1 != 0 && bootstrap.base == 0,
-        "MFT bootstrap is not an allocated base record"
-    );
-    ensure!(
-        !bootstrap
-            .attributes
-            .iter()
-            .any(|a| a.report.type_code == 0x20),
-        "MFT attribute-list assembly is unsupported; inventory would be incomplete"
-    );
-    let mft_data = unnamed(&bootstrap, 0x80)?.clone();
-    ensure!(
-        !mft_data.report.resident && mft_data.report.flags == 0,
-        "invalid MFT data stream layout"
-    );
-    ensure!(
-        mft_data.report.logical_size % u64::from(geometry.file_record_size) == 0,
-        "partial MFT record at EOF"
-    );
-    let mft_record_count = mft_data.report.logical_size / u64::from(geometry.file_record_size);
-    ensure!(
-        mft_record_count > 6 && mft_record_count <= MAX_MFT_RECORDS,
-        "MFT record count exceeds inspection limit or lacks system records"
-    );
-    let mft_bitmap_attribute = unnamed(&bootstrap, 0xb0)?;
-    require_bitmap_bytes(
-        &mft_bitmap_attribute.report,
-        mft_bitmap_attribute.report.logical_size,
-    )?;
-    let mft_bitmap = read_small_attribute(
-        reader,
-        mft_bitmap_attribute,
-        &geometry,
-        MAX_MFT_RECORDS.div_ceil(8),
-    )?;
-    ensure!(
-        mft_bitmap.len() as u64 >= mft_record_count.div_ceil(8),
-        "MFT bitmap is too short"
-    );
-    ensure!(
-        (mft_record_count as usize..mft_bitmap.len() * 8)
-            .all(|bit| mft_bitmap[bit / 8] & (1 << (bit % 8)) == 0),
-        "MFT bitmap contains allocated records beyond MFT EOF"
-    );
+    let mft_bootstrap::Bootstrap {
+        record,
+        data: mft_data,
+        bitmap: mft_bitmap,
+        record_count: mft_record_count,
+        assembly: mft_assembly,
+    } = mft_bootstrap::read(reader, &geometry)?;
+    let mut canonical_bootstrap = if mft_assembly.is_some() {
+        Some(record)
+    } else {
+        None
+    };
     let mut report = NtfsInspection {
         schema_version: 1,
         geometry: geometry.clone(),
@@ -2397,6 +2335,9 @@ pub fn inspect_with_limits<R: Read + Seek>(
     // numerically, so defer them without caching an unbounded MFT in memory.
     let mut physical_extensions = vec![0u8; mft_record_count.div_ceil(8) as usize];
     let mut consumed = std::collections::BTreeMap::<u64, (usize, usize)>::new();
+    if let Some(assembly) = mft_assembly {
+        assembled_io::retain_assembly(&mut report, &mut budget, &mut consumed, assembly)?;
+    }
     let mft_context = assembled_io::MftContext {
         data: &mft_data,
         bitmap: &mft_bitmap,
@@ -2448,28 +2389,21 @@ pub fn inspect_with_limits<R: Read + Seek>(
                 !consumed.contains_key(&number),
                 "extension changed into a base record during inventory"
             );
+            if number == 0
+                && let Some(canonical) = canonical_bootstrap.take()
+            {
+                let expected = &report.attribute_assemblies[0].base.raw_record_sha256;
+                ensure!(
+                    *expected == hex::encode(Sha256::digest(&raw)),
+                    "MFT bootstrap changed during inventory"
+                );
+                record = canonical;
+            }
             if let Some(assembly) = mft_context
                 .resolve(reader, number, &raw, &mut record)
                 .with_context(|| format!("assembling ordinary DATA for MFT record {number}"))?
             {
-                let index = report.attribute_assemblies.len();
-                // Conservatively charge the temporary BTree ownership index as
-                // well as all retained ledger capacities to the report budget.
-                budget.charge(
-                    (assembly.extensions.len() as u64)
-                        .checked_mul(128)
-                        .context("assembly ownership accounting overflow")?,
-                )?;
-                for (extension, segment) in assembly.extensions.iter().enumerate() {
-                    ensure!(
-                        consumed
-                            .insert(segment.record_number, (index, extension))
-                            .is_none(),
-                        "one physical extension is claimed by multiple base files"
-                    );
-                }
-                let retained = assembled_io::heap_bytes(&assembly)?;
-                budget.push(&mut report.attribute_assemblies, assembly, retained)?;
+                assembled_io::retain_assembly(&mut report, &mut budget, &mut consumed, assembly)?;
             }
         } else {
             ensure!(

@@ -5,6 +5,8 @@ DATA is split between its base MFT record and extension records. This is wired
 through inspection, allocation/namespace/security reconciliation, native mapping
 comparison, ordinary shadow construction and the checked source stream reader.
 It has synthetic source/test evidence, not a new native conversion qualification.
+The separate [MFT bootstrap profile](ntfs-mft-bootstrap.md) extends the same
+physical-record ledger to record zero without relaxing ordinary-file identities.
 
 The initial profile requires:
 
@@ -80,7 +82,7 @@ bytes fail reread, and allocated slack beyond list EOF is not interpreted as ent
 The pure assembler tests additionally cover malformed list entries, missing/extra
 origins, duplicate identities, unsupported forms, physical overlaps and limits.
 
-MFT bootstrap lists, filesystem-internal lists, directory-index assembly,
+Unimplemented filesystem-internal lists, directory-index assembly,
 lists whose own mappings require further assembly, named streams, multiple links and encoded/sparse segments
 remain outside this profile. No original VM/checkpoint, device, source image or
 writer experiment was changed to establish these source results.

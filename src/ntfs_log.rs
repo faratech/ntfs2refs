@@ -169,6 +169,7 @@ pub fn parse_restart_pair(log: &[u8]) -> Result<RestartPair> {
 /// Re-read MFT record 2 and its DATA mapping from the supplied partition,
 /// materialize the bounded logical stream, then parse both restart pages.
 pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<VerifiedRestart> {
+    crate::ntfs_inspect::revalidate_mft_mapping(reader, raw)?;
     ensure!(
         raw.dirty == Some(false) && raw.volume_flags.is_some_and(|flags| flags & 1 == 0),
         "NTFS dirty state is unresolved"

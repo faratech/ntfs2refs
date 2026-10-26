@@ -37,7 +37,7 @@ fn candidate(number: u64, record: &Record) -> bool {
         })
 }
 
-fn evidence(number: u64, raw: &[u8], record: &Record) -> RecordEvidence {
+pub(super) fn evidence(number: u64, raw: &[u8], record: &Record) -> RecordEvidence {
     RecordEvidence {
         record_number: number,
         sequence_number: record.sequence,
@@ -189,25 +189,55 @@ pub fn validate_record_coverage(raw: &NtfsInspection) -> Result<()> {
             .iter()
             .find(|f| f.record_number == base.record_number)
             .context("assembly has no canonical base file")?;
+        let mft = matches!(assembly.schema_version, 3 | 4);
         ensure!(
-            file.sequence_number == base.sequence_number
+            mft || assembly.mft_bitmap_hex.is_none(),
+            "ordinary file cannot supply MFT bitmap authority"
+        );
+        let expected_role = if mft {
+            MetadataRole::ReservedSystemRecord
+        } else {
+            MetadataRole::OutsideExtendCandidate
+        };
+        ensure!(
+            (!mft || base.record_number == 0)
+                && file.sequence_number == base.sequence_number
                 && file.base_file_reference == 0
                 && file.hard_link_count == base.hard_link_count
                 && file.is_directory == base.is_directory
-                && file.metadata_role == MetadataRole::OutsideExtendCandidate
+                && file.metadata_role == expected_role
                 && file.metadata_role_issue.is_none(),
             "assembled file identity/ordinary namespace role differs"
         );
         let value =
             hex::decode(&assembly.list_value_hex).context("invalid attribute-list evidence")?;
-        let (canonical, replay) = lists::assemble(
-            base.clone(),
-            assembly.extensions.clone(),
-            &value,
-            &raw.geometry,
-        )?;
+        let (canonical, replay) = if mft {
+            let encoded = assembly
+                .mft_bitmap_hex
+                .as_ref()
+                .context("MFT bitmap replay evidence absent")?;
+            ensure!(
+                encoded.len() <= MAX_MFT_RECORDS.div_ceil(8) as usize * 2,
+                "MFT bitmap replay budget exceeded"
+            );
+            let bitmap = hex::decode(encoded)?;
+            lists::assemble_mft(
+                base.clone(),
+                assembly.extensions.clone(),
+                &value,
+                &bitmap,
+                &raw.geometry,
+            )?
+        } else {
+            lists::assemble(
+                base.clone(),
+                assembly.extensions.clone(),
+                &value,
+                &raw.geometry,
+            )?
+        };
         ensure!(
-            matches!(assembly.schema_version, 1 | 2)
+            matches!(assembly.schema_version, 1..=4)
                 && serde_json::to_vec(&replay)? == serde_json::to_vec(assembly)?
                 && serde_json::to_vec(&canonical)? == serde_json::to_vec(&file.attributes)?,
             "assembly evidence does not reproduce the canonical attributes"
@@ -226,6 +256,21 @@ pub fn validate_record_coverage(raw: &NtfsInspection) -> Result<()> {
         physical.len() as u64 == raw.records_scanned,
         "physical MFT records are missing from canonical files/assembly ledgers"
     );
+    if let Some(mft) = raw
+        .attribute_assemblies
+        .iter()
+        .find(|a| a.base.record_number == 0)
+    {
+        let bitmap = hex::decode(mft.mft_bitmap_hex.as_ref().context("MFT bitmap absent")?)?;
+        let allocated: u64 = bitmap.iter().map(|b| u64::from(b.count_ones())).sum();
+        ensure!(
+            allocated == physical.len() as u64
+                && physical.keys().all(|number| bitmap
+                    .get(*number as usize / 8)
+                    .is_some_and(|byte| byte & (1 << (*number % 8)) != 0)),
+            "MFT bitmap and complete physical-record ownership disagree"
+        );
+    }
     Ok(())
 }
 
@@ -249,6 +294,11 @@ fn attributes_heap_bytes(attributes: &[AttributeInventory], capacity: usize) -> 
 }
 pub(super) fn heap_bytes(assembly: &Assembly) -> Result<u64> {
     let mut total = assembly.list_value_hex.capacity() as u64;
+    if let Some(bitmap) = &assembly.mft_bitmap_hex {
+        total = total
+            .checked_add(bitmap.capacity() as u64)
+            .context("MFT bitmap accounting overflow")?;
+    }
     total = total
         .checked_add(
             (assembly.extensions.capacity() * std::mem::size_of::<RecordEvidence>()) as u64,
@@ -265,4 +315,28 @@ pub(super) fn heap_bytes(assembly: &Assembly) -> Result<u64> {
             .context("assembly record accounting overflow")?;
     }
     Ok(total)
+}
+
+pub(super) fn retain_assembly(
+    report: &mut NtfsInspection,
+    budget: &mut ReportBudget,
+    consumed: &mut BTreeMap<u64, (usize, usize)>,
+    assembly: Assembly,
+) -> Result<()> {
+    let index = report.attribute_assemblies.len();
+    budget.charge(
+        (assembly.extensions.len() as u64)
+            .checked_mul(128)
+            .context("assembly ownership accounting overflow")?,
+    )?;
+    for (extension, segment) in assembly.extensions.iter().enumerate() {
+        ensure!(
+            consumed
+                .insert(segment.record_number, (index, extension))
+                .is_none(),
+            "one physical extension is claimed by multiple base files"
+        );
+    }
+    let retained = heap_bytes(&assembly)?;
+    budget.push(&mut report.attribute_assemblies, assembly, retained)
 }

@@ -272,6 +272,7 @@ fn quota_indexes_match(owners: &[(Vec<u8>, Vec<u8>)], quotas: &[(Vec<u8>, Vec<u8
 }
 
 pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<VerifiedIndexes> {
+    crate::ntfs_inspect::revalidate_mft_mapping(reader, raw)?;
     crate::ntfs_inspect::validate_record_coverage(raw)?;
     ensure!(
         raw.geometry.cluster_size == 4096

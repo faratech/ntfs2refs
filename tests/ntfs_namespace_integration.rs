@@ -441,6 +441,238 @@ fn assembly_fixture(
     image
 }
 
+fn fragmented_mft_fixture(island: bool, nonresident_aux: bool) -> Vec<u8> {
+    let mut image = assembly_fixture(23, [16, 17], 12288, 12288);
+    let user = image[MFT + 23 * 1024..MFT + 24 * 1024].to_vec();
+    image[MFT + 23 * 1024..MFT + 24 * 1024].fill(0);
+    let records: usize = if island { 48 } else { 24 };
+    let mut bitmap = vec![0u8; records.div_ceil(8)];
+    for number in [0, 1, 3, 5, 6, 7, 9, 10, 16, 17, 19, 23]
+        .into_iter()
+        .chain(island.then_some(30))
+    {
+        bitmap[number / 8] |= 1 << (number % 8);
+    }
+    let segments = if island {
+        vec![(30usize, 5u64, 50u16, 1u8), (19, 6, 60, 6)]
+    } else {
+        vec![(19, 5, 50, 1)]
+    };
+    let mut list = Vec::new();
+    let origins = [(0x10, 0, 0, 100), (0x30, 0, 0, 2), (0x80, 0, 0, 0)]
+        .into_iter()
+        .chain(
+            segments
+                .iter()
+                .map(|(number, vcn, _, _)| (0x80, *number, *vcn, 0)),
+        )
+        .chain(std::iter::once((0xb0, 0, 0, 1)));
+    for (kind, number, vcn, instance) in origins {
+        let mut row = [0u8; 32];
+        p32(&mut row, 0, kind);
+        p16(&mut row, 4, 32);
+        row[7] = 26;
+        p64(&mut row, 8, vcn);
+        p64(&mut row, 16, (1 << 48) | number as u64);
+        p16(&mut row, 24, instance);
+        list.extend(row);
+    }
+    let bitmap_attribute = if nonresident_aux {
+        image[91 * 4096..91 * 4096 + bitmap.len()].copy_from_slice(&bitmap);
+        let mut a = list_disk_attribute(0xb0, 91, bitmap.len() as u64, 1);
+        p16(&mut a, 14, 1);
+        a
+    } else {
+        support::resident(0xb0, "", &bitmap, 1)
+    };
+    let list_attribute = if nonresident_aux {
+        image[90 * 4096..90 * 4096 + list.len()].copy_from_slice(&list);
+        let mut a = list_disk_attribute(0x20, 90, list.len() as u64, 1);
+        p16(&mut a, 14, 3);
+        a
+    } else {
+        support::resident(0x20, "", &list, 3)
+    };
+    let mut data = list_disk_attribute(0x80, 4, (records * 1024) as u64, 5);
+    p64(&mut data, 40, (records * 1024) as u64);
+    put_record(
+        &mut image,
+        0,
+        &[
+            assembly_si(100, false),
+            filename("$MFT", 2),
+            list_attribute,
+            data,
+            bitmap_attribute,
+        ],
+        false,
+        1,
+    );
+    image[50 * 4096 + 3 * 1024..51 * 4096].copy_from_slice(&user);
+    for (number, vcn, lcn, clusters) in segments {
+        let mut data = list_disk_attribute(0x80, lcn, 0, clusters);
+        p64(&mut data, 16, vcn);
+        p64(&mut data, 24, vcn + u64::from(clusters) - 1);
+        for at in [40, 48, 56] {
+            p64(&mut data, at, u64::MAX);
+        }
+        let mut extension = support::record(&[data], 1, 0);
+        p64(&mut extension, 32, 1 << 48);
+        let at = if number < 20 {
+            MFT + number * 1024
+        } else {
+            60 * 4096 + (number - 24) * 1024
+        };
+        image[at..at + 1024].copy_from_slice(&extension);
+    }
+    let volume_bitmap = attribute(&image, 6, 0x80);
+    let value = volume_bitmap
+        + usize::from(u16::from_le_bytes(
+            image[volume_bitmap + 20..volume_bitmap + 22]
+                .try_into()
+                .unwrap(),
+        ));
+    for cluster in std::iter::once(50)
+        .chain(if island { 60..66 } else { 60..60 })
+        .chain(if nonresident_aux { 90..92 } else { 90..90 })
+    {
+        image[value + cluster / 8] |= 1 << (cluster % 8);
+    }
+    image[MFT + 2 * 1024..MFT + 3 * 1024].copy_from_slice(&support::record(&[], 0, 0));
+    let primary = image[MFT..MFT + 4096].to_vec();
+    image[30 * 4096..31 * 4096].copy_from_slice(&primary);
+    let boot = image[..512].to_vec();
+    let end = image.len();
+    image[end - 512..].copy_from_slice(&boot);
+    image
+}
+
+#[test]
+fn mft_bootstrap_reaches_user_records_outside_its_initial_map_and_rechecks_backups() {
+    for island in [false, true] {
+        for auxiliary in [false, true] {
+            let image = fragmented_mft_fixture(island, auxiliary);
+            let raw = inspect(&image);
+            ntfs_inspect::validate_record_coverage(&raw).unwrap();
+            let mft = raw
+                .attribute_assemblies
+                .iter()
+                .find(|a| a.base.record_number == 0)
+                .unwrap();
+            assert_eq!(mft.schema_version, if auxiliary { 4 } else { 3 });
+            assert_eq!(
+                mft.extensions
+                    .iter()
+                    .map(|r| r.record_number)
+                    .collect::<Vec<_>>(),
+                if island { vec![19, 30] } else { vec![19] }
+            );
+            assert_eq!(
+                raw.records_scanned,
+                raw.files.len() as u64 + if island { 4 } else { 3 }
+            );
+            assert_eq!(
+                raw.allocation_reconciliation.as_ref().unwrap().status,
+                AllocationReconciliationStatus::ConsistentRawModel
+            );
+            assert_eq!(
+                raw.namespace_reconciliation.as_ref().unwrap().status,
+                Status::ConsistentRawModel
+            );
+            assert_eq!(
+                raw.security_reconciliation.as_ref().unwrap().status,
+                ntfs2refs::ntfs_security::Status::ConsistentRawModel
+            );
+            let expected = [vec![0x31; 4096], vec![0x72; 4096], vec![0xc3; 4096]].concat();
+            assert_eq!(
+                ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &raw, 23, 16384).unwrap(),
+                expected
+            );
+            let bytes =
+                ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &raw, 0, 65536).unwrap();
+            assert_eq!(&bytes[23 * 1024..23 * 1024 + 4], b"FILE");
+            assert_eq!(
+                ntfs2refs::shadow_tree::derive_ordinary(&raw)
+                    .unwrap()
+                    .objects
+                    .len(),
+                2
+            );
+            assert!(
+                ntfs2refs::ntfs_backup::verify(&mut Cursor::new(&image), image.len() as u64, &raw)
+                    .unwrap()
+                    .binds(&raw)
+            );
+        }
+    }
+}
+
+#[test]
+fn mft_bootstrap_refuses_unreachable_headers_and_changed_bitmap_evidence() {
+    use std::io::{Read, Seek, SeekFrom};
+    struct NoGuess<'a> {
+        inner: Cursor<&'a [u8]>,
+        forbidden_reads: usize,
+    }
+    impl Read for NoGuess<'_> {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let start = self.inner.position();
+            let end = start + out.len() as u64;
+            if start < 51 * 4096 && end > 50 * 4096 {
+                self.forbidden_reads += 1;
+                return Err(std::io::Error::other("Unlearned MFT range read"));
+            }
+            self.inner.read(out)
+        }
+    }
+    impl Seek for NoGuess<'_> {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+    let mut image = fragmented_mft_fixture(false, false);
+    let list = attribute(&image, 0, 0x20);
+    let value = list
+        + usize::from(u16::from_le_bytes(
+            image[list + 20..list + 22].try_into().unwrap(),
+        ));
+    p64(&mut image, value + 3 * 32 + 16, (1 << 48) | 23);
+    let mut guarded = NoGuess {
+        inner: Cursor::new(image.as_slice()),
+        forbidden_reads: 0,
+    };
+    let error = ntfs_inspect::inspect(&mut guarded, image.len() as u64).unwrap_err();
+    assert!(format!("{error:#}").contains("no progress"));
+    assert_eq!(guarded.forbidden_reads, 0);
+
+    let image = fragmented_mft_fixture(true, true);
+    let raw = inspect(&image);
+    let mut stale = image.clone();
+    stale[91 * 4096 + 2] |= 1 << 4; // Previously free record20, header unchanged.
+    assert!(ntfs_inspect::read_plain_stream(&mut Cursor::new(&stale), &raw, 23, 16384).is_err());
+    assert!(
+        ntfs2refs::ntfs_backup::verify(&mut Cursor::new(&stale), stale.len() as u64, &raw).is_err()
+    );
+    let mut forged = raw.clone();
+    let mft = forged
+        .attribute_assemblies
+        .iter_mut()
+        .find(|a| a.base.record_number == 0)
+        .unwrap();
+    let mut bitmap = hex::decode(mft.mft_bitmap_hex.as_ref().unwrap()).unwrap();
+    bitmap[2] |= 1 << 4;
+    mft.mft_bitmap_hex = Some(hex::encode(bitmap));
+    assert!(ntfs_inspect::validate_record_coverage(&forged).is_err());
+    let mut missing = raw.clone();
+    missing
+        .attribute_assemblies
+        .retain(|a| a.base.record_number != 0);
+    missing.records_scanned -= 2;
+    assert!(
+        ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &missing, 23, 16384).is_err()
+    );
+}
+
 fn list_disk_attribute(kind: u32, lcn: u16, logical: u64, clusters: u8) -> Vec<u8> {
     let [low, high] = lcn.to_le_bytes();
     support::nonresident(

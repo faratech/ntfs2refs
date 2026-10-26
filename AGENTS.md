@@ -17,23 +17,32 @@ On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
 
 ## Verified baseline as of 2026-10-26
 
-- Public `ntfs2refs convert --request` converted twelve existing objects,
-  including a naturally allocated 128 MiB file, on the original 52 GiB NTFS
-  partition. Native ReFS verification and strict verification after reboot
-  passed. There were 106 patches, 346,841,088 target bytes written and a
-  693,708,354-byte external journal.
-- That run retained **zero payload bytes**: five ordinary payloads were
-  relocated and 88 resident bytes materialized. The older prepared one-file
-  run retained 64 KiB, but does not prove general retention of existing files.
-- Native `complete-label` restored the original label, repeated successfully
-  without a second setter call, and passed strict twelve-object verification
-  after reboot. The shadow was absent. This test used an explicitly backfilled,
-  separately pinned legacy request; a fresh whole conversion exercising the
-  new capture-to-automatic-label path remains to be qualified.
-- Exact-frozen target semantics passed a protected twelve-object native check
-  with equal complete before/after image hashes. The integrated conversion
-  path now requires that protected observation; a fresh complete conversion
-  through this addition remains to be qualified.
+- Public `ntfs2refs convert --request` completed a fourteen-object tree on the
+  original 52 GiB partition, retaining 134,217,728 payload bytes at their original
+  physical extent, relocating 8,933,376 and materializing 88. There were 134
+  patches, 231,337,984 raw target bytes written and a 462,706,832-byte journal.
+  The executable SHA-256 is `0a90d93c715e7ac9f2ad3b0560b5a1dadb5b4da9c879d3a5711bef81e0ad160c`,
+  built from `f025c8b2a0e48605edac07f67af32968c8b9b33f`; later commits do not
+  inherit this qualification. A separate strict native check matched all
+  fourteen objects and the retained file's original LCN 2173673.
+- This retention fixture used synthetic allocation history: an 8 GiB zero-written
+  temporary file and normal NTFS creation of the 128 MiB file, with no source
+  extent moves. It does not prove arbitrary or low-LCN placement. Shadow payload
+  initialization was still 143,151,192 bytes; actual allocated scratch and full
+  process I/O were not measured. The fourteen-object result passed a bounded
+  native create/grow/truncate/rename/delete and 128-entry workload, strict
+  verification afterward, and strict verification after clean reboot. The exact
+  mutation report constrains the changed root basic-info record. The 128 MiB
+  file's original LCN/hash and source label survived with the shadow absent.
+  This does not establish arbitrary storage power-loss or broad workload safety.
+- That fresh full conversion passed protected exact-frozen target semantics
+  and automatic original-label restoration through capture/frozen reconciliation/
+  finalization. The earlier separate `complete-label` repetition/reboot result
+  used a backfilled legacy request and remains distinct historical evidence.
+- The earlier twelve-object public conversion retained zero bytes, wrote
+  346,841,088 target bytes with a 693,708,354-byte journal, and passed strict
+  native verification after reboot. That older reboot and the prepared one-file
+  64 KiB retention result do not qualify the fourteen-object run's later behavior.
 - Public preactivation cancellation passed on the 52 GiB fixture. Public
   `rollback --without-shadow` also passed after a controlled first-flushed-write
   process exit with the exact shadow detached. It proved the complete original
@@ -121,6 +130,16 @@ before using it; the guest has subsequently run label completion and rebooted.
 Never restore, reboot or redispatch over a still-running or unknown operation.
 An interrupted host observation does not prove that the guest worker stopped.
 
+The latest fourteen-object retained/mutated/reboot-verified branch is saved as
+checkpoint `f6393f52-56ce-4847-bc24-7d5e019ac2e2`; its actual parent identity was
+confirmed and the VM was running after preservation. Use the successful
+`preserved-checkpoint.json` report, not the earlier empty-ID checkpoint attempt.
+Follow the canonical [preservation record](lab/PRESERVATION.md). Specific user
+approval is required for irreversible checkpoint/backing cleanup or reset of
+the verified VM; blanket project authorization does not grant it. No further
+disk experiment is authorized on this preserved branch. Read-only inventory
+and source/test work may continue. No export or copy is currently needed.
+
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those
 counters are not a completion percentage. The current full-image workflow can
@@ -171,10 +190,14 @@ tests and release builds. Do not transfer that result to later changes.
 `evidence/qualification-registry.json` records bounded implementation/native
 claims and their exact evidence pins; it never grants execution authority.
 
-Next work should improve retention on independently populated volumes, qualify
-the restricted writer through Microsoft's driver once capacity permits, finish
-native public interruption/recovery coverage, and exercise the fresh automatic
-label path. Preserve completed fixture paths and add versioned profiles rather
-than deleting their enrollment checks. Report payload retained, relocated and
-materialized, actual scratch allocation, changed bytes and journal capacity
-separately. Boot and broad production qualification remain separate objectives.
+Next work should broaden source/placement coverage, reduce measured scratch and
+I/O costs, extend the native interruption/marker-recovery matrix, and investigate
+the rejected independent writer using the accepted baseline control. The
+fourteen-object aged-layout conversion, automatic label path, mutation and
+reboot now have bounded native evidence; do not repeat them without a concrete
+new change or unresolved gate. Preserve completed fixture paths and add
+versioned profiles rather than deleting their enrollment checks. Follow
+[the preservation constraint](lab/PRESERVATION.md) before any lab operation.
+Report payload retained, relocated and materialized, actual scratch allocation,
+changed bytes and journal capacity separately. Boot and broad production
+qualification remain separate objectives.

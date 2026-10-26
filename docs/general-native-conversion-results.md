@@ -1,5 +1,156 @@
 # General guest conversion: existing NTFS tree
 
+## Public fourteen-object conversion with a retained 128 MiB extent
+
+On October 26, 2026, public `ntfs2refs convert --request` completed run
+`c668cc9d52fe43f780e52a581b1d350f` on the original 52 GiB NTFS partition.
+The worker exited 0, all fourteen objects passed native ReFS verification,
+and finalization automatically restored the original `n2r-retained-source`
+label with successful setter, flush and exact readback. This fresh run used
+the integrated protected frozen-target observation and source-label capture;
+it did not backfill a legacy request or invoke separate label completion.
+
+The converter executable SHA-256 was
+`0a90d93c715e7ac9f2ad3b0560b5a1dadb5b4da9c879d3a5711bef81e0ad160c`,
+built from source commit `f025c8b2a0e48605edac07f67af32968c8b9b33f`.
+The result belongs to that binary and fixture; later commits do not inherit its
+qualification. All execution occurred inside the disk-owning Windows VM.
+
+`natural-large.bin` was created through normal NTFS writes after synthetic
+allocation history: an owned temporary file received 8 GiB of zero writes,
+the large file was created, and the temporary file was removed. No source
+extent movement was requested. The large file occupied LCN `2173673` for
+32,768 clusters and contained 134,217,728 bytes with SHA-256
+`d6123963cb86930c3cf0462de8a1a03a6be54b5e8f32cf96aa6bced35cd5b43d`.
+This is one deliberately aged allocation case, not evidence for arbitrary or
+low-LCN placement.
+
+The admitted frozen NTFS SHA-256 was
+`3e540ccf38e3a6bcd2de621cae7b5501fa1847f411c9bf86f174da3c3a798ae4`.
+The protected target observation had equal complete before/after hashes, and
+raw reconstruction proved that same target SHA-256 before handoff:
+`a83a925888ed78bf2a33c78094a7cf56353776eb2d92b57d1c5d89d4b3801277`.
+The fourteen-object semantic expectation SHA-256 was
+`4402223abdc4d055d83f51545091f3179d200427fea2a1235414119baf3c10f3`.
+Native ReFS mounting and label restoration can subsequently change metadata;
+no current post-mount whole-image equality is claimed.
+
+| Scoped measurement | Bytes |
+|---|---:|
+| Source logical contents | 143,151,192 |
+| Payload retained at its original physical range | 134,217,728 |
+| Payload relocated | 8,933,376 |
+| Resident bytes materialized | 88 |
+| Shadow payload initialization | 143,151,192 |
+| Raw apply target writes, 134 ranges | 231,337,984 |
+| Complete external journal | 462,706,832 |
+
+The retained range was excluded from journal payload replacement. The shadow
+still initialized payload-proportional contents, including the retained file's
+logical bytes. Mapping/hash agreement and the journal proof are not a complete
+storage-I/O trace or a zero-payload-I/O claim. Actual allocated scratch and total
+process I/O were not measured; the run does not establish payload-independent
+scratch requirements.
+
+A separate strict native verifier then exited 0 and matched all fourteen
+objects, their contents, names, basic metadata, security views and mount paths
+under the automatically restored label. Its retrieval mapping independently
+confirmed `natural-large.bin` at the same original LCN and length, with the
+same logical hash. The verifier binary SHA-256 was
+`e16eb377cb725b0c0c7452a2104cba0af3da4feb9e86a4220962156ff4e35010`.
+The direct native command produced this result without changing Windows
+security settings. An earlier PowerShell postcheck preflight was blocked by
+guest Restricted policy before its task/output was created; no mutation ran
+through that blocked worker.
+
+Ignored conversion evidence:
+`.lab/hyperv/certificate-conversion/win11-20261026T062029798Z`.
+
+| Conversion artifact | SHA-256 |
+|---|---|
+| `result.json` | `d1de89e30b2558d4c6dfa651968a5e17c20533ce84439a6ea26ae2f3f53710a5` |
+| `apply.json` | `bfbd690b48d5410b6459a60361ea3ec4af0edc7172fdb939bb6a2f3e9dcd37e5` |
+| `finalization.json` | `eb92e005a800d84b234e612de9355c09c51ae5803bc00c2a9db584cf9fc1d8cb` |
+| `collected.json` | `77fe848c2a8b1049f11b30a78159ce2721e90958fefd87c479de86be18a70931` |
+| `qualification/target-preservation.json` | `d96fba83938c1f0855f4591c1240d9c3e78b1d6c8f9eeadf790a20305220d5a8` |
+| `qualification/source-label-frozen.json` | `13f0972ff8b3f76fbedb5232055a8dfe154a35c24057ec6d7f5d17706c661214` |
+
+The separate native check is under
+`.lab/hyperv/native-public-postcheck/win11-20261026T074650343Z`:
+
+- `verify.json`: `053f315ef48a229ef65fc855d6e161bf94e134c151f743981929713ca24ec3ca`.
+- `retained-mapping.json`: `6c2538471aedc65dcf6fa9ca468adb195632e5377df1cd7ef7728c485ec13faf`.
+
+Allocation-history provenance is under
+`.lab/hyperv/natural-retention/win11-20261026T060655480Z`:
+
+- `recovered-large.json`: `adf0313812440019403175d76717ac1262b6c83852255e0e98ecaac232906340`.
+- `recovery-completion.json`: `fd6e46ebf52604efbdf0106b91f6d764edfa983923b04cb8ca279bef90975e66`.
+
+### Native mutation and clean reboot of the retained result
+
+Direct native executables subsequently completed the bounded mutation and
+verification sequence without changing guest security settings or loading a
+PowerShell worker. The mutation task exited 0 with report kind
+`general-refs-mutation-workload`; that report has no `success` field. Its
+explicit evidence records a 50 MiB test file grown to 80 MiB, truncated to
+10 MiB, renamed and deleted, plus 128 temporary directory entries. Only new
+test paths were written and the mutation directory was removed. These sizes
+describe workload states, not total storage I/O.
+
+A separate strict native check then matched all fourteen objects. Its root
+basic-info policy uses the exact 40-byte post-mutation record from the pinned
+mutation report; arbitrary timestamp differences are not masked. After a
+clean reboot, another strict check matched all fourteen objects under that
+same exact policy, the original `F:\` mount and `n2r-retained-source` label.
+The shadow was absent. Retrieval mapping and logical hashing still placed
+`natural-large.bin` at LCN `2173673` for 32,768 clusters with its original hash.
+
+| Native postcheck report | SHA-256 |
+|---|---|
+| `.lab/hyperv/native-public-postcheck/win11-20261026T075434903Z/mutation.json` | `84253085b44239670193752b5e09480f6e1ae701c0e9b1d567720f8f8c88e017` |
+| `.lab/hyperv/native-public-postcheck/win11-20261026T080936948Z/verify.json` | `b1470bd2659455bf6a95ae36d731592b667fad89969bc3c25f0528ef12796566` |
+| `.lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/verify.json` | `f5d432558be1dbe5d10c40ca8cffa37cc6a5b83feab1c7a5275f2a867c69c256` |
+| `.lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/retained-mapping.json` | `3e3d9a0b245744c0fa08e5e0fb73924a4c421190a675ea1f6bc25da90fe6eb7b` |
+
+The native mutation executable SHA-256 was
+`57e5ccffeb3342b189db44f3fa6a0c9fbc00cbf6cb7904ae34048c383d3da714`;
+the strict verifier remained
+`e16eb377cb725b0c0c7452a2104cba0af3da4feb9e86a4220962156ff4e35010`.
+The exact source commits for these separate executables are not supplied by
+their dispatch records; their hashes identify the measured tools.
+
+The successful converted branch was cleanly shut down and saved as checkpoint
+`f6393f52-56ce-4847-bc24-7d5e019ac2e2`, then started. The authoritative
+`preserved-checkpoint.json` under the final postcheck directory has SHA-256
+`5e2b380b39a262d34367ce0b7988912343b68c47e1cacd7c8455c07d16e6f83b`.
+The earlier `checkpoint.json` had an empty ID after Hyper-V reached its
+50-checkpoint limit; it did not save a checkpoint. The separate
+`checkpoint-attempt-failed.json` preserves that failure. Only after removal of
+one verified obsolete failed leaf did the later checkpoint succeed; cleanup
+diagnostics remain in
+`.lab/hyperv/checkpoint-cleanup-20261026T082155089Z.json`.
+That removed failed-probe recovery point is lost; its diagnostic files do not
+recreate the deleted VM state. The current verified branch was unaffected.
+See the canonical [preservation record](../lab/PRESERVATION.md) for the exact
+deleted leaf and the specific-approval requirement now in force.
+The actual current parent was subsequently confirmed as the successful
+checkpoint, with the VM running and 50 checkpoints retained. The failed attempt
+is retained solely as failure evidence. Further checkpoint/backing cleanup or
+reset of this verified branch requires specific approval; no additional disk
+experiments, export or copy are requested on it.
+
+A read-only capacity audit after preservation reported 182,843,418,124 actual
+lab bytes, 85,747,052,544 host free bytes and a 68,719,476,736-byte free-space
+floor. This whole-lab snapshot does not measure the conversion's allocated
+scratch or total I/O; future experiments must check current capacity again.
+
+This qualifies the bounded fourteen-object mutation and clean-reboot sequence.
+The older twelve-object ReFS reboot and four-user-file NTFS rollback reboot
+remain separate evidence. Arbitrary placement, broader geometry/features,
+storage power loss and lower scratch requirements remain open; direct-writer
+acceptance is a separate research path.
+
 ## Public shadowless rollback after one flushed write
 
 On October 26, 2026, public `ntfs2refs rollback --without-shadow` restored the

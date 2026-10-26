@@ -74,8 +74,37 @@ ntfs2refs complete-label --request request.json --request-sha256 REQUEST_SHA256 
 The implementation has pure label/binding/guard tests, synthetic frozen-NTFS
 reconciliation tests and marker-only receipt tests. Workspace compilation and
 release builds passed. The native-only command also passed the bounded case
-below. A fresh whole conversion exercising the new label capture and automatic
-finalization path remains separate qualification.
+below. A subsequent fresh fourteen-object public conversion also passed label
+capture, frozen reconciliation and automatic finalization, as recorded next.
+
+## Fresh automatic restoration during public conversion
+
+Run `c668cc9d52fe43f780e52a581b1d350f` completed the actual public conversion
+path with original source-label producer artifacts. No legacy request field
+was backfilled. Finalization restored `n2r-retained-source` with setter called,
+setter successful, flush successful and exact readback. A separate direct
+native verifier then matched the full fourteen-object tree, mount paths and
+desired label. Subsequent strict fourteen-object checks passed after a bounded
+native mutation workload and clean reboot, with the restored source label and
+shadow absent. Automatic-path repetition/idempotence remains separate; the
+older native-only completion evidence below does not qualify that repetition.
+
+The converter was built from `f025c8b2a0e48605edac07f67af32968c8b9b33f`, SHA-256
+`0a90d93c715e7ac9f2ad3b0560b5a1dadb5b4da9c879d3a5711bef81e0ad160c`.
+Ignored evidence is under
+`.lab/hyperv/certificate-conversion/win11-20261026T062029798Z`:
+
+- `qualification/source-label.json`: `2a319f01a873bf093e9c1c70c48824bd27ddf2b69aee2ed39a5e496a54219ed1`.
+- `qualification/source-label-frozen.json`: `13f0972ff8b3f76fbedb5232055a8dfe154a35c24057ec6d7f5d17706c661214`.
+- `finalization.json`: `eb92e005a800d84b234e612de9355c09c51ae5803bc00c2a9db584cf9fc1d8cb`.
+
+The separate native report is
+`.lab/hyperv/native-public-postcheck/win11-20261026T074650343Z/verify.json`,
+SHA-256 `053f315ef48a229ef65fc855d6e161bf94e134c151f743981929713ca24ec3ca`.
+The strict post-mutation/reboot report is
+`.lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/verify.json`,
+SHA-256 `f5d432558be1dbe5d10c40ca8cffa37cc6a5b83feab1c7a5275f2a867c69c256`.
+See [the complete conversion result and limits](general-native-conversion-results.md#public-fourteen-object-conversion-with-a-retained-128-mib-extent).
 
 ## Native completion, repetition and reboot
 

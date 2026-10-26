@@ -683,7 +683,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             automatic_label.stages[&Stage::NativeObserved],
-            Status::Unrecorded
+            Status::Passed
         );
         let writer = rows
             .iter()

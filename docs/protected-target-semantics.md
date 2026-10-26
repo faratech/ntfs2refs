@@ -65,3 +65,21 @@ certificate before activation. That producer intentionally exited after the firs
 flushed target write and was recovered by public shadowless rollback. It qualifies
 the integrated admission stage, rather than a fresh complete ReFS conversion or
 automatic label restoration. See [the exact run and pins](general-native-conversion-results.md#public-shadowless-rollback-after-one-flushed-write).
+
+The subsequent fresh fourteen-object public conversion completed through this
+integrated path. Protected target observation had equal complete before/after
+SHA-256 `a83a925888ed78bf2a33c78094a7cf56353776eb2d92b57d1c5d89d4b3801277`,
+bound to semantic expectation
+`4402223abdc4d055d83f51545091f3179d200427fea2a1235414119baf3c10f3`.
+Raw apply proved the same image before handoff, finalization automatically
+restored the source label, and a separate strict native verifier matched all
+fourteen objects. Subsequent strict native checks also passed after bounded
+mutation and clean reboot, using the exact pinned mutation report for root
+basic metadata. The result remains specific to the `f025c8b` converter binary
+and aged allocation-history fixture; complete raw ownership/write-set and
+broad fault qualification remain open.
+
+Ignored report:
+`.lab/hyperv/certificate-conversion/win11-20261026T062029798Z/qualification/target-preservation.json`,
+SHA-256 `d96fba83938c1f0855f4591c1240d9c3e78b1d6c8f9eeadf790a20305220d5a8`.
+See [the full result and independent postcheck](general-native-conversion-results.md#public-fourteen-object-conversion-with-a-retained-128-mib-extent).

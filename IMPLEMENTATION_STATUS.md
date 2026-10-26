@@ -3,8 +3,15 @@
 Current bounded evidence is recorded in
 [`evidence/qualification-registry.json`](evidence/qualification-registry.json)
 and [the native results](docs/general-native-conversion-results.md). Public
-conversion of an existing twelve-object tree passed native/reboot verification,
-with zero retained payload bytes. Public preactivation cancellation and one
+conversion of a fourteen-object tree passed integrated protected admission,
+automatic source-label restoration and a separate strict native check, retaining
+a normally allocated 128 MiB extent after synthetic allocation history. The
+exact binary was built from `f025c8b`; its bounded native mutation workload,
+strict fourteen-object post-mutation check and strict clean-reboot check passed.
+The original retained extent/hash and label survived with the shadow absent.
+The exact mutation report constrains post-mutation root basic metadata. The
+earlier twelve-object native/reboot result retained
+zero payload bytes. Public preactivation cancellation and one
 public `rollback --without-shadow` case also passed: after a controlled first
 flushed target write, rollback restored the exact NTFS preimage before writable
 mounting with the enrolled shadow detached. Original NTFS availability and four
@@ -14,9 +21,10 @@ equality after writable mounting. A fresh unmodified reference import also
 passed native reads of its two original files with the adopted name absent;
 the overlay-inclusive writer candidate remains rejected, with no specific
 defect isolated and no baseline mutation/reboot result. Broader failure
-coverage and a fresh complete
-conversion through current protected-target/automatic-label integration remain
-open. The remaining sections preserve chronological implementation notes; their
+coverage, arbitrary retention placement and lower scratch requirements remain
+open. Shadow payload initialization is still payload-proportional, and actual
+allocated scratch/aggregate I/O were not measured. The remaining sections
+preserve chronological implementation notes; their
 historical pending states do not supersede the pinned current registry.
 
 The explicit persisted-source view records all stored/native FILETIMEs and each

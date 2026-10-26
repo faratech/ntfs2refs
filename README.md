@@ -4,16 +4,23 @@ Rust tooling and a Hyper-V laboratory for researching offline, extent-preserving
 NTFS-to-ReFS conversion. The current focus is data volumes; Windows OS-volume
 conversion and build-specific boot qualification are deferred.
 
-**The public Rust CLI has converted an existing twelve-object tree, including
-a naturally allocated 128 MiB file, on its original 52 GiB NTFS partition.**
-All admission gates passed; the worker saved its external journal/ticket,
-applied 106 patches, recorded handoff and verified the tree through Microsoft's
-ReFS driver at F:. Strict verification of all twelve objects also passed after
-a clean reboot. Five ordinary payloads (128.5 MiB) were relocated and two resident
-Windows files (88 bytes) were materialized; retained payload bytes were zero.
-See the [certificate-backed result and its limits](docs/general-native-conversion-results.md).
-The run used `ntfs2refs convert --request` inside the owning VM. Its complete
-recovery journal was 693,708,354 bytes, within the 768 MiB bound.
+**The public Rust CLI converted a fourteen-object tree on its original 52 GiB
+partition while retaining a normally allocated 128 MiB payload extent.**
+The exact `f025c8b` binary passed integrated protected-target/source admission,
+applied 134 patches and automatically restored the original source label.
+A separate strict native verifier matched all fourteen objects and confirmed
+the large file at its original LCN. The fixture used synthetic 8 GiB allocation
+history and no source extent moves; arbitrary or low-LCN placement remains open.
+The run relocated 8,933,376 bytes and materialized 88 resident bytes. Raw target
+writes were 231,337,984 bytes and the external journal was 462,706,832 bytes.
+Shadow initialization remained payload-proportional; allocated scratch and full
+process I/O were not measured. A bounded native mutation workload, strict
+fourteen-object verification afterward and strict verification after clean
+reboot also passed. The original 128 MiB mapping/hash and source label survived
+with the shadow absent. See the [exact result and limits](docs/general-native-conversion-results.md#public-fourteen-object-conversion-with-a-retained-128-mib-extent).
+
+The earlier twelve-object public run relocated every ordinary payload and
+retained zero bytes; its strict native/reboot result remains separately pinned.
 
 **A prepared one-file NTFS-to-ReFS conversion passed inside the Windows 11 VM.**
 The same partition became readable through Microsoft's ReFS driver while the
@@ -30,13 +37,13 @@ The Windows executable now exposes an experimental
 requires live source/target qualification and an independent journal; image
 feasibility plans remain non-executable. The current profile is bounded and
 boot volumes remain excluded.
-The [source-label path](docs/source-volume-label.md) captures the frozen NTFS
-label and provides native-only post-handoff completion. Label restoration,
-repeat completion and strict verification after reboot passed on the converted
-twelve-object tree; the command does not replay the raw journal.
+The [source-label path](docs/source-volume-label.md) passed fresh capture,
+frozen reconciliation and automatic finalization in the fourteen-object run.
+Separate native-only completion, repetition and reboot passed earlier on the
+twelve-object tree; that command does not replay the raw journal.
 Admission now requires [protected target semantics](docs/protected-target-semantics.md)
-on the exact frozen image. That helper passed a native twelve-object check with
-unchanged full-image hashes across a read-only observation. Public
+on the exact frozen image. Equal complete hashes across protected observation
+passed both the earlier helper check and the fresh full conversion. Public
 [operation state and preactivation cancel](docs/public-cancel-and-operation-state.md)
 and explicit shadowless rollback are implemented; positive native recovery
 qualification is recorded separately from unit tests. Public preactivation

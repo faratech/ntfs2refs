@@ -834,6 +834,399 @@
         "metadata_write_count": 0,
         "target_bytes_written": 68157440
       }
+    },
+    {
+      "id": "public-fourteen-object-aged-retention",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed"
+      ],
+      "outcome": "passed",
+      "scope": "Full public convert --request exited0. Integrated protected source/target admission passed; 134217728 payload bytes remained in their original physical range, 8933376 relocated and 88 resident bytes materialized. Automatic label capture/finalization restored the original label with setter/flush/readback success. Apply used 134 ranges and 231337984 bytes; journal 462706832 bytes. Shadow payload initialization was 143151192 bytes. Subsequent mutation, strict post-mutation verification and clean reboot are qualified by separately pinned evidence records.",
+      "repository_commit": "f025c8b2a0e48605edac07f67af32968c8b9b33f",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "0a90d93c715e7ac9f2ad3b0560b5a1dadb5b4da9c879d3a5711bef81e0ad160c",
+        "retained_path": null
+      },
+      "environment": null,
+      "corpus": {
+        "description": "Fourteen-object mixed tree on the original 52 GiB partition. natural-large.bin was written normally after synthetic allocation history (an 8 GiB zero-written temporary file); the owned temporary file was then removed. No source extent moves were requested. One aged allocation case, not arbitrary or low-LCN placement.",
+        "source_image_sha256": "3e540ccf38e3a6bcd2de621cae7b5501fa1847f411c9bf86f174da3c3a798ae4",
+        "expected_image_sha256": "a83a925888ed78bf2a33c78094a7cf56353776eb2d92b57d1c5d89d4b3801277",
+        "expected_semantic_manifest_sha256": "4402223abdc4d055d83f51545091f3179d200427fea2a1235414119baf3c10f3"
+      },
+      "artifacts": [
+        {
+          "role": "Public dispatch and exact producer identity",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "3e338958f1ff5b56572a2a8f7f78fc582734a21911e11a663028d1027e43cd6e"
+        },
+        {
+          "role": "Exit0 and writable original ReFS",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/collected.json",
+          "location_unknown_reason": null,
+          "sha256": "77fe848c2a8b1049f11b30a78159ce2721e90958fefd87c479de86be18a70931"
+        },
+        {
+          "role": "Fourteen-object semantic expectation",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/expectation.json",
+          "location_unknown_reason": null,
+          "sha256": "4402223abdc4d055d83f51545091f3179d200427fea2a1235414119baf3c10f3"
+        },
+        {
+          "role": "Protected exact target semantics and mixed placement",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/qualification/target-preservation.json",
+          "location_unknown_reason": null,
+          "sha256": "d96fba83938c1f0855f4591c1240d9c3e78b1d6c8f9eeadf790a20305220d5a8"
+        },
+        {
+          "role": "Live source certificate",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/qualification/certificate.json",
+          "location_unknown_reason": null,
+          "sha256": "c6ffb61c2482f38b3f9819536795a4f19bcd5e22dd5052439cb77c7bd13d7b4c"
+        },
+        {
+          "role": "Original native source-label capture",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/qualification/source-label.json",
+          "location_unknown_reason": null,
+          "sha256": "2a319f01a873bf093e9c1c70c48824bd27ddf2b69aee2ed39a5e496a54219ed1"
+        },
+        {
+          "role": "Frozen raw NTFS label reconciliation",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/qualification/source-label-frozen.json",
+          "location_unknown_reason": null,
+          "sha256": "13f0972ff8b3f76fbedb5232055a8dfe154a35c24057ec6d7f5d17706c661214"
+        },
+        {
+          "role": "Exact durable journal and capacity",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "a3bd39e4fa4b49770b6f35960ebd0e57c7bec2674c5344cf05023c0711c76ae7"
+        },
+        {
+          "role": "Exact pre-handoff target image and raw writes",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/apply.json",
+          "location_unknown_reason": null,
+          "sha256": "bfbd690b48d5410b6459a60361ea3ec4af0edc7172fdb939bb6a2f3e9dcd37e5"
+        },
+        {
+          "role": "Native handoff/tree and automatic label restoration",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/finalization.json",
+          "location_unknown_reason": null,
+          "sha256": "eb92e005a800d84b234e612de9355c09c51ae5803bc00c2a9db584cf9fc1d8cb"
+        },
+        {
+          "role": "Completed public conversion",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261026T062029798Z/result.json",
+          "location_unknown_reason": null,
+          "sha256": "d1de89e30b2558d4c6dfa651968a5e17c20533ce84439a6ea26ae2f3f53710a5"
+        },
+        {
+          "role": "Normal source allocation and original large-file mapping/hash",
+          "path": ".lab/hyperv/natural-retention/win11-20261026T060655480Z/recovered-large.json",
+          "location_unknown_reason": null,
+          "sha256": "adf0313812440019403175d76717ac1262b6c83852255e0e98ecaac232906340"
+        },
+        {
+          "role": "Synthetic allocation history, no source extent moves",
+          "path": ".lab/hyperv/natural-retention/win11-20261026T060655480Z/recovery-completion.json",
+          "location_unknown_reason": null,
+          "sha256": "fd6e46ebf52604efbdf0106b91f6d764edfa983923b04cb8ca279bef90975e66"
+        }
+      ],
+      "source_documents": [
+        "docs/general-native-conversion-results.md",
+        "docs/source-volume-label.md",
+        "docs/protected-target-semantics.md"
+      ],
+      "unknown_fields": {
+        "windows_build_revision": "Exact runtime build/revision is not pinned in this run metadata; another experiment and the profile policy build are not substituted.",
+        "refs_driver": "No exact refs.sys identity was captured with this run; another observer result is not inherited.",
+        "actual_shadow_backing_bytes": "Actual allocated shadow backing was not measured. Shadow payload initialization is a separate scoped count.",
+        "full_process_io": "Complete process/disk I/O coverage was not measured. Raw journal writes, placement and initialization are scoped metrics, not aggregate I/O.",
+        "executable_retained_path": "The dispatch pins the guest executable; no host-relative retained binary path is recorded here.",
+        "retained_payload_io_coverage": "Mapping/hash and journal evidence establish extent identity and exclusion from journal payload writes. They do not measure every storage I/O or prove zero payload I/O throughout conversion."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": false,
+      "metrics": {
+        "logical_bytes": 143151192,
+        "retained_payload_bytes": 134217728,
+        "relocated_payload_bytes": 8933376,
+        "materialized_payload_bytes": 88,
+        "target_bytes_written": 231337984,
+        "journal_bytes": 462706832,
+        "objects_verified": 14,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "fourteen-object-native-postcheck-and-retained-mapping",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed"
+      ],
+      "outcome": "passed",
+      "scope": "Separate direct native.exe strict verification exited0 and matched all fourteen objects and original mount paths under the automatically restored label. Retrieval mapping confirmed natural-large.bin at original LCN2173673, 32768 clusters/134217728 bytes, SHA-256 d6123963cb86930c3cf0462de8a1a03a6be54b5e8f32cf96aa6bced35cd5b43d. No payload writes, mutation or reboot workload. The earlier PowerShell worker was blocked before task/output creation; this result belongs to direct native execution, without security-setting changes.",
+      "repository_commit": null,
+      "executable": {
+        "name": "native.exe",
+        "sha256": "e16eb377cb725b0c0c7452a2104cba0af3da4feb9e86a4220962156ff4e35010",
+        "retained_path": null
+      },
+      "environment": null,
+      "corpus": {
+        "description": "Same fourteen-object semantic expectation, independently checked after automatic label restoration. NTFS and ReFS mappings both locate natural-large.bin at LCN2173673. The raw target hash belongs to pre-handoff reconstruction, not current post-mount image equality.",
+        "source_image_sha256": "3e540ccf38e3a6bcd2de621cae7b5501fa1847f411c9bf86f174da3c3a798ae4",
+        "expected_image_sha256": "a83a925888ed78bf2a33c78094a7cf56353776eb2d92b57d1c5d89d4b3801277",
+        "expected_semantic_manifest_sha256": "4402223abdc4d055d83f51545091f3179d200427fea2a1235414119baf3c10f3"
+      },
+      "artifacts": [
+        {
+          "role": "Direct native verifier dispatch and hash",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T074650343Z/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "1a79a18d2d27c84f1b45e7e41a1c1581338aa0d42aa6973fd6539fe32d887194"
+        },
+        {
+          "role": "Separate verifier exit0 and fourteen objects",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T074650343Z/collected.json",
+          "location_unknown_reason": null,
+          "sha256": "5a2d8e70270c6f88d9a67fae7bda50d97872f97d8c091061e625743d991d923c"
+        },
+        {
+          "role": "Strict full fourteen-object semantic verification",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T074650343Z/verify.json",
+          "location_unknown_reason": null,
+          "sha256": "053f315ef48a229ef65fc855d6e161bf94e134c151f743981929713ca24ec3ca"
+        },
+        {
+          "role": "Original physical range and logical hash confirmation",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T074650343Z/retained-mapping.json",
+          "location_unknown_reason": null,
+          "sha256": "6c2538471aedc65dcf6fa9ca468adb195632e5377df1cd7ef7728c485ec13faf"
+        }
+      ],
+      "source_documents": [
+        "docs/general-native-conversion-results.md"
+      ],
+      "unknown_fields": {
+        "windows_build_revision": "Exact runtime build/revision is not pinned in this run metadata; another experiment and the profile policy build are not substituted.",
+        "refs_driver": "No exact refs.sys identity was captured with this run; another observer result is not inherited.",
+        "actual_shadow_backing_bytes": "Actual allocated shadow backing was not measured. Shadow payload initialization is a separate scoped count.",
+        "full_process_io": "Complete process/disk I/O coverage was not measured. Raw journal writes, placement and initialization are scoped metrics, not aggregate I/O.",
+        "repository_commit": "Separate native verifier is pinned by binary hash; its exact source commit is not recorded in the postcheck dispatch.",
+        "executable_retained_path": "Verifier executed guest-locally; no host-relative retained binary path is recorded here."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": false,
+      "metrics": {
+        "retained_payload_bytes": 134217728,
+        "objects_verified": 14,
+        "target_bytes_written": 0
+      }
+    },
+    {
+      "id": "fourteen-object-native-mutation",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed"
+      ],
+      "outcome": "passed",
+      "scope": "Direct native mutation worker exited0 with kind general-refs-mutation-workload (the report has no success field). It created a 50 MiB test file, grew to 80 MiB, truncated to 10 MiB, renamed/deleted it and exercised 128 directory entries. Only new test paths were written and the mutation directory was removed. The exact 40-byte post-mutation root basic-info record was retained. Security settings were unchanged; no PowerShell worker loaded. Sizes are workload states, not measured total I/O.",
+      "repository_commit": null,
+      "executable": {
+        "name": "native.exe",
+        "sha256": "57e5ccffeb3342b189db44f3fa6a0c9fbc00cbf6cb7904ae34048c383d3da714",
+        "retained_path": null
+      },
+      "environment": null,
+      "corpus": {
+        "description": "Completed fourteen-object f025c8b conversion; expected manifest 4402223... plus the exact pinned mutation report defines the permitted post-mutation root basic-info record. Source/expected raw image hashes are historical pre-handoff pins, not post-mount image equality.",
+        "source_image_sha256": "3e540ccf38e3a6bcd2de621cae7b5501fa1847f411c9bf86f174da3c3a798ae4",
+        "expected_image_sha256": "a83a925888ed78bf2a33c78094a7cf56353776eb2d92b57d1c5d89d4b3801277",
+        "expected_semantic_manifest_sha256": "4402223abdc4d055d83f51545091f3179d200427fea2a1235414119baf3c10f3"
+      },
+      "artifacts": [
+        {
+          "role": "Direct native mutation dispatch and executable pin",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T075434903Z/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "18f9e1ef6cc3c3219e2c7c688e5ded0c5f5c19dbd8d5d38ec9201d1eea664a1c"
+        },
+        {
+          "role": "Terminal exit0, workload kind and explicit cleanup/new-path fields",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T075434903Z/collected.json",
+          "location_unknown_reason": null,
+          "sha256": "ce518ede4d82c0aa62a476de2cb8a7082fbce076b2be5a77187ccc7fd638d990"
+        },
+        {
+          "role": "Mutation sizes, cleanup proof and exact root basic-info",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T075434903Z/mutation.json",
+          "location_unknown_reason": null,
+          "sha256": "84253085b44239670193752b5e09480f6e1ae701c0e9b1d567720f8f8c88e017"
+        }
+      ],
+      "source_documents": [
+        "docs/general-native-conversion-results.md"
+      ],
+      "unknown_fields": {
+        "windows_build_revision": "Exact runtime build/revision is not pinned in this run metadata; another experiment and the profile policy build are not substituted.",
+        "refs_driver": "No exact refs.sys identity was captured with this run; another observer result is not inherited.",
+        "actual_shadow_backing_bytes": "Actual allocated shadow backing was not measured. Shadow payload initialization is a separate scoped count.",
+        "full_process_io": "Complete process/disk I/O coverage was not measured. Raw journal writes, placement and initialization are scoped metrics, not aggregate I/O.",
+        "repository_commit": "These direct native binaries are measured by executable SHA-256; their exact source commit is not recorded in the postcheck dispatch.",
+        "executable_retained_path": "Verifier executed guest-locally; no host-relative retained binary path is recorded here."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": false,
+      "metrics": {}
+    },
+    {
+      "id": "fourteen-object-postmutation-strict-verification",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed"
+      ],
+      "outcome": "passed",
+      "scope": "Separate strict native verification exited0 and matched all fourteen objects after the mutation workload. Root basic metadata was constrained by exact mutation-report SHA-256 84253085b44239670193752b5e09480f6e1ae701c0e9b1d567720f8f8c88e017 and its captured post-mutation root bytes, not an arbitrary timestamp exception. All other expected semantics remained strict. Security settings unchanged; no PowerShell worker loaded.",
+      "repository_commit": null,
+      "executable": {
+        "name": "native.exe",
+        "sha256": "e16eb377cb725b0c0c7452a2104cba0af3da4feb9e86a4220962156ff4e35010",
+        "retained_path": null
+      },
+      "environment": null,
+      "corpus": {
+        "description": "Completed fourteen-object f025c8b conversion; expected manifest 4402223... plus the exact pinned mutation report defines the permitted post-mutation root basic-info record. Source/expected raw image hashes are historical pre-handoff pins, not post-mount image equality.",
+        "source_image_sha256": "3e540ccf38e3a6bcd2de621cae7b5501fa1847f411c9bf86f174da3c3a798ae4",
+        "expected_image_sha256": "a83a925888ed78bf2a33c78094a7cf56353776eb2d92b57d1c5d89d4b3801277",
+        "expected_semantic_manifest_sha256": "4402223abdc4d055d83f51545091f3179d200427fea2a1235414119baf3c10f3"
+      },
+      "artifacts": [
+        {
+          "role": "Strict post-mutation native dispatch",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T080936948Z/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "89f9d1f5dd106d3466d68d3852333e8aaceee3130849e89df7ae6b74090ba772"
+        },
+        {
+          "role": "Exit0, fourteen objects and exact mutation pin",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T080936948Z/collected.json",
+          "location_unknown_reason": null,
+          "sha256": "7330b6332a482736c970b68bac6dcda5e9f3faca4a8ca1cd22bd04d0278b590c"
+        },
+        {
+          "role": "Strict all-fourteen post-mutation result",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T080936948Z/verify.json",
+          "location_unknown_reason": null,
+          "sha256": "b1470bd2659455bf6a95ae36d731592b667fad89969bc3c25f0528ef12796566"
+        }
+      ],
+      "source_documents": [
+        "docs/general-native-conversion-results.md"
+      ],
+      "unknown_fields": {
+        "windows_build_revision": "Exact runtime build/revision is not pinned in this run metadata; another experiment and the profile policy build are not substituted.",
+        "refs_driver": "No exact refs.sys identity was captured with this run; another observer result is not inherited.",
+        "actual_shadow_backing_bytes": "Actual allocated shadow backing was not measured. Shadow payload initialization is a separate scoped count.",
+        "full_process_io": "Complete process/disk I/O coverage was not measured. Raw journal writes, placement and initialization are scoped metrics, not aggregate I/O.",
+        "repository_commit": "These direct native binaries are measured by executable SHA-256; their exact source commit is not recorded in the postcheck dispatch.",
+        "executable_retained_path": "Verifier executed guest-locally; no host-relative retained binary path is recorded here."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": false,
+      "metrics": {
+        "objects_verified": 14,
+        "target_bytes_written": 0
+      }
+    },
+    {
+      "id": "fourteen-object-postmutation-clean-reboot",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "After clean reboot, direct strict native verification exited0 and matched all fourteen objects using the same exact mutation report/root policy. Original ReFS F: and n2r-retained-source label were preserved with the shadow absent. natural-large.bin retained original LCN2173673, 32768 clusters/128 MiB, and logical SHA-256 d6123963cb86930c3cf0462de8a1a03a6be54b5e8f32cf96aa6bced35cd5b43d. Valid powered-off checkpoint f6393f52-56ce-4847-bc24-7d5e019ac2e2 was saved and restarted. Earlier checkpoint.json had no created ID after the 50-checkpoint limit; only preserved-checkpoint.json records the later success. No security settings changed or PowerShell worker loaded. Clean reboot is not storage power-loss qualification.",
+      "repository_commit": null,
+      "executable": {
+        "name": "native.exe",
+        "sha256": "e16eb377cb725b0c0c7452a2104cba0af3da4feb9e86a4220962156ff4e35010",
+        "retained_path": null
+      },
+      "environment": null,
+      "corpus": {
+        "description": "Completed fourteen-object f025c8b conversion; expected manifest 4402223... plus the exact pinned mutation report defines the permitted post-mutation root basic-info record. Source/expected raw image hashes are historical pre-handoff pins, not post-mount image equality.",
+        "source_image_sha256": "3e540ccf38e3a6bcd2de621cae7b5501fa1847f411c9bf86f174da3c3a798ae4",
+        "expected_image_sha256": "a83a925888ed78bf2a33c78094a7cf56353776eb2d92b57d1c5d89d4b3801277",
+        "expected_semantic_manifest_sha256": "4402223abdc4d055d83f51545091f3179d200427fea2a1235414119baf3c10f3"
+      },
+      "artifacts": [
+        {
+          "role": "Clean shutdown after strict post-mutation verification",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T080936948Z/reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "90e5c7e7ab8091f18d2a6fcf6363cffd14d6fa1a0fc5f82d171949dc9869822d"
+        },
+        {
+          "role": "Direct strict postboot dispatch and exact mutation pin",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/dispatch.json",
+          "location_unknown_reason": null,
+          "sha256": "893c280b8d0f727be3feba60c6ab62c2a338cd9002ce78308ae7776b9a3b2362"
+        },
+        {
+          "role": "Exit0, fourteen objects, ReFS/original label and shadow absent",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/collected.json",
+          "location_unknown_reason": null,
+          "sha256": "a515d1321b6ca4b5710ee5f9838f0d3f2816c5f5b43b2b8d0cb914394a69906d"
+        },
+        {
+          "role": "Strict all-fourteen post-mutation/reboot report",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/verify.json",
+          "location_unknown_reason": null,
+          "sha256": "f5d432558be1dbe5d10c40ca8cffa37cc6a5b83feab1c7a5275f2a867c69c256"
+        },
+        {
+          "role": "Original retained extent/hash after mutation and reboot",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/retained-mapping.json",
+          "location_unknown_reason": null,
+          "sha256": "3e3d9a0b245744c0fa08e5e0fb73924a4c421190a675ea1f6bc25da90fe6eb7b"
+        },
+        {
+          "role": "Earlier checkpoint-limit failure; no saved ID",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/checkpoint-attempt-failed.json",
+          "location_unknown_reason": null,
+          "sha256": "151c451c53b8899e9e12f135e897cd71371059f634c66cbe1441f0940bf46825"
+        },
+        {
+          "role": "Actual later powered-off successful checkpoint",
+          "path": ".lab/hyperv/native-public-postcheck/win11-20261026T081420019Z/preserved-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "5e2b380b39a262d34367ce0b7988912343b68c47e1cacd7c8455c07d16e6f83b"
+        }
+      ],
+      "source_documents": [
+        "docs/general-native-conversion-results.md"
+      ],
+      "unknown_fields": {
+        "windows_build_revision": "Exact runtime build/revision is not pinned in this run metadata; another experiment and the profile policy build are not substituted.",
+        "refs_driver": "No exact refs.sys identity was captured with this run; another observer result is not inherited.",
+        "actual_shadow_backing_bytes": "Actual allocated shadow backing was not measured. Shadow payload initialization is a separate scoped count.",
+        "full_process_io": "Complete process/disk I/O coverage was not measured. Raw journal writes, placement and initialization are scoped metrics, not aggregate I/O.",
+        "repository_commit": "These direct native binaries are measured by executable SHA-256; their exact source commit is not recorded in the postcheck dispatch.",
+        "executable_retained_path": "Verifier executed guest-locally; no host-relative retained binary path is recorded here."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "objects_verified": 14,
+        "retained_payload_bytes": 134217728,
+        "target_bytes_written": 0
+      }
     }
   ],
   "claims": [
@@ -841,7 +1234,7 @@
       "id": "public-existing-tree-conversion",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Existing ordinary tree conversion",
-      "statement": "Bounded twelve-object existing NTFS tree converted on its original partition through public CLI and passed strict native/reboot checks.",
+      "statement": "Historical twelve-object public conversion passed strict native/reboot checks with zero retained payload; the later fourteen-object retained conversion is separately pinned.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
         "public-twelve-object-native"
@@ -851,47 +1244,69 @@
         "Historical binary predates label/protected-target integration."
       ],
       "remaining_gates": [
-        "Fresh whole conversion through current integrated paths",
-        "Broader supported profile and failure matrix"
+        "Broader supported profile and fault matrix"
+      ]
+    },
+    {
+      "id": "public-retained-fourteen-object-conversion",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Fourteen-object public conversion with retained natural extent",
+      "statement": "Exact f025c8b public binary completed conversion, protected admission and automatic label restoration. Direct native checks matched all fourteen objects before mutation, after a bounded mutation workload and after clean reboot, retaining the original 128 MiB physical extent.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation",
+        "public-fourteen-object-aged-retention",
+        "fourteen-object-native-postcheck-and-retained-mapping",
+        "fourteen-object-native-mutation",
+        "fourteen-object-postmutation-strict-verification",
+        "fourteen-object-postmutation-clean-reboot"
+      ],
+      "exclusions": [
+        "Exact binary and synthetic aged allocation-history case, not arbitrary placement or later HEAD qualification.",
+        "Bounded mutation and clean reboot, not process-fault or storage power-loss qualification for this fourteen-object conversion.",
+        "Payload-proportional shadow initialization and unmeasured allocated scratch remain."
+      ],
+      "remaining_gates": [
+        "Broader allocation/profile/fault matrix",
+        "Measured I/O and lower scratch requirements"
       ]
     },
     {
       "id": "protected-frozen-target-observation",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Protected frozen target semantics",
-      "statement": "Actual frozen target image bound to native semantics by unchanged full hashes around protected observation.",
+      "statement": "Protected target semantics passed both the standalone helper and full fourteen-object public conversion, with equal complete frozen target hashes around protected observation.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
         "protected-target-twelve-object-native",
-        "integrated-admission-before-first-write"
+        "integrated-admission-before-first-write",
+        "public-fourteen-object-aged-retention"
       ],
       "exclusions": [
         "No complete raw allocation graph or selective-write-set proof.",
-        "Helper success is not a fresh whole conversion."
+        "Broad build/geometry qualification remains separate from the exact fourteen-object mutation/reboot result."
       ],
       "remaining_gates": [
-        "Fresh integrated full conversion",
-        "Complete target-required write-set and ownership proof"
+        "Complete target-required write-set and ownership proof",
+        "Additional build/profile qualification"
       ]
     },
     {
       "id": "integrated-bounded-admission",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Integrated bounded source and target admission",
-      "statement": "Current-core live source admission and protected exact-frozen target semantics passed before the controlled first target write, including the narrowly supported volume Object ID and tracking.log forms.",
+      "statement": "Live source admission and protected exact-frozen target semantics passed before activation in the completed fourteen-object public conversion, including narrowly supported volume Object ID and tracking.log forms.",
       "evidence_ids": [
         "bounded-lifecycle-implementation",
-        "integrated-admission-before-first-write"
+        "integrated-admission-before-first-write",
+        "public-fourteen-object-aged-retention"
       ],
       "exclusions": [
-        "Producer intentionally stopped after its first flushed target write.",
-        "No fresh complete current-code ReFS conversion or automatic label restoration.",
-        "Ordinary user Object IDs and unsupported system/user attributes remain refused."
+        "Ordinary user Object IDs and unsupported attributes remain refused.",
+        "One bounded synthetic allocation-history case and exact binary, not later commits or arbitrary volumes."
       ],
       "remaining_gates": [
-        "Fresh complete conversion through current integrated path",
-        "Fresh automatic source-label completion",
-        "Broader internal-metadata and source profile qualification"
+        "Broader internal-metadata/source profile qualification",
+        "Additional fault cases"
       ]
     },
     {
@@ -908,22 +1323,28 @@
         "No raw replay or current-image equality authority."
       ],
       "remaining_gates": [
-        "Fresh capture-to-automatic-label conversion"
+        "Repetition/idempotence of the fresh automatic fourteen-object label path"
       ]
     },
     {
       "id": "automatic-source-label-path",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Automatic source-label workflow",
-      "statement": "Capture/frozen reconciliation/automatic finalization integration exists; complete fresh native path has no recorded passing result.",
+      "statement": "Fresh public conversion automatically restored n2r-retained-source from original producer artifacts. Direct strict native verification matched all fourteen objects after mutation and clean reboot with the restored label and shadow absent.",
       "evidence_ids": [
-        "bounded-lifecycle-implementation"
+        "bounded-lifecycle-implementation",
+        "public-fourteen-object-aged-retention",
+        "fourteen-object-native-postcheck-and-retained-mapping",
+        "fourteen-object-postmutation-strict-verification",
+        "fourteen-object-postmutation-clean-reboot"
       ],
       "exclusions": [
-        "Separate label completion does not qualify this integration."
+        "No legacy request backfill was needed.",
+        "Automatic-path repetition/idempotence and additional label variants remain distinct; historical separate completion still supplies only its own repetition result."
       ],
       "remaining_gates": [
-        "Fresh whole conversion using original label producer artifacts"
+        "Automatic-path repetition/idempotence",
+        "Additional exact label variants"
       ]
     },
     {
@@ -1005,17 +1426,23 @@
       "id": "natural-payload-retention",
       "profile_id": "ordinary-ntfs31-refs314-v2",
       "feature": "Retention of independently allocated payloads",
-      "statement": "Placement attempts/candidate planning exist; twelve-object public run relocated all five ordinary payloads and retained zero bytes.",
+      "statement": "A normally written 128 MiB file kept original LCN2173673 and its logical hash through public conversion, a bounded native mutation workload and clean reboot, after synthetic 8 GiB allocation history with no source extent moves.",
       "evidence_ids": [
-        "bounded-lifecycle-implementation"
+        "bounded-lifecycle-implementation",
+        "public-fourteen-object-aged-retention",
+        "fourteen-object-native-postcheck-and-retained-mapping",
+        "fourteen-object-postmutation-clean-reboot"
       ],
       "exclusions": [
-        "Prepared one-file 64 KiB retention does not prove general natural retention.",
-        "Identical hashes/location do not prove absence of payload I/O."
+        "One deliberately aged allocation-history case, not arbitrary or low-LCN placement.",
+        "Shadow initialization remains payload-proportional.",
+        "Mapping/hash and journal evidence do not measure every payload I/O.",
+        "Mutation writes were restricted to new test paths; no arbitrary source-file update workload is claimed."
       ],
       "remaining_gates": [
-        "Independently populated retained-range conversion",
-        "Complete target ownership and measured payload I/O"
+        "Additional placements and fragmentation",
+        "Complete target ownership and measured payload I/O",
+        "Lower scratch requirements"
       ]
     },
     {

@@ -12,6 +12,9 @@ recovery tests. Independent-writer research and its journal-fencing prerequisite
 are parked off that path; see [the parked scope](docs/isolated-journal-writer-exclusion.md).
 Preserve all existing VM/checkpoint and experiment evidence. Use a separately
 owned disposable alpha fixture for new native tests, with exact bindings and budgets.
+The frozen engine is tagged `alpha-native-shadow-20261026`; follow
+[the alpha scope](docs/native-shadow-alpha.md). Work on its native harness and
+conversion/recovery results before adding more parser or writer features.
 
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.

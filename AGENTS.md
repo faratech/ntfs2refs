@@ -107,6 +107,17 @@ Parser support for a feature is not evidence that conversion preserves it.
   the explicitly assembled map. See [retrieval pagination](docs/native-retrieval-pagination.md).
   This does not add NTFS attribute-list support or native conversion qualification.
 
+The later bounded attribute-list implementation is in `src/ntfs_attribute_list.rs`
+and `src/ntfs_assembled_io.rs`; see [the profile](docs/ntfs-attribute-list-assembly.md).
+Ordinary files can assemble unnamed unencoded DATA through a resident list and
+uniquely owned extension records. Canonical files contain each stream once;
+`attribute_assemblies` preserves original records and list bytes. Require
+`validate_record_coverage` rather than equating logical-file and physical-record
+counts. Checked stream reads rebuild and compare the actual list/segments and
+MFT allocation bits. MFT bootstrap, system/directory/nonresident lists, named or
+encoded segments and unsupported forms remain refused. Existing file/data/run
+bounds remain. This is source/test coverage, with no new native qualification.
+
 Preserve these distinctions:
 
 1. Raw recovery requires the pinned request/ticket, actual journal identity,

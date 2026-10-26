@@ -344,6 +344,9 @@ pub fn check_file(
     Ok(())
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
+    if !raw.attribute_assemblies.is_empty() {
+        crate::ntfs_inspect::validate_record_coverage(raw)?;
+    }
     ensure!(
         matches!(native.schema_version, 3..=7),
         "native stream profile missing"

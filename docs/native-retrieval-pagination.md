@@ -22,6 +22,9 @@ rules. Namespace, source identity, allocation reconciliation, logical content,
 physical retrieval-base adjustment and exact before/after transcripts remain
 required. Unsupported encodings and unassembled NTFS attribute lists still fail.
 This does not establish support for highly fragmented NTFS attribute-list files.
+The later [bounded ordinary DATA assembler](ntfs-attribute-list-assembly.md)
+connects supported resident-list segments to this same native mapping comparison;
+it retains the source profile's run bounds and needs its own native qualification.
 
 The legacy `parse_retrieval` decoder still accepts only one complete, zero-VCN
 mapping with at most 1,024 extents. The new `parse_complete_retrieval` decoder is

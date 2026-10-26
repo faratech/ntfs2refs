@@ -814,6 +814,11 @@ fn assess_source_view_profile(
         "every supplied attribute interval and allocation bitmap must reconcile",
     );
     gate(
+        "raw_mft_record_coverage",
+        ntfs::validate_record_coverage(raw).is_ok(),
+        "every allocated physical record must be a canonical file or a uniquely bound extension",
+    );
+    gate(
         "raw_namespace",
         raw.namespace_reconciliation
             .as_ref()

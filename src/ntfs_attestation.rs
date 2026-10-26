@@ -263,6 +263,9 @@ pub fn compare(
     inspection_sha256: &str,
     native: &Report,
 ) -> Result<Comparison> {
+    if !raw.attribute_assemblies.is_empty() {
+        crate::ntfs_inspect::validate_record_coverage(raw)?;
+    }
     native.request.validate()?;
     ensure!(
         matches!(native.schema_version, 2..=7) && !native.conversion_qualified,

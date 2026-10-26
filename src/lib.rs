@@ -43,6 +43,7 @@ pub mod lab_tree_reconstruct;
 pub mod ntfs_admission;
 pub mod ntfs_allocation;
 pub mod ntfs_attestation;
+pub mod ntfs_attribute_list;
 pub mod ntfs_backup;
 pub mod ntfs_data_attestation;
 #[cfg(windows)]

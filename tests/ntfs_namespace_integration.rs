@@ -221,6 +221,463 @@ fn fixture() -> Vec<u8> {
 fn inspect(image: &[u8]) -> ntfs_inspect::NtfsInspection {
     ntfs_inspect::inspect(&mut Cursor::new(image), image.len() as u64).unwrap()
 }
+
+// Helpers for the complete assembly/namespace/security fixture below. Synthetic
+// bytes exercise the converter pipeline; they are not native mount evidence.
+fn assembly_attrs(image: &[u8], number: usize) -> Vec<Vec<u8>> {
+    let mut raw = image[MFT + number * 1024..MFT + (number + 1) * 1024].to_vec();
+    for (index, tail) in [510, 1022].into_iter().enumerate() {
+        let value: [u8; 2] = raw[50 + index * 2..52 + index * 2].try_into().unwrap();
+        raw[tail..tail + 2].copy_from_slice(&value);
+    }
+    let mut at = 56;
+    let mut attrs = Vec::new();
+    while u32::from_le_bytes(raw[at..at + 4].try_into().unwrap()) != u32::MAX {
+        let size = u32::from_le_bytes(raw[at + 4..at + 8].try_into().unwrap()) as usize;
+        attrs.push(raw[at..at + size].to_vec());
+        at += size;
+    }
+    attrs
+}
+fn assembly_si(instance: u16, directory: bool) -> Vec<u8> {
+    let mut value = [0u8; 72];
+    for at in [0, 8, 16, 24] {
+        p64(&mut value, at, 1);
+    }
+    // Directory identity comes from the FILE header; keep the existing stored
+    // basic-attribute profile used by the shadow constructor.
+    p32(&mut value, 32, if directory { 0 } else { 0x20 });
+    p32(&mut value, 52, 256);
+    support::resident(0x10, "", &value, instance)
+}
+fn assembly_security_index(by_id: bool, hash: u32) -> Vec<u8> {
+    let key = if by_id {
+        256u32.to_le_bytes().to_vec()
+    } else {
+        [hash.to_le_bytes(), 256u32.to_le_bytes()].concat()
+    };
+    let data = 16 + key.len();
+    let size = (data + 20 + 7) & !7;
+    let mut value = vec![0; 32 + size + 16];
+    p32(&mut value, 4, if by_id { 0x10 } else { 0x12 });
+    p32(&mut value, 8, 4096);
+    value[12] = 1;
+    p32(&mut value, 16, 16);
+    p32(&mut value, 20, (16 + size + 16) as u32);
+    p32(&mut value, 24, (16 + size + 16) as u32);
+    p16(&mut value, 32, data as u16);
+    p16(&mut value, 34, 20);
+    p16(&mut value, 40, size as u16);
+    p16(&mut value, 42, key.len() as u16);
+    value[48..48 + key.len()].copy_from_slice(&key);
+    p32(&mut value, 32 + data, hash);
+    p32(&mut value, 36 + data, 256);
+    p32(&mut value, 48 + data, 48);
+    p16(&mut value, 32 + size + 8, 16);
+    p16(&mut value, 32 + size + 12, 2);
+    value
+}
+fn assembly_root_page(image: &mut [u8], base: u64) {
+    let mut page = vec![0; 4096];
+    page[..4].copy_from_slice(b"INDX");
+    p16(&mut page, 4, 40);
+    p16(&mut page, 6, 9);
+    p32(&mut page, 24, 40);
+    p32(&mut page, 32, 4096 - 24);
+    let mut at = 64;
+    for (name, child) in [
+        ("$Bitmap", 6),
+        ("$Boot", 7),
+        ("$MFT", 0),
+        ("$MFTMirr", 1),
+        ("$Secure", 9),
+        ("$UpCase", 10),
+        ("$Volume", 3),
+        ("hello.txt", base),
+    ] {
+        let attr = filename(name, 0);
+        let key_len = 66 + 2 * name.len();
+        let size = (16 + key_len + 7) & !7;
+        p64(&mut page, at, (1 << 48) | child);
+        p16(&mut page, at + 8, size as u16);
+        p16(&mut page, at + 10, key_len as u16);
+        page[at + 16..at + 16 + key_len].copy_from_slice(&attr[24..24 + key_len]);
+        at += size;
+    }
+    p16(&mut page, at + 8, 16);
+    p16(&mut page, at + 12, 2);
+    at += 16;
+    p32(&mut page, 28, (at - 24) as u32);
+    p16(&mut page, 40, 0xabcd);
+    for sector in 1..9 {
+        let value: [u8; 2] = page[sector * 512 - 2..sector * 512].try_into().unwrap();
+        page[40 + sector * 2..42 + sector * 2].copy_from_slice(&value);
+        p16(&mut page, sector * 512 - 2, 0xabcd);
+    }
+    image[INDEX..INDEX + 4096].copy_from_slice(&page);
+}
+
+fn assembly_fixture(
+    base: usize,
+    extensions: [usize; 2],
+    logical: u64,
+    initialized: u64,
+) -> Vec<u8> {
+    let mut image = fixture();
+    for number in [0, 1, 3, 5, 6, 7, 10] {
+        let mut attrs = assembly_attrs(&image, number);
+        if number == 0 || number == 1 {
+            attrs.retain(|a| u32::from_le_bytes(a[..4].try_into().unwrap()) != 0x30);
+            attrs.push(filename(if number == 0 { "$MFT" } else { "$MFTMirr" }, 2));
+        }
+        attrs.push(assembly_si(100, number == 5));
+        put_record(&mut image, number, &attrs, number == 5, 1);
+    }
+    let bitmap_at = attribute(&image, 0, 0xb0);
+    let bitmap_value = bitmap_at
+        + usize::from(u16::from_le_bytes(
+            image[bitmap_at + 20..bitmap_at + 22].try_into().unwrap(),
+        ));
+    image[bitmap_value + 1] |= 2;
+    image[bitmap_value + 2] = 0;
+    for number in [base, extensions[0], extensions[1]] {
+        image[bitmap_value + number / 8] |= 1 << (number % 8);
+    }
+
+    let mut descriptor = vec![0; 28];
+    descriptor[0] = 1;
+    p16(&mut descriptor, 2, 0x8004);
+    p32(&mut descriptor, 16, 20);
+    descriptor[20] = 2;
+    p16(&mut descriptor, 22, 8);
+    let hash = ntfs2refs::ntfs_security::ntfs_hash(&descriptor).unwrap();
+    let mut sds = support::nonresident(0x80, &[0x21, 65, 224, 0, 0], 0x40030, 65);
+    sds.resize(80, 0);
+    p32(&mut sds, 4, 80);
+    sds[9] = 4;
+    p16(&mut sds, 10, 64);
+    p16(&mut sds, 14, 1);
+    p16(&mut sds, 32, 72);
+    for (i, unit) in "$SDS".encode_utf16().enumerate() {
+        p16(&mut sds, 64 + i * 2, unit);
+    }
+    sds[72..77].copy_from_slice(&[0x21, 65, 224, 0, 0]);
+    put_record(
+        &mut image,
+        9,
+        &[
+            assembly_si(0, false),
+            sds,
+            support::resident(0x90, "$SII", &assembly_security_index(true, hash), 2),
+            support::resident(0x90, "$SDH", &assembly_security_index(false, hash), 3),
+            filename("$Secure", 4),
+        ],
+        false,
+        1,
+    );
+    for at in [224 * 4096, 224 * 4096 + 0x40000] {
+        p32(&mut image, at, hash);
+        p32(&mut image, at + 4, 256);
+        p32(&mut image, at + 16, 48);
+        image[at + 20..at + 48].copy_from_slice(&descriptor);
+    }
+    let bitmap_at = attribute(&image, 6, 0x80);
+    let bitmap_value = bitmap_at
+        + usize::from(u16::from_le_bytes(
+            image[bitmap_at + 20..bitmap_at + 22].try_into().unwrap(),
+        ));
+    for cluster in [102, 104].into_iter().chain(224..289) {
+        image[bitmap_value + cluster / 8] |= 1 << (cluster % 8);
+    }
+
+    let mut list = Vec::new();
+    for (kind, record, vcn, instance) in [
+        (0x10, base, 0, 0),
+        (0x30, base, 0, 1),
+        (0x80, base, 0, 3),
+        (0x80, extensions[0], 1, 0),
+        (0x80, extensions[1], 2, 0),
+    ] {
+        let mut entry = [0; 32];
+        p32(&mut entry, 0, kind);
+        p16(&mut entry, 4, 32);
+        entry[7] = 26;
+        p64(&mut entry, 8, vcn);
+        p64(&mut entry, 16, (1 << 48) | record as u64);
+        p16(&mut entry, 24, instance);
+        list.extend_from_slice(&entry);
+    }
+    let mut data = support::nonresident(0x80, &[0x11, 1, 100, 0], logical, 1);
+    p16(&mut data, 14, 3);
+    p64(&mut data, 40, 3 * 4096);
+    p64(&mut data, 56, initialized);
+    put_record(
+        &mut image,
+        base,
+        &[
+            assembly_si(0, false),
+            filename("hello.txt", 1),
+            support::resident(0x20, "", &list, 2),
+            data,
+        ],
+        false,
+        1,
+    );
+    for (i, number) in extensions.into_iter().enumerate() {
+        let mut data = support::nonresident(0x80, &[0x11, 1, 102 + i as u8 * 2, 0], 0, 1);
+        p64(&mut data, 16, i as u64 + 1);
+        p64(&mut data, 24, i as u64 + 1);
+        for at in [40, 48, 56] {
+            p64(&mut data, at, u64::MAX);
+        }
+        let mut extension = support::record(&[data], 1, 0);
+        p64(&mut extension, 32, (1 << 48) | base as u64);
+        image[MFT + number * 1024..MFT + (number + 1) * 1024].copy_from_slice(&extension);
+    }
+    for (cluster, byte) in [(100, 0x31), (102, 0x72), (104, 0xc3)] {
+        image[cluster * 4096..(cluster + 1) * 4096].fill(byte);
+    }
+    assembly_root_page(&mut image, base as u64);
+    image
+}
+
+#[test]
+fn assembled_data_conserves_physical_records_and_feeds_the_ordinary_shadow() {
+    use ntfs2refs::{ntfs_inspect::LogicalHashStatus, ntfs_stream_plan, shadow_tree};
+    use sha2::{Digest, Sha256};
+    for (base, extensions) in [(16, [17, 18]), (19, [16, 17])] {
+        let image = assembly_fixture(base, extensions, 3 * 4096, 3 * 4096);
+        let raw = inspect(&image);
+        assert_eq!(raw.attribute_assemblies.len(), 1);
+        assert_eq!(raw.records_scanned, raw.files.len() as u64 + 2);
+        ntfs_inspect::validate_record_coverage(&raw).unwrap();
+        assert!(
+            extensions
+                .iter()
+                .all(|n| !raw.files.iter().any(|f| f.record_number == *n as u64))
+        );
+        assert_eq!(
+            raw.namespace_reconciliation.as_ref().unwrap().status,
+            Status::ConsistentRawModel
+        );
+        assert_eq!(
+            raw.allocation_reconciliation.as_ref().unwrap().status,
+            AllocationReconciliationStatus::ConsistentRawModel
+        );
+        assert_eq!(
+            raw.security_reconciliation.as_ref().unwrap().status,
+            ntfs2refs::ntfs_security::Status::ConsistentRawModel
+        );
+        let file = raw
+            .files
+            .iter()
+            .find(|f| f.record_number == base as u64)
+            .unwrap();
+        assert_eq!(file.streams.len(), 1);
+        assert_eq!(file.streams[0].extents.len(), 3);
+        assert_eq!(
+            file.streams[0].logical_hash_status,
+            LogicalHashStatus::Complete
+        );
+        let expected = [vec![0x31; 4096], vec![0x72; 4096], vec![0xc3; 4096]].concat();
+        assert_eq!(
+            file.streams[0].logical_sha256.as_deref(),
+            Some(hex::encode(Sha256::digest(&expected)).as_str())
+        );
+        assert_eq!(
+            ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &raw, base as u64, 16384)
+                .unwrap(),
+            expected
+        );
+        let tree = shadow_tree::derive_ordinary(&raw).unwrap();
+        assert_eq!(tree.objects.len(), 2);
+        let plan = ntfs_stream_plan::classify(&raw);
+        assert_eq!(plan.streams.len(), 1);
+        assert_eq!(plan.retained_candidate_bytes, 12288);
+        for at in [0, 4090, 8190] {
+            assert_eq!(
+                ntfs_inspect::hash_plain_stream_range(
+                    &mut Cursor::new(&image),
+                    &raw,
+                    base as u64,
+                    at,
+                    32,
+                    16384
+                )
+                .unwrap(),
+                hex::encode(Sha256::digest(&expected[at as usize..at as usize + 32]))
+            );
+        }
+    }
+}
+
+#[test]
+fn assembled_data_keeps_vdl_zeroes_and_rejects_changed_segments_and_missing_ledgers() {
+    let image = assembly_fixture(16, [17, 18], 8192 + 37, 4096 + 100);
+    let raw = inspect(&image);
+    let mut expected = vec![0; 8192 + 37];
+    expected[..4096].fill(0x31);
+    expected[4096..4196].fill(0x72);
+    assert_eq!(
+        ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &raw, 16, 16384).unwrap(),
+        expected
+    );
+    for (offset, bit) in [
+        (MFT + 17 * 1024 + 16, 1),
+        (MFT + 18 * 1024 + 56 + 40, 1),
+        (attribute(&image, 16, 0x20) + 24 + 3 * 32 + 24, 1),
+        (100 * 4096, 1),
+    ] {
+        let mut changed = image.clone();
+        changed[offset] ^= bit;
+        assert!(
+            ntfs_inspect::read_plain_stream(&mut Cursor::new(&changed), &raw, 16, 16384).is_err()
+        );
+    }
+    let mut missing = raw.clone();
+    missing.attribute_assemblies.clear();
+    assert!(ntfs_inspect::validate_record_coverage(&missing).is_err());
+    assert!(ntfs2refs::shadow_tree::derive_ordinary(&missing).is_err());
+    let mut shared = raw.clone();
+    shared
+        .attribute_assemblies
+        .push(shared.attribute_assemblies[0].clone());
+    assert!(ntfs_inspect::validate_record_coverage(&shared).is_err());
+    assert!(ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &shared, 16, 16384).is_err());
+}
+#[test]
+fn actual_mft_allocation_and_unclaimed_extensions_still_block_qualification() {
+    let image = assembly_fixture(16, [17, 18], 12288, 12288);
+    let raw = inspect(&image);
+    let bitmap = attribute(&image, 0, 0xb0);
+    let value = bitmap
+        + usize::from(u16::from_le_bytes(
+            image[bitmap + 20..bitmap + 22].try_into().unwrap(),
+        ));
+    for number in [16, 17, 18] {
+        let mut changed = image.clone();
+        changed[value + number / 8] &= !(1 << (number % 8));
+        assert!(
+            ntfs_inspect::read_plain_stream(&mut Cursor::new(&changed), &raw, 16, 16384).is_err()
+        );
+        if let Ok(unqualified) =
+            ntfs_inspect::inspect(&mut Cursor::new(&changed), changed.len() as u64)
+        {
+            // A missing base can remain a diagnostic orphan/index disagreement;
+            // a diagnostic report is never equivalent to source admission.
+            assert_ne!(
+                unqualified
+                    .allocation_reconciliation
+                    .as_ref()
+                    .unwrap()
+                    .status,
+                AllocationReconciliationStatus::ConsistentRawModel
+            );
+            assert!(ntfs2refs::shadow_tree::derive_ordinary(&unqualified).is_err());
+        }
+    }
+    let mut orphan = image.clone();
+    orphan[value + 2] |= 1 << 3;
+    let mut segment = support::record(
+        &[support::nonresident(0x80, &[0x11, 1, 106, 0], 4096, 1)],
+        1,
+        0,
+    );
+    p64(&mut segment, 32, (1 << 48) | 16);
+    orphan[MFT + 19 * 1024..MFT + 20 * 1024].copy_from_slice(&segment);
+    let unresolved = inspect(&orphan);
+    assert_eq!(
+        unresolved.records_scanned,
+        unresolved.files.len() as u64 + 2
+    );
+    assert_eq!(
+        unresolved
+            .allocation_reconciliation
+            .as_ref()
+            .unwrap()
+            .status,
+        AllocationReconciliationStatus::IncompleteAttributeInventory
+    );
+    assert!(ntfs2refs::shadow_tree::derive_ordinary(&unresolved).is_err());
+    // Forged counters cannot admit an actual list lacking its physical ledger.
+    let mut counterfeit = raw.clone();
+    counterfeit.attribute_assemblies.clear();
+    counterfeit.records_scanned = counterfeit.files.len() as u64;
+    assert!(
+        ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &counterfeit, 16, 16384).is_err()
+    );
+}
+
+#[test]
+fn assembled_stream_agrees_with_independent_native_retrieval_page_replay() {
+    use n2r_win32::{
+        attestation::{IoctlQuery, Query, StreamCapture, StreamQuery},
+        stream_layout,
+    };
+    let image = assembly_fixture(16, [17, 18], 12288, 12288);
+    let raw = inspect(&image);
+    let file = raw.files.iter().find(|f| f.record_number == 16).unwrap();
+    let mut id = vec![0; 24];
+    p64(&mut id, 0, raw.geometry.serial_number);
+    p64(&mut id, 8, 16 | (1 << 48));
+    let identity = Query {
+        class: 18,
+        bytes: id,
+        native_error: None,
+    };
+    let name: Vec<_> = "::$DATA".encode_utf16().collect();
+    let mut enumeration = vec![0; 24 + name.len() * 2];
+    p32(&mut enumeration, 4, (name.len() * 2) as u32);
+    p64(&mut enumeration, 8, 12288);
+    p64(&mut enumeration, 16, 12288);
+    for (i, unit) in name.iter().enumerate() {
+        p16(&mut enumeration, 24 + i * 2, *unit);
+    }
+    fn page(start: u64, rows: &[(u64, u64)], error: Option<i32>) -> IoctlQuery {
+        let mut bytes = vec![0; 16 + rows.len() * 16];
+        p32(&mut bytes, 0, rows.len() as u32);
+        p64(&mut bytes, 8, start);
+        for (i, (next, lcn)) in rows.iter().enumerate() {
+            p64(&mut bytes, 16 + 16 * i, *next);
+            p64(&mut bytes, 24 + 16 * i, *lcn);
+        }
+        IoctlQuery {
+            code: stream_layout::GET_RETRIEVAL,
+            input: start.to_le_bytes().to_vec(),
+            bytes,
+            native_error: error,
+        }
+    }
+    let mut native = StreamCapture {
+        enumeration: Query {
+            class: 7,
+            bytes: enumeration,
+            native_error: None,
+        },
+        parse_error: None,
+        streams: vec![StreamQuery {
+            name_utf16: vec![],
+            logical_size: 12288,
+            allocated_size: 12288,
+            open_error: None,
+            binding_error: None,
+            identity_before: Some(identity.clone()),
+            identity_after: Some(identity),
+            retrieval: Some(page(0, &[(1, 100)], Some(234))),
+            retrieval_continuation: vec![page(1, &[(2, 102), (3, 104)], None)],
+        }],
+    };
+    ntfs2refs::ntfs_stream_attestation::check_file(file, &native, 0, &raw.geometry).unwrap();
+    native.streams[0].retrieval_continuation[0] = page(1, &[(2, 103), (3, 104)], None);
+    assert!(
+        ntfs2refs::ntfs_stream_attestation::check_file(file, &native, 0, &raw.geometry).is_err()
+    );
+    native.streams[0].retrieval_continuation.clear();
+    assert!(
+        ntfs2refs::ntfs_stream_attestation::check_file(file, &native, 0, &raw.geometry).is_err()
+    );
+}
+
 fn attribute(image: &[u8], record: usize, kind: u32) -> usize {
     let base = MFT + record * 1024;
     let mut at = base

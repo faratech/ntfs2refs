@@ -2,14 +2,19 @@
 //!
 //! `ntfs` validates the standard geometry. The bounded record/run-list reader below
 //! also retains raw UTF-16 names and metadata that its high-level API does not yet
-//! expose. Raw directory-index reconciliation is diagnostic; native namespace
-//! enumeration/security attestation and attribute-list assembly remain blockers.
+//! expose. Ordinary unnamed DATA can be assembled from a bounded resident list;
+//! unsupported list forms remain explicit refusals. Raw reconciliation alone
+//! never replaces native namespace/security evidence or source admission.
 
 use crate::ntfs_allocation::{self, Assessment, AttributeKey, Limits, PhysicalInterval};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
+
+#[path = "ntfs_assembled_io.rs"]
+mod assembled_io;
+pub use assembled_io::validate_record_coverage;
 
 const MAX_MFT_RECORDS: u64 = 1_000_000;
 const MAX_BITMAP_BYTES: u64 = 128 * 1024 * 1024;
@@ -148,6 +153,11 @@ pub struct NtfsInspection {
     #[serde(default)]
     pub security_reconciliation: Option<crate::ntfs_security::Reconciliation>,
     pub files: Vec<FileInventory>,
+    /// Original physical records for supported assembled ordinary DATA. The
+    /// canonical files contain each stream once; extensions are not file IDs.
+    /// Deserialized evidence never grants source/device write authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attribute_assemblies: Vec<crate::ntfs_attribute_list::Assembly>,
     pub blockers: Vec<InspectionBlocker>,
     pub inventory_complete: bool,
     /// Retained report storage, including vector spare capacity; excludes the
@@ -1986,6 +1996,9 @@ fn checked_plain_attribute<R: Read + Seek>(
     stream_name_utf16: &[u16],
     max_bytes: u64,
 ) -> Result<(Attribute, String)> {
+    if !raw.attribute_assemblies.is_empty() {
+        validate_record_coverage(raw)?;
+    }
     let file = raw
         .files
         .iter()
@@ -2051,7 +2064,37 @@ fn checked_plain_attribute<R: Read + Seek>(
         &mut bytes,
         geometry,
     )?;
-    let record = parse_record(bytes, geometry)?;
+    let mut record = parse_record(bytes.clone(), geometry)?;
+    if let Some(expected) = raw
+        .attribute_assemblies
+        .iter()
+        .find(|a| a.base.record_number == record_number)
+    {
+        let bitmap_attribute = unnamed(&bootstrap, 0xb0)?;
+        require_bitmap_bytes(
+            &bitmap_attribute.report,
+            bitmap_attribute.report.logical_size,
+        )?;
+        let bitmap = read_small_attribute(
+            reader,
+            bitmap_attribute,
+            geometry,
+            MAX_MFT_RECORDS.div_ceil(8),
+        )?;
+        let context = assembled_io::MftContext {
+            data: mft,
+            bitmap: &bitmap,
+            geometry,
+            record_count: mft.report.logical_size / u64::from(geometry.file_record_size),
+        };
+        let actual = context
+            .resolve(reader, record_number, &bytes, &mut record)?
+            .context("inspected DATA assembly is no longer present")?;
+        ensure!(
+            serde_json::to_vec(&actual)? == serde_json::to_vec(expected)?,
+            "source attribute list or physical extension evidence changed"
+        );
+    }
     ensure!(
         record.flags & 1 != 0
             && record.flags & 2 == 0
@@ -2321,6 +2364,7 @@ pub fn inspect_with_limits<R: Read + Seek>(
         namespace_reconciliation: None,
         security_reconciliation: None,
         files: Vec::new(),
+        attribute_assemblies: Vec::new(),
         blockers: Vec::new(),
         inventory_complete: false,
         inventory_memory_bytes: 0,
@@ -2332,8 +2376,26 @@ pub fn inspect_with_limits<R: Read + Seek>(
     let mut volume_bitmap = None;
     let mut namespace = NamespaceCapture::default();
     let mut security = SecurityCapture::default();
-    for number in 0..mft_record_count {
+    // Base files are processed first. Extension records may precede their base
+    // numerically, so defer them without caching an unbounded MFT in memory.
+    let mut physical_extensions = vec![0u8; mft_record_count.div_ceil(8) as usize];
+    let mut consumed = std::collections::BTreeMap::<u64, (usize, usize)>::new();
+    let mft_context = assembled_io::MftContext {
+        data: &mft_data,
+        bitmap: &mft_bitmap,
+        geometry: &geometry,
+        record_count: mft_record_count,
+    };
+    for (pass, number) in
+        (0..2).flat_map(|pass| (0..mft_record_count).map(move |number| (pass, number)))
+    {
         if mft_bitmap[number as usize / 8] & (1 << (number % 8)) == 0 {
+            continue;
+        }
+        if pass == 1
+            && (physical_extensions[number as usize / 8] & (1 << (number % 8)) == 0
+                || consumed.contains_key(&number))
+        {
             continue;
         }
         let mut raw = vec![0; geometry.file_record_size as usize];
@@ -2345,13 +2407,59 @@ pub fn inspect_with_limits<R: Read + Seek>(
             &geometry,
         )
         .with_context(|| format!("reading MFT record {number}"))?;
-        let record =
-            parse_record(raw, &geometry).with_context(|| format!("parsing MFT record {number}"))?;
+        let mut record = parse_record(raw.clone(), &geometry)
+            .with_context(|| format!("parsing MFT record {number}"))?;
         ensure!(
             record.flags & 1 != 0,
             "MFT bitmap marks record {number} allocated but its header disagrees"
         );
-        report.records_scanned += 1;
+        if pass == 0 {
+            report.records_scanned += 1;
+            if record.base != 0 {
+                physical_extensions[number as usize / 8] |= 1 << (number % 8);
+                if let Some(&(assembly, extension)) = consumed.get(&number) {
+                    ensure!(
+                        report.attribute_assemblies[assembly].extensions[extension]
+                            .raw_record_sha256
+                            == hex::encode(Sha256::digest(&raw)),
+                        "consumed extension changed during inventory"
+                    );
+                }
+                continue;
+            }
+            ensure!(
+                !consumed.contains_key(&number),
+                "extension changed into a base record during inventory"
+            );
+            if let Some(assembly) = mft_context
+                .resolve(reader, number, &raw, &mut record)
+                .with_context(|| format!("assembling ordinary DATA for MFT record {number}"))?
+            {
+                let index = report.attribute_assemblies.len();
+                // Conservatively charge the temporary BTree ownership index as
+                // well as all retained ledger capacities to the report budget.
+                budget.charge(
+                    (assembly.extensions.len() as u64)
+                        .checked_mul(128)
+                        .context("assembly ownership accounting overflow")?,
+                )?;
+                for (extension, segment) in assembly.extensions.iter().enumerate() {
+                    ensure!(
+                        consumed
+                            .insert(segment.record_number, (index, extension))
+                            .is_none(),
+                        "one physical extension is claimed by multiple base files"
+                    );
+                }
+                let retained = assembled_io::heap_bytes(&assembly)?;
+                budget.push(&mut report.attribute_assemblies, assembly, retained)?;
+            }
+        } else {
+            ensure!(
+                record.base != 0,
+                "deferred extension changed into a base file"
+            );
+        }
         if number == 5 {
             ensure!(record.flags & 2 != 0, "root record is not a directory");
             root_seen = true;
@@ -2636,11 +2744,19 @@ pub fn inspect_with_limits<R: Read + Seek>(
             .push(&mut report.files, inventory, retained)
             .with_context(|| format!("retaining MFT record {number}"))?;
     }
+    report.files.sort_unstable_by_key(|file| file.record_number);
+    for number in consumed.keys() {
+        ensure!(
+            physical_extensions[*number as usize / 8] & (1 << (*number % 8)) != 0,
+            "consumed extension was not observed as an allocated physical segment"
+        );
+    }
     ensure!(
         root_seen && report.volume_flags.is_some() && report.allocated_clusters.is_some(),
         "missing allocated root, volume-information, or allocation-bitmap records"
     );
     classify_metadata_roles(&mut report, &mut budget)?;
+    validate_record_coverage(&report)?;
     let allocation = reconcile_allocation(
         &report,
         volume_bitmap.as_deref().context("missing volume bitmap")?,

@@ -13,8 +13,11 @@ no exception. DATA attributes are supplied once from `attributes`; the duplicate
 `streams` view creates no additional claim. Resident contents are already owned
 through the MFT allocation, and sparse holes have no physical claim.
 
-The inspector refuses to assess a partial model if any record requires an
-attribute list/extension or repeats an attribute instance. It also rejects MFT
+The inspector refuses to assess a partial model if any record has an unassembled
+attribute list/extension or repeats an attribute instance. The later
+[ordinary DATA assembly profile](ntfs-attribute-list-assembly.md) supplies one
+canonical allocation claim per stream and a separate physical-record ledger;
+extension origins are never counted a second time as payload owners. It also rejects MFT
 bitmap allocations beyond MFT EOF. Bitmap bytes must be fully initialized,
 unencoded and nonsparse for the requested domain; synthesized zeroes must never
 hide allocated file records or volume clusters.

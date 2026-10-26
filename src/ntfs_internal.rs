@@ -272,9 +272,9 @@ fn quota_indexes_match(owners: &[(Vec<u8>, Vec<u8>)], quotas: &[(Vec<u8>, Vec<u8
 }
 
 pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<VerifiedIndexes> {
+    crate::ntfs_inspect::validate_record_coverage(raw)?;
     ensure!(
-        raw.records_scanned == raw.files.len() as u64
-            && raw.geometry.cluster_size == 4096
+        raw.geometry.cluster_size == 4096
             && raw.geometry.bytes_per_sector == 512
             && raw.geometry.file_record_size == 1024,
         "bounded initial-profile MFT scan required"

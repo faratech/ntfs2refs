@@ -201,9 +201,9 @@ pub fn derive_ordinary(raw: &ntfs::NtfsInspection) -> Result<Tree> {
     derive_profile(raw, true)
 }
 fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
+    ntfs::validate_record_coverage(raw)?;
     ensure!(
         raw.schema_version == 1
-            && raw.records_scanned == raw.files.len() as u64
             && raw.geometry.cluster_size == 4096
             && raw.geometry.bytes_per_sector == 512,
         "incomplete record scan or unsupported source geometry"

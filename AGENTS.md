@@ -142,6 +142,23 @@ the verified VM; blanket project authorization does not grant it. No further
 disk experiment is authorized on this preserved branch. Read-only inventory
 and source/test work may continue. No export or copy is currently needed.
 
+Mike specifically approved removal of the independently reconstructible fixed
+reference VHD and creation of a separate offline fixture on 2026-10-26. Only
+`.lab/hyperv/corpus/devdrive-20261023T231918797Z/target-fixed.vhd` was removed,
+after fresh hash, identity, attachment and complete registered-ancestry checks.
+The packet, overlays, evidence, archive and all fifty original checkpoints remain.
+The separate VM `ntfs2refs-reference-isolated`, ID
+`8f7fc646-8c9f-41d0-b65a-ecfadccfc36a`, is powered off with fixed 8 GiB RAM,
+four vCPUs, no NIC and automatic checkpoints disabled. Its ownership record is
+`.lab/hyperv/isolated-reference-20261026-review/manifest.json`. Its three standalone
+VHDX files are independent copies whose hashes match the archive; container UUIDs
+were preserved by copying, while host file identities are new. Do not use a VHD
+UUID alone to infer backing-file aliasing. vTPM/Secure Boot settings were retained.
+The export's read-only DVD ISO reference remains recorded in the manifest.
+No guest boot, credential login or native experiment has run on this fixture.
+Do not dispatch helpers bound to the old `win11` manifest against this new VM.
+The approval covers this provisioning, not a writer experiment or further cleanup.
+
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those
 counters are not a completion percentage. The current full-image workflow can

@@ -42,3 +42,33 @@ No additional export/copy is needed to establish this recorded checkpoint.
 Before any later copy, propose its destination, estimated size and free-space
 margin without deleting recovery points, filling the host disk, changing
 security settings or spending money.
+
+## Specifically approved independent fixture, 2026-10-26
+
+Mike answered `1. Yes 2. Yes` to the exact fixed-reference deletion and named
+offline-VM provisioning request. That approval was relayed by the project manager.
+Only `D:\code\ntfs2refs\.lab\hyperv\corpus\devdrive-20261023T231918797Z\target-fixed.vhd`
+was permanently deleted. A fresh current-file SHA-256 matched `b671d327...269b7`,
+the retained packet matched `585df94c...23df5b`, and the exact full reconstruction
+proof was reused without repeating its virtual scan. File identity/length,
+exclusive-read availability, attachments and all registered VM/checkpoint chains
+were checked before removal. Free-space reclamation was delayed; measured space
+subsequently rose to about 143.5 GiB before the independent copy.
+
+The new VM `ntfs2refs-reference-isolated` has ID
+`8f7fc646-8c9f-41d0-b65a-ecfadccfc36a`. It is powered off, generation 2, with fixed
+8 GiB RAM, four vCPUs, no NIC and zero checkpoints. Existing vTPM and Secure Boot
+configuration was preserved. Its three copied VHDX files have no parents, have
+new single-link host file identities, and matched the freshly verified archive
+hashes before any boot. Their container UUIDs remain copied from the archive;
+they are not evidence of a shared writable backing file. No boot or credential
+login was attempted, and no writer/native experiment was authorized or run.
+Preserve this fixture and its evidence too.
+
+Ownership is recorded at `.lab/hyperv/isolated-reference-20261026-review/manifest.json`.
+Detailed authorization, preflight, deletion outcome, delayed capacity check,
+archive hashes, import and final ownership records are under
+`.lab/hyperv/reference-isolation-approved-20261026T130646790Z`.
+The original VM retained the exact fifty checkpoint IDs and current checkpoint
+listed above. This follow-up approval does not authorize additional cleanup or
+retroactively authorize the earlier failed-leaf checkpoint deletion.

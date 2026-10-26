@@ -100,6 +100,25 @@ pub(crate) fn prepare_with_budget(
     verify_existing: bool,
     max_change_bytes: u64,
 ) -> Result<QualifiedTree> {
+    prepare_with_budget_and_source_freeze_hook(
+        pair,
+        output,
+        verify_existing,
+        max_change_bytes,
+        |_, _, _| Ok(()),
+    )
+}
+
+/// The laboratory may stop after the real durable source-freeze artifact.
+/// The callback borrows the actual frozen handle and receives only pins from
+/// the current native run; no deserialized completion flag enters this path.
+pub(crate) fn prepare_with_budget_and_source_freeze_hook(
+    pair: GeneralSourceShadowBinding,
+    output: &Path,
+    verify_existing: bool,
+    max_change_bytes: u64,
+    after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
+) -> Result<QualifiedTree> {
     pair.validate()?;
     ensure!(
         (1..=lab_reconstruct::MAX_CHANGE_BYTES).contains(&max_change_bytes)
@@ -141,12 +160,12 @@ pub(crate) fn prepare_with_budget(
             GeneralFrozenPartition::isolate_observed_ntfs(pair.source.clone(), &mut events)?;
         let length = source.byte_len();
         let source_hash = hex::encode(lab_reconstruct::hash_range(&mut source, 0, length)?);
-        save(
+        save_source_frozen_then(
             output,
-            "source-frozen.json",
             &serde_json::json!({"schema_version":1,
             "kind":"observed-frozen-source-identity","binding":source.binding(),"source_sha256":source_hash,
             "state":source.state(&mut events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
+            |artifact_sha256| after_source_freeze(&source, &source_hash, artifact_sha256),
         )?;
         let raw = ntfs_inspect::inspect(&mut source, length)?;
         let source_label_frozen =
@@ -292,6 +311,19 @@ pub(crate) fn prepare_with_budget(
     }
 }
 
+/// Successful return from save includes its durable flush. Keeping the next
+/// phase behind this callback makes a failed save or injected stop prevent
+/// raw metadata inspection, target construction and journal activation.
+fn save_source_frozen_then(
+    output: &Path,
+    frozen: &impl Serialize,
+    after_saved: impl FnOnce(&str) -> Result<()>,
+) -> Result<String> {
+    let pin = save(output, "source-frozen.json", frozen)?;
+    after_saved(&pin)?;
+    Ok(pin)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +338,59 @@ mod tests {
         fs::write(&file, b"keep").unwrap();
         assert!(create_output(&file.join("run")).is_err());
         assert_eq!(fs::read(file).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn source_freeze_hook_observes_durable_artifact_and_its_actual_pin() {
+        let temporary = tempfile::tempdir().unwrap();
+        let frozen =
+            serde_json::json!({"source_sha256":"a".repeat(64),"state":{"disk_attributes":3}});
+        let mut hook_called = false;
+        let pin = save_source_frozen_then(temporary.path(), &frozen, |pin| {
+            let bytes = fs::read(temporary.path().join("source-frozen.json"))?;
+            ensure!(hex::encode(Sha256::digest(&bytes)) == pin);
+            ensure!(serde_json::from_slice::<serde_json::Value>(&bytes)? == frozen);
+            hook_called = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(hook_called);
+        assert_eq!(pin.len(), 64);
+    }
+
+    #[test]
+    fn failed_freeze_save_or_hook_prevents_the_next_phase() {
+        let temporary = tempfile::tempdir().unwrap();
+        fs::write(temporary.path().join("source-frozen.json"), b"keep").unwrap();
+        let mut hook_called = false;
+        assert!(
+            save_source_frozen_then(temporary.path(), &serde_json::json!({}), |_| {
+                hook_called = true;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!hook_called);
+        assert_eq!(
+            fs::read(temporary.path().join("source-frozen.json")).unwrap(),
+            b"keep"
+        );
+        let fresh = tempfile::tempdir().unwrap();
+        let mut next_phase_started = false;
+        let stopped: Result<()> = (|| {
+            save_source_frozen_then(fresh.path(), &serde_json::json!({}), |_| {
+                anyhow::bail!("controlled source-freeze stop")
+            })?;
+            next_phase_started = true;
+            Ok(())
+        })();
+        assert!(
+            stopped
+                .unwrap_err()
+                .to_string()
+                .contains("source-freeze stop")
+        );
+        assert!(!next_phase_started);
+        assert!(fresh.path().join("source-frozen.json").is_file());
     }
 }

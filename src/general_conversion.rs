@@ -63,7 +63,14 @@ impl Request {
 }
 
 pub fn convert(request: &Request, output: &Path) -> Result<()> {
-    convert_profile(request, output, None)
+    convert_profile(request, output, Interruption::None)
+}
+
+#[derive(Clone, Copy)]
+enum Interruption {
+    None,
+    AfterWrites(u32),
+    AfterSourceFreeze,
 }
 
 /// Controlled lab fault injection after N complete, flushed target writes.
@@ -74,14 +81,65 @@ pub fn convert_interrupted(request: &Request, output: &Path, writes: u32) -> Res
         (1..=4096).contains(&writes),
         "interruption count must be 1..=4096"
     );
-    convert_profile(request, output, Some(writes))
+    convert_profile(request, output, Interruption::AfterWrites(writes))
 }
 
-fn convert_profile(
+/// Laboratory-only process death after the real source-frozen artifact is
+/// durable, with the native source handle still live and before target work.
+/// The production conversion CLI does not expose this interruption point.
+pub fn convert_interrupted_after_source_freeze(request: &Request, output: &Path) -> Result<()> {
+    convert_profile(request, output, Interruption::AfterSourceFreeze)
+}
+
+fn interrupt_after_source_freeze(
     request: &Request,
     output: &Path,
-    interrupt_after_writes: Option<u32>,
+    source: &n2r_win32::GeneralFrozenPartition,
+    source_sha256: &str,
+    artifact_sha256: &str,
 ) -> Result<()> {
+    let mut events = Vec::<NativeEvent>::new();
+    let state = source.state(&mut events)?;
+    ensure!(
+        source.binding() == &request.pair.source
+            && state.disk_attributes == 3
+            && source.freeze_observation().is_some(),
+        "source-freeze interruption requires the actual observed excluded source"
+    );
+    let intent = serde_json::json!({
+        "schema_version":1,
+        "kind":"controlled-preactivation-interruption-intent",
+        "experiment_id":request.experiment_id,
+        "phase":"source-frozen-artifact-durable",
+        "binding":source.binding(),
+        "source_sha256":source_sha256,
+        "source_frozen_artifact":"qualification/source-frozen.json",
+        "source_frozen_artifact_sha256":artifact_sha256,
+        "source_state_sha256":hex::encode(Sha256::digest(serde_json::to_vec(&state)?)),
+        "disk_attributes":state.disk_attributes,
+        "expected_process_exit_code":87,
+        "target_construction_started":false,
+        "journal_prepared":false,
+        "reconstruction_activated":false,
+        "handoff_authorized":false,
+        "source_payload_writes":0,
+        "ordinary_conversion_behavior_changed":false
+    });
+    ensure!(
+        serde_json::to_vec_pretty(&intent)?.len() <= 16384,
+        "preactivation interruption intent exceeds its bound"
+    );
+    qualification::save(output, "preactivation-interruption-intent.json", &intent)?;
+    // Intentionally bypass Rust destructors. Persistent attrs3 and the real
+    // public qualification artifact survive the process and handle teardown.
+    std::process::exit(87);
+}
+
+fn convert_profile(request: &Request, output: &Path, interruption: Interruption) -> Result<()> {
+    let interrupt_after_writes = match interruption {
+        Interruption::AfterWrites(writes) => Some(writes),
+        Interruption::None | Interruption::AfterSourceFreeze => None,
+    };
     request.validate()?;
     qualification::create_output(output)?;
     qualification::save(output, "conversion-intent.json", request)?;
@@ -91,11 +149,23 @@ fn convert_profile(
             request.max_journal_bytes,
             request.pair.source.identity.partition_bytes,
         )?;
-        let qualified = qualification::prepare_with_budget(
+        let qualified = qualification::prepare_with_budget_and_source_freeze_hook(
             request.pair.clone(),
             &output.join("qualification"),
             request.verify_existing_shadow,
             max_change_bytes,
+            |source, source_sha256, artifact_sha256| {
+                if matches!(interruption, Interruption::AfterSourceFreeze) {
+                    interrupt_after_source_freeze(
+                        request,
+                        output,
+                        source,
+                        source_sha256,
+                        artifact_sha256,
+                    )?;
+                }
+                Ok(())
+            },
         )?;
         let qualification::QualifiedTree {
             mut source,

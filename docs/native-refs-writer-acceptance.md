@@ -131,3 +131,47 @@ applying COW metadata, records zero writer pages and does not expect the adopted
 file. All blank-disk, identity, full-image and handoff gates remain required.
 Native writer acceptance, mutation and reboot qualification remain open. This
 research outcome is separate from the successful native-shadow conversions.
+
+## Separate unmodified-baseline native verifier
+
+`lab/guest/Test-ImportedBaseline.ps1` is the read-only control after a successful
+`--baseline-only --handoff` import. It requires five separately pinned import
+artifacts (`request.json`, `import.json`, `prepared.json`, `handoff.json` and
+`result.json`). The packet, complete imported disk, GPT route, protected raw
+payload and persistent VHD identity must match the reference proofs. Baseline
+preparation must have zero patches, zero writer bytes/pages, no consumed
+overlay inputs and `adopted_file_expected: false`. A fresh VHD identity separate
+from the rejected candidate is mandatory.
+
+The baseline profile expects only the two original files under `fixtures`.
+It brackets their reads with an exact `FILE_NOT_FOUND` check for
+`adopted-existing.bin`; access-denied, path/device errors and a present object
+cannot be reported as absence. It retains the original file IDs, lengths,
+logical hashes and native extent observations. The 61-byte small reference
+file may report zero or the decoded 64-byte inline allocation with EOF
+retrieval pointers; no physical data extent is invented for it.
+
+The raw 4 KiB payload hash belongs to the imported image proof **before the
+first native mount**. It is not represented as an owned baseline file, and
+the verifier does not claim that native mounting preserves free raw bytes.
+The existing adopted-file verifier keeps its separate candidate profile and
+exact adopted extent expectation.
+
+The host dispatcher is:
+
+```powershell
+.\scripts\Dispatch-LabImportedBaselineVerification.ps1 `
+  -ImportDirectory .lab\hyperv\writer-acceptance\NEW-BASELINE\imported `
+  -GuestImportDirectory C:\ntfs2refs\reference-imports\NEW-BASELINE\artifacts `
+  -ExpectedCheckpointId CURRENT_OWNED_CHECKPOINT_GUID
+```
+
+It verifies exported/live artifact pins and the exact owned VM branch, refuses
+active lab operations, and dispatches one SYSTEM verification task. It never
+creates or attaches a disk, changes its state, restores a checkpoint, applies
+an overlay or retries a task. The returned handle identifies the task and its
+fresh `verification.json` output. A baseline mount failure remains evidence to
+collect separately; none of these scripts repair an imported filesystem.
+
+Pure profile, identity, absence-error and import-proof tests cover this new
+path. Native unmodified-baseline qualification remains pending.

@@ -160,6 +160,16 @@ pub fn prepare(
     shadow: &mut GeneralFrozenPartition,
     journal: &mut File,
 ) -> Result<Preparation> {
+    prepare_with_progress(request, source, shadow, journal, &mut |_| {})
+}
+
+pub fn prepare_with_progress(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    shadow: &mut GeneralFrozenPartition,
+    journal: &mut File,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<Preparation> {
     request.validate()?;
     ensure!(
         source.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
@@ -196,13 +206,14 @@ pub fn prepare(
         Some(observed)
     };
     let observed_binding = binding(request, &journal_before.identity)?;
-    let summary = lab_reconstruct::prepare_journal(
+    let summary = lab_reconstruct::prepare_journal_with_progress(
         source,
         shadow,
         journal,
         &request.comparison,
         &observed_binding,
         request.max_journal_bytes,
+        progress,
     )?;
     let source_after = source.state(&mut events)?;
     let shadow_after = shadow.state(&mut events)?;

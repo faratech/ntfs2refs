@@ -226,7 +226,16 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
             "journal-location.json",
             &serde_json::json!({"path":journal_path,"identity":observed.identity}),
         )?;
-        let prepared = reconstruct::prepare(&plan, &mut source, &mut target, &mut journal)?;
+        let mut progress = crate::preparation_progress::SnapshotFile::create(
+            &output.join("journal-progress.json"),
+        );
+        let prepared = reconstruct::prepare_with_progress(
+            &plan,
+            &mut source,
+            &mut target,
+            &mut journal,
+            &mut |snapshot| progress.report(snapshot),
+        )?;
         qualification::save(output, "prepare.json", &prepared)?;
         let ticket_pin = qualification::save(output, "ticket.json", &prepared.journal.ticket)?;
         // Read back the durable external ticket while holding its file handle

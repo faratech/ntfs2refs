@@ -1,6 +1,7 @@
 //! Lab-only byte comparison. Inputs are read-only; retained file semantics and
 //! write authority are outside this module's scope.
 use crate::block_io::SourceIdentity;
+use crate::preparation_progress::{Reporter, Subphase};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -287,6 +288,14 @@ fn open_input(path: &Path, length: u64) -> Result<Input> {
 }
 
 pub(crate) fn hash_reader<R: Read + Seek>(reader: &mut R, length: u64) -> Result<String> {
+    hash_reader_observed(reader, length, &mut |_| {})
+}
+
+fn hash_reader_observed<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    progress: &mut dyn FnMut(u64),
+) -> Result<String> {
     reader.seek(SeekFrom::Start(0))?;
     let mut hash = Sha256::new();
     let mut buffer = vec![0; BUFFER_BYTES];
@@ -296,6 +305,7 @@ pub(crate) fn hash_reader<R: Read + Seek>(reader: &mut R, length: u64) -> Result
         reader.read_exact(&mut buffer[..count])?;
         hash.update(&buffer[..count]);
         remaining -= count as u64;
+        progress(length - remaining);
     }
     Ok(hex::encode(hash.finalize()))
 }
@@ -378,7 +388,19 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
     shadow: &mut S,
     request: &RetainedCompareRequest,
 ) -> Result<RetainedComparison> {
+    let mut sink = |_| {};
+    let mut progress = Reporter::new(request.expected_length, &mut sink);
+    compare_streams_observed(source, shadow, request, &mut progress)
+}
+
+pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
+    source: &mut R,
+    shadow: &mut S,
+    request: &RetainedCompareRequest,
+    progress: &mut Reporter<'_>,
+) -> Result<RetainedComparison> {
     validate_request(request)?;
+    progress.update(Subphase::Comparing, 0);
     source.seek(SeekFrom::Start(0))?;
     shadow.seek(SeekFrom::Start(0))?;
     let mut source_hash = Sha256::new();
@@ -406,6 +428,7 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
         shadow.read_exact(&mut right[..count])?;
         source_hash.update(&left[..count]);
         shadow_hash.update(&right[..count]);
+        progress.update(Subphase::Comparing, (offset + count as u64) * 2);
         // Equal bytes have the same hybrid value regardless of ownership.
         // Keep every retained pin proof, but hash its exact overlap in bulk
         // instead of visiting each equal sector.
@@ -542,12 +565,18 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
             hashes_match_request: true,
         });
     }
+    progress.update(Subphase::RecheckingSource, 0);
     ensure!(
-        hash_reader(source, request.expected_length)? == source_sha256,
+        hash_reader_observed(source, request.expected_length, &mut |bytes| {
+            progress.update(Subphase::RecheckingSource, bytes);
+        })? == source_sha256,
         "source changed after comparison"
     );
+    progress.update(Subphase::RecheckingShadow, 0);
     ensure!(
-        hash_reader(shadow, request.expected_length)? == shadow_sha256,
+        hash_reader_observed(shadow, request.expected_length, &mut |bytes| {
+            progress.update(Subphase::RecheckingShadow, bytes);
+        })? == shadow_sha256,
         "shadow changed after comparison"
     );
     let retained_differing_bytes = observations.iter().map(|range| range.differing_bytes).sum();
@@ -600,6 +629,139 @@ pub(crate) fn compare_streams<R: Read + Seek, S: Read + Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::RefCell, io, rc::Rc};
+
+    struct ObservedReader {
+        inner: std::io::Cursor<Vec<u8>>,
+        trace: Rc<RefCell<Vec<String>>>,
+        name: &'static str,
+        fail: Option<&'static str>,
+    }
+    impl Read for ObservedReader {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            self.trace
+                .borrow_mut()
+                .push(format!("{} read {}", self.name, bytes.len()));
+            if self.fail == Some("read") {
+                return Err(io::Error::other("injected read failure"));
+            }
+            self.inner.read(bytes)
+        }
+    }
+    impl Seek for ObservedReader {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.trace
+                .borrow_mut()
+                .push(format!("{} seek {position:?}", self.name));
+            if self.fail == Some("seek") {
+                return Err(io::Error::other("injected seek failure"));
+            }
+            self.inner.seek(position)
+        }
+    }
+
+    fn observed_fixture() -> (Vec<u8>, Vec<u8>, RetainedCompareRequest) {
+        let before = vec![0x31; BUFFER_BYTES * 2 + 8192];
+        let mut after = before.clone();
+        after[4096..8192].fill(0x44); // Retained differences must stay excluded.
+        after[BUFFER_BYTES - 4096..BUFFER_BYTES + 4096].fill(0x72);
+        let request = RetainedCompareRequest {
+            schema_version: 2,
+            sector_size: 4096,
+            expected_length: before.len() as u64,
+            source_sha256: hex::encode(Sha256::digest(&before)),
+            shadow_sha256: hex::encode(Sha256::digest(&after)),
+            retained_ranges: vec![RetainedRangeRequest {
+                offset: 4096,
+                length: 4096,
+                source_sha256: hex::encode(Sha256::digest(&before[4096..8192])),
+                shadow_sha256: hex::encode(Sha256::digest(&after[4096..8192])),
+            }],
+            max_change_bytes: 8192,
+            max_ranges: 2,
+        };
+        (before, after, request)
+    }
+
+    #[test]
+    fn reporting_preserves_complete_comparison_and_io_order() {
+        let (before, after, request) = observed_fixture();
+        let run = |observed: bool| {
+            let trace = Rc::new(RefCell::new(Vec::new()));
+            let mut source = ObservedReader {
+                inner: std::io::Cursor::new(before.clone()),
+                trace: trace.clone(),
+                name: "source",
+                fail: None,
+            };
+            let mut shadow = ObservedReader {
+                inner: std::io::Cursor::new(after.clone()),
+                trace: trace.clone(),
+                name: "shadow",
+                fail: None,
+            };
+            let mut events = Vec::new();
+            let report = if observed {
+                let mut sink = |p| events.push(p);
+                let mut reporter = Reporter::new(request.expected_length, &mut sink);
+                compare_streams_observed(&mut source, &mut shadow, &request, &mut reporter).unwrap()
+            } else {
+                compare_streams(&mut source, &mut shadow, &request).unwrap()
+            };
+            (
+                serde_json::to_value(report).unwrap(),
+                trace.borrow().clone(),
+                events,
+            )
+        };
+        let (baseline, old_trace, _) = run(false);
+        let (observed, new_trace, events) = run(true);
+        assert_eq!(baseline, observed);
+        assert_eq!(old_trace, new_trace);
+        assert_eq!(observed["patch_bytes"], 8192);
+        assert_eq!(observed["retained_differing_bytes"], 4096);
+        assert_eq!(
+            events.last().unwrap().bytes_scanned,
+            request.expected_length * 4
+        );
+        assert_eq!(events.last().unwrap().subphase, Subphase::RecheckingShadow);
+        assert!(!events.iter().any(|p| p.subphase == Subphase::Complete));
+    }
+
+    #[test]
+    fn source_and_shadow_read_or_seek_errors_still_propagate() {
+        let (before, after, request) = observed_fixture();
+        for side in ["source", "shadow"] {
+            for failure in ["read", "seek"] {
+                let mut events = Vec::new();
+                let mut sink = |p| events.push(p);
+                let mut reporter = Reporter::new(request.expected_length, &mut sink);
+                let trace = Rc::new(RefCell::new(Vec::new()));
+                let mut source = ObservedReader {
+                    inner: std::io::Cursor::new(before.clone()),
+                    trace: trace.clone(),
+                    name: "source",
+                    fail: (side == "source").then_some(failure),
+                };
+                let mut shadow = ObservedReader {
+                    inner: std::io::Cursor::new(after.clone()),
+                    trace,
+                    name: "shadow",
+                    fail: (side == "shadow").then_some(failure),
+                };
+                let error =
+                    compare_streams_observed(&mut source, &mut shadow, &request, &mut reporter)
+                        .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("injected {failure} failure"))
+                );
+                assert!(!events.iter().any(|p| p.subphase == Subphase::Complete));
+            }
+        }
+    }
+
     struct MutatingOnSecondPass {
         inner: std::io::Cursor<Vec<u8>>,
         starts: u32,
@@ -641,7 +803,7 @@ mod tests {
             max_change_bytes: 0,
             max_ranges: 1,
         };
-        for side in 0..2 {
+        for (observed, side) in [(false, 0), (false, 1), (true, 0), (true, 1)] {
             let mut source = MutatingOnSecondPass {
                 inner: std::io::Cursor::new(bytes.clone()),
                 starts: 0,
@@ -652,13 +814,22 @@ mod tests {
                 starts: 0,
                 mutate: side == 1,
             };
-            let error = compare_streams(&mut source, &mut shadow, &request).unwrap_err();
+            let mut events = Vec::new();
+            let error = if observed {
+                let mut sink = |p| events.push(p);
+                let mut reporter = Reporter::new(request.expected_length, &mut sink);
+                compare_streams_observed(&mut source, &mut shadow, &request, &mut reporter)
+                    .unwrap_err()
+            } else {
+                compare_streams(&mut source, &mut shadow, &request).unwrap_err()
+            };
             let expected = if side == 0 {
                 "source changed after comparison"
             } else {
                 "shadow changed after comparison"
             };
             assert!(error.to_string().contains(expected), "{error:#}");
+            assert!(!events.iter().any(|p| p.subphase == Subphase::Complete));
         }
     }
     #[test]

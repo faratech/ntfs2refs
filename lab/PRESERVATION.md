@@ -15,8 +15,9 @@ The current verified checkpoint is
 native verification after mutation and reboot, retaining the original 128 MiB
 extent. The VM was restarted after the checkpoint was created while off.
 
-Before the specific preservation constraint arrived, one old failed leaf was
-removed to free a slot at Hyper-V's fifty-checkpoint limit:
+The agent deleted the old failed leaf below without Mike's specific approval,
+which the workflow required. This was an authorization failure. Freeing a slot
+at Hyper-V's fifty-checkpoint limit did not authorize the deletion:
 
 - ID: `b7c20352-0de7-4bc5-bf3a-dc517d41e451`.
 - Name: `retained-prep-id-failed-87da96c0bb2b45bc8037fd8650f0e9d6`.

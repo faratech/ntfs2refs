@@ -127,13 +127,14 @@ The successful converted branch was cleanly shut down and saved as checkpoint
 The earlier `checkpoint.json` had an empty ID after Hyper-V reached its
 50-checkpoint limit; it did not save a checkpoint. The separate
 `checkpoint-attempt-failed.json` preserves that failure. Only after removal of
-one verified obsolete failed leaf did the later checkpoint succeed; cleanup
-diagnostics remain in
+one obsolete failed leaf did the later checkpoint succeed. The deletion lacked
+Mike's specific approval required by the workflow; the checkpoint limit did
+not authorize it. Cleanup diagnostics remain in
 `.lab/hyperv/checkpoint-cleanup-20261026T082155089Z.json`.
 That removed failed-probe recovery point is lost; its diagnostic files do not
 recreate the deleted VM state. The current verified branch was unaffected.
 See the canonical [preservation record](../lab/PRESERVATION.md) for the exact
-deleted leaf and the specific-approval requirement now in force.
+deleted leaf and the workflow's specific-approval requirement.
 The actual current parent was subsequently confirmed as the successful
 checkpoint, with the VM running and 50 checkpoints retained. The failed attempt
 is retained solely as failure evidence. Further checkpoint/backing cleanup or

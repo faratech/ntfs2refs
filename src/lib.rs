@@ -59,6 +59,7 @@ pub mod ntfs_stream_attestation;
 pub mod ntfs_stream_plan;
 pub mod ntfs_transactions;
 pub mod planner;
+pub mod preparation_progress;
 pub mod refs_allocator;
 pub mod refs_bootstrap;
 pub mod refs_containers;

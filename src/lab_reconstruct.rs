@@ -326,6 +326,30 @@ pub fn prepare_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     binding: &JournalBinding,
     max_journal_bytes: u64,
 ) -> Result<JournalSummary> {
+    prepare_journal_with_progress(
+        source,
+        shadow,
+        journal,
+        request,
+        binding,
+        max_journal_bytes,
+        &mut |_| {},
+    )
+}
+
+/// Same preparation protocol with rate-limited diagnostic observations. The
+/// callback receives only counters, not storage handles, and grants no authority.
+pub fn prepare_journal_with_progress<R: ReadSeek, S: ReadSeek, J: DurableIo>(
+    source: &mut R,
+    shadow: &mut S,
+    journal: &mut J,
+    request: &RetainedCompareRequest,
+    binding: &JournalBinding,
+    max_journal_bytes: u64,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<JournalSummary> {
+    use crate::preparation_progress::{Reporter, Subphase};
+    let mut progress = Reporter::new(request.expected_length, progress);
     validate_profile(request)?;
     validate_binding(binding)?;
     ensure!(
@@ -341,7 +365,8 @@ pub fn prepare_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         journal.byte_len()? == 0,
         "journal must be a newly created empty external file"
     );
-    let comparison = retained_compare::compare_streams(source, shadow, request)?;
+    let comparison =
+        retained_compare::compare_streams_observed(source, shadow, request, &mut progress)?;
     ensure!(
         source.byte_len()? == request.expected_length
             && shadow.byte_len()? == request.expected_length,
@@ -386,6 +411,7 @@ pub fn prepare_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     header[40..72].copy_from_slice(&digest(&metadata));
     let hash = digest(&header[..96]);
     header[96..].copy_from_slice(&hash);
+    progress.update(Subphase::WritingJournal, 0);
     journal.seek(SeekFrom::Start(0))?;
     journal.write_all(&[0; BODY_START as usize])?;
     journal.write_all(&header)?;
@@ -436,6 +462,7 @@ pub fn prepare_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         "prepared journal length mismatch"
     );
     journal.sync_all()?;
+    progress.update(Subphase::VerifyingJournal, 0);
     let ticket = JournalTicket {
         schema_version: 1,
         binding: binding.clone(),
@@ -448,6 +475,7 @@ pub fn prepare_journal<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         journal_length,
     };
     load_journal(journal, &ticket)?;
+    progress.update(Subphase::Complete, 0);
     Ok(JournalSummary {
         ticket,
         changed_bytes: comparison.patch_bytes,
@@ -916,6 +944,241 @@ mod handoff_receipt_tests {
     }
     fn hash(bytes: &[u8]) -> String {
         hex::encode(Sha256::digest(bytes))
+    }
+
+    struct ProgressJournal {
+        memory: Memory,
+        events: Vec<String>,
+        fail: Option<&'static str>,
+    }
+    impl Read for ProgressJournal {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            self.events.push(format!("read {}", bytes.len()));
+            if self.fail == Some("read") {
+                return Err(io::Error::other("injected journal read"));
+            }
+            self.memory.read(bytes)
+        }
+    }
+    impl Seek for ProgressJournal {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.events.push(format!("seek {position:?}"));
+            self.memory.seek(position)
+        }
+    }
+    impl Write for ProgressJournal {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.events.push(format!("write {}", bytes.len()));
+            if self.fail == Some("write") {
+                return Err(io::Error::other("injected journal write"));
+            }
+            self.memory.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.memory.flush()
+        }
+    }
+    impl ReadSeek for ProgressJournal {
+        fn byte_len(&mut self) -> io::Result<u64> {
+            self.memory.byte_len()
+        }
+    }
+    impl DurableIo for ProgressJournal {
+        fn sync_all(&mut self) -> io::Result<()> {
+            self.events.push("sync_all".into());
+            if self.fail == Some("sync") {
+                return Err(io::Error::other("injected journal sync"));
+            }
+            self.memory.sync_all()
+        }
+    }
+
+    fn progress_fixture() -> (Vec<u8>, Vec<u8>, RetainedCompareRequest) {
+        let before = vec![0x31; 16384];
+        let mut after = before.clone();
+        after[..4096].fill(0x72);
+        after[8192..12288].fill(0x73);
+        let request = RetainedCompareRequest {
+            schema_version: 2,
+            sector_size: 4096,
+            expected_length: 16384,
+            source_sha256: hash(&before),
+            shadow_sha256: hash(&after),
+            retained_ranges: vec![crate::retained_compare::RetainedRangeRequest {
+                offset: 4096,
+                length: 4096,
+                source_sha256: hash(&before[4096..8192]),
+                shadow_sha256: hash(&after[4096..8192]),
+            }],
+            max_change_bytes: 8192,
+            max_ranges: 2,
+        };
+        (before, after, request)
+    }
+
+    #[test]
+    fn progress_preserves_journal_bytes_ticket_summary_and_durability_order() {
+        use crate::preparation_progress::Subphase;
+        let (before, after, request) = progress_fixture();
+        // Generated independently from exact ceef114 source blobs, before the
+        // observer change. These are memory-backend byte compatibility pins.
+        let comparison = crate::retained_compare::compare_streams(
+            &mut io::Cursor::new(before.clone()),
+            &mut io::Cursor::new(after.clone()),
+            &request,
+        )
+        .unwrap();
+        assert_eq!(
+            hash(&serde_json::to_vec(&comparison).unwrap()),
+            "62527aaa882d4ae8de63bf6ad4e895be0e0018d0df6b856341bd92270c0c25fb"
+        );
+        let run = |observe| {
+            let mut source = Memory(io::Cursor::new(before.clone()));
+            let mut shadow = Memory(io::Cursor::new(after.clone()));
+            let mut journal = ProgressJournal {
+                memory: Memory(io::Cursor::new(vec![])),
+                events: vec![],
+                fail: None,
+            };
+            let mut progress = Vec::new();
+            let summary = if observe {
+                prepare_journal_with_progress(
+                    &mut source,
+                    &mut shadow,
+                    &mut journal,
+                    &request,
+                    &binding(),
+                    1024 * 1024,
+                    &mut |p| progress.push(p),
+                )
+                .unwrap()
+            } else {
+                prepare_journal(
+                    &mut source,
+                    &mut shadow,
+                    &mut journal,
+                    &request,
+                    &binding(),
+                    1024 * 1024,
+                )
+                .unwrap()
+            };
+            (serde_json::to_value(summary).unwrap(), journal, progress)
+        };
+        let (baseline, old_journal, _) = run(false);
+        let (observed, journal, progress) = run(true);
+        assert_eq!(baseline, observed);
+        assert_eq!(old_journal.memory.0.get_ref(), journal.memory.0.get_ref());
+        assert_eq!(journal.memory.0.get_ref().len(), 26102);
+        assert_eq!(
+            hash(journal.memory.0.get_ref()),
+            "25bc934cbfb11719fad3ae9c8434b115f048b6253b00d5a2f6f4ea86ef7578af"
+        );
+        assert_eq!(
+            observed["ticket"]["immutable_sha256"],
+            "138a579099c2c98d91d456421c88bd82127c48a4485be0c774c7269e0d627368"
+        );
+        assert_eq!(old_journal.events, journal.events);
+        assert_eq!(
+            journal
+                .events
+                .iter()
+                .filter(|e| e.as_str() == "sync_all")
+                .count(),
+            1
+        );
+        assert_eq!(
+            progress.iter().map(|p| p.subphase).collect::<Vec<_>>(),
+            vec![
+                Subphase::Comparing,
+                Subphase::Comparing,
+                Subphase::RecheckingSource,
+                Subphase::RecheckingSource,
+                Subphase::RecheckingShadow,
+                Subphase::RecheckingShadow,
+                Subphase::WritingJournal,
+                Subphase::VerifyingJournal,
+                Subphase::Complete,
+            ]
+        );
+        assert!(
+            progress
+                .iter()
+                .all(|p| !p.execution_authorized && p.total_scan_bytes == 65536)
+        );
+        assert_eq!(progress.last().unwrap().bytes_scanned, 65536);
+    }
+
+    #[test]
+    fn journal_failures_and_bad_pins_propagate_without_false_completion() {
+        use crate::preparation_progress::Subphase;
+        let (before, after, original) = progress_fixture();
+        for failure in ["write", "sync", "read", "source-pin", "retained-pin"] {
+            let mut request = original.clone();
+            if failure == "source-pin" {
+                request.source_sha256 = "0".repeat(64);
+            }
+            if failure == "retained-pin" {
+                request.retained_ranges[0].source_sha256 = "0".repeat(64);
+            }
+            let mut source = Memory(io::Cursor::new(before.clone()));
+            let mut shadow = Memory(io::Cursor::new(after.clone()));
+            let mut journal = ProgressJournal {
+                memory: Memory(io::Cursor::new(vec![])),
+                events: vec![],
+                fail: Some(failure),
+            };
+            let mut progress = Vec::new();
+            let error = prepare_journal_with_progress(
+                &mut source,
+                &mut shadow,
+                &mut journal,
+                &request,
+                &binding(),
+                1024 * 1024,
+                &mut |p| progress.push(p),
+            )
+            .unwrap_err();
+            assert!(
+                !progress.iter().any(|p| p.subphase == Subphase::Complete),
+                "{failure}"
+            );
+            if failure.ends_with("pin") {
+                assert!(journal.memory.0.get_ref().is_empty(), "{failure}");
+                assert!(error.to_string().contains("SHA-256 pin"), "{error:#}");
+            } else {
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("injected journal {failure}")),
+                    "{error:#}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_progress_file_does_not_change_journal_preparation() {
+        let (before, after, request) = progress_fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("already-exists");
+        std::fs::write(&path, b"keep").unwrap();
+        let mut sidecar = crate::preparation_progress::SnapshotFile::create(&path);
+        let mut source = Memory(io::Cursor::new(before));
+        let mut shadow = Memory(io::Cursor::new(after));
+        let mut journal = Memory(io::Cursor::new(vec![]));
+        let summary = prepare_journal_with_progress(
+            &mut source,
+            &mut shadow,
+            &mut journal,
+            &request,
+            &binding(),
+            1024 * 1024,
+            &mut |p| sidecar.report(p),
+        )
+        .unwrap();
+        assert!(summary.preparation_durable);
+        assert_eq!(std::fs::read(path).unwrap(), b"keep");
     }
     fn completed() -> (
         Memory,

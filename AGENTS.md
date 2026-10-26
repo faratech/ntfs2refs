@@ -87,6 +87,8 @@ Parser support for a feature is not evidence that conversion preserves it.
   substitute for actual device observations.
 - `src/general_reconstruct.rs` and `src/lab_reconstruct.rs`: native adapter and
   durable old/new journal protocol, exact-image checks and handoff.
+- `src/preparation_progress.rs`: bounded diagnostic scan progress, outside the
+  journal format and all admission/recovery authority.
 - `src/general_recovery.rs`: public raw resume, rollback and finalization.
 - `src/general_label_completion.rs`: native-only post-handoff label completion.
 - `src/source_volume_label.rs` and `crates/n2r-win32/src/volume_label*`:
@@ -143,7 +145,11 @@ and source/test work may continue. No export or copy is currently needed.
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those
 counters are not a completion percentage. The current full-image workflow can
-read many multiples of the partition size. Guest-local shadow attachment may
+read many multiples of the partition size. During journal preparation its
+optional `journalProgress` shows the comparison/recheck subphase, combined scan
+bytes and elapsed time even before the first journal write. Missing or partial
+telemetry is ignored; see [the progress contract](docs/journal-preparation-progress.md).
+Guest-local shadow attachment may
 disappear across reboot; raw recovery must restore its exact enrolled backing
 through the existing helper when required.
 

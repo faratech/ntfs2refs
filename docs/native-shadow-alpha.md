@@ -32,6 +32,15 @@ separate interrupted branch followed by public shadowless rollback. Preserve
 each branch's exact executable/request/tree/journal/marker/result pins before
 restoring the disposable baseline. Process-fault tests do not prove power-loss safety.
 
+`lab/Collect-NativeShadowAlphaMarker.ps1` collects additional marker bytes only
+from an already restored, running preserved branch after the matrix controller
+has released its leases. It reads the journal without write access, checks the
+canonical completed marker and immutable journal body, and saves the 8 KiB
+prefix with hashes outside the guest. It does not restore/boot a VM, verify the
+current target image, attest the native journal file ID, or grant replay
+authority. Its implementation and pure checks do not count as a native capture;
+link the actual capture report when those pins have been collected.
+
 The initial capacity plan charges the 18,035,647,136-byte archive copy plus
 16 GiB for source/shadow/journal/OS/checkpoint growth, retaining 64 GiB free and
 the existing 208 GiB lab ceiling. Recheck actual capacity at each large stage.

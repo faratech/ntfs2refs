@@ -14,7 +14,7 @@ namespace Ntfs2Refs {
  public sealed class AgedFile {public string path,fileId,volumeSerial,retrievalHex,observedUtc;public long eofBytes,allocationBytes;public uint links;public bool deletePending;public AgedExtent[] extents;}
  public sealed class AgedSource {public string diskGuid,partitionGuid,volumePath,rootFileId,volumeSerial,layoutSha256;public long diskBytes,partitionOffset,partitionBytes,freeBytes;public ulong attributes;}
  public sealed class AgedResult {
-  public string phase="new",reservationMode="allocation_only",reservationPath,probePath,generatedSha256,readbackSha256,error;
+  public string phase="new",reservationMode="allocation_only",reservationPath,reservationStandardHex,probePath,generatedSha256,readbackSha256,error;
   public int seed;public long reservationPayloadBytesWritten,probeBytesWritten,reservationBytes=8589934592L,probeBytes=8388608L;
   public long freeAfterReservation=-1,freeAfterProbe=-1,freeAfterReservationDelete=-1;
   public bool reservationCreated,reservationAllocated,reservationFlushed,reservationZeroBytesOnly,probeCreated,probeFlushed,probeComplete,placementSuitable,reservationDeleteAttempted,reservationDeleteReturned,reservationDeleted,closed;
@@ -26,7 +26,7 @@ namespace Ntfs2Refs {
   public const long ReservationBytes=8589934592L,ProbeBytes=8388608L,MinimumFreeHeadroom=1073741824L,PartitionBytes=55834574848L;
   public const int ReservationChunkBytes=1048576,ReservationWriteCount=8192;
   const uint Read=0x80000000,Write=0x40000000,Delete=0x10000,OpenReparse=0x00200000,Backup=0x02000000,WriteThrough=0x80000000;
-  readonly string volume;readonly int seed;IntPtr root,sourceVolume,disk,reservation,probe;string reservationId,probeId;bool closeAttempted,sequentialReservation;
+  readonly string volume;readonly int seed;IntPtr root,sourceVolume,disk,reservation,probe;string reservationId,probeId;bool closeAttempted;
   public readonly AgedResult Result=new AgedResult();
   [DllImport("kernel32.dll",CharSet=CharSet.Unicode,ExactSpelling=true,SetLastError=true)]static extern IntPtr CreateFileW(string path,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
   [DllImport("kernel32.dll",ExactSpelling=true,SetLastError=true)]static extern bool CloseHandle(IntPtr handle);
@@ -48,12 +48,13 @@ namespace Ntfs2Refs {
   static Guid GuidAt(byte[] b,int at){byte[] g=new byte[16];Array.Copy(b,at,g,0,16);return new Guid(g);}
   public static void ValidateInputs(string id,string volumePath){Match m=Regex.Match(volumePath??"",@"\A\\\\\?\\Volume\{([0-9a-fA-F-]{36})\}\\\z");Guid parsed;if(!Regex.IsMatch(id??"",@"\A[0-9a-f]{32}\z")||!m.Success||!Guid.TryParse(m.Groups[1].Value,out parsed)||parsed==Guid.Empty)throw new ArgumentException("Fresh lowercase ID and exact nonempty volume-GUID root required.");}
   public static byte[] AllocationInput(){return BitConverter.GetBytes(ReservationBytes);}
-  public static AgedFile ParseStandard(byte[] bytes){return ParseBoundedStandard(bytes,ProbeBytes);}
-  public static AgedFile ParseReservationStandard(byte[] bytes){return ParseBoundedStandard(bytes,ReservationBytes);}
+  public static AgedFile ParseStandard(byte[] bytes){return ParseStandard(bytes,false);}
+  public static AgedFile ParseStandard(byte[] bytes,bool reservationFile){return ParseBoundedStandard(bytes,reservationFile?ReservationBytes:ProbeBytes);}
+  public static AgedFile ParseReservationStandard(byte[] bytes){return ParseStandard(bytes,true);}
   static AgedFile ParseBoundedStandard(byte[] bytes,long maximumEof){
    if(bytes==null||bytes.Length!=24)throw new InvalidDataException("Complete standard file information required.");
    long allocated=BitConverter.ToInt64(bytes,0),eof=BitConverter.ToInt64(bytes,8);uint links=BitConverter.ToUInt32(bytes,16);
-   if(allocated<0||allocated>ReservationBytes||eof<0||eof>maximumEof||links!=1||bytes[21]!=0)throw new InvalidDataException("Ordinary bounded single-link file required.");
+   if(allocated<0||allocated>ReservationBytes||eof<0||eof>maximumEof||eof>allocated||links!=1||bytes[21]!=0)throw new InvalidDataException("Ordinary bounded single-link file required: allocation="+allocated+", EOF="+eof+", maximumEOF="+maximumEof+", links="+links+", directory="+bytes[21]+".");
    return new AgedFile{allocationBytes=allocated,eofBytes=eof,links=links,deletePending=bytes[20]!=0};
   }
   public static void ValidateReservationSnapshot(AgedFile file,bool initialized){if(file==null||file.links!=1||file.deletePending||file.allocationBytes!=ReservationBytes||file.eofBytes!=(initialized?ReservationBytes:0))throw new InvalidDataException("Reservation allocation/EOF differs from its explicit mode.");}
@@ -74,9 +75,9 @@ namespace Ntfs2Refs {
   byte[] Info(IntPtr h,int cls,int size){byte[] b=new byte[size];AgedOperation op=Begin("GetFileInformation:"+cls,0);End(op,GetFileInformationByHandleEx(h,cls,b,(uint)size),size);return b;}
   byte[] Control(IntPtr h,uint code,byte[] input,int capacity){if(code!=0x560000&&code!=0x90064&&code!=0x90073&&code!=0x7405c&&code!=0x70050&&code!=0x700f0&&code!=0x2d1400)throw new ArgumentException("Read-only control is not enrolled.");byte[] b=new byte[capacity];uint n;AgedOperation op=Begin("DeviceIoControl:"+code.ToString("x"),0);bool ok=DeviceIoControl(h,code,input,(uint)(input==null?0:input.Length),b,(uint)b.Length,out n,IntPtr.Zero);End(op,ok,n);if(n>capacity)throw new InvalidDataException("Oversized native response.");Array.Resize(ref b,(int)n);return b;}
   void CheckPath(IntPtr h,string path,bool directory){byte[] basic=Info(h,0,40);uint attrs=BitConverter.ToUInt32(basic,32);if((attrs&0x4e00)!=0||((attrs&16)!=0)!=directory)throw new InvalidDataException("Ordinary uncompressed/unencrypted path required.");StringBuilder final=new StringBuilder(512);uint n=GetFinalPathNameByHandleW(h,final,512,0);if(n==0||n>=512||!String.Equals(final.ToString(),@"\\?\"+path,StringComparison.OrdinalIgnoreCase))throw new InvalidDataException("Resolved file handle path differs.");}
-  AgedFile ReservationState(){return FileState(reservation,Result.reservationPath,false,sequentialReservation);}
+  AgedFile ReservationState(){return FileState(reservation,Result.reservationPath,false,true);}
   AgedFile FileState(IntPtr h,string path,bool mapping){return FileState(h,path,mapping,false);}
-  AgedFile FileState(IntPtr h,string path,bool mapping,bool initializedReservation){CheckPath(h,path,false);byte[] standard=Info(h,1,24);AgedFile f=initializedReservation?ParseReservationStandard(standard):ParseStandard(standard);byte[] id=Info(h,18,24);f.path=path;f.volumeSerial=BitConverter.ToUInt64(id,0).ToString("x16");f.fileId=FileId(id);f.observedUtc=DateTime.UtcNow.ToString("o");if(f.deletePending)throw new InvalidDataException("Unexpected pending file deletion.");if(mapping){byte[] raw=Control(h,0x90073,new byte[8],16+16*1024);f.retrievalHex=Hex(raw);f.extents=ParseRetrieval(raw,f.allocationBytes);}return f;}
+  AgedFile FileState(IntPtr h,string path,bool mapping,bool reservationFile){CheckPath(h,path,false);byte[] standard=Info(h,1,24);if(reservationFile)Result.reservationStandardHex=Hex(standard);AgedFile f=ParseStandard(standard,reservationFile);byte[] id=Info(h,18,24);f.path=path;f.volumeSerial=BitConverter.ToUInt64(id,0).ToString("x16");f.fileId=FileId(id);f.observedUtc=DateTime.UtcNow.ToString("o");if(f.deletePending)throw new InvalidDataException("Unexpected pending file deletion.");if(mapping){byte[] raw=Control(h,0x90073,new byte[8],16+16*1024);f.retrievalHex=Hex(raw);f.extents=ParseRetrieval(raw,f.allocationBytes);}return f;}
   static void SameFile(AgedFile a,AgedFile b){if(a.fileId!=b.fileId||a.volumeSerial!=b.volumeSerial||a.eofBytes!=b.eofBytes||a.allocationBytes!=b.allocationBytes)throw new InvalidDataException("Owned file identity or lengths changed.");}
   static void SameSource(AgedSource a,AgedSource b){if(a.diskGuid!=b.diskGuid||a.partitionGuid!=b.partitionGuid||a.volumePath!=b.volumePath||a.rootFileId!=b.rootFileId||a.volumeSerial!=b.volumeSerial||a.layoutSha256!=b.layoutSha256||a.attributes!=b.attributes)throw new InvalidDataException("Owned source identity changed.");}
   AgedSource ObserveSource(){
@@ -95,7 +96,7 @@ namespace Ntfs2Refs {
   public void ReserveInitializedZeroes(){ReserveCore(true);}
   void ReserveCore(bool initialized){
    if(Result.phase!="new"||Environment.MachineName!="N2R-WIN11"||Environment.GetEnvironmentVariable("SystemDrive")!="C:"||IntPtr.Size!=8)throw new InvalidOperationException("Fresh owned x64 Windows guest fixture required.");Result.phase="source-bind";
-   sequentialReservation=initialized;Result.reservationMode=initialized?"sequential_initialized_zeroes":"allocation_only";
+   Result.reservationMode=initialized?"sequential_initialized_zeroes":"allocation_only";
    root=Open(@"F:\",0x20080,3,3,Backup|OpenReparse);sourceVolume=Open(@"\\.\F:",Read,3,3,0);disk=Open(@"\\.\PhysicalDrive1",Read,3,3,0);Result.sourceBefore=ObserveSource();
    if(Result.sourceBefore.freeBytes<ReservationBytes+ProbeBytes+MinimumFreeHeadroom)throw new IOException("Insufficient source space for the capped reservation and reserve.");
    Result.phase="create-exclusive-reservation";reservation=Open(Result.reservationPath,Read|Write|Delete,0,1,OpenReparse|(initialized?0:WriteThrough));Result.reservationCreated=true;AgedFile empty=ReservationState();Result.reservation=empty;if(empty.eofBytes!=0||empty.allocationBytes!=0||empty.volumeSerial!=Result.sourceBefore.volumeSerial)throw new InvalidDataException("Fresh empty reservation differs.");reservationId=empty.fileId;

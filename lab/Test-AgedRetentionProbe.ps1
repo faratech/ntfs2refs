@@ -37,6 +37,14 @@ Check ($ast.ParamBlock.Parameters.Name.VariablePath.UserPath-contains'Sequential
 Check ([long][Ntfs2Refs.NativeAgedRetentionProbe]::ReservationChunkBytes*[Ntfs2Refs.NativeAgedRetentionProbe]::ReservationWriteCount-eq8GB) 'Sequential write schedule must cover exactly8GiB.'
 Check ([Ntfs2Refs.NativeAgedRetentionProbe]::ReservationChunkBytes-eq1MB-and[Ntfs2Refs.NativeAgedRetentionProbe]::ReservationWriteCount-eq8192) 'Sequential writes must be8192 one-MiB chunks.'
 $initialized=[Ntfs2Refs.NativeAgedRetentionProbe]::ParseReservationStandard((Standard 8GB 8GB))
+[Ntfs2Refs.NativeAgedRetentionProbe]::ParseStandard((Standard 8GB 8GB),$true)|Out-Null
+Check $true 'Explicit reservation-role parser must permit exact8GiB EOF.'
+[Ntfs2Refs.NativeAgedRetentionProbe]::ParseStandard((Standard 8MB 8MB),$false)|Out-Null
+Check $true 'Explicit probe-role parser must permit exact8MiB EOF.'
+Refuse {[Ntfs2Refs.NativeAgedRetentionProbe]::ParseStandard((Standard 8GB 8GB),$false)} 'Probe role accepted reservation EOF.'
+Refuse {[Ntfs2Refs.NativeAgedRetentionProbe]::ParseStandard((Standard (8GB+4096) 8GB),$true)} 'Reservation allocation exceeded8GiB.'
+Refuse {[Ntfs2Refs.NativeAgedRetentionProbe]::ParseStandard((Standard 8MB (8MB+1)),$true)} 'Reservation EOF exceeded allocation.'
+Refuse {[Ntfs2Refs.NativeAgedRetentionProbe]::ParseStandard((Standard 8MB (8MB+1)),$false)} 'Probe EOF exceeded allocation.'
 [Ntfs2Refs.NativeAgedRetentionProbe]::ValidateReservationSnapshot($initialized,$true)
 Check ($initialized.allocationBytes-eq8GB-and$initialized.eofBytes-eq8GB) 'Initialized reservation EOF/allocation differs.'
 [Ntfs2Refs.NativeAgedRetentionProbe]::ValidateReservationSnapshot($reserved,$false)

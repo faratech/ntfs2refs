@@ -64,6 +64,29 @@ fn validated_ticket(
     Ok(descriptor)
 }
 
+fn durable_marker_for_mount<'a>(
+    request: &Request,
+    journal: &'a mut File,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+    proof: &lab_reconstruct::CompletedMarkerProof,
+) -> Result<lab_reconstruct::DurableCompletedMarker<'a, File>> {
+    lab_reconstruct::guard_completed_marker_durability(
+        journal,
+        ticket,
+        observed_binding,
+        proof,
+        |file| {
+            let observed = observe_general_journal_file(file, &request.journal)?;
+            ensure!(
+                observed.file_bytes == ticket.journal_length,
+                "completed journal length changed around durability barrier"
+            );
+            binding(request, &observed.identity)
+        },
+    )
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -820,8 +843,8 @@ pub fn complete_rollback_without_shadow(
     Ok(report)
 }
 
-/// Complete only a fully verified rollback marker left durable by an earlier
-/// process. This path never writes or repairs the journal marker again.
+/// Complete a fully verified readable rollback marker with a fresh journal
+/// durability barrier. This never writes or repairs the journal marker.
 pub fn resume_completed_rollback(
     request: &Request,
     mut target: GeneralJournaledPartition,
@@ -857,6 +880,7 @@ pub fn resume_completed_rollback(
     let raw = ntfs_inspect::inspect(&mut target, length)?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
+    let durable = durable_marker_for_mount(request, journal, ticket, &observed_binding, &proof)?;
     let mut report = RollbackFinalization {
         success: false,
         replay_closed: true,
@@ -868,7 +892,7 @@ pub fn resume_completed_rollback(
         events,
         production_conversion_qualified: false,
     };
-    if let Err(error) = target.bring_online(&mut report.events) {
+    if let Err(error) = durable.with_mount(|| target.bring_online(&mut report.events)) {
         report.error = Some(error.to_string());
         return Ok(report);
     }
@@ -888,9 +912,9 @@ pub fn resume_completed_rollback(
     Ok(report)
 }
 
-/// Finish a durable NTFS rollback marker after process death when the ReFS
-/// shadow is unavailable. This path only reads the marker and target before
-/// Windows is allowed to mount the restored NTFS volume.
+/// Finish a readable NTFS rollback marker after process death when the ReFS
+/// shadow is unavailable. Synchronize and revalidate the journal before mount;
+/// the marker bytes are never rewritten or repaired.
 pub fn resume_completed_rollback_without_shadow(
     request: &Request,
     mut target: GeneralJournaledPartition,
@@ -921,6 +945,7 @@ pub fn resume_completed_rollback_without_shadow(
     let raw = ntfs_inspect::inspect(&mut target, length)?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
+    let durable = durable_marker_for_mount(request, journal, ticket, &bound, &proof)?;
     let mut report = RollbackFinalization {
         success: false,
         replay_closed: true,
@@ -932,7 +957,7 @@ pub fn resume_completed_rollback_without_shadow(
         events,
         production_conversion_qualified: false,
     };
-    if let Err(error) = target.bring_online(&mut report.events) {
+    if let Err(error) = durable.with_mount(|| target.bring_online(&mut report.events)) {
         report.error = Some(error.to_string());
         return Ok(report);
     }
@@ -1130,8 +1155,9 @@ pub(crate) fn finalize(
     Ok(report)
 }
 
-/// Finish an already durable ReFS handoff marker after process death. This
-/// path proves the exact marker and target image without writing the journal.
+/// Finish a readable ReFS handoff marker after process death. Keep the exact
+/// image proof and establish a fresh journal sync/revalidation before mount,
+/// without writing or repairing any journal bytes.
 pub fn finalize_after_marker(
     request: &Request,
     mut target: GeneralJournaledPartition,
@@ -1167,6 +1193,7 @@ pub fn finalize_after_marker(
         &observed_binding,
         request.comparison.expected_length,
     )?;
+    let durable = durable_marker_for_mount(request, journal, ticket, &observed_binding, &proof)?;
     let mut report = Finalization {
         success: false,
         rollback_closed: true,
@@ -1181,7 +1208,7 @@ pub fn finalize_after_marker(
         events,
         general_conversion_qualified: false,
     };
-    if let Err(error) = target.bring_online(&mut report.events) {
+    if let Err(error) = durable.with_mount(|| target.bring_online(&mut report.events)) {
         report.error = Some(error.to_string());
         return Ok(report);
     }

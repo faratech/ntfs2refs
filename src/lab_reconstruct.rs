@@ -135,6 +135,8 @@ pub enum CompletionKind {
     NtfsRollback,
 }
 
+/// Readable marker/image consistency only. This does not establish journal
+/// durability or authorize a writable native mount.
 #[derive(Debug, Serialize)]
 pub struct CompletedMarkerProof {
     pub kind: CompletionKind,
@@ -1334,9 +1336,9 @@ mod handoff_receipt_tests {
     }
 }
 
-/// Read-only proof for resuming an already durable final handoff after process
-/// death. A partial or unknown marker is never repaired or interpreted as a
-/// new write authorization.
+/// Read-only consistency proof after process death. It does not prove the
+/// readable marker reached stable storage. A partial or unknown marker is
+/// never repaired or interpreted as a new write authorization.
 pub fn verify_completed_marker<T: ReadSeek, S: ReadSeek, J: ReadSeek>(
     target: &mut T,
     shadow: &mut S,
@@ -1439,9 +1441,9 @@ pub fn verify_completed_refs_marker_from_journal<T: ReadSeek, S: ReadSeek, J: Re
     )
 }
 
-/// Prove a previously durable NTFS rollback marker after shadow loss. The
+/// Inspect an exact readable NTFS rollback marker after shadow loss. The
 /// immutable journal is parsed in full and binds the expected source hash;
-/// this path cannot verify or assert anything about the missing shadow.
+/// this proves neither journal durability nor anything about the missing shadow.
 pub fn verify_completed_rollback_marker_without_shadow<T: ReadSeek, J: ReadSeek>(
     target: &mut T,
     journal: &mut J,
@@ -1489,6 +1491,98 @@ pub fn verify_completed_rollback_marker_without_shadow<T: ReadSeek, J: ReadSeek>
         target_exact: true,
         shadow_exact: false,
     })
+}
+
+/// A journal-only pre-mount barrier. The caller must retain all existing target,
+/// required-shadow and native isolation checks. This cannot be serialized or
+/// issued by read-only completed-marker inspection. The mutable journal lease
+/// remains borrowed through the mount callback.
+pub struct DurableCompletedMarker<'a, J: DurableIo> {
+    journal: &'a mut J,
+}
+
+impl<J: DurableIo> DurableCompletedMarker<'_, J> {
+    /// Invoke the caller's synchronous mount transition after this journal
+    /// barrier. This is not general authority for deferred or spawned work.
+    pub fn with_mount<R>(self, mount: impl FnOnce() -> R) -> R {
+        let result = mount();
+        let _held_journal = self.journal;
+        result
+    }
+}
+
+fn recheck_completed_journal<J: ReadSeek>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    binding: &JournalBinding,
+    proof: &CompletedMarkerProof,
+) -> Result<()> {
+    validate_binding(binding)?;
+    ensure!(
+        ticket.binding == *binding,
+        "completed durability storage binding differs"
+    );
+    let loaded = load_completed_journal(journal, ticket)?;
+    ensure!(
+        loaded.manifest.binding == *binding,
+        "completed durability immutable binding differs"
+    );
+    let (magic, code, expected_target) = match proof.kind {
+        CompletionKind::Refs => (b"N2RHND01", 3, &loaded.manifest.expected_postimage_sha256),
+        CompletionKind::NtfsRollback => (b"N2RABT01", 4, &loaded.manifest.request.source_sha256),
+    };
+    let expected = marker(magic, code, ticket, expected_target)?;
+    ensure!(
+        proof.marker_exact
+            && proof.target_exact
+            && proof.target_sha256 == *expected_target
+            && proof.immutable_journal_sha256 == ticket.immutable_sha256
+            && proof.marker_sha256 == hex::encode(digest(&expected)),
+        "completed durability proof differs from immutable journal"
+    );
+    match &proof.shadow_sha256 {
+        Some(hash) => ensure!(
+            proof.shadow_exact && hash == &loaded.manifest.request.shadow_sha256,
+            "completed durability shadow proof differs"
+        ),
+        None => ensure!(
+            matches!(proof.kind, CompletionKind::NtfsRollback) && !proof.shadow_exact,
+            "completed durability requires the original shadow proof"
+        ),
+    }
+    let mut observed = [0; GRANULE as usize];
+    read_at(journal, 0, &mut observed)?;
+    ensure!(observed == expected, "completed durability marker differs");
+    Ok(())
+}
+
+/// Establish a fresh journal durability barrier before an after-marker mount.
+/// The same exclusively held, identity-bound handle must be supplied to both
+/// observations. Unknown/partial/foreign markers are refused before sync; no
+/// marker, intent or payload is written or repaired. A sync/recheck failure
+/// returns no gate and must leave the target excluded.
+///
+/// This revalidates the bounded journal twice, without adding target/shadow
+/// image scans. Successful sync is the DurableIo contract, not hardware proof.
+pub fn guard_completed_marker_durability<'a, J: DurableIo>(
+    journal: &'a mut J,
+    ticket: &JournalTicket,
+    expected_binding: &JournalBinding,
+    proof: &CompletedMarkerProof,
+    mut observe_binding: impl FnMut(&mut J) -> Result<JournalBinding>,
+) -> Result<DurableCompletedMarker<'a, J>> {
+    ensure!(
+        observe_binding(journal)? == *expected_binding,
+        "completed durability journal identity changed before sync"
+    );
+    recheck_completed_journal(journal, ticket, expected_binding, proof)?;
+    journal.sync_all()?;
+    ensure!(
+        observe_binding(journal)? == *expected_binding,
+        "completed durability journal identity changed after sync"
+    );
+    recheck_completed_journal(journal, ticket, expected_binding, proof)?;
+    Ok(DurableCompletedMarker { journal })
 }
 
 fn write_span<T: DurableIo, J: Read + Seek>(

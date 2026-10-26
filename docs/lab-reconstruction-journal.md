@@ -102,3 +102,37 @@ model; this does not establish physical persistence or native mount eligibility.
 The existing completed/corrupt-marker tests remain separate. No production
 behavior changes or stable/volatile crash model are introduced. Storage
 power-loss qualification and repeated native interruptions remain open.
+
+## After-marker durability before writable mount
+
+The three public after-marker paths (NTFS rollback with/without shadow and
+ReFS finalization) retain their existing exact image, required-shadow, native
+storage/isolation and immutable-journal checks. They now use the same shared
+journal guard immediately before their synchronous `bring_online` call:
+
+1. Reobserve the held journal's binding/length and validate the complete pinned
+   immutable body, proof scope and exact expected lifecycle marker.
+2. Successfully `sync_all` that same exclusively opened journal handle.
+3. Reobserve its binding/length and repeat complete journal/marker validation.
+4. Only then invoke the existing mount transition, retaining the journal lease.
+
+Partial, foreign and unknown markers are refused before synchronization. Any
+sync, readback, binding or content error returns no gate and leaves the target
+excluded. The guard issues no journal writes and never clears, rewrites or
+repairs a marker. Synchronization requests persistence of existing bytes.
+Read-only completed-marker inspection continues to prove readable consistency
+only; it is not a durable receipt or mount authority.
+
+Cost: two additional completed-journal validations, four 4 KiB barrier reads
+(including each loader's barrier read) and native identity observations. Each
+validation rehashes the immutable body and
+its per-record payloads using the existing loader (roughly four journal-sized
+read passes across the two validations, plus framing/identity reads). The
+journal remains capped at 768 MiB. No additional full target/shadow image scan
+is added; all existing scans remain. Flush latency is storage-dependent and
+unmeasured by this source-only change.
+
+The preserved native fixture remains qualified only for its original tested
+binary. Volatile/stable memory tests exercise this new guard's ordering and
+failure refusal; they do not establish hardware power-loss behavior or native
+acceptance of the new guard.

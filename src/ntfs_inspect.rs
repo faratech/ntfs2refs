@@ -1446,59 +1446,76 @@ fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationRec
     let cluster = u64::from(report.geometry.cluster_size);
     let mut intervals = Vec::new();
     let mut name_units = 0usize;
-    for file in &report.files {
-        // AttributeInventory is authoritative here. StreamInventory duplicates
-        // DATA attributes and must never produce additional ownership claims.
-        for attribute in &file.attributes {
-            if attribute.resident {
-                continue; // Already contained in the MFT's allocation.
+    // Canonical DATA is claimed once. An assembled nonresident list is not a
+    // user stream, but its original metadata storage still needs its own owner.
+    let canonical = report.files.iter().flat_map(|file| {
+        file.attributes
+            .iter()
+            .map(move |attribute| (file.record_number, file.sequence_number, attribute))
+    });
+    let list_storage = report.attribute_assemblies.iter().filter_map(|assembly| {
+        assembly
+            .base
+            .attributes
+            .iter()
+            .find(|a| a.type_code == 0x20 && !a.resident)
+            .map(|attribute| {
+                (
+                    assembly.base.record_number,
+                    assembly.base.sequence_number,
+                    attribute,
+                )
+            })
+    });
+    for (record_number, sequence_number, attribute) in canonical.chain(list_storage) {
+        if attribute.resident {
+            continue; // Already contained in the MFT's allocation.
+        }
+        for extent in &attribute.extents {
+            let Some(physical) = extent.physical_offset else {
+                continue; // Sparse holes have no physical owner.
+            };
+            if intervals.len() >= limits.max_intervals {
+                result.detail = "Allocation interval budget exceeded".into();
+                return result;
             }
-            for extent in &attribute.extents {
-                let Some(physical) = extent.physical_offset else {
-                    continue; // Sparse holes have no physical owner.
-                };
-                if intervals.len() >= limits.max_intervals {
-                    result.detail = "Allocation interval budget exceeded".into();
+            name_units = match name_units.checked_add(attribute.name_utf16.len()) {
+                Some(total) if total <= limits.max_total_name_units => total,
+                _ => {
+                    result.detail = "Allocation attribute-name budget exceeded".into();
                     return result;
                 }
-                name_units = match name_units.checked_add(attribute.name_utf16.len()) {
-                    Some(total) if total <= limits.max_total_name_units => total,
-                    _ => {
-                        result.detail = "Allocation attribute-name budget exceeded".into();
-                        return result;
-                    }
-                };
-                if !extent.logical_offset.is_multiple_of(cluster)
-                    || !physical.is_multiple_of(cluster)
-                    || extent.length == 0
-                    || !extent.length.is_multiple_of(cluster)
-                {
-                    result.detail = "Attribute extent is not a nonempty cluster interval".into();
-                    return result;
-                }
-                if intervals.try_reserve(1).is_err() {
-                    result.detail = "Allocation interval storage unavailable".into();
-                    return result;
-                }
-                let mut name = Vec::new();
-                if name.try_reserve_exact(attribute.name_utf16.len()).is_err() {
-                    result.detail = "Allocation attribute-name storage unavailable".into();
-                    return result;
-                }
-                name.extend_from_slice(&attribute.name_utf16);
-                intervals.push(PhysicalInterval {
-                    owner: AttributeKey {
-                        record_number: file.record_number,
-                        sequence_number: file.sequence_number,
-                        type_code: attribute.type_code,
-                        name_utf16: name,
-                        instance: attribute.instance,
-                    },
-                    vcn_start: extent.logical_offset / cluster,
-                    lcn_start: physical / cluster,
-                    clusters: extent.length / cluster,
-                });
+            };
+            if !extent.logical_offset.is_multiple_of(cluster)
+                || !physical.is_multiple_of(cluster)
+                || extent.length == 0
+                || !extent.length.is_multiple_of(cluster)
+            {
+                result.detail = "Attribute extent is not a nonempty cluster interval".into();
+                return result;
             }
+            if intervals.try_reserve(1).is_err() {
+                result.detail = "Allocation interval storage unavailable".into();
+                return result;
+            }
+            let mut name = Vec::new();
+            if name.try_reserve_exact(attribute.name_utf16.len()).is_err() {
+                result.detail = "Allocation attribute-name storage unavailable".into();
+                return result;
+            }
+            name.extend_from_slice(&attribute.name_utf16);
+            intervals.push(PhysicalInterval {
+                owner: AttributeKey {
+                    record_number,
+                    sequence_number,
+                    type_code: attribute.type_code,
+                    name_utf16: name,
+                    instance: attribute.instance,
+                },
+                vcn_start: extent.logical_offset / cluster,
+                lcn_start: physical / cluster,
+                clusters: extent.length / cluster,
+            });
         }
     }
     result.physical_intervals = intervals.len();

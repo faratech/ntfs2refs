@@ -441,6 +441,133 @@ fn assembly_fixture(
     image
 }
 
+fn list_disk_attribute(kind: u32, lcn: u16, logical: u64, clusters: u8) -> Vec<u8> {
+    let [low, high] = lcn.to_le_bytes();
+    support::nonresident(
+        kind,
+        &[0x21, clusters, low, high, 0],
+        logical,
+        u64::from(clusters),
+    )
+}
+
+// 132 normal 32-byte entries require 4,224 bytes, across two nonadjacent
+// clusters. All 129 extension records belong to the one logical user file.
+fn nonresident_list_fixture() -> (Vec<u8>, Vec<u8>) {
+    let mut image = assembly_fixture(16, [17, 18], 12288, 12288);
+    image.resize(4 * 1024 * 1024, 0);
+    p64(&mut image, 40, 8192);
+    p64(&mut image, 56, 350);
+    let mut mft_bitmap = vec![0u8; 146usize.div_ceil(8)];
+    for n in [0, 1, 3, 5, 6, 7, 9, 10, 16].into_iter().chain(17..146) {
+        mft_bitmap[n / 8] |= 1 << (n % 8);
+    }
+    put_record(
+        &mut image,
+        0,
+        &[
+            list_disk_attribute(0x80, 4, 146 * 1024, 37),
+            support::resident(0xb0, "", &mft_bitmap, 1),
+            filename("$MFT", 2),
+            assembly_si(100, false),
+        ],
+        false,
+        1,
+    );
+    put_record(
+        &mut image,
+        1,
+        &[
+            list_disk_attribute(0x80, 350, 4096, 1),
+            filename("$MFTMirr", 2),
+            assembly_si(100, false),
+        ],
+        false,
+        1,
+    );
+    let mut bitmap = vec![0u8; 128];
+    for n in [0, 200, 350, 700, 702]
+        .into_iter()
+        .chain(4..41)
+        .chain(128..160)
+        .chain(224..289)
+        .chain((0..130).map(|n| 400 + n * 2))
+    {
+        bitmap[n / 8] |= 1 << (n % 8);
+    }
+    put_record(
+        &mut image,
+        6,
+        &[
+            support::resident(0x80, "", &bitmap, 0),
+            filename("$Bitmap", 1),
+            assembly_si(100, false),
+        ],
+        false,
+        1,
+    );
+    let mut list = Vec::new();
+    let origins = [(0x10, 16, 0, 0), (0x30, 16, 0, 1), (0x80, 16, 0, 3)]
+        .into_iter()
+        .chain((1..130).map(|vcn| (0x80, 16 + vcn, vcn as u64, 0)));
+    for (kind, number, vcn, instance) in origins {
+        let mut entry = [0u8; 32];
+        p32(&mut entry, 0, kind);
+        p16(&mut entry, 4, 32);
+        entry[7] = 26;
+        p64(&mut entry, 8, vcn);
+        p64(&mut entry, 16, (1 << 48) | number as u64);
+        p16(&mut entry, 24, instance);
+        list.extend_from_slice(&entry);
+    }
+    assert_eq!(list.len(), 4224);
+    let mut list_attribute = support::nonresident(
+        0x20,
+        &[0x21, 1, 188, 2, 0x11, 1, 2, 0],
+        list.len() as u64,
+        2,
+    );
+    p16(&mut list_attribute, 14, 2);
+    let mut data = list_disk_attribute(0x80, 400, 130 * 4096, 1);
+    p16(&mut data, 14, 3);
+    p64(&mut data, 40, 130 * 4096);
+    put_record(
+        &mut image,
+        16,
+        &[
+            assembly_si(0, false),
+            filename("hello.txt", 1),
+            list_attribute,
+            data,
+        ],
+        false,
+        1,
+    );
+    let mut expected = Vec::new();
+    for vcn in 0..130 {
+        let lcn = 400 + vcn * 2;
+        let byte = ((vcn * 37 + 11) % 251) as u8;
+        image[lcn * 4096..(lcn + 1) * 4096].fill(byte);
+        expected.extend(std::iter::repeat_n(byte, 4096));
+        if vcn > 0 {
+            let mut data = list_disk_attribute(0x80, lcn as u16, 0, 1);
+            p64(&mut data, 16, vcn as u64);
+            p64(&mut data, 24, vcn as u64);
+            for at in [40, 48, 56] {
+                p64(&mut data, at, u64::MAX);
+            }
+            let mut extension = support::record(&[data], 1, 0);
+            p64(&mut extension, 32, (1 << 48) | 16);
+            let number = 16 + vcn;
+            image[MFT + number * 1024..MFT + (number + 1) * 1024].copy_from_slice(&extension);
+        }
+    }
+    image[700 * 4096..701 * 4096].copy_from_slice(&list[..4096]);
+    image[702 * 4096..702 * 4096 + 128].copy_from_slice(&list[4096..]);
+    image[702 * 4096 + 128..703 * 4096].fill(0xa5);
+    (image, expected)
+}
+
 #[test]
 fn assembled_data_conserves_physical_records_and_feeds_the_ordinary_shadow() {
     use ntfs2refs::{ntfs_inspect::LogicalHashStatus, ntfs_stream_plan, shadow_tree};
@@ -676,6 +803,119 @@ fn assembled_stream_agrees_with_independent_native_retrieval_page_replay() {
     assert!(
         ntfs2refs::ntfs_stream_attestation::check_file(file, &native, 0, &raw.geometry).is_err()
     );
+}
+
+#[test]
+fn nonresident_list_storage_is_accounted_once_and_all_segments_reconstruct() {
+    let (image, expected) = nonresident_list_fixture();
+    let raw = inspect(&image);
+    assert_eq!(raw.attribute_assemblies.len(), 1);
+    assert_eq!(raw.attribute_assemblies[0].schema_version, 2);
+    assert_eq!(raw.attribute_assemblies[0].extensions.len(), 129);
+    assert_eq!(raw.records_scanned, raw.files.len() as u64 + 129);
+    ntfs_inspect::validate_record_coverage(&raw).unwrap();
+    let allocation = raw.allocation_reconciliation.as_ref().unwrap();
+    assert_eq!(
+        allocation.status,
+        AllocationReconciliationStatus::ConsistentRawModel
+    );
+    assert_eq!(allocation.physical_intervals, 138); // 6 system + 130 DATA + 2 LIST.
+    assert_eq!(raw.allocated_clusters, Some(269));
+    assert_eq!(
+        raw.namespace_reconciliation.as_ref().unwrap().status,
+        Status::ConsistentRawModel
+    );
+    assert_eq!(
+        raw.security_reconciliation.as_ref().unwrap().status,
+        ntfs2refs::ntfs_security::Status::ConsistentRawModel
+    );
+    assert_eq!(
+        ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &raw, 16, 1024 * 1024).unwrap(),
+        expected
+    );
+    assert_eq!(
+        ntfs2refs::shadow_tree::derive_ordinary(&raw)
+            .unwrap()
+            .objects
+            .len(),
+        2
+    );
+    assert_eq!(
+        ntfs2refs::ntfs_stream_plan::classify(&raw).retained_candidate_bytes,
+        expected.len() as u64
+    );
+
+    let mut changed = image.clone();
+    changed[702 * 4096 + 26] ^= 1;
+    assert!(
+        ntfs_inspect::read_plain_stream(&mut Cursor::new(&changed), &raw, 16, 1024 * 1024).is_err()
+    );
+    let mut slack = image.clone();
+    slack[702 * 4096 + 500] ^= 1;
+    assert_eq!(
+        ntfs_inspect::read_plain_stream(&mut Cursor::new(&slack), &raw, 16, 1024 * 1024).unwrap(),
+        expected
+    );
+    let mut old_schema = raw.clone();
+    old_schema.attribute_assemblies[0].schema_version = 1;
+    assert!(ntfs_inspect::validate_record_coverage(&old_schema).is_err());
+}
+
+#[test]
+fn unallocated_nonresident_list_metadata_is_not_treated_as_free_space() {
+    let (mut image, _) = nonresident_list_fixture();
+    let bitmap = attribute(&image, 6, 0x80);
+    let value = bitmap
+        + usize::from(u16::from_le_bytes(
+            image[bitmap + 20..bitmap + 22].try_into().unwrap(),
+        ));
+    image[value + 702 / 8] &= !(1 << (702 % 8));
+    let raw = inspect(&image);
+    assert_eq!(
+        raw.allocation_reconciliation.as_ref().unwrap().status,
+        AllocationReconciliationStatus::Rejected
+    );
+    assert!(ntfs2refs::shadow_tree::derive_ordinary(&raw).is_err());
+}
+
+#[test]
+fn incomplete_nonresident_list_is_refused_before_any_list_payload_read() {
+    use std::io::{Read, Seek, SeekFrom};
+    struct Guard {
+        inner: Cursor<Vec<u8>>,
+        attempts: usize,
+    }
+    impl Read for Guard {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            let start = self.inner.position();
+            let end = start + out.len() as u64;
+            if [700u64, 702]
+                .iter()
+                .any(|cluster| start < (cluster + 1) * 4096 && end > cluster * 4096)
+            {
+                self.attempts += 1;
+                return Err(std::io::Error::other(
+                    "List payload read was forbidden by the fixture",
+                ));
+            }
+            self.inner.read(out)
+        }
+    }
+    impl Seek for Guard {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+    let (mut image, _) = nonresident_list_fixture();
+    let list = attribute(&image, 16, 0x20);
+    p64(&mut image, list + 56, 4223);
+    let length = image.len() as u64;
+    let mut guarded = Guard {
+        inner: Cursor::new(image),
+        attempts: 0,
+    };
+    assert!(ntfs_inspect::inspect(&mut guarded, length).is_err());
+    assert_eq!(guarded.attempts, 0);
 }
 
 fn attribute(image: &[u8], record: usize, kind: u32) -> usize {

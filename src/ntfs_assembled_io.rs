@@ -21,7 +21,8 @@ fn candidate(number: u64, record: &Record) -> bool {
                 && a.flags == 0
                 && a.compression_unit == 0
                 && match a.type_code {
-                    0x10 | 0x20 | 0x30 | 0x50 => a.resident,
+                    0x10 | 0x30 | 0x50 => a.resident,
+                    0x20 => a.lowest_vcn == 0,
                     0x80 => !a.resident && a.lowest_vcn == 0,
                     _ => false,
                 }
@@ -71,11 +72,10 @@ impl MftContext<'_> {
             "attribute-list base is not currently allocated in the MFT bitmap"
         );
         let list = unnamed(record, 0x20)?;
-        let value = list
-            .resident_value
-            .as_deref()
-            .context("resident list bytes absent")?;
-        let entries = lists::parse(value)?;
+        lists::validate_list_storage(&list.report, self.geometry)?;
+        let value =
+            read_small_attribute(reader, list, self.geometry, lists::MAX_LIST_BYTES as u64)?;
+        let entries = lists::parse(&value)?;
         let references: BTreeSet<_> = entries
             .iter()
             .filter(|e| e.record_number != number)
@@ -89,6 +89,7 @@ impl MftContext<'_> {
         let mut runs = record
             .attributes
             .iter()
+            .filter(|a| a.report.type_code == 0x80)
             .map(|a| a.report.extents.len())
             .sum::<usize>();
         ensure!(runs <= 1024, "assembled DATA run budget exceeded");
@@ -119,6 +120,7 @@ impl MftContext<'_> {
             runs = parsed
                 .attributes
                 .iter()
+                .filter(|a| a.report.type_code == 0x80)
                 .try_fold(runs, |n, a| n.checked_add(a.report.extents.len()))
                 .context("assembled DATA run count overflow")?;
             ensure!(runs <= 1024, "assembled DATA run budget exceeded");
@@ -127,7 +129,7 @@ impl MftContext<'_> {
         let (canonical, assembly) = lists::assemble(
             evidence(number, raw, record),
             extensions,
-            value,
+            &value,
             self.geometry,
         )?;
         let old = std::mem::take(&mut record.attributes);
@@ -196,8 +198,8 @@ pub fn validate_record_coverage(raw: &NtfsInspection) -> Result<()> {
                 && file.metadata_role_issue.is_none(),
             "assembled file identity/ordinary namespace role differs"
         );
-        let value = hex::decode(&assembly.list_value_hex)
-            .context("invalid resident attribute-list evidence")?;
+        let value =
+            hex::decode(&assembly.list_value_hex).context("invalid attribute-list evidence")?;
         let (canonical, replay) = lists::assemble(
             base.clone(),
             assembly.extensions.clone(),
@@ -205,7 +207,7 @@ pub fn validate_record_coverage(raw: &NtfsInspection) -> Result<()> {
             &raw.geometry,
         )?;
         ensure!(
-            assembly.schema_version == 1
+            matches!(assembly.schema_version, 1 | 2)
                 && serde_json::to_vec(&replay)? == serde_json::to_vec(assembly)?
                 && serde_json::to_vec(&canonical)? == serde_json::to_vec(&file.attributes)?,
             "assembly evidence does not reproduce the canonical attributes"

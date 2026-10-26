@@ -446,3 +446,94 @@ fn exact_run_budget_succeeds_and_extra_run_or_extension_exhaustion_refuses() {
             .contains("extension record count")
     );
 }
+
+fn nonresident_fixture() -> (RecordEvidence, Vec<RecordEvidence>, Vec<u8>, NtfsGeometry) {
+    let (mut base, extensions, small, geometry) = fixture(false);
+    let mut bytes = Vec::new();
+    for row in small.as_chunks::<32>().0 {
+        let mut padded = vec![0x5a; 1024];
+        padded[..32].copy_from_slice(row);
+        padded[4..6].copy_from_slice(&1024u16.to_le_bytes());
+        bytes.extend(padded);
+    }
+    bind_list(&mut base, &bytes);
+    let list = &mut base.attributes[2];
+    list.resident = false;
+    list.allocated_size = 8192;
+    list.resident_sha256 = None;
+    list.extents = vec![
+        Extent {
+            logical_offset: 0,
+            physical_offset: Some(500 * 4096),
+            length: 4096,
+        },
+        Extent {
+            logical_offset: 4096,
+            physical_offset: Some(503 * 4096),
+            length: 4096,
+        },
+    ];
+    (base, extensions, bytes, geometry)
+}
+
+#[test]
+fn complete_fragmented_nonresident_list_uses_a_separate_storage_version() {
+    let (base, extensions, bytes, geometry) = nonresident_fixture();
+    list::validate_list_storage(&base.attributes[2], &geometry).unwrap();
+    let (canonical, ledger) = list::assemble(base, extensions, &bytes, &geometry).unwrap();
+    assert_eq!(ledger.schema_version, 2);
+    assert!(!ledger.base.attributes[2].resident);
+    assert_eq!(ledger.base.attributes[2].extents.len(), 2);
+    assert_eq!(hex::decode(ledger.list_value_hex).unwrap(), bytes);
+    assert!(canonical.iter().all(|a| a.type_code != 0x20));
+    assert_eq!(canonical.last().unwrap().extents.len(), 3);
+    let (base, extensions, bytes, geometry) = fixture(false);
+    assert_eq!(
+        list::assemble(base, extensions, &bytes, &geometry)
+            .unwrap()
+            .1
+            .schema_version,
+        1
+    );
+}
+
+#[test]
+fn nonresident_list_refuses_synthetic_zeroes_incomplete_storage_and_payload_overlap() {
+    for case in 0..17 {
+        let (mut base, extensions, bytes, geometry) = nonresident_fixture();
+        let a = &mut base.attributes[2];
+        match case {
+            0 => a.initialized_size -= 1,
+            1 => a.allocated_size = 4096,
+            2 => a.allocated_size = 12288,
+            3 => a.extents[1].logical_offset = 8192,
+            4 => a.extents[0].physical_offset = None,
+            5 => a.extents[1].physical_offset = a.extents[0].physical_offset,
+            6 => a.extents[1].physical_offset = Some(geometry.volume_size),
+            7 => a.extents[0].physical_offset = Some(500 * 4096 + 1),
+            8 => a.extents[0].length = 0,
+            9 => a.extents[0].length = 4097,
+            10 => a.logical_size = list::MAX_LIST_BYTES as u64 + 1,
+            11 => a.resident_sha256 = Some(hash(&bytes)),
+            12 => a.resident_metadata_hex = Some(hex::encode(&bytes)),
+            13 => a.lowest_vcn = 1,
+            14 => a.flags = 0x8000,
+            15 => a.extents.clear(),
+            16 => a.extents[0].physical_offset = Some(100 * 4096),
+            _ => unreachable!(),
+        }
+        if case == 16 {
+            // Its own storage is valid; the combined DATA/list ownership is not.
+            list::validate_list_storage(a, &geometry).unwrap();
+        } else {
+            assert!(
+                list::validate_list_storage(a, &geometry).is_err(),
+                "storage case {case}"
+            );
+        }
+        assert!(
+            list::assemble(base, extensions, &bytes, &geometry).is_err(),
+            "assembly case {case}"
+        );
+    }
+}

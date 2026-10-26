@@ -142,6 +142,93 @@ fn plain_data(attribute: &AttributeInventory) -> Result<()> {
     Ok(())
 }
 
+/// Establish complete initialized metadata coverage before reading a list. A
+/// nonresident list must fit in this one attribute's own mapping; assembling a
+/// list from further list segments (including MFT bootstrap) is a separate gate.
+pub fn validate_list_storage(
+    attribute: &AttributeInventory,
+    geometry: &NtfsGeometry,
+) -> Result<()> {
+    ensure!(
+        attribute.type_code == 0x20
+            && attribute.name_utf16.is_empty()
+            && attribute.flags == 0
+            && attribute.compression_unit == 0
+            && attribute.lowest_vcn == 0,
+        "ordinary standalone attribute-list storage required"
+    );
+    ensure!(
+        attribute.logical_size > 0
+            && attribute.logical_size <= MAX_LIST_BYTES as u64
+            && attribute.initialized_size == attribute.logical_size,
+        "attribute-list bytes must be completely initialized and bounded"
+    );
+    if attribute.resident {
+        ensure!(
+            attribute.extents.is_empty()
+                && attribute.allocated_size == attribute.logical_size
+                && attribute
+                    .resident_sha256
+                    .as_ref()
+                    .is_some_and(|hash| hash.len() == 64
+                        && hash
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))),
+            "resident attribute-list storage differs"
+        );
+        return Ok(());
+    }
+    let cluster = u64::from(geometry.cluster_size);
+    ensure!(
+        cluster > 0 && cluster.is_power_of_two() && geometry.volume_size > 0,
+        "invalid attribute-list geometry"
+    );
+    let rounded = attribute
+        .logical_size
+        .checked_next_multiple_of(cluster)
+        .context("attribute-list allocation overflow")?;
+    ensure!(
+        attribute.resident_sha256.is_none()
+            && attribute.resident_metadata_hex.is_none()
+            && attribute.allocated_size == rounded
+            && !attribute.extents.is_empty()
+            && attribute.extents.len() <= MAX_RUNS,
+        "nonresident attribute-list allocation/form exceeds profile"
+    );
+    let mut next = 0u64;
+    let mut physical = Vec::new();
+    for extent in &attribute.extents {
+        ensure!(
+            extent.logical_offset == next
+                && extent.length > 0
+                && extent.length.is_multiple_of(cluster),
+            "attribute-list mapping has a gap/overlap or invalid length"
+        );
+        let start = extent
+            .physical_offset
+            .context("sparse attribute-list storage is unsupported")?;
+        let end = start
+            .checked_add(extent.length)
+            .context("attribute-list physical overflow")?;
+        ensure!(
+            start.is_multiple_of(cluster) && end <= geometry.volume_size,
+            "attribute-list physical extent is unaligned or out of volume"
+        );
+        next = next
+            .checked_add(extent.length)
+            .context("attribute-list coverage overflow")?;
+        ensure!(next <= rounded, "attribute-list mapping exceeds allocation");
+        physical.push((start, end));
+    }
+    ensure!(next == rounded, "attribute-list mapping is incomplete");
+    physical.sort_unstable();
+    ensure!(
+        physical.windows(2).all(|p| p[0].1 <= p[1].0),
+        "attribute-list physical extents overlap"
+    );
+    Ok(())
+}
+
 /// Assemble one fully enumerated ordinary base file. Continuation length/VDL/
 /// allocation fields are deliberately ignored; only the VCN-zero DATA fields
 /// define the logical stream. No record is fetched or source byte written here.
@@ -172,10 +259,11 @@ pub fn assemble(
             "duplicate base attribute type"
         );
         match attribute.type_code {
-            0x10 | 0x20 | 0x30 | 0x50 => ensure!(
+            0x10 | 0x30 | 0x50 => ensure!(
                 attribute.resident && attribute.lowest_vcn == 0 && attribute.extents.is_empty(),
                 "base metadata must be resident and standalone"
             ),
+            0x20 => validate_list_storage(attribute, geometry)?,
             0x80 => plain_data(attribute)?,
             _ => anyhow::bail!("unsupported extra base attribute"),
         }
@@ -189,11 +277,10 @@ pub fn assemble(
     ensure!(data.lowest_vcn == 0, "base DATA does not begin at VCN zero");
     ensure!(
         list.logical_size == list_value.len() as u64
-            && list.initialized_size == list.logical_size
-            && list.allocated_size == list.logical_size
-            && list.resident_sha256.as_deref()
-                == Some(hex::encode(Sha256::digest(list_value)).as_str()),
-        "resident attribute-list bytes differ from their raw attribute"
+            && (!list.resident
+                || list.resident_sha256.as_deref()
+                    == Some(hex::encode(Sha256::digest(list_value)).as_str())),
+        "attribute-list bytes differ from their raw attribute"
     );
     if let Some(value) = &list.resident_metadata_hex {
         ensure!(
@@ -318,10 +405,21 @@ pub fn assemble(
         next == data.allocated_size,
         "DATA segments do not cover the complete allocated size"
     );
+    for extent in &list.extents {
+        let start = extent
+            .physical_offset
+            .context("list storage has no physical owner")?;
+        physical.push((
+            start,
+            start
+                .checked_add(extent.length)
+                .context("list physical overflow")?,
+        ));
+    }
     physical.sort_unstable();
     ensure!(
         physical.windows(2).all(|pair| pair[0].1 <= pair[1].0),
-        "DATA physical ranges overlap"
+        "DATA or attribute-list physical ranges overlap"
     );
     let mut canonical: Vec<_> = base
         .attributes
@@ -337,7 +435,7 @@ pub fn assemble(
     Ok((
         canonical,
         Assembly {
-            schema_version: 1,
+            schema_version: if list.resident { 1 } else { 2 },
             base,
             extensions,
             list_value_hex: hex::encode(list_value),

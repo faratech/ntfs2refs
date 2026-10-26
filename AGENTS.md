@@ -109,13 +109,16 @@ Parser support for a feature is not evidence that conversion preserves it.
 
 The later bounded attribute-list implementation is in `src/ntfs_attribute_list.rs`
 and `src/ntfs_assembled_io.rs`; see [the profile](docs/ntfs-attribute-list-assembly.md).
-Ordinary files can assemble unnamed unencoded DATA through a resident list and
+Ordinary files can assemble unnamed unencoded DATA through a complete list and
 uniquely owned extension records. Canonical files contain each stream once;
 `attribute_assemblies` preserves original records and list bytes. Require
 `validate_record_coverage` rather than equating logical-file and physical-record
 counts. Checked stream reads rebuild and compare the actual list/segments and
-MFT allocation bits. MFT bootstrap, system/directory/nonresident lists, named or
-encoded segments and unsupported forms remain refused. Existing file/data/run
+MFT allocation bits. Ledger version 1 retains resident lists; version 2 covers
+fully initialized nonresident lists whose entire mapping is in the base record.
+Their physical storage is separately claimed during allocation reconciliation.
+MFT bootstrap, system/directory lists, lists needing further segment assembly,
+named or encoded segments and unsupported forms remain refused. Existing file/data/run
 bounds remain. This is source/test coverage, with no new native qualification.
 
 Preserve these distinctions:

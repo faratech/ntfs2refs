@@ -230,8 +230,11 @@ so TxF semantics cannot silently be carried across.
 
 The new `ntfs_internal` reader rereads resident object-ID, reparse and quota
 indexes from their actual MFT records, verifies their inventory identity and
-parses them through the bounded index reader. Object-ID/reparse indexes must
-be empty. Quota indexes must cross-match SID/owner identities and contain only
+parses them through the bounded index reader. Reparse indexes must be empty.
+Object-ID indexes must be empty or satisfy the separately cross-bound,
+[reserved-volume identity replacement policy](internal-volume-object-id.md);
+user object IDs and unexplained entries remain refused. Quota indexes must
+cross-match SID/owner identities and contain only
 unlimited default entries, zero accounting and no exceeded-limit state; an
 opaque native observation must additionally show stable disabled quota policy.
 Configured limits, tracking/enforcement, foreign entries and unsupported index

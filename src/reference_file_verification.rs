@@ -344,16 +344,26 @@ mod tests {
         use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
         let f = Fixture::new();
         let mut held = HeldFile::open(&f.source).unwrap();
-        assert!(OpenOptions::new().write(true).open(&f.source).is_err());
+        let write_error = OpenOptions::new().write(true).open(&f.source).unwrap_err();
+        assert_eq!(write_error.raw_os_error(), Some(32)); // ERROR_SHARING_VIOLATION.
+        let delete_error = OpenOptions::new()
+            .access_mode(0x10000)
+            .share_mode(7)
+            .open(&f.source)
+            .unwrap_err();
+        assert_eq!(delete_error.raw_os_error(), Some(32));
+        held.before.file_bytes += 1;
+        assert!(held.unchanged().is_err());
+        drop(held);
+        // Positive controls distinguish sharing exclusion from unrelated errors.
+        assert!(OpenOptions::new().write(true).open(&f.source).is_ok());
         assert!(
             OpenOptions::new()
                 .access_mode(0x10000)
                 .share_mode(7)
                 .open(&f.source)
-                .is_err()
+                .is_ok()
         );
-        held.before.file_bytes += 1;
-        assert!(held.unchanged().is_err());
         assert!(HeldFile::open(Path::new(r"\\.\PhysicalDrive0")).is_err());
         assert!(HeldFile::open(Path::new(r"\\?\C:\device.vhd")).is_err());
     }

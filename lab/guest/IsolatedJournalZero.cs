@@ -25,6 +25,8 @@ namespace Ntfs2RefsResearch {
   // This proves only the supplied stream's read. It is never native write authority.
   public bool GrantsWriteAuthority { get {return false;} }
   public void AssertCurrent(Stream candidate,string token) {
+   // Same readable object/length/identity only: this does not reread content,
+   // exclude external writers or extend a vanished host storage fence.
    if(!Object.ReferenceEquals(source,candidate)||candidate==null||!candidate.CanRead||candidate.CanWrite||!candidate.CanSeek
       ||candidate.Length!=requested||checkedBytes!=requested||!String.Equals(identity,token,StringComparison.Ordinal))
     throw new InvalidDataException("Zero proof is not current for the same held read-only stream and identity.");

@@ -7,6 +7,12 @@ volume and preserves eligible payload blocks in place. Prefer Rust. Hyper-V
 is laboratory infrastructure; the converter must not depend on a hypervisor.
 Focus on nonboot data volumes. Boot conversion remains deferred.
 
+Mike's latest priority is a frozen native-shadow alpha and end-to-end conversion/
+recovery tests. Independent-writer research and its journal-fencing prerequisites
+are parked off that path; see [the parked scope](docs/isolated-journal-writer-exclusion.md).
+Preserve all existing VM/checkpoint and experiment evidence. Use a separately
+owned disposable alpha fixture for new native tests, with exact bindings and budgets.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

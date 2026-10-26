@@ -1,5 +1,5 @@
-<# Compile and pure refusals only. Never pass a valid factory request here;
-   no firmware, device, VM, credential or native operation is invoked. #>
+<# Compile and pure refusals only. Even correctly bound factory arguments must
+   refuse before firmware/device access because no durable fence backend exists. #>
 [CmdletBinding()]param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -44,5 +44,11 @@ foreach($vm in @([guid]::Empty,[guid]$policy.old_vm_id,[guid]'11111111-1111-1111
 foreach($bad in @($null,'',('0'*64),$token.ToUpperInvariant(),($token+'0'))) {
     RefuseBeforeNative ([guid]$policy.vm_id) $bad
 }
+Check (-not [Ntfs2RefsResearch.IsolatedJournalReader]::DurableWriterExclusionSupported) 'Unreviewed durable fence was enabled.'
+$blocked=$false
+try {[Ntfs2RefsResearch.IsolatedJournalReader]::OpenReadOnly([guid]$policy.vm_id,$token)|Out-Null}
+catch {$blocked=$_.Exception.InnerException -is [NotSupportedException] -and
+    $_.Exception.InnerException.Message -ceq [Ntfs2RefsResearch.IsolatedJournalReader]::ExclusionRefusal}
+Check $blocked 'Correct identity arguments bypassed the missing durable writer fence.'
 [pscustomobject]@{checks=$script:checks;passed=$true;compile_only_native_adapter=$true;
     native_calls=0;device_opens=0;vm_operations=0;credentials_accessed=0;large_images_created=0}

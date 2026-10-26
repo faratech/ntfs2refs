@@ -26,6 +26,11 @@ namespace Ntfs2RefsResearch {
  // streams from becoming native read leases. Host backing ownership is still
  // a separate acquisition requirement; firmware/NAA alone cannot prove it.
  public sealed class IsolatedJournalReader : Stream {
+  // Identity pins and one guest device's sharing mode do not exclude host,
+  // alias or lower storage-stack writers. No reviewed durable cross-stack
+  // fence backend exists for this fixture; never issue a native zero proof.
+  public const bool DurableWriterExclusionSupported = false;
+  public const string ExclusionRefusal = "No reviewed durable host/guest storage writer fence; native journal open and zero scan are disabled.";
   const string DevicePath = @"\\.\PhysicalDrive2";
   const uint GenericRead = 0x80000000;
   const uint GetNumber=0x002d1080, GetLength=0x0007405c;
@@ -70,6 +75,7 @@ namespace Ntfs2RefsResearch {
    if(expectedVmId!=new Guid(IsolatedJournalDeviceProfile.VmId) ||
       !String.Equals(token,ExpectedIdentityToken(),StringComparison.Ordinal))
     throw new InvalidDataException("Exact isolated VM and journal token required before native acquisition.");
+   RequireDurableExclusion();
    byte[] firmware=ReadFirmware();
    IsolatedJournalDeviceProfile.ValidateCaller(expectedVmId,Environment.MachineName,firmware);
    // No GENERIC_WRITE, share fallback, privilege adjustment or writable reopen.
@@ -80,6 +86,11 @@ namespace Ntfs2RefsResearch {
    }
    try {return new IsolatedJournalReader(disk,token,firmware);}
    catch {disk.Dispose();throw;}
+  }
+  static void RequireDurableExclusion() {
+   // No JSON flag, PID, heartbeat, stable before/after observation or caller
+   // supplied boolean can create this missing enforcement mechanism.
+   throw new NotSupportedException(ExclusionRefusal);
   }
   static byte[] ReadFirmware() {
    const uint Rsmb=0x52534d42;
@@ -131,6 +142,7 @@ namespace Ntfs2RefsResearch {
   // Only the existing opaque same-stream proof is returned, after actual
   // before/after device queries and full read coverage agree. No write lease.
   public ZeroProof ScanAndBind() {
+   RequireDurableExclusion();
    RequireOpen();
    if(scanAttempted)throw new InvalidOperationException("One scan attempt per native lease.");
    scanAttempted=true;

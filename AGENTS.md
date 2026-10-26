@@ -205,6 +205,14 @@ Do not substitute these JSON plans for live ownership/handle acquisition. Their
 fresh C: staging proposal preserves the old importer's C:-only guard and still
 needs execution review. No old helper route constants were changed.
 
+The guest-side `IsolatedJournalReader.Windows.cs` now compiles with the pure
+`IsolatedJournalDeviceProfile.cs` validators. It acquires only a read handle and
+reuses the same-stream scanner after actual guest/device identity checks. This
+is source-only work: no native method or device open has run. Host backing
+ownership and exclusion across storage aliases remain separate gates; no-sharing
+access alone is not that proof. Do not dispatch it from this source checkpoint
+or turn its receipt into initialization/import authority.
+
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those
 counters are not a completion percentage. The current full-image workflow can

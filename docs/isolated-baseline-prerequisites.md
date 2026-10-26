@@ -50,6 +50,34 @@ must still bind the exact owned native handle, its length and exclusion to the
 host/guest observations. No mutating initialization/import runner is supplied by
 these predicates. A serialized plan/proof cannot replace that execution boundary.
 
+`lab/guest/IsolatedJournalReader.Windows.cs` now supplies the **guest-side read-only
+acquisition code**, with a private lease constructor. Before opening a physical
+device it checks the exact expected VM token, computer name and actual SMBIOS
+type-1 UUID. It then requests `GENERIC_READ`, `OPEN_EXISTING` and no sharing on
+`\\.\PhysicalDrive2`, with no writable fallback, privilege adjustment or disk setter.
+Actual handle queries must identify disk 2, 8 GiB, 512/4096 geometry, RAW/zero
+partitions, unchanged attributes, the recorded SCSI route and the device-associated
+binary NAA. Header/full descriptor reads are bounded and must agree. The scanner
+uses that held lease; native snapshots before and after the read, firmware and
+exact byte counts must agree before a zero proof is returned. Raw query replies
+are retained in a bounded transcript for independent replay.
+
+The source and its pure validators compile, but **no native method has been run**.
+This adapter does not acquire host VHDX file/ancestry ownership, prove absence of
+other workers or establish exclusion across every storage-stack alias. A no-sharing
+device open is not a substitute for those obligations. No dispatcher is supplied,
+and the existing initialization review still grants no native write authority.
+The profile's reply forms require an actual separately reviewed observation;
+unexpected native replies must refuse rather than trigger a fallback.
+
+The pure snapshot parser follows Microsoft's
+[device-ID descriptor](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddstor/ns-ntddstor-_storage_device_id_descriptor),
+[identifier chain](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddstor/ns-ntddstor-_storage_identifier),
+[SCSI address](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddscsi/ns-ntddscsi-_scsi_address)
+and [disk attribute](https://learn.microsoft.com/en-us/windows/win32/api/winioctl/ns-winioctl-get_disk_attributes)
+layouts. Access/sharing requests use the documented
+[CreateFile contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
+
 The source plan uses a fresh `C:\ntfs2refs\isolated-baseline\<run>` staging directory
 for bounded helpers, packet and reports, preserving the existing importer's C:-only
 input guard. J: holds `J:\ntfs2refs-reference\<experiment>\reference.vhdx`.

@@ -107,6 +107,58 @@ enum Command {
     Finalize(RecoveryArgs),
     /// Complete only the source label on a strictly verified mounted ReFS target.
     CompleteLabel(LabelCompletionArgs),
+    /// Report verified public-run lifecycle facts without changing disk state.
+    OperationState(RunOperationArgs),
+    /// Restore unchanged NTFS availability before reconstruction activation.
+    Cancel(RunOperationArgs),
+}
+
+#[derive(clap::Args)]
+struct RunOperationArgs {
+    #[arg(long)]
+    run_directory: PathBuf,
+    /// SHA-256 of the run's conversion-intent.json.
+    #[arg(long)]
+    intent_sha256: String,
+    /// SHA-256 of qualification/source-frozen.json, required when present.
+    #[arg(long)]
+    frozen_source_sha256: Option<String>,
+    /// SHA-256 of qualification/source-mount-paths.json, required when present.
+    #[arg(long)]
+    mount_paths_sha256: Option<String>,
+    /// SHA-256 of the derived request.json, required when present.
+    #[arg(long)]
+    request_sha256: Option<String>,
+    /// SHA-256 of the derived ticket.json, required when present.
+    #[arg(long)]
+    ticket_sha256: Option<String>,
+    #[arg(long)]
+    output: PathBuf,
+}
+fn run_operation(args: RunOperationArgs, cancel: bool) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let input = ntfs2refs::general_operation_state::Inputs {
+            run_directory: args.run_directory,
+            intent_sha256: args.intent_sha256,
+            frozen_source_sha256: args.frozen_source_sha256,
+            mount_paths_sha256: args.mount_paths_sha256,
+            request_sha256: args.request_sha256,
+            ticket_sha256: args.ticket_sha256,
+        };
+        if cancel {
+            ntfs2refs::general_cancel::cancel(&input, &args.output)?;
+        } else {
+            let report = ntfs2refs::general_operation_state::inspect(&input, &args.output)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (args, cancel);
+        anyhow::bail!("public run state and cancellation require Windows")
+    }
 }
 
 #[derive(clap::Args)]
@@ -151,6 +203,9 @@ struct RecoveryArgs {
     /// Complete an already durable rollback or handoff marker after process death.
     #[arg(long, requires = "request")]
     after_marker: bool,
+    /// Use only the pinned old-byte journal for NTFS rollback; never resumes ReFS apply.
+    #[arg(long, requires = "request")]
+    without_shadow: bool,
 }
 #[derive(Deserialize)]
 struct IdentityBaseline {
@@ -238,6 +293,10 @@ fn conversion_request(path: &Path, pin: &str) -> Result<ntfs2refs::general_conve
 }
 
 fn recover(args: RecoveryArgs, operation: &str) -> Result<()> {
+    ensure!(
+        !args.without_shadow || operation == "rollback",
+        "--without-shadow is only valid for rollback"
+    );
     let Some(request) = args.request else {
         return planner::require_writer();
     };
@@ -248,12 +307,14 @@ fn recover(args: RecoveryArgs, operation: &str) -> Result<()> {
     #[cfg(windows)]
     {
         use ntfs2refs::general_recovery::{Inputs, Operation};
-        let operation = match (operation, args.after_marker) {
-            ("resume", false) => Operation::Resume,
-            ("rollback", false) => Operation::Rollback,
-            ("rollback", true) => Operation::RollbackAfterMarker,
-            ("finalize", false) => Operation::Finalize,
-            ("finalize", true) => Operation::FinalizeAfterMarker,
+        let operation = match (operation, args.after_marker, args.without_shadow) {
+            ("resume", false, false) => Operation::Resume,
+            ("rollback", false, false) => Operation::Rollback,
+            ("rollback", true, false) => Operation::RollbackAfterMarker,
+            ("rollback", false, true) => Operation::RollbackWithoutShadow,
+            ("rollback", true, true) => Operation::RollbackAfterMarkerWithoutShadow,
+            ("finalize", false, false) => Operation::Finalize,
+            ("finalize", true, false) => Operation::FinalizeAfterMarker,
             _ => anyhow::bail!("unsupported recovery operation"),
         };
         let inputs = Inputs {
@@ -401,6 +462,8 @@ fn run() -> Result<u8> {
         Command::Resume(args) => recover(args, "resume")?,
         Command::Rollback(args) => recover(args, "rollback")?,
         Command::Finalize(args) => recover(args, "finalize")?,
+        Command::OperationState(args) => run_operation(args, false)?,
+        Command::Cancel(args) => run_operation(args, true)?,
         Command::CompleteLabel(args) => {
             #[cfg(windows)]
             ntfs2refs::general_label_completion::complete(

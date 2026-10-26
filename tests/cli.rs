@@ -333,3 +333,102 @@ fn recovery_requires_all_pinned_inputs_when_request_is_supplied() {
         );
     }
 }
+
+#[test]
+fn shadowless_recovery_refuses_resume_and_finalize_before_reading_inputs() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("never-created");
+    let pin = "a".repeat(64);
+    for command in ["resume", "finalize"] {
+        let result = cli(&[
+            command,
+            "--without-shadow",
+            "--journal",
+            "absent-journal",
+            "--request",
+            "absent-request.json",
+            "--request-sha256",
+            &pin,
+            "--ticket",
+            "absent-ticket.json",
+            "--ticket-sha256",
+            &pin,
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("--without-shadow is only valid for rollback"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!output.exists());
+    }
+    let missing_pins = cli(&[
+        "rollback",
+        "--without-shadow",
+        "--journal",
+        "absent-journal",
+    ]);
+    assert_eq!(missing_pins.status.code(), Some(2));
+}
+
+#[cfg(windows)]
+#[test]
+fn shadowless_rollback_keeps_pinned_envelope_and_refuses_forward_expectation() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = temp.path().join("never-created");
+    let pin = "a".repeat(64);
+    for after_marker in [false, true] {
+        let mut args = vec![
+            "rollback",
+            "--without-shadow",
+            "--journal",
+            "absent-journal",
+            "--request",
+            "absent-request.json",
+            "--request-sha256",
+            "invalid",
+            "--ticket",
+            "absent-ticket.json",
+            "--ticket-sha256",
+            &pin,
+            "--output",
+            output.to_str().unwrap(),
+        ];
+        if after_marker {
+            args.push("--after-marker");
+        }
+        let result = cli(&args);
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("request and ticket require canonical SHA-256 pins"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!output.exists());
+        let request_pin = args
+            .iter()
+            .position(|arg| *arg == "--request-sha256")
+            .unwrap()
+            + 1;
+        args[request_pin] = &pin;
+        args.extend([
+            "--expectation",
+            "absent-tree.json",
+            "--expectation-sha256",
+            &pin,
+        ]);
+        let result = cli(&args);
+        assert!(!result.status.success());
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("only finalize operations require the expectation and its pin"),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(!output.exists());
+    }
+}

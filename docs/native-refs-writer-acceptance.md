@@ -1,7 +1,7 @@
 # Independent writer: native acceptance preparation
 
 The strict REFSNT experiment produced a candidate ReFS image with an existing
-4 KiB cluster adopted as `/adopted.bin`. Microsoft acceptance is still
+4 KiB cluster adopted as `/adopted-existing.bin`. Microsoft acceptance is still
 unqualified. This next experiment must preserve the already successful
 converter branch and execute metadata import and native inspection inside the
 disk-owning VM.
@@ -46,9 +46,10 @@ After checking capacity, create a fresh parent directory and run:
 The previous sparse-copy observation suggests a small reference packet, but
 actual packet size and native backing allocation must be measured. The host
 was below the configured 64 GiB free reserve at implementation time. No real
-reference packet or new disk was created by the codec implementation work.
+reference packet or new disk was created by the initial codec implementation;
+the later experiment below records both.
 
-## Packet contract and missing native importer
+## Packet contract and restricted native importer
 
 The packet is `N2RREF01`, a bounded JSON header, ordered `N2RRNG01` records
 containing disk offsets, lengths, SHA-256 and bytes, then `N2REND01` with a
@@ -65,7 +66,7 @@ the source. `verify_reconstructed_contents` performs that full virtual scan.
 A native importer must instead or additionally verify the full imported disk
 hash before any experimental writer metadata is applied.
 
-The native importer remains to be implemented. Its required sequence is:
+`lab-import-refs-reference` implements the following restricted sequence:
 
 1. Create a new thin VHDX with a fresh enrolled persistent VHD identity. Check
    actual backing allocation and guest/host reserves. Never select the OS or
@@ -81,7 +82,7 @@ The native importer remains to be implemented. Its required sequence is:
    range hash and the protected payload. Apply only its eight metadata ranges
    at partition-relative offsets; never write the adopted payload. Flush and
    verify the changed ranges and payload again.
-5. Mount through Microsoft's driver, read `/adopted.bin`, check its exact hash,
+5. Mount through Microsoft's driver, read `/adopted-existing.bin`, check its exact hash,
    length and physical mapping, and verify the existing reference files.
    Native refusal is an experiment result, not permission to override
    checksums or allocator evidence.
@@ -93,3 +94,40 @@ The native importer remains to be implemented. Its required sequence is:
 checking. The Rust frozen/journaled partition wrappers demonstrate state and
 route checks. Reuse those contracts rather than adding an unrestricted
 raw-write command. GPL engine code remains external research.
+
+## Recorded native attempt
+
+The real packet is 68,162,693 bytes, holding 65 nonzero 1 MiB chunks. SHA-256:
+`585df94c07190bcd3476a596ee870d1c3e60d793d03d9d4d3bd545780f23df5b`.
+The complete virtual-disk hash is
+`ea08681ba795322529e395febea156af8ec97687ed2bf192b6e6d0bc17f5af07`.
+The fixed-image, selected-partition and payload pins all matched.
+
+A fresh thin disk was created inside the VM with persistent VHD identity
+`a0c231ef-a959-4a6e-8ae2-7d80363eebe6`; initial backing was 4 MiB. The first
+import refused before writes because Storage Management reported RAW while
+the native layout response was an entirely zero 48-byte MBR-style header. The
+corrected guard admits that exact empty shape and still requires a whole-disk
+zero scan before writing.
+
+The corrected import passed the whole blank scan, full imported/fixed-image
+hashes, eight metadata old/new/readback checks and protected-payload proof.
+It durably prepared and handed off the disk. Microsoft then refused the
+filesystem with volume-repair failure. The first relevant System event was
+Medium Allocator structural inconsistency (`0xC0000518`), followed by checksum,
+repair and mount failures. No failing page address was supplied. Independent
+Rust inspection still passes the exact overlay's Medium root/leaf checksums,
+self-addresses, table IDs, bounds and free-count summary; those narrower checks
+do not override the native refusal.
+
+The rejected image was detached and retained; container SHA-256:
+`2810d73163c9f41786ddd3df04641e94c9ec0d69f9c4d90197dce01720a104da`.
+Ignored evidence: `.lab/hyperv/writer-acceptance/win11-20261025T231634770Z` and
+`.lab/research/reference-transport-20261025T225304085Z`.
+
+The clean unmodified reference control remains the next discriminator. The
+separate lab `--baseline-only` mode imports the same packet without reading or
+applying COW metadata, records zero writer pages and does not expect the adopted
+file. All blank-disk, identity, full-image and handoff gates remain required.
+Native writer acceptance, mutation and reboot qualification remain open. This
+research outcome is separate from the successful native-shadow conversions.

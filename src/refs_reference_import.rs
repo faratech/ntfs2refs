@@ -245,6 +245,16 @@ fn save_bytes(root: &Path, name: &str, b: &[u8]) -> Result<()> {
     Ok(())
 }
 pub fn run(request: &Request, output: &Path, handoff: bool) -> Result<()> {
+    run_profile(request, output, handoff, false)
+}
+/// Lab control that imports the unmodified Windows reference rather than
+/// applying the strict writer overlay. It retains every blank/import gate.
+pub fn run_profile(
+    request: &Request,
+    output: &Path,
+    handoff: bool,
+    baseline_only: bool,
+) -> Result<()> {
     request.validate()?;
     let packet_bytes = pinned(
         &request.packet_path,
@@ -267,15 +277,20 @@ pub fn run(request: &Request, output: &Path, handoff: bool) -> Result<()> {
                 == "6234f364d8fb1b532234405c7e2bb1c8e08337ef7fc6e4138f80c8b3d9411786",
         "reference profile differs from pinned Windows corpus"
     );
-    let cow = pinned(&request.cow_path, &request.cow_sha256, 131280)?;
-    let trace = pinned(&request.trace_path, &request.trace_sha256, 65536)?;
-    let patches = patches(&cow, &trace, &packet)?;
+    let patches = if baseline_only {
+        vec![]
+    } else {
+        let cow = pinned(&request.cow_path, &request.cow_sha256, 131280)?;
+        let trace = pinned(&request.trace_path, &request.trace_sha256, 65536)?;
+        patches(&cow, &trace, &packet)?
+    };
+    let writer_metadata_bytes = patches.iter().map(|p| p.data.len() as u64).sum::<u64>();
     artifacts::create_output(output)?;
     save_bytes(output, "request.json", &serde_json::to_vec_pretty(request)?)?;
     artifacts::save(
         output,
         "intent.json",
-        &serde_json::json!({"kind":"restricted-reference-import-intent","packet_sha256":request.packet_sha256,"cow_sha256":request.cow_sha256,"trace_sha256":request.trace_sha256,"handoff_requested":handoff,"native_writer_qualified":false,"ntfs_conversion":false}),
+        &serde_json::json!({"kind":"restricted-reference-import-intent","packet_sha256":request.packet_sha256,"cow_sha256":request.cow_sha256,"trace_sha256":request.trace_sha256,"baseline_only":baseline_only,"overlay_inputs_consumed":!baseline_only,"adopted_file_expected":!baseline_only,"handoff_requested":handoff,"native_writer_qualified":false,"ntfs_conversion":false}),
     )?;
     let mut phase = "blank-disk-proof";
     let attempted = (|| -> Result<()> {
@@ -293,7 +308,11 @@ pub fn run(request: &Request, output: &Path, handoff: bool) -> Result<()> {
             &hex::decode(&packet.header.fixed_footer_hex)?,
         )?;
         artifacts::save(output, "import.json", &proof)?;
-        phase = "writer-metadata";
+        phase = if baseline_only {
+            "baseline-reference-preparation"
+        } else {
+            "writer-metadata"
+        };
         for (index, patch) in patches.iter().enumerate() {
             artifacts::save(
                 output,
@@ -303,7 +322,11 @@ pub fn run(request: &Request, output: &Path, handoff: bool) -> Result<()> {
             disk.apply_metadata_patch(patch.offset, &patch.data, &patch.old, &patch.new)?;
         }
         phase = "prepared-offline";
-        let prepared = disk.finish_overlay()?;
+        let prepared = if baseline_only {
+            disk.finish_baseline()?
+        } else {
+            disk.finish_overlay()?
+        };
         artifacts::save(output, "prepared.json", &prepared)?;
         if handoff {
             phase = "explicit-native-handoff";
@@ -315,7 +338,7 @@ pub fn run(request: &Request, output: &Path, handoff: bool) -> Result<()> {
             artifacts::save(
                 output,
                 "handoff-intent.json",
-                &serde_json::json!({"kind":"reference-native-handoff-intent","prepared_sha256":hash(&bytes),"only_reference_disk":true,"ntfs_conversion":false}),
+                &serde_json::json!({"kind":"reference-native-handoff-intent","prepared_sha256":hash(&bytes),"baseline_only":baseline_only,"adopted_file_expected":!baseline_only,"only_reference_disk":true,"ntfs_conversion":false}),
             )?;
             let state = disk.handoff(&prepared)?;
             artifacts::save(output, "handoff.json", &state)?;
@@ -324,7 +347,7 @@ pub fn run(request: &Request, output: &Path, handoff: bool) -> Result<()> {
         artifacts::save(
             output,
             "result.json",
-            &serde_json::json!({"kind":"restricted-reference-import","success":true,"imported_disk_sha256":proof.disk_sha256,"reference_bytes_written":proof.reference_bytes_written,"writer_metadata_bytes":131072,"writer_metadata_pages":8,"payload_sha256":proof.payload_sha256,"writer_payload_writes":0,"handoff_performed":handoff,"native_writer_qualified":false,"ntfs_conversion_qualified":false}),
+            &serde_json::json!({"kind":"restricted-reference-import","success":true,"baseline_only":baseline_only,"overlay_inputs_consumed":!baseline_only,"adopted_file_expected":!baseline_only,"imported_disk_sha256":proof.disk_sha256,"reference_bytes_written":proof.reference_bytes_written,"writer_metadata_bytes":writer_metadata_bytes,"writer_metadata_pages":patches.len(),"payload_sha256":proof.payload_sha256,"writer_payload_writes":0,"handoff_performed":handoff,"native_writer_qualified":false,"ntfs_conversion_qualified":false}),
         )?;
         Ok(())
     })();
@@ -332,7 +355,7 @@ pub fn run(request: &Request, output: &Path, handoff: bool) -> Result<()> {
         artifacts::save(
             output,
             "failed.json",
-            &serde_json::json!({"kind":"restricted-reference-import-failure","phase":phase,"error":format!("{error:#}"),"automatic_retry":false,"native_writer_qualified":false}),
+            &serde_json::json!({"kind":"restricted-reference-import-failure","phase":phase,"baseline_only":baseline_only,"error":format!("{error:#}"),"automatic_retry":false,"native_writer_qualified":false}),
         )?;
         return Err(error);
     }

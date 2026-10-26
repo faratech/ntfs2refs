@@ -26,8 +26,8 @@ use windows_sys::Win32::{
     Security::{GetSecurityDescriptorLength, IsValidSecurityDescriptor, SECURITY_ATTRIBUTES},
     Storage::FileSystem::{
         BackupWrite, CreateDirectoryW, CreateFileW, GetDiskFreeSpaceW,
-        GetFileInformationByHandleEx, GetVolumeInformationW, SetFileInformationByHandle,
-        SetFileTime,
+        GetFileInformationByHandleEx, GetVolumeInformationByHandleW, GetVolumeInformationW,
+        SetFileInformationByHandle, SetFileTime,
     },
     System::IO::DeviceIoControl,
 };
@@ -329,6 +329,19 @@ fn observed_shadow(
         })
     } else {
         native::snapshot(disk, binding, events)
+    }
+}
+
+fn observed_shadow_profile(
+    disk: &File,
+    binding: &DiskBinding,
+    general: Option<&GeneralDiskBinding>,
+    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<crate::PartitionSnapshot> {
+    match protected {
+        Some(lease) => lease.snapshot(binding, events),
+        None => observed_shadow(disk, binding, general, events),
     }
 }
 #[derive(Debug, Serialize)]
@@ -976,12 +989,33 @@ fn open(path: &str, directory: bool, write: bool) -> io::Result<File> {
         .custom_flags(0x02200000)
         .open(path)?;
     suppress_access(&f)?;
+    validate_open_type(&f, directory)?;
+    Ok(f)
+}
+
+// The protected lease already prevents persisted access-time changes. These
+// handles request no write access and issue no per-handle timestamp setter;
+// exact native before/after metadata remains part of verification.
+fn open_protected_readonly(path: &str, directory: bool) -> io::Result<File> {
+    let f = File::options()
+        .access_mode(PROTECTED_READ_ACCESS)
+        .share_mode(3)
+        .custom_flags(0x02200000)
+        .open(path)?;
+    validate_open_type(&f, directory)?;
+    Ok(f)
+}
+
+// ACCESS_SYSTEM_SECURITY | READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_DATA.
+const PROTECTED_READ_ACCESS: u32 = 0x01020081;
+
+fn validate_open_type(f: &File, directory: bool) -> io::Result<()> {
     let attrs = info(&f, 0, 40)?;
     let flags = u32::from_le_bytes(attrs[32..36].try_into().unwrap());
     if flags & (0x400 | 0x800 | 0x4000) != 0 || (flags & 16 != 0) != directory {
         return Err(invalid("shadow path type or encoding differs"));
     }
-    Ok(f)
+    Ok(())
 }
 fn enumerate(file: &File) -> io::Result<Vec<namespace_layout::Entry>> {
     let mut calls = vec![];
@@ -1342,6 +1376,47 @@ pub fn verify_general_ordinary(
     })
 }
 
+/// This route is callable only with an actual borrowed native read-only
+/// volume capability. The enclosing freeze lease retains persistent READ_ONLY
+/// storage throughout this strict semantic observation.
+pub(crate) fn verify_general_ordinary_readonly(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+) -> io::Result<GeneralReport> {
+    pair.validate()?;
+    if protected.binding() != &pair.shadow {
+        return Err(invalid(
+            "protected ReFS lease does not bind the expected shadow",
+        ));
+    }
+    let binding = DiskBinding {
+        disk_number: pair.shadow.disk_number,
+        volume_guid: pair.shadow.volume_guid.clone(),
+        identity: pair.shadow.identity.clone(),
+    };
+    let native = run_role_profile(
+        binding,
+        pair.source.disk_number,
+        input,
+        Mode::Verify,
+        &same_security,
+        false,
+        true,
+        None,
+        Some(&pair.shadow),
+        None,
+        Some(protected),
+    )?;
+    validate_existing(&native, input, &same_security, false, None)?;
+    Ok(GeneralReport {
+        pair,
+        native,
+        conversion_qualified: false,
+    })
+}
+
 /// Inspect the original data disk after the journal handoff has been made
 /// durable and it has mounted as ReFS. The caller supplies the pre-cutover
 /// source tree from separately pinned recovery artifacts.
@@ -1596,10 +1671,81 @@ fn run_role_with_label(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     converted: bool,
     ordinary: bool,
-    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
 ) -> io::Result<Report> {
+    run_role_profile(
+        binding,
+        source_disk,
+        input,
+        mode,
+        same_security,
+        converted,
+        ordinary,
+        payload_writer,
+        general_shadow,
+        expected_label,
+        None,
+    )
+}
+
+fn validate_protected_profile(
+    mode: Mode,
+    converted: bool,
+    ordinary: bool,
+    payload_writer: bool,
+    general_shadow: bool,
+    expected_label: bool,
+) -> io::Result<()> {
+    if mode != Mode::Verify
+        || converted
+        || !ordinary
+        || payload_writer
+        || !general_shadow
+        || expected_label
+    {
+        return Err(invalid(
+            "protected ReFS lease is restricted to exact shadow verification",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_observation_access(attributes: u64, flags: u32, protected: bool) -> io::Result<()> {
+    let expected_attributes = if protected { 2 } else { 0 };
+    let expected_readonly_flag = if protected { 0x80000 } else { 0 };
+    if attributes != expected_attributes || flags & 0x80000 != expected_readonly_flag {
+        return Err(invalid(
+            "native observation storage/volume protection differs",
+        ));
+    }
+    Ok(())
+}
+
+fn run_role_profile(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    mode: Mode,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    converted: bool,
+    ordinary: bool,
+    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    general_shadow: Option<&GeneralDiskBinding>,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+) -> io::Result<Report> {
+    if protected.is_some() {
+        validate_protected_profile(
+            mode,
+            converted,
+            ordinary,
+            payload_writer.is_some(),
+            general_shadow.is_some(),
+            expected_label.is_some(),
+        )?;
+    }
     if let Some(label) = expected_label {
         label.validate()?;
         if !converted || mode != Mode::Verify {
@@ -1771,16 +1917,25 @@ fn run_role_with_label(
         .read(true)
         .share_mode(3)
         .open(format!("\\\\.\\PhysicalDrive{}", binding.disk_number))?;
-    let before = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
-    if before.disk_attributes != 0 {
-        return Err(invalid("shadow must be online writable"));
+    let expected_attributes = if protected.is_some() { 2 } else { 0 };
+    let before = observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
+    if before.disk_attributes != expected_attributes {
+        return Err(invalid(
+            "shadow protection state differs from its native access route",
+        ));
     }
     let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
-    let volume = File::options()
-        .read(true)
-        .write(mode != Mode::Verify)
-        .share_mode(3)
-        .open(root.trim_end_matches('\\'))?;
+    let opened_volume;
+    let volume = if let Some(lease) = protected {
+        lease.volume()
+    } else {
+        opened_volume = File::options()
+            .read(true)
+            .write(mode != Mode::Verify)
+            .share_mode(3)
+            .open(root.trim_end_matches('\\'))?;
+        &opened_volume
+    };
     let ext = ctl(&volume, 0x560000, &[], 32)?;
     if ext.len() != 32
         || layout::u32_at(&ext, 0)? != 1
@@ -1797,23 +1952,56 @@ fn run_role_with_label(
     let (mut spc, mut bps, mut free, mut clusters) = (0, 0, 0, 0);
     // SAFETY: initialized fixed output buffers and NUL-terminated volume path.
     unsafe {
-        check(GetVolumeInformationW(
-            root_w.as_ptr(),
-            label.as_mut_ptr(),
-            128,
-            &mut serial,
-            &mut component,
-            &mut flags,
-            fs.as_mut_ptr(),
-            32,
-        ))?;
-        check(GetDiskFreeSpaceW(
-            root_w.as_ptr(),
-            &mut spc,
-            &mut bps,
-            &mut free,
-            &mut clusters,
-        ))?;
+        if protected.is_some() {
+            check(GetVolumeInformationByHandleW(
+                volume.as_raw_handle(),
+                label.as_mut_ptr(),
+                128,
+                &mut serial,
+                &mut component,
+                &mut flags,
+                fs.as_mut_ptr(),
+                32,
+            ))?;
+        } else {
+            check(GetVolumeInformationW(
+                root_w.as_ptr(),
+                label.as_mut_ptr(),
+                128,
+                &mut serial,
+                &mut component,
+                &mut flags,
+                fs.as_mut_ptr(),
+                32,
+            ))?;
+            check(GetDiskFreeSpaceW(
+                root_w.as_ptr(),
+                &mut spc,
+                &mut bps,
+                &mut free,
+                &mut clusters,
+            ))?;
+        }
+    }
+    if protected.is_some() {
+        let data = ctl(volume, 0x000902d8, &[], 256)?;
+        if data.len() < 64
+            || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))
+            || layout::u32_at(&data, 4)? != 3
+            || layout::u32_at(&data, 8)? != 14
+            || layout::u64_at(&data, 24)? != binding.identity.partition_bytes / 512
+            || layout::u64_at(&data, 32)? != binding.identity.partition_bytes / 4096
+        {
+            return Err(invalid("protected ReFS volume-data profile differs"));
+        }
+        bps = layout::u32_at(&data, 56)?;
+        let cluster_bytes = layout::u32_at(&data, 60)?;
+        if bps != 512 || cluster_bytes != 4096 {
+            return Err(invalid("protected ReFS allocation geometry differs"));
+        }
+        spc = cluster_bytes / bps;
+        clusters = u32::try_from(layout::u64_at(&data, 32)?)
+            .map_err(|_| invalid("protected ReFS cluster count exceeds observation profile"))?;
     }
     let text = |b: &[u16]| {
         String::from_utf16_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(b.len())])
@@ -1823,7 +2011,8 @@ fn run_role_with_label(
         .position(|unit| *unit == 0)
         .ok_or_else(|| invalid("unterminated converted volume label"))?;
     let label_matches = volume_label_matches(&label[..label_end], expected_label)?;
-    if text(&fs) != "ReFS" || !label_matches || spc != 8 || bps != 512 || flags & 0x80000 != 0 {
+    validate_observation_access(before.disk_attributes, flags, protected.is_some())?;
+    if text(&fs) != "ReFS" || !label_matches || spc != 8 || bps != 512 {
         return Err(invalid(
             "shadow filesystem, label, geometry or read-only flag differs",
         ));
@@ -1832,16 +2021,19 @@ fn run_role_with_label(
     if base.len() != 8 || layout::u64_at(&base, 0)? != 0 {
         return Err(invalid("initial tree shadow requires zero retrieval base"));
     }
-    let mut names = vec![
-        "SeBackupPrivilege",
-        "SeSecurityPrivilege",
-        "SeRestorePrivilege",
-    ];
+    let mut names = vec!["SeBackupPrivilege", "SeSecurityPrivilege"];
+    if protected.is_none() {
+        names.push("SeRestorePrivilege");
+    }
     if mode == Mode::ConstructRetaining {
         names.push("SeManageVolumePrivilege");
     }
     let mut privileges = Privileges::enable_for(&names)?;
-    let root_handle = open(&root, true, true)?;
+    let root_handle = if protected.is_some() {
+        open_protected_readonly(&root, true)?
+    } else {
+        open(&root, true, true)?
+    };
     let root_state = snapshot(&root_handle);
     let matched_before = security_matches(&input[0], &root_state, &same_security)?;
     let mut root_security = RootSecurity {
@@ -1858,7 +2050,8 @@ fn run_role_with_label(
         return Err(invalid("root security changed before verification"));
     }
     if mode == Mode::ProbeRoot {
-        let after = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
+        let after =
+            observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
         privileges.restore()?;
         return Ok(Report {
             binding,
@@ -2042,11 +2235,12 @@ fn run_role_with_label(
         crate::bitmap_layout::allocated_ranges(&metadata_bitmap, binding.identity.partition_bytes)?;
     let mut objects = vec![];
     for i in input {
-        let mut h = open(
-            &format!("{}{}", root, i.components.join("\\")),
-            i.directory,
-            false,
-        )?;
+        let path = format!("{}{}", root, i.components.join("\\"));
+        let mut h = if protected.is_some() {
+            open_protected_readonly(&path, i.directory)?
+        } else {
+            open(&path, i.directory, false)?
+        };
         let before = snapshot(&h);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
@@ -2226,10 +2420,8 @@ fn run_role_with_label(
                 .transpose()?,
         });
     }
-    let after = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
-    if after.disk_attributes != 0 {
-        return Err(invalid("shadow disk state changed"));
-    }
+    let after = observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
+    validate_observation_access(after.disk_attributes, flags, protected.is_some())?;
     privileges.restore()?;
     Ok(Report {
         binding,
@@ -2252,6 +2444,65 @@ fn run_role_with_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protected_verification_rejects_writable_flags_and_mutation_modes() {
+        validate_observation_access(0, 0, false).unwrap();
+        validate_observation_access(2, 0x80000, true).unwrap();
+        for (attributes, flags, protected) in [
+            (2, 0x80000, false),
+            (0, 0, true),
+            (2, 0, true),
+            (0, 0x80000, false),
+            (3, 0x80000, true),
+            (1, 0, false),
+        ] {
+            assert!(validate_observation_access(attributes, flags, protected).is_err());
+        }
+        validate_protected_profile(Mode::Verify, false, true, false, true, false).unwrap();
+        for mode in [
+            Mode::ProbeRoot,
+            Mode::RestoreRootOnly,
+            Mode::Construct,
+            Mode::ConstructRetaining,
+        ] {
+            assert!(validate_protected_profile(mode, false, true, false, true, false).is_err());
+        }
+        for (converted, ordinary, writer, general, label) in [
+            (true, true, false, true, false),
+            (false, false, false, true, false),
+            (false, true, true, true, false),
+            (false, true, false, false, false),
+            (false, true, false, true, true),
+        ] {
+            assert!(
+                validate_protected_profile(
+                    Mode::Verify,
+                    converted,
+                    ordinary,
+                    writer,
+                    general,
+                    label
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn protected_file_handles_request_no_write_or_delete_rights() {
+        let write_or_delete = 0x40000000
+            | 0x10000000
+            | 0x00010000
+            | 0x00040000
+            | 0x00080000
+            | 0x00000002
+            | 0x00000004
+            | 0x00000010
+            | 0x00000100;
+        assert_eq!(PROTECTED_READ_ACCESS & write_or_delete, 0);
+        assert_eq!(PROTECTED_READ_ACCESS & 0x01020081, 0x01020081);
+    }
+
     #[test]
     fn converted_labels_are_explicit_and_shadow_enrollment_remains_exact() {
         let source = crate::volume_label::VolumeLabel::from_text("工程 😀").unwrap();

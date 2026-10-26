@@ -1,0 +1,620 @@
+ntfs2refs implementation review and development roadmap
+
+Repository: faratech/ntfs2refs (private)
+Reviewed commit: 9210557804b63f5f39d13c86508af31aace39794
+Review date: October 25, 2026, America/New_York
+Review type: Read-only architecture, implementation, evidence and qualification review
+
+Executive assessment
+
+ntfs2refs has reached a real, bounded same-partition conversion milestone. The repository records a public CLI run that converted twelve existing objects, including a naturally allocated 128 MiB file, on their original 52 GiB NTFS partition, followed by native ReFS verification and verification after reboot. That is meaningful progress beyond an inspector or proposed writer.
+
+The next objective should be a recoverable, measured, extent-preserving converter for a clearly specified data-volume profile. Continue the existing implementation. The most valuable work is to close the remaining correctness and operational gaps, demonstrate natural retention using the newest code, and qualify the separate direct-writer experiment through Microsoft's driver.
+
+The distinction that governs the roadmap is:
+
+Preserving the original partition: recorded as achieved for bounded fixtures.
+
+Preserving naturally placed payload extents: not established by the recorded general conversions, which retained zero payload bytes.
+
+Avoiding payload-proportional temporary storage: not achieved by the native-shadow architecture, which first writes the file contents into another ReFS volume.
+
+Qualifying arbitrary existing volumes and native power-loss recovery: still open.
+
+The current system is a useful experimental converter. It is not yet a generally qualified converter for ordinary workstation or server data disks. This is a judgment about qualification and coverage, not a claim that the completed native experiments are invalid. R1 R2
+
+Review boundary
+
+I examined the pinned repository tree, the central Rust/Win32 conversion, admission, placement and recovery paths, relevant tests, the strict writer harness, and the result documents. GitHub still reported the same HEAD when rechecked during the review.
+
+I did not compile this snapshot or rerun its Windows/Hyper-V experiments. The review environment did not provide the pinned Rust/Windows lab toolchain. The native successes below are repository-recorded results with artifact hashes. The underlying ignored .lab evidence and checkpoints were not independently revalidated here. No repository edits or native disk operations were performed.
+
+1. What is achieved, implemented, and still unqualified
+
+Area
+
+Current evidence
+
+Practical meaning
+
+Public same-partition conversion
+
+Twelve objects; 52 GiB original partition; a naturally allocated 128 MiB file; native verification and reboot verification recorded
+
+The public workflow can complete a bounded conversion
+
+Prepared extent retention
+
+An earlier prepared 64 KiB file retained its physical extent; native mutation and reboot were recorded
+
+Extent retention is possible on the prepared profile
+
+Naturally populated trees
+
+Four-file and later public general runs relocated ordinary payloads; the twelve-object run retained zero bytes
+
+General natural retention remains a separate milestone
+
+New retention splitter
+
+HEAD splits source runs around occupied subranges using both native bitmap views and measures actual moves
+
+The newest implementation deserves a bounded native retention run; earlier zero-retention results do not measure this newest code
+
+Source admission
+
+Live native observations, raw inspection, allocation/namespace/security checks, freeze evidence and an opaque certificate are connected to activation
+
+A JSON success flag alone does not grant write authority
+
+Real recovery journal
+
+Old/new bytes, exact hashes, storage identity, durable ticket, apply/resume/rollback and handoff barrier exist
+
+Substantial recovery machinery is implemented
+
+Native crash coverage
+
+Selected interruption/restart cases are recorded; broader public/native interruption coverage remains open
+
+Process interruption and model tests do not qualify arbitrary power loss
+
+Source-label completion
+
+Native completion, repetition without a second setter call, and reboot verification recorded
+
+Fresh conversion through the new automatic capture/finalization path is still a distinct gate
+
+Direct existing-extent writer
+
+One 4 KiB existing cluster adopted on an already-ReFS image; eight metadata writes, 131,072 bytes; payload unchanged
+
+Offline adoption mechanism demonstrated; Microsoft-driver acceptance and NTFS-owned extent conversion remain unqualified
+
+Restricted writer importer
+
+Raw reference import, overlay application and optional handoff are implemented
+
+The missing work is native acceptance verification and evidence collection, not another importer
+
+Production readiness
+
+Narrow profile and multiple unqualified integration/storage cases
+
+No general production-readiness conclusion is justified
+
+Sources: general conversion results, prepared conversion, tree conversion, current retention code, label results, strict writer result, importer.
+
+The measured cost of the 128 MiB-file run
+
+The recorded source had 134,742,016 ordinary payload bytes and 88 resident bytes, approximately 128.50 MiB in total. It applied 106 patch ranges totaling 346,841,088 bytes, approximately 330.77 MiB, and produced a 693,708,354-byte journal, approximately 661.57 MiB. Retained payload bytes were zero.
+
+For that fixture, target writes were about 2.57 times logical payload, and journal size was about 5.15 times logical payload. These are calculations from one recorded run, not general performance estimates. They show why journal and target-write efficiency need explicit measurement. R2
+
+2. Preserve the good architecture
+
+The present conversion path is conceptually coherent:
+
+Bind the source, independent shadow and journal storage.
+
+Freeze the NTFS source, inspect it, and reconcile it with native observations.
+
+Build the expected files and metadata on a native ReFS shadow.
+
+Verify target preservation, freeze the shadow and bind the conversion certificate.
+
+Construct and persist the old/new journal and recovery ticket.
+
+Activate the original partition, apply its exact patch set and verify the expected raw image.
+
+Persist the irreversible handoff marker, then let Windows mount ReFS and verify the converted tree.
+
+The implementation deserves credit for several specific design decisions:
+
+Authority is tied to live context. SourceCertificate is issued through live source and target evidence, and its fields are not reconstructed from arbitrary deserialized success flags. The qualification source object retains the freeze witness.
+
+Journal durability precedes destructive activation. The conversion path saves the recovery ticket, rereads it through an exclusive file handle, and checks its pin before activation.
+
+The rollback boundary is explicit. The handoff record closes raw replay before writable ReFS mounting. Post-handoff changes such as label restoration use native filesystem operations.
+
+Metadata fidelity is treated seriously. The implementation distinguishes stored/kernel security descriptors from API projections and reconciles namespace, allocation and stream evidence.
+
+The Rust/platform boundary is useful. Main-crate unsafe code is forbidden; native operations are concentrated in the separate Win32 crate.
+
+Refusal is a supported result. Unsupported source features, occupancy conflicts and insufficient journal space cause refusal instead of silent semantic loss.
+
+Continue these contracts. A wholesale rewrite would discard useful accumulated knowledge without addressing the immediate qualification gaps. R3 R4 R6 R8 R9 R33
+
+3. Highest-priority correctness issue: bind target semantics to the frozen image
+
+What the code does
+
+In general_target_preservation::verify_and_freeze:
+
+Lines 96–99 verify the native ReFS tree.
+
+Lines 100–116 derive placement from the native mappings and read source ranges.
+
+Line 117 isolates the target.
+
+Line 130 hashes the frozen target.
+
+The native verifier operates on an online, writable shadow. shadow_native.rs requires disk attributes zero for this path, and its per-file opens use share_mode(3), which allows write sharing. The native verification function returns a report; it does not retain a no-writer lease through the later freeze.
+
+The resulting frozen hash pins the bytes present after isolation, while the semantic observations were gathered earlier. I did not find an end-to-end guarantee that those are the same semantic state. The retained-range allocator check does not reverify the entire frozen target namespace, security descriptors, timestamps and logical data. R5 R10
+
+Why it matters
+
+A successful native observation followed by a raw image hash is weaker than a successful observation of the exact protected image. A change between the observation and freeze could leave the certificate describing earlier contents or mappings.
+
+This is a static-review consistency concern, not reproduced corruption. In the owned, controlled lab the interval may never have affected a run. It should nevertheless be closed before generalizing the workflow.
+
+Recommended change
+
+Provide one explicit contract:
+
+A protected post-freeze semantic observation tied to before/after unchanged raw-image hashes; or
+
+A proven exclusive observation-to-freeze protocol that prevents relevant writers and explains flush/dismount transitions.
+
+Reuse the project's protected observation work where applicable. Fail qualification if the protocol cannot be established. Do not rely only on a clean lab or an ownership convention.
+
+Acceptance gate: the exact frozen target admitted to the journal has verified namespace, streams, logical hashes, mappings, timestamps and security views, with no unprotected semantic interval. Keep this gate independent of any later write-set optimization.
+
+4. Finish public recovery across the whole operation
+
+The core is more complete than the public recovery surface.
+
+4.1 Failures before activation need a public cancel path
+
+Qualification persistently isolates the source before several later steps can fail. Remaining offline/read-only is intentional and safe.
+
+However, public recovery reopens an already-activated target and requires disk attributes 1, while a source frozen before activation has attributes 3. The existing lab abort helper is not directly compatible with the artifact produced by the public qualification flow:
+
+Public source-frozen.json has kind observed-frozen-source-identity and fields including binding and state.
+
+lab-abort-general-source expects different kind strings plus binding_sha256, before and after.
+
+Therefore a user can be safely stopped with an unchanged source but lack a supported public command that proves it unchanged and restores availability. R4 R7 R32
+
+Add a read-only recovery-state classifier and a public cancel/abort operation using the public run's actual pinned artifact schema. Cancel must prove exact device identity, unchanged source bytes, and absence of an activated reconstruction before restoring the original state and mount paths. Do not automatically bring a disk online just because a worker failed.
+
+4.2 Public rollback still depends on the shadow
+
+general_recovery::run unconditionally reopens the shadow before choosing resume, rollback or finalize. Yet general_reconstruct::rollback_without_shadow and the core journal operation already exist, with ordinary-file tests.
+
+Expose and qualify a deliberate public shadowless rollback path. It should preserve journal identity, original binding, immutable ticket, unchanged out-of-journal data and the irreversible handoff restriction. Do not automatically give shadowless forward resume the same authority. R7 R8 R9 R29
+
+4.3 Make recovery state intelligible
+
+A proposed read-only status command should report verified state and permissible operations, for example:
+
+Observed state
+
+Intended public behavior
+
+Source frozen, reconstruction not activated
+
+Prove unchanged source; allow cancel
+
+Activated, handoff absent
+
+Allow qualified resume or rollback
+
+Shadow missing, handoff absent
+
+Allow qualified shadowless rollback
+
+Full handoff marker, exact offline postimage
+
+Allow supported finalization
+
+Already mounted and changed by ReFS
+
+Supported native verification/completion only, subject to strict current-tree checks
+
+Partial or foreign marker, or identity mismatch
+
+Fail closed and report the unresolved state
+
+These are proposed user-visible states, not a claim that such a command exists today.
+
+Partial handoff markers currently sacrifice availability to prevent unsafe rollback. Keep that refusal. If future work introduces redundant/versioned commit records, qualify the new protocol separately rather than accepting ambiguous legacy records.
+
+4.4 Qualify current integration, not only older helpers
+
+Native tests should cover cancellation before activation, interruptions during apply and rollback, missing shadow, journal errors, process death around handoff, and native-only post-handoff completion. The newly integrated automatic source-label path also needs a fresh whole conversion. An older successful conversion plus a later independently tested completion command is not an end-to-end result for current HEAD. R30
+
+5. Make natural retention the next visible milestone
+
+The newest splitter is worth testing
+
+Current shadow_native::retain_source_run_on_shadow calls retention_layout::plan_free_subruns, checks both legacy and metadata-inclusive bitmap views, and measures each requested native move.
+
+That addresses the important case where a large source run is only partly blocked. It is more capable than rejecting a whole run whenever one portion is occupied. The latest implementation must be measured directly; the older zero-retention run is not a result for this splitter. R10 R11
+
+Recommended experiment
+
+Use an independently populated NTFS tree under the existing bounds. Preserve its naturally chosen source positions. Include:
+
+At least one large ordinary file.
+
+Several smaller files, a resident file and an empty file.
+
+A fragmented file, a partial final cluster and an initialized-prefix case.
+
+Source ranges that produce mixed free/occupied target subranges.
+
+Some of these source shapes are implemented candidates whose native conversion qualification is still open. Their inclusion is an experiment objective, not an assertion of support.
+
+Run the real public qualification/journal/finalization flow with the latest binary, then verify through Microsoft's driver, exercise a bounded native mutation workload, and verify after reboot.
+
+Record retained, relocated and materialized bytes separately. Success requires measured nonzero retention on naturally placed extents, complete logical and metadata preservation, and no overlap between retained ranges and converter target writes. A high retention percentage is useful later; the first requirement is valid natural retention.
+
+Distinguish retention from zero-copy
+
+Unchanged physical location and identical hashes do not alone prove that no payload I/O occurred. The repository already has a disk-I/O evidence design, but the document says trace decoding and coverage validation are unfinished.
+
+Use positive controls, complete operation coverage, retained-range address mapping and loss accounting before making an absence-of-writes claim. Report source/target writes separately from shadow writes. Even a successful target-retention result on this path still involves copying payload into the shadow. R31
+
+Reuse the evacuation planner carefully
+
+shadow_evacuation.rs contains a bounded planner; it is not integrated execution. If ordinary shadow file data blocks a useful candidate range, implement a small measured native evacuation step for those identified user-data blockers. Requery mappings and both allocation views after each move.
+
+Metadata occupancy requires a different solution. Do not assume native APIs can relocate every metadata page or infer ownership from a legacy free bit. Microsoft's bitmap documentation also states that a bitmap is a point-in-time observation and can become stale on a writable volume. R12 M1
+
+6. Separate the two scaling problems
+
+6.1 The shadow still requires payload-proportional work and storage
+
+The generalized workflow already streams from the checked NTFS reader. Streaming is not missing. In shadow_native.rs, files are created and their logical bytes are written before native placement attempts begin.
+
+Consequently:
+
+Process memory can be bounded.
+
+Payload writes to the shadow still grow with logical contents.
+
+Shadow backing still grows with materialized data and metadata.
+
+The original partition's target writes can fall with successful retention.
+
+The architecture still has distinct source, shadow and journal-storage roles.
+
+A sparse virtual disk's nominal size and sparse flags are not reliable substitutes for measured allocated backing; the research notes already record a discrepancy worth resolving. R3 R4 R10 R16
+
+6.2 Full-image reconstruction amplifies I/O and journal size
+
+retained_compare::compare_streams reads the entire source and shadow, then rehashes both. The function explicitly accounts for four times the partition length in reads. On the recorded 52 GiB partition that is 208 GiB read by the comparator alone, excluding other inventory, hashing, journal and recovery passes. R13
+
+The journal contains old and new bytes for every changed sector, so its payload is approximately twice the changed-byte set, plus framing. Unneeded differences in free-space remnants can therefore create real journal work. The current maximum journal is 768 MiB, yielding a 376 MiB changed-byte budget after its reserved overhead. R9 R25
+
+Do not treat larger constants as a scalability solution.
+
+Qualify the existing target write-set planner
+
+refs_write_set already builds a diagnostic candidate. It correctly remains non-executable because the independent frozen ownership/reference graph and native hybrid-image qualification are incomplete.
+
+The intended optimization is to reconstruct the ranges the target actually needs and preserve unrelated original bytes elsewhere. Before enabling it:
+
+Reconcile the frozen target's allocation tiers, reservations, reachable metadata and payload references.
+
+Prove bootstrap/checkpoint/recovery-required ranges are included.
+
+Verify complete target-payload coverage, not only a supplied subset.
+
+Bind the hybrid postimage and before/after journal bytes.
+
+Test native mount, subsequent allocation, growth, truncation, deletion, remount and reboot.
+
+The pre-freeze native bitmap is insufficient by itself; dismount/flush can change allocation state. The repo's metadata-write-set document recognizes this explicitly. R14 R15
+
+Only after the proof boundaries are established should repeated reads be consolidated or replaced with authenticated chunk evidence. A first scalable version can still perform deliberate full validation passes; reducing temporary allocation and redundant scans are separate goals.
+
+Make native queries iterative
+
+The complete bitmap buffer is 2 MiB including a 16-byte header. At 4 KiB clusters its representational coverage is approximately:
+
+(2,097,152 - 16) × 8 × 4,096 = 68,718,952,960 bytes, or 63.9995 GiB.
+
+The reader requires a complete bitmap starting at zero. Retrieval-pointer decoding similarly expects a single response starting at VCN zero and permits at most 1,024 extents.
+
+Thus the 128 GiB pair limit and 64 TiB individual disk-binding limit do not imply the whole pipeline can convert volumes of those sizes. Introduce paginated bitmap/retrieval queries, bounded iterators, exact coverage checks and resumable evidence capture. Test boundary-sized and highly fragmented supported inputs before raising file/data limits. R22 R23 R24
+
+7. Finish direct-writer acceptance using the harness already present
+
+The strict REFSNT experiment adopted one existing 4 KiB cluster on an already-ReFS image, using eight metadata writes totaling 131,072 bytes and three image flushes. It then reread the result through the external engine; a separate Rust overlay check examined bootstrap/payload properties. This does not establish a complete metadata graph, Microsoft's acceptance, or an NTFS-to-ReFS direct conversion. R16
+
+HEAD now includes a restricted reference importer. It imports a pinned reference into a fresh enrolled disk, verifies it, applies the eight overlay pages and optionally hands off. Its result deliberately says native_writer_qualified=false.
+
+The missing operation is a native acceptance verifier and collector:
+
+Use the existing importer on the disposable owned reference disk.
+
+Verify the filesystem through Microsoft's driver.
+
+Open the actual adopted filename, verify size, hash and physical mapping.
+
+Verify all original reference objects.
+
+Exercise bounded growth/truncation/rename/deletion and fresh allocation.
+
+Remount and reboot, then reverify.
+
+Preserve exact binary, driver, reference, overlay and result pins.
+
+The strict adapter names the file adopted-existing.bin. The older acceptance document refers to adopted.bin and says the importer is missing. Reconcile those details before running the test. R17 R18 R19 R41
+
+Keep three independent gates:
+
+Existing-cluster adoption accepted on a ReFS control image.
+
+Metadata and allocation ownership proven for the required writer profile.
+
+An NTFS-owned extent adopted during same-partition conversion with the journal protocol.
+
+Long term, a qualified direct extent writer or another validated metadata-only construction method is the route toward scratch that depends mainly on metadata, required relocation and recovery material. That is a design target, not a measured property of the current system.
+
+Keep the native-shadow path as a control, compatibility oracle and usable bounded backend. Reuse its admission, identity, expectation and journal contracts rather than building a separate recovery system around the research writer.
+
+8. Broaden the source preservation contract deliberately
+
+Current conversion support is much narrower than the parser's decoding capability.
+
+Dimension
+
+Current conversion boundary
+
+Source geometry
+
+NTFS 3.1 profile; 512-byte logical sectors; 4 KiB clusters; 1 KiB MFT records
+
+Target
+
+ReFS 3.14 / 4 KiB / 512-byte sector profile
+
+Native source policy qualification
+
+Windows build 26300 checks; broader build/profile qualification separate
+
+Volume topology
+
+Dedicated basic GPT data disk; no additional data/EFI/system partitions, with a bounded optional MSR
+
+Ordinary tree size
+
+128 files, 32 directories, 256 MiB logical contents
+
+Names
+
+ASCII-only components up to 100 bytes; at most 16 components
+
+File identity
+
+One name/link profile; hard links and short-name aliases refused
+
+Streams
+
+Single unnamed ordinary DATA stream for conversion
+
+Additional semantics
+
+ADS, sparse/encoded streams, reparse semantics and unassembled attributes are refused by the admitted profile
+
+Security
+
+SACL absence required; shadow construction requires present DACL
+
+Basic metadata
+
+Restricted file attributes and positive bounded FILETIMEs
+
+Boot conversion
+
+Deferred
+
+These are implementation constraints, not universal ReFS limitations. Microsoft's current overview lists Unicode names, named streams, hard links and sparse files among ReFS capabilities; its protocol documentation specifically identifies hard-link support for ReFS 3.5 and later. Exact target behavior must still be qualified for this converter. R4 R5 R20 R21 R24 M2 M3
+
+Suggested expansion order
+
+First, qualify implemented ordinary cases. Resident, empty, fragmented, partial-tail, initialized-prefix and preallocated layouts need individually traceable native outcomes. The source classifier already contains useful distinctions; validate those without weakening admission.
+
+Next, Unicode and path identity. Removing the ASCII guard is insufficient. Preserve exact UTF-16 components and define collision/case behavior against both source and target. The current ASCII-uppercase path keys also need redesign. Include accented names, CJK, surrogate pairs and case-sensitive-source refusals or support.
+
+Then named streams. The checked named-stream reader already exists. Add target reconstruction, length/limit handling, independent hashes and stream enumeration before widening admission. Zone.Identifier is a useful ordinary test case. Do not silently discard streams.
+
+Then hard links and broader security. Preserve object identity across multiple names and test update/delete behavior. Qualify SACL and security descriptor cases explicitly. Reparse points, encoded content, object IDs, quotas and transaction semantics should have separate preservation/refusal decisions.
+
+Build a read-only preflight inventory that explains every blocking feature and estimates space from measured candidate plans. It can guide real-data prioritization without changing user volumes.
+
+Prevent planner drift
+
+The source stream classifier can retain an initialized prefix and materialize its tail. The direct-adoption planner is more conservative for uninitialized streams and can classify whole runs as relocated on any collision. They are separate, non-equivalent diagnostic models today.
+
+Before the direct writer becomes executable, define a canonical per-stream disposition model with complete byte coverage: adopt, relocate, materialize and hole. Backends may impose additional restrictions, but their accounting and preservation invariants should agree. This is a targeted integration improvement, not a request for a broad rewrite. R26 R27
+
+9. Turn qualification into durable, current evidence
+
+The test code includes valuable coverage of torn journals, interrupted apply/rollback, flush failures, foreign bytes and handoff closure. tests/recovery_model.rs explicitly states that it is a tiny in-memory model with assumed durability, not a Windows/storage or ReFS crash qualification. Preserve that distinction. R28 R29
+
+No checked-in CI configuration was present in the reviewed tree. The GitHub Actions query returned zero runs for this SHA, and the combined-status query returned no statuses. This does not prove that no external CI exists. It means this review could not establish a reproducible attached CI result for the pinned commit.
+
+Add two lanes:
+
+Ordinary Windows/MSVC CI: pinned Rust 1.98.1, formatting, clippy, workspace tests, release builds and parser/contract tests.
+
+Controlled native qualification: owned Hyper-V fixtures, exact source/target bindings and approved mutations; semantic preservation, interruption, recovery, remount and reboot evidence.
+
+Portable tests alone omit the cfg(windows) conversion, qualification and recovery modules. A Windows build/test lane is therefore essential. R33 R37
+
+Use one capability/evidence registry
+
+Several documents are stale:
+
+IMPLEMENTATION_STATUS.md opens with a conversion still running.
+
+format-gates.md says no native conversion result has been produced.
+
+native-refs-writer-acceptance.md says the importer remains to be implemented.
+
+Older streaming documentation does not cleanly distinguish the optional historical lab path from the generalized streaming workflow.
+
+Replace ambiguous current-status prose with a maintained, preferably generated matrix. Each claim should carry:
+
+Profile and feature.
+
+Exact repository commit and executable hash.
+
+Windows build/revision and relevant driver identity.
+
+Input corpus and expected semantic manifest.
+
+Result artifact locations and digests.
+
+Implemented, unit-tested, native-observed, reboot-verified and fault-qualified status.
+
+Explicit exclusions and remaining gates.
+
+Keep chronological lab notes, but derive README/current capability output from this registry. A latest-commit label must not silently inherit all evidence from an earlier binary. R34 R35 R36
+
+10. Recommended implementation sequence
+
+Order
+
+Work package
+
+Completion evidence
+
+1
+
+Close target verification-to-freeze interval
+
+Semantics proven for the exact protected image used by admission
+
+2
+
+Public status/cancel and shadowless rollback
+
+Native tests from public artifacts, including pre-activation failure and missing shadow
+
+3
+
+Current-HEAD natural retention and automatic label run
+
+Nonzero natural retention; exact bytes/mappings/metadata; mutation and reboot; label path exercised
+
+4
+
+Direct-writer native acceptance, in parallel
+
+Existing imported candidate accepted by Microsoft's driver with read/mapping/mutation/reboot evidence
+
+5
+
+Frozen ownership reconciliation and selective target write set
+
+Qualified hybrid image; no omitted required ranges; lower measured changed-byte and journal cost
+
+6
+
+Unicode, streams and broader identity/security profiles
+
+Explicit preservation and refusal matrix; native conformance cases
+
+7
+
+Paginated evidence collection and bounded scale-up
+
+Complete bitmap/run coverage on larger and fragmented inputs; measured I/O/storage curves
+
+8
+
+Wider Windows/Server/storage qualification
+
+Independently qualified exact profiles and recovery results
+
+Steps 1–3 are the next focused product iteration. Step 4 is an independent research workstream that could change the long-term storage architecture. Steps 5–7 should be driven by measured bottlenecks and coverage, not arbitrary percentage-complete estimates.
+
+Boot conversion, a GUI and broad filesystem-feature parity should stay outside the immediate critical path. The project already has a concrete data-volume objective and enough infrastructure to deliver a meaningful bounded release.
+
+11. Metrics every native run should publish
+
+Use disjoint logical-byte counts and separate physical I/O/storage counts:
+
+Logical payload bytes.
+
+Eligible retention-candidate bytes.
+
+Actually retained payload bytes.
+
+Relocated payload bytes.
+
+Resident/uninitialized/tail materialization bytes.
+
+Target metadata/bootstrap bytes written.
+
+Total original-target bytes written.
+
+Shadow payload bytes written.
+
+Journal immutable bytes and total bytes.
+
+Actual peak shadow/journal/host backing allocation.
+
+Full-image read bytes and pass counts by phase.
+
+Native operation results, duration and recovery state.
+
+Source/target semantic manifest hashes, binary/driver/profile pins and reboot outcome.
+
+Report inability to measure a value as unknown. Do not equate requested disk bytes, sparse logical length, retained hashes, or operation counters with evidence they do not supply.
+
+12. Coding-agent handoff
+
+Continue from the reviewed commit or explicitly rebase this review against subsequent changes. Preserve existing enrolled fixtures, live source admission, both bitmap views, exact journal identity and handoff closure.
+
+Audit and fix the target verification-to-freeze contract in general_target_preservation.rs and shadow_native.rs. Produce a protected semantic witness for the exact frozen target; keep unqualified alternatives refused.
+
+Add public read-only operation-state reporting. Add unchanged-source cancel using the public qualification artifact schema. Expose the existing shadowless rollback core through a deliberately qualified public route.
+
+Run a bounded natural mixed-placement tree through current HEAD, exercising new split retention and automatic source-label integration. Include implemented ordinary edge cases as separate qualification rows.
+
+Complete native acceptance verification around the existing restricted reference importer. Use adopted-existing.bin from the strict adapter and verify the entire reference tree. Keep acceptance of a ReFS control image distinct from NTFS direct conversion.
+
+Reconcile the frozen ReFS ownership graph before making refs_write_set executable. Keep exact hybrid-image, recovery and native mutation gates.
+
+Implement iterative bitmap/retrieval evidence and then expand measured profile limits. Preserve complete-coverage checks.
+
+Extend Unicode/path identity and named-stream preservation through versioned profiles; keep explicit refusals for every unsupported semantic case.
+
+Add Windows CI and a capability/evidence registry. Update stale current-status documents from recorded current evidence.
+
+Publish retained/relocated/materialized bytes, target and shadow I/O, actual staging allocation, journal size and full-image read counts for every run.
+
+Do not claim zero-copy, arbitrary-volume support, current-HEAD native qualification or power-loss safety from narrower tests.
+
+Recommended next outcome: a current-commit native demonstration that retains naturally placed payload, preserves all admitted semantics, recovers through its public interface, and exposes measured storage/I/O costs. That is the strongest foundation for a useful converter and for deciding how aggressively to pursue the direct writer.
+
+Source references
+
+Repository references below are pinned to the reviewed commit. Line references in the narrative refer to this snapshot. Public Microsoft documentation was retrieved during this review.

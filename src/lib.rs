@@ -9,11 +9,15 @@ pub mod fixed_vhd;
 #[cfg(windows)]
 pub mod general_allocation_capture;
 #[cfg(windows)]
+pub mod general_cancel;
+#[cfg(windows)]
 pub mod general_conversion;
 #[cfg(windows)]
 pub mod general_lab;
 #[cfg(windows)]
 pub mod general_label_completion;
+#[cfg(windows)]
+pub mod general_operation_state;
 #[cfg(windows)]
 pub mod general_qualification;
 #[cfg(windows)]

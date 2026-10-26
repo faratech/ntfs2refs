@@ -23,10 +23,20 @@ pub enum Operation {
     Resume,
     Rollback,
     RollbackAfterMarker,
+    RollbackWithoutShadow,
+    RollbackAfterMarkerWithoutShadow,
     Finalize,
     FinalizeAfterMarker,
 }
 impl Operation {
+    /// Shadowless authority is deliberately limited to the NTFS rollback
+    /// direction. Missing shadow storage never changes another operation.
+    pub fn requires_shadow(self) -> bool {
+        !matches!(
+            self,
+            Self::RollbackWithoutShadow | Self::RollbackAfterMarkerWithoutShadow
+        )
+    }
     fn needs_expectation(self) -> bool {
         matches!(self, Self::Finalize | Self::FinalizeAfterMarker)
     }
@@ -139,7 +149,7 @@ pub fn recover(operation: Operation, inputs: &Inputs, output: &Path) -> Result<(
         "intent.json",
         &serde_json::json!({"schema_version":1,"kind":"general-recovery-intent",
         "operation":operation,"request_sha256":inputs.request_sha256,"ticket_sha256":inputs.ticket_sha256,
-        "expectation_sha256":inputs.expectation_sha256,"journal":inputs.journal,"fresh_apply_authorized":false}),
+        "expectation_sha256":inputs.expectation_sha256,"journal":inputs.journal,"shadow_access_required":operation.requires_shadow(),"fresh_apply_authorized":false}),
     )?;
     run(
         operation,
@@ -181,16 +191,25 @@ fn run(
         let mut events = Vec::<NativeEvent>::new();
         let mut target =
             GeneralJournaledPartition::reopen(request.pair.source.clone(), &mut events)?;
-        let mut shadow = GeneralFrozenPartition::reopen(request.pair.shadow.clone(), &mut events)?;
         ensure!(
-            target.state(&mut events)?.disk_attributes == 1
-                && shadow.state(&mut events)?.disk_attributes == 3,
-            "recovery requires an already activated offline target and excluded read-only shadow"
+            target.state(&mut events)?.disk_attributes == 1,
+            "recovery requires an already activated offline target"
         );
+        let mut shadow = if operation.requires_shadow() {
+            let shadow = GeneralFrozenPartition::reopen(request.pair.shadow.clone(), &mut events)?;
+            ensure!(
+                shadow.state(&mut events)?.disk_attributes == 3,
+                "recovery requires an excluded read-only shadow"
+            );
+            Some(shadow)
+        } else {
+            None
+        };
         artifacts::save(output, "preflight-events.json", &events)?;
         events.clear();
         match operation {
             Operation::Resume | Operation::Rollback => {
+                let shadow = shadow.as_mut().context("required shadow unavailable")?;
                 phase = "journal-recovery";
                 let mode = if operation == Operation::Resume {
                     protocol::RecoveryOperation::Resume
@@ -201,7 +220,7 @@ fn run(
                     mode,
                     request,
                     &mut target,
-                    &mut shadow,
+                    shadow,
                     &mut journal,
                     ticket,
                     &mut events,
@@ -220,7 +239,7 @@ fn run(
                     let completed = protocol::complete_rollback(
                         request,
                         target,
-                        &mut shadow,
+                        shadow,
                         &mut journal,
                         ticket,
                         events,
@@ -238,11 +257,12 @@ fn run(
                 }
             }
             Operation::RollbackAfterMarker => {
+                let shadow = shadow.as_mut().context("required shadow unavailable")?;
                 phase = "rollback-after-marker";
                 let completed = protocol::resume_completed_rollback(
                     request,
                     target,
-                    &mut shadow,
+                    shadow,
                     &mut journal,
                     ticket,
                     events,
@@ -257,22 +277,16 @@ fn run(
                 );
             }
             Operation::Finalize | Operation::FinalizeAfterMarker => {
+                let shadow = shadow.as_mut().context("required shadow unavailable")?;
                 phase = "refs-handoff";
                 let expected = expectation.context("finalize expectation absent")?;
                 let mut completed = if operation == Operation::Finalize {
-                    protocol::finalize(
-                        request,
-                        target,
-                        &mut shadow,
-                        &mut journal,
-                        ticket,
-                        expected,
-                    )?
+                    protocol::finalize(request, target, shadow, &mut journal, ticket, expected)?
                 } else {
                     protocol::finalize_after_marker(
                         request,
                         target,
-                        &mut shadow,
+                        shadow,
                         &mut journal,
                         ticket,
                         expected,
@@ -286,15 +300,72 @@ fn run(
                     completed.error
                 );
             }
+            Operation::RollbackWithoutShadow => {
+                phase = "journal-only-rollback";
+                let execution = protocol::rollback_without_shadow(
+                    request,
+                    &mut target,
+                    &mut journal,
+                    ticket,
+                    &mut events,
+                )?;
+                artifacts::save(output, "execution.json", &execution)?;
+                artifacts::save(output, "execution-events.json", &events)?;
+                events.clear();
+                ensure!(
+                    execution.result.target_sha256 == execution.expected_target_sha256
+                        && execution.expected_target_sha256 == request.comparison.source_sha256
+                        && !execution.shadow_available
+                        && target.state(&mut events)?.disk_attributes == 1,
+                    "shadowless rollback did not prove the complete excluded NTFS image"
+                );
+                phase = "journal-only-rollback-completion";
+                let completed = protocol::complete_rollback_without_shadow(
+                    request,
+                    target,
+                    &mut journal,
+                    ticket,
+                    events,
+                )?;
+                artifacts::save(output, "completion.json", &completed)?;
+                ensure!(
+                    completed.success
+                        && completed.replay_closed
+                        && !completed.shadow_available
+                        && completed.mounted_filesystem.as_deref() == Some("NTFS"),
+                    "shadowless NTFS rollback completion refused: {:?}",
+                    completed.error
+                );
+            }
+            Operation::RollbackAfterMarkerWithoutShadow => {
+                phase = "journal-only-rollback-after-marker";
+                let completed = protocol::resume_completed_rollback_without_shadow(
+                    request,
+                    target,
+                    &mut journal,
+                    ticket,
+                    events,
+                )?;
+                artifacts::save(output, "completion.json", &completed)?;
+                ensure!(
+                    completed.success
+                        && completed.replay_closed
+                        && !completed.shadow_available
+                        && completed.mounted_filesystem.as_deref() == Some("NTFS"),
+                    "shadowless completed rollback marker could not be finalized: {:?}",
+                    completed.error
+                );
+            }
         }
         artifacts::save(
             output,
             "result.json",
             &serde_json::json!({"schema_version":1,"kind":"general-recovery",
             "success":true,"operation":operation,"fresh_apply_authorized":false,
+            "shadow_access_required":operation.requires_shadow(),
             "target_remains_offline":operation == Operation::Resume,
             "rollback_closed":matches!(operation,Operation::Finalize|Operation::FinalizeAfterMarker),
-            "ntfs_rollback_completed":matches!(operation,Operation::Rollback|Operation::RollbackAfterMarker)}),
+            "ntfs_rollback_completed":matches!(operation,Operation::Rollback|Operation::RollbackAfterMarker|Operation::RollbackWithoutShadow|Operation::RollbackAfterMarkerWithoutShadow)}),
         )?;
         Ok(())
     })();
@@ -303,7 +374,7 @@ fn run(
             output,
             "failed.json",
             &serde_json::json!({"schema_version":1,"kind":"general-recovery-failure",
-            "operation":operation,"phase":phase,"error":format!("{error:#}"),"automatic_fallback_attempted":false}),
+            "operation":operation,"phase":phase,"error":format!("{error:#}"),"shadow_access_required":operation.requires_shadow(),"automatic_fallback_attempted":false}),
         )?;
         return Err(error);
     }
@@ -341,6 +412,37 @@ mod tests {
         assert!(value.validate(Operation::Finalize).is_err());
     }
     #[test]
+    fn shadowless_authority_is_explicit_and_cannot_supply_forward_expectations() {
+        for operation in [
+            Operation::Resume,
+            Operation::Rollback,
+            Operation::RollbackAfterMarker,
+            Operation::Finalize,
+            Operation::FinalizeAfterMarker,
+        ] {
+            assert!(operation.requires_shadow());
+        }
+        for operation in [
+            Operation::RollbackWithoutShadow,
+            Operation::RollbackAfterMarkerWithoutShadow,
+        ] {
+            assert!(!operation.requires_shadow());
+            let mut value = inputs();
+            value.validate(operation).unwrap();
+            value.expectation = Some("tree.json".into());
+            value.expectation_sha256 = Some("c".repeat(64));
+            assert!(value.validate(operation).is_err());
+        }
+        assert_eq!(
+            serde_json::to_value(Operation::RollbackWithoutShadow).unwrap(),
+            "rollback_without_shadow"
+        );
+        assert_eq!(
+            serde_json::to_value(Operation::RollbackAfterMarkerWithoutShadow).unwrap(),
+            "rollback_after_marker_without_shadow"
+        );
+    }
+    #[test]
     fn pinned_inputs_refuse_changed_bytes_size_and_noncanonical_pins() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("input.json");
@@ -359,8 +461,14 @@ mod tests {
         let output = directory.path().join("output");
         let mut value = inputs();
         value.request_sha256 = "invalid".into();
-        assert!(recover(Operation::Resume, &value, &output).is_err());
-        assert!(!output.exists());
+        for operation in [
+            Operation::Resume,
+            Operation::RollbackWithoutShadow,
+            Operation::RollbackAfterMarkerWithoutShadow,
+        ] {
+            assert!(recover(operation, &value, &output).is_err());
+            assert!(!output.exists());
+        }
     }
     #[test]
     fn mismatched_expectation_is_refused_before_output_or_native_access() {

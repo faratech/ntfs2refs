@@ -115,6 +115,80 @@ pub struct GeneralLiveNtfsObservation {
     before: GeneralDiskState,
     after: GeneralDiskState,
 }
+/// Constructed only while a frozen ReFS partition is published through a
+/// physically read-only lease and returned to persistent exclusion. The raw
+/// before/after image equality remains the caller's independent obligation.
+#[derive(Debug, Serialize)]
+pub struct GeneralLiveRefsObservation {
+    report: crate::shadow_native::GeneralReport,
+    before: GeneralDiskState,
+    observed_readonly: GeneralDiskState,
+    after: GeneralDiskState,
+}
+impl GeneralLiveRefsObservation {
+    pub fn report(&self) -> &crate::shadow_native::GeneralReport {
+        &self.report
+    }
+    pub fn before(&self) -> &GeneralDiskState {
+        &self.before
+    }
+    pub fn after(&self) -> &GeneralDiskState {
+        &self.after
+    }
+}
+
+/// A borrowed actual volume handle created only inside the exclusion lease.
+/// Neither a caller-provided flag nor a serialized report can create this
+/// route. No constructor or disk-state setters are exposed outside native.rs.
+pub(crate) struct GeneralReadonlyRefsVolume<'a> {
+    binding: &'a GeneralDiskBinding,
+    management: &'a File,
+    volume: &'a File,
+    expected_state: &'a GeneralDiskState,
+}
+impl GeneralReadonlyRefsVolume<'_> {
+    pub(crate) fn binding(&self) -> &GeneralDiskBinding {
+        self.binding
+    }
+    pub(crate) fn volume(&self) -> &File {
+        self.volume
+    }
+    pub(crate) fn snapshot(
+        &self,
+        binding: &DiskBinding,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionSnapshot> {
+        if binding.disk_number != self.binding.disk_number
+            || binding.volume_guid != self.binding.volume_guid
+            || binding.identity != self.binding.identity
+        {
+            return Err(invalid("protected ReFS observer binding differs"));
+        }
+        let state = general_disk_state(self.management, self.binding, events)?;
+        if state != *self.expected_state || state.disk_attributes != READ_ONLY {
+            return Err(invalid(
+                "protected ReFS volume is no longer physically read-only",
+            ));
+        }
+        let extents = control(
+            self.volume,
+            "protected-refs-observation-extents",
+            VOLUME_EXTENTS,
+            &[],
+            1024,
+            events,
+        )?;
+        self.binding.validate_volume_extent(&extents)?;
+        Ok(PartitionSnapshot {
+            binding: binding.clone(),
+            disk_attributes: state.disk_attributes,
+            device: state.device,
+            length: state.disk_length,
+            alignment: state.alignment,
+            layout: state.gpt_layout,
+        })
+    }
+}
 impl GeneralLiveNtfsObservation {
     pub fn report(&self) -> &crate::attestation::Report {
         &self.report
@@ -269,7 +343,7 @@ fn control(
     Ok(output)
 }
 
-fn device_file(path: &str, writable: bool, unbuffered: bool) -> io::Result<File> {
+pub(crate) fn device_file(path: &str, writable: bool, unbuffered: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(writable).share_mode(3);
     if unbuffered {
@@ -290,7 +364,11 @@ fn attributes(file: &File, events: &mut Vec<NativeEvent>) -> io::Result<u64> {
     Ok(attributes)
 }
 
-fn set_attributes(file: &File, value: u64, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+pub(crate) fn set_attributes(
+    file: &File,
+    value: u64,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<()> {
     if value & !(OFFLINE | READ_ONLY) != 0 {
         return Err(invalid("unknown requested attributes"));
     }
@@ -372,7 +450,7 @@ pub(crate) fn snapshot(
 }
 
 /// Recheck immutable disk route, geometry and layout through the same handle.
-fn general_disk_state(
+pub(crate) fn general_disk_state(
     disk: &File,
     binding: &GeneralDiskBinding,
     events: &mut Vec<NativeEvent>,
@@ -405,6 +483,34 @@ fn general_disk_state(
         gpt_layout,
         disk_attributes,
     })
+}
+
+/// Observe stable GPT identity, geometry and attributes through one read-only
+/// raw disk handle. Mounted-volume access is not required, and all four known
+/// OFFLINE/READ_ONLY combinations are reportable. This grants no authority to
+/// restore availability, activate a journal or change disk attributes.
+pub fn observe_general_disk_state_readonly(
+    binding: GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralDiskState> {
+    binding.validate()?;
+    if current_windows_disk(events)? == binding.disk_number {
+        return Err(invalid("current Windows disk is excluded"));
+    }
+    let disk = device_file(
+        &format!("\\\\.\\PhysicalDrive{}", binding.disk_number),
+        false,
+        false,
+    )?;
+    let before = general_disk_state(&disk, &binding, events)?;
+    let after = general_disk_state(&disk, &binding, events)?;
+    if before != after || current_windows_disk(events)? == binding.disk_number {
+        return Err(invalid(
+            "general read-only disk state changed during observation",
+        ));
+    }
+    close_file(disk, "close-general-readonly-state-observation", events)?;
+    Ok(after)
 }
 
 /// Probe one dedicated non-system basic data disk without locking, dismounting,
@@ -1700,6 +1806,114 @@ impl GeneralFrozenPartition {
         })
     }
 
+    /// Verify all admitted ReFS semantics through an actual retained
+    /// READ_ONLY volume handle, then restore OFFLINE|READ_ONLY before returning.
+    /// The opaque return value is issued only after strict native verification
+    /// and a checked exclusion transition. No post-LOCK bitmap is required.
+    pub fn observe_refs_files(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &[crate::shadow_native::Input<'_>],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsObservation> {
+        pair.validate()?;
+        if pair.shadow != self.binding {
+            return Err(invalid(
+                "protected ReFS observation is not the frozen shadow",
+            ));
+        }
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "protected ReFS observation requires frozen exclusion",
+            ));
+        }
+        let management = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number),
+            true,
+            false,
+        )?;
+        if general_disk_state(&management, &self.binding, events)? != before {
+            return Err(invalid("protected ReFS control-handle route differs"));
+        }
+        let mut expected_readonly = before.clone();
+        expected_readonly.disk_attributes = READ_ONLY;
+        let mut lease = ReadonlyObservationLease {
+            file: &management,
+            events,
+            restoration_attempted: false,
+        };
+        let collected = (|| {
+            set_attributes(lease.file, READ_ONLY, lease.events)?;
+            control(
+                lease.file,
+                "refresh-protected-readonly-refs-properties",
+                UPDATE_PROPERTIES,
+                &[],
+                0,
+                lease.events,
+            )?;
+            let mut volume = None;
+            for _ in 0..60 {
+                if attributes(lease.file, lease.events)? != READ_ONLY {
+                    return Err(invalid("protected ReFS disk lost its read-only state"));
+                }
+                match device_file(&self.binding.volume_path()?, false, false) {
+                    Ok(file) => {
+                        volume = Some(file);
+                        break;
+                    }
+                    Err(error) if matches!(error.raw_os_error(), Some(2 | 3 | 21 | 1167)) => {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let volume = volume.ok_or_else(|| {
+                invalid("protected read-only ReFS volume was not published within 15 seconds")
+            })?;
+            if general_disk_state(lease.file, &self.binding, lease.events)? != expected_readonly {
+                return Err(invalid("protected ReFS identity changed while publishing"));
+            }
+            let protected = GeneralReadonlyRefsVolume {
+                binding: &self.binding,
+                management: lease.file,
+                volume: &volume,
+                expected_state: &expected_readonly,
+            };
+            let observed = crate::shadow_native::verify_general_ordinary_readonly(
+                pair,
+                input,
+                &same_security,
+                &protected,
+            );
+            // All native file handles close before the persistent offline
+            // transition; the retained read-only volume route closes once.
+            close_file(
+                volume,
+                "close-protected-refs-observation-volume",
+                lease.events,
+            )?;
+            observed
+        })();
+        let restored = lease.finish();
+        drop(lease);
+        restored?;
+        let after = self.state(events)?;
+        if before != after {
+            return Err(invalid(
+                "protected ReFS exclusion changed during observation",
+            ));
+        }
+        Ok(GeneralLiveRefsObservation {
+            report: collected?,
+            before,
+            observed_readonly: expected_readonly,
+            after,
+        })
+    }
+
     /// Transition only an unchanged OFFLINE|READ_ONLY source to OFFLINE. The
     /// caller must first persist and verify its external recovery journal.
     pub fn activate_for_journal(
@@ -2050,7 +2264,22 @@ impl Seek for GeneralFrozenPartition {
     }
 }
 
-fn close_file(file: File, name: &str, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+pub(crate) fn refresh_disk_properties(
+    file: &File,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<()> {
+    control(
+        file,
+        "refresh-disk-properties",
+        UPDATE_PROPERTIES,
+        &[],
+        0,
+        events,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn close_file(file: File, name: &str, events: &mut Vec<NativeEvent>) -> io::Result<()> {
     let raw = file.into_raw_handle();
     // SAFETY: into_raw_handle transferred sole ownership; this is the only close.
     // On failure, do not blindly close again: the handle value could be reused.

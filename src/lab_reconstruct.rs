@@ -663,6 +663,42 @@ pub fn inspect_journal<J: ReadSeek>(
     })
 }
 
+/// Read only the complete immutable journal across any marker state. This
+/// deliberately does not validate/repair mutable lifecycle sectors or assert
+/// anything about current target/shadow bytes. Status callers must validate
+/// the exact marker separately; raw recovery still uses `load_journal`.
+pub fn inspect_completed_journal<J: ReadSeek>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+) -> Result<JournalDescriptor> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        *observed_binding == ticket.binding,
+        "completed inspection binding differs from trusted ticket"
+    );
+    let loaded = load_completed_journal(journal, ticket)?;
+    ensure!(
+        loaded.manifest.binding == *observed_binding,
+        "completed immutable binding differs"
+    );
+    Ok(JournalDescriptor {
+        binding: loaded.manifest.binding,
+        request: loaded.manifest.request,
+        patches: loaded
+            .records
+            .iter()
+            .map(|record| JournalPatchRange {
+                offset: record.offset,
+                length: record.length,
+            })
+            .collect(),
+        changed_bytes: loaded.records.iter().map(|record| record.length).sum(),
+        expected_postimage_sha256: loaded.manifest.expected_postimage_sha256,
+        immutable_sha256: ticket.immutable_sha256.clone(),
+    })
+}
+
 fn normalized_target<T: ReadSeek, J: Read + Seek>(
     target: &mut T,
     journal: &mut J,
@@ -944,6 +980,9 @@ mod handoff_receipt_tests {
         assert_eq!(receipt.expected_length(), request.expected_length);
         assert_eq!(receipt.expected_postimage_sha256(), request.shadow_sha256);
         assert_eq!(receipt.binding(), &binding());
+        let descriptor = inspect_completed_journal(&mut readonly, &ticket, &binding()).unwrap();
+        assert_eq!(descriptor.expected_postimage_sha256, request.shadow_sha256);
+        assert!(inspect_journal(&mut readonly, &ticket, &binding()).is_err());
         assert_eq!(
             serde_json::to_vec(receipt.comparison()).unwrap(),
             serde_json::to_vec(&request).unwrap()

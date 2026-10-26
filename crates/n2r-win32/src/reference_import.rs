@@ -281,11 +281,37 @@ pub struct ImportProof {
 #[derive(Debug, Serialize)]
 pub struct PreparedProof {
     pub binding: Binding,
+    pub profile: PreparationProfile,
+    pub baseline_only: bool,
+    pub adopted_file_expected: bool,
     pub import_disk_sha256: String,
     pub payload_sha256: String,
     pub patches: Vec<PatchObservation>,
     pub state: State,
     pub native_mount_qualified: bool,
+}
+/// The baseline control preserves the Windows reference bytes exactly; it
+/// must never be described as containing the writer's adopted-file metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparationProfile {
+    BaselineOnly,
+    WriterOverlay,
+}
+impl PreparationProfile {
+    fn require_patch_count(self, count: usize) -> io::Result<()> {
+        require(
+            count
+                == match self {
+                    Self::BaselineOnly => 0,
+                    Self::WriterOverlay => 8,
+                },
+            "prepared reference profile requires zero baseline or exactly eight writer pages",
+        )
+    }
+    fn baseline_only(self) -> bool {
+        self == Self::BaselineOnly
+    }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -293,6 +319,17 @@ enum Phase {
     Overlay,
     Prepared,
     HandedOff,
+}
+fn require_preparation(
+    phase: Phase,
+    profile: PreparationProfile,
+    patch_count: usize,
+) -> io::Result<()> {
+    require(
+        phase == Phase::Overlay,
+        "verified reference phase required before preparation",
+    )?;
+    profile.require_patch_count(patch_count)
 }
 pub struct FreshReferenceDisk {
     binding: Binding,
@@ -304,6 +341,7 @@ pub struct FreshReferenceDisk {
     import_hash: String,
     payload_hash: String,
     patches: Vec<PatchObservation>,
+    prepared_profile: Option<PreparationProfile>,
     privileges: crate::attestation_native::Privileges,
 }
 fn control(f: &File, code: u32, input: &[u8], capacity: usize) -> io::Result<Vec<u8>> {
@@ -398,6 +436,7 @@ impl FreshReferenceDisk {
             import_hash: String::new(),
             payload_hash: String::new(),
             patches: vec![],
+            prepared_profile: None,
             privileges,
         };
         let before = d.state()?;
@@ -616,10 +655,15 @@ impl FreshReferenceDisk {
         )
     }
     pub fn finish_overlay(&mut self) -> io::Result<PreparedProof> {
-        require(
-            self.phase == Phase::Overlay && self.patches.len() == 8,
-            "complete eight-page overlay required",
-        )?;
+        self.finish_profile(PreparationProfile::WriterOverlay)
+    }
+    /// Prepare the exact imported Windows reference with no writer pages.
+    /// The complete blank/import/fixed-image/GPT proofs are still mandatory.
+    pub fn finish_baseline(&mut self) -> io::Result<PreparedProof> {
+        self.finish_profile(PreparationProfile::BaselineOnly)
+    }
+    fn finish_profile(&mut self, profile: PreparationProfile) -> io::Result<PreparedProof> {
+        require_preparation(self.phase, profile, self.patches.len())?;
         self.require_offline()?;
         self.file.sync_all()?;
         self.verify_final_pages()?;
@@ -632,8 +676,12 @@ impl FreshReferenceDisk {
             "prepared reference lost persistent exclusion",
         )?;
         self.phase = Phase::Prepared;
+        self.prepared_profile = Some(profile);
         Ok(PreparedProof {
             binding: self.binding.clone(),
+            profile,
+            baseline_only: profile.baseline_only(),
+            adopted_file_expected: !profile.baseline_only(),
             import_disk_sha256: self.import_hash.clone(),
             payload_sha256: self.payload_hash.clone(),
             patches: self.patches.clone(),
@@ -645,12 +693,17 @@ impl FreshReferenceDisk {
     pub fn handoff(&mut self, p: &PreparedProof) -> io::Result<State> {
         require(
             self.phase == Phase::Prepared
+                && self.prepared_profile == Some(p.profile)
+                && p.baseline_only == p.profile.baseline_only()
+                && p.adopted_file_expected == !p.profile.baseline_only()
                 && p.binding.vhd_path == self.binding.vhd_path
                 && p.binding.persistent_vhd_id == self.binding.persistent_vhd_id
                 && p.import_disk_sha256 == self.import_hash
                 && p.payload_sha256 == self.payload_hash,
             "prepared handoff proof differs",
         )?;
+        p.profile.require_patch_count(p.patches.len())?;
+        p.profile.require_patch_count(self.patches.len())?;
         self.require_offline()?;
         self.verify_final_pages()?;
         self.phase = Phase::HandedOff;
@@ -669,6 +722,50 @@ impl FreshReferenceDisk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn baseline_and_writer_preparation_require_distinct_complete_write_sets() {
+        PreparationProfile::BaselineOnly
+            .require_patch_count(0)
+            .unwrap();
+        PreparationProfile::WriterOverlay
+            .require_patch_count(8)
+            .unwrap();
+        for count in 1..=9 {
+            assert!(
+                PreparationProfile::BaselineOnly
+                    .require_patch_count(count)
+                    .is_err()
+            );
+        }
+        for count in [0, 1, 2, 7, 9] {
+            assert!(
+                PreparationProfile::WriterOverlay
+                    .require_patch_count(count)
+                    .is_err()
+            );
+        }
+        assert!(PreparationProfile::BaselineOnly.baseline_only());
+        assert!(!PreparationProfile::WriterOverlay.baseline_only());
+        assert_eq!(
+            serde_json::to_value(PreparationProfile::BaselineOnly).unwrap(),
+            "baseline_only"
+        );
+        assert_eq!(
+            serde_json::to_value(PreparationProfile::WriterOverlay).unwrap(),
+            "writer_overlay"
+        );
+    }
+    #[test]
+    fn baseline_control_cannot_prepare_before_the_complete_reference_proof() {
+        for phase in [Phase::Reference, Phase::Prepared, Phase::HandedOff] {
+            assert!(require_preparation(phase, PreparationProfile::BaselineOnly, 0).is_err());
+            assert!(require_preparation(phase, PreparationProfile::WriterOverlay, 8).is_err());
+        }
+        require_preparation(Phase::Overlay, PreparationProfile::BaselineOnly, 0).unwrap();
+        require_preparation(Phase::Overlay, PreparationProfile::WriterOverlay, 8).unwrap();
+        assert!(require_preparation(Phase::Overlay, PreparationProfile::BaselineOnly, 8).is_err());
+        assert!(require_preparation(Phase::Overlay, PreparationProfile::WriterOverlay, 0).is_err());
+    }
     #[test]
     fn empty_native_layout_accepts_observed_zero_header_without_accepting_mbr_data() {
         assert!(uninitialized_layout(&[0; 48]).unwrap());

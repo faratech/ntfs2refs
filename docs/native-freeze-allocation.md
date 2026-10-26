@@ -48,5 +48,27 @@ and audit-event bounds remain unchanged.
 
 Focused tests cover complete distinct bitmap views, query inputs and phase,
 truncated and failed required queries, token/route/state mismatches, and opaque
-serialization. Native ReFS acceptance of this optional freeze path is a
-separate laboratory qualification; these tests perform no disk operations.
+serialization. These tests perform no disk operations.
+
+## Native refusal on the current Windows profile
+
+The owning-machine `lab-freeze-refs-allocation` probe was run against the
+converted twelve-object ReFS data volume. Lock and explicit flush succeeded,
+but the post-lock legacy query returned Win32 error 21, `device not ready`.
+A second version attempted both views independently, confirming the same
+error for the metadata-inclusive query. It produced no allocation witness and
+did not continue to persistent exclusion. Closing the lock left the disk
+online/writable with its original label. A strict native verification of all
+twelve objects then passed.
+
+This rules out assuming that post-lock bitmap queries work on this Windows
+build. The optional path remains experimental and fails closed. It is not
+used by the public conversion workflow, and no pre-lock-map fallback was
+introduced. A frozen-map optimization still needs a different proven capture
+contract or complete raw allocation/metadata reconciliation.
+
+Ignored evidence directories are
+`.lab/hyperv/freeze-allocation/win11-20261025T224632508Z` and
+`.lab/hyperv/freeze-allocation/win11-20261025T225509704Z`. The latter records
+both failed controls explicitly. Its `verified.json` SHA-256 is
+`8f894ed6cdbe7e1a4190c022ce2a798d5dc8667e0f5932eb7504ec3f101bae9a`.

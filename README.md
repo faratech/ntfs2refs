@@ -34,6 +34,12 @@ The [source-label path](docs/source-volume-label.md) captures the frozen NTFS
 label and provides native-only post-handoff completion. Label restoration,
 repeat completion and strict verification after reboot passed on the converted
 twelve-object tree; the command does not replay the raw journal.
+Admission now requires [protected target semantics](docs/protected-target-semantics.md)
+on the exact frozen image. That helper passed a native twelve-object check with
+unchanged full-image hashes across a read-only observation. Public
+[operation state and preactivation cancel](docs/public-cancel-and-operation-state.md)
+and explicit shadowless rollback are implemented; positive native recovery
+qualification remains separate from their unit and refusal tests.
 The [general guest conversion result](docs/general-native-conversion-results.md)
 records a separate successful same-partition run, post-handoff mutation and
 reboot, with its current source-admission and retained-extent limits.

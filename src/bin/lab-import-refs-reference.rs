@@ -13,10 +13,13 @@ fn main() -> anyhow::Result<()> {
         /// Bring only the fresh imported reference online after durable proofs.
         #[arg(long)]
         handoff: bool,
+        /// Import only the exact Windows reference; apply no writer overlay.
+        #[arg(long)]
+        baseline_only: bool,
     }
     let a = Args::parse();
     let r = ntfs2refs::refs_reference_import::load_request(&a.request, &a.request_sha256)?;
-    ntfs2refs::refs_reference_import::run(&r, &a.output, a.handoff)
+    ntfs2refs::refs_reference_import::run_profile(&r, &a.output, a.handoff, a.baseline_only)
 }
 #[cfg(not(windows))]
 fn main() {

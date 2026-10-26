@@ -1,5 +1,5 @@
-//! Verify the actual native ReFS tree against the frozen NTFS semantics, then
-//! freeze the same target and bind its bytes. Serialized reports cannot create
+//! Freeze the ReFS target, verify its native semantics while read-only, and
+//! bracket that observation with unchanged raw-image hashes. Serialized reports cannot create
 //! this witness or supply an unfrozen target to journal activation.
 use crate::{
     general_shadow, lab_reconstruct, ntfs_attestation, ntfs_inspect, refs_inspect,
@@ -7,11 +7,152 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use n2r_win32::{
-    GeneralDiskState, GeneralFrozenPartition, NativeEvent,
-    general_layout::GeneralSourceShadowBinding, shadow_native,
+    GeneralDiskState, GeneralFrozenPartition, GeneralLiveRefsObservation, NativeEvent,
+    general_layout::GeneralSourceShadowBinding,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::{
+    io::{Read, Seek},
+    path::Path,
+};
+
+fn bracket_image<R: Read + Seek, T>(
+    image: &mut R,
+    length: u64,
+    observe: impl FnOnce(&mut R) -> Result<T>,
+) -> Result<(T, String)> {
+    let before = lab_reconstruct::hash_range(image, 0, length)?;
+    let observation = observe(image)?;
+    let after = lab_reconstruct::hash_range(image, 0, length)?;
+    ensure!(
+        before == after,
+        "protected semantic observation changed frozen image bytes"
+    );
+    Ok((observation, hex::encode(after)))
+}
+
+/// Native semantics of an exact, protected image. This is not source admission
+/// or a complete ReFS allocator/metadata-graph proof.
+#[derive(Debug, Serialize)]
+pub struct ProtectedTargetSemantics {
+    native: GeneralLiveRefsObservation,
+    target_sha256: String,
+    expected_tree_sha256: String,
+    frozen_state: GeneralDiskState,
+}
+impl ProtectedTargetSemantics {
+    pub fn native(&self) -> &GeneralLiveRefsObservation {
+        &self.native
+    }
+    pub fn target_sha256(&self) -> &str {
+        &self.target_sha256
+    }
+}
+
+pub fn verify_frozen_tree(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    events: &mut Vec<NativeEvent>,
+) -> Result<ProtectedTargetSemantics> {
+    pair.validate()?;
+    expected.validate()?;
+    ensure!(
+        target.binding() == &pair.shadow,
+        "protected target binding differs"
+    );
+    let before = target.state(events)?;
+    ensure!(
+        before.disk_attributes == 3,
+        "target must be frozen before semantic observation"
+    );
+    let tree = shadow_tree::Tree {
+        profile: "native-ordinary-tree-shadow-v2",
+        objects: expected.objects.clone(),
+        logical_bytes: expected.logical_bytes,
+        internal_replacement_pending: expected.internal_replacement_pending.clone(),
+    };
+    let input = general_shadow::native_inputs(&tree);
+    let length = target.byte_len();
+    let (native, target_sha256) = bracket_image(target, length, |target| {
+        Ok(target.observe_refs_files(
+            pair,
+            &input,
+            |a, b| {
+                ntfs_attestation::same_security(a, b)
+                    .map_err(|error| std::io::Error::other(error.to_string()))
+            },
+            events,
+        )?)
+    })?;
+    ensure!(
+        native.before() == &before && native.after() == &before && target.state(events)? == before,
+        "protected target observation changed persistent exclusion"
+    );
+    Ok(ProtectedTargetSemantics {
+        native,
+        target_sha256,
+        expected_tree_sha256: hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?)),
+        frozen_state: before,
+    })
+}
+
+/// Qualify the same protected contract without source admission or writes.
+pub fn observe_frozen_run(
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    output: &Path,
+) -> Result<()> {
+    use crate::general_qualification as artifacts;
+    pair.validate()?;
+    expected.validate()?;
+    artifacts::create_output(output)?;
+    artifacts::save(
+        output,
+        "intent.json",
+        &serde_json::json!({
+        "kind":"protected-frozen-target-observation-intent","pair":pair,
+        "expected_tree_sha256":hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?)),
+        "source_admission_authorized":false,"raw_writes_authorized":false}),
+    )?;
+    let mut events = Vec::new();
+    let attempted = (|| -> Result<()> {
+        let state =
+            n2r_win32::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
+        let mut target = match state.disk_attributes {
+            0 => GeneralFrozenPartition::isolate(pair.shadow.clone(), &mut events)?,
+            3 => GeneralFrozenPartition::reopen(pair.shadow.clone(), &mut events)?,
+            _ => anyhow::bail!(
+                "target must be mounted writable or persistently frozen before observation"
+            ),
+        };
+        let proof = verify_frozen_tree(&mut target, pair, expected, &mut events)?;
+        artifacts::save(output, "protected-semantics.json", &proof)?;
+        artifacts::save(
+            output,
+            "result.json",
+            &serde_json::json!({
+            "kind":"protected-frozen-target-observation","success":true,
+            "target_sha256":proof.target_sha256(),"objects":expected.objects.len(),
+            "frozen_image_unchanged":true,"disk_left_offline_read_only":true,
+            "source_admission_authorized":false,"raw_writes_authorized":false}),
+        )?;
+        Ok(())
+    })();
+    artifacts::save(output, "events.json", &events)?;
+    if let Err(error) = attempted {
+        artifacts::save(
+            output,
+            "failed.json",
+            &serde_json::json!({
+            "kind":"protected-frozen-target-observation-failure","error":format!("{error:#}"),
+            "raw_writes_authorized":false,"automatic_writable_retry":false}),
+        )?;
+        return Err(error);
+    }
+    Ok(())
+}
 
 #[derive(Debug, Serialize)]
 pub struct FrozenTargetPreservation {
@@ -20,7 +161,8 @@ pub struct FrozenTargetPreservation {
     source_sha256: String,
     target_sha256: String,
     expected_tree_sha256: String,
-    native: shadow_native::GeneralReport,
+    native: ProtectedTargetSemantics,
+    target_sha256_before_observation: String,
     before: GeneralDiskState,
     after: GeneralDiskState,
     placement: tree_placement::Plan,
@@ -92,12 +234,15 @@ pub fn verify_and_freeze(
     tree.bind_security_views(source_views)?;
     let expected = shadow_tree::ExpectedTree::from(&tree);
     expected.validate()?;
-    let input = general_shadow::native_inputs(&tree);
-    let native = shadow_native::verify_general_ordinary(pair.clone(), &input, |a, b| {
-        ntfs_attestation::same_security(a, b)
-            .map_err(|error| std::io::Error::other(error.to_string()))
-    })?;
-    let mappings = tree_placement::mappings_from_native(&tree, &native.native)?;
+    let mut target = GeneralFrozenPartition::isolate(pair.shadow.clone(), events)?;
+    let before = target.state(events)?;
+    let length = target.byte_len();
+    let native = verify_frozen_tree(&mut target, pair.clone(), &expected, events)?;
+    let target_sha256 = native.target_sha256().to_owned();
+    let target_sha256_before_observation = target_sha256.clone();
+    // Derive placement from this protected observation of the exact frozen
+    // image, never an earlier writable construction report.
+    let mappings = tree_placement::mappings_from_native(&tree, &native.native().report().native)?;
     let placement = tree_placement::diagnose_measured(
         &tree,
         &mappings,
@@ -114,9 +259,6 @@ pub fn verify_and_freeze(
             )
         },
     )?;
-    let mut target = GeneralFrozenPartition::isolate(pair.shadow.clone(), events)?;
-    let before = target.state(events)?;
-    let length = target.byte_len();
     let refs = refs_inspect::inspect(&mut target, length)?;
     ensure!(
         refs.geometry.major_version == 3
@@ -127,7 +269,6 @@ pub fn verify_and_freeze(
             && refs.backup_header_status == refs_inspect::BackupHeaderStatus::Matching,
         "frozen target ReFS format differs"
     );
-    let target_sha256 = hex::encode(lab_reconstruct::hash_range(&mut target, 0, length)?);
     let comparison =
         placement.comparison_request(length, source_sha256, &target_sha256, max_change_bytes)?;
     let retained_allocation = if comparison.retained_ranges.is_empty() {
@@ -155,6 +296,7 @@ pub fn verify_and_freeze(
         target_sha256,
         expected_tree_sha256: hex::encode(Sha256::digest(serde_json::to_vec_pretty(&expected)?)),
         native,
+        target_sha256_before_observation,
         before,
         after,
         placement,
@@ -164,4 +306,45 @@ pub fn verify_and_freeze(
         source_views_sha256: hex::encode(Sha256::digest(serde_json::to_vec(source_views)?)),
     };
     Ok((target, proof))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn late_change_between_semantics_and_freeze_hash_cannot_create_a_result() {
+        let mut image = Cursor::new(vec![0x31; 3 * 4096]);
+        let error = bracket_image(&mut image, 3 * 4096, |image| {
+            // Simulates an out-of-band change after an otherwise successful
+            // semantic observation, without changing device identity/state.
+            image.get_mut()[4096] ^= 1;
+            Ok("semantic-report")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("changed frozen image bytes"));
+    }
+
+    #[test]
+    fn incomplete_final_image_or_failed_semantics_cannot_create_a_result() {
+        let mut image = Cursor::new(vec![0x31; 8192]);
+        assert!(
+            bracket_image(&mut image, 8192, |image| {
+                image.get_mut().truncate(4096);
+                Ok(())
+            })
+            .is_err()
+        );
+        let mut image = Cursor::new(vec![0x31; 8192]);
+        assert!(
+            bracket_image::<_, ()>(&mut image, 8192, |_| {
+                anyhow::bail!("native tree mismatch")
+            })
+            .is_err()
+        );
+        let (result, hash) = bracket_image(&mut image, 8192, |_| Ok(7)).unwrap();
+        assert_eq!(result, 7);
+        assert_eq!(hash, hex::encode(Sha256::digest(vec![0x31; 8192])));
+    }
 }

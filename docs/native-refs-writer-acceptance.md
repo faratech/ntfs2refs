@@ -1,10 +1,11 @@
-# Independent writer: native acceptance preparation
+# Independent writer: native acceptance and reference control
 
 The strict REFSNT experiment produced a candidate ReFS image with an existing
-4 KiB cluster adopted as `/adopted-existing.bin`. Microsoft acceptance is still
-unqualified. This next experiment must preserve the already successful
-converter branch and execute metadata import and native inspection inside the
-disk-owning VM.
+4 KiB cluster adopted as `/adopted-existing.bin`. Microsoft rejected that
+candidate with a Medium Allocator structural error. A separate unmodified
+reference import passed the native read control below; this does not qualify
+the writer or isolate a specific failing field. Import and native inspection
+ran inside the disk-owning VM, separately from NTFS conversion.
 
 ## Exact reference and small transport
 
@@ -125,10 +126,10 @@ The rejected image was detached and retained; container SHA-256:
 Ignored evidence: `.lab/hyperv/writer-acceptance/win11-20261025T231634770Z` and
 `.lab/research/reference-transport-20261025T225304085Z`.
 
-The clean unmodified reference control remains the next discriminator. The
-separate lab `--baseline-only` mode imports the same packet without reading or
+The separate lab `--baseline-only` mode imports the same packet without reading or
 applying COW metadata, records zero writer pages and does not expect the adopted
 file. All blank-disk, identity, full-image and handoff gates remain required.
+That clean reference control subsequently passed the native read check below.
 Native writer acceptance, mutation and reboot qualification remain open. This
 research outcome is separate from the successful native-shadow conversions.
 
@@ -174,4 +175,52 @@ fresh `verification.json` output. A baseline mount failure remains evidence to
 collect separately; none of these scripts repair an imported filesystem.
 
 Pure profile, identity, absence-error and import-proof tests cover this new
-path. Native unmodified-baseline qualification remains pending.
+path. The bounded native result follows.
+
+## Accepted unmodified reference control
+
+On October 26, 2026, a new baseline import with experiment ID
+`23d17bcbc9a3478a8866617346e7591c` and persistent VHD ID
+`4c21c5b9-5060-409d-8374-53a11ca83f1f` completed on a separately created blank
+64 GiB VHDX. Before handoff, it proved all 64 GiB blank, reproduced the complete
+imported disk SHA-256
+`ea08681ba795322529e395febea156af8ec97687ed2bf192b6e6d0bc17f5af07`
+and original fixed-VHD SHA-256
+`b671d327fba46dc371b65a0e20d631525db13af02fa85e9c797412cba58269b7`,
+validated GPT and the pinned 52 GiB reference partition, and verified the raw
+payload hash. It wrote 68,157,440 nonzero-chunk bytes. No COW input was consumed:
+writer metadata pages/bytes and writer payload writes were all zero.
+
+Task `N2R-BaselineVerify-d78d72a09ee94402a31bfcc3dc5eabd2` exited 0 with status
+`unmodified-baseline-native-read-verified`. Microsoft ReFS read both original
+files with matching before/after IDs, lengths, hashes and extent observations:
+
+| Reference file | Logical bytes | SHA-256 |
+|---|---:|---|
+| `fixtures\nonresident.bin` | 4,194,304 | `ecbf557fb4d10cb9a59eb55645e2e154ff42e6f37cb7ca5a60eed2da1de0539d` |
+| `fixtures\small.txt` | 61 | `060769a53319045a7aedad5277e4d5118695f2e62aa626100682a686ea143ca2` |
+
+`adopted-existing.bin` was confirmed absent before and after those reads.
+This is a two-file read/transport control, not complete namespace, ACL or
+timestamp qualification. No mutation workload or reboot was performed on this
+reference. The pre-mount raw payload is not a baseline file, and no complete
+current raw-image hash or preservation of free raw bytes is claimed after mount.
+
+Import evidence is under
+`.lab/hyperv/writer-baseline/win11-20261026T051439507Z/imported`:
+
+- `import.json`: `e80638b9e33cac2037d45a7a74ecfff7646bd5e97d3894713526c6c6a5127e53`.
+- `prepared.json`: `c5894e01bdf4d148dd963e9cb7e7e634af193f106bfe0ae480ae3dcb99366cb2`.
+- `handoff.json`: `2386b9698ed5185deacae72704796bd7fae2a0047617afa0d85efa2586c494b4`.
+- `result.json`: `7aebe8846e681b5f54676363894476e43c17be42c30047bae006e93d19f748da`.
+
+Native evidence is under
+`.lab/hyperv/baseline-native-verification/win11-20261026T052857143Z`:
+
+- `verification.json`: `0f67ff46bed9e5e9b8aeb12f08f2f2e94213943bb98ed2c4f3d57779253bf0a0`.
+- `collected.json`: `77542e494950e31c0c8dffa087dfc73563595bfe20c4a379f1012befb59b8b45`.
+
+The accepted control shows that this captured reference can pass through the
+baseline import path and mount through Microsoft ReFS. It narrows investigation
+of the rejected overlay-inclusive candidate; it does not prove every transport
+variant correct or identify a particular writer/overlay-handling defect.

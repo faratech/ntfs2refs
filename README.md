@@ -40,8 +40,13 @@ unchanged full-image hashes across a read-only observation. Public
 [operation state and preactivation cancel](docs/public-cancel-and-operation-state.md)
 and explicit shadowless rollback are implemented; positive native recovery
 qualification is recorded separately from unit tests. Public preactivation
-cancellation passed on the 52 GiB fixture with exact source-hash and original
-mount restoration; native shadowless rollback remains pending.
+cancellation passed on the 52 GiB fixture. Public `rollback --without-shadow`
+also passed after a controlled first-flushed-write process exit with the shadow
+detached: it proved the exact NTFS preimage before restoring writable NTFS,
+the original mount/label and four known user files. Those four files and
+original availability also matched after a clean reboot; complete postboot
+metadata/security semantics were not rechecked. This is one process-fault
+case; storage power-loss and broader interruption coverage remain open.
 The [general guest conversion result](docs/general-native-conversion-results.md)
 records a separate successful same-partition run, post-handoff mutation and
 reboot, with its current source-admission and retained-extent limits.
@@ -175,6 +180,10 @@ The [user-report reconciliation](docs/research/user-report-reconciliation.md)
 checks the supplied research against pinned sources and the current implementation.
 The [REFSNT evaluation](docs/research/refsnt-writer-evaluation.md) identifies its
 extent-adoption primitive and records reproduced read-only corpus results.
+The [native writer control](docs/native-refs-writer-acceptance.md) now distinguishes
+the rejected overlay candidate from a separate accepted, unmodified two-file
+reference import. The baseline has no writer overlay or adopted file and does
+not establish writer acceptance, mutation or reboot qualification.
 These notes distinguish documented behavior, native observations and untested
 design proposals.
 

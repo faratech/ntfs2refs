@@ -3,7 +3,8 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$ReportPath,
  [ValidatePattern('\A[0-9a-f]{32}\z')][string]$FixtureId=([guid]::NewGuid().ToString('N')),
- [ValidateRange(0,2147483647)][int]$Seed=1311912525)
+ [ValidateRange(0,2147483647)][int]$Seed=1311912525,
+ [switch]$SequentialZeroReservation)
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 function Assert-NewPath([string]$Path){try{$null=Get-Item -LiteralPath $Path -Force -ErrorAction Stop;throw ('Path already exists: '+$Path)}catch [Management.Automation.ItemNotFoundException]{}}
 function Source-Identity {
@@ -25,11 +26,12 @@ if('Ntfs2Refs.NativeAgedRetentionProbe'-as[type]){throw 'Fresh process required 
 Add-Type -Path $helper
 $native=New-Object Ntfs2Refs.NativeAgedRetentionProbe($FixtureId,$before.volumePath,$Seed)
 Assert-NewPath $native.Result.reservationPath;Assert-NewPath $native.Result.probePath
-$record=[ordered]@{schemaVersion=1;kind='aged-layout-ntfs-retention-probe';fixtureId=$FixtureId;status='started';stage='preflight';seed=$Seed;generator='System.Random.NextBytes';runtimeVersion=[string][Environment]::Version;helperSha256=(Get-FileHash -LiteralPath $helper).Hash.ToLowerInvariant();scriptSha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant();reservationCapBytes=8GB;probeLogicalBytes=8MB;minimumSourceHeadroomBytes=1GB;positivePlacementMinimumOffset=8GB;sourceBefore=$before;sourceBeforeReservationDelete=$null;sourceAfter=$null;native=$native.Result;sourceMovesRequested=0;validDataSettersRequested=0;probeDeletionRequested=$false;error=$null;startedUtc=[DateTime]::UtcNow.ToString('o')}
+$record=[ordered]@{schemaVersion=1;kind='aged-layout-ntfs-retention-probe';fixtureId=$FixtureId;status='started';stage='preflight';reservationMode=$(if($SequentialZeroReservation){'sequential_initialized_zeroes'}else{'allocation_only'});seed=$Seed;generator='System.Random.NextBytes';runtimeVersion=[string][Environment]::Version;helperSha256=(Get-FileHash -LiteralPath $helper).Hash.ToLowerInvariant();scriptSha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant();reservationCapBytes=8GB;probeLogicalBytes=8MB;minimumSourceHeadroomBytes=1GB;positivePlacementMinimumOffset=8GB;sourceBefore=$before;sourceBeforeReservationDelete=$null;sourceAfter=$null;native=$native.Result;sourceMovesRequested=0;validDataSettersRequested=0;probeDeletionRequested=$false;error=$null;startedUtc=[DateTime]::UtcNow.ToString('o')}
 $report=[IO.File]::Open($ReportPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
 function Save-Report([string]$Stage){$record.stage=$Stage;$record.updatedUtc=[DateTime]::UtcNow.ToString('o');$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($record|ConvertTo-Json -Depth 20));if($bytes.Length-gt2MB){throw 'Aged-layout report exceeds bound.'};$report.Position=0;$report.SetLength(0);$report.Write($bytes,0,$bytes.Length);$report.Flush($true)}
 try{
- Save-Report 'reservation-intent';Assert-NoWorker;$native.Reserve();Save-Report 'reservation-allocated-eof-zero'
+ Save-Report 'reservation-intent';Assert-NoWorker
+ if($SequentialZeroReservation){$native.ReserveInitializedZeroes();Save-Report 'reservation-initialized-zeroes-eof-eight-gibibytes'}else{$native.Reserve();Save-Report 'reservation-allocated-eof-zero'}
  Assert-NoWorker;$native.CreateProbe();Save-Report 'probe-flushed-hashed-and-mapped'
  $preDelete=Source-Identity;$record.sourceBeforeReservationDelete=$preDelete
  if(($before|ConvertTo-Json -Compress)-cne($preDelete|ConvertTo-Json -Compress)){throw 'Source identity changed before owned reservation cleanup.'}

@@ -69,6 +69,12 @@ Payload before/after/logical SHA-256 all equal
 `6234f364d8fb1b532234405c7e2bb1c8e08337ef7fc6e4138f80c8b3d9411786`.
 This is not native `refs.sys` qualification.
 
+The subsequent [native import experiments](../../docs/native-refs-writer-acceptance.md)
+rejected the overlay-inclusive writer candidate with a Medium Allocator error,
+while a separate unmodified reference control passed two-file native reads.
+That accepted baseline has zero writer pages and no adopted file; it does not
+qualify the writer or identify a specific failing metadata field.
+
 Ignored evidence:
 
 - Build/provenance/contracts: `.lab/research/refsnt-strict-20261025T211214103Z`.

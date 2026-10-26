@@ -1,5 +1,88 @@
 # General guest conversion: existing NTFS tree
 
+## Public shadowless rollback after one flushed write
+
+On October 26, 2026, public `ntfs2refs rollback --without-shadow` restored the
+original 52 GiB NTFS partition after a controlled interruption immediately
+after the first flushed target write. The exact enrolled ReFS shadow had been
+detached; its backing was preserved. The public recovery worker exited 0,
+proved the complete original NTFS preimage, wrote the exact version-4
+`N2RABT01` rollback marker and restored writable NTFS at `F:\` with label
+`n2r-retained-source`. A separate mounted check matched all four known user-file
+lengths and logical hashes.
+
+The producer was run `f44b8b2ab26b496b8c259c7d78873577`, built from Rust source
+commit `63802ac1cfbb6a43f7d832a228f006686173b666`. Its lab-only controlled-exit
+binary SHA-256 was
+`463a2a4695e4d6720b0ffe25fca4a46fc4a8071c5117af0734c2680831338119`;
+the public recovery CLI SHA-256 was
+`79803f05b9306179945fb270d4749a5849830f79bb62c1f0acab3dab9da07612`.
+The producer's observed exit 86 was the intended fault, not a completed
+conversion. Source admission and the integrated protected target observation
+had passed before activation, including the narrowly recognized volume
+Object ID and ordinary `System Volume Information\tracking.log` forms.
+This does not admit arbitrary user Object IDs or unsupported attributes.
+
+The frozen NTFS preimage SHA-256, independently proved by rollback before
+returning to writable NTFS, was
+`11a4fac03da88070db1a92510558b36f2ad0e8258a3cac129d99b74e0897ede1`.
+The frozen shadow's complete hash was equal before and after its protected
+semantic observation:
+`947fb85a6c5936fa364591322270a147fb68173da3422b64f38d7d68a9c51a42`.
+Its pinned twelve-object semantic expectation SHA-256 was
+`f1f0ef021df871b5210398f85129e9dcbe1a33f977ac5bd2a303eb6acb735729`.
+The mounted NTFS check after rollback covers four user files and original
+availability; it is not a second full twelve-object metadata/security comparison.
+
+| Scoped measurement | Bytes |
+|---|---:|
+| Source logical contents | 544,856 |
+| Payload retained in the planned target | 0 |
+| Payload relocated in the planned target | 544,768 |
+| Resident bytes materialized | 88 |
+| Shadow payload initialization | 544,856 |
+| Actual rollback target writes, 132 ranges | 70,733,824 |
+| Complete external journal | 141,497,986 |
+
+Shadow payload initialization is payload-proportional I/O. Actual shadow
+backing allocation and aggregate process I/O were not measured. The detached
+VHDX file length is not evidence of its allocated backing. These scoped values
+are not a total read/write count for qualification, preparation and recovery.
+
+The shadow was detached in
+`.lab/hyperv/interrupted-shadow-detach/win11-20261026T045519870Z`.
+Producer evidence is under
+`.lab/hyperv/certificate-conversion/win11-20261026T041259787Z`;
+public recovery evidence is under
+`.lab/hyperv/public-recovery/win11-20261026T045553296Z`.
+The recovery task was
+`N2R-PublicRecovery-114ea8c5837d4c81ac833fd0efc2b1d3`.
+
+| Result artifact under the recovery directory | SHA-256 |
+|---|---|
+| `preflight.json` | `478078c75d9cafa82022a80f9cffbf139172f10d08897662407986049187852c` |
+| `execution.json` | `920c9469b5fc0dc7f8d7e1696baebbaee16f0d9c087f862773e149fe09d5100f` |
+| `completion.json` | `8410fd1b95138f5219d9b0e9f3761e9633a58695b6ae0922c1def4b139975b37` |
+| `result.json` | `f71cce07d32c910677c4c43b79a828f02817a6574d7d2983f60e2c2269d627c5` |
+| `collected.json` | `3752a25dc157aee670a87c951c0b825b2823ed63a6a117248aaa1064668ecddf` |
+| `fixture-after.json` | `2610eca6c7e9c187795152eeb0c35ee2875240179056653f254de4af273de62e` |
+| `postboot-fixture.json` | `09a67709f6fe8eb9084f29ee23141885e4fcc73176bd77f63709c92d3dfccb4e` |
+
+The restored branch was cleanly shut down and saved as powered-off checkpoint
+`228cf4fa-8f3e-43ef-bdad-d553629a5e8f`, then restarted. The later
+`postboot-fixture.json` records boot UTC `2026-10-26T05:11:44.396642Z`, writable
+NTFS at `F:\`, the original label, source/partition GUIDs, and matching lengths
+and hashes for `source0.bin`, `archive\doc1.bin`, `archive\nested\doc2.bin` and
+`notes\doc3.bin`. These are the four known user files, totaling 524,288 bytes.
+It is not a complete postboot twelve-object namespace/security/timestamp
+comparison. Whole-image equality applies immediately before writable NTFS
+mounting; normal later NTFS metadata writes are allowed and postboot bitwise
+equality is explicitly not claimed. This qualifies one controlled process-fault
+rollback case, not
+storage power loss, every write/flush boundary or interrupted marker completion.
+It also does not establish a fresh complete ReFS conversion or automatic source
+label restoration through the current integrated path.
+
 ## Public CLI conversion with a natural 128 MiB file
 
 On October 25, 2026, run `da82958436a84a91b446cfdc6221c2eb` completed through
@@ -198,9 +281,9 @@ passed their new raw/native checks. The bounded default-RM freeze also passed
 in a separate native source run. The later certificate-backed run above
 accounts for the Windows files' distinct security views and passes target
 preservation. The first-write interruption
-and resume path passed, but a broader write/flush fault matrix and the
-shadowless rollback path remain to be qualified natively. The public conversion
+and resume path passed, but a broader write/flush fault matrix remains open.
+The later public shadowless rollback case is recorded above. The public conversion
 and recovery CLI now wraps the generic core; public conversion passed the
-larger run above, while public recovery invocation and broader profile
+larger run above, while public forward-resume invocation and broader profile
 qualification remain distinct work. Boot volume conversion is a
 separate later objective.

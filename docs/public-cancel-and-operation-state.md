@@ -118,7 +118,8 @@ The public-cancel dispatch/collect scripts preserve exact artifact pins,
 specific task identity, source state, original mount paths and the four-file
 manifest for repetition. The run above used a separately recorded manual
 dispatch; it is not retroactively claimed as a run of the new scripts.
-Native shadowless rollback remains the next recovery gate.
+The later public shadowless rollback qualification is recorded in
+[the native results](general-native-conversion-results.md#public-shadowless-rollback-after-one-flushed-write).
 
 ## Cancellation after a real qualification refusal
 
@@ -142,5 +143,6 @@ Ignored evidence is
 - `cancel/result.json`: `3b0b9e0ebf6b5eb68f67baefd3883a57578dc8b6a3b320f35dbd2a2fbd5ddd23`.
 - `cancel/source-restored.json`: `e2336640a193669a82d1b6f9b5768d09227d580e5e8f8b6ef26e5982562caf8d`.
 
-Whole-image equality after the writable mount and native missing-shadow
-rollback remain separate claims.
+Whole-image equality after the writable mount is not claimed. The later
+missing-shadow rollback case is a separate qualification, recorded in
+[the native results](general-native-conversion-results.md#public-shadowless-rollback-after-one-flushed-write).

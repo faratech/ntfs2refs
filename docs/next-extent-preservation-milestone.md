@@ -6,15 +6,29 @@ file allocation at EOF zero, writes and verifies an 8 MiB probe, then removes
 only that temporary reservation through its original exclusive handle. It
 records native file identities and complete bounded retrieval mappings.
 
+The explicit `-SequentialZeroReservation` mode instead grows a fresh exclusive
+reservation with 8,192 sequential ordinary 1 MiB zero writes. It performs no
+upfront allocation setter, flushes once, and requires both EOF and allocation
+to equal 8 GiB before creating the probe. Its bounded report aggregates the
+writes into one operation with attempted/completed counts and actual bytes;
+`reservationMode` and `reservationPayloadBytesWritten` distinguish this from
+the default allocation-only mode. Both modes use the original DELETE handle
+for the same guarded cleanup and preserve files on failure. Account for the
+8 GiB initialized temporary write and host backing capacity separately.
+
 A positive placement result requires every probe extent to start at or above
 8 GiB relative to the partition. Unsuitable placement is reported explicitly;
 the helper never moves source extents or deletes the probe to force success.
 Failures preserve the created files and evidence for inspection. Live
 conversion/recovery workers prevent execution.
 
-This is code and pure-check coverage only. A native run and subsequent measured
-conversion remain pending. A future success would qualify an aged-layout
-fixture, not arbitrary source placement or low-LCN retention.
+The initial default-mode native run reserved 8 GiB at EOF zero but Windows
+placed the probe at LCN 6408 (partition offset 26,247,168), below the threshold.
+It reported unsuitable placement, removed only its owned reservation, and kept
+the probe. The sequential-zero mode has pure-check coverage; its native run
+and subsequent measured conversion remain pending. This synthetic allocation
+history can qualify only an aged-layout fixture, not arbitrary source
+placement or low-LCN retention.
 
 # Next milestone: one retained NTFS extent under native ReFS metadata
 

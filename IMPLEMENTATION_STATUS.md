@@ -1,17 +1,23 @@
 # Implementation handoff
 
-The native four-file reconstruction engine and its CLI are implemented and build
-in release mode. The new schema-2 laboratory profile supports a genuine empty
-retained set: all four naturally placed files require relocation. It reuses the
-durable old/new journal for prepare, offline activation, apply, resume, rollback
-and irreversible handoff. The original one-file adapter retains its schema-1
-and single-retained-range guards. A second tool captures exact source tree
-expectations and verifies the converted original through native ReFS after
-handoff. Controlled process interruption after a chosen durable target write is
-implemented for recovery qualification. Native tree conversion is currently
-running under the owned VM workflow; this paragraph is implementation status,
-not a claim that the native conversion or interruption suite passed. The general
-converter remains blocked pending source admission and broader qualification.
+Current bounded evidence is recorded in
+[`evidence/qualification-registry.json`](evidence/qualification-registry.json)
+and [the native results](docs/general-native-conversion-results.md). Public
+conversion of an existing twelve-object tree passed native/reboot verification,
+with zero retained payload bytes. Public preactivation cancellation and one
+public `rollback --without-shadow` case also passed: after a controlled first
+flushed target write, rollback restored the exact NTFS preimage before writable
+mounting with the enrolled shadow detached. Original NTFS availability and four
+known user-file hashes passed afterward and after a clean reboot. That postboot
+check does not cover all twelve objects' security/timestamps or whole-image
+equality after writable mounting. A fresh unmodified reference import also
+passed native reads of its two original files with the adopted name absent;
+the overlay-inclusive writer candidate remains rejected, with no specific
+defect isolated and no baseline mutation/reboot result. Broader failure
+coverage and a fresh complete
+conversion through current protected-target/automatic-label integration remain
+open. The remaining sections preserve chronological implementation notes; their
+historical pending states do not supersede the pinned current registry.
 
 The explicit persisted-source view records all stored/native FILETIMEs and each
 optionally hidden reserved NTFS root identity. Its focused tests and pinned

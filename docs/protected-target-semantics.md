@@ -57,3 +57,11 @@ Two focused tests independently reject a late byte change after semantic
 observation, a truncated final image and a failed semantic callback. Native
 guards retain the normal writable-path requirements and refuse malformed or
 wrong-state read-only capabilities.
+
+The later controlled first-write producer exercised this helper in the actual
+qualification path. Its complete target hash was unchanged across observation,
+all twelve expected objects passed and live source admission issued a device-bound
+certificate before activation. That producer intentionally exited after the first
+flushed target write and was recovered by public shadowless rollback. It qualifies
+the integrated admission stage, rather than a fresh complete ReFS conversion or
+automatic label restoration. See [the exact run and pins](general-native-conversion-results.md#public-shadowless-rollback-after-one-flushed-write).

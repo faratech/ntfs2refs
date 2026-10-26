@@ -70,6 +70,17 @@ a fresh apply, silently clears a foreign device's exclusion, or crosses the
 closed rollback boundary. A shadow-backed recovery needs the bound shadow
 available in its required protected state.
 
+`rollback --without-shadow` explicitly selects journal-old-byte recovery when
+the enrolled shadow is unavailable. It still requires the exact pinned request,
+ticket, actual journal identity, expected target state and permitted pre-handoff
+lifecycle. It grants no forward resume or finalization authority. This public
+command passed a bounded native first-flushed-write interruption with the shadow
+detached, exact NTFS preimage proof before writable mounting and original NTFS
+availability afterward. A later clean-boot check matched four known user-file
+hashes and the original mount/label/partition identity; it did not reverify all
+twelve objects' security/timestamps or post-mount whole-image equality.
+See [the result and limits](general-native-conversion-results.md#public-shadowless-rollback-after-one-flushed-write).
+
 For a label-only failure after handoff and the first writable ReFS mount, use
 the separate native-only command. Its pinned request must contain
 `expected_source_label`:

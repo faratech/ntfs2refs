@@ -15,7 +15,7 @@ admission, allocation evidence or recovery barriers to obtain a passing run.
 
 On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
 
-## Verified baseline as of 2026-10-25
+## Verified baseline as of 2026-10-26
 
 - Public `ntfs2refs convert --request` converted twelve existing objects,
   including a naturally allocated 128 MiB file, on the original 52 GiB NTFS
@@ -34,16 +34,26 @@ On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
   with equal complete before/after image hashes. The integrated conversion
   path now requires that protected observation; a fresh complete conversion
   through this addition remains to be qualified.
-- Public preactivation cancellation passed on the 52 GiB fixture, including
-  the complete frozen source hash, original NTFS mount and four user-file
-  hashes. Explicit public shadowless rollback is implemented but its native
-  interruption/recovery test remains pending.
+- Public preactivation cancellation passed on the 52 GiB fixture. Public
+  `rollback --without-shadow` also passed after a controlled first-flushed-write
+  process exit with the exact shadow detached. It proved the complete original
+  NTFS preimage before writable mounting, completed the version-4 rollback
+  marker, and restored the original mount/label and four user-file hashes.
+  Those four hashes and original NTFS availability/identity also matched after
+  a clean reboot; full twelve-object security/timestamp semantics were not
+  rechecked after boot, and post-mount whole-image equality is not claimed.
+  This is one process-fault case; broader write/flush, power-loss and interrupted
+  marker-completion qualification remain open. The producer passed integrated
+  protected-target/source admission, but intentionally stopped before complete
+  ReFS conversion and automatic label restoration.
 - The separate REFSNT experiment adopted one existing 4 KiB physical cluster
   with eight metadata writes totaling 131,072 bytes and three real image
   flushes. The payload stayed unchanged and independent Rust checks passed.
   Microsoft rejected the imported writer candidate with a Medium Allocator
-  structural error. A clean, unmodified reference import is the next control;
-  neither the transport nor a specific writer defect has yet been isolated.
+  structural error. A separate fresh unmodified reference import passed native
+  read verification of its two original files, with zero overlay pages and the
+  adopted name absent. That baseline has no mutation/reboot qualification and
+  does not qualify the rejected writer; its specific defect remains unisolated.
 
 Use the detailed reports rather than inferring broader support:
 

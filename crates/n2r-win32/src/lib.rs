@@ -14,6 +14,7 @@ pub mod logical_hash;
 pub mod namespace_layout;
 #[cfg(windows)]
 mod namespace_native;
+pub mod reference_file;
 #[cfg(windows)]
 pub mod reference_import;
 pub mod region_layout;

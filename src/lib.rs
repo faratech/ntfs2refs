@@ -60,6 +60,8 @@ pub mod ntfs_stream_plan;
 pub mod ntfs_transactions;
 pub mod planner;
 pub mod preparation_progress;
+#[cfg(windows)]
+pub mod reference_file_verification;
 pub mod refs_allocator;
 pub mod refs_bootstrap;
 pub mod refs_containers;

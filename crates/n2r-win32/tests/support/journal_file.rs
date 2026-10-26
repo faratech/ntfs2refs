@@ -2,6 +2,20 @@
 // not need to become an API that accepts untrusted evidence as native authority.
 use super::*;
 
+#[test]
+fn large_reference_observer_does_not_widen_journal_admission() {
+    assert_eq!(MAX_JOURNAL_BYTES, 768 * 1024 * 1024);
+    let mut evidence = fixture(&binding());
+    put64(&mut evidence.file_standard_info, 0, MAX_JOURNAL_BYTES);
+    put64(&mut evidence.file_standard_info, 8, MAX_JOURNAL_BYTES);
+    assert!(validate_file_fields(&evidence).is_ok());
+    put64(&mut evidence.file_standard_info, 8, MAX_JOURNAL_BYTES + 1);
+    assert!(validate_file_fields(&evidence).is_err());
+    put64(&mut evidence.file_standard_info, 0, (64_u64 << 30) + 4096);
+    put64(&mut evidence.file_standard_info, 8, (64_u64 << 30) + 512);
+    assert!(validate_file_fields(&evidence).is_err());
+}
+
 fn put32(b: &mut [u8], at: usize, n: u32) {
     b[at..at + 4].copy_from_slice(&n.to_le_bytes());
 }

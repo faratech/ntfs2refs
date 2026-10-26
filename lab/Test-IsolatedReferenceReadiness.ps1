@@ -1,4 +1,6 @@
-# Mike-approved readiness for this one isolated VM. No guest settings or disk writes.
+# Historical case-specific readiness recorder. Approval strings below are actor
+# claims, not independent provenance; see lab/PRESERVATION.md's corrected timeline.
+# No guest settings or disk writes.
 param([switch]$ApprovedBootRetry)
 $ErrorActionPreference = 'Stop'
 Import-Module Hyper-V

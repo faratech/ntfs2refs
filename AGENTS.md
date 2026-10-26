@@ -160,14 +160,23 @@ four vCPUs, no NIC and automatic checkpoints disabled. Its ownership record is
 VHDX files are independent copies whose hashes match the archive; container UUIDs
 were preserved by copying, while host file identities are new. Do not use a VHD
 UUID alone to infer backing-file aliasing. vTPM/Secure Boot settings were retained.
-The provisioning manifest is a historical preboot record. A specifically approved
-ejection cleared only the DVD's ISO path; the DVD device and boot order remain.
-An initial start was denied access to the inherited ISO, and its failed guard
-did not preserve the prior ISO SDDL. Do not claim that pre-ejection ACL is known.
-The later approved single retry booted normally and authenticated through
-PowerShell Direct by this VM GUID, using the existing authorized credential.
-The VM is now running without a NIC; no further permission change was needed.
-The ISO ACL hash stayed unchanged during that retry. Windows 11 Pro 26300.9457
+The provisioning manifest is a historical preboot record. The ejection cleared
+the DVD's ISO path; the DVD device and boot order remain. An initial start was
+denied access to the inherited ISO. The failed post-ejection SDDL string comparison
+does not establish an access-rule change: the prior SDDL was held only in memory,
+not persisted, so a rule delta cannot be distinguished from representation/order
+changes. Do not claim that the pre-ejection ACL or a rule-level delta is known.
+The retry dispatched at 2026-10-26 14:46:25.6485767 UTC booted normally and
+authenticated through PowerShell Direct by this VM GUID using the existing
+credential. Its authorization provenance needs the chronology in
+[the preservation record](lab/PRESERVATION.md): the local `Approved.` entry has
+no exposed sender/account/origin metadata, and its scope cannot be established
+from the supported view. Mike's explicit main-room approval at 15:01:36 UTC came
+later and must not be attributed retroactively to the 14:46 dispatch. Treat
+approval wording in original receipts as actor claims, not independent proof.
+The VM is now running without a NIC. The recorded post-ejection/current ISO SDDL
+hash matched across the retry; this is separate from the missing earlier ACL
+baseline. No explicit ACL repair was performed. Windows 11 Pro 26300.9457
 and the expected `refs.sys` hash matched. The observed disk-role mapping and
 resource margins are in
 `.lab/hyperv/isolated-reference-20261026-review/readiness-20261026T144625632Z/binding-summary.json`.
@@ -178,8 +187,8 @@ JSON contains remoted service enum wrappers; read it with `ConvertFrom-Json
 -AsHashtable`, or use the normalized binding summary. Later source serializes
 those enum fields as strings; that serialization change has not been rerun here.
 Do not dispatch helpers bound to the old `win11` manifest against this new VM.
-The approval covers provisioning and read-only guest readiness, not formatting,
-reference import, a writer experiment, conversion or further cleanup.
+The recorded later explicit approval covers normal boot/read-only guest readiness,
+not formatting, reference import, a writer experiment, conversion or further cleanup.
 
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those

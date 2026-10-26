@@ -73,28 +73,55 @@ The original VM retained the exact fifty checkpoint IDs and current checkpoint
 listed above. This follow-up approval does not authorize additional cleanup or
 retroactively authorize the earlier failed-leaf checkpoint deletion.
 
-## Approved normal boot/read-only readiness, 2026-10-26
+## Normal boot/read-only readiness and corrected provenance, 2026-10-26
 
 An initial start of the isolated VM failed before guest boot because Hyper-V
 could not read the inherited Downloads ISO at DVD controller 0/location 3.
-Mike specifically approved clearing that media path and one normal boot/login
-retry. The DVD device and boot order remain. The post-ejection guard reported
-an ISO SDDL difference; its pre-ejection SDDL was not saved, so its exact ACL
-delta is not reconstructible from that record. No explicit ACL correction was
-performed. After the follow-up approval, the ISO remained ejected and the single
-retry succeeded without another permission change. The ISO ACL hash was equal
-before/after that retry; this does not prove pre-ejection ACL preservation.
+The DVD media path was subsequently cleared; the DVD device and boot order remain.
+The post-ejection guard failed an SDDL string comparison. The pre-ejection SDDL
+was held only in process memory and was not persisted. That comparison does not
+establish that an actual access rule changed, nor distinguish a rule delta from
+representation or ordering changes. Earlier assertions that ejection changed the
+ISO's access rules overstated the retained evidence. The exact pre-ejection ACL
+and rule delta cannot be reconstructed from these records. No explicit ACL repair
+was performed, and the ISO remained ejected for the successful boot.
+
+The supported local task view records a `userMessage` whose full text is
+`Approved.` in a turn starting **2026-10-26 14:44:15 UTC**. Its exposed message ID
+is `01a178ab-5029-7c90-b0e9-7463a5e9d25f`. The view exposes no sender, account or
+origin metadata; the turn start is not asserted to be an exact message timestamp.
+The preceding assistant response proposed an ISO ACL change or a trusted source
+for the pre-ejection ACL. Consequently, that one-word reply's intended scope
+cannot be established from the supported view. Do not treat its type or the
+original receipt's approval wording as independent proof of human identity or
+authorization for a boot/login action.
+
+The actual `Start-VM` retry dispatch was **2026-10-26 14:46:25.6485767 UTC**.
+Mike's later explicit main-room approval was **2026-10-26 15:01:36 UTC**. That
+later approval cannot retroactively authorize or be attributed as the cause of
+the earlier dispatch. Assess any independently verified earlier authority
+separately; the local one-word entry and later approval do not resolve it.
+The original local entry, command records, approval strings and all evidence
+files are preserved. This documentation correction does not rewrite them.
+
+Current ACL evidence is separate: read-only post-ejection observations and the
+successful retry record contain ISO SDDL SHA-256
+`e47f6c19950c5a4608222a19e72e3371ab6292da908dda316711342f1a098d6f`.
+The current view includes a Read/Synchronize entry for the preserved VM identity
+`NT VIRTUAL MACHINE\EEBBFD4E-D964-4AAF-A6E6-5603FB9B6C4C`. Matching serialized
+hashes across those later observations do not recover the pre-ejection access
+rules or prove they were preserved.
 
 VM `8f7fc646-8c9f-41d0-b65a-ecfadccfc36a` is now running with 8 GiB assigned,
 four vCPUs, no NIC, vTPM enabled and Secure Boot On. One PowerShell Direct login
-through that exact VM GUID used the approved existing credential. Only read-only
+through that exact VM GUID used the existing credential. Only read-only
 OS/build, driver, storage and integration queries ran; the session then closed.
 The profile matched Windows 11 Pro 26300.9457 and the expected ReFS driver hash.
 Guest disk 0 is the GPT OS disk, disk 1 the RAW 64 GiB target, and disk 2 the RAW
 8 GiB journal. Neither data disk has a partition/volume enrollment or J: route.
-No format, reference import, conversion or writer experiment was performed or
-authorized by this readiness step. The original VM and all fifty checkpoint
-identities were preserved.
+No format, reference import, conversion or writer experiment was performed. The
+later approval did not authorize those actions. The original VM and all fifty
+checkpoint identities were preserved.
 
 The successful run is
 `.lab/hyperv/isolated-reference-20261026-review/readiness-20261026T144625632Z`.

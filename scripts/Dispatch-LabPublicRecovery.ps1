@@ -2,7 +2,7 @@
    interruption. No disk-state transitions, restores, restarts or UAC. #>
 [CmdletBinding()]
 param([Parameter(Mandatory)][string]$InterruptedDirectory,
- [Parameter(Mandatory)][ValidateSet('Resume','Rollback','Finalize','FinalizeAfterMarker')][string]$Operation,
+ [Parameter(Mandatory)][ValidateSet('Resume','Rollback','RollbackWithoutShadow','Finalize','FinalizeAfterMarker')][string]$Operation,
  [Parameter(Mandatory)][string]$BinaryPath,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BinarySha256,
  [string]$PreviousRecoveryDirectory)
@@ -24,6 +24,12 @@ $expectedPin=Pinned-Artifact 'expectation.json' 16MB;$locationPin=Pinned-Artifac
 $interruptionPin=Pinned-Artifact 'interruption-intent.json' 16384
 $request=Get-Content $requestPin.path -Raw|ConvertFrom-Json;$ticket=Get-Content $ticketPin.path -Raw|ConvertFrom-Json
 $location=Get-Content $locationPin.path -Raw|ConvertFrom-Json
+$withoutShadow=$Operation-ceq'RollbackWithoutShadow'
+$expectedLabel=$null
+if($withoutShadow){
+ if($request.comparison.source_sha256-cnotmatch'\A[0-9a-f]{64}\z'-or$ticket.immutable_sha256-cnotmatch'\A[0-9a-f]{64}\z'-or$request.PSObject.Properties.Name-notcontains'expected_source_label'-or-not$request.expected_source_label-or$request.expected_source_label.utf16.Count-gt32-or@($request.expected_source_label.utf16|Where-Object {$_-lt0-or$_-gt65535-or$_-eq0}).Count){throw 'Shadowless rollback qualification requires pinned original source bytes, immutable journal and captured UTF-16 source label.'}
+ $expectedLabel=@($request.expected_source_label.utf16)
+}
 $journal='\\?\Volume{'+$request.journal.disk.volume_guid.Trim('{}')+'}\ntfs2refs-shadow\'+$request.experiment_id+'\reconstruction.journal'
 if($request.experiment_id-cne$original.runId-or$request.expected_tree_sha256-cne$expectedPin.sha256-or-not[string]::Equals([string]$location.path,$journal,[StringComparison]::OrdinalIgnoreCase)-or$request.pair.source.disk_number-ne1-or$request.pair.shadow.disk_number-ne3-or$request.journal.disk.disk_number-ne2-or[guid]$request.pair.source.identity.disk_guid-ne[guid]'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa'-or[guid]$request.pair.shadow.identity.disk_guid-ne[guid]'49dbc2d2-4120-4fbf-911d-0f8d58153598'-or[guid]$request.journal.disk.identity.disk_guid-ne[guid]'04d5194b-f5db-43da-9b02-ed7a54325d56'){throw 'Recovery plan, expectation or actual journal location differs.'}
 $prior=$null
@@ -42,6 +48,7 @@ $output=Assert-LabPath (Join-Path $cfg.Root ('public-recovery/win11-'+[DateTime]
 New-Item -ItemType Directory -Path $output|Out-Null
 function Save([string]$Name,$Value){$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 14));$file=[IO.File]::Open((Join-Path $output $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
 $record=[ordered]@{schemaVersion=1;kind='public-cli-recovery-dispatch';stepId=$step;operation=$Operation;originRunId=$original.runId;originDirectory=$origin;previousRecoveryDirectory=$PreviousRecoveryDirectory;vmId=[string]$vm.Id;checkpointId=[string]$vm.ParentSnapshotId;taskName=$taskName;guestRoot=$root;guestOutput=$result;binarySha256=$BinarySha256;requestSha256=$requestPin.sha256;ticketSha256=$ticketPin.sha256;expectationSha256=$expectedPin.sha256;interruptionIntentSha256=$interruptionPin.sha256;journal=$journal;startedUtc=[DateTime]::UtcNow.ToString('o')}
+if($withoutShadow){$record.withoutShadow=$true;$record.sourceSha256=$request.comparison.source_sha256;$record.immutableJournalSha256=$ticket.immutable_sha256;$record.expectedSourceLabelUtf16=$expectedLabel}
 Save 'dispatch.json' $record
 Copy-Item -LiteralPath $interruptionPin.path -Destination (Join-Path $output 'interruption-intent.json')
 $credential=Import-Clixml (Join-Path $cfg.Root 'win11/secrets/guest-credential.xml');$session=$null
@@ -56,7 +63,12 @@ try{
   if($originalTask.State-in@('Running','Queued')-or$info.LastRunTime.Year-lt2000-or$info.LastTaskResult-ne86){throw 'Original converter is live, unknown or not a completed controlled exit86.'}
   if(@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.State-in@('Running','Queued')}).Count-or(Get-Process -Name 'converter','ntfs2refs','ntfs2refs-recover','public-cli','qualifier' -ErrorAction SilentlyContinue)){throw 'Another converter or recovery may still be live.'}
   if($PriorTask){$prior=Get-ScheduledTask -TaskName $PriorTask;$pi=Get-ScheduledTaskInfo -TaskName $PriorTask;if($prior.State-in@('Running','Queued')-or$pi.LastTaskResult-ne0-or$pi.LastRunTime.Year-lt2000){throw 'Prior Resume did not finish successfully.'}}
-  foreach($spec in @(@(1,'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa','79eaccdf-38d3-4561-97cc-9276af5d223a',64GB,52GB,$true,$false),@(3,'49dbc2d2-4120-4fbf-911d-0f8d58153598','e071a0c1-5f96-4327-85e8-da9b831e27d3',64GB,52GB,$true,$true),@(2,'04d5194b-f5db-43da-9b02-ed7a54325d56','7435ee94-c435-403f-a515-dec1ccd5094e',8GB,(8GB-32MB),$false,$false))){
+  $withoutShadow=$Operation-ceq'RollbackWithoutShadow'
+  $disks=@(Get-Disk)
+  if($withoutShadow-and@($disks|Where-Object {$_.Number-eq3-or[guid]$_.Guid-eq[guid]'49dbc2d2-4120-4fbf-911d-0f8d58153598'}).Count){throw 'Shadowless rollback qualification requires the actual shadow disk to be absent; no detach is performed.'}
+  $specs=@(@(1,'a01574d5-2a5c-4136-958a-dcf0d0e0f7aa','79eaccdf-38d3-4561-97cc-9276af5d223a',64GB,52GB,$true,$false),@(2,'04d5194b-f5db-43da-9b02-ed7a54325d56','7435ee94-c435-403f-a515-dec1ccd5094e',8GB,(8GB-32MB),$false,$false))
+  if(-not$withoutShadow){$specs+=,@(3,'49dbc2d2-4120-4fbf-911d-0f8d58153598','e071a0c1-5f96-4327-85e8-da9b831e27d3',64GB,52GB,$true,$true)}
+  foreach($spec in $specs){
    $disk=Get-Disk -Number $spec[0];$part=Get-Partition -DiskNumber $spec[0] -PartitionNumber 2
    if([guid]$disk.Guid-ne[guid]$spec[1]-or[guid]$part.Guid-ne[guid]$spec[2]-or$disk.Size-ne$spec[3]-or$part.Size-ne$spec[4]-or$part.Offset-ne16MB-or$disk.IsOffline-ne$spec[5]-or$disk.IsReadOnly-ne$spec[6]-or$disk.IsBoot-or$disk.IsSystem-or$part.IsBoot-or$part.IsSystem-or$disk.PartitionStyle-cne'GPT'){throw 'Enrolled disk identity, geometry or persistent exclusion differs.'}
   }
@@ -76,21 +88,25 @@ try{
   if((Test-Path -LiteralPath $Root)-or(Test-Path -LiteralPath $Output)){throw 'Fresh guest recovery input/output required.'}
   New-Item -ItemType Directory -Path $Root|Out-Null;$outputParent=Split-Path $Output -Parent;if(-not(Test-Path $outputParent)){New-Item -ItemType Directory -Path $outputParent|Out-Null}
   foreach($directory in @($Root,$outputParent)){$ancestor=$directory;while($ancestor){$item=Get-Item -LiteralPath $ancestor -Force;if(-not$item.PSIsContainer-or($item.Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'Ordinary guest artifact ancestry required.'};$next=Split-Path $ancestor -Parent;if($next-ceq$ancestor){break};$ancestor=$next}}
-  [pscustomobject]@{originalTaskExitCode=$info.LastTaskResult;controlledInterruptionCount=$intent.interrupt_after_writes;interruptionIntentSha256=(Get-FileHash $intentPath).Hash.ToLowerInvariant();journal=$Journal;journalLength=$JournalLength;handoffClear=$zero;handoffMagic=$magic;handoffSectorSha256=$markerSha;sourceOffline=$true;sourceReadOnly=$false;shadowOffline=$true;shadowReadOnly=$true;checkedUtc=[DateTime]::UtcNow.ToString('o')}
+  [pscustomobject]@{originalTaskExitCode=$info.LastTaskResult;controlledInterruptionCount=$intent.interrupt_after_writes;interruptionIntentSha256=(Get-FileHash $intentPath).Hash.ToLowerInvariant();journal=$Journal;journalLength=$JournalLength;handoffClear=$zero;handoffMagic=$magic;handoffSectorSha256=$markerSha;sourceOffline=$true;sourceReadOnly=$false;shadowPresent=-not$withoutShadow;shadowOffline=if($withoutShadow){$null}else{$true};shadowReadOnly=if($withoutShadow){$null}else{$true};checkedUtc=[DateTime]::UtcNow.ToString('o')}
  }
  Save 'preflight.json' $preflight
  Copy-Item -LiteralPath $binary.FullName -Destination ($root+'\public-cli.exe') -ToSession $session
  foreach($item in @(@($requestPin.path,'request.json'),@($ticketPin.path,'ticket.json'),@($expectedPin.path,'expectation.json'))){Copy-Item -LiteralPath $item[0] -Destination ($root+'\'+$item[1]) -ToSession $session}
  Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $output 'public-cli.exe')
- $command=if($Operation-ceq'FinalizeAfterMarker'){'finalize'}else{$Operation.ToLowerInvariant()}
+ $command=if($Operation-ceq'FinalizeAfterMarker'){'finalize'}elseif($withoutShadow){'rollback'}else{$Operation.ToLowerInvariant()}
  $arguments=$command+' --request "'+$root+'\request.json" --request-sha256 '+$requestPin.sha256+' --ticket "'+$root+'\ticket.json" --ticket-sha256 '+$ticketPin.sha256+' --journal "'+$journal+'" --output "'+$result+'"'
  if($Operation-in@('Finalize','FinalizeAfterMarker')){$arguments+=' --expectation "'+$root+'\expectation.json" --expectation-sha256 '+$expectedPin.sha256}
  if($Operation-ceq'FinalizeAfterMarker'){$arguments+=' --after-marker'}
- $dispatched=Invoke-Command -Session $session -ArgumentList @($root,$result,$taskName,$BinarySha256,$requestPin.sha256,$ticketPin.sha256,$expectedPin.sha256,$arguments) -ScriptBlock {
-  param($Root,$Output,$TaskName,$BinarySha,$RequestSha,$TicketSha,$ExpectedSha,$Arguments);$ErrorActionPreference='Stop'
+ if($withoutShadow){$arguments+=' --without-shadow'}
+ $dispatched=Invoke-Command -Session $session -ArgumentList @($root,$result,$taskName,$BinarySha256,$requestPin.sha256,$ticketPin.sha256,$expectedPin.sha256,$arguments,$withoutShadow) -ScriptBlock {
+  param($Root,$Output,$TaskName,$BinarySha,$RequestSha,$TicketSha,$ExpectedSha,$Arguments,$WithoutShadow);$ErrorActionPreference='Stop'
   foreach($entry in @(@('public-cli.exe',$BinarySha),@('request.json',$RequestSha),@('ticket.json',$TicketSha),@('expectation.json',$ExpectedSha))){if((Get-FileHash ($Root+'\'+$entry[0])).Hash.ToLowerInvariant()-cne$entry[1]){throw 'Copied recovery executable/input pin differs.'}}
   if(@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.State-in@('Running','Queued')}).Count){throw 'Another lab operation started before dispatch.'}
-  $source=Get-Disk -Number 1;$shadow=Get-Disk -Number 3;if(-not$source.IsOffline-or$source.IsReadOnly-or-not$shadow.IsOffline-or-not$shadow.IsReadOnly){throw 'Persistent exclusion changed before dispatch.'}
+  $source=Get-Disk -Number 1
+  if(-not$source.IsOffline-or$source.IsReadOnly){throw 'Persistent source exclusion changed before dispatch.'}
+  if($WithoutShadow){if(@(Get-Disk|Where-Object {$_.Number-eq3-or[guid]$_.Guid-eq[guid]'49dbc2d2-4120-4fbf-911d-0f8d58153598'}).Count){throw 'Shadow appeared before shadowless rollback dispatch.'}}
+  else{$shadow=Get-Disk -Number 3;if(-not$shadow.IsOffline-or-not$shadow.IsReadOnly){throw 'Persistent shadow exclusion changed before dispatch.'}}
   if(Test-Path $Output){throw 'Guest recovery output already exists.'}
   $action=New-ScheduledTaskAction -Execute ($Root+'\public-cli.exe') -Argument $Arguments
   $principal=New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest

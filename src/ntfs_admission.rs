@@ -121,6 +121,7 @@ fn unresolved_codes(
     backups: bool,
     clean_log: bool,
     short_name_policy: bool,
+    volume_identity: Option<&crate::ntfs_internal::VerifiedIndexes>,
 ) -> Vec<String> {
     raw.blockers
         .iter()
@@ -137,6 +138,9 @@ fn unresolved_codes(
                     && raw.volume_flags == Some(0x80))
                 && !accounted_internal_txf_blocker(raw, blocker)
                 && !accounted_empty_badclus_blocker(raw, blocker)
+                && !(blocker.code == "object_id"
+                    && blocker.file_record_number == Some(3)
+                    && volume_identity.is_some_and(|proof| proof.covers_volume_object_id(raw, 3)))
         })
         .map(|blocker| blocker.code.clone())
         .collect()
@@ -163,6 +167,7 @@ pub(crate) fn bind_clean_log(
         assessment.backup_evidence.is_some(),
         true,
         policy_bound,
+        None,
     );
     for gate in &mut assessment.gates {
         if gate.code == "log_restart_pages" {
@@ -230,7 +235,13 @@ pub(crate) fn bind_short_name_policy(
         .gates
         .iter()
         .any(|gate| gate.code == "log_restart_pages" && gate.satisfied);
-    let unresolved = unresolved_codes(raw, assessment.backup_evidence.is_some(), clean_log, true);
+    let unresolved = unresolved_codes(
+        raw,
+        assessment.backup_evidence.is_some(),
+        clean_log,
+        true,
+        None,
+    );
     for gate in &mut assessment.gates {
         if gate.code == "volume_policy_flags" {
             gate.satisfied = true;
@@ -272,6 +283,42 @@ pub struct InternalReplacement {
     pub record_number: u64,
     pub role: String,
     pub action: &'static str,
+}
+
+/// Account only for a reread, cross-indexed filesystem-internal volume ID.
+/// User object IDs are never covered by this replacement policy.
+pub(crate) fn bind_internal_volume_identity(
+    assessment: &mut Assessment,
+    raw: &ntfs::NtfsInspection,
+    indexes: &crate::ntfs_internal::VerifiedIndexes,
+) -> bool {
+    if !indexes.covers_volume_object_id(raw, 3) {
+        return false;
+    }
+    let clean_log = assessment
+        .gates
+        .iter()
+        .any(|g| g.code == "log_restart_pages" && g.satisfied);
+    let short_names = assessment
+        .gates
+        .iter()
+        .any(|g| g.code == "volume_policy_flags" && g.satisfied);
+    let unresolved = unresolved_codes(
+        raw,
+        assessment.backup_evidence.is_some(),
+        clean_log,
+        short_names,
+        Some(indexes),
+    );
+    for gate in &mut assessment.gates {
+        if gate.code == "remaining_inspection_refusals" {
+            gate.satisfied = unresolved.is_empty();
+            gate.detail = format!(
+                "unresolved inspection checks: {unresolved:?}; sole reread $Volume identity is recorded for explicit filesystem-internal replacement; user object IDs remain refused"
+            );
+        }
+    }
+    true
 }
 
 /// Replace NTFS runtime structures with the native-created ReFS structures
@@ -318,6 +365,12 @@ pub(crate) fn bind_internal_replacement(
             return None;
         }
         let action = match object.role.as_str() {
+            "$Volume" if indexes.covers_volume_object_id(raw, 3) => {
+                "replace_filesystem_internal_volume_identity"
+            }
+            "$Extend\\$ObjId" if indexes.internal_volume_object_id().is_some() => {
+                "replace_ntfs_internal_volume_identity_index"
+            }
             "$LogFile" | "$Extend\\$UsnJrnl" => "start_new_filesystem_journal_epoch",
             "$Extend\\$RmMetadata\\$Repair" => "replace_ntfs_runtime_diagnostics",
             role if role.starts_with("$Extend\\$RmMetadata") || role == "$Extend\\$Deleted" => {
@@ -334,7 +387,7 @@ pub(crate) fn bind_internal_replacement(
     for gate in &mut assessment.gates {
         if gate.code == "internal_replacement_state" {
             gate.satisfied = true;
-            gate.detail = "frozen allocation/namespace/security, backup/restart copies, empty object/reparse indexes, disabled default quotas and the observed default-RM freeze agree; each NTFS-internal object has an explicit replacement disposition".into();
+            gate.detail = "frozen allocation/namespace/security, backup/restart copies, verified internal object/reparse index state, disabled default quotas and the observed default-RM freeze agree; a sole NTFS volume identity is recorded for explicit replacement and user object IDs remain refused".into();
         }
     }
     Some(replacements)
@@ -812,7 +865,7 @@ fn assess_source_view_profile(
         false,
         "read and reconcile both $LogFile restart pages from the frozen device; clean flags alone do not prove complete log recovery",
     );
-    let unresolved = unresolved_codes(raw, backups.is_some(), false, false);
+    let unresolved = unresolved_codes(raw, backups.is_some(), false, false, None);
     let internal_txf_count = raw
         .blockers
         .iter()

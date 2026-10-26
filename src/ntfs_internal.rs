@@ -1,6 +1,7 @@
 //! Narrow frozen-source checks for indexes that role recognition cannot
-//! authorize dropping. Object/reparse entries and nondefault quota state stay
-//! refused; default quota entries also require a live disabled-policy witness.
+//! authorize dropping. User object/reparse entries and nondefault quota state
+//! stay refused; the sole cross-bound $Volume identity has an explicit audit
+//! and replacement disposition, and default quotas require a live witness.
 use crate::{
     ntfs_admission,
     ntfs_index::{self, Input, Profile},
@@ -31,15 +32,67 @@ pub struct IndexEntry {
 #[derive(Debug, Serialize)]
 pub struct VerifiedIndexes {
     inspection_sha256: String,
+    internal_volume_object_id: Option<InternalVolumeObjectId>,
     pub indexes: Vec<IndexState>,
     pub default_quotas_only: bool,
     pub native_quota_policy_bound: bool,
     pub replacement_supported: bool,
 }
+
+/// Exact NTFS filesystem-internal identity recorded for replacement, not a
+/// claim that ReFS preserves the same NTFS object-ID semantics. Created only
+/// from a fresh resident-value read and its sole cross-matched index entry.
+#[derive(Debug, Serialize)]
+pub struct InternalVolumeObjectId {
+    inspection_sha256: String,
+    record_number: u64,
+    sequence_number: u16,
+    attribute_instance: u16,
+    object_id_hex: String,
+    object_id_sha256: String,
+    object_index_record_number: u64,
+    object_index_sequence_number: u16,
+    object_index_name: &'static str,
+    object_index_root_sha256: String,
+    object_index_value_sha256: String,
+    file_reference: u64,
+    disposition: &'static str,
+    same_refs_object_id_preserved: bool,
+}
+impl InternalVolumeObjectId {
+    pub fn binds(&self, raw: &NtfsInspection) -> bool {
+        serde_json::to_vec(raw)
+            .is_ok_and(|bytes| hex::encode(Sha256::digest(bytes)) == self.inspection_sha256)
+    }
+    pub fn record_number(&self) -> u64 {
+        self.record_number
+    }
+    pub fn sequence_number(&self) -> u16 {
+        self.sequence_number
+    }
+    pub fn object_id_hex(&self) -> &str {
+        &self.object_id_hex
+    }
+    pub fn disposition(&self) -> &'static str {
+        self.disposition
+    }
+}
+
 impl VerifiedIndexes {
     pub fn binds(&self, raw: &NtfsInspection) -> bool {
         serde_json::to_vec(raw)
             .is_ok_and(|bytes| hex::encode(Sha256::digest(bytes)) == self.inspection_sha256)
+    }
+    pub fn internal_volume_object_id(&self) -> Option<&InternalVolumeObjectId> {
+        self.internal_volume_object_id.as_ref()
+    }
+    pub fn covers_volume_object_id(&self, raw: &NtfsInspection, record_number: u64) -> bool {
+        record_number == 3
+            && self.binds(raw)
+            && self
+                .internal_volume_object_id
+                .as_ref()
+                .is_some_and(|id| id.record_number == record_number && id.binds(raw))
     }
     #[cfg(windows)]
     pub fn bind_native_quota(&mut self, observed: &n2r_win32::GeneralLiveNtfsObservation) -> bool {
@@ -79,6 +132,85 @@ impl VerifiedIndexes {
         self.replacement_supported = self.indexes.iter().all(|i| i.replacement_supported);
         true
     }
+}
+
+fn internal_volume_object_id<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    index_file: &ntfs_inspect::FileInventory,
+    index_root: &[u8],
+    entries: &[(Vec<u8>, Vec<u8>)],
+) -> Result<Option<InternalVolumeObjectId>> {
+    let mut ids = raw.files.iter().flat_map(|file| {
+        file.attributes
+            .iter()
+            .filter(|attribute| attribute.type_code == 0x40)
+            .map(move |attribute| (file, attribute))
+    });
+    let Some((volume, attribute)) = ids.next() else {
+        return Ok(None);
+    };
+    if ids.next().is_some() || entries.len() != 1 {
+        return Ok(None);
+    }
+    let name: Vec<_> = "$O".encode_utf16().collect();
+    if volume.record_number != 3
+        || volume.sequence_number == 0
+        || volume.base_file_reference != 0
+        || volume.is_directory
+        || volume.hard_link_count != 1
+        || volume.metadata_role != ntfs_inspect::MetadataRole::ReservedSystemRecord
+        || volume.metadata_role_issue.is_some()
+        || ntfs_admission::internal_role(raw, volume).as_deref() != Some("$Volume")
+        || !attribute.resident
+        || !attribute.name_utf16.is_empty()
+        || attribute.flags != 0
+        || attribute.compression_unit != 0
+        || attribute.lowest_vcn != 0
+        || attribute.logical_size != 16
+        || attribute.initialized_size != 16
+        || attribute.allocated_size != 16
+        || !attribute.extents.is_empty()
+        || index_file.base_file_reference != 0
+        || index_file.sequence_number == 0
+        || index_file.metadata_role_issue.is_some()
+        || index_file.attributes.iter().any(|attribute| {
+            matches!(attribute.type_code, 0x20 | 0xa0 | 0xb0)
+                || (attribute.type_code == 0x90 && attribute.name_utf16 != name)
+        })
+    {
+        return Ok(None);
+    }
+    // The helper parses the actual FILE record, applies USA fixups, checks
+    // file sequence/base identity and compares the complete attribute report.
+    let value = ntfs_inspect::read_resident_inventory_attribute(reader, raw, volume, attribute)?;
+    let reference = (u64::from(volume.sequence_number) << 48) | volume.record_number;
+    let (key, indexed) = &entries[0];
+    if value.len() != 16
+        || value.iter().all(|byte| *byte == 0)
+        || key.as_slice() != value
+        || indexed.len() != 56
+        || indexed[..8] != reference.to_le_bytes()
+        || indexed[8..] != [0; 48]
+    {
+        return Ok(None);
+    }
+    Ok(Some(InternalVolumeObjectId {
+        inspection_sha256: hex::encode(Sha256::digest(serde_json::to_vec(raw)?)),
+        record_number: volume.record_number,
+        sequence_number: volume.sequence_number,
+        attribute_instance: attribute.instance,
+        object_id_hex: hex::encode(&value),
+        object_id_sha256: hex::encode(Sha256::digest(&value)),
+        object_index_record_number: index_file.record_number,
+        object_index_sequence_number: index_file.sequence_number,
+        object_index_name: "$O",
+        object_index_root_sha256: hex::encode(Sha256::digest(index_root)),
+        object_index_value_sha256: hex::encode(Sha256::digest(indexed)),
+        file_reference: reference,
+        disposition: "replace-filesystem-internal-volume-identity",
+        same_refs_object_id_preserved: false,
+    }))
 }
 
 fn supported_quota(entries: &[(Vec<u8>, Vec<u8>)]) -> bool {
@@ -150,6 +282,7 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
     let mut indexes = Vec::new();
     let mut quota_owners = Vec::new();
     let mut quota_ids = Vec::new();
+    let mut volume_object_id = None;
     for (role, name, profile) in [
         ("$Extend\\$ObjId", "$O", Profile::OBJECT_ID),
         ("$Extend\\$Reparse", "$R", Profile::REPARSE),
@@ -189,7 +322,19 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
             |_, key, value| Ok((key.to_vec(), value.to_vec())),
         )
         .with_context(|| format!("internal index {role}/{name}"))?;
-        let supported = role != "$Extend\\$Quota" && parsed.entries.is_empty();
+        let supported = if role == "$Extend\\$ObjId" {
+            volume_object_id =
+                internal_volume_object_id(reader, raw, file, &root, &parsed.entries)?;
+            volume_object_id.is_some()
+                || (parsed.entries.is_empty()
+                    && raw.files.iter().all(|file| {
+                        file.attributes
+                            .iter()
+                            .all(|attribute| attribute.type_code != 0x40)
+                    }))
+        } else {
+            role != "$Extend\\$Quota" && parsed.entries.is_empty()
+        };
         if role == "$Extend\\$Quota" {
             if name == "$Q" {
                 quota_ids = parsed.entries.clone();
@@ -212,7 +357,9 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
                 })
                 .collect(),
             replacement_supported: supported,
-            detail: if supported {
+            detail: if role == "$Extend\\$ObjId" && volume_object_id.is_some() {
+                "sole $Volume identity cross-matches its current file reference; recorded for explicit filesystem-internal replacement, not same-ID preservation"
+            } else if supported {
                 "empty index or unlimited format defaults"
             } else {
                 "nonempty or unrecognized internal state requires preservation"
@@ -222,6 +369,7 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
     }
     Ok(VerifiedIndexes {
         inspection_sha256: hex::encode(Sha256::digest(serde_json::to_vec(raw)?)),
+        internal_volume_object_id: volume_object_id,
         replacement_supported: indexes.iter().all(|i| i.replacement_supported),
         default_quotas_only: quota_indexes_match(&quota_owners, &quota_ids),
         native_quota_policy_bound: false,
@@ -230,8 +378,85 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
 }
 
 #[cfg(test)]
+#[path = "../tests/support/volume_object_id.rs"]
+mod volume_identity_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    fn diagnostic_assessment(raw: &NtfsInspection) -> ntfs_admission::Assessment {
+        let comparison = crate::ntfs_attestation::Comparison {
+            schema_version: 1,
+            source_inspection_sha256: hex::encode(Sha256::digest(serde_json::to_vec(raw).unwrap())),
+            requested_files: raw.files.len(),
+            opened_files: 0,
+            matched_files: 0,
+            files: vec![],
+            all_requested_metadata_matched: false,
+            conversion_qualified: false,
+            native_streams: None,
+            native_logical_data: None,
+            native_namespace: None,
+        };
+        ntfs_admission::assess_ordinary_with_backups(raw, &comparison, 5, None)
+    }
+
+    #[test]
+    fn volume_identity_binder_clears_only_its_blocker_without_admitting_source() {
+        use std::io::Cursor;
+        use volume_identity_fixture::{ID, fixture, index_value};
+        let bytes = fixture(Some(&ID), &[(ID.to_vec(), index_value(3, 3))], false);
+        let mut raw = ntfs_inspect::inspect(&mut Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        raw.blockers.push(ntfs_inspect::InspectionBlocker {
+            code: "unimplemented_future_feature".into(),
+            message: "unrelated source requirement must survive identity classification".into(),
+            file_record_number: Some(16),
+        });
+        let proof = verify(&mut Cursor::new(&bytes), &raw).unwrap();
+        let mut assessment = diagnostic_assessment(&raw);
+        let other_gates = |assessment: &ntfs_admission::Assessment| {
+            assessment
+                .gates
+                .iter()
+                .filter(|gate| gate.code != "remaining_inspection_refusals")
+                .map(|gate| (gate.code.clone(), gate.satisfied))
+                .collect::<Vec<_>>()
+        };
+        let before = other_gates(&assessment);
+        assert!(assessment.gates.iter().any(|gate| {
+            gate.code == "remaining_inspection_refusals" && gate.detail.contains("\"object_id\"")
+        }));
+        assert!(ntfs_admission::bind_internal_volume_identity(
+            &mut assessment,
+            &raw,
+            &proof
+        ));
+        let remaining = assessment
+            .gates
+            .iter()
+            .find(|gate| gate.code == "remaining_inspection_refusals")
+            .unwrap();
+        assert!(!remaining.satisfied);
+        assert!(!remaining.detail.contains("\"object_id\""));
+        assert!(remaining.detail.contains("unimplemented_future_feature"));
+        assert_eq!(other_gates(&assessment), before);
+        assert!(!assessment.source_admitted);
+        assert!(!assessment.certificate_issued);
+        assert!(!assessment.execution_authorized);
+        let user_ids = fixture(Some(&ID), &[(ID.to_vec(), index_value(3, 3))], true);
+        let raw =
+            ntfs_inspect::inspect(&mut Cursor::new(&user_ids), user_ids.len() as u64).unwrap();
+        let proof = verify(&mut Cursor::new(&user_ids), &raw).unwrap();
+        let mut assessment = diagnostic_assessment(&raw);
+        let before = serde_json::to_vec(&assessment).unwrap();
+        assert!(!ntfs_admission::bind_internal_volume_identity(
+            &mut assessment,
+            &raw,
+            &proof
+        ));
+        assert_eq!(serde_json::to_vec(&assessment).unwrap(), before);
+    }
+
     #[test]
     fn quota_policy_rejects_users_limits_tracking_and_truncation() {
         let mut value = vec![0; 48];

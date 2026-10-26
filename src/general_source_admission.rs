@@ -196,10 +196,13 @@ pub fn assess(
         }
         Err(error) => (None, Some(format!("{error:#}"))),
     };
+    if let Some(indexes) = &internal_indexes {
+        ntfs_admission::bind_internal_volume_identity(&mut assessment, raw, indexes);
+    }
     assessment.gates.push(ntfs_admission::Gate {
         code: "internal_indexes".into(),
         satisfied: internal_indexes.as_ref().is_some_and(|proof| proof.binds(raw) && proof.replacement_supported),
-        detail: "reread object-ID, reparse and quota indexes must contain only supported empty/default state; transaction replacement remains separate".into(),
+        detail: "reread object-ID, reparse and quota indexes must contain supported empty/default state or the exact cross-bound internal volume identity; user object IDs and transaction replacement remain separate".into(),
     });
     let (transaction_freeze, transaction_freeze_error) = match (source.freeze_observation(), log_restart) {
         (Some(freeze), Some(log)) => match crate::ntfs_transactions::verify(raw,log,freeze,observed) {

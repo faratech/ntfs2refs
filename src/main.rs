@@ -412,10 +412,16 @@ fn run() -> Result<u8> {
                 None,
             )?;
         }
-        Command::Capabilities => output(
-            &serde_json::json!({"schema_version":1,"raw_image_inspection":true,"ntfs_inventory_complete":false,"refs_header_inspection":true,"retained_range_comparison":true,"conversion_planning":"image feasibility reports remain non-executable","native_refs_writer":false,"conversion_writes":cfg!(windows),"journal_recovery":cfg!(windows),"native_workflow":"experimental single-profile data volumes; live qualification and external journal required","qualified_boot_builds":[]}),
-            None,
-        )?,
+        Command::Capabilities => {
+            let registry = ntfs2refs::capability_evidence::Registry::embedded()?;
+            output(
+                &serde_json::json!({"schema_version":1,"raw_image_inspection":true,"ntfs_inventory_complete":false,"refs_header_inspection":true,"retained_range_comparison":true,"conversion_planning":"image feasibility reports remain non-executable","native_refs_writer":false,"conversion_writes":cfg!(windows),"journal_recovery":cfg!(windows),"native_workflow":"experimental single-profile data volumes; live qualification and external journal required","qualified_boot_builds":[],
+                    "qualification_registry_scope":registry.scope,
+                    "recorded_qualification":registry.matrix()?,
+                    "recorded_evidence_grants_runtime_authority":false}),
+                None,
+            )?;
+        }
         Command::Diff {
             before,
             after,

@@ -1,0 +1,680 @@
+{
+  "schema_version": 1,
+  "scope": "Observational qualification only. Stages derive from linked evidence, without current-HEAD inheritance, artifact revalidation or runtime admission authority. Null historical identities remain unknown.",
+  "profiles": [
+    {
+      "id": "ordinary-ntfs31-refs314-v2",
+      "description": "Bounded nonboot native-shadow conversion and owning-machine recovery. These implementation limits are not a production certification.",
+      "source_filesystem": "NTFS 3.1",
+      "target_filesystem": "ReFS 3.14",
+      "logical_sector_bytes": 512,
+      "cluster_bytes": 4096,
+      "mft_record_bytes": 1024,
+      "source_policy_windows_build": 26300,
+      "observed_partition_bytes": 55834574848,
+      "limits": {
+        "maximum_files": 128,
+        "maximum_directories": 32,
+        "maximum_logical_bytes": 268435456,
+        "ascii_names_only": true,
+        "maximum_component_bytes": 100,
+        "maximum_path_components": 16,
+        "unnamed_streams_per_file": 1,
+        "requires_absent_sacl": true
+      },
+      "exclusions": [
+        "Boot/system volumes",
+        "Unicode names, ADS, hard links and DOS short-name aliases",
+        "Sparse, compressed and encrypted source semantics",
+        "Reparse points, EAs and unassembled attribute-list extensions",
+        "SACL preservation",
+        "Broad build/geometry compatibility",
+        "Payload-independent scratch use or arbitrary source retention"
+      ]
+    },
+    {
+      "id": "fixed-refs314-writer-reference-v1",
+      "description": "External GPL REFSNT research: one existing 4 KiB cluster adopted in a Windows-formatted 52 GiB reference; not a converter backend.",
+      "source_filesystem": null,
+      "target_filesystem": "ReFS 3.14",
+      "logical_sector_bytes": 512,
+      "cluster_bytes": 4096,
+      "mft_record_bytes": null,
+      "source_policy_windows_build": null,
+      "observed_partition_bytes": 55834574848,
+      "limits": {
+        "maximum_files": 1,
+        "maximum_directories": 1,
+        "maximum_logical_bytes": 4096,
+        "ascii_names_only": true,
+        "maximum_component_bytes": 100,
+        "maximum_path_components": 16,
+        "unnamed_streams_per_file": 1,
+        "requires_absent_sacl": true
+      },
+      "exclusions": [
+        "GPL engine is not linked into Rust product",
+        "No NTFS extent adoption proof",
+        "No arbitrary-volume formatting or general writer qualification",
+        "Native mutation, reboot and power-loss qualification absent"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "id": "bounded-lifecycle-implementation",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "implemented",
+        "unit_tested"
+      ],
+      "outcome": "passed",
+      "scope": "Source/target certificate and public conversion/recovery lifecycle, including protected observation, status and cancel. This record links source/unit evidence only.",
+      "repository_commit": "9457d5fed0687b608441a7c43134a8e6e11e777e",
+      "executable": null,
+      "environment": null,
+      "corpus": {
+        "description": "Source/target certificate and public conversion/recovery lifecycle, including protected observation, status and cancel. This record links source/unit evidence only.",
+        "source_image_sha256": null,
+        "expected_image_sha256": null,
+        "expected_semantic_manifest_sha256": null
+      },
+      "artifacts": [],
+      "source_documents": [
+        "docs/cli-workflow.md",
+        "docs/protected-target-semantics.md",
+        "docs/public-cancel-and-operation-state.md"
+      ],
+      "unknown_fields": {
+        "unit_test_run_digest": "Focused test successes are recorded in prose; an immutable transcript digest is not published.",
+        "executable": "Measured producer executable hash is not published in the cited report."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": false,
+      "metrics": {}
+    },
+    {
+      "id": "public-twelve-object-native",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Public convert --request on the original 52 GiB partition: seven files, five directories and a natural 128 MiB file; exact images, strict native semantics and clean postboot verification passed. Five ordinary payloads relocated, 88 resident bytes materialized, zero retained.",
+      "repository_commit": null,
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "a6fe7b80ca53c244c8f0bc5801cc5f6d36ec38d853d936ace6f37772ac56398a",
+        "retained_path": null
+      },
+      "environment": null,
+      "corpus": {
+        "description": "Public convert --request on the original 52 GiB partition: seven files, five directories and a natural 128 MiB file; exact images, strict native semantics and clean postboot verification passed. Five ordinary payloads relocated, 88 resident bytes materialized, zero retained.",
+        "source_image_sha256": "a1278213487fdf19b931eec4cf175ae8b2947aeb2f2da4df65de256e074a8856",
+        "expected_image_sha256": "5f30e039f5f64e193dfe8a372099da4a680ae1f09bee9cd92d964c8777d06104",
+        "expected_semantic_manifest_sha256": null
+      },
+      "artifacts": [
+        {
+          "role": "result.json",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261025T203834359Z/result.json",
+          "location_unknown_reason": null,
+          "sha256": "56eafffa795cbb146117542027d23c17a5c179557bba8aa93815c08293ee6e30"
+        },
+        {
+          "role": "apply.json",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261025T203834359Z/apply.json",
+          "location_unknown_reason": null,
+          "sha256": "dcb91b34fe9396a2ce96eba2b8fedb240fd52a390348e95cd8f90fd6449aaabe"
+        },
+        {
+          "role": "finalization.json",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261025T203834359Z/finalization.json",
+          "location_unknown_reason": null,
+          "sha256": "0ba79448a5a0a03a999e4a9aa19c91b007957efc3abf24e4c113127f3fad4237"
+        },
+        {
+          "role": "postboot.json",
+          "path": ".lab/hyperv/certificate-conversion/win11-20261025T203834359Z/postboot.json",
+          "location_unknown_reason": null,
+          "sha256": "89fd0710197e50a9a6d60c57cbc1142011ab56345de0c56075e09cbafb32ef45"
+        }
+      ],
+      "source_documents": [
+        "docs/general-native-conversion-results.md"
+      ],
+      "unknown_fields": {
+        "actual_shadow_backing_bytes": "Actual allocated shadow backing for this run is not published.",
+        "repository_commit": "Exact historical producer commit is not established; current HEAD is not inherited.",
+        "executable_retained_path": "The report pins the binary but does not give its retained path.",
+        "windows_build_revision": "Exact historical runtime build/revision is not established; the profile policy build is not a runtime observation.",
+        "refs_driver": "Exact historical refs.sys version/hash is not established; another run is not substituted.",
+        "expected_semantic_manifest_sha256": "The report describes the expected corpus without pinning its complete semantic manifest."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 134742104,
+        "retained_payload_bytes": 0,
+        "relocated_payload_bytes": 134742016,
+        "materialized_payload_bytes": 88,
+        "target_bytes_written": 346841088,
+        "journal_bytes": 693708354,
+        "objects_verified": 12,
+        "actual_shadow_backing_bytes": null
+      }
+    },
+    {
+      "id": "protected-target-twelve-object-native",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed"
+      ],
+      "outcome": "passed",
+      "scope": "Twelve expected objects observed with actual target attributes 3 -> 2 -> 3 and identical complete frozen image hashes before/after. Helper qualification, not a fresh whole conversion.",
+      "repository_commit": null,
+      "executable": {
+        "name": "lab-verify-frozen-refs.exe",
+        "sha256": "47fbb9f9ebdebf0516cdfa1398d6d56270e1b73f802bdc76b5369dee1dd4e5ba",
+        "retained_path": null
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Twelve expected objects observed with actual target attributes 3 -> 2 -> 3 and identical complete frozen image hashes before/after. Helper qualification, not a fresh whole conversion.",
+        "source_image_sha256": "f49b63207fb01c639ca0816ce7049da3233cd8d23d0dd7d0ed670552c4f45f0e",
+        "expected_image_sha256": "f49b63207fb01c639ca0816ce7049da3233cd8d23d0dd7d0ed670552c4f45f0e",
+        "expected_semantic_manifest_sha256": "9655d3160e8f884ca326db522252094a6cfeb28a874debbd29accce2fee7b60f"
+      },
+      "artifacts": [
+        {
+          "role": "protected-semantics.json",
+          "path": ".lab/hyperv/protected-target/win11-20261026T005646691Z/protected-semantics.json",
+          "location_unknown_reason": null,
+          "sha256": "37202774e39f1d8149137283055de763a808b2a7aeefe75d47d8bf64ba73b680"
+        },
+        {
+          "role": "result.json",
+          "path": ".lab/hyperv/protected-target/win11-20261026T005646691Z/result.json",
+          "location_unknown_reason": null,
+          "sha256": "514c47f16c47389f332075da327de9390d9f8e884080a938c3f106b0cc6d8760"
+        }
+      ],
+      "source_documents": [
+        "docs/protected-target-semantics.md"
+      ],
+      "unknown_fields": {
+        "repository_commit": "Binary was built from a working tree committed later as 9457d5f; this does not identify an exact clean producer commit or qualify that whole commit.",
+        "executable_retained_path": "The report pins the binary but does not give its retained path."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": false,
+      "metrics": {
+        "objects_verified": 12,
+        "source_bytes_hashed": 111669149696
+      }
+    },
+    {
+      "id": "native-label-completion-and-reboot",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Separately pinned legacy request backfilled with independently observed source label; complete-label restored and repeated without another setter, then strict twelve-object verification passed after clean reboot with shadow absent.",
+      "repository_commit": null,
+      "executable": null,
+      "environment": null,
+      "corpus": {
+        "description": "Separately pinned legacy request backfilled with independently observed source label; complete-label restored and repeated without another setter, then strict twelve-object verification passed after clean reboot with shadow absent.",
+        "source_image_sha256": null,
+        "expected_image_sha256": null,
+        "expected_semantic_manifest_sha256": null
+      },
+      "artifacts": [
+        {
+          "role": "result.json",
+          "path": ".lab/hyperv/native-label-completion/win11-20261025T215220889Z/first/result.json",
+          "location_unknown_reason": null,
+          "sha256": "fa17f89c5ce7803d999ffe0557cfd7eda906d045b2b6b9199ee9ee8193cddf5f"
+        },
+        {
+          "role": "postboot.json",
+          "path": ".lab/hyperv/native-label-completion/win11-20261025T215220889Z/postboot.json",
+          "location_unknown_reason": null,
+          "sha256": "26b5e1a4264948bf9900b31d18419bd4e680a33cd4aca5fad685e1e3fe08327c"
+        },
+        {
+          "role": "Repeated label-completion result",
+          "path": ".lab/hyperv/native-label-completion/win11-20261025T215220889Z/idempotent/result.json",
+          "location_unknown_reason": null,
+          "sha256": "7e72d4371151b6b0fd3a5a5e108b7f6fb1c6d6c04163d6f4ca9700aadbbf6e04"
+        }
+      ],
+      "source_documents": [
+        "docs/source-volume-label.md"
+      ],
+      "unknown_fields": {
+        "repository_commit": "Exact historical producer commit is not established; current HEAD is not inherited.",
+        "executable": "Measured producer executable hash is not published in the cited report.",
+        "windows_build_revision": "Exact historical runtime build/revision is not established; the profile policy build is not a runtime observation.",
+        "refs_driver": "Exact historical refs.sys version/hash is not established; another run is not substituted.",
+        "expected_semantic_manifest_sha256": "The report describes the expected corpus without pinning its complete semantic manifest."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "objects_verified": 12,
+        "target_bytes_written": 0
+      }
+    },
+    {
+      "id": "public-cancel-after-freeze-exit87",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "process_fault_qualified"
+      ],
+      "outcome": "passed",
+      "scope": "Current-core lab exit87 after durable source freeze and before inspection/construction/journal/activation. Public status recognized frozen state; public cancel proved full unchanged source under an exclusive lease, restored attributes 3 -> 0, original NTFS F: and label. Four logical files matched after writable mount. Whole-image equality ends immediately before writable NTFS resumes.",
+      "repository_commit": null,
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "80e0d4308bd948859102c674877ecc7da0b90228c0619477e53dbdde4b9852c6",
+        "retained_path": null
+      },
+      "environment": null,
+      "corpus": {
+        "description": "Current-core lab exit87 after durable source freeze and before inspection/construction/journal/activation. Public status recognized frozen state; public cancel proved full unchanged source under an exclusive lease, restored attributes 3 -> 0, original NTFS F: and label. Four logical files matched after writable mount. Whole-image equality ends immediately before writable NTFS resumes.",
+        "source_image_sha256": "27a9fec374c60679c7272b7f9aa3679603c0ceb10e9a3a6b730434e8ef71f348",
+        "expected_image_sha256": null,
+        "expected_semantic_manifest_sha256": "5dc5cabfb3d07c68103d10758704baf527f5ccae92b10f3e4ff806d741be1fcf"
+      },
+      "artifacts": [
+        {
+          "role": "result.json",
+          "path": ".lab/hyperv/public-cancel/win11-20261026T022520948Z/cancel/result.json",
+          "location_unknown_reason": null,
+          "sha256": "4e8b7aafc6ce8309d1374d18a6c7d5d5d02d351224dd400ca81ed2fde11ebf93"
+        },
+        {
+          "role": "source-restored.json",
+          "path": ".lab/hyperv/public-cancel/win11-20261026T022520948Z/cancel/source-restored.json",
+          "location_unknown_reason": null,
+          "sha256": "2a3a1bb47ba7ec6de821b3329c64e79d49cd4f1177ec69541cbefebabe9a243f"
+        },
+        {
+          "role": "Dispatch and measured executable pin",
+          "path": ".lab/hyperv/public-cancel/win11-20261026T022520948Z/dispatch.json",
+          "sha256": "cccdff7ad7f9baf179651129ef86ae5541b89c7af845234d1ea18c92ab744f93",
+          "location_unknown_reason": null
+        },
+        {
+          "role": "Pre-freeze four-user-file logical manifest",
+          "path": ".lab/hyperv/recovery-qualification/win11-20261026T014456621Z/fixture-before.json",
+          "sha256": "5dc5cabfb3d07c68103d10758704baf527f5ccae92b10f3e4ff806d741be1fcf",
+          "location_unknown_reason": null
+        }
+      ],
+      "source_documents": [
+        "docs/public-cancel-and-operation-state.md"
+      ],
+      "unknown_fields": {
+        "manifest_scope": "The manifest pin is the pre-freeze four-user-file logical fixture, not a complete metadata/security manifest; measured pin supplied from the dispatch evidence.",
+        "repository_commit": "Exact historical producer commit is not established; current HEAD is not inherited.",
+        "executable_retained_path": "The report pins the binary but does not give its retained path.",
+        "windows_build_revision": "Exact historical runtime build/revision is not established; the profile policy build is not a runtime observation.",
+        "refs_driver": "Exact historical refs.sys version/hash is not established; another run is not substituted."
+      },
+      "fault_model": "process_exit_after_source_freeze",
+      "clean_reboot_observed": false,
+      "metrics": {
+        "source_bytes_hashed": 55834574848,
+        "target_bytes_written": 0
+      }
+    },
+    {
+      "id": "public-posthandoff-status-and-cancel-refusal",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed"
+      ],
+      "outcome": "passed",
+      "scope": "Public status classified mounted_refs_after_handoff; cancel refused postactivation artifacts with exit1 and left original writable ReFS availability unchanged. Successful refusal is not positive cancellation.",
+      "repository_commit": null,
+      "executable": null,
+      "environment": null,
+      "corpus": {
+        "description": "Public status classified mounted_refs_after_handoff; cancel refused postactivation artifacts with exit1 and left original writable ReFS availability unchanged. Successful refusal is not positive cancellation.",
+        "source_image_sha256": null,
+        "expected_image_sha256": null,
+        "expected_semantic_manifest_sha256": null
+      },
+      "artifacts": [
+        {
+          "role": "observed.json",
+          "path": ".lab/hyperv/public-state/win11-20261026T012027660Z/observed.json",
+          "location_unknown_reason": null,
+          "sha256": "c53933167c5c7a73af3bf0e0144c44547deced23f0cd2d0549209b0a76ffb032"
+        }
+      ],
+      "source_documents": [
+        "docs/public-cancel-and-operation-state.md"
+      ],
+      "unknown_fields": {
+        "repository_commit": "Exact historical producer commit is not established; current HEAD is not inherited.",
+        "executable": "Measured producer executable hash is not published in the cited report.",
+        "windows_build_revision": "Exact historical runtime build/revision is not established; the profile policy build is not a runtime observation.",
+        "refs_driver": "Exact historical refs.sys version/hash is not established; another run is not substituted.",
+        "expected_semantic_manifest_sha256": "The report describes the expected corpus without pinning its complete semantic manifest."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": false,
+      "metrics": {}
+    },
+    {
+      "id": "process-first-write-resume-reboot",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "stages": [
+        "native_observed",
+        "reboot_verified",
+        "process_fault_qualified"
+      ],
+      "outcome": "passed",
+      "scope": "Earlier eight-object lab path exited86 after the first flushed target write; pinned resume proved expected ReFS, separate finalization closed recovery, and native verification passed after clean reboot. This is not public recovery CLI qualification.",
+      "repository_commit": null,
+      "executable": null,
+      "environment": null,
+      "corpus": {
+        "description": "Earlier eight-object lab path exited86 after the first flushed target write; pinned resume proved expected ReFS, separate finalization closed recovery, and native verification passed after clean reboot. This is not public recovery CLI qualification.",
+        "source_image_sha256": null,
+        "expected_image_sha256": null,
+        "expected_semantic_manifest_sha256": null
+      },
+      "artifacts": [
+        {
+          "role": "Strict post-recovery reboot verifier report under .lab/hyperv/general-recovery-reboot/win11-20261025T143305523Z",
+          "path": ".lab/hyperv/general-recovery-reboot/win11-20261025T143305523Z/guest-verify-manual.json",
+          "location_unknown_reason": null,
+          "sha256": "b763ed7869abf5e7214567009a3838b825d972b2389d82399fbfdba755029c0b"
+        }
+      ],
+      "source_documents": [
+        "docs/general-native-conversion-results.md"
+      ],
+      "unknown_fields": {
+        "repository_commit": "Exact historical producer commit is not established; current HEAD is not inherited.",
+        "executable": "Measured producer executable hash is not published in the cited report.",
+        "windows_build_revision": "Exact historical runtime build/revision is not established; the profile policy build is not a runtime observation.",
+        "refs_driver": "Exact historical refs.sys version/hash is not established; another run is not substituted.",
+        "expected_semantic_manifest_sha256": "The report describes the expected corpus without pinning its complete semantic manifest."
+      },
+      "fault_model": "process_exit_after_first_flushed_target_write",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "objects_verified": 8
+      }
+    },
+    {
+      "id": "independent-writer-native-rejection",
+      "profile_id": "fixed-refs314-writer-reference-v1",
+      "stages": [
+        "native_observed"
+      ],
+      "outcome": "failed",
+      "scope": "Strict one-cluster adoption overlay imported after full blank/imported-image proofs and eight old/new metadata checks. Microsoft refused Medium Allocator structural inconsistency 0xC0000518, followed by repair/checksum/mount failures. Narrow Rust inspection cannot override native refusal.",
+      "repository_commit": null,
+      "executable": {
+        "name": "importer-raw-header-fix.exe",
+        "sha256": "11762f7ad7d7b17336cb9ff2e73eb8eba599089f7525f5d3beba176e4fe4ce46",
+        "retained_path": ".lab/hyperv/writer-acceptance/win11-20261025T231634770Z/importer-raw-header-fix.exe"
+      },
+      "environment": null,
+      "corpus": {
+        "description": "Windows-formatted ReFS reference with separately applied eight-page overlay",
+        "source_image_sha256": "805eecc9f17436bac644b2b774e96896ace8af2aec8c66dcaf6c3bbb8e4be0c9",
+        "expected_image_sha256": null,
+        "expected_semantic_manifest_sha256": null
+      },
+      "artifacts": [
+        {
+          "role": "Detached rejected candidate VHDX container",
+          "path": null,
+          "location_unknown_reason": "The cited report records the digest but not an exact retained artifact path.",
+          "sha256": "2810d73163c9f41786ddd3df04641e94c9ec0d69f9c4d90197dce01720a104da"
+        },
+        {
+          "role": "Native ReFS rejection events",
+          "path": ".lab/hyperv/writer-acceptance/win11-20261025T231634770Z/native-rejection-events.json",
+          "sha256": "7b3a0c9b1e78fb035ff40d87baf2d00eb9b8da9a93b102700062b97765615bd8",
+          "location_unknown_reason": null
+        },
+        {
+          "role": "Retained candidate identity and container pin",
+          "path": ".lab/hyperv/writer-acceptance/win11-20261025T231634770Z/candidate-preserved.json",
+          "sha256": "f2848e798d75528107cec3f53bbffe552ef2293d24310d065b31a45ab87d706f",
+          "location_unknown_reason": null
+        },
+        {
+          "role": "Successful import proof before native refusal",
+          "path": ".lab/hyperv/writer-acceptance/win11-20261025T231634770Z/imported/result.json",
+          "sha256": "59eab0978249cf82373e266008bf7d5b048fc3dcb925c276799cae2d4b79ad85",
+          "location_unknown_reason": null
+        }
+      ],
+      "source_documents": [
+        "docs/native-refs-writer-acceptance.md"
+      ],
+      "unknown_fields": {
+        "repository_commit": "Exact historical producer commit is not established; current HEAD is not inherited.",
+        "windows_build_revision": "Exact historical runtime build/revision is not established; the profile policy build is not a runtime observation.",
+        "refs_driver": "Exact historical refs.sys version/hash is not established; another run is not substituted.",
+        "expected_semantic_manifest_sha256": "The report describes the expected corpus without pinning its complete semantic manifest."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": false,
+      "metrics": {
+        "retained_payload_bytes": 4096,
+        "target_bytes_written": 131072,
+        "metadata_write_count": 8
+      }
+    }
+  ],
+  "claims": [
+    {
+      "id": "public-existing-tree-conversion",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Existing ordinary tree conversion",
+      "statement": "Bounded twelve-object existing NTFS tree converted on its original partition through public CLI and passed strict native/reboot checks.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation",
+        "public-twelve-object-native"
+      ],
+      "exclusions": [
+        "Run retained zero payload bytes.",
+        "Historical binary predates label/protected-target integration."
+      ],
+      "remaining_gates": [
+        "Fresh whole conversion through current integrated paths",
+        "Broader supported profile and failure matrix"
+      ]
+    },
+    {
+      "id": "protected-frozen-target-observation",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Protected frozen target semantics",
+      "statement": "Actual frozen target image bound to native semantics by unchanged full hashes around protected observation.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation",
+        "protected-target-twelve-object-native"
+      ],
+      "exclusions": [
+        "No complete raw allocation graph or selective-write-set proof.",
+        "Helper success is not a fresh whole conversion."
+      ],
+      "remaining_gates": [
+        "Fresh integrated full conversion",
+        "Complete target-required write-set and ownership proof"
+      ]
+    },
+    {
+      "id": "native-label-completion",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Native source-label completion",
+      "statement": "Separate complete-label restored, repeated and reboot-verified the source label on an existing converted twelve-object volume.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation",
+        "native-label-completion-and-reboot"
+      ],
+      "exclusions": [
+        "Uses separately pinned backfilled legacy request.",
+        "No raw replay or current-image equality authority."
+      ],
+      "remaining_gates": [
+        "Fresh capture-to-automatic-label conversion"
+      ]
+    },
+    {
+      "id": "automatic-source-label-path",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Automatic source-label workflow",
+      "statement": "Capture/frozen reconciliation/automatic finalization integration exists; complete fresh native path has no recorded passing result.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation"
+      ],
+      "exclusions": [
+        "Separate label completion does not qualify this integration."
+      ],
+      "remaining_gates": [
+        "Fresh whole conversion using original label producer artifacts"
+      ]
+    },
+    {
+      "id": "public-preactivation-cancel",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Public preactivation cancellation",
+      "statement": "After controlled post-freeze process exit, public cancel proved unchanged source bytes exclusively and restored original NTFS availability.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation",
+        "public-cancel-after-freeze-exit87"
+      ],
+      "exclusions": [
+        "Hash equality immediately before returning to writable NTFS, not after writable mount.",
+        "One process fault, not a storage power cut."
+      ],
+      "remaining_gates": [
+        "Broader concurrent-worker/journal/mount-restoration native cases",
+        "Storage fault matrix"
+      ]
+    },
+    {
+      "id": "public-status-and-handoff-refusal",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Public status and handoff cancel refusal",
+      "statement": "Status observed completed ReFS handoff and cancel refused that activated source without changing availability.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation",
+        "public-posthandoff-status-and-cancel-refusal"
+      ],
+      "exclusions": [
+        "Status grants no execution authority.",
+        "Wrong-identity refusal is recorded in prose without a pinned result in this registry."
+      ],
+      "remaining_gates": [
+        "Native partial/foreign marker and worker-contention classification"
+      ]
+    },
+    {
+      "id": "interrupted-native-resume",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Interrupted native apply and resume",
+      "statement": "Controlled first-flushed-write process exit recovered through lab resume/finalization and passed native/reboot verification.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation",
+        "process-first-write-resume-reboot"
+      ],
+      "exclusions": [
+        "Earlier eight-object wrapper, not public recovery CLI qualification.",
+        "No arbitrary write/flush or storage-power-loss coverage."
+      ],
+      "remaining_gates": [
+        "Public recovery invocation",
+        "Broader fault matrix"
+      ]
+    },
+    {
+      "id": "public-shadowless-rollback",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Explicit shadowless rollback",
+      "statement": "Public rollback --without-shadow exists with focused contract tests; native success is not yet recorded.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation"
+      ],
+      "exclusions": [
+        "Ongoing setup and an admission refusal are not rollback success.",
+        "Forward resume/finalize retain their shadow dependency."
+      ],
+      "remaining_gates": [
+        "Native interrupted rollback without shadow and exact restored preimage",
+        "Native process-restart marker completion"
+      ]
+    },
+    {
+      "id": "natural-payload-retention",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Retention of independently allocated payloads",
+      "statement": "Placement attempts/candidate planning exist; twelve-object public run relocated all five ordinary payloads and retained zero bytes.",
+      "evidence_ids": [
+        "bounded-lifecycle-implementation"
+      ],
+      "exclusions": [
+        "Prepared one-file 64 KiB retention does not prove general natural retention.",
+        "Identical hashes/location do not prove absence of payload I/O."
+      ],
+      "remaining_gates": [
+        "Independently populated retained-range conversion",
+        "Complete target ownership and measured payload I/O"
+      ]
+    },
+    {
+      "id": "independent-writer-acceptance",
+      "profile_id": "fixed-refs314-writer-reference-v1",
+      "feature": "Independent writer native acceptance",
+      "statement": "Microsoft rejected the exact imported REFSNT candidate; native acceptance remains unqualified.",
+      "evidence_ids": [
+        "independent-writer-native-rejection"
+      ],
+      "exclusions": [
+        "External GPL engine not linked into Rust product.",
+        "Rust/checker acceptance cannot override native refusal."
+      ],
+      "remaining_gates": [
+        "Unmodified reference control",
+        "Explain/fix Medium Allocator rejection",
+        "Native mapping/content/mutation/remount/reboot"
+      ]
+    },
+    {
+      "id": "storage-power-loss",
+      "profile_id": "ordinary-ntfs31-refs314-v2",
+      "feature": "Storage power-loss recovery",
+      "statement": "No storage power-loss qualification is recorded.",
+      "evidence_ids": [],
+      "exclusions": [
+        "Unit models assume durability.",
+        "Process exits/clean reboots do not establish storage power-loss behavior."
+      ],
+      "remaining_gates": [
+        "Durable write/flush failure matrix on identified native storage with persistent exclusion"
+      ]
+    }
+  ]
+}

@@ -7,6 +7,8 @@ engine source checkpoint is `96720eff89c7e808983c8d5c9800d475fe62515c`, tagged
 `714ddd2bc78d1165061524a390e538c15d8022b2b56ca5170040edfe1286b841`.
 Formatting, Clippy, release builds and 665 workspace tests passed (13 ignored).
 This is a candidate freeze, not new native qualification.
+The later [normal-path result](native-shadow-alpha-results.md) records its bounded
+native conversion/mutation/reboot pass; recovery cases remain separate evidence.
 
 No additional filesystem features or independent-writer experiments belong on
 this path. Preserve old evidence and binaries. If native failures require an

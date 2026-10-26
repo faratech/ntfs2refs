@@ -4,6 +4,7 @@
 [CmdletBinding()]
 param([Parameter(Mandatory)][ValidateSet('Cancel','Resume','RollbackWithoutShadow')][string]$Case,
       [ValidatePattern('\A(?:[0-9a-f]{32})?\z')][string]$CaseId='',
+      [switch]$ResumeAfterRestore,
       [ValidateRange(30,600)][int]$ReadinessTimeoutSeconds=240)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -155,7 +156,8 @@ $guestPreflight={
 }
 
 try{
-    $owned=Assert-AlphaVm @('Off') $passedId
+    if($ResumeAfterRestore-and-not$CaseId){throw 'Explicit reviewed pre-start case ID required.'}
+    $owned=Assert-AlphaVm @('Off') $(if($ResumeAfterRestore){$baselineId}else{$passedId})
     $saved=@(Get-VMSnapshot -VM $owned|Where-Object {$_.Id-eq$passedId})
     $base=@(Get-VMSnapshot -VM $owned|Where-Object {$_.Id-eq$baselineId})
     if($saved.Count-ne1-or$saved[0].Name-cne$preserved.name-or[guid]$saved[0].ParentSnapshotId-ne$baselineId-or
@@ -165,12 +167,26 @@ try{
     $cases=Join-Path $alphaRoot 'fault-cases'
     if(-not(Test-Path -LiteralPath $cases)){$null=[IO.Directory]::CreateDirectory($cases)};Assert-Ordinary $cases $true
     $caseRoot=Join-Path $cases $run
-    if(Test-Path -LiteralPath $caseRoot){throw 'Case already exists; inspect its exact operation instead of redispatching.'}
-    $null=New-Item -ItemType Directory -Path $caseRoot;$createdCaseRoot=$true;Assert-Ordinary $caseRoot $true
+    if($ResumeAfterRestore){
+        Assert-Ordinary $caseRoot $true
+        $prior=Read-HostJson (Join-Path $caseRoot 'intent.json')
+        $failure=Read-HostJson (Join-Path $caseRoot 'failed-preserved.json')
+        if($prior.case-cne$Case-or$prior.run_id-cne$run-or[guid]$prior.vm_id-ne$vmId-or
+           [guid]$prior.restore_only_checkpoint-ne$baselineId-or$failure.phase-cne'restore-owned-ntfs-baseline'-or
+           $failure.start_attempted-or(Test-Path -LiteralPath (Join-Path $caseRoot 'dispatch.json'))-or
+           (Test-Path -LiteralPath (Join-Path $caseRoot 'baseline-restored.json'))){throw 'Only the observed completed restore before any producer dispatch may continue.'}
+        Save-Record (Join-Path $caseRoot ('resume-after-restore-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')+'.json')) `
+            @{vm_id=$vmId.ToString('D');checkpoint_id=$baselineId.ToString('D');state='Off';producer_previously_started=$false;restore_repeated=$false}
+    }else{
+        if(Test-Path -LiteralPath $caseRoot){throw 'Case already exists; inspect its exact operation instead of redispatching.'}
+        $null=New-Item -ItemType Directory -Path $caseRoot
+    }
+    $createdCaseRoot=$true;Assert-Ordinary $caseRoot $true
     $inputRoot='C:\ntfs2refs\alpha\fault-inputs\'+$run
     $guestInput=Join-Path $inputRoot 'request.json';$guestOutput='C:\ntfs2refs\alpha\fault-runs\'+$run
     $taskName='N2R-AlphaFault-'+$Case+'-'+$run
     $expectedExit=if($Case-ceq'Cancel'){87}else{86}
+    if(-not$ResumeAfterRestore){
     Save-Record (Join-Path $caseRoot 'intent.json') ([ordered]@{schema_version=1;kind='native-shadow-alpha-fault-intent';case=$Case;vm_id=$vmId.ToString('D');run_id=$run;
         normal_controller_id=$completion.controller_id;preserved_normal_checkpoint=$passedId.ToString('D');restore_only_checkpoint=$baselineId.ToString('D');
         normal_result_sha256=(Get-FileHash -LiteralPath (Join-Path $postRoot 'result.json')).Hash.ToLowerInvariant();normal_checkpoint_sha256=(Get-FileHash -LiteralPath (Join-Path $postRoot 'preserved-checkpoint.json')).Hash.ToLowerInvariant();
@@ -180,6 +196,14 @@ try{
     Capacity-Record (Join-Path $caseRoot 'before-restore-capacity.json')
     $phase='restore-owned-ntfs-baseline';$null=Assert-AlphaVm @('Off') $passedId
     Restore-VMSnapshot -VMSnapshot $base[0] -Confirm:$false -ErrorAction Stop
+    # Wait only for metadata convergence; never repeat the restore action.
+    $metadataDeadline=[DateTime]::UtcNow.AddSeconds(30)
+    do{
+        $observedVm=Get-VM -Id $vmId
+        if($observedVm.State.ToString()-ceq'Off'-and[guid]$observedVm.ParentSnapshotId-eq$baselineId){break}
+        Start-Sleep -Seconds 1
+    }while([DateTime]::UtcNow-lt$metadataDeadline)
+    }
     $owned=Assert-AlphaVm @('Off') $baselineId
     if(@(Get-VMSnapshot -VM $owned|Where-Object {$_.Id-eq$passedId}).Count-ne1){throw 'Preserved normal checkpoint disappeared; no start is allowed.'}
     Save-Record (Join-Path $caseRoot 'baseline-restored.json') @{vm_id=$vmId.ToString('D');checkpoint_id=$baselineId.ToString('D');state='Off';normal_checkpoint_preserved=$true;observed_utc=[DateTime]::UtcNow.ToString('o')}
@@ -289,7 +313,8 @@ try{
     [pscustomobject]@{status='fault-producer-dispatched';case=$Case;dispatch_directory=$caseRoot;dispatch=$dispatch;completion_inferred=$false;recovery_attempted=$false}
 }catch{
     if($createdCaseRoot-and(Test-Path -LiteralPath $caseRoot)){
-        Save-Record (Join-Path $caseRoot 'failed-preserved.json') @{phase=$phase;error=$_.Exception.ToString();start_attempted=$startAttempted;
+        $failureName=if($ResumeAfterRestore){'failed-resume-'+[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ')+'.json'}else{'failed-preserved.json'}
+        Save-Record (Join-Path $caseRoot $failureName) @{phase=$phase;error=$_.Exception.ToString();start_attempted=$startAttempted;
             worker_termination_inferred=$false;automatic_recovery_attempted=$false;redispatch_allowed=$false;recorded_utc=[DateTime]::UtcNow.ToString('o')}
     }
     throw

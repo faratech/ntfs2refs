@@ -26,6 +26,15 @@ On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
 
 ## Verified baseline as of 2026-10-26
 
+- The frozen native-shadow alpha has separate bounded native evidence in
+  [its result report](docs/native-shadow-alpha-results.md): normal public conversion
+  of 15 admitted objects, 128 MiB retained, strict native verification, mutation
+  and reboot passed. Its independent preactivation cancellation branch also
+  passed complete frozen-image verification, seven user-file checks and reboot.
+  Preserve both OFF checkpoints. Resume after raw-write interruption and a
+  separate shadowless rollback remain distinct pending qualification cases.
+  Use the exact frozen executable pins and fresh alpha dispatchers; no engine
+  or independent-writer feature work belongs on this critical path.
 - Public `ntfs2refs convert --request` completed a fourteen-object tree on the
   original 52 GiB partition, retaining 134,217,728 payload bytes at their original
   physical extent, relocating 8,933,376 and materializing 88. There were 134
@@ -297,9 +306,10 @@ tests and release builds. Do not transfer that result to later changes.
 `evidence/qualification-registry.json` records bounded implementation/native
 claims and their exact evidence pins; it never grants execution authority.
 
-Next work should broaden source/placement coverage, reduce measured scratch and
-I/O costs, extend the native interruption/marker-recovery matrix, and investigate
-the rejected independent writer using the accepted baseline control. The
+Immediate work is the frozen alpha's end-to-end interruption/resume/finalization
+and separate shadowless rollback tests. Preserve each completed branch before
+restoring its disposable baseline. Source/placement expansion, scratch/I/O
+optimization and independent-writer investigation follow that qualification. The
 fourteen-object aged-layout conversion, automatic label path, mutation and
 reboot now have bounded native evidence; do not repeat them without a concrete
 new change or unresolved gate. Preserve completed fixture paths and add

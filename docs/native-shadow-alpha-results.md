@@ -46,7 +46,25 @@ Evidence is under ignored root `.lab/hyperv/shadow-alpha-20261026`, including
 `postcheck/ef9e1456af154eb0b85645a2a094848c`. Exported JSON hashes were compared
 with guest hashes. The complete journal remains in the preserved VM branch.
 
-Cancellation and interruption/recovery cases use separate baseline branches.
-Their outcomes are not inferred from this normal-path result. Power-loss safety,
+The separate preactivation cancellation case
+`fd23326c56424b7b94cc4a92658ccb19` also passed. Its controlled producer exited
+87 after freezing the source. Public `operation-state` reported
+`frozen_before_activation`; public `cancel` exited zero, checked the complete
+partition against frozen SHA-256
+`58b48267e752c7f93cb25cda61f9153c20e1f5ac92d080bea31e129829874b15`,
+and restored original NTFS availability without journal or source-payload writes.
+The cancellation result SHA-256 is
+`2fa0561e3695b82587891189fb311d105973e62a8d6ffd1259524337cd247d45`.
+Seven user-file lengths/hashes, the original partition, mount and label matched
+before and after a clean reboot. Checkpoint
+`1cd601b8-c87d-42a8-a105-b1771fdf2b38` preserves that branch OFF. Full
+post-mount image equality and a complete security/timestamp audit are not claimed.
+The case's bounded JSON evidence was exported and its hashes compared with the
+guest. Two preservation harness preflights needed correction/metadata
+re-observation; neither retried a converter, reboot or restore operation, and
+their original receipts remain preserved.
+
+Interruption/resume and shadowless rollback use further separate baseline
+branches; their outcomes are not inferred from the earlier results. Power-loss safety,
 boot conversion, advanced source features and broader Windows compatibility
 remain unqualified. Independent-writer research remains off the alpha path.

@@ -148,16 +148,32 @@ reference VHD and creation of a separate offline fixture on 2026-10-26. Only
 after fresh hash, identity, attachment and complete registered-ancestry checks.
 The packet, overlays, evidence, archive and all fifty original checkpoints remain.
 The separate VM `ntfs2refs-reference-isolated`, ID
-`8f7fc646-8c9f-41d0-b65a-ecfadccfc36a`, is powered off with fixed 8 GiB RAM,
+`8f7fc646-8c9f-41d0-b65a-ecfadccfc36a`, has fixed 8 GiB RAM,
 four vCPUs, no NIC and automatic checkpoints disabled. Its ownership record is
 `.lab/hyperv/isolated-reference-20261026-review/manifest.json`. Its three standalone
 VHDX files are independent copies whose hashes match the archive; container UUIDs
 were preserved by copying, while host file identities are new. Do not use a VHD
 UUID alone to infer backing-file aliasing. vTPM/Secure Boot settings were retained.
-The export's read-only DVD ISO reference remains recorded in the manifest.
-No guest boot, credential login or native experiment has run on this fixture.
+The provisioning manifest is a historical preboot record. A specifically approved
+ejection cleared only the DVD's ISO path; the DVD device and boot order remain.
+An initial start was denied access to the inherited ISO, and its failed guard
+did not preserve the prior ISO SDDL. Do not claim that pre-ejection ACL is known.
+The later approved single retry booted normally and authenticated through
+PowerShell Direct by this VM GUID, using the existing authorized credential.
+The VM is now running without a NIC; no further permission change was needed.
+The ISO ACL hash stayed unchanged during that retry. Windows 11 Pro 26300.9457
+and the expected `refs.sys` hash matched. The observed disk-role mapping and
+resource margins are in
+`.lab/hyperv/isolated-reference-20261026-review/readiness-20261026T144625632Z/binding-summary.json`.
+OS disk 0 is GPT/NTFS; target disk 1 and journal disk 2 are RAW and uninitialized.
+No J: volume, target NTFS source, or native-experiment enrollment is established.
+No writer/native disk experiment has run on this fixture. The raw observation
+JSON contains remoted service enum wrappers; read it with `ConvertFrom-Json
+-AsHashtable`, or use the normalized binding summary. Later source serializes
+those enum fields as strings; that serialization change has not been rerun here.
 Do not dispatch helpers bound to the old `win11` manifest against this new VM.
-The approval covers this provisioning, not a writer experiment or further cleanup.
+The approval covers provisioning and read-only guest readiness, not formatting,
+reference import, a writer experiment, conversion or further cleanup.
 
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those

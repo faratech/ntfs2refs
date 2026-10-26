@@ -105,7 +105,10 @@ try {
             disk_devices=@(Get-CimInstance Win32_DiskDrive | Select-Object Index,DeviceID,SerialNumber,Size,BytesPerSector,SCSIBus,SCSIPort,SCSITargetId,SCSILogicalUnit,PNPDeviceID);
             partitions=@(Get-Partition | Select-Object DiskNumber,PartitionNumber,Guid,Offset,Size,GptType,DriveLetter,IsBoot,IsSystem,IsReadOnly,AccessPaths);
             volumes=@(Get-Volume | Select-Object DriveLetter,FileSystemLabel,FileSystem,UniqueId,Path,Size,SizeRemaining,AllocationUnitSize,DriveType,HealthStatus);
-            integration_services=@(Get-Service vmicheartbeat,vmicvmsession,vmictimesync,vmicshutdown,vmicguestinterface -ErrorAction SilentlyContinue | Select-Object Name,Status,StartType);
+            # Serialize enums as strings: remoted enum wrappers otherwise emit
+            # both `value` and `Value`, which case-insensitive JSON readers reject.
+            integration_services=@(Get-Service vmicheartbeat,vmicvmsession,vmictimesync,vmicshutdown,vmicguestinterface -ErrorAction SilentlyContinue |
+                ForEach-Object { [pscustomobject]@{ Name=$_.Name; Status=[string]$_.Status; StartType=[string]$_.StartType } });
             refs_driver_version=$driver.VersionInfo.FileVersion; refs_driver_bytes=$driver.Length;
             refs_driver_sha256=(Get-FileHash -LiteralPath $driver.FullName -Algorithm SHA256).Hash.ToLowerInvariant();
             captured_utc=[DateTime]::UtcNow.ToString('o')

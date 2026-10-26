@@ -72,3 +72,32 @@ archive hashes, import and final ownership records are under
 The original VM retained the exact fifty checkpoint IDs and current checkpoint
 listed above. This follow-up approval does not authorize additional cleanup or
 retroactively authorize the earlier failed-leaf checkpoint deletion.
+
+## Approved normal boot/read-only readiness, 2026-10-26
+
+An initial start of the isolated VM failed before guest boot because Hyper-V
+could not read the inherited Downloads ISO at DVD controller 0/location 3.
+Mike specifically approved clearing that media path and one normal boot/login
+retry. The DVD device and boot order remain. The post-ejection guard reported
+an ISO SDDL difference; its pre-ejection SDDL was not saved, so its exact ACL
+delta is not reconstructible from that record. No explicit ACL correction was
+performed. After the follow-up approval, the ISO remained ejected and the single
+retry succeeded without another permission change. The ISO ACL hash was equal
+before/after that retry; this does not prove pre-ejection ACL preservation.
+
+VM `8f7fc646-8c9f-41d0-b65a-ecfadccfc36a` is now running with 8 GiB assigned,
+four vCPUs, no NIC, vTPM enabled and Secure Boot On. One PowerShell Direct login
+through that exact VM GUID used the approved existing credential. Only read-only
+OS/build, driver, storage and integration queries ran; the session then closed.
+The profile matched Windows 11 Pro 26300.9457 and the expected ReFS driver hash.
+Guest disk 0 is the GPT OS disk, disk 1 the RAW 64 GiB target, and disk 2 the RAW
+8 GiB journal. Neither data disk has a partition/volume enrollment or J: route.
+No format, reference import, conversion or writer experiment was performed or
+authorized by this readiness step. The original VM and all fifty checkpoint
+identities were preserved.
+
+The successful run is
+`.lab/hyperv/isolated-reference-20261026-review/readiness-20261026T144625632Z`.
+Use its normalized `binding-summary.json` for disk-role mapping and actual
+resource margins; the provisioning hashes describe the images before boot.
+Keep the earlier failure and ejection records as well.

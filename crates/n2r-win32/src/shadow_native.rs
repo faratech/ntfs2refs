@@ -1,6 +1,7 @@
 //! Native creation on a separately bound empty ReFS volume. Never writes the
 //! source disk, manufactures ReFS bytes or grants conversion authority.
 mod evacuation;
+pub mod valid_data_probe;
 use crate::{
     attestation::{PrivilegeState, Snapshot},
     attestation_native::{Privileges, snapshot},

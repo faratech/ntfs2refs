@@ -54,10 +54,45 @@ Do not run these routes unchanged on the isolated VM or remove their old guards.
 Only a separately reviewed, narrowly versioned isolated enrollment can use them.
 The initialization proof gate remains closed; a read-only report cannot open it.
 
-The last recorded free space was about 67.49 GiB. The existing conservative setup
-budget requires 88.125 GiB: 8 GiB journal growth, 128 MiB overhead, 16 GiB growth
-allowance and the unchanged 64 GiB reserve. That leaves a roughly 20.6 GiB deficit.
-The 208 GiB actual-lab ceiling also remains enforced. Both reference backings must
-fit J: together with its reserve; individual 6 GiB ceilings do not prove combined
-fit. Reacquire capacity before setup. No deletion, limit increase, VM snapshot or
-configuration/security/credential change follows from this plan.
+At the read-only capacity observation around 2026-10-27 03:46 UTC, actual lab
+usage was 182,437,692,234 bytes against a 223,338,299,392-byte ceiling, and host
+free space was 72,205,086,720 bytes against the 68,719,476,736-byte reserve.
+Thus the smaller current headroom was 3,485,609,984 bytes; after the 128 MiB
+observation allowance it was 3,351,392,256 bytes. These are observations, not
+reservations or a mechanism that stops guest writes at the budget.
+
+The existing conservative setup budget requires 94,623,498,240 bytes
+(88.125 GiB) of initial free space: 8 GiB journal growth, 128 MiB overhead,
+16 GiB growth allowance and the unchanged 64 GiB reserve. The measured shortfall
+was 22,418,411,520 bytes (about 20.88 GiB). An 8 GiB dynamic journal can grow
+beyond the measured headroom, and the prospective reference backings must fit
+the journal together with its reserve; monitoring alone is not an enforceable
+write quota. Reacquire capacity and establish an enforceable write/growth bound
+before setup. No deletion, limit increase, VM snapshot or configuration/security/
+credential change follows from this plan.
+
+## Next bounded investigation (not dispatched)
+
+The preserved observation contains one complete guest logical read and host
+file identity, length and timestamps before/after. It does not contain a
+before-and-after byte snapshot of the 4 MiB VHDX container. The preboot archive
+hash is from a different time and cannot establish when any later container
+change happened. These records alone therefore cannot distinguish a VHDX
+metadata update from a change in guest-visible data, or establish the cause
+of the changed last-write time.
+
+The next useful investigation is a separately reviewed, capacity-admitted
+test on the same isolated fixture: capture immutable full-container bytes while
+the VM is offline, perform one controlled read-only guest observation, then
+capture the complete container again while offline. Compare changed container
+regions and independently resolve the before/after VHDX block mappings to the
+guest-visible logical bytes. Record both guest and container hashes and retain
+both copies. Use the exact VM/disk-2/file bindings above, prohibit unrelated
+workers, and do not infer a durable writer fence from a matching comparison.
+If mappings, logs or timestamps cannot be explained, retain the refusal.
+
+That sequence would change the isolated VM's runtime state and repeat a disk
+observation; this document does not authorize it. It is independent of, and
+must not delay, the native-shadow converter. The reference-control setup still
+needs the measured free-space shortfall addressed and a genuinely enforceable
+growth bound before any formatting or import, not merely periodic monitoring.

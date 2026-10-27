@@ -60,3 +60,31 @@ source hash was still in progress; no completed source-frozen artifact, journal
 or conversion result was present. This is live progress evidence only. Use the
 recorded task/process and current collector output rather than treating an
 observation timeout or missing later report as termination.
+
+Candidate 2 subsequently terminated with result 1 and no converter process.
+It completed the full source hash but refused on `primary and mirror MFT record
+24 differ`. No source payload writes or reconstruction were authorized. The full
+failure output, staged candidate and read-only primary/mirror cluster captures
+are retained under `candidate2/terminal-evidence`. Capture SHA-256 values are
+`9f7881f1bdfdbb6d55ec60038eb394891c01e826ea10883896a12766db51a780`
+(primary) and `342d2d35c6b0381f101484feead82b1624b4b0cb73f92b4cdc956c44532e859b`
+(mirror), each 65,536 bytes. These are local captured-artifact observations,
+not source-health or conversion-success claims.
+
+The first four records match exactly. Divergent mirror slots from 24 onward
+remain inactive, zero-LSN, nameless format templates while primary entries have
+become live. Microsoft's [MFT mirror definition](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/8ac44452-328c-4d7b-a784-d72afd19bd9f)
+specifies four bootstrap records. The corrected backup policy keeps those four
+byte-identical, validates every declared slot's USA/record structure, hashes the
+complete regions, and accepts extra-slot differences only for the narrow
+inactive format template (zero flags/links/base/LSN, matching slot number,
+resident unnamed standard-information/security/empty-data attributes, no name,
+format timestamps/flags and valid security descriptor). Other extra differences
+still refuse. Extended evidence identifies exact matches and recognized padding;
+it does not falsely label the entire allocated cluster as synchronized records.
+
+The refused beta branch is saved OFF as checkpoint
+`cbd04cca-3117-4b25-8731-efa56a5e0ffd`. Only this disposable beta was returned to
+its own baseline `506bf3fe-afac-40fb-bfe9-e357141506d2`, after terminal-worker
+proof and archival. Hyper-V parent publication lag was observed without repeating
+the completed restore. Earlier protected VMs/checkpoints were not restored.

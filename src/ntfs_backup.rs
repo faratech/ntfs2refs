@@ -15,6 +15,18 @@ pub struct VerifiedBackups {
     backup_boot_sha256: String,
     mirrored_records: u32,
     mirrored_record_sha256: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extended_mirror: Option<ExtendedMirrorEvidence>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ExtendedMirrorEvidence {
+    profile: &'static str,
+    declared_record_slots: u32,
+    equal_extra_slots: Vec<u32>,
+    inactive_format_padding_slots: Vec<u32>,
+    primary_region_sha256: String,
+    mirror_region_sha256: String,
 }
 fn fingerprint(raw: &NtfsInspection) -> Result<String> {
     Ok(hex::encode(Sha256::digest(serde_json::to_vec(raw)?)))
@@ -90,19 +102,24 @@ pub fn verify<R: Read + Seek>(
             "backup bootstrap location differs from DATA map"
         );
     }
-    // NTFS mirrors at least four file records, or one complete cluster when
-    // that is larger. Validate the entire declared bootstrap mirror, using
-    // fixed record buffers rather than allocating a cluster-sized pair.
+    // Keep the complete geometry-sized stream checked and hashed, but do not
+    // equate its allocation/logical length with synchronized live record count.
+    // The bootstrap contract is four records; a larger stream may retain
+    // inactive format templates after those records became live in the MFT.
     let mirror_bytes = u64::from(g.cluster_size).max(4 * u64::from(g.file_record_size));
     ensure!(
         mirror.logical_size == mirror_bytes && mirror.initialized_size == mirror_bytes,
         "MFT mirror length differs from the source cluster/record geometry"
     );
-    let mirrored_records = u32::try_from(mirror_bytes / u64::from(g.file_record_size))?;
+    let declared_slots = u32::try_from(mirror_bytes / u64::from(g.file_record_size))?;
     let mut primary = [0; 1024];
     let mut mirrored = [0; 1024];
     let mut hashes = vec![];
-    for i in 0..mirrored_records {
+    let mut equal_extra_slots = Vec::new();
+    let mut padding_slots = Vec::new();
+    let mut primary_hash = Sha256::new();
+    let mut mirror_hash = Sha256::new();
+    for i in 0..declared_slots {
         let offset = u64::from(i) * u64::from(g.file_record_size);
         ntfs::read_nonresident_inventory_range(reader, mft, offset, &mut primary, g)?;
         ntfs::read_nonresident_inventory_range(reader, mirror, offset, &mut mirrored, g)?;
@@ -110,20 +127,38 @@ pub fn verify<R: Read + Seek>(
             .with_context(|| format!("primary MFT record {i}"))?;
         ntfs::validate_file_record(&mirrored, g)
             .with_context(|| format!("mirror MFT record {i}"))?;
-        // Conservative: no normalization of differing LSNs, USA encodings,
-        // attributes or unused bytes. Other valid layouts may be refused.
-        ensure!(
-            primary == mirrored,
-            "primary and mirror MFT record {i} differ"
-        );
-        hashes.push(hex::encode(Sha256::digest(primary)));
+        primary_hash.update(primary);
+        mirror_hash.update(mirrored);
+        if i < 4 {
+            ensure!(
+                primary == mirrored,
+                "primary and mirror MFT record {i} differ"
+            );
+            hashes.push(hex::encode(Sha256::digest(primary)));
+        } else if primary == mirrored {
+            equal_extra_slots.push(i);
+        } else {
+            ensure!(
+                ntfs::inactive_mirror_template(&mirrored, g, i)?,
+                "primary and mirror MFT record {i} differ outside the recognized inactive format padding"
+            );
+            padding_slots.push(i);
+        }
     }
     Ok(VerifiedBackups {
         inspection_fingerprint: fingerprint(raw)?,
         partition_length: length,
         primary_boot_sha256: hex::encode(Sha256::digest(&boot)),
         backup_boot_sha256: hex::encode(Sha256::digest(&backup)),
-        mirrored_records,
+        mirrored_records: 4,
         mirrored_record_sha256: hashes,
+        extended_mirror: (declared_slots > 4).then(|| ExtendedMirrorEvidence {
+            profile: "ntfs-inactive-mirror-padding-v1",
+            declared_record_slots: declared_slots,
+            equal_extra_slots,
+            inactive_format_padding_slots: padding_slots,
+            primary_region_sha256: hex::encode(primary_hash.finalize()),
+            mirror_region_sha256: hex::encode(mirror_hash.finalize()),
+        }),
     })
 }

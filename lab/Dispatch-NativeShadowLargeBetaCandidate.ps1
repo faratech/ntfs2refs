@@ -43,8 +43,9 @@ try{
         }
         if(Test-Path -LiteralPath $Stage){throw 'Fresh candidate stage required.'}
         $null=New-Item -ItemType Directory -Path $Stage
-        [pscustomobject]@{previous_task=(Get-ScheduledTask -TaskName 'N2R-LargeBetaConvert-592d72139d3443dead6f7f947209c494').State.ToString();
-            previous_result=(Get-ScheduledTaskInfo -TaskName 'N2R-LargeBetaConvert-592d72139d3443dead6f7f947209c494').LastTaskResult;
+        $prior=Get-ScheduledTask -TaskName 'N2R-LargeBetaConvert-592d72139d3443dead6f7f947209c494' -ErrorAction SilentlyContinue
+        [pscustomobject]@{previous_task=if($prior){$prior.State.ToString()}else{'not-present-on-current-baseline'};
+            previous_result=if($prior){(Get-ScheduledTaskInfo -TaskName $prior.TaskName).LastTaskResult}else{$null};
             disks=@(Get-Disk|Select-Object Number,IsOffline,IsReadOnly,Size)}
     }
     Save 'prior-state.json' $prior

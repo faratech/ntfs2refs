@@ -872,6 +872,69 @@ pub(crate) fn validate_file_record(bytes: &[u8], geometry: &NtfsGeometry) -> Res
     Ok(())
 }
 
+/// Recognize only the inactive, nameless format template observed in the
+/// allocated tail of a larger-cluster $MFTMirr. This is not a live backup.
+pub(crate) fn inactive_mirror_template(
+    bytes: &[u8],
+    geometry: &NtfsGeometry,
+    slot: u32,
+) -> Result<bool> {
+    let record = parse_record(bytes.to_vec(), geometry)?;
+    if record.flags != 0
+        || record.links != 0
+        || record.base != 0
+        || u64le(bytes, 8)? != 0
+        || u32le(bytes, 44)? != slot
+        || record.attributes.len() != 3
+    {
+        return Ok(false);
+    }
+    let kinds: Vec<_> = record
+        .attributes
+        .iter()
+        .map(|a| a.report.type_code)
+        .collect();
+    if kinds != [0x10, 0x50, 0x80]
+        || record.attributes.iter().any(|a| {
+            !a.report.resident
+                || a.report.flags != 0
+                || !a.report.name_utf16.is_empty()
+                || a.report.lowest_vcn != 0
+                || a.report.compression_unit != 0
+        })
+    {
+        return Ok(false);
+    }
+    let standard = record.attributes[0]
+        .resident_value
+        .as_deref()
+        .context("missing template standard information")?;
+    let security = record.attributes[1]
+        .resident_value
+        .as_deref()
+        .context("missing template security")?;
+    let data = record.attributes[2]
+        .resident_value
+        .as_deref()
+        .context("missing template data")?;
+    if standard.len() != 48
+        || !data.is_empty()
+        || u32le(standard, 32)? != 6
+        || standard[36..].iter().any(|byte| *byte != 0)
+    {
+        return Ok(false);
+    }
+    let time = u64le(standard, 0)?;
+    if time == 0
+        || time >= i64::MAX as u64
+        || (1..4).any(|i| u64le(standard, i * 8).ok() != Some(time))
+    {
+        return Ok(false);
+    }
+    crate::ntfs_security::parse_descriptor(security)?;
+    Ok(true)
+}
+
 /// Reread a bounded resident attribute from its actual MFT record. Inventory
 /// hashes alone are not a substitute for the bytes being interpreted.
 pub(crate) fn read_resident_inventory_attribute<R: Read + Seek>(

@@ -44,10 +44,12 @@ sectors, 1 KiB MFT records and 4 KiB index records. The default alpha still
 requires 4 KiB source clusters. ReFS target clusters remain 4 KiB in both paths;
 the source planner translates compatible physical byte ranges rather than
 equating NTFS and ReFS cluster numbers. Backup admission checks the geometry-sized
-MFT mirror completely with fixed record buffers. Any unsupported mirror form or
-record discrepancy still refuses conversion. The mirror sizing follows the
-documented [NTFS mirror layout](https://flatcap.github.io/linux-ntfs/ntfs/files/mftmirr.html);
-other layouts remain refused rather than reducing coverage to four records.
+MFT mirror completely with fixed record buffers. The four bootstrap records
+remain byte-identical, while extra allocated slots must either match or be
+recognized inactive format padding; unknown discrepancies still refuse. Both
+complete regions remain hashed and all record/USA structures checked. See the
+[actual larger-cluster observation](native-shadow-large-beta.md); allocated
+stream length is not treated as a guarantee of live mirror synchronization.
 The source profile is bound to the journal and recovery ticket; use the same executable
 for conversion and recovery. Its partition routing budget is 2 PiB, derived from
 the streaming 4 KiB target-bitmap budget. Default/unprofiled routes retain the

@@ -23,6 +23,14 @@ refused before source freeze on a legacy fixed-layout TxF path; failure receipts
 and staged binaries are preserved. New attempts must first prove the prior task
 terminal and use fresh candidate/run paths. Do not reset any earlier protected VM
 or transfer the frozen alpha's qualification to this engine/profile.
+Candidate 2 completed its source hash, then refused on MFT mirror slot 24. Its
+terminal evidence and 64 KiB raw captures are archived, and checkpoint
+`cbd04cca-3117-4b25-8731-efa56a5e0ffd` preserves the refused beta branch. The
+backup correction retains exact first-four comparison and full-region hashing,
+recognizing only narrow inactive format padding in additional mirror slots;
+other discrepancies remain fatal. The beta alone was restored to its own
+baseline `506bf3fe-afac-40fb-bfe9-e357141506d2` after terminal proof. Do not
+redispatch an old run or infer any native conversion success from these fixes.
 
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.

@@ -741,3 +741,22 @@ profiles must not silently weaken its full-image journal/recovery contract.
 Use bounded streaming buffers/paged or interval allocation processing, never
 RAM proportional to total volume capacity. Current measured converter peak is
 70,984 KiB in a 4 GiB VM; do not enlarge RAM without measured need.
+
+The frozen evidence's existing Rust write-set planner produced a non-executable
+candidate: 14,764,269,568 target-owned bytes and 41,070,305,280 preserved bytes,
+six owned ranges, 115 observed anchor ranges. Its ignored candidate JSON hash
+is 6c8b27f591d2d317a9b8cb1fa2debb1ab2f0ccf1f9564a687a3a687f047dabfa.
+The required graph/allocator, bootstrap-completeness and native hybrid-image
+gates remain; this does not authorize dropping free-space patches.
+Rust native valid-data probe 667bbfc is built but NOT executed. The later
+Prepare-StreamingV2ValidityProbe.ps1 requires the exact sizing task terminal at
+exit 0, archives its result, preserves candidate5 OFF as a new checkpoint while
+retaining all nine old ones, then boots a fresh child with a six-GiB allowance.
+Only shadow disk3 becomes writable. The probe creates one new SYSTEM-only
+1,052,672-byte file, attempts a one-MiB SetFileValidData, records raw mapping and
+cached/storage validity around it and flushes. It never reads payload, deletes
+the private file, writes the source, or grants conversion/adoption authority.
+Before invoking that helper, inspect the same live sizing task; never terminate
+or redispatch it to pick up a later binary. The public/recovery/sizing release
+builds also passed after be43a24's CNG v2 recheck change; that change has no
+native workflow result yet. No unit tests have been added or run.

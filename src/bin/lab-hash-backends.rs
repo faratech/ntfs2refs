@@ -47,9 +47,13 @@ fn main() -> anyhow::Result<()> {
             && before.last_write_time() == after.last_write_time(),
         "benchmark digest or stable file identity differs"
     );
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    let sha_cpu_feature = Some(std::is_x86_feature_detected!("sha"));
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    let sha_cpu_feature: Option<bool> = None;
     let report = serde_json::json!({"kind":"read-only-sha256-backend-timing","input":args.input,
         "bytes":before.len(),"sha256":hex::encode(native),"native_seconds":native_seconds,
-        "rust_seconds":rust_seconds,"sha_cpu_feature":std::is_x86_feature_detected!("sha"),
+        "rust_seconds":rust_seconds,"sha_cpu_feature":sha_cpu_feature,
         "native_provider":"Microsoft Primitive Provider","all_bytes_read_by_both":true});
     let bytes = serde_json::to_vec_pretty(&report)?;
     let mut output = fs::OpenOptions::new()

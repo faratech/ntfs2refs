@@ -312,17 +312,16 @@ pub fn hash_range<R: Read + Seek>(io: &mut R, at: u64, length: u64) -> Result<[u
 /// Preserve the exact SHA-256 contract while using Windows' optimized backend
 /// for the explicitly selected streaming profile. Legacy profiles keep their
 /// previous implementation; provider/read errors never become a partial hash.
+#[cfg(windows)]
 pub(crate) fn hash_range_with_resource_profile<R: Read + Seek>(
     io: &mut R,
     at: u64,
     length: u64,
     resources: crate::ntfs_admission::ResourceProfile,
 ) -> Result<[u8; 32]> {
-    #[cfg(windows)]
     if resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2 {
         return Ok(n2r_win32::sha256_native::hash_range(io, at, length)?);
     }
-    let _ = resources;
     hash_range(io, at, length)
 }
 fn validate_binding(binding: &JournalBinding) -> Result<()> {

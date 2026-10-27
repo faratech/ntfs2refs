@@ -105,8 +105,17 @@ the guest run/stage. Rust postcheck tools are pinned in this candidate's
 the explicit `-StreamingV2` switch only after successful handoff. No native
 streaming conversion/recovery success is established yet.
 
+The same candidate 3 later completed native shadow construction (13 objects,
+4,295,249,950 bytes initialized). The cache normalization event succeeded.
+All six measured retention candidates were metadata-blocked and unsubmitted;
+no retained payload is established. Its copied construction report hash is
+`1f3ceb7db217264643bfeb4f2aaca82ebb44e8a1cf79237cb156ace0e94f35ec`.
+The task was still live in target preservation. Do not treat that intermediate
+report as a conversion certificate or trigger postchecks before terminal handoff.
+
 Later source adds CNG SHA-256 only to streaming V2's three full-source hash
-passes; see [the measured scope](docs/native-sha256-performance.md). The same
+passes and protected target before/after brackets; see
+[the measured scope](docs/native-sha256-performance.md). The same
 real 1 GiB corpus image matched its pinned digest with both backends; native
 was about 1.66 times faster on this no-SHA-instruction host. This is a host
 observation, not native conversion or guest performance qualification. Candidate

@@ -22,9 +22,23 @@ fn bracket_image<R: Read + Seek, T>(
     length: u64,
     observe: impl FnOnce(&mut R) -> Result<T>,
 ) -> Result<(T, String)> {
-    let before = lab_reconstruct::hash_range(image, 0, length)?;
+    bracket_image_with_resource_profile(
+        image,
+        length,
+        crate::ntfs_admission::ResourceProfile::AlphaV1,
+        observe,
+    )
+}
+
+fn bracket_image_with_resource_profile<R: Read + Seek, T>(
+    image: &mut R,
+    length: u64,
+    resources: crate::ntfs_admission::ResourceProfile,
+    observe: impl FnOnce(&mut R) -> Result<T>,
+) -> Result<(T, String)> {
+    let before = lab_reconstruct::hash_range_with_resource_profile(image, 0, length, resources)?;
     let observation = observe(image)?;
-    let after = lab_reconstruct::hash_range(image, 0, length)?;
+    let after = lab_reconstruct::hash_range_with_resource_profile(image, 0, length, resources)?;
     ensure!(
         before == after,
         "protected semantic observation changed frozen image bytes"
@@ -91,7 +105,7 @@ pub fn verify_frozen_tree_with_resource_profile(
     };
     let input = general_shadow::native_inputs(&tree);
     let length = target.byte_len();
-    let (native, target_sha256) = bracket_image(target, length, |target| {
+    let observe = |target: &mut GeneralFrozenPartition| {
         Ok(target.observe_refs_files_with_resource_profile(
             pair,
             &input,
@@ -102,7 +116,13 @@ pub fn verify_frozen_tree_with_resource_profile(
             resources.native_profile(),
             events,
         )?)
-    })?;
+    };
+    let (native, target_sha256) =
+        if resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2 {
+            bracket_image_with_resource_profile(target, length, resources, observe)?
+        } else {
+            bracket_image(target, length, observe)?
+        };
     ensure!(
         native.before() == &before && native.after() == &before && target.state(events)? == before,
         "protected target observation changed persistent exclusion"

@@ -33,11 +33,13 @@ Native ran first; caching/order and concurrent VM activity are uncontrolled.
 The report is `.lab/performance/sha256-backends-20261027T181612602Z.json`,
 SHA-256 `580c313d4744711782f8ec10df1a41f2487f2e727ebcd826f544117078e3ba63`.
 
-Only `experimental_streaming_tree_v2` source full-image hashes select this
-backend: initial freeze, admission recheck and final target-preservation source
-recheck. Both old profiles retain their prior Rust path. Source exclusion,
+Only `experimental_streaming_tree_v2` full-image source and protected-target
+bracket hashes select this backend: initial source freeze, admission recheck,
+final target-preservation source recheck, and the before/after target hashes
+around its protected native semantic observation. Both old profiles retain
+their prior Rust path. Source exclusion,
 full-image equality, identity checks and recovery barriers are unchanged.
-The other stream, comparison, target and recovery digests remain unchanged.
+The other stream, comparison and recovery digests remain unchanged.
 This source change builds, but has no native conversion qualification yet.
 No unit tests were added or run. The native streaming run already in progress
 is evidence only for its original 98d02a4 producer.

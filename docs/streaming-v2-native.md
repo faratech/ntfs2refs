@@ -158,3 +158,13 @@ Postcheck executables were built/pinned separately from the same source:
 verifier `7fb8d16a4a31009d2c054e09bc786a2d3747db20187104d7fdd4763d8f1b8957`,
 mutator `f73a8ad55923dcf88c58385de70a496ba85c9a1151b2c6aa9f8ab85fcd374517`.
 No outcome or expanded qualification is claimed for this live attempt.
+
+The same PID subsequently completed native shadow construction: 13 objects,
+4,295,249,950 payload bytes initialized, and one successful target-only indexer
+cache normalization event. The immutable construction report was copied to
+`candidate3/native-shadow-observed.json`, SHA-256
+`1f3ceb7db217264643bfeb4f2aaca82ebb44e8a1cf79237cb156ace0e94f35ec`.
+All six retention candidates were blocked by metadata-inclusive allocations;
+none was submitted or proved retained. Do not claim payload retention from this
+case. The live process then entered target preservation. That stage and the
+eventual journal/cutover/native readback are still pending in this observation.

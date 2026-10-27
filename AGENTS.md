@@ -698,3 +698,11 @@ Candidate 5 is active: run dbd514da89ac4c44b16bde4f7e3a805c, PID 4564 created
 Converter hash 78ed37fa9120ea10de481ebb4d14d580a48e2cac86051084f3ccc90592a54f3f.
 Observe the existing task; do not redispatch. No evacuation/retention outcome
 is established yet. The cap is now 232 GiB with the 64 GiB reserve unchanged.
+Candidate 5 subsequently completed native shadow construction: thirteen source
+objects, 8590217246 shadow payload bytes initialized; eight shadow-only moves
+totaled 2721431552 bytes, all measured mappings verified, then two retention
+moves confirmed the same byte count at original source locations. Its copied
+construction report hash is a258b91f69e07aaf4b5064ecdf553332757e7b665a46ab3c783a79f7498b864f.
+It is still live in target preservation; do not infer completed conversion or
+low-scratch qualification from those intermediate observations. Continue
+monitoring the existing candidate5 task and the 232 GiB/64 GiB storage limits.

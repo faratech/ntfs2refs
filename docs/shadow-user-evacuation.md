@@ -102,3 +102,16 @@ root runtime-time override. The workload receipt alone cannot authorize changes
 to those immutable source fields. Existing native artifacts already matched
 that predicate, but they do not qualify this later build. Release builds pass;
 no unit tests or VM runs were started for these changes.
+
+The active candidate 5 later completed native shadow construction and entered
+target preservation. Its immutable construction report was copied to
+candidate5/native-shadow-observed.json, SHA-256
+a258b91f69e07aaf4b5064ecdf553332757e7b665a46ab3c783a79f7498b864f.
+The report records thirteen source objects and 8590217246 initialized payload
+bytes, one evacuation batch with eight moves totaling 2721431552 bytes and every
+moved range measured at its planned destination. Two subsequent retention moves
+confirmed 2721431552 bytes at original source locations. No remaining known
+shadow-user obstruction was reported by that batch. This is construction-stage
+placement evidence only: protected-target/raw-graph checks, cutover, native
+readback and scratch/I/O qualification remain pending. Full payload-sized shadow
+initialization has not been eliminated. The same task/PID remains authoritative.

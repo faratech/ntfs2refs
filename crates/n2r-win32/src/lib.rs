@@ -5,6 +5,8 @@ pub mod attestation;
 #[cfg(windows)]
 mod attestation_native;
 pub mod bitmap_layout;
+#[cfg(windows)]
+mod bitmap_observation;
 pub mod bitmap_paging;
 pub mod bitmap_streaming;
 pub mod discovery;

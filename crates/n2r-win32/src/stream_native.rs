@@ -64,20 +64,29 @@ pub(crate) fn bitmap_streamed(
     file: &File,
     clusters: u64,
 ) -> io::Result<(IoctlQuery, crate::bitmap_streaming::Summary)> {
+    bitmap_streamed_with_input(file, clusters, &[0; 8])
+}
+
+pub(crate) fn bitmap_streamed_with_input(
+    file: &File,
+    clusters: u64,
+    template: &[u8],
+) -> io::Result<(IoctlQuery, crate::bitmap_streaming::Summary)> {
+    crate::bitmap_paging::page_input(template, 0)?;
     let mut collector = crate::bitmap_streaming::Collector::new(
         clusters,
         crate::bitmap_streaming::source_limits(clusters)?,
     )?;
     let mut first = None;
     while collector.response_capacity() != 0 {
-        let input = crate::bitmap_paging::page_input(&[0; 8], collector.next_lcn())?;
+        let input = crate::bitmap_paging::page_input(template, collector.next_lcn())?;
         let query = ioctl(
             file,
             layout::GET_BITMAP,
             &input,
             collector.response_capacity(),
         );
-        let complete = collector.push(&query, &[0; 8], &mut |_| Ok(()))?;
+        let complete = collector.push(&query, template, &mut |_| Ok(()))?;
         if first.is_none() {
             first = Some(query);
         }

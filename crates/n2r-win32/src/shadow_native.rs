@@ -376,6 +376,10 @@ fn bitmap_proof_heap(proof: &crate::bitmap_paging::Proof) -> usize {
             .encoding
             .capacity()
             .saturating_add(proof.canonical_bitmap_sha256.capacity())
+            .saturating_add(proof.streaming.as_ref().map_or(0, |streaming| {
+                streaming.bitmap_data_sha256.capacity()
+                    + streaming.page_transcript_sha256.capacity()
+            }))
             .saturating_add(
                 proof
                     .pages
@@ -505,6 +509,7 @@ fn retain_run_on_shadow(
     run: &SourceRun,
     submit_if_free: bool,
     evidence_budget: usize,
+    streaming: bool,
 ) -> io::Result<RetentionAttempt> {
     let offset = run
         .physical_offset
@@ -513,20 +518,17 @@ fn retain_run_on_shadow(
     let h = open(&format!("{}{}", root, i.components.join("\\")), false, true)?;
     let before_capture = crate::stream_native::retrieval_capture(&h)?;
     let mapping_before = before_capture.canonical;
-    let legacy = crate::stream_native::bitmap_capture(volume, &[0; 8])?;
+    let legacy =
+        crate::bitmap_observation::Observation::capture(volume, &[0; 8], partition, streaming)?;
     let mut ex = [0; 16];
     ex[8] = 1;
-    let metadata = crate::stream_native::bitmap_capture(volume, &ex)?;
+    let metadata =
+        crate::bitmap_observation::Observation::capture(volume, &ex, partition, streaming)?;
     let candidate = CandidateReport {
-        legacy: crate::bitmap_layout::candidate(&legacy.bitmap, offset, run.length, partition)?,
-        metadata_inclusive: crate::bitmap_layout::candidate(
-            &metadata.bitmap,
-            offset,
-            run.length,
-            partition,
-        )?,
-        legacy_page_proof: legacy.proof,
-        metadata_page_proof: metadata.proof,
+        legacy: legacy.view(partition)?.candidate(offset, run.length)?,
+        metadata_inclusive: metadata.view(partition)?.candidate(offset, run.length)?,
+        legacy_page_proof: legacy.proof(),
+        metadata_page_proof: metadata.proof(),
     };
     if candidate.legacy.declared_clusters != partition / 4096
         || candidate.metadata_inclusive.declared_clusters != partition / 4096
@@ -603,6 +605,7 @@ fn retain_source_run_on_shadow(
     partition: u64,
     run: &SourceRun,
     attempts: &mut Vec<RetentionAttempt>,
+    streaming: bool,
 ) -> io::Result<()> {
     remaining_retention_evidence(attempts)?;
     // Bound the complete tree, including non-submitted collision diagnostics.
@@ -613,13 +616,14 @@ fn retain_source_run_on_shadow(
     let physical_offset = run
         .physical_offset
         .ok_or_else(|| invalid("source placement hole"))?;
-    let legacy = crate::stream_native::bitmap_capture(volume, &[0; 8])?;
+    let legacy =
+        crate::bitmap_observation::Observation::capture(volume, &[0; 8], partition, streaming)?;
     let mut ex = [0; 16];
     ex[8] = 1;
-    let metadata = crate::stream_native::bitmap_capture(volume, &ex)?;
-    let plan = crate::retention_layout::plan_free_subruns(
-        &legacy.bitmap,
-        &metadata.bitmap,
+    let metadata =
+        crate::bitmap_observation::Observation::capture(volume, &ex, partition, streaming)?;
+    let plan = legacy.plan_free_subruns(
+        &metadata,
         crate::retention_layout::SourceRun {
             logical_offset: run.logical_offset,
             physical_offset,
@@ -632,7 +636,9 @@ fn retain_source_run_on_shadow(
         // A later free-space change must not turn this diagnostic into an
         // unplanned move. Already-correct placement is still recorded.
         let budget = remaining_retention_evidence(attempts)?;
-        let attempt = retain_run_on_shadow(volume, root, input, partition, run, false, budget)?;
+        let attempt = retain_run_on_shadow(
+            volume, root, input, partition, run, false, budget, streaming,
+        )?;
         append_retention_attempt(attempts, attempt)?;
     } else {
         for candidate in plan.subruns {
@@ -642,8 +648,9 @@ fn retain_source_run_on_shadow(
                 length: candidate.length,
             };
             let budget = remaining_retention_evidence(attempts)?;
-            let attempt =
-                retain_run_on_shadow(volume, root, input, partition, &subrun, true, budget)?;
+            let attempt = retain_run_on_shadow(
+                volume, root, input, partition, &subrun, true, budget, streaming,
+            )?;
             append_retention_attempt(attempts, attempt)?;
         }
     }
@@ -2374,6 +2381,7 @@ fn run_role_profile(
                             length: i.logical_length(),
                         },
                         &mut retention_attempts,
+                        resource_profile.is_some(),
                     )?;
                 }
                 for run in &i.source_runs {
@@ -2384,6 +2392,7 @@ fn run_role_profile(
                         binding.identity.partition_bytes,
                         run,
                         &mut retention_attempts,
+                        resource_profile.is_some(),
                     )?;
                 }
             }
@@ -2420,27 +2429,28 @@ fn run_role_profile(
         volume.sync_all()?;
     }
     // No fallback from metadata-inclusive evidence to the legacy view.
-    let legacy_bitmap = crate::stream_native::bitmap_capture(volume, &[0; 8])?;
+    let legacy_bitmap = crate::bitmap_observation::Observation::capture(
+        volume,
+        &[0; 8],
+        binding.identity.partition_bytes,
+        resource_profile.is_some(),
+    )?;
     let mut ex_input = [0; 16];
     ex_input[8] = 1;
-    let metadata_bitmap = crate::stream_native::bitmap_capture(volume, &ex_input)?;
-    let metadata_allocation = crate::bitmap_layout::allocated_ranges(
-        &metadata_bitmap.bitmap,
+    let metadata_bitmap = crate::bitmap_observation::Observation::capture(
+        volume,
+        &ex_input,
         binding.identity.partition_bytes,
+        resource_profile.is_some(),
     )?;
+    let metadata_allocation = metadata_bitmap.allocation_map(binding.identity.partition_bytes)?;
     // These maps are immutable for the complete verification pass. Hash each
     // only once even if many files report a source-placement candidate. Move
     // attempts above still collect and recheck fresh native bitmaps separately.
     let candidate_views = if input.iter().any(|i| i.source_offset.is_some()) {
         Some((
-            crate::bitmap_layout::BitmapView::new(
-                &legacy_bitmap.bitmap,
-                binding.identity.partition_bytes,
-            )?,
-            crate::bitmap_layout::BitmapView::new(
-                &metadata_bitmap.bitmap,
-                binding.identity.partition_bytes,
-            )?,
+            legacy_bitmap.view(binding.identity.partition_bytes)?,
+            metadata_bitmap.view(binding.identity.partition_bytes)?,
         ))
     } else {
         None
@@ -2619,8 +2629,8 @@ fn run_role_profile(
                             .candidate(offset, i.logical_length().next_multiple_of(4096))?,
                         metadata_inclusive: metadata_view
                             .candidate(offset, i.logical_length().next_multiple_of(4096))?,
-                        legacy_page_proof: legacy_bitmap.proof.clone(),
-                        metadata_page_proof: metadata_bitmap.proof.clone(),
+                        legacy_page_proof: legacy_bitmap.proof(),
+                        metadata_page_proof: metadata_bitmap.proof(),
                     })
                 })
                 .transpose()?,
@@ -2636,7 +2646,7 @@ fn run_role_profile(
         after,
         objects,
         metadata_allocation: Some(metadata_allocation),
-        metadata_allocation_page_proof: Some(metadata_bitmap.proof),
+        metadata_allocation_page_proof: Some(metadata_bitmap.proof()),
         base_sectors: 0,
         privilege_states: privileges.audit().to_vec(),
         events,

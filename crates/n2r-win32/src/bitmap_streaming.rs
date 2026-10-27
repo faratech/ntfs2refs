@@ -48,10 +48,14 @@ impl Summary {
     /// prefix. Later-page acquisition is represented by the native transcript;
     /// this method does not recreate missing pages or a native acquisition.
     pub fn validate_source_first(&self, first: &IoctlQuery) -> io::Result<()> {
+        self.validate_first_page(first, &[0; 8])
+    }
+
+    pub fn validate_first_page(&self, first: &IoctlQuery, template: &[u8]) -> io::Result<()> {
         let limits = source_limits(self.cluster_count)?;
         self.validate(self.cluster_count, limits)?;
         let mut collector = Collector::new(self.cluster_count, limits)?;
-        let complete = collector.push(first, &[0; 8], &mut |_| Ok(()))?;
+        let complete = collector.push(first, template, &mut |_| Ok(()))?;
         if complete {
             if collector.finish()? != *self {
                 return Err(bad(

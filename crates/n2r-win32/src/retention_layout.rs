@@ -39,6 +39,103 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+/// Equivalent free-space complement over complete streamed allocation ranges.
+/// Merge the two ordered occupied views rather than visiting every cluster.
+pub fn plan_free_subruns_streamed(
+    legacy: &crate::bitmap_streaming::Summary,
+    metadata: &crate::bitmap_streaming::Summary,
+    run: SourceRun,
+    partition: u64,
+    max_subruns: usize,
+) -> io::Result<Plan> {
+    if !(1..=MAX_SUBRUNS).contains(&max_subruns)
+        || partition == 0
+        || !partition.is_multiple_of(CLUSTER)
+        || run.length == 0
+        || !run.length.is_multiple_of(CLUSTER)
+        || !run.logical_offset.is_multiple_of(CLUSTER)
+        || !run.physical_offset.is_multiple_of(CLUSTER)
+        || run.logical_offset.checked_add(run.length).is_none()
+        || run
+            .physical_offset
+            .checked_add(run.length)
+            .is_none_or(|end| end > partition)
+    {
+        return Err(invalid("streamed retention run geometry or budget differs"));
+    }
+    let domain = partition / CLUSTER;
+    for summary in [legacy, metadata] {
+        summary.validate(domain, crate::bitmap_streaming::source_limits(domain)?)?;
+        if summary.declared_clusters != domain {
+            return Err(invalid("streamed retention bitmap domain differs"));
+        }
+    }
+    u32::try_from(run.length / CLUSTER)
+        .map_err(|_| invalid("retention run exceeds u32 cluster count"))?;
+    let start = run.physical_offset / CLUSTER;
+    let end = start + run.length / CLUSTER;
+    let mut left = legacy.allocated_ranges.iter().peekable();
+    let mut right = metadata.allocated_ranges.iter().peekable();
+    let mut cursor = start;
+    let mut free_clusters = 0u64;
+    let mut subruns = Vec::new();
+    let mut push_free = |begin: u64, end: u64| -> io::Result<()> {
+        if begin == end {
+            return Ok(());
+        }
+        if subruns.len() >= max_subruns {
+            return Err(invalid("retention free-subrun budget exceeded"));
+        }
+        let count = u32::try_from(end - begin)
+            .map_err(|_| invalid("retention subrun exceeds u32 cluster count"))?;
+        let physical_offset = begin * CLUSTER;
+        let logical_offset = run.logical_offset + (begin - start) * CLUSTER;
+        subruns.push(FreeSubrun {
+            logical_offset,
+            physical_offset,
+            length: u64::from(count) * CLUSTER,
+            starting_vcn: logical_offset / CLUSTER,
+            destination_lcn: begin,
+            clusters: count,
+        });
+        free_clusters += u64::from(count);
+        Ok(())
+    };
+    loop {
+        let next = match (left.peek(), right.peek()) {
+            (Some(a), Some(b)) if a.starting_lcn <= b.starting_lcn => left.next(),
+            (Some(_), Some(_)) => right.next(),
+            (Some(_), None) => left.next(),
+            (None, Some(_)) => right.next(),
+            (None, None) => break,
+        }
+        .unwrap();
+        if next.starting_lcn >= end {
+            break;
+        }
+        let occupied_end = (next.starting_lcn + next.clusters).min(end);
+        if occupied_end <= cursor {
+            continue;
+        }
+        let occupied_start = next.starting_lcn.max(start);
+        if occupied_start > cursor {
+            push_free(cursor, occupied_start)?;
+        }
+        cursor = occupied_end;
+    }
+    if cursor < end {
+        push_free(cursor, end)?;
+    }
+    Ok(Plan {
+        source: run,
+        legacy_bitmap_sha256: legacy.canonical_bitmap_sha256.clone(),
+        metadata_bitmap_sha256: metadata.canonical_bitmap_sha256.clone(),
+        free_bytes: free_clusters * CLUSTER,
+        blocked_bytes: run.length - free_clusters * CLUSTER,
+        subruns,
+    })
+}
+
 /// Split an already eligible, fully initialized NTFS source run into maximal
 /// intervals that are free in both native ReFS views. The two bitmaps must
 /// cover exactly the same complete partition domain starting at cluster zero.

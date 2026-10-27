@@ -57,8 +57,29 @@ Schema-8 reports retain their raw-page replay contract, and unprofiled/default
 collection remains schema 7 with the existing raw-page path. Older schemas
 reject streamed-summary fields. Larger clusters are accepted by native routing
 only for the explicit experimental resource profile, with geometry still checked
-against the frozen raw inventory. Target bitmap and recovery integration remain
-separate work. The converter's 128 GiB partition limit is unchanged.
+against the frozen raw inventory.
+
+The experimental shadow path also streams both legacy and metadata-inclusive
+ReFS occupancy during retention planning, fresh pre-move rechecks and protected
+target verification. Ordered allocated ranges provide candidate occupancy by
+binary search and interval intersection. Free-subrun planning merges the two
+occupied views and takes their complement within the source run, rather than
+walking every target cluster. The mover still measures actual file mappings;
+earlier free-space observations alone never prove retention. Metadata-inclusive
+query failures remain fatal, with no legacy-only fallback.
+
+Target bitmap proofs distinguish `streamed-volume-bitmap-v1` from the historical
+assembled encoding. Their `pages` list contains the first actual response receipt
+only. The optional `streaming` field records the full native transcript hash,
+data hash, complete page count and returned bytes; it is not a complete raw-page
+replay transcript. The assembly-profile field applies only to assembled proofs.
+Unprofiled shadow paths keep their assembled encoding with the new optional
+field absent. Target allocation ranges still represent occupancy, not a proof
+that every bootstrap structure can be omitted from reconstruction.
+
+Standalone lock/dismount allocation witnesses retain their existing assembly
+path. Larger-volume routing and remaining recovery/resource integration also
+remain separate work. The converter's 128 GiB partition limit is unchanged.
 
 This code has compilation evidence only. No unit tests or native volume scan
 were run. Existing native evidence retains its original bounds and executable

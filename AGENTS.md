@@ -123,8 +123,12 @@ bitmap summaries. Both native bitmap data hashes/counts must match the frozen
 raw bitmap, and before/after transcript/first-page observations must agree.
 Only the real opaque live observation can satisfy the expanded admission gate;
 JSON summaries cannot issue it. Schema 8 replay remains available, and default
-alpha collection stays schema 7. Target bitmap collection is still bounded by
-its existing assembly profile, so the live partition ceiling is unchanged.
+alpha collection stays schema 7. Expanded shadow retention planning/rechecks and
+protected target verification now stream both target bitmap views. Their compact
+proof encoding records a first-page receipt plus full transcript digest/counts;
+it must not be described as complete raw-page replay. Default target collection
+and standalone lock/dismount allocation witnesses retain assembled maps. The
+live partition ceiling remains unchanged pending remaining integration.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

@@ -70,6 +70,18 @@ pub struct Proof {
     /// Omitted for legacy proofs so their existing serialization is unchanged.
     #[serde(default, skip_serializing_if = "AssemblyProfile::is_legacy")]
     pub assembly_profile: AssemblyProfile,
+    /// Present only for compact streaming evidence. `pages` then contains
+    /// the first response receipt, not a complete raw-page replay transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<StreamingProof>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamingProof {
+    pub bitmap_data_sha256: String,
+    pub page_transcript_sha256: String,
+    pub complete_page_count: u64,
+    pub returned_bytes: u64,
 }
 #[derive(Debug)]
 pub struct Capture {
@@ -230,6 +242,7 @@ impl Assembler {
             canonical_bitmap_sha256: hex::encode(Sha256::digest(&self.bitmap)),
             pages: self.pages,
             assembly_profile: self.profile,
+            streaming: None,
         };
         Ok(Capture {
             bitmap: self.bitmap,

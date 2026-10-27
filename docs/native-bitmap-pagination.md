@@ -1,5 +1,9 @@
 # Complete native bitmap pagination
 
+A separate [streaming collector](native-bitmap-streaming.md) now provides
+bounded-memory native read-only observations. It does not replace the existing
+conversion evidence or expand this assembly profile.
+
 The native source collector, shadow retention/verifier and locked ReFS allocation
 capture now share `n2r_win32::bitmap_paging`. Each control call requests at most
 2 MiB of bitmap payload plus its 16-byte header. The complete map is bounded to

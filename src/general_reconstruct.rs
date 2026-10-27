@@ -255,7 +255,11 @@ pub fn prepare_with_progress(
             request.source_resource_profile.unwrap_or_default(),
         ),
     )?;
-    let refs = refs_inspect::inspect(shadow, shadow.byte_len())?;
+    let refs = refs_inspect::inspect_with_resource_profile(
+        shadow,
+        shadow.byte_len(),
+        request.source_resource_profile.unwrap_or_default(),
+    )?;
     ensure!(
         request
             .source_resource_profile

@@ -16,6 +16,78 @@ const CLUSTER: u64 = 4096;
 const CPC: u64 = 16384;
 const KEY_TAG: u64 = 0x0000_0001_0000_0000;
 
+#[path = "refs_containers_compact.rs"]
+mod compact;
+pub use compact::inspect_container_tables_compact;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompactAddress {
+    container_id: u64,
+    physical_start_lcn: u64,
+}
+
+/// Compact traversal receipts are serializable; live address lookup data is
+/// intentionally not. A diagnostic JSON document cannot recreate this index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactTreeIndex {
+    pub encoding: String,
+    pub mapping_rows: u64,
+    pub pages_read: u32,
+    pub bytes_read: u64,
+    pub mapping_sha256: String,
+    pub page_transcript_sha256: String,
+    #[serde(skip)]
+    addresses: Vec<CompactAddress>,
+    #[serde(skip)]
+    binding: Option<CompactBinding>,
+}
+
+#[derive(Debug, Clone)]
+struct CompactBinding {
+    checkpoint_lcn: u64,
+    root_index: usize,
+    table_id: u64,
+    root_slots: [u64; 4],
+    root_sha256: String,
+    volume_clusters: u64,
+}
+
+impl CompactTreeIndex {
+    pub(crate) fn same_addresses(&self, other: &Self) -> bool {
+        self.addresses == other.addresses
+    }
+}
+
+pub enum ContainerAddressView<'a> {
+    Detailed(&'a [ContainerMapping]),
+    Compact(&'a CompactTreeIndex),
+}
+
+impl ContainerAddressView<'_> {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Detailed(rows) => rows.len(),
+            Self::Compact(index) => index.addresses.len(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn lookup(&self, id: u64) -> Option<(u64, usize)> {
+        match self {
+            Self::Detailed(rows) => rows
+                .binary_search_by_key(&id, |row| row.container_id)
+                .ok()
+                .map(|index| (rows[index].physical_start_lcn, index)),
+            Self::Compact(rows) => rows
+                .addresses
+                .binary_search_by_key(&id, |row| row.container_id)
+                .ok()
+                .map(|index| (rows.addresses[index].physical_start_lcn, index)),
+        }
+    }
+}
+
 /// A container value has exactly 160 bytes in this format profile. Keep the
 /// actual bytes in memory and encode hex only at the diagnostic boundary.
 /// Malformed imported diagnostic strings remain representable so validation
@@ -138,7 +210,60 @@ pub struct ContainerTreeObservation {
     /// Sorted by container ID only after a successful walk; partial data remain
     /// explicitly rejected. All flags/counts are raw, with no allocation policy.
     pub mappings: Vec<ContainerMapping>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact: Option<CompactTreeIndex>,
     pub rejection: Option<String>,
+}
+
+impl ContainerTreeObservation {
+    pub fn address_view(&self, volume_clusters: u64) -> Result<ContainerAddressView<'_>> {
+        if let Some(index) = &self.compact {
+            let binding = index
+                .binding
+                .as_ref()
+                .context("compact index must be rebuilt from the actual image")?;
+            let hash = |value: &str| {
+                value.len() == 64
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            };
+            ensure!(
+                self.walk_finished
+                    && self.root_count_matches == Some(true)
+                    && self.rejection.is_none()
+                    && self.mappings.is_empty()
+                    && index.encoding == "refs-container-compact-index-v1"
+                    && index.mapping_rows == index.addresses.len() as u64
+                    && index.mapping_rows <= 33_554_432
+                    && index.pages_read > 0
+                    && index.pages_read <= 1_048_576
+                    && index.bytes_read == u64::from(index.pages_read) * PAGE as u64
+                    && hash(&index.mapping_sha256)
+                    && hash(&index.page_transcript_sha256)
+                    && self.expected_root_rows == Some(index.mapping_rows)
+                    && binding.checkpoint_lcn == self.checkpoint_lcn
+                    && binding.root_index == self.root_index
+                    && binding.table_id == self.table_id
+                    && binding.root_slots == self.root_lcn_slots
+                    && binding.volume_clusters == volume_clusters
+                    && self
+                        .pages
+                        .first()
+                        .is_some_and(|page| page.sha256 == binding.root_sha256),
+                "compact container lookup data absent or incomplete; rebuild from actual image"
+            );
+            Ok(ContainerAddressView::Compact(index))
+        } else {
+            ensure!(
+                self.mappings
+                    .windows(2)
+                    .all(|p| p[0].container_id < p[1].container_id),
+                "duplicate or unsorted container mapping"
+            );
+            Ok(ContainerAddressView::Detailed(&self.mappings))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -419,6 +544,7 @@ pub fn inspect_container_tables<R: Read + Seek>(
             walk_finished: false,
             pages: Vec::new(),
             mappings: Vec::new(),
+            compact: None,
             rejection: None,
         };
         let mut stack = vec![PendingPage {

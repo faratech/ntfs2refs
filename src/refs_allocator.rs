@@ -126,7 +126,7 @@ fn row_parts(row: &refs_node::NodeRowObservation) -> Result<(Vec<u8>, Vec<u8>)> 
 
 fn translate(
     vlcn: u64,
-    mappings: &[crate::refs_containers::ContainerMapping],
+    mappings: &crate::refs_containers::ContainerAddressView<'_>,
     volume_clusters: u64,
 ) -> Result<u64> {
     ensure!(
@@ -135,11 +135,10 @@ fn translate(
     );
     let id = vlcn >> 15;
     let offset = vlcn & (CPC - 1);
-    let index = mappings
-        .binary_search_by_key(&id, |mapping| mapping.container_id)
-        .map_err(|_| anyhow::anyhow!("allocator page container unmapped"))?;
-    let physical = mappings[index]
-        .physical_start_lcn
+    let (start, _) = mappings
+        .lookup(id)
+        .context("allocator page container unmapped")?;
+    let physical = start
         .checked_add(offset)
         .context("translated LCN overflow")?;
     ensure!(
@@ -266,7 +265,7 @@ pub fn inspect_medium_with_resource_profile(
     image_bytes: u64,
     resources: crate::ntfs_admission::ResourceProfile,
 ) -> Result<MediumAllocatorObservation> {
-    let refs = refs_inspect::inspect(reader, image_bytes)?;
+    let refs = refs_inspect::inspect_with_resource_profile(reader, image_bytes, resources)?;
     let geometry = &refs.geometry;
     ensure!(
         geometry.major_version == 3
@@ -316,13 +315,7 @@ pub fn inspect_medium_with_resource_profile(
         .iter()
         .find(|t| t.checkpoint_lcn == checkpoint.0 && t.root_index == 7)
         .context("primary container table absent")?;
-    let mappings = tree.mappings.as_slice();
-    ensure!(
-        mappings
-            .windows(2)
-            .all(|pair| pair[0].container_id < pair[1].container_id),
-        "duplicate or unsorted container mapping"
-    );
+    let mappings = tree.address_view(image_bytes / CLUSTER)?;
     let roots = bootstrap
         .virtual_roots
         .as_ref()
@@ -365,7 +358,7 @@ pub fn inspect_medium_with_resource_profile(
             root_slots,
             &root_bytes,
             root,
-            mappings,
+            &mappings,
         );
     }
     ensure!(
@@ -392,7 +385,7 @@ pub fn inspect_medium_with_resource_profile(
         ];
         let mut physical = [0; 4];
         for (index, &vlcn) in vlcns.iter().enumerate() {
-            physical[index] = translate(vlcn, mappings, image_bytes / CLUSTER)?;
+            physical[index] = translate(vlcn, &mappings, image_bytes / CLUSTER)?;
         }
         let page = read_page(reader, &physical, image_bytes)?;
         ensure!(
@@ -502,7 +495,7 @@ fn inspect_medium_multilevel(
     root_slots: [u64; 4],
     root_bytes: &[u8; PAGE],
     root: refs_node::RootNodeObservation,
-    mappings: &[crate::refs_containers::ContainerMapping],
+    mappings: &crate::refs_containers::ContainerAddressView<'_>,
 ) -> Result<MediumAllocatorObservation> {
     const MAX_PAGES: usize = 4096;
     const MAX_ROWS: usize = 65536;

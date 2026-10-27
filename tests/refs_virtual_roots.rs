@@ -157,6 +157,7 @@ fn fixture() -> Fixture {
                     rejection: None,
                 }],
                 mappings: vec![mapping.clone()],
+                compact: None,
                 rejection: None,
             }
         })

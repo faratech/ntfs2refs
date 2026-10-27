@@ -141,16 +141,24 @@ one-level; Container Table scaling remains unfinished.
 The expanded Small allocator now also walks bounded multilevel trees, with
 physical child addressing, CRC/header/self-location/level checks and ordered
 disjoint managed ranges. Its default root-only entry is preserved. This path
-has compilation evidence only; Container Table scaling remains unfinished.
+has compilation evidence only; larger-volume routing remains unfinished.
 Container consumers now borrow sorted mapping rows for binary lookup, with no
 duplicate B-tree map. The experimental Small path reads only physical bootstrap
 structures before its own walk; Medium still independently requires container
-validation. Diagnostic row hex and container budgets remain unchanged. No new
+validation. Default diagnostic row values and container budgets remain unchanged. No new
 native qualification follows from these memory/I/O changes.
 Container values now retain their 160 bytes inline and expose hex only through
 diagnostic serialization. Comparisons/hashes consume actual bytes; malformed
 imported strings remain diagnostic-only and cannot supply mapping data. The JSON
-field name remains `value_bytes_hex`; container budgets are unchanged.
+field name remains `value_bytes_hex`; default container budgets are unchanged.
+The larger-tree path now selects a separate compact Container Table walk:
+ID/physical-start indexes remain live only, while diagnostics retain mapping
+and page-transcript digests plus the root observation. Lookup data and its
+private root/volume binding are not serialized; imported JSON cannot recreate
+them. Both container copies must agree, with every followed page authenticated.
+See [compact traversal](docs/refs-compact-containers.md). This has compilation
+evidence only. The public partition ceiling and other conversion/resource
+limits remain; no native qualification is inherited from the frozen alpha.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

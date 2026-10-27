@@ -6,7 +6,7 @@
 //! https://xbpt.gitlab.io/forefst/structures/chkp/
 use crate::{
     refs_bootstrap::{AnchorProbe, RootReference, crc64_nvme},
-    refs_containers::{ContainerMapping, ContainerTablesProbe, ContainerTreeObservation},
+    refs_containers::{ContainerAddressView, ContainerTablesProbe, ContainerTreeObservation},
     refs_inspect::RefsGeometry,
 };
 use anyhow::{Context, Result, ensure};
@@ -133,10 +133,11 @@ fn validate_map(
         tree.walk_finished && tree.rejection.is_none() && tree.root_count_matches == Some(true),
         "container walk or root count is not qualified for translation"
     );
+    let view = tree.address_view(volume_clusters)?;
     ensure!(
-        !tree.mappings.is_empty()
-            && tree.mappings.len() <= 4096
-            && tree.expected_root_rows == Some(tree.mappings.len() as u64),
+        !view.is_empty()
+            && (tree.compact.is_some() || view.len() <= 4096)
+            && tree.expected_root_rows == Some(view.len() as u64),
         "container row count differs or exceeds bound"
     );
     ensure!(
@@ -165,6 +166,9 @@ fn validate_map(
         tree.pages[0].stored_crc64 == crc && tree.pages[0].computed_crc64 == crc,
         "container root CRC differs from checkpoint reference"
     );
+    if tree.compact.is_some() {
+        return Ok(());
+    }
     let mut previous_id = None;
     let mut physical = Vec::new();
     physical
@@ -204,7 +208,7 @@ fn validate_map(
     }
     Ok(())
 }
-type CommonMap<'a> = &'a [ContainerMapping];
+type CommonMap<'a> = ContainerAddressView<'a>;
 fn common_map<'a>(
     checkpoint: &AnchorProbe,
     containers: &'a ContainerTablesProbe,
@@ -267,6 +271,23 @@ fn common_map<'a>(
     );
     validate_map(first, checkpoint, volume_clusters)?;
     validate_map(second, checkpoint, volume_clusters)?;
+    if let (Some(a), Some(b)) = (&first.compact, &second.compact) {
+        ensure!(
+            a.mapping_rows == b.mapping_rows
+                && a.same_addresses(b)
+                && a.mapping_sha256 == b.mapping_sha256,
+            "compact container failover mappings or values differ"
+        );
+        binding.container_table_ids = Some([first.table_id, second.table_id]);
+        binding.mapping_rows = Some(first.address_view(volume_clusters)?.len());
+        binding.common_mapping_sha256 = Some(a.mapping_sha256.clone());
+        binding.both_complete_count_matching_maps_agree = true;
+        return first.address_view(volume_clusters);
+    }
+    ensure!(
+        first.compact.is_none() && second.compact.is_none(),
+        "mixed container evidence encodings"
+    );
     ensure!(
         first.mappings.len() == second.mappings.len(),
         "container failover row counts differ"
@@ -289,7 +310,7 @@ fn common_map<'a>(
     binding.mapping_rows = Some(first.mappings.len());
     binding.common_mapping_sha256 = Some(hex::encode(hash.finalize()));
     binding.both_complete_count_matching_maps_agree = true;
-    Ok(first.mappings.as_slice())
+    first.address_view(volume_clusters)
 }
 fn translate(
     reference: &RootReference,
@@ -309,12 +330,10 @@ fn translate(
         );
         let id = virtual_lcn >> 15;
         let offset = virtual_lcn & 0x3fff;
-        let index = map
-            .binary_search_by_key(&id, |mapping| mapping.container_id)
-            .map_err(|_| anyhow::anyhow!("virtual root names an absent container"))?;
-        let mapping = &map[index];
-        let lcn = mapping
-            .physical_start_lcn
+        let (start, index) = map
+            .lookup(id)
+            .context("virtual root names an absent container")?;
+        let lcn = start
             .checked_add(offset)
             .context("translated address overflow")?;
         ensure!(lcn < volume_clusters, "translated root lies outside volume");

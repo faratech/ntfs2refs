@@ -309,7 +309,7 @@ pub fn verify_and_freeze(
             }
         },
     )?;
-    let refs = refs_inspect::inspect(&mut target, length)?;
+    let refs = refs_inspect::inspect_with_resource_profile(&mut target, length, resources)?;
     ensure!(
         refs.geometry.major_version == 3
             && refs.geometry.minor_version == 14

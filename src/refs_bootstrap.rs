@@ -690,7 +690,7 @@ pub fn inspect<R: Read + Seek>(
     geometry: &RefsGeometry,
     vbr: &[u8],
 ) -> Result<Option<BootstrapProbe>> {
-    inspect_profile(reader, geometry, vbr, true)
+    inspect_profile(reader, geometry, vbr, true, false)
 }
 
 /// Physical bootstrap only; container descendants and virtual roots remain
@@ -700,7 +700,16 @@ pub fn inspect_physical<R: Read + Seek>(
     geometry: &RefsGeometry,
     vbr: &[u8],
 ) -> Result<Option<BootstrapProbe>> {
-    inspect_profile(reader, geometry, vbr, false)
+    inspect_profile(reader, geometry, vbr, false, false)
+}
+
+/// Experimental container lookup with compact live index storage.
+pub fn inspect_compact<R: Read + Seek>(
+    reader: &mut R,
+    geometry: &RefsGeometry,
+    vbr: &[u8],
+) -> Result<Option<BootstrapProbe>> {
+    inspect_profile(reader, geometry, vbr, true, true)
 }
 
 fn inspect_profile<R: Read + Seek>(
@@ -708,6 +717,7 @@ fn inspect_profile<R: Read + Seek>(
     geometry: &RefsGeometry,
     vbr: &[u8],
     include_virtual: bool,
+    compact_containers: bool,
 ) -> Result<Option<BootstrapProbe>> {
     if geometry.major_version != 3
         || geometry.minor_version != 14
@@ -720,6 +730,10 @@ fn inspect_profile<R: Read + Seek>(
     if !include_virtual {
         report.profile.push_str("; physical bootstrap only");
         report.warnings[1] = "Only anchors, checkpoints and physical root pages are probed; container descendants and virtual roots are not traversed.".into();
+    }
+    if compact_containers {
+        report.profile.push_str("; compact container index v1");
+        report.warnings[1] = "Container pages and values are digest-covered with compact live address indexes; diagnostics omit lookup data and are not replay authority.".into();
     }
     let clusters = geometry.volume_bytes / CLUSTER_BYTES as u64;
     if clusters < 34 || !geometry.volume_bytes.is_multiple_of(CLUSTER_BYTES as u64) {
@@ -810,17 +824,27 @@ fn inspect_profile<R: Read + Seek>(
         }
     }
     if include_virtual && !roots.is_empty() {
-        let containers = crate::refs_containers::inspect_container_tables(
-            reader,
-            geometry,
-            &roots,
-            &protected,
-            crate::refs_containers::ContainerLimits::default(),
-        )?;
+        let containers = if compact_containers {
+            crate::refs_containers::inspect_container_tables_compact(
+                reader, geometry, &roots, &protected,
+            )?
+        } else {
+            crate::refs_containers::inspect_container_tables(
+                reader,
+                geometry,
+                &roots,
+                &protected,
+                crate::refs_containers::ContainerLimits::default(),
+            )?
+        };
         for page in &mut report.physical_root_pages {
             page.children_traversed = containers.trees.iter().any(|tree| {
                 tree.root_lcn_slots == page.lcn_slots
-                    && tree.pages.iter().any(|child| child.depth != 0)
+                    && (tree.pages.iter().any(|child| child.depth != 0)
+                        || tree
+                            .compact
+                            .as_ref()
+                            .is_some_and(|index| index.pages_read > 1))
             });
         }
         let virtual_roots = crate::refs_virtual_roots::inspect_virtual_roots(

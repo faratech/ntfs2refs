@@ -66,14 +66,14 @@ pretending that Small covers the entire volume. Leaves are decoded incrementally
 
 This Small-tier expansion has compilation evidence only. Its default entry
 still uses the original root-only profile, with no new field in legacy JSON
-when there are no child pages. Container traversal and larger-volume routing
+when there are no child pages. Larger-volume routing
 remain unfinished; native qualification and the partition ceiling are unchanged.
 
 Container lookup now borrows the validated, sorted mapping rows and uses binary
 search instead of constructing duplicate B-tree indexes in Medium/virtual-root
 readers. Container traversal retains rows in index order, rejecting duplicate
-or unsorted IDs; physical-overlap checks sort a compact vector of starts. Raw
-diagnostic hex is still retained, and container traversal budgets are unchanged.
+or unsorted IDs; physical-overlap checks sort a compact vector of starts. The
+default detailed reader retains raw diagnostic values and its original budgets.
 
 The experimental Small reader also uses a physical-bootstrap-only inspection,
 avoiding an extra container/virtual-root scan. This still reads the redundant
@@ -88,6 +88,12 @@ heap-allocated 320-character hex string. Copy comparison and mapping digests
 read those bytes directly, avoiding repeated hex decoding. JSON still emits the
 same `value_bytes_hex` string field. Imported malformed diagnostic strings remain
 representable and are explicitly refused before they can supply mapping bytes.
-This removes one retained heap allocation per valid mapping; it does not remove
-the diagnostic table's row-count limits or qualify larger volumes. Existing
+This removes one retained heap allocation per valid detailed mapping; it does not
+qualify larger volumes. Existing
 fixture assignments were adapted to the value type without adding or running tests.
+
+The larger-tree profile now uses a separate [compact container walk](refs-compact-containers.md),
+retaining only live ID/address indexes while hashing all page and row-value data.
+Serialized summaries cannot recreate those indexes. It is connected to bootstrap,
+virtual-root and allocator checks plus frozen reconstruction qualification; native
+qualification and the public partition ceiling remain unchanged.

@@ -34,6 +34,10 @@ try{
     }
     New-Item -ItemType Directory -Path $destination|Out-Null
     $pins|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $root 'terminal-guest-pins.json') -Encoding utf8
+    # PS5's directory-transfer implementation assumes non-strict scalar Length
+    # behavior. Evidence guards above are complete; use its default transport
+    # scope, then verify every copied byte against the captured guest hashes.
+    Invoke-Command -Session $session -ScriptBlock {Set-StrictMode -Off}
     Copy-Item -LiteralPath $dispatch.guest_output -FromSession $session -Destination (Join-Path $destination 'run') -Recurse
     Copy-Item -LiteralPath $dispatch.guest_stage -FromSession $session -Destination (Join-Path $destination 'stage') -Recurse
     foreach($pin in $pins){

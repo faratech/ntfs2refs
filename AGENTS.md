@@ -84,6 +84,14 @@ refuse. Legacy profiles retain their existing behavior. Use its dedicated
 collector and never redispatch on an observation timeout. No successful conversion
 or recovery is claimed yet; see [the run](docs/streaming-v2-native.md).
 
+Candidate 2 (`b82e5dbbdd1d4ae899315954c37a2609`) also refused before source
+payload writes, with a generic access-denied error in construction. Its raw/native
+source gates passed; target preservation remained unqualified. The new cache
+handle omitted FILE_WRITE_ATTRIBUTES needed by access-time suppression. That
+right and syscall-specific error context are now added. Candidate 2 is archived
+and preserved OFF at `beddfbe8-f40d-4903-9c2c-c6162b3b4349`; only this disposable
+VM was restored to its own original NTFS baseline. No old task is redispatched.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

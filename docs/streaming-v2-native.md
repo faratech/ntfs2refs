@@ -116,3 +116,29 @@ archival into `candidate2/terminal-evidence/run`, use
 with its ordered phases. Preserve the successful converted branch before
 mutation. Use `Restart-NativeShadowLargeBetaVerified.ps1 -StreamingV2` only
 after successful mutation and its strict readback. No unit tests were run.
+
+Candidate 2 terminated before raw apply with `Access is denied. (os error 5)`
+in native-shadow construction. All source-only admission gates passed, including
+native/raw logical bytes, Unicode namespace, allocation and full frozen-source
+identity; target security/preservation gates remained pending. No conversion
+certificate or execution authorization issued. Its generic error did not retain
+the individual failed syscall. Code inspection found that the new DELETE/read
+handle lacked FILE_WRITE_ATTRIBUTES required by per-handle SetFileTime
+suppression; this was corrected and open/suppression/deletion errors now name
+their operation. No source or target admission condition was removed.
+
+Twenty terminal/staged files (10,258,288 bytes) were copied and hash-verified;
+manifest SHA-256 is
+`a4d92ec8fc1b24386371ede9c72e03e356b3e59d121d45fb371b5edc5b6275a8`.
+The first archive transfer encountered a PS5 internal scalar Length error after
+strict mode had been enabled in that remoting session. A fresh default-mode
+transfer session completed the copy against the original guest pins; the
+archive helper now resets only its transport session's PowerShell strict mode
+after evidence guards, with complete hash readback afterward. No Windows ACL,
+UAC or security policy was changed.
+
+The refused branch is preserved OFF as
+`beddfbe8-f40d-4903-9c2c-c6162b3b4349`. A single restore returned this VM to
+its enrolled clean NTFS baseline; in-process Hyper-V observations stayed stale
+through the post-restore wait, but a fresh process confirmed OFF and baseline
+`775f4db8-8635-486c-b6eb-7098426b51a6`. No second restore was issued.

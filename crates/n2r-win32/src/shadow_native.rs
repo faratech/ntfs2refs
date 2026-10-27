@@ -1277,11 +1277,21 @@ fn existing_system_entries(
                 return Err(invalid("target-only indexer cache attributes differ"));
             }
             let mut file = File::options()
-                .access_mode(PROTECTED_READ_ACCESS | 0x10000) // DELETE on this file only
+                // SetFileTime's per-handle access-time suppression requires
+                // FILE_WRITE_ATTRIBUTES, even though it changes no stored time.
+                .access_mode(PROTECTED_READ_ACCESS | 0x10100)
                 .share_mode(1)
                 .custom_flags(0x02200000)
-                .open(format!("{root}{system}\\{name}"))?;
-            suppress_access(&file)?;
+                .open(format!("{root}{system}\\{name}"))
+                .map_err(|e| {
+                    io::Error::new(e.kind(), format!("open target-only indexer cache: {e}"))
+                })?;
+            suppress_access(&file).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("suppress target-only indexer cache access time: {e}"),
+                )
+            })?;
             validate_open_type(&file, false)?;
             let state = snapshot(&file);
             let standard = query_bytes(&state, 1, 24)?;
@@ -1337,7 +1347,8 @@ fn existing_system_entries(
         // BOOLEAN, with FileDispositionInfo (4). No raw filesystem edits.
         check(unsafe {
             SetFileInformationByHandle(file.as_raw_handle(), 4, (&delete as *const u8).cast(), 1)
-        })?;
+        })
+        .map_err(|e| io::Error::new(e.kind(), format!("remove target-only indexer cache: {e}")))?;
         drop(file);
         events.push(NativeEvent {
             operation: "remove-target-only-formatter-indexer-cache".into(),

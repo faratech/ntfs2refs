@@ -52,3 +52,13 @@ above measures the native hasher, not this comparison or journal workflow.
 This source change builds, but has no native conversion qualification yet.
 No unit tests were added or run. The native streaming run already in progress
 is evidence only for its original 98d02a4 producer.
+
+Later retention planning reuses the two complete bitmap observations across
+streaming V2 runs while no move was submitted and no mapping change observed.
+Those cached views only select candidates and provide no-submit diagnostics.
+Every submitted move still captures both fresh maps in the existing native
+move routine. Any submitted/partial move or observed mapping change invalidates
+the planning cache before the next source run. Legacy profiles recapture on
+every call. Source retention, metadata reservation handling and final native/raw
+target proofs are unchanged. This source/build optimization has not run in a VM;
+the recovery producer was staged before it.

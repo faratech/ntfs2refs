@@ -638,8 +638,13 @@ fn retain_source_run_on_shadow(
     attempts: &mut Vec<RetentionAttempt>,
     streaming: bool,
     reuse_no_submit_snapshot: bool,
+    planning_cache: &mut Option<(
+        crate::bitmap_observation::Observation,
+        crate::bitmap_observation::Observation,
+    )>,
 ) -> io::Result<()> {
     remaining_retention_evidence(attempts)?;
+    let first_attempt = attempts.len();
     // Bound the complete tree, including non-submitted collision diagnostics.
     let remaining = crate::retention_layout::MAX_SUBRUNS
         .checked_sub(attempts.len())
@@ -648,14 +653,22 @@ fn retain_source_run_on_shadow(
     let physical_offset = run
         .physical_offset
         .ok_or_else(|| invalid("source placement hole"))?;
-    let legacy =
-        crate::bitmap_observation::Observation::capture(volume, &[0; 8], partition, streaming)?;
-    let mut ex = [0; 16];
-    ex[8] = 1;
-    let metadata =
-        crate::bitmap_observation::Observation::capture(volume, &ex, partition, streaming)?;
+    if !reuse_no_submit_snapshot || planning_cache.is_none() {
+        let legacy =
+            crate::bitmap_observation::Observation::capture(volume, &[0; 8], partition, streaming)?;
+        let mut ex = [0; 16];
+        ex[8] = 1;
+        let metadata =
+            crate::bitmap_observation::Observation::capture(volume, &ex, partition, streaming)?;
+        *planning_cache = Some((legacy, metadata));
+    }
+    // This cache selects candidates/diagnostics only. Each submitted move still
+    // captures both live maps inside retain_run_on_shadow before native I/O.
+    let (legacy, metadata) = planning_cache
+        .as_ref()
+        .ok_or_else(|| invalid("missing retention planning observations"))?;
     let plan = legacy.plan_free_subruns(
-        &metadata,
+        metadata,
         crate::retention_layout::SourceRun {
             logical_offset: run.logical_offset,
             physical_offset,
@@ -720,6 +733,15 @@ fn retain_source_run_on_shadow(
             )?;
             append_retention_attempt(attempts, attempt)?;
         }
+    }
+    if !reuse_no_submit_snapshot
+        || attempts[first_attempt..]
+            .iter()
+            .any(|attempt| attempt.submitted || attempt.mapping_before != attempt.mapping_after)
+    {
+        // A move, even a failed/partial one, may change data or COW metadata
+        // allocation. Never carry its planning snapshot into another run.
+        *planning_cache = None;
     }
     Ok(())
 }
@@ -2748,6 +2770,7 @@ fn run_role_profile(
             }
         }
         if mode == Mode::ConstructRetaining {
+            let mut planning_cache = None;
             for i in input.iter().filter(|i| !i.directory) {
                 if let Some(offset) = i.source_offset
                     && i.logical_length() > 0
@@ -2769,6 +2792,7 @@ fn run_role_profile(
                             == Some(
                                 crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
                             ),
+                        &mut planning_cache,
                     )?;
                 }
                 for run in &i.source_runs {
@@ -2784,6 +2808,7 @@ fn run_role_profile(
                             == Some(
                                 crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
                             ),
+                        &mut planning_cache,
                     )?;
                 }
             }

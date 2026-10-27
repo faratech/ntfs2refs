@@ -164,6 +164,22 @@ The next native gate is streaming interruption/resume/rollback, rather than
 repeating the completed conversion/mutation/reboot case. Low-scratch retention,
 nonzero large files and broader capacity/features remain incomplete.
 
+The passed streaming branch remains preserved; only its own VM was restored
+once to NTFS baseline 775f4db8 for the separate controlled recovery candidate 4.
+Run `61d60b73d23b48dcb7e777328169ddc9`, PID 4120 created 20:26:32 UTC, was live
+in target preservation. Controlled producer SHA-256 is
+`a5e557d422fa73faba8e6a2683182a3b60536be61714f9e38684c891366a44e8`,
+source caf9853 plus the unchanged capabilities dirty patch. It will exit 86 after
+one flushed write, before handoff. Observe that exact task; do not redispatch.
+See [the recovery branch](docs/streaming-v2-recovery.md). No recovery outcome is
+recorded yet. Preserve the interrupted branch and verify persistent exclusion
+after reboot before executing explicit recovery with its original staged helper.
+
+Subsequent source caches the two planning bitmap views across V2 source runs
+only while no submitted move/mapping change occurred. Every actual move still
+rechecks fresh views; old profiles retain per-run capture. That cache did not
+produce candidate 4 and has compilation evidence only.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

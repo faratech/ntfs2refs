@@ -21,6 +21,7 @@ pub use assembled_io::validate_record_coverage;
 pub(crate) const MAX_MFT_RECORDS: u64 = 1_000_000;
 const MAX_BITMAP_BYTES: u64 = 128 * 1024 * 1024;
 const STREAM_HASH_BUFFER_BYTES: usize = 64 * 1024;
+const ALPHA_MAX_PLAIN_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Bounds retained inventory data independently of the separately bounded
 /// metadata read buffers. Hitting the limit returns an error, never a partial
@@ -2017,6 +2018,7 @@ fn checked_plain_attribute<R: Read + Seek>(
     record_number: u64,
     stream_name_utf16: &[u16],
     max_bytes: u64,
+    alpha_limit: bool,
 ) -> Result<(Attribute, String)> {
     if !raw.attribute_assemblies.is_empty() {
         validate_record_coverage(raw)?;
@@ -2039,7 +2041,7 @@ fn checked_plain_attribute<R: Read + Seek>(
         stream.flags == 0
             && stream.logical_hash_status == LogicalHashStatus::Complete
             && stream.logical_size <= max_bytes
-            && max_bytes <= 256 * 1024 * 1024,
+            && (!alpha_limit || max_bytes <= ALPHA_MAX_PLAIN_BYTES),
         "unsupported stream or materialization budget"
     );
     let geometry = &raw.geometry;
@@ -2149,6 +2151,50 @@ pub struct StreamCopyProof {
     pub sha256: String,
 }
 
+/// Explicit cumulative logical-byte budget for the fixed-buffer streaming
+/// APIs below. Every selected logical byte is charged, including holes and
+/// uninitialized ranges. Metadata/bootstrap rereads are not charged; physical
+/// device I/O and output overhead can differ. This budget is neither a total
+/// I/O bound nor admission or conversion authority. A failed transfer still
+/// consumes its reservation because partial output may exist.
+#[derive(Debug)]
+pub struct StreamTransferBudget {
+    max_stream_bytes: u64,
+    max_total_bytes: u64,
+    reserved_bytes: u64,
+}
+
+impl StreamTransferBudget {
+    pub fn new(max_stream_bytes: u64, max_total_bytes: u64) -> Result<Self> {
+        ensure!(
+            max_stream_bytes > 0 && max_total_bytes > 0,
+            "positive per-stream and cumulative logical-byte budgets required"
+        );
+        Ok(Self {
+            max_stream_bytes,
+            max_total_bytes,
+            reserved_bytes: 0,
+        })
+    }
+
+    pub fn reserved_bytes(&self) -> u64 {
+        self.reserved_bytes
+    }
+
+    fn reserve(&mut self, bytes: u64) -> Result<()> {
+        let reserved = self
+            .reserved_bytes
+            .checked_add(bytes)
+            .context("stream transfer accounting overflow")?;
+        ensure!(
+            reserved <= self.max_total_bytes,
+            "cumulative stream transfer budget exceeded"
+        );
+        self.reserved_bytes = reserved;
+        Ok(())
+    }
+}
+
 /// Stream one bounded plain unnamed DATA attribute through a fixed 64 KiB
 /// buffer. Sparse holes and bytes beyond NTFS valid-data length are emitted as
 /// zeroes. The caller must discard any partial output if this returns an error;
@@ -2178,20 +2224,77 @@ pub fn copy_plain_named_stream<R: Read + Seek, W: Write>(
         stream_name_utf16.len() <= 255,
         "stream name exceeds NTFS limit"
     );
-    let (attribute, expected) =
-        checked_plain_attribute(reader, raw, record_number, stream_name_utf16, max_bytes)?;
+    let (attribute, expected) = checked_plain_attribute(
+        reader,
+        raw,
+        record_number,
+        stream_name_utf16,
+        max_bytes,
+        true,
+    )?;
+    copy_checked_attribute(
+        reader,
+        &raw.geometry,
+        &attribute,
+        &expected,
+        record_number,
+        stream_name_utf16,
+        output,
+    )
+}
+
+/// Copy a checked plain stream with explicit per-stream and cumulative logical
+/// byte budgets. Metadata reads and physical I/O are not included in the budget.
+/// Unlike `read_plain_stream`, this does not allocate a payload-sized buffer.
+/// The caller chooses the output and must discard partial output on any error;
+/// use a bounded/file-backed output when working with large streams.
+pub fn copy_plain_stream_with_budget<R: Read + Seek, W: Write>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    budget: &mut StreamTransferBudget,
+    output: &mut W,
+) -> Result<StreamCopyProof> {
+    ensure!(
+        stream_name_utf16.len() <= 255,
+        "stream name exceeds NTFS limit"
+    );
+    let (attribute, expected) = checked_plain_attribute(
+        reader,
+        raw,
+        record_number,
+        stream_name_utf16,
+        budget.max_stream_bytes,
+        false,
+    )?;
+    budget.reserve(attribute.report.logical_size)?;
+    copy_checked_attribute(
+        reader,
+        &raw.geometry,
+        &attribute,
+        &expected,
+        record_number,
+        stream_name_utf16,
+        output,
+    )
+}
+
+fn copy_checked_attribute<R: Read + Seek, W: Write>(
+    reader: &mut R,
+    geometry: &NtfsGeometry,
+    attribute: &Attribute,
+    expected: &str,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    output: &mut W,
+) -> Result<StreamCopyProof> {
     let mut digest = Sha256::new();
     let mut copied = 0u64;
     let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
     while copied < attribute.report.logical_size {
         let count = (attribute.report.logical_size - copied).min(buffer.len() as u64) as usize;
-        read_attribute_range(
-            reader,
-            &attribute,
-            copied,
-            &mut buffer[..count],
-            &raw.geometry,
-        )?;
+        read_attribute_range(reader, attribute, copied, &mut buffer[..count], geometry)?;
         output.write_all(&buffer[..count])?;
         digest.update(&buffer[..count]);
         copied += count as u64;
@@ -2221,7 +2324,46 @@ pub fn hash_plain_stream_range<R: Read + Seek>(
     max_bytes: u64,
 ) -> Result<String> {
     let (attribute, expected) =
-        checked_plain_attribute(reader, raw, record_number, &[], max_bytes)?;
+        checked_plain_attribute(reader, raw, record_number, &[], max_bytes, true)?;
+    hash_checked_attribute_range(reader, &raw.geometry, &attribute, &expected, offset, length)
+}
+
+/// Hash a checked logical range using the same cumulative streaming budget.
+/// Every requested byte is charged, including holes and repeated ranges.
+pub fn hash_plain_stream_range_with_budget<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    offset: u64,
+    length: u64,
+    budget: &mut StreamTransferBudget,
+) -> Result<String> {
+    let (attribute, expected) = checked_plain_attribute(
+        reader,
+        raw,
+        record_number,
+        &[],
+        budget.max_stream_bytes,
+        false,
+    )?;
+    ensure!(
+        offset
+            .checked_add(length)
+            .is_some_and(|end| end <= attribute.report.logical_size),
+        "requested logical stream range escapes EOF"
+    );
+    budget.reserve(length)?;
+    hash_checked_attribute_range(reader, &raw.geometry, &attribute, &expected, offset, length)
+}
+
+fn hash_checked_attribute_range<R: Read + Seek>(
+    reader: &mut R,
+    geometry: &NtfsGeometry,
+    attribute: &Attribute,
+    expected: &str,
+    offset: u64,
+    length: u64,
+) -> Result<String> {
     ensure!(
         offset
             .checked_add(length)
@@ -2235,10 +2377,10 @@ pub fn hash_plain_stream_range<R: Read + Seek>(
         let count = (length - copied).min(buffer.len() as u64) as usize;
         read_attribute_range(
             reader,
-            &attribute,
+            attribute,
             offset + copied,
             &mut buffer[..count],
-            &raw.geometry,
+            geometry,
         )?;
         hash.update(&buffer[..count]);
         copied += count as u64;

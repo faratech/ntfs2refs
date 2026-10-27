@@ -4,14 +4,16 @@
     [Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
     [Parameter(Mandatory)][ValidateSet('BeforeMutation','AfterPreservationBoot','Mutate','AfterMutation','AfterReboot')][string]$Phase,
     [ValidateRange(1,9)][int]$Attempt=1,
-    [switch]$StreamingV2
+    [switch]$StreamingV2,
+    [ValidateRange(1,9)][int]$ToolsetVersion=1
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
 $root=Join-Path $workspace ($(if($StreamingV2){'.lab\hyperv\streaming-v2-20261027\'}else{'.lab\hyperv\shadow-large-beta-20261027\'})+$Candidate)
 if((Get-PSDrive D).Free-lt64GB){throw 'The 64 GiB host reserve is required.'}
-$toolsRoot=Join-Path $root 'rust-postcheck-tools'
+if($ToolsetVersion-gt1-and-not$StreamingV2){throw 'Versioned observers require the separate streaming fixture.'}
+$toolsRoot=Join-Path $root $(if($ToolsetVersion-eq1){'rust-postcheck-tools'}else{'rust-postcheck-tools-v'+$ToolsetVersion})
 $manifest=Get-Content -LiteralPath (Join-Path $toolsRoot 'manifest.json') -Raw|ConvertFrom-Json
 $dispatch=Get-Content -LiteralPath (Join-Path $root 'dispatch.json') -Raw|ConvertFrom-Json
 $qualified=Join-Path $root $(if($StreamingV2){'terminal-evidence\run'}else{'qualified-observed'})
@@ -20,11 +22,12 @@ $treePin=(Get-FileHash -LiteralPath (Join-Path $qualified 'expectation.json')).H
 $id=if($StreamingV2){[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'}else{[guid]'6c4793d2-cdee-468b-bf3b-1c11cae0b501'}
 $kind=if($StreamingV2){'streaming-v2-rust-postcheck-tools'}else{'large-beta-rust-postcheck-tools'}
 if([guid]$dispatch.vm_id-ne$id-or$manifest.kind-cne$kind){throw 'Fixture/tool enrollment differs.'}
+if($StreamingV2-and$manifest.run_id-cne$dispatch.run_id){throw 'Observer manifest run differs.'}
 & (Join-Path $PSScriptRoot 'Verify-NativeShadowLargeBetaPayload.ps1') -Candidate $Candidate -StreamingV2:$StreamingV2 | Out-Null
 $post=Join-Path $root 'rust-postcheck'
 $guestPost=Join-Path $dispatch.guest_stage 'rust-postcheck'
-$guestTools=Join-Path $guestPost 'tools'
-if($Attempt-gt1-and$Phase-notin@('AfterPreservationBoot','AfterMutation','AfterReboot')){throw 'Only read-only verification phases permit fresh observation attempts.'}
+$guestTools=Join-Path $guestPost $(if($ToolsetVersion-eq1){'tools'}else{'tools-v'+$ToolsetVersion})
+if($Attempt-gt1-and$Phase-notin@('BeforeMutation','AfterPreservationBoot','AfterMutation','AfterReboot')){throw 'Only read-only verification phases permit fresh observation attempts.'}
 $phaseKey=if($Attempt-eq1){$Phase}else{$Phase+'-attempt-'+$Attempt}
 if(Test-Path -LiteralPath (Join-Path $post ($Phase+'.json'))){throw 'Phase already completed; inspect its receipt.'}
 function Save-NewRecord([string]$Path,$Value){
@@ -32,29 +35,37 @@ function Save-NewRecord([string]$Path,$Value){
     try{$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 28));$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
 }
 if($Phase-ceq'BeforeMutation'){
-    if(Test-Path -LiteralPath $post){throw 'Fresh postcheck directory required; inspect prior intent.'}
-    New-Item -ItemType Directory -Path $post | Out-Null
+    if($Attempt-eq1){
+        if(Test-Path -LiteralPath $post){throw 'Fresh postcheck directory required; inspect prior intent.'}
+        New-Item -ItemType Directory -Path $post | Out-Null
+    }elseif(-not(Test-Path -LiteralPath (Join-Path $post 'BeforeMutation-intent.json'))){throw 'Original read-only observation intent required.'}
 }else{
     $previous=switch($Phase){'AfterPreservationBoot'{'BeforeMutation'}'Mutate'{'AfterPreservationBoot'}'AfterMutation'{'Mutate'}'AfterReboot'{'AfterMutation'}}
     $receipt=Get-Content -LiteralPath (Join-Path $post ($previous+'.json')) -Raw|ConvertFrom-Json
     if(-not$receipt.success-or$receipt.run_id-cne$dispatch.run_id){throw 'Successful matching prior phase required.'}
 }
 $mutation=if($Phase-in@('AfterMutation','AfterReboot')){Get-Content -LiteralPath (Join-Path $post 'Mutate.json') -Raw|ConvertFrom-Json}else{$null}
-Save-NewRecord (Join-Path $post ($phaseKey+'-intent.json')) @{phase=$Phase;attempt=$Attempt;run_id=$dispatch.run_id;utc=[DateTime]::UtcNow.ToString('o');tools=$manifest.tools}
+Save-NewRecord (Join-Path $post ($phaseKey+'-intent.json')) @{phase=$Phase;attempt=$Attempt;run_id=$dispatch.run_id;utc=[DateTime]::UtcNow.ToString('o');tools=$manifest.tools;
+    toolset_version=$ToolsetVersion;tools_manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $toolsRoot 'manifest.json')).Hash.ToLowerInvariant()}
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $session=New-PSSession -VMId $id -Credential $credential
 try{
     if($Phase-ceq'BeforeMutation'){
-        Invoke-Command -Session $session -ArgumentList $guestPost,$guestTools -ScriptBlock {
-            param($Post,$Tools);$ErrorActionPreference='Stop'
-            if(Test-Path -LiteralPath $Post){throw 'Guest postcheck directory exists.'}
+        $copyRequired=Invoke-Command -Session $session -ArgumentList $guestPost,$guestTools,($Attempt-gt1) -ScriptBlock {
+            param($Post,$Tools,$Retry);$ErrorActionPreference='Stop'
+            if(-not$Retry-and(Test-Path -LiteralPath $Post)){throw 'Guest postcheck directory exists.'}
+            if(Test-Path -LiteralPath $Tools){
+                if(-not$Retry){throw 'Guest tool stage exists.'}
+                return $false
+            }
             New-Item -ItemType Directory -Path $Tools | Out-Null
+            $true
         }
         foreach($row in $manifest.tools){
             if($row.name-cnotin@('lab-verify-general-converted.exe','lab-general-refs-mutation.exe')){throw 'Unexpected executable.'}
             $source=Join-Path $toolsRoot $row.name
             if((Get-Item -LiteralPath $source).Length-ne$row.bytes-or(Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant()-cne$row.sha256){throw 'Host executable pin differs.'}
-            Copy-Item -LiteralPath $source -ToSession $session -Destination (Join-Path $guestTools $row.name)
+            if($copyRequired){Copy-Item -LiteralPath $source -ToSession $session -Destination (Join-Path $guestTools $row.name)}
         }
     }
     $priorBoot=''

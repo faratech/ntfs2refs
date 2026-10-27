@@ -175,3 +175,54 @@ observation, the journal reporter was in `comparing` with 104,119,402,496 scan
 bytes out of its 223,338,299,392-byte comparison/recheck budget. This is one
 preparation stage, not an overall conversion percentage, and execution was
 still unauthorized. No source cutover/native finalization is established yet.
+
+Candidate 3 subsequently completed apply, irreversible handoff and native ReFS
+verification; its task was Ready, exit 0, with no converter process at 18:55 UTC.
+The original partition is now ReFS/4 KiB with label `n2r-stream-source`.
+The complete result reports source admission and closed rollback. Its SHA-256 is
+`583aacb6d214d67919caa7dfc269ad5e8856482de75a05caaa7a832cb03a1710`;
+finalization SHA-256 is
+`fae6cc02d48443e787ac7d4e03bab5db63551217aa1340bde4c093274ff912b9`.
+Source preimage is
+`2faa04e9e3cf5884c36b6e9f75fc37c5918a4102c914ed2ed435ff78a8e64930`,
+raw target postimage/frozen shadow
+`25d8ddfb5bd506178f8c11573260728311f1e4c386d5907fc84dc7a63cea7e1b`.
+The expected tree is
+`0992ec867426127b25e81b672a352d3cebe9f881e7263738e12a94a0c100dc50`.
+314 patches wrote 339,808,256 target bytes, with a 679,676,029-byte journal
+(679,667,837 immutable, SHA-256
+`1d1b48d063c3a234b719815134711b15d8769d64b5c97a77bdab1ae3e4ad851c`).
+This is a zero-filled large-file case and retained no original payload extent;
+logical relocation, initialized shadow bytes and actual target writes differ.
+No physical scratch/I/O efficiency or streaming crash-recovery claim follows.
+The 33-file terminal archive was verified against the guest; its manifest hash
+is `89816313944e20bc328dff54362063798d4ee975f33ac1eb1e340951b3821af9`.
+
+The first independent strict BeforeMutation observation then refused. A fresh
+read-only diagnostic found all eight admitted stream hashes unchanged, including
+the six user files; only SVI access/write/change times differed. Its namespace
+had gained `IndexerVolumeGuid`, which Windows regenerated after mount. The initial
+native finalization report had the original SVI contents/times. The failed
+observer hash is
+`20247cb990e461acc068430d0e626f2846009a3d385e9fc84805d728c8156bc7`,
+diagnostic hash
+`8a2c0eca673dbb08ec2709e64b6afc8cc8d8ad3c0ac3202f62eb049129a82cc4`.
+Do not reinterpret that failure as a passed strict observation or undo it.
+
+A converted-V2-only normalization now accounts for one source-absent
+IndexerVolumeGuid after reading its exact stable identity/type/attributes, one
+link, sole unnamed stream, security-query results, exactly 76 bytes of UTF-16
+braced GUID, and stable parent metadata. Its original bytes and snapshots are
+reported. Only SVI's runtime access/write/change timestamps may advance, bounded
+by their originals and the observation clock, with cache creation no earlier
+than the original SVI change time. SVI creation/attributes/security, all user
+metadata and all source stream hashes remain exact. Unknown entries, aliases,
+extra streams and malformed cache contents still refuse. No cache is deleted
+or timestamp rewritten on the operational volume. Pre-handoff shadow checks,
+old profiles and source-present cache objects retain the old strict policy.
+The original expected-tree artifact is not edited. New read-only observer
+attempts/toolsets preserve all previous intents, reports and binaries; mutation
+attempts remain single-use. This source correction still needs live observation.
+
+Mike approved a further cap increase to 224 GiB for preservation and the new
+reboot/mutation branch, retaining every checkpoint and the 64 GiB free reserve.

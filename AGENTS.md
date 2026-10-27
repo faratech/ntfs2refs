@@ -81,8 +81,9 @@ The V2-only normalization validates the exact target-only cache's identity,
 single-link ordinary-file type, sole unnamed stream, 76-byte GUID and absence
 from the source before deleting it through Windows. Unknown SVI entries still
 refuse. Legacy profiles retain their existing behavior. Use its dedicated
-collector and never redispatch on an observation timeout. No successful conversion
-or recovery is claimed yet; see [the run](docs/streaming-v2-native.md).
+collector and never redispatch on an observation timeout. Candidates 1/2 did not
+convert; candidate 3's later success is recorded below and in
+[the run](docs/streaming-v2-native.md).
 
 Candidate 2 (`b82e5dbbdd1d4ae899315954c37a2609`) also refused before source
 payload writes, with a generic access-denied error in construction. Its raw/native
@@ -92,25 +93,30 @@ right and syscall-specific error context are now added. Candidate 2 is archived
 and preserved OFF at `beddfbe8-f40d-4903-9c2c-c6162b3b4349`; only this disposable
 VM was restored to its own original NTFS baseline. No old task is redispatched.
 
-Candidate 3 is now the only active streaming attempt: run
+Candidate 3 is the completed streaming attempt: run
 `e5d4b7dfa9474dedb3e19b67c1b03f24`, PID 2540 created 18:10:37 UTC,
 producer `98d02a4f698d44d7ba89c5a45c24b49422eae363` plus the unchanged
 capabilities-only dirty patch. Converter SHA-256 is
 `a28a4a5b74839754181f4cc9a44d97aab383b665f2249746418457c8bcde6f39`.
 At 18:12 UTC the same task/process was live in source qualification. Observe
 with `Collect-StreamingV2Conversion.ps1 -Candidate candidate3`. Do not restart.
-After terminal state, `Archive-StreamingV2Terminal.ps1` preserves and rehashes
-the guest run/stage. Rust postcheck tools are pinned in this candidate's
+`Archive-StreamingV2Terminal.ps1` archived and rehashed 33 guest run/stage files.
+Rust postcheck tools are pinned in this candidate's
 `rust-postcheck-tools`; use the existing beta postcheck/reboot scripts with
-the explicit `-StreamingV2` switch only after successful handoff. No native
-streaming conversion/recovery success is established yet.
+the explicit `-StreamingV2` switch. The task exited 0, native conversion passed,
+and the handoff is closed. Result SHA-256 is
+`583aacb6d214d67919caa7dfc269ad5e8856482de75a05caaa7a832cb03a1710`,
+expected tree `0992ec867426127b25e81b672a352d3cebe9f881e7263738e12a94a0c100dc50`.
+314 patches wrote 339,808,256 bytes; the journal is 679,676,029 bytes.
+No retention, streaming interruption recovery or reboot/mutation qualification
+is claimed from that result alone. Never replay its old journal after handoff.
 
 The same candidate 3 later completed native shadow construction (13 objects,
 4,295,249,950 bytes initialized). The cache normalization event succeeded.
 All six measured retention candidates were metadata-blocked and unsubmitted;
 no retained payload is established. Its copied construction report hash is
 `1f3ceb7db217264643bfeb4f2aaca82ebb44e8a1cf79237cb156ace0e94f35ec`.
-The task was still live in target preservation. Do not treat that intermediate
+The task then entered target preservation. Do not treat that intermediate
 report as a conversion certificate or trigger postchecks before terminal handoff.
 
 Later source adds CNG SHA-256 only to streaming V2's three full-source hash
@@ -119,16 +125,30 @@ passes and protected target before/after brackets; see
 real 1 GiB corpus image matched its pinned digest with both backends; native
 was about 1.66 times faster on this no-SHA-instruction host. This is a host
 observation, not native conversion or guest performance qualification. Candidate
-3 still uses its staged 98d02a4 engine. Do not replace/restart it or assign its
-future outcome to the newer binaries. Legacy profiles remain on their old hash
+3 used its staged 98d02a4 engine. Do not replace/restart it or assign its
+outcome to the newer binaries. Legacy profiles remain on their old hash
 path. No source exclusion, read coverage or recovery gate was removed.
 
 Later streaming V2 journal preparation also selects CNG for its initial full
 comparison/postimage hashes, including its existing bounded shadow worker.
 Native hash handles are created on that worker and errors propagate as Results.
 The two full Rust rechecks, patch/range hashes, I/O order and serialized journal
-remain unchanged. This is source/build work only; the live candidate 3 uses
-98d02a4 throughout. Do not assign its eventual outcome to these newer builds.
+remain unchanged. This is source/build work only; candidate 3 used
+98d02a4 throughout. Do not assign its outcome to these newer builds.
+
+The initial independent BeforeMutation observer refused: Windows regenerated
+SVI/IndexerVolumeGuid after mount and advanced SVI access/write/change times.
+The diagnostic found every admitted stream hash unchanged and only that internal
+directory's times changed. Both failed/diagnostic reports remain in
+`candidate3/rust-postcheck`. A V2-converted-only policy now validates the extra
+cache's exact name, stable ID/type, single link/stream, 76-byte braced GUID,
+parent stability and bounded timestamps. It accounts for the extra cache and
+permits only SVI's monotonic access/write/change times; its creation, attributes,
+security and every user object remain strict. No operational file is deleted
+or retimed, and the original expected tree remains pinned. This policy is not
+enabled for pre-handoff shadow qualification, old profiles or a source-present
+IndexerVolumeGuid. Versioned postcheck toolsets retain the old binaries and
+allow a new read-only BeforeMutation attempt; a mutation cannot be retried.
 
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
@@ -488,7 +508,9 @@ and UTC timestamp were compared incorrectly.
 
 Mike explicitly approved raising the lab cap from 208 to 216 GiB on October 27
 to preserve the refused streaming branch and allow its next native run.
-`lab/lab.config.json` limits actual lab usage to 216 GiB and requires 64 GiB
+Mike subsequently approved 224 GiB to preserve the converted streaming branch
+and allow its reboot/mutation child. The 64 GiB host reserve remains.
+`lab/lab.config.json` limits actual lab usage to 224 GiB and requires 64 GiB
 host free space. Check actual free space and backing allocation before large
 experiments. Sparse flags, logical lengths and reported sparse ranges alone
 have not provided reliable capacity accounting on this ReFS host.

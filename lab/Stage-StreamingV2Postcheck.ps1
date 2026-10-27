@@ -1,5 +1,6 @@
 # Pin host-built Rust observers; this does not execute anything in the guest.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate)
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
+    [ValidateRange(1,9)][int]$ToolsetVersion=1)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
@@ -7,7 +8,7 @@ $root=Join-Path $workspace ('.lab\hyperv\streaming-v2-20261027\'+$Candidate)
 $dispatch=Get-Content -LiteralPath (Join-Path $root 'dispatch.json') -Raw|ConvertFrom-Json
 if([guid]$dispatch.vm_id-ne[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'-or
     $dispatch.source_resource_profile-cne'experimental_streaming_tree_v2'){throw 'Enrolled streaming candidate required.'}
-$destination=Join-Path $root 'rust-postcheck-tools'
+$destination=Join-Path $root $(if($ToolsetVersion-eq1){'rust-postcheck-tools'}else{'rust-postcheck-tools-v'+$ToolsetVersion})
 if(Test-Path -LiteralPath $destination){throw 'Tool stage already exists; preserve its pins.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
 $capacity=Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)
@@ -25,6 +26,7 @@ foreach($tool in $tools){
 }
 $patch=(& git -C $workspace diff --binary -- src crates Cargo.toml Cargo.lock rust-toolchain.toml)-join"`n"
 $value=@{kind='streaming-v2-rust-postcheck-tools';run_id=$dispatch.run_id;vm_id=$dispatch.vm_id;
+    toolset_version=$ToolsetVersion;
     source_commit=(& git -C $workspace rev-parse HEAD).Trim();tools=$tools;
     working_tree_patch_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($patch))).ToLowerInvariant();
     no_guest_execution=$true;utc=[DateTime]::UtcNow.ToString('o')}

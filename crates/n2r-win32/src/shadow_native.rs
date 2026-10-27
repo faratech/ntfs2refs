@@ -170,6 +170,21 @@ pub struct Report {
     pub security_repair_preflight_sha256: Option<String>,
     pub security_repair_privileges: Vec<PrivilegeState>,
     pub retention_attempts: Vec<RetentionAttempt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post_mount_indexer_cache: Option<PostMountIndexerCache>,
+}
+
+/// A newly generated, source-absent filesystem cache on the converted volume.
+/// This records live reads; it never grants write authority or deletes a file.
+#[derive(Debug, Serialize)]
+pub struct PostMountIndexerCache {
+    pub file_id: [u8; 16],
+    pub attributes: u32,
+    pub contents: Vec<u8>,
+    pub streams: Vec<u8>,
+    pub before: Snapshot,
+    pub after: Snapshot,
+    pub observed_filetime: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -862,8 +877,33 @@ fn validate_existing(
         } else {
             &expected_owned
         };
+        let actual_basic = query_bytes(&o.before, 0, 40)?;
+        let cache_directory_times = if i.components == ["System Volume Information"] {
+            report
+                .post_mount_indexer_cache
+                .as_ref()
+                .is_some_and(|cache| {
+                    let Ok(cache_basic) = query_bytes(&cache.before, 0, 40) else {
+                        return false;
+                    };
+                    let Ok(created) = layout::u64_at(cache_basic, 0) else {
+                        return false;
+                    };
+                    actual_basic[..8] == expected_basic[..8]
+                        && actual_basic[32..] == expected_basic[32..]
+                        && created >= layout::u64_at(expected_basic, 24).unwrap_or(u64::MAX)
+                        && created <= cache.observed_filetime
+                        && [8, 16, 24].into_iter().all(|at| {
+                            let old = layout::u64_at(expected_basic, at).unwrap_or(u64::MAX);
+                            let now = layout::u64_at(actual_basic, at).unwrap_or(0);
+                            now >= old && now <= cache.observed_filetime
+                        })
+                })
+        } else {
+            false
+        };
         if i.components != o.components
-            || query_bytes(&o.before, 0, 40)? != expected_basic
+            || (actual_basic != expected_basic && !cache_directory_times)
             || o.before != o.after
         {
             return Err(invalid(
@@ -915,6 +955,13 @@ fn validate_existing(
             }
         }
     }
+    if let Some(cache) = &report.post_mount_indexer_cache {
+        if unique.contains(cache.file_id.as_slice()) {
+            return Err(invalid(
+                "post-mount indexer cache aliases an admitted source object",
+            ));
+        }
+    }
     for (i, o) in input
         .iter()
         .zip(&report.objects)
@@ -938,8 +985,26 @@ fn validate_existing(
             })
             .collect();
         let mut seen = BTreeSet::new();
+        let mut cache_seen = false;
         for entry in &o.namespace {
             if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
+                continue;
+            }
+            if i.components == ["System Volume Information"]
+                && entry.name_utf16 == "IndexerVolumeGuid".encode_utf16().collect::<Vec<_>>()
+                && report
+                    .post_mount_indexer_cache
+                    .as_ref()
+                    .is_some_and(|cache| {
+                        cache.file_id == entry.file_id && cache.attributes == entry.attributes
+                    })
+            {
+                if cache_seen {
+                    return Err(invalid(
+                        "duplicate post-mount indexer cache directory entry",
+                    ));
+                }
+                cache_seen = true;
                 continue;
             }
             if i.components.is_empty()
@@ -967,6 +1032,12 @@ fn validate_existing(
         }
         if seen.len() != expected.len() {
             return Err(invalid("missing existing shadow directory entry"));
+        }
+        if i.components == ["System Volume Information"]
+            && report.post_mount_indexer_cache.is_some()
+            && !cache_seen
+        {
+            return Err(invalid("post-mount indexer cache missing from directory"));
         }
     }
     Ok(())
@@ -1210,6 +1281,114 @@ fn enumerate(file: &File) -> io::Result<Vec<namespace_layout::Entry>> {
 
 fn formatter_cache_name(name: &str) -> bool {
     matches!(name, "WPSettings.dat" | "IndexerVolumeGuid")
+}
+
+fn observe_post_mount_indexer_cache(
+    root: &str,
+    input: &[Input<'_>],
+    objects: &[ObjectReport],
+) -> io::Result<Option<PostMountIndexerCache>> {
+    let system = "System Volume Information";
+    let name = "IndexerVolumeGuid";
+    if input.iter().any(|i| {
+        i.components.len() == 2
+            && i.components[0].eq_ignore_ascii_case(system)
+            && i.components[1].eq_ignore_ascii_case(name)
+    }) {
+        return Ok(None);
+    }
+    let Some(parent_observation) = objects.iter().find(|o| o.components == [system]) else {
+        return Ok(None);
+    };
+    let names: Vec<_> = parent_observation
+        .namespace
+        .iter()
+        .filter(|e| e.name_utf16 == name.encode_utf16().collect::<Vec<_>>())
+        .collect();
+    if names.is_empty() {
+        return Ok(None);
+    }
+    if names.len() != 1 || names[0].attributes & !0x2027 != 0 {
+        return Err(invalid(
+            "post-mount indexer cache namespace or attributes differ",
+        ));
+    }
+    let entry = names[0];
+    let parent = open(&format!("{root}{system}"), true, false)?;
+    if snapshot(&parent) != parent_observation.after {
+        return Err(invalid(
+            "system directory changed before post-mount cache observation",
+        ));
+    }
+    let mut file = File::options()
+        .access_mode(0x01020181)
+        .share_mode(1)
+        .custom_flags(0x02200000)
+        .open(format!("{root}{system}\\{name}"))?;
+    suppress_access(&file)?;
+    validate_open_type(&file, false)?;
+    let before = snapshot(&file);
+    let standard = query_bytes(&before, 1, 24)?;
+    let basic = query_bytes(&before, 0, 40)?;
+    if query_bytes(&before, 18, 24)?[8..24] != entry.file_id
+        || entry.file_id == [0; 16]
+        || layout::u64_at(standard, 8)? != 76
+        || layout::u64_at(standard, 0)? > 65536
+        || layout::u32_at(standard, 16)? != 1
+        || standard[20] != 0
+        || standard[21] != 0
+        || layout::u32_at(basic, 32)? != entry.attributes
+        || before.security_error.is_some()
+        || before
+            .kernel_security
+            .as_ref()
+            .is_none_or(|s| s.native_error.is_some())
+    {
+        return Err(invalid(
+            "post-mount indexer cache identity, type, size or security query differs",
+        ));
+    }
+    let mut streams = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+    let (entries, used) = stream_layout::parse_streams(&streams)?;
+    if entries.len() != 1 || !entries[0].name.is_empty() || entries[0].logical_size != 76 {
+        return Err(invalid("post-mount indexer cache has unexpected streams"));
+    }
+    streams.truncate(used);
+    let mut contents = vec![0; 76];
+    file.read_exact(&mut contents)?;
+    let guid: Vec<_> = contents
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    if guid.iter().enumerate().any(|(at, &c)| match at {
+        0 => c != u16::from(b'{'),
+        37 => c != u16::from(b'}'),
+        9 | 14 | 19 | 24 => c != u16::from(b'-'),
+        _ => c > 127 || !(c as u8).is_ascii_hexdigit(),
+    }) || file.read(&mut [0u8; 1])? != 0
+    {
+        return Err(invalid("post-mount indexer cache GUID contents differ"));
+    }
+    let after = snapshot(&file);
+    if before != after || snapshot(&parent) != parent_observation.after {
+        return Err(invalid(
+            "post-mount indexer cache or parent changed during observation",
+        ));
+    }
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| invalid("system clock predates Unix epoch"))?;
+    let observed_filetime = u64::try_from(since_epoch.as_nanos() / 100 + 116_444_736_000_000_000)
+        .map_err(|_| invalid("post-mount cache observation clock overflow"))?;
+    Ok(Some(PostMountIndexerCache {
+        file_id: entry.file_id,
+        attributes: entry.attributes,
+        contents,
+        streams,
+        before,
+        after,
+        observed_filetime,
+    }))
 }
 
 fn source_formatter_cache_bounds(input: &[Input<'_>]) -> io::Result<()> {
@@ -2472,6 +2651,7 @@ fn run_role_profile(
             security_repair_preflight_sha256: None,
             security_repair_privileges: vec![],
             retention_attempts,
+            post_mount_indexer_cache: None,
         });
     }
     if constructing || mode == Mode::RestoreRootOnly {
@@ -2531,6 +2711,7 @@ fn run_role_profile(
                 security_repair_preflight_sha256: None,
                 security_repair_privileges: vec![],
                 retention_attempts,
+                post_mount_indexer_cache: None,
             });
         }
         for (index, i) in input.iter().enumerate().skip(1) {
@@ -2844,6 +3025,14 @@ fn run_role_profile(
                 .transpose()?,
         });
     }
+    let post_mount_indexer_cache = if converted
+        && resource_profile
+            == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
+    {
+        observe_post_mount_indexer_cache(&root, input, &objects)?
+    } else {
+        None
+    };
     let after = observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
     validate_observation_access(after.disk_attributes, flags, protected.is_some())?;
     privileges.restore()?;
@@ -2865,6 +3054,7 @@ fn run_role_profile(
         security_repair_preflight_sha256: None,
         security_repair_privileges: vec![],
         retention_attempts,
+        post_mount_indexer_cache,
     })
 }
 #[cfg(test)]

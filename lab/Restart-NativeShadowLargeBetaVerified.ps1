@@ -14,7 +14,7 @@ $id=if($StreamingV2){[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'}else{[guid]'6c
 if([guid]$dispatch.vm_id-ne$id){throw 'Enrolled VM differs.'}
 if($StreamingV2){
     Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
-    Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 2GB
+    Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 6GB
 }
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $before=Invoke-Command -VMId $id -Credential $credential -ScriptBlock {

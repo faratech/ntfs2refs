@@ -12,7 +12,8 @@ if([guid]$d.vm_id-ne$id-or$d.run_id-cne'dbd514da89ac4c44b16bde4f7e3a805c'-or-not
 $stage=Join-Path $root 'valid-data-probe'
 if(Test-Path -LiteralPath $stage){throw 'Probe has state; inspect without redispatch.'}
 $vm=Get-VM -Id $id
-if($vm.State.ToString()-cne'Running'-or$vm.ParentSnapshotId-ne$baseline){throw 'Running owned refused-baseline child required.'}
+if($vm.State.ToString()-cne'Running'-or$vm.ParentSnapshotId-ne$baseline-or$vm.MemoryStartup-ne4GB-or$vm.DynamicMemoryEnabled-or
+    @(Get-VMNetworkAdapter -VM $vm).Count){throw 'Running isolated four-GiB refused-baseline child required.'}
 $old=@(Get-VMSnapshot -VM $vm)
 if($old.Count-ne9){throw 'All nine earlier checkpoints must remain.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
@@ -46,6 +47,11 @@ try{
     Copy-Item -LiteralPath $state.sizing_path -FromSession $s -Destination (Join-Path $stage 'sizing-result.json')
     if((Get-Item -LiteralPath (Join-Path $stage 'sizing-result.json')).Length-ne$state.sizing_bytes-or
         (Get-FileHash -LiteralPath (Join-Path $stage 'sizing-result.json')).Hash.ToLowerInvariant()-cne$state.sizing_sha256){throw 'Sizing archive pin differs.'}
+    $measured=Get-Content -LiteralPath (Join-Path $stage 'sizing-result.json') -Raw|ConvertFrom-Json
+    $frozen=Get-Content -LiteralPath (Join-Path $root 'terminal-evidence\run\qualification\target-preservation.json') -Raw|ConvertFrom-Json
+    if($measured.request_sha256-cne$requestPin-or$measured.measurement.kind-cne'frozen-general-journal-sizing'-or
+        -not$measured.measurement.inputs_unchanged-or$measured.measurement.source_payload_writes-ne0-or$measured.measurement.execution_authorized-or
+        $measured.measurement.source_sha256-cne$frozen.source_sha256-or$measured.measurement.shadow_sha256-cne$frozen.target_sha256){throw 'Sizing result does not bind the archived frozen pair.'}
 }finally{Remove-PSSession $s}
 Stop-VM -VM $vm -Confirm:$false -ErrorAction Stop
 $off=Get-CimInstance -Namespace 'root/virtualization/v2' -ClassName Msvm_ComputerSystem -Filter "Name='2401593c-4b30-472e-9b6d-c9534cbaa599'"
@@ -67,12 +73,16 @@ try{
         if([guid]$source.Guid-ne[guid]'1b191872-c372-41ee-a416-e18863996f54'-or-not$source.IsOffline-or-not$source.IsReadOnly-or
             [guid]$shadow.Guid-ne[guid]'c0f2cd39-ad3d-484e-9990-0e6eba74485f'-or-not$shadow.IsOffline-or-not$shadow.IsReadOnly-or$shadow.IsBoot-or$shadow.IsSystem){throw 'Exact excluded disks required.'}
         if(Test-Path -LiteralPath $Stage){throw 'Fresh private probe stage required.'}
+        $driver=Get-Item -LiteralPath 'C:\Windows\System32\drivers\refs.sys'
+        $driverPin=(Get-FileHash -LiteralPath $driver.FullName).Hash.ToLowerInvariant()
+        if($driverPin-cne'3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4'){throw 'Native ReFS oracle fingerprint changed.'}
         New-Item -ItemType Directory -Path $Stage|Out-Null
         Set-Disk -Number 3 -IsReadOnly $false -ErrorAction Stop
         Set-Disk -Number 3 -IsOffline $false -ErrorAction Stop
         $p=Get-Partition -DiskNumber 3|Where-Object {$_.Offset-eq16MB};$v=Get-Volume -Partition $p
         if([guid]$p.Guid-ne[guid]'cbfd3e55-e35c-4f6e-aaac-dca706c3ec17'-or$p.Size-ne52GB-or$v.FileSystem-cne'ReFS'-or$v.AllocationUnitSize-ne4096-or$v.FileSystemLabel-cne'n2r-retained-shadow'){throw 'Mounted probe target differs.'}
-        [pscustomobject]@{shadow_partition_guid=$p.Guid;source_offline=(Get-Disk -Number 1).IsOffline;source_readonly=(Get-Disk -Number 1).IsReadOnly;utc=[DateTime]::UtcNow.ToString('o')}
+        [pscustomobject]@{shadow_partition_guid=$p.Guid;source_offline=(Get-Disk -Number 1).IsOffline;source_readonly=(Get-Disk -Number 1).IsReadOnly;
+            refs_driver_sha256=$driverPin;refs_driver_version=$driver.VersionInfo.FileVersion;os_build=(Get-CimInstance Win32_OperatingSystem).BuildNumber;utc=[DateTime]::UtcNow.ToString('o')}
     }
     Save-New 'mounted-shadow.json' $mounted
     Copy-Item -LiteralPath $binary -ToSession $s -Destination (Join-Path $guestStage 'lab-probe-native-valid-data.exe')

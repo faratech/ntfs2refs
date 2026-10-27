@@ -141,3 +141,21 @@ conservative old/new payload and metadata budget. It grants no admission or
 execution authority. The separately pinned sizing task is currently active;
 the failed converter is not restarted. The dispatcher now accepts an explicit
 `JournalBudgetMiB` and charges its increase to the required lab growth allowance.
+
+Mike approved a 240 GiB lab cap, then prioritized minimum disk and RAM use.
+This does not establish payload-independent scratch. The full 8,590,217,246-byte
+shadow initialization and whole-partition comparison still exist. The active
+read-only sizing pass is a measurement of that baseline, not another conversion.
+Its result should drive the required-write-set work before a larger attempt.
+
+The intended low-scratch model is new ReFS metadata in source-free space,
+retained compatible payload at original offsets, only unavoidable relocation
+or materialization, and recovery records for destructive writes. Volume size
+alone must not allocate a second data copy or an in-memory bitmap. Metadata
+size, fragmentation and incompatible source features still impose real space
+requirements. A new selective-write profile needs complete coverage of target
+anchors, metadata, allocator state and rewritten payload; a bitmap with file
+extents subtracted is not that proof. Removing full shadow initialization
+additionally requires a qualified extent-adoption/metadata-construction path;
+skipping zero filling alone does not establish allocation, initialized-data or
+privacy correctness. Preserve the existing full-image path as the reference.

@@ -725,3 +725,19 @@ actual changed bytes and conservative journal requirement before choosing the
 next budget. Preserve the failed branch before any restore or new conversion.
 The dispatcher now accepts JournalBudgetMiB and increases its required lab
 growth allowance along with that budget; never bypass the approved cap.
+
+Mike subsequently approved 240 GiB (257698037760 bytes); the 64 GiB free-space
+reserve and 4 GiB VM memory are unchanged. He then explicitly prioritized
+minimal disk utilization and RAM for physical-drive conversion. Treat the
+native-shadow full-payload copy and whole-partition free-sector replacement as
+architectural costs to remove, rather than increasing lab caps as the product
+solution. Finish the active read-only sizing measurement and preserve this
+failed branch. Do not launch another larger conversion merely because its cap
+now permits it. Next establish a complete target-required write set and the
+means to construct metadata around retained payload without initializing a
+second full payload copy. Keep the successful native-shadow path as a reference
+and preserve its protocol/evidence. New selective-write or metadata-adoption
+profiles must not silently weaken its full-image journal/recovery contract.
+Use bounded streaming buffers/paged or interval allocation processing, never
+RAM proportional to total volume capacity. Current measured converter peak is
+70,984 KiB in a 4 GiB VM; do not enlarge RAM without measured need.

@@ -7,7 +7,7 @@ function Reject([scriptblock]$Action,[string]$Message){$refused=$false;try{&$Act
 $path=Join-Path $PSScriptRoot 'Read-IsolatedJournalObservation.ps1';$tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
 Check ($errors.Count-eq0) 'Launcher syntax failed.'
-$pureNames=@('Get-IsolatedJournalObservationOutputPath','Assert-IsolatedObservationCapacity','Assert-IsolatedObservationNoWorkers','Assert-IsolatedObservationStorageManagement','Assert-IsolatedObservationReport','Assert-IsolatedObservationFreshHostType')
+$pureNames=@('Get-IsolatedJournalObservationOutputPath','Assert-IsolatedObservationCapacity','Assert-IsolatedObservationNoWorkers','Assert-IsolatedObservationStorageManagement','Assert-IsolatedObservationReport','Assert-IsolatedObservationFreshHostType','ConvertFrom-IsolatedObservationTransport')
 foreach($name in $pureNames){
  $definitions=@($ast.FindAll({param($node) $node-is[Management.Automation.Language.FunctionDefinitionAst]-and$node.Name-ceq$name},$false))
  Check ($definitions.Count-eq1) ('Unique pure definition required: '+$name)
@@ -128,6 +128,67 @@ foreach($failure in @('early-eof','wrong-size','wrong-token','bad-hash','changed
  Reject {Assert-IsolatedObservationReport $report ('a'*64)} ('Incomplete/inconsistent report accepted: '+$failure)
 }
 
+# CLR data-only fixtures reproduce the native report's nested readonly fields.
+# No native reader/identity assembly is loaded and no P/Invoke exists here.
+if(-not('IsolatedObservationTransportFixture.Report' -as[type])){
+ Add-Type -TypeDefinition @'
+namespace IsolatedObservationTransportFixture {
+ public sealed class Content {
+  public readonly string identityToken=new string('a',64),contentSha256=new string('c',64);
+  public readonly string startedUtc="2026-10-27T12:00:01.0000000Z",finishedUtc="2026-10-27T12:04:59.0000000Z";
+  public readonly long requestedBytes=8589934592L,bytesRead=8589934592L,readCalls=8193,nonzeroBytes=0,firstNonzeroOffset=-1;
+  public readonly bool complete=true,allZeroObserved=true;
+  public bool informationalOnly {get{return true;}}
+  public bool grantsInitializationAuthority {get{return false;}}
+  public bool grantsWriteAuthority {get{return false;}}
+  public bool atomicImmutabilityClaimed {get{return false;}}
+ }
+ public sealed class Query {
+  public uint code=0x70050;public int capacity=192,returnedBytes=48,error=0;public bool succeeded=true;
+  public string inputHex="",outputHex=new string('0',96);
+ }
+ public sealed class Report {
+  public string kind="isolated-journal-readonly-content-observation";
+  public string beforeSnapshotSha256=new string('b',64),afterSnapshotSha256=new string('b',64);
+  public string startedUtc="2026-10-27T12:00:00.0000000Z",finishedUtc="2026-10-27T12:05:00.0000000Z";
+  public long nativeBytesRead=8589934592L,nativeReadCalls=8192;public bool identityMatchedBeforeAfter=true;
+  public readonly Content content=new Content();
+  public readonly Query[] queries=new Query[]{new Query(),new Query{code=0x2d1400,capacity=92,returnedBytes=92,outputHex=new string('d',184)}};
+  public bool informationalOnly {get{return true;}}
+  public bool grantsInitializationAuthority {get{return false;}}
+  public bool grantsWriteAuthority {get{return false;}}
+  public bool atomicImmutabilityClaimed {get{return false;}}
+  public bool durableWriterFenceEstablished {get{return false;}}
+ }
+}
+'@
+}
+$typedReport=New-Object IsolatedObservationTransportFixture.Report
+$storage=[pscustomobject]@{kind='isolated-journal-storage-management-observation';disk_number=2;unique_id='600224806AAC261F021F249596F332FC';
+ size_bytes=8GB;logical_sector_bytes=512;physical_sector_bytes=4096;partition_style='RAW';partition_count=0;cim_partition_count=0;
+ is_boot=$false;is_system=$false;is_offline=$false;is_read_only=$false;write_authority=$false}
+$envelope=[pscustomobject]@{kind='isolated-journal-guest-observation-attempt';success=$true;native_api_invocations=1;
+ report=$typedReport;storage_management_before=$storage;storage_management_after=$storage;write_authority=$false}
+$guestJson=$envelope|ConvertTo-Json -Depth 32 -Compress -WarningAction Stop
+$wire=[Management.Automation.PSSerializer]::Serialize($guestJson)
+$wireValue=[Management.Automation.PSSerializer]::Deserialize($wire)
+Check ($wireValue-is[string]-and$wireValue-ceq$guestJson) 'JSON string changed through default-depth CLIXML transport.'
+$roundtrip=ConvertFrom-IsolatedObservationTransport $wireValue
+Check ($roundtrip.report.content.contentSha256-ceq$typedReport.content.contentSha256) 'Nested typed CLR content hash was lost during transport.'
+Check ($roundtrip.report.content.bytesRead-eq8GB-and$roundtrip.report.content.nonzeroBytes-eq0-and$roundtrip.report.content.allZeroObserved-is[bool]) 'Content counts/flags changed through transport.'
+Check ($roundtrip.report.queries.Count-eq2-and$roundtrip.report.queries[0].outputHex-ceq$typedReport.queries[0].outputHex-and
+ $roundtrip.report.queries[1].outputHex-ceq$typedReport.queries[1].outputHex-and$roundtrip.report.queries[1].returnedBytes-eq92) 'Raw native query hex or returned-byte counts were truncated.'
+Check ($roundtrip.report.informationalOnly-is[bool]-and$roundtrip.report.grantsWriteAuthority-is[bool]-and-not$roundtrip.report.grantsWriteAuthority) 'Report authority flags changed type/value.'
+Assert-IsolatedObservationReport $roundtrip.report ('a'*64);Check $true 'Complete typed CLR report failed host admission after JSON/CLIXML roundtrip.'
+Assert-IsolatedObservationStorageManagement $roundtrip.storage_management_before
+Assert-IsolatedObservationStorageManagement $roundtrip.storage_management_after;Check $true 'Storage-management evidence changed through transport.'
+foreach($bad in @($null,123,@($guestJson,$guestJson),'','not-json','null','[]',('['+$guestJson+']'),'{',('x'*(2MB+1)))){
+ Reject {ConvertFrom-IsolatedObservationTransport $bad} 'Wrong-type, oversized or malformed guest JSON transport accepted.'
+}
+Reject {ConvertFrom-IsolatedObservationTransport '{"kind":"foreign-envelope"}'} 'Foreign envelope kind accepted.'
+Reject {ConvertFrom-IsolatedObservationTransport '{"kind":["isolated-journal-guest-observation-attempt"]}'} 'Array envelope kind accepted as a string.'
+Reject {ConvertFrom-IsolatedObservationTransport ('{"kind":"'+('é'*1MB)+'"}')} 'Multibyte JSON transport exceeded the UTF-8 byte limit.'
+
 # Dispatch structure and source gates are inspected, never invoked.
 $commands=@($ast.FindAll({param($node) $node-is[Management.Automation.Language.CommandAst]},$true))
 $taskQueries=@($commands|Where-Object {$_.GetCommandName()-ceq'Get-ScheduledTask'})
@@ -153,6 +214,8 @@ $sessions=@($commands|Where-Object {$_.GetCommandName()-ceq'New-PSSession'})
 Check ($sessions.Count-eq1-and$sessions[0].Extent.Text-match'-VMId \$vmId') 'Session is not confined to the exact recorded VM.'
 $invocations=@($commands|Where-Object {$_.GetCommandName()-ceq'Invoke-Command'})
 Check ($invocations.Count-eq1-and$invocations[0].Extent.Text-match'-ScriptBlock \$guestObservation') 'Guest observation is not one-shot.'
+Check (@($commands|Where-Object {$_.GetCommandName()-ceq'ConvertFrom-IsolatedObservationTransport'}).Count-eq1) 'Host does not parse exactly one bounded transport string.'
+Check ($ast.Extent.Text-match'\$transport=\$envelope\|ConvertTo-Json -Depth 32 -Compress -WarningAction Stop') 'Guest CLR DTO is not JSON-serialized before CLIXML.'
 Check ($ast.Extent.Text-match"GetMethod\('ObserveReadOnly',\[type\[\]\]@\(\[guid\],\[string\]\)\)") 'Guest API signature is not pinned.'
 Check ($ast.Extent.Text-match'\[Reflection.Assembly\]::Load\(\$bytes\)') 'Guest assembly is not loaded in memory.'
 Check ($ast.Extent.Text-match"durableWriterFenceEstablished"-and$ast.Extent.Text-match'atomic_content_snapshot_claimed=\$false') 'Observation limits are not explicit.'

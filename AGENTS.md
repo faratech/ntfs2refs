@@ -235,10 +235,10 @@ resource margins are in
 `.lab/hyperv/isolated-reference-20261026-review/readiness-20261026T144625632Z/binding-summary.json`.
 OS disk 0 is GPT/NTFS; target disk 1 and journal disk 2 are RAW and uninitialized.
 No J: volume, target NTFS source, or native-experiment enrollment is established.
-No writer/native disk experiment has run on this fixture. The raw observation
+No writer or conversion experiment has run on this fixture. The original readiness
 JSON contains remoted service enum wrappers; read it with `ConvertFrom-Json
--AsHashtable`, or use the normalized binding summary. Later source serializes
-those enum fields as strings; that serialization change has not been rerun here.
+-AsHashtable`, or use the normalized binding summary. Later read-only observation
+work and its actual terminal result are described below.
 Do not dispatch helpers bound to the old `win11` manifest against this new VM.
 The recorded later explicit approval covers normal boot/read-only guest readiness,
 not formatting, reference import, a writer experiment, conversion or further cleanup.
@@ -248,18 +248,30 @@ Source-only baseline prerequisites are in `lab/IsolatedBaselineGuards.psm1` and
 [the source boundary](docs/isolated-baseline-prerequisites.md). They validate
 structural observations and a complete same-stream zero receipt, and return
 review plans only. They neither attest a live native source nor grant write
-authority. No journal initialization/import runner or live device scan has run.
+authority. No journal initialization/import runner has run. A separately admitted
+observation read all 8 GiB from the enrolled journal, but its host controller
+refused a changed backing last-write timestamp and exited 1; see below.
 Do not substitute these JSON plans for live ownership/handle acquisition. Their
 fresh C: staging proposal preserves the old importer's C:-only guard and still
 needs execution review. No old helper route constants were changed.
 
 The guest-side `IsolatedJournalReader.Windows.cs` now compiles with the pure
 `IsolatedJournalDeviceProfile.cs` validators. It acquires only a read handle and
-reuses the same-stream scanner after actual guest/device identity checks. This
-is source-only work: no native method or device open has run. Host backing
-ownership and exclusion across storage aliases remain separate gates; no-sharing
-access alone is not that proof. Do not dispatch it from this source checkpoint
-or turn its receipt into initialization/import authority.
+reuses the same-stream scanner after actual guest/device identity checks. Its
+initialization-proof APIs still refuse before native access. The separate
+observation-only entry ran once after the reviewed layout/identifier corrections:
+`.lab/hyperv/isolated-reference-20261026-review/journal-observation-review-20261027T031140034Z`.
+The guest read 8,589,934,592 bytes, observed zeros, and recorded SHA-256
+`ebfb4ef19ae410f190327b5ebd312711263bc7579970e87d9c1e2d84e06b3c25`.
+Its native identity snapshots matched, but the host journal VHDX last-write time
+changed despite unchanged recorded file identity and 4 MiB length. The host
+exited 1 and retained a failure receipt; no host success receipt, immutable
+snapshot, zero proof or initialization/import authority was produced. The cause
+of the timestamp change is unproven. Preserve all receipts and do not retry the
+observation, weaken that refusal or initialize/format/import storage from this
+result. Host backing ownership and exclusion across storage aliases remain
+separate gates; no-sharing access alone is not that proof. The detailed chronology
+and pins are in [the prerequisite report](docs/isolated-baseline-prerequisites.md).
 
 Dispatch long work once, retain its task handle and collect terminal evidence.
 `Collect-LabAdmittedConversion.ps1` reports live phase and I/O counters; those

@@ -146,4 +146,37 @@ foreach($fault in @('device','length','logical-sector','scsi','naa','attributes'
   'logical-sector'{U32 $bad.alignment 16 4096};'scsi'{$bad.scsi[7]=1};'naa'{$bad.identifiers[43]=$bad.identifiers[43]-bxor1};'attributes'{$bad.attributes[8]=1}}
  Reject {ValidateObservation $bad} ('Observation weakened shared identity checks: '+$fault)
 }
-[pscustomobject]@{checks=$checks;passed=$true;nativeOperations=0;deviceOperations=0;vmOperations=0;imageWrites=0}
+# Exact92-byte descriptor from the owned metadata-only query at2026-10-27
+# 03:01:08UTC. Two records:12->56->92, with four zero padding bytes each.
+$actualHex='100000005c00000002000000010000000100000018002c00000000004d534654202020206aac261f021f8949b5c8249596f332fc0000000001000000030000001000240000000000600224806aac261f021f249596f332fc00000000'
+$actualIds=[byte[]]::new($actualHex.Length/2)
+for($i=0;$i-lt$actualIds.Length;$i++){$actualIds[$i]=[Convert]::ToByte($actualHex.Substring(2*$i,2),16)}
+$native=Snapshot;$native.identifiers=[byte[]]$actualIds.Clone();$native.layout=[byte[]]::new(48)
+$nativeDigest=ValidateObservation $native
+Check ($nativeDigest-cmatch'\A[0-9a-f]{64}\z'-and$native.identifiers.Length-eq92) 'Actual terminal-end descriptor refused.'
+$native.layout=(Snapshot).layout
+Reject {Validate $native} 'Strict RAW initialization accepted nonzero final NextOffset.'
+Check ((ValidateObservation $native)-cne$nativeDigest) 'Native layout bytes were normalized before hashing.'
+$zeroTerminated=Snapshot;$zeroTerminated.identifiers=[byte[]]$actualIds.Clone();U16 $zeroTerminated.identifiers 66 0
+Check ((ValidateObservation $zeroTerminated)-ceq(Validate $zeroTerminated)) 'Legacy zero terminal offset ceased to pass both policies.'
+$sameLayout=Snapshot;$sameLayout.identifiers=[byte[]]$actualIds.Clone()
+Check ((ValidateObservation $sameLayout)-cne(ValidateObservation $zeroTerminated)) 'Terminal offset bytes were normalized before hashing.'
+foreach($fault in @('inside-payload','before-end','extra-end','outside','unaligned','count-one','count-three','truncated','declared-short','declared-long','foreign-naa','first-padding','last-padding','intermediate-overlap','intermediate-unaligned','intermediate-outside')){
+ $bad=Snapshot;$bad.identifiers=[byte[]]$actualIds.Clone();$bad.layout=[byte[]]::new(48)
+ switch($fault){
+  'inside-payload'{U16 $bad.identifiers 66 16} 'before-end'{U16 $bad.identifiers 66 32}
+  'extra-end'{U16 $bad.identifiers 66 40} 'outside'{U16 $bad.identifiers 66 65532} 'unaligned'{U16 $bad.identifiers 66 35}
+  'count-one'{U32 $bad.identifiers 8 1} 'count-three'{U32 $bad.identifiers 8 3}
+  'truncated'{$bad.identifiers=[byte[]]$bad.identifiers[0..90]} 'declared-short'{U32 $bad.identifiers 4 91}
+  'declared-long'{$bad.identifiers=[byte[]]($bad.identifiers+[byte[]]::new(4));U32 $bad.identifiers 4 96}
+  'foreign-naa'{$bad.identifiers[87]=$bad.identifiers[87]-bxor1} 'first-padding'{$bad.identifiers[52]=1} 'last-padding'{$bad.identifiers[88]=1}
+  'intermediate-overlap'{U16 $bad.identifiers 22 24} 'intermediate-unaligned'{U16 $bad.identifiers 22 45} 'intermediate-outside'{U16 $bad.identifiers 22 76}
+ }
+ Reject {ValidateObservation $bad} ('Observation accepted malformed actual descriptor: '+$fault)
+}
+$actualFrame=[IO.MemoryStream]::new();$domain=[Text.Encoding]::ASCII.GetBytes("n2r-isolated-journal-device-v1`0");$actualFrame.Write($domain,0,$domain.Length)
+$native.layout=[byte[]]::new(48)
+foreach($key in @('device','length','alignment','layout','attributes','scsi','identifiers')){$raw=$native.$key;$n=[BitConverter]::GetBytes([uint32]$raw.Length);$actualFrame.Write($n,0,4);$actualFrame.Write($raw,0,$raw.Length)}
+$sha=[Security.Cryptography.SHA256]::Create();try{$expectedActual=[BitConverter]::ToString($sha.ComputeHash($actualFrame.ToArray())).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose();$actualFrame.Dispose()}
+Check ($nativeDigest-ceq$expectedActual) 'Actual response length-framed bytes were not hashed exactly.'
+[pscustomobject]@{checks=$checks;passed=$true;actualMetadataSnapshotSha256=$nativeDigest;nativeOperations=0;deviceOperations=0;vmOperations=0;imageWrites=0}

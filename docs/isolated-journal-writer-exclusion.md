@@ -1,9 +1,10 @@
 # Parked independent-writer journal prerequisite
 
-This work is separate from the completed native-shadow alpha. A later admitted
-observation acquired host identities but refused native layout validation before
-its payload loop. Bounded metadata-only diagnosis recorded the exact response.
-No 8 GiB device scan, initialization or writer trial has completed; see
+This work is separate from the completed native-shadow alpha. Earlier admitted
+observations refused native layout and identifier validation before their payload
+loops. Separately admitted corrections led to one complete 8 GiB guest read, but
+the host then refused a changed VHDX last-write timestamp and exited 1. No
+end-to-end observation pass, initialization or writer trial follows; see
 [the prerequisite chronology](isolated-baseline-prerequisites.md#admitted-observation-refusal-and-bounded-metadata-diagnosis).
 
 The source collector joins current/checkpoint attachments and every VHD ancestor
@@ -17,10 +18,11 @@ no-sharing PhysicalDrive2 handle also does not establish exclusion of all host o
 lower-storage writers. A stable snapshot or `ZeroProof.AssertCurrent` does not
 recheck content or survive loss of a cross-host fence. No reviewed durable fence
 backend exists. Correct guest identity arguments therefore now refuse before
-native access; JSON claims cannot enable the scan.
+native access on the initialization-proof path; JSON claims cannot enable that
+proof-producing scan.
 
 That refusal belongs to the initialization-proof path, not to ordinary
-read-only measurement. The separate source-only
+read-only measurement. The separate
 `IsolatedJournalReader.ObserveReadOnly(Guid, string)` entry returns a report,
 closes its private `GENERIC_READ`/no-sharing handle and never exposes a stream,
 handle or `ZeroProof`. It observes exactly 8 GiB, hashes the bytes, records
@@ -28,8 +30,15 @@ informational zero/nonzero counts, and checks native identity before/after.
 It trusts Windows/Hyper-V and needs ordinary project-worker and route checks;
 it does not require a malicious-kernel/admin exclusion mechanism to report what
 was read. Matching identity/timestamp observations still do not prove an atomic
-immutable snapshot. The first admitted attempt refused before payload reading;
-it did not create an observational hash or any initialization proof.
+immutable snapshot. The latest admitted run,
+`journal-observation-review-20261027T031140034Z`, read all 8,589,934,592 guest
+bytes and observed zeros with SHA-256
+`ebfb4ef19ae410f190327b5ebd312711263bc7579970e87d9c1e2d84e06b3c25`.
+Native identity snapshots matched, while the host backing's 4 MiB length and
+file identity remained recorded and its last-write timestamp changed. The cause
+is unproven. The host produced `failed.json`, not a success receipt. The retained
+guest report is a measurement of bytes read, not an immutable snapshot or an
+initialization proof. No automatic retry or write operation followed.
 
 The existing `OpenReadOnly` and `ScanAndBind` initialization-proof APIs retain
 their pre-native durable-fence refusal. An observational all-zero report cannot

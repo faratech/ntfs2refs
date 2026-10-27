@@ -62,13 +62,14 @@ uses that held lease; native snapshots before and after the read, firmware and
 exact byte counts must agree before a zero proof is returned. Raw query replies
 are retained in a bounded transcript for independent replay.
 
-The source and its pure validators compile, but **no native method has been run**.
-This adapter does not acquire host VHDX file/ancestry ownership, prove absence of
-other workers or establish exclusion across every storage-stack alias. A no-sharing
-device open is not a substitute for those obligations. No dispatcher is supplied,
-and the existing initialization review still grants no native write authority.
-The profile's reply forms require an actual separately reviewed observation;
-unexpected native replies must refuse rather than trigger a fallback.
+The initialization-proof entry remains blocked before native access. The separate
+observation-only entry has now read the enrolled device; its completed guest read
+and subsequent host refusal are recorded below. This guest adapter does not itself
+acquire host VHDX file/ancestry ownership, prove absence of other workers or establish
+exclusion across every storage-stack alias. A no-sharing device open is not a
+substitute for those obligations. The existing initialization review still grants
+no native write authority. Unexpected native replies must refuse rather than
+trigger a fallback.
 
 The pure snapshot parser follows Microsoft's
 [device-ID descriptor](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddstor/ns-ntddstor-_storage_device_id_descriptor),
@@ -96,11 +97,11 @@ Pure checks use synthetic observations and lazy generated zero streams with one
 1 MiB buffer, including an 8 GiB virtual read. They create no giant image and call
 no VM/device/credential/native mutation API. Original evidence is retained.
 
-The next proposed operation for separate review is **fresh owned identity acquisition
-and a read-only complete journal scan only**, with all other disks excluded. No
-initialization, formatting, reference creation, packet import or native mount is
-authorized by this source checkpoint. Stop on mismatch, nonzero/incomplete data,
-uncertain ownership/worker state, failed exclusion, occupied J: or resource failure.
+The separately admitted operation was fresh owned identity acquisition and a
+read-only complete journal observation only, with all other disks excluded.
+Its terminal outcome is recorded below. No initialization, formatting, reference
+creation, packet import or native mount was authorized. A failed observation
+does not authorize an automatic retry or removal of its refusal condition.
 
 Budget admission must be rechecked from actual free space. Conservatively charge
 8 GiB plus 128 MiB for journal-parent growth and another 16 GiB allowance, retaining
@@ -118,16 +119,16 @@ spending limit needs increasing; this does not identify a code/test failure.
 No CI rerun, billing or runner-policy change was performed. Chronology/ACL evidence
 correction `9684ae5` remains committed with original records untouched.
 
-## Separate observation-only proposal (not dispatched)
+## Separate observation-only entry and original proposal
 
-`lab/Read-IsolatedJournalObservation.ps1` is a proposed one-shot observer for
+`lab/Read-IsolatedJournalObservation.ps1` is a one-shot observer for
 the existing isolated VM only. It does not initialize storage or obtain an
 initialization proof. The original `Read-IsolatedJournalPrerequisite.ps1
 -RequireZeroScan`, `IsolatedJournalReader.OpenReadOnly` and `ScanAndBind` retain
-their durable-fence refusal. No native observation or 8 GiB device scan has been
-executed from this source checkpoint.
+their durable-fence refusal. The original proposal below preceded the separately
+admitted attempts in the chronology; it is not an instruction to dispatch again.
 
-The proposed command, for review before any dispatch, is:
+The original proposed command was:
 
 ```powershell
 & "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
@@ -192,9 +193,9 @@ test completed all 8 GiB with 8,193 managed read calls, SHA-256
 `ebfb4ef19ae410f190327b5ebd312711263bc7579970e87d9c1e2d84e06b3c25`
 and no image/device/native call. Host CLR 4 compatibility compilation using the
 installed framework also passed.
-These checks establish source behavior only. Native reply compatibility, live
-identity acquisition and the actual device read remain unexecuted and must
-refuse unexpected replies without fallback or automatic retry.
+These initial checks established source behavior only. Subsequent native reply
+refusals, their separately admitted corrections and the final completed guest
+read with host refusal are recorded below. No automatic retry follows a failure.
 
 ## Admitted observation refusal and bounded metadata diagnosis
 
@@ -259,3 +260,83 @@ reader/profile source pins are recorded by each fresh run. The one corrected
 observation is separately admitted after these checks. Original refusal and
 partial/corrected metadata receipts remain unchanged; no old retry field is
 rewritten and no automatic repeat is permitted on the corrected run's failure.
+
+## Identifier reply correction and lossless observation transport
+
+The corrected run at `2026-10-27T02:50:47Z`, under
+`journal-observation-review-20261027T025047834Z`, passed the layout check but
+refused `Last identifier continues beyond declared count.` Its constructor
+again stopped before payload reading. The original `guest-observation.json`
+SHA-256 is `957234876a5013ebd461abe61bc23e1d6a2884dfa6482799320092f89ca1fa44`;
+`failed.json` is
+`00cd0b8be113f861a26597fa17c32f27cecf1eeb8abe2396db1141a9f3570451`.
+These receipts remain unchanged.
+
+One separately admitted metadata-only query at
+`identity-metadata-review-20261027T030108072Z` captured all identity responses.
+Its `metadata-query.json` SHA-256 is
+`730ad6e2dec558233cf43d5d96851ce9f9c3c5c331c02ecabf8146d4b13770f3`.
+The 92-byte device-ID descriptor has two identifiers. The second starts at
+offset 56, contains the enrolled 16-byte binary NAA, and has a relative
+`NextOffset` of 36, ending exactly at the descriptor's declared size, 92.
+Its four trailing padding bytes are zero. The observation-only parser now
+accepts that aligned terminal boundary while retaining count, bounds, padding
+and exact NAA checks. Initialization parsing still requires final offset zero.
+The actual response bytes remain part of the snapshot hash.
+
+A pure typed-DTO remoting fixture also reproduced loss of nested report fields
+through default CLIXML serialization. The guest now serializes bounded JSON
+before remoting; the host requires one UTF-8 JSON object no larger than 2 MiB
+before saving or checking it. Query bytes, hashes and Boolean flags survive
+the fixture round trip. This does not introduce another native invocation.
+
+Fresh Windows PowerShell 5.1 checks passed: 140 device-profile, 79 observation,
+15 original-reader refusal and 163 launcher/transport checks. No device was
+opened by these tests. Corrected source SHA-256 pins:
+
+- Launcher: `c4878421556a729bb1fe1749a2b299a19c1e49432fe638899cfa36d3010935f7`.
+- Device profile: `55d30af92d830196d24012941f22f0c851a34aea7818c0c949564fd4b7132e47`.
+
+Only one fresh corrected observation was admitted. Its terminal result follows;
+initialization, formatting, reference import and writer experiments remained
+outside that observation.
+
+## Complete guest observation followed by host timestamp refusal
+
+The one corrected run is preserved under
+`.lab/hyperv/isolated-reference-20261026-review/journal-observation-review-20261027T031140034Z`.
+It used the launcher/profile source pins above and in-memory assembly SHA-256
+`febd5a1297df999967803c0ecde7b7c2078fc37bde1332b3c1d7861ed17ee71a`.
+The guest made one observation invocation and completed the enrolled Disk 2 read
+from `2026-10-27T03:14:09.7985674Z` to `2026-10-27T03:14:33.5518125Z`:
+
+- All 8,589,934,592 bytes were read; zero nonzero bytes were observed.
+- Content SHA-256 was
+  `ebfb4ef19ae410f190327b5ebd312711263bc7579970e87d9c1e2d84e06b3c25`.
+- There were 8,192 native reads and 8,193 managed read calls, including the end
+  check. The report retained all 24 native query replies.
+- Before/after native snapshot hashes matched
+  `de0ccad300e3055548d86b40c0e9a330d19ca313bda0f817d4092e574fd162e0`.
+  Independent Storage Management observations retained the exact Disk 2 NAA,
+  8 GiB/512/4096 geometry, RAW state and zero partitions before and after.
+- The guest report remained informational only: initialization/write authority,
+  atomic immutability and durable writer-fence claims were all false.
+
+The host then exited **1**, refusing during held-host-identity/worker
+revalidation: `Enrolled journal backing length/mtime changed during observation;
+preserved bytes are observations only.` The journal backing kept the same
+recorded host file identity and 4,194,304-byte length, but its last-write time
+changed from `2026-10-26T14:46:28.4210473Z` to
+`2026-10-27T03:14:37.9340259Z`. The cause of that timestamp change is not
+established. It is not evidence that guest logical bytes changed, and the
+matching guest reads do not establish host-content immutability.
+
+`guest-observation.json` SHA-256 is
+`e135cbcdb24f1ac504c27566a053a59270d04d0c7c410a8d91905dd90a8e07f3`;
+`failed.json` is
+`7b91736d54a6146f19a63bfd316ccaf8d041f4f7ac45d0bbdbc216a34635f659`.
+Both backing metadata observations, source/assembly pins, host graphs, worker
+reports and transcript remain beside them. There is **no host success receipt,
+initialization proof or write authority**. No initialization, formatting, import,
+repair or automatic retry followed. Preserve this refusal and the earlier
+attempts; do not relabel the completed guest read as an end-to-end pass.

@@ -54,7 +54,7 @@ namespace Ntfs2RefsResearch {
    Need(typeOne==1,"SMBIOS Type 1 is absent.");
   }
 
-  static void Identifiers(byte[] bytes){
+  static void Identifiers(byte[] bytes,bool observationOnly){
    Bounds(bytes,44,Cap,"STORAGE_DEVICE_ID_DESCRIPTOR");
    uint version=U32(bytes,0),declared=U32(bytes,4),count=U32(bytes,8);
    Need((version==12||version==16)&&declared>=44&&declared<=bytes.Length&&version<=declared,"Storage identifier header version/size differs.");
@@ -72,7 +72,13 @@ namespace Ntfs2RefsResearch {
      Need(++deviceNaa==1&&code==1&&size==Naa.Length,"Ambiguous or nonbinary device NAA identifier.");
      for(int j=0;j<Naa.Length;j++)Need(bytes[payload+j]==Naa[j],"Journal NAA identity differs.");
     }
-    if(i+1==count){Need(next==0,"Last identifier continues beyond declared count.");Zero(bytes,finish,limit,"Last identifier");}
+    if(i+1==count){
+     // The owned metadata-only capture ends its last identifier at Size rather
+     // than using NextOffset0. Accept that exact aligned terminal boundary only
+     // for observation; validate its complete padding and hash unchanged bytes.
+     bool observedEnd=observationOnly&&next>=16+size&&next%4==0&&next==limit-pos;
+     Need(next==0||observedEnd,"Last identifier continues beyond declared count.");Zero(bytes,finish,limit,"Last identifier");
+    }
     else{
      Need(next>=16+size&&next%4==0&&next<=limit-pos-16,"Identifier chain overlaps, is unaligned or exceeds descriptor.");
      Zero(bytes,finish,pos+next,"Identifier chain");pos+=next;
@@ -107,7 +113,7 @@ namespace Ntfs2RefsResearch {
    else{Need(observationOnly&&layout.Length==48,"Journal layout is outside the selected profile.");Zero(layout,0,layout.Length,"Exact observation-only MBR layout");}
    Bounds(attributes,16,16,"GET_DISK_ATTRIBUTES");Need(U32(attributes,0)==16&&U32(attributes,4)==0&&U64(attributes,8)==0,"Journal disk attributes differ.");
    Bounds(scsi,8,8,"SCSI_ADDRESS");Need(U32(scsi,0)==8&&scsi[4]==0&&scsi[5]==0&&scsi[6]==0&&scsi[7]==2,"Journal SCSI address differs.");
-   Identifiers(identifiers);
+   Identifiers(identifiers,observationOnly);
    byte[][] responses={device,length,alignment,layout,attributes,scsi,identifiers};
    using(SHA256 sha=SHA256.Create()){
     byte[] domain=Encoding.ASCII.GetBytes("n2r-isolated-journal-device-v1\0");sha.TransformBlock(domain,0,domain.Length,null,0);

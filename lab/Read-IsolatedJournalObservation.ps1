@@ -64,6 +64,18 @@ function Assert-IsolatedObservationReport($Report,[string]$Token){
 function Assert-IsolatedObservationFreshHostType($LoadedType=('Ntfs2RefsResearch.IsolatedHostFileIdentity' -as[type])){
  if($null-ne$LoadedType){throw 'Use a fresh PowerShell process: preloaded IsolatedHostFileIdentity type is refused before Add-Type.'}
 }
+function ConvertFrom-IsolatedObservationTransport([object]$Value){
+ if($Value-isnot[string]-or$Value.Length-lt2-or$Value.Length-gt2MB-or[Text.Encoding]::UTF8.GetByteCount($Value)-gt2MB){throw 'One bounded UTF-8 JSON string required from the guest observation.'}
+ $text=$Value.Trim()
+ if(-not$text.StartsWith('{')-or-not$text.EndsWith('}')){throw 'Guest observation transport must contain one JSON object.'}
+ # PS7.5+ otherwise promotes UTC text to DateTime; the report contract retains
+ # canonical source strings. Windows PowerShell5.1 already preserves the text.
+ $parsed=if((Get-Command ConvertFrom-Json -ErrorAction Stop).Parameters.ContainsKey('DateKind')){
+  $text|ConvertFrom-Json -DateKind String -ErrorAction Stop
+ }else{$text|ConvertFrom-Json -ErrorAction Stop}
+ if($parsed-isnot[pscustomobject]-or$parsed.kind-isnot[string]-or$parsed.kind-cne'isolated-journal-guest-observation-attempt'){throw 'Typed guest observation envelope required.'}
+ $parsed
+}
 
 $workspace='D:\code\ntfs2refs';$isolatedRoot=Join-Path $workspace '.lab\hyperv\isolated-reference-20261026-review'
 $vmId=[guid]'8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'
@@ -175,10 +187,15 @@ $guestObservation={
   try{$after=Workers}catch{$errorText=([string]$errorText+'; after-inventory: '+$_.Exception.Message)}
   try{$storageAfter=StorageManagement}catch{$errorText=([string]$errorText+'; after-storage-management: '+$_.Exception.Message)}
  }
- [pscustomobject]@{kind='isolated-journal-guest-observation-attempt';success=($null-eq$errorText);native_api_invocations=$invocations;
+ $envelope=[pscustomobject]@{kind='isolated-journal-guest-observation-attempt';success=($null-eq$errorText);native_api_invocations=$invocations;
   assembly_sha256=$loadedHash;before_workers=$before;after_workers=$after;storage_management_before=$storageBefore;storage_management_after=$storageAfter;report=$report;error=$errorText;
   guest_file_staging=$false;guest_attributes_changed=$false;privileges_changed=$false;initialization_authorized=$false;write_authority=$false;
   reader_lifetime='Private API using scope closes the native reader before its data-only return; transport failure does not establish worker termination.'}
+ # Serialize while the concrete CLR DTO is still in this guest process.
+ # Default remoting CLIXML depth turns nested content into a type-name string.
+ $transport=$envelope|ConvertTo-Json -Depth 32 -Compress -WarningAction Stop
+ if($transport.Length-gt2MB-or[Text.Encoding]::UTF8.GetByteCount($transport)-gt2MB){throw 'Guest observation JSON transport exceeds2MiB.'}
+ $transport
 }
 
 try{
@@ -247,7 +264,8 @@ try{
   requested_native_api='IsolatedJournalReader.ObserveReadOnly(Guid,string)';maximum_attempts=1;host_identity_pins_held=$true;
   zero_proof_requested=$false;initialization_authorized=$false;write_authority=$false;atomic_content_snapshot_claimed=$false;durable_writer_fence=$false;created_utc=[DateTime]::UtcNow.ToString('o')}
  $phase='one-shot-readonly-guest-observation';$guestCallAttempted=$true
- $observed=Invoke-Command -Session $session -ScriptBlock $guestObservation -ArgumentList ([Convert]::ToBase64String($dllBytes)),$dllHash,$vmId,$token
+ $transport=Invoke-Command -Session $session -ScriptBlock $guestObservation -ArgumentList ([Convert]::ToBase64String($dllBytes)),$dllHash,$vmId,$token
+ $observed=ConvertFrom-IsolatedObservationTransport $transport
  Save 'guest-observation' $observed
  $phase='revalidate-held-host-identity-and-known-workers'
  $hostAfter=Host-Workers;Save 'host-workers-after' $hostAfter

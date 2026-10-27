@@ -635,11 +635,24 @@ fn retain_source_run_on_shadow(
     if plan.subruns.is_empty() {
         // A later free-space change must not turn this diagnostic into an
         // unplanned move. Already-correct placement is still recorded.
-        let budget = remaining_retention_evidence(attempts)?;
-        let attempt = retain_run_on_shadow(
-            volume, root, input, partition, run, false, budget, streaming,
-        )?;
-        append_retention_attempt(attempts, attempt)?;
+        let chunk_bytes = crate::retention_layout::MAX_MOVE_BYTES;
+        if run.length.div_ceil(chunk_bytes) > remaining as u64 {
+            return Err(invalid("retention diagnostic chunk budget exceeded"));
+        }
+        let mut offset = 0;
+        while offset < run.length {
+            let subrun = SourceRun {
+                logical_offset: run.logical_offset + offset,
+                physical_offset: Some(physical_offset + offset),
+                length: (run.length - offset).min(chunk_bytes),
+            };
+            let budget = remaining_retention_evidence(attempts)?;
+            let attempt = retain_run_on_shadow(
+                volume, root, input, partition, &subrun, false, budget, streaming,
+            )?;
+            append_retention_attempt(attempts, attempt)?;
+            offset += subrun.length;
+        }
     } else {
         for candidate in plan.subruns {
             let subrun = SourceRun {

@@ -7,6 +7,9 @@ use std::io;
 
 const CLUSTER: u64 = 4096;
 pub const MAX_SUBRUNS: usize = 1024;
+// FSCTL_MOVE_FILE counts clusters in a DWORD. This bounds each submitted move,
+// not the length of the original file or of a streamed bitmap interval.
+pub(crate) const MAX_MOVE_BYTES: u64 = u32::MAX as u64 * CLUSTER;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct SourceRun {
@@ -70,8 +73,6 @@ pub fn plan_free_subruns_streamed(
             return Err(invalid("streamed retention bitmap domain differs"));
         }
     }
-    u32::try_from(run.length / CLUSTER)
-        .map_err(|_| invalid("retention run exceeds u32 cluster count"))?;
     let start = run.physical_offset / CLUSTER;
     let end = start + run.length / CLUSTER;
     let mut left = legacy.allocated_ranges.iter().peekable();
@@ -79,26 +80,25 @@ pub fn plan_free_subruns_streamed(
     let mut cursor = start;
     let mut free_clusters = 0u64;
     let mut subruns = Vec::new();
-    let mut push_free = |begin: u64, end: u64| -> io::Result<()> {
-        if begin == end {
-            return Ok(());
+    let mut push_free = |mut begin: u64, end: u64| -> io::Result<()> {
+        while begin < end {
+            if subruns.len() >= max_subruns {
+                return Err(invalid("retention free-subrun budget exceeded"));
+            }
+            let count = (end - begin).min(u64::from(u32::MAX)) as u32;
+            let physical_offset = begin * CLUSTER;
+            let logical_offset = run.logical_offset + (begin - start) * CLUSTER;
+            subruns.push(FreeSubrun {
+                logical_offset,
+                physical_offset,
+                length: u64::from(count) * CLUSTER,
+                starting_vcn: logical_offset / CLUSTER,
+                destination_lcn: begin,
+                clusters: count,
+            });
+            free_clusters += u64::from(count);
+            begin += u64::from(count);
         }
-        if subruns.len() >= max_subruns {
-            return Err(invalid("retention free-subrun budget exceeded"));
-        }
-        let count = u32::try_from(end - begin)
-            .map_err(|_| invalid("retention subrun exceeds u32 cluster count"))?;
-        let physical_offset = begin * CLUSTER;
-        let logical_offset = run.logical_offset + (begin - start) * CLUSTER;
-        subruns.push(FreeSubrun {
-            logical_offset,
-            physical_offset,
-            length: u64::from(count) * CLUSTER,
-            starting_vcn: logical_offset / CLUSTER,
-            destination_lcn: begin,
-            clusters: count,
-        });
-        free_clusters += u64::from(count);
         Ok(())
     };
     loop {

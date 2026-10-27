@@ -13,7 +13,9 @@ $result=Invoke-Command -VMId $id -Credential $credential -ArgumentList $d.task_n
     $taskObject=Get-ScheduledTask -TaskName $TaskName;$info=Get-ScheduledTaskInfo -TaskName $TaskName
     $all=@(Get-CimInstance Win32_Process|Where-Object {$_.Name-ceq'ntfs2refs.exe'})
     $processes=@($all|Where-Object {$_.ExecutablePath-ceq(Join-Path $Stage 'ntfs2refs.exe')-and$_.CommandLine-like('*'+$Run+'*')}|ForEach-Object {
-        [pscustomobject]@{pid=$_.ProcessId;created=$_.CreationDate;read_bytes=[long]$_.ReadTransferCount;written_bytes=[long]$_.WriteTransferCount;cpu_seconds=([double]$_.KernelModeTime+[double]$_.UserModeTime)/10000000}
+        [pscustomobject]@{pid=$_.ProcessId;created=$_.CreationDate;read_bytes=[long]$_.ReadTransferCount;written_bytes=[long]$_.WriteTransferCount;
+            working_set_bytes=[long]$_.WorkingSetSize;peak_working_set_kib=[long]$_.PeakWorkingSetSize;
+            cpu_seconds=([double]$_.KernelModeTime+[double]$_.UserModeTime)/10000000}
     })
     $live=$taskObject.State.ToString()-in@('Running','Queued')-or$all.Count-gt0
     $names=@('qualification/source-frozen.json','qualification/source-basis.json','qualification/native-source.json','qualification/certificate.json','qualification/failed.json','expectation.json','request.json','journal-location.json','prepare.json','ticket.json','apply.json','finalization.json','result.json','failed.json')

@@ -193,6 +193,17 @@ Use the dedicated recovery collector; do not redispatch or finalize until the
 actual resume task succeeds. The old producer's exit 86 remains historical;
 it does not describe the later recovery state. No completed recovery is claimed.
 
+Resume later exited 0 with the exact expected complete postimage
+`6fa71cb5281c1af88334260bd453eb8887996596f83f9f08498efe7493a08383`,
+remaining excluded and pre-handoff. Resume result hash is
+`e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a`.
+Explicit Finalize is now active: task
+`N2R-StreamingV2Recover-Finalize-61d60b73d23b48dcb7e777328169ddc9`,
+PID 580 created 21:05:14 UTC, same original staged recovery binary. Observe with
+the recovery collector `-Operation Finalize`; do not repeat resume or finalize.
+No mounted recovery result is established yet. Preserve the successful branch
+before later rollback qualification on a restored partial-snapshot fork.
+
 Subsequent source caches the two planning bitmap views across V2 source runs
 only while no submitted move/mapping change occurred. Every actual move still
 rechecks fresh views; old profiles retain per-run capture. That cache did not

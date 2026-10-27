@@ -100,3 +100,22 @@ Task `N2R-StreamingV2Recover-Resume-61d60b73d23b48dcb7e777328169ddc9`,
 PID 5052 created 20:56:59 UTC, was observed live validating journal/normalized
 target and shadow. No completed resume, finalize or rollback outcome is claimed.
 Observe that exact task with `Collect-StreamingV2Recovery.ps1 -Operation Resume`.
+
+Resume subsequently exited 0. Its complete target hash matched
+`6fa71cb5281c1af88334260bd453eb8887996596f83f9f08498efe7493a08383`;
+the source remained offline and the shadow offline/read-only. The result hash
+is `e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a`.
+Its execution/result artifacts are retained under `recovery-resume/Resume-terminal`.
+The execution report records 314 patches/339,795,968 bytes written and no
+handoff. This proves completed excluded resume, not a mounted ReFS result.
+
+Explicit Finalize was dispatched once at 21:05:13 UTC with the same original
+recovery executable, qualified request pin
+`a1bef54f9077bf5cec9602f5ef98a25b56cdd228b0cfe7c94f45b20044395d25`,
+ticket `947f6398ebd729ce11ab8f0eee6a0a881a833ddbba7e817222bf6a8e1575fd4b`
+and expectation `bdfd26773a07cd54e365eebaff2170d65b9b6ecd6e038d446b5eea23bd2342e7`.
+Task `N2R-StreamingV2Recover-Finalize-61d60b73d23b48dcb7e777328169ddc9`,
+PID 580 created 21:05:14 UTC, was observed live in finalization validation.
+No final handoff/native result is claimed until that task becomes terminal.
+Never replay the old journal after a successful handoff; preserve this branch
+before any separate snapshot-forked rollback case.

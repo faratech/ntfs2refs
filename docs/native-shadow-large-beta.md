@@ -197,3 +197,21 @@ journal. The separate ticket copy was refused because the converter holds it;
 the partial-copy receipt is preserved and no sharing change/retry was made.
 The generic preparation report's qualification/authority flags remain false;
 live authorization belongs to the integrated opaque-capability path, not JSON.
+
+At `2026-10-27T12:25:49Z`, PID 2940 remained live and its cumulative writes
+had increased from 815,606,419 to 1,153,514,131 bytes. A separate guest raw
+physical-disk counter observation at `12:26:32Z` recorded 338,219,008 cumulative
+write bytes on target disk 1, compared with 315,392 before the apply writes:
+the delta is exactly the planned 337,903,616 target bytes. This establishes
+target-write activity, not completed postimage verification or native ReFS
+mount success. The target was still offline/writable, the shadow offline/
+read-only, and no apply/final result artifact was yet present. The read-only
+counter capture is retained as `candidate3/target-write-observed-*.json`.
+
+A process-only memory observation at `12:19:11Z` recorded a peak working set
+of 70,808 KiB and peak page-file usage of 101,712 KiB. It is neither a whole-VM
+allocation bound nor qualification of a more complex source. Guest readiness
+also confirmed the postcheck PowerShell Direct session has an administrator
+token with backup/restore/security/volume-management privileges available but
+disabled; the native helpers enable and restore their required privileges.
+No privilege or UAC setting was changed by that observation.

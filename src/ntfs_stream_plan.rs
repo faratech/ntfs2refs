@@ -65,7 +65,7 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
         profile: if resources == ResourceProfile::AlphaV1 {
             "ntfs-4k-to-refs-4k-source-streams-v4"
         } else {
-            "ntfs-4k-to-refs-4k-large-source-streams-v1"
+            "ntfs-aligned-to-refs-4k-large-source-streams-v1"
         }
         .into(),
         streams: Vec::new(),
@@ -127,7 +127,8 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
                         && stream.allocated_size.is_multiple_of(CLUSTER)
                 })
                 && physical_runs;
-            let (mut disposition, mut reason) = if u64::from(raw.geometry.cluster_size) != CLUSTER
+            let (mut disposition, mut reason) = if !resources
+                .supports_source_geometry(&raw.geometry)
                 || stream.flags != 0
                 || !complete
                 || stream.logical_size > limits.maximum_stream_bytes

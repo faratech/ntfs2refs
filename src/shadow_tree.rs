@@ -243,9 +243,7 @@ fn derive_profile(
     let limits = resources.limits();
     ntfs::validate_record_coverage(raw)?;
     ensure!(
-        raw.schema_version == 1
-            && raw.geometry.cluster_size == 4096
-            && raw.geometry.bytes_per_sector == 512,
+        raw.schema_version == 1 && resources.supports_source_geometry(&raw.geometry),
         "incomplete record scan or unsupported source geometry"
     );
     ensure!(

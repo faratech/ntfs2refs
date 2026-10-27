@@ -39,6 +39,22 @@ pub struct ResourceLimits {
 }
 
 impl ResourceProfile {
+    /// Source allocation units are independent of the fixed 4 KiB ReFS target.
+    /// The expanded geometry remains explicitly experimental and still uses
+    /// the same bounded tree, native-observation and journal requirements.
+    pub fn supports_source_geometry(self, geometry: &ntfs::NtfsGeometry) -> bool {
+        geometry.bytes_per_sector == 512
+            && geometry.file_record_size == 1024
+            && geometry.index_record_size == 4096
+            && match self {
+                Self::AlphaV1 => geometry.cluster_size == 4096,
+                Self::ExperimentalLargeTreeV1 => {
+                    geometry.cluster_size >= 4096
+                        && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
+                }
+            }
+    }
+
     pub const fn native_profile(self) -> Option<n2r_win32::attestation::ResourceProfile> {
         match self {
             Self::AlphaV1 => None,
@@ -914,10 +930,8 @@ fn assess_source_view_profile(
     );
     gate(
         "geometry",
-        raw.geometry.bytes_per_sector == 512
-            && raw.geometry.cluster_size == 4096
-            && raw.geometry.file_record_size == 1024,
-        "initial source geometry is 512-byte sectors, 4 KiB clusters and 1 KiB MFT records",
+        resources.supports_source_geometry(&raw.geometry),
+        "source geometry must match the selected resource profile; target allocation units remain 4 KiB",
     );
     gate(
         "clean_volume",

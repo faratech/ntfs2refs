@@ -257,7 +257,10 @@ pub fn prepare_with_progress(
     )?;
     let refs = refs_inspect::inspect(shadow, shadow.byte_len())?;
     ensure!(
-        ntfs.geometry.cluster_size == 4096
+        request
+            .source_resource_profile
+            .unwrap_or_default()
+            .supports_source_geometry(&ntfs.geometry)
             && refs.geometry.major_version == 3
             && refs.geometry.minor_version == 14
             && refs.geometry.bytes_per_cluster == 4096

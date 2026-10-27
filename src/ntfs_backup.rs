@@ -1,4 +1,4 @@
-//! Strict initial-profile backup checks against actual source reads.
+//! Strict geometry-bound backup checks against actual source reads.
 use crate::ntfs_inspect::{self as ntfs, AttributeInventory, NtfsInspection};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -53,8 +53,10 @@ pub fn verify<R: Read + Seek>(
     ntfs::revalidate_mft_mapping(reader, raw)?;
     let g = &raw.geometry;
     ensure!(
-        g.bytes_per_sector == 512 && g.cluster_size == 4096 && g.file_record_size == 1024,
-        "backup checks require the initial 512/4K/1K profile"
+        g.bytes_per_sector == 512
+            && crate::ntfs_index::supports_cluster_size(g.cluster_size)
+            && g.file_record_size == 1024,
+        "backup checks require supported clusters, 512-byte sectors and 1 KiB MFT records"
     );
     ensure!(
         length == g.volume_size
@@ -88,35 +90,40 @@ pub fn verify<R: Read + Seek>(
             "backup bootstrap location differs from DATA map"
         );
     }
+    // NTFS mirrors at least four file records, or one complete cluster when
+    // that is larger. Validate the entire declared bootstrap mirror, using
+    // fixed record buffers rather than allocating a cluster-sized pair.
+    let mirror_bytes = u64::from(g.cluster_size).max(4 * u64::from(g.file_record_size));
     ensure!(
-        mirror.logical_size == 4096 && mirror.initialized_size == 4096,
-        "MFT mirror length exceeds the four-record initial profile"
+        mirror.logical_size == mirror_bytes && mirror.initialized_size == mirror_bytes,
+        "MFT mirror length differs from the source cluster/record geometry"
     );
-    let mut primary = vec![0; 4096];
-    let mut mirrored = vec![0; 4096];
-    ntfs::read_nonresident_inventory_range(reader, mft, 0, &mut primary, g)?;
-    ntfs::read_nonresident_inventory_range(reader, mirror, 0, &mut mirrored, g)?;
+    let mirrored_records = u32::try_from(mirror_bytes / u64::from(g.file_record_size))?;
+    let mut primary = [0; 1024];
+    let mut mirrored = [0; 1024];
     let mut hashes = vec![];
-    for (i, (p, m)) in primary
-        .as_chunks::<1024>()
-        .0
-        .iter()
-        .zip(mirrored.as_chunks::<1024>().0)
-        .enumerate()
-    {
-        ntfs::validate_file_record(p, g).with_context(|| format!("primary MFT record {i}"))?;
-        ntfs::validate_file_record(m, g).with_context(|| format!("mirror MFT record {i}"))?;
+    for i in 0..mirrored_records {
+        let offset = u64::from(i) * u64::from(g.file_record_size);
+        ntfs::read_nonresident_inventory_range(reader, mft, offset, &mut primary, g)?;
+        ntfs::read_nonresident_inventory_range(reader, mirror, offset, &mut mirrored, g)?;
+        ntfs::validate_file_record(&primary, g)
+            .with_context(|| format!("primary MFT record {i}"))?;
+        ntfs::validate_file_record(&mirrored, g)
+            .with_context(|| format!("mirror MFT record {i}"))?;
         // Conservative: no normalization of differing LSNs, USA encodings,
         // attributes or unused bytes. Other valid layouts may be refused.
-        ensure!(p == m, "primary and mirror MFT record {i} differ");
-        hashes.push(hex::encode(Sha256::digest(p)));
+        ensure!(
+            primary == mirrored,
+            "primary and mirror MFT record {i} differ"
+        );
+        hashes.push(hex::encode(Sha256::digest(primary)));
     }
     Ok(VerifiedBackups {
         inspection_fingerprint: fingerprint(raw)?,
         partition_length: length,
         primary_boot_sha256: hex::encode(Sha256::digest(&boot)),
         backup_boot_sha256: hex::encode(Sha256::digest(&backup)),
-        mirrored_records: 4,
+        mirrored_records,
         mirrored_record_sha256: hashes,
     })
 }

@@ -113,6 +113,11 @@ The current experimental larger-tree candidate separately opts into up to
 1,024 files, 256 directories and 4 GiB logical contents, bound to the v2 journal,
 native source observation and protected target observation. It has not passed
 a native conversion or interruption run, and does not widen the default alpha.
+Its later source geometry path accepts 4 KiB through 2 MiB power-of-two clusters
+with 512-byte sectors, 1 KiB MFT records and 4 KiB indexes. Target clusters remain
+4 KiB; byte-based retention planning and geometry-sized MFT-mirror checks are
+required. This source change has compilation evidence only, no native run, and
+does not remove the 128 GiB partition or other resource ceilings.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

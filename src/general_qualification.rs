@@ -197,9 +197,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
         online.read_exact(&mut boot)?;
         let geometry = ntfs_inspect::inspect_boot_sector(&boot, online.byte_len())?;
         ensure!(
-            geometry.bytes_per_sector == 512
-                && geometry.cluster_size == 4096
-                && geometry.file_record_size == 1024,
+            resources.supports_source_geometry(&geometry),
             "source geometry exceeds the supported qualification profile"
         );
         online.revalidate_route(&mut events)?;

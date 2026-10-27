@@ -175,7 +175,15 @@ fn main() -> anyhow::Result<()> {
     source_reader.read_exact(&mut boot)?;
     let source_geometry =
         ntfs2refs::ntfs_inspect::inspect_boot_sector(&boot, source_reader.byte_len())?;
-    validate_source_geometry(&source_geometry)?;
+    if args.experimental_large_tree {
+        ensure!(
+            ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
+                .supports_source_geometry(&source_geometry),
+            "source geometry preflight refused: experimental conversion requires 512-byte sectors, power-of-two clusters from 4 KiB through 2 MiB, 1 KiB MFT records and 4 KiB index records; no output was created"
+        );
+    } else {
+        validate_source_geometry(&source_geometry)?;
+    }
     ensure!(
         u32::from(source_geometry.bytes_per_sector) == source.bytes_per_sector
             && source_geometry.sectors_per_cluster == source.sectors_per_cluster
@@ -186,7 +194,12 @@ fn main() -> anyhow::Result<()> {
     let source_native_bytes_read = source_reader.native_bytes_read;
     drop(source_reader);
     let preflight_scope = "File features/contents, full live admission and source consistency remain unassessed. Live observations may change; this preflight does not authorize conversion or replace frozen admission.";
-    println!("Source geometry preflight: 512-byte sectors, 4-KiB clusters, 1-KiB MFT records.");
+    println!(
+        "Source geometry preflight: {}-byte sectors, {}-byte clusters, {}-byte MFT records.",
+        source_geometry.bytes_per_sector,
+        source_geometry.cluster_size,
+        source_geometry.file_record_size,
+    );
     println!("{preflight_scope}");
     let source_preflight = serde_json::json!({
         "kind":"read-only-source-geometry-preflight",

@@ -150,6 +150,20 @@ enabled for pre-handoff shadow qualification, old profiles or a source-present
 IndexerVolumeGuid. Versioned postcheck toolsets retain the old binaries and
 allow a new read-only BeforeMutation attempt; a mutation cannot be retried.
 
+The corrected toolset v2, source `4f187a502bcb2a27dbf9b47e19b7b4897eb59525`,
+passed BeforeMutation attempt 2, the preserved converted boot, mutation,
+verification afterward and another clean reboot/verification. The VM is now OFF
+at `157284d6-91fc-4b2b-ba6c-3052a0c413bc` (mutation/reboot passed), parent
+`8d4b9eaa-d814-4a3a-aa89-056e817d47d2` (converted/native passed), parent the
+original NTFS baseline. Preserve all five streaming checkpoints and both
+terminal/postcheck archives. Never replay the old journal over this handoff.
+The main engine is still the original 98d02a4 producer; newer CNG builds are
+not qualified by this case. The registry records only this 52 GiB source,
+Unicode/4 GiB+1 zero-file case and its explicit system-cache normalization.
+The next native gate is streaming interruption/resume/rollback, rather than
+repeating the completed conversion/mutation/reboot case. Low-scratch retention,
+nonzero large files and broader capacity/features remain incomplete.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

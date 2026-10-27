@@ -114,6 +114,37 @@
         "No interruption/recovery or storage power-loss test of this beta profile.",
         "Later executables and streaming-payload v2 do not inherit this result."
       ]
+    },
+    {
+      "id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "description": "One 52 GiB nonboot NTFS/64 KiB to ReFS/4 KiB conversion with Unicode and a 4 GiB+1 ordinary zero file. Limits are implementation ceilings, not tested maxima.",
+      "source_filesystem": "NTFS 3.1",
+      "target_filesystem": "ReFS 3.14",
+      "logical_sector_bytes": 512,
+      "cluster_bytes": 4096,
+      "source_cluster_bytes": 65536,
+      "mft_record_bytes": 1024,
+      "source_policy_windows_build": 26300,
+      "observed_partition_bytes": 55834574848,
+      "limits": {
+        "maximum_files": 1024,
+        "maximum_directories": 256,
+        "maximum_logical_bytes": 2251799813685248,
+        "ascii_names_only": false,
+        "maximum_component_bytes": 765,
+        "maximum_path_components": 16,
+        "unnamed_streams_per_file": 1,
+        "requires_absent_sacl": true
+      },
+      "exclusions": [
+        "Boot/system volumes and unsupported NTFS semantics remain excluded.",
+        "Names are bounded to 255 UTF-16 units; the UTF-8 byte ceiling is conservative.",
+        "Eight admitted files/five directories; only this 52 GiB source and zero-filled large payload were observed.",
+        "No retained payload, payload-independent scratch, nonzero over-4-GiB payload or broad capacity qualification.",
+        "Only the validated source-absent post-mount indexer cache and its internal directory runtime timestamps normalize; all admitted user data and metadata stay strict.",
+        "No streaming interruption/recovery or storage power-loss test.",
+        "New CNG converter builds do not inherit this old producer result."
+      ]
     }
   ],
   "evidence": [
@@ -2544,6 +2575,176 @@
         "objects_verified": 14,
         "actual_shadow_backing_bytes": null
       }
+    },
+    {
+      "id": "streaming-v2-unicode-4g-native-mutation-reboot",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Public convert inside the owned VM changed the same 52 GiB partition to ReFS with Chinese, Latin and supplementary-plane names and a 4294967297-byte zero file. All thirteen admitted source objects passed native readback, the new-file mutation workload, clean boot and post-mutation reboot under the explicit converted-V2 indexer-cache normalization. No source extent moves or allocation aging were used. All payload relocated/materialized; five checkpoints remain preserved.",
+      "repository_commit": "98d02a4f698d44d7ba89c5a45c24b49422eae363",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "a28a4a5b74839754181f4cc9a44d97aab383b665f2249746418457c8bcde6f39",
+        "retained_path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/stage/ntfs2refs.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Six ordinary user files plus two admitted Windows ancillary files, five directories including root; 4295249950 source logical bytes. The largest zero-filled file is 4 GiB+1. Windows adds one validated source-absent indexer cache after handoff; it is separately accounted, not an original source object.",
+        "source_image_sha256": "2faa04e9e3cf5884c36b6e9f75fc37c5918a4102c914ed2ed435ff78a8e64930",
+        "expected_image_sha256": "25d8ddfb5bd506178f8c11573260728311f1e4c386d5907fc84dc7a63cea7e1b",
+        "expected_semantic_manifest_sha256": "0992ec867426127b25e81b672a352d3cebe9f881e7263738e12a94a0c100dc50"
+      },
+      "artifacts": [
+        {
+          "role": "native-conversion-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/result.json",
+          "location_unknown_reason": null,
+          "sha256": "583aacb6d214d67919caa7dfc269ad5e8856482de75a05caaa7a832cb03a1710"
+        },
+        {
+          "role": "exact-raw-apply",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/apply.json",
+          "location_unknown_reason": null,
+          "sha256": "3d68516afc95b7df999c0391235477d601cbcea4bdf54e6f6151ad44a5633d76"
+        },
+        {
+          "role": "durable-journal-preparation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "f3413e9c85dd8043c6cf77e7b32a3d9ff356b04afba18038345ee7b2ff4f95e1"
+        },
+        {
+          "role": "irreversible-handoff-native-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/finalization.json",
+          "location_unknown_reason": null,
+          "sha256": "fae6cc02d48443e787ac7d4e03bab5db63551217aa1340bde4c093274ff912b9"
+        },
+        {
+          "role": "original-semantic-manifest",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/expectation.json",
+          "location_unknown_reason": null,
+          "sha256": "0992ec867426127b25e81b672a352d3cebe9f881e7263738e12a94a0c100dc50"
+        },
+        {
+          "role": "live-source-certificate",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence/run/qualification/certificate.json",
+          "location_unknown_reason": null,
+          "sha256": "39eb4cb115268fa5d335cb7e8eb66c20a4735ed8dd136bbc66a3907114cc95ab"
+        },
+        {
+          "role": "verified-terminal-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/terminal-evidence-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "89816313944e20bc328dff54362063798d4ee975f33ac1eb1e340951b3821af9"
+        },
+        {
+          "role": "initial-refused-observer",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/guest-BeforeMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "20247cb990e461acc068430d0e626f2846009a3d385e9fc84805d728c8156bc7"
+        },
+        {
+          "role": "regenerated-cache-diagnostic",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/guest-DiagnoseAfterBeforeMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "8a2c0eca673dbb08ec2709e64b6afc8cc8d8ad3c0ac3202f62eb049129a82cc4"
+        },
+        {
+          "role": "normalized-native-before-mutation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/BeforeMutation-attempt-2.json",
+          "location_unknown_reason": null,
+          "sha256": "8a18fb30b1145e3ec3b43215be15089b1bc04a36edb241d91a9b5078dbfcd5ca"
+        },
+        {
+          "role": "converted-checkpoint-boot-verification",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/AfterPreservationBoot.json",
+          "location_unknown_reason": null,
+          "sha256": "aa51f878d8f80a3dc5fc5dc21477775af04bfe62f98eaf8a03439f4ce22bb3cd"
+        },
+        {
+          "role": "native-mutation-workload",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/Mutate.json",
+          "location_unknown_reason": null,
+          "sha256": "514c8485f44010085b6a2b85fdb9324c979a4e3c8e684eeb3a27b3989457311f"
+        },
+        {
+          "role": "native-after-mutation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/AfterMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "404380b66d9e4f496d2edaceef5977a3a37a97482cc9ca899c3cbe8e2da9bfd6"
+        },
+        {
+          "role": "native-after-mutation-reboot",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck/AfterReboot.json",
+          "location_unknown_reason": null,
+          "sha256": "66a683388912854d920ad1c0441352a3588d9052d9b92e571a1315a4209cd7ec"
+        },
+        {
+          "role": "preserved-converted-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/converted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "f35b117d0875762c99731508a579546b6f621a7c6ac23b1944f1cd061e56303e"
+        },
+        {
+          "role": "preserved-mutation-reboot-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "bfe93abd3e7862a3c16571f36881a3c379f6a4f1ddca91b7b5b4066ce5a3ee54"
+        },
+        {
+          "role": "driver-identity-and-retained-postchecks",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/postcheck-terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "57ecc4fec070f83fbe21cfc4e7b6bfb8feb0d41a452961e7e94bc731fe68c9f9"
+        },
+        {
+          "role": "separately-pinned-postcheck-tools",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/rust-postcheck-tools-v2/manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "133535f4641e326b19db98881a5f9173ce65efa80ad1d755f2f57d2e5b9d0478"
+        },
+        {
+          "role": "producer-source-and-binary-pins",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate3/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "38b7916f2cb40bf58d252309bb921d6fa785dc71d1d6e01751a4861813ec6664"
+        }
+      ],
+      "source_documents": [
+        "docs/streaming-v2-native.md",
+        "docs/native-sha256-performance.md"
+      ],
+      "unknown_fields": {
+        "dirty_source_state": "Producer included the capabilities-only src/main.rs patch d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9; executable is pinned, not clean-HEAD inherited.",
+        "postcheck_lineage": "The initial observer refused a regenerated indexer cache. The version-2 observer and mutator are pinned from 4f187a502bcb2a27dbf9b47e19b7b4897eb59525; their source is distinct from the 98d02a4 converter.",
+        "actual_shadow_backing_bytes": "Not independently measured; payload initialization was 4295249950 bytes. Full-workflow physical I/O remains unmeasured.",
+        "CNG_converter_qualification": "Newer CNG source/journal hashing code was built and separately benchmarked on the host, but did not produce this native conversion.",
+        "unit_tests": "No unit tests were added or run."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 4295249950,
+        "retained_payload_bytes": 0,
+        "relocated_payload_bytes": 4295249920,
+        "materialized_payload_bytes": 30,
+        "target_bytes_written": 339808256,
+        "journal_bytes": 679676029,
+        "objects_verified": 13,
+        "actual_shadow_backing_bytes": null
+      }
     }
   ],
   "claims": [
@@ -2837,6 +3038,25 @@
         "Efficient payload-independent scratch and reduced full-volume I/O",
         "Native interruption/recovery on this expanded geometry",
         "Additional supported features, placements, counts and geometries"
+      ]
+    },
+    {
+      "id": "unicode-over4g-streaming-conversion",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "feature": "Unicode and over-4-GiB ordinary-stream same-partition conversion",
+      "statement": "Microsoft ReFS accepted all admitted streams on the original partition. Native readback passed after mutation and reboot, with only the validated generated indexer cache/internal-directory runtime timestamps normalized. Converted and post-mutation/reboot OFF checkpoints are preserved.",
+      "evidence_ids": [
+        "streaming-v2-unicode-4g-native-mutation-reboot"
+      ],
+      "exclusions": [
+        "Zero retained payload in this placement; large file contents are zeros.",
+        "No native streaming recovery or power-loss qualification.",
+        "Exact old converter and separately pinned newer observer; current HEAD inherits no result."
+      ],
+      "remaining_gates": [
+        "Efficient payload-independent scratch and reduced whole-partition I/O",
+        "Native streaming interruption/resume/rollback qualification",
+        "Nonzero large streams and broader supported features, geometries and capacities"
       ]
     }
   ]

@@ -226,3 +226,46 @@ attempts remain single-use. This source correction still needs live observation.
 
 Mike approved a further cap increase to 224 GiB for preservation and the new
 reboot/mutation branch, retaining every checkpoint and the 64 GiB free reserve.
+
+The version-2 observer/mutator toolset was built from
+`4f187a502bcb2a27dbf9b47e19b7b4897eb59525`, separately from the 98d02a4
+converter. Verifier SHA-256 is
+`a6867be8ca1b1dd3dbea5c5af24b4f5ba3fb29603b0e5ab06d914a505fc6e969`,
+mutator `8377257ddf34940a5b8387dec1f67baa830856626f2d81f6d90ea3a5fed93ee2`.
+The live read-only BeforeMutation attempt 2 passed, retaining the original
+failure/diagnostic and expectation. The converted state was shut down cleanly
+and preserved as OFF checkpoint `8d4b9eaa-d814-4a3a-aa89-056e817d47d2`,
+parent `775f4db8-8635-486c-b6eb-7098426b51a6`.
+
+Its child booted at 19:27:27 UTC and passed strict native verification under the
+explicit indexer normalization. The Rust workload created 50 MiB, grew to
+80 MiB, truncated to 10 MiB, renamed, created 128 directory entries and deleted
+the test tree. Native verification of the original admitted tree passed again.
+A further clean reboot at 20:00:09 UTC passed payload readback and native
+verification. These are guest report hashes, distinct from host wrappers:
+
+| Phase | Guest report SHA-256 |
+| --- | --- |
+| Before mutation, attempt 2 | `d2fdef7d628987cd0fdc6459c689309da54a3e3b450e258053332729c116733f` |
+| After preserved converted boot | `9082ac5a6b83d9c4108da640f83ee8bddc62d59ac5b1f09a38482bcd96cf3fda` |
+| Mutation | `f8329669d2e49d4fd81dfbd6ac6ed715bc648fa009c0d5c9e83edb50dce6fc40` |
+| After mutation | `74de94c6a8f868addf47dab1bb4591ae2a184d3e6c975458a1a2efcb31d69bbd` |
+| After mutation reboot | `6804dd9288ce421570d531417554773151dffcf4eac8ce7f55b8dffee4b24d19` |
+
+The passed child is now OFF at checkpoint
+`157284d6-91fc-4b2b-ba6c-3052a0c413bc`, parent the preserved converted checkpoint.
+All five streaming checkpoints remain. No older VM was reset or deleted.
+Nineteen postcheck files/tool binaries (7,657,534 bytes) are archived separately
+in `postcheck-terminal-evidence`, with a manifest. Live driver observation
+recorded file version `10.0.26100.8875 (WinBuild.160101.0800)` and the same
+previously pinned refs.sys hash; the OS build remains 26300.9457. These are
+different version identities, not an inferred driver version.
+
+The admitted payload totals are: zero retained, 4,295,249,920 relocated and
+30 materialized bytes, with 4,295,249,950 shadow bytes initialized. The final
+conservative lab counter was 229,883,336,043 bytes under the 240,518,168,576-byte
+cap, with 115,585,527,808 host bytes free. These are saved backing file lengths
+and host free space, not independently measured scratch allocation or physical
+I/O. No interruption/recovery, power loss, nonzero over-4-GiB file or broader
+capacity/feature qualification was performed. No unit tests were added or run.
+Later CNG converter builds inherit none of this old producer's outcome.

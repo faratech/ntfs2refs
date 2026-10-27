@@ -101,8 +101,18 @@ $guestGuard={
  Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
  function Ordinary([string]$Path,[bool]$Directory){
   $f=Get-Item -LiteralPath $Path -Force
-  if([bool]$f.PSIsContainer-ne$Directory-or($f.Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'Ordinary guest path required.'}
-  $p=Split-Path $f.FullName -Parent;while($p){$a=Get-Item -LiteralPath $p -Force;if(-not$a.PSIsContainer-or($a.Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'Guest ancestry differs.'};$n=Split-Path $p -Parent;if($n-ceq$p){break};$p=$n};$f
+  if($f-isnot[IO.FileSystemInfo]-or[bool]($f.Attributes-band[IO.FileAttributes]::Directory)-ne$Directory-or
+   ($f.Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'Ordinary guest path required.'}
+  # Windows PowerShell5.1 needs a trailing slash to stat a volume-GUID root;
+  # both Split-Path and DirectoryInfo.Parent can remove it.
+  $p=if($f-is[IO.DirectoryInfo]){$f.Parent}else{$f.Directory}
+  while($p){
+   $volumeRoot=$p.FullName-match'\A\\\\\?\\Volume\{[0-9a-fA-F-]{36}\}\z'
+   if($volumeRoot){$p=Get-Item -LiteralPath ($p.FullName+'\') -Force}
+   if($p-isnot[IO.DirectoryInfo]-or-not$p.Exists-or-not($p.Attributes-band[IO.FileAttributes]::Directory)-or
+    ($p.Attributes-band[IO.FileAttributes]::ReparsePoint)){throw 'Guest ancestry differs.'}
+   if($volumeRoot){break};$p=$p.Parent
+  };$f
  }
  function Json([string]$Path,[long]$Limit){$f=Ordinary $Path $false;if($f.Length-gt$Limit){throw 'Bounded guest JSON required.'};Get-Content -LiteralPath $Path -Raw|ConvertFrom-Json}
  function Binding($Actual,$Expected){

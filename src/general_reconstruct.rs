@@ -232,6 +232,69 @@ pub fn prepare(
     prepare_with_progress(request, source, shadow, journal, &mut |_| {})
 }
 
+/// Measure a frozen pair without creating a journal or authorizing execution.
+/// The existing request remains unchanged; only this diagnostic comparison's
+/// byte ceiling expands to the image length so an undersized budget can be
+/// reported accurately. All image and retained-range pins are still checked.
+pub fn measure_journal_requirements(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    shadow: &mut GeneralFrozenPartition,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<serde_json::Value> {
+    request.validate()?;
+    ensure!(
+        source.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
+        "actual frozen sizing bindings differ"
+    );
+    let mut events = Vec::new();
+    let before_source = source.state(&mut events)?;
+    let before_shadow = shadow.state(&mut events)?;
+    ensure!(
+        before_source.disk_attributes == 3 && before_shadow.disk_attributes == 3,
+        "sizing requires persistent offline/read-only exclusion"
+    );
+    let mut comparison_request = request.comparison.clone();
+    comparison_request.max_change_bytes = comparison_request.expected_length;
+    let mut reporter =
+        crate::preparation_progress::Reporter::new(comparison_request.expected_length, progress);
+    let compared = retained_compare::compare_streams_observed_with_resource_profile(
+        source,
+        shadow,
+        &comparison_request,
+        &mut reporter,
+        request.source_resource_profile.unwrap_or_default(),
+    )?;
+    ensure!(
+        compared.source_shadow_unchanged_after_comparison
+            && compared.retained_differing_bytes == 0
+            && source.state(&mut events)? == before_source
+            && shadow.state(&mut events)? == before_shadow,
+        "frozen sizing inputs or retained bytes changed"
+    );
+    let conservative_journal_bytes = compared
+        .patch_bytes
+        .checked_mul(2)
+        .and_then(|v| v.checked_add(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE))
+        .ok_or_else(|| anyhow::anyhow!("journal sizing overflow"))?;
+    let profile = JournalProfile::from_schema(request.schema_version)?;
+    Ok(serde_json::json!({
+        "schema_version":1,"kind":"frozen-general-journal-sizing",
+        "source_sha256":compared.request.source_sha256,
+        "shadow_sha256":compared.request.shadow_sha256,
+        "retained_bytes":compared.retained_bytes,
+        "changed_bytes":compared.patch_bytes,"patch_count":compared.patches.len(),
+        "conservative_journal_bytes":conservative_journal_bytes,
+        "requested_journal_bytes":request.max_journal_bytes,
+        "fits_requested_budget":conservative_journal_bytes<=request.max_journal_bytes,
+        "fits_profile_ceiling":conservative_journal_bytes<=profile.max_journal_bytes(),
+        "inputs_unchanged":true,"source_payload_writes":0,
+        "journal_created":false,"execution_authorized":false,
+        "full_scan_input_bytes_read":compared.full_scan_input_bytes_read,
+        "source_before":before_source,"shadow_before":before_shadow,"events":events
+    }))
+}
+
 pub fn prepare_with_progress(
     request: &Request,
     source: &mut GeneralFrozenPartition,

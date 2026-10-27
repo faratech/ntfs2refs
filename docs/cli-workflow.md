@@ -189,3 +189,13 @@ and recovery retain the exact selected resource profile; imported JSON cannot
 substitute for live source/target capabilities. The new profile has compilation
 evidence only and has not run in the native lab. The active candidate-3 beta
 continues using v1 and its original executable.
+
+On a machine with at least two CPUs, v2's shadow-backed apply/resume/rollback
+preflight interleaves the complete shadow read with target normalization against
+the old/new journal payloads. The shadow SHA-256 uses the bounded worker while
+the owning thread reads storage, checks every affected byte and hashes the
+normalized full target. Both complete image pins must pass before the existing
+patch-writing path is entered. Shadowless recovery and older profiles retain
+their sequential checks. This overlaps CPU work with a fixed extra buffer; it
+removes no reads, pin checks, patch checks, flushes or handoff barriers. The
+change has compilation/format evidence only and no measured native speedup.

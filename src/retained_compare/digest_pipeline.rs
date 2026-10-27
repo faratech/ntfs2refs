@@ -7,7 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-pub(super) struct Pipeline {
+pub(crate) struct Pipeline {
     input: Option<SyncSender<Vec<u8>>>,
     recycled: Option<Receiver<Vec<u8>>>,
     spare: Option<Vec<u8>>,
@@ -16,7 +16,7 @@ pub(super) struct Pipeline {
 }
 
 impl Pipeline {
-    pub(super) fn new(chunk_bytes: usize) -> Result<Self> {
+    pub(crate) fn new(chunk_bytes: usize) -> Result<Self> {
         let (input, chunks) = sync_channel::<Vec<u8>>(1);
         let (buffers, recycled) = sync_channel(1);
         let worker = thread::Builder::new()
@@ -41,7 +41,7 @@ impl Pipeline {
         })
     }
 
-    pub(super) fn update(&mut self, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn update(&mut self, bytes: &[u8]) -> Result<()> {
         anyhow::ensure!(
             bytes.len() <= self.chunk_bytes,
             "digest chunk exceeds bound"
@@ -64,7 +64,7 @@ impl Pipeline {
             .map_err(|_| anyhow!("shadow digest worker stopped before accepting input"))
     }
 
-    pub(super) fn finish(mut self) -> Result<[u8; 32]> {
+    pub(crate) fn finish(mut self) -> Result<[u8; 32]> {
         // No more input can follow. Closing the recycle receiver releases a
         // worker returning its final chunk; that chunk was hashed before send.
         self.input.take();

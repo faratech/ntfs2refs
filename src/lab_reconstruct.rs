@@ -833,6 +833,15 @@ fn normalized_target<T: ReadSeek, J: Read + Seek>(
     journal: &mut J,
     loaded: &Loaded,
 ) -> Result<()> {
+    normalized_target_observed(target, journal, loaded, &mut |_| Ok(()))
+}
+
+fn normalized_target_observed<T: ReadSeek, J: Read + Seek>(
+    target: &mut T,
+    journal: &mut J,
+    loaded: &Loaded,
+    on_chunk: &mut dyn FnMut(usize) -> Result<()>,
+) -> Result<()> {
     let request = &loaded.manifest.request;
     ensure!(
         target.byte_len()? == request.expected_length,
@@ -847,6 +856,7 @@ fn normalized_target<T: ReadSeek, J: Read + Seek>(
     while offset < request.expected_length {
         let count = usize::try_from((request.expected_length - offset).min(BUFFER as u64))?;
         read_at(target, offset, &mut current[..count])?;
+        on_chunk(count)?;
         while first_record < loaded.records.len()
             && loaded.records[first_record].offset + loaded.records[first_record].length <= offset
         {
@@ -900,6 +910,26 @@ fn validate_recovery<T: ReadSeek, S: ReadSeek, J: DurableIo>(
         shadow.byte_len()? == loaded.manifest.request.expected_length,
         "shadow length changed"
     );
+    if loaded.manifest.binding.source_resource_profile
+        == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+        && std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2)
+    {
+        // Both complete images remain mandatory. Only digest work overlaps:
+        // every device/journal read stays on the owning thread, and neither
+        // result can authorize patches until the two full checks have passed.
+        shadow.seek(SeekFrom::Start(0))?;
+        let mut buffer = vec![0; BUFFER];
+        let mut digest = retained_compare::digest_pipeline::Pipeline::new(BUFFER)?;
+        normalized_target_observed(target, journal, &loaded, &mut |count| {
+            shadow.read_exact(&mut buffer[..count])?;
+            digest.update(&buffer[..count])
+        })?;
+        ensure!(
+            hex::encode(digest.finish()?) == loaded.manifest.request.shadow_sha256,
+            "shadow image changed"
+        );
+        return Ok(loaded);
+    }
     ensure!(
         retained_compare::hash_reader(shadow, loaded.manifest.request.expected_length)?
             == loaded.manifest.request.shadow_sha256,

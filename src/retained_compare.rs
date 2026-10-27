@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-mod digest_pipeline;
+pub(crate) mod digest_pipeline;
 
 // Four full passes are included in the u64 I/O report, followed by 32 bytes of
 // file-container probes. The actual converter retains its own narrower live

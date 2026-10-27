@@ -177,3 +177,23 @@ consumed by the clean-reboot helper; strict verification runs again afterward.
 Create-new intent and result files prevent blind phase repetition after errors.
 The controller has syntax-check evidence only. These tools are not guest-staged,
 no phase has executed, and the earlier PowerShell-only workload remains unused.
+
+At `2026-10-27T11:54:28Z`, candidate 3 had finished all comparison/recheck
+passes and durable journal preparation, with its same converter PID 2940 live
+in raw-apply stage. The source remained offline, now writable under the active
+executor; the shadow remained offline/read-only. No `apply.json` or final result
+was yet present. This stage name does not establish completed target writes.
+
+The read-only `candidate3/journal-observed/prepare.json` copy has SHA-256
+`e39fa3e072c79d99a5742213e3c67498307cdd5786f1da66bac55852d080341a`.
+It records 94 patches, 337,903,616 changed target bytes, equal old/new payload
+lengths, 24,314 overhead bytes and a 675,831,546-byte v2 journal. Its immutable
+body is 675,823,354 bytes, SHA-256
+`5429666ab8907c55224a7b5176f57bad9dcae786857922a2027682a83854f3bf`.
+The planned postimage hash equals the frozen shadow hash
+`f47ce622da431f3841dadec720da617519d0c5bd7027d0fbdd189e02aa3f5e8b`.
+These are recorded preparation values, not an independent rehash of the active
+journal. The separate ticket copy was refused because the converter holds it;
+the partial-copy receipt is preserved and no sharing change/retry was made.
+The generic preparation report's qualification/authority flags remain false;
+live authorization belongs to the integrated opaque-capability path, not JSON.

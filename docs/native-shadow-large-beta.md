@@ -215,3 +215,15 @@ also confirmed the postcheck PowerShell Direct session has an administrator
 token with backup/restore/security/volume-management privileges available but
 disabled; the native helpers enable and restore their required privileges.
 No privilege or UAC setting was changed by that observation.
+
+The completed apply receipt appeared by `2026-10-27T12:41:13Z`. Its read-only
+copy at `candidate3/journal-observed/apply.json` has SHA-256
+`4274d55241e731c7a65a1ac8c520ea6119398bc72444d72309b4c3724c35acbb`.
+It records `applied-before-handoff`, 94 patches, 337,903,616 actual target bytes
+written, and full target SHA-256
+`f47ce622da431f3841dadec720da617519d0c5bd7027d0fbdd189e02aa3f5e8b`,
+exactly the admitted postimage/frozen-shadow pin. `handoff_recorded` is false in
+that apply receipt. It proves flushed/readback-checked reconstruction and the
+full postimage, not a native mount or completed conversion. At `12:52:16Z`,
+the same process was still Running in handoff/finalization, target offline/
+writable and shadow offline/read-only. No final result was present.

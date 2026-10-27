@@ -10,7 +10,7 @@ use crate::ntfs_allocation::{self, Assessment, AttributeKey, Limits, PhysicalInt
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 #[path = "ntfs_assembled_io.rs"]
 mod assembled_io;
@@ -19,7 +19,6 @@ mod mft_bootstrap;
 pub use assembled_io::validate_record_coverage;
 
 pub(crate) const MAX_MFT_RECORDS: u64 = 1_000_000;
-const MAX_BITMAP_BYTES: u64 = 128 * 1024 * 1024;
 const STREAM_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const ALPHA_MAX_PLAIN_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -1428,10 +1427,14 @@ fn classify_metadata_roles(report: &mut NtfsInspection, budget: &mut ReportBudge
     Ok(())
 }
 
-fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationReconciliation {
+fn reconcile_allocation<R: Read + Seek>(
+    report: &NtfsInspection,
+    bitmap: &mut R,
+    original: &ntfs_allocation::BitmapSummary,
+) -> Result<AllocationReconciliation> {
     let mut result = AllocationReconciliation {
         status: AllocationReconciliationStatus::Rejected,
-        bitmap_sha256: hex::encode(Sha256::digest(bitmap)),
+        bitmap_sha256: original.sha256.clone(),
         domain_clusters: report.geometry.total_clusters,
         physical_intervals: 0,
         detail: String::new(),
@@ -1448,7 +1451,7 @@ fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationRec
                 "MFT record {} needs attribute-list/extension assembly; no partial allocation model assessed",
                 file.record_number
             );
-            return result;
+            return Ok(result);
         }
         if file.attributes.iter().enumerate().any(|(index, a)| {
             file.attributes[..index]
@@ -1460,15 +1463,14 @@ fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationRec
                 "MFT record {} repeats an attribute instance; ownership identity is ambiguous",
                 file.record_number
             );
-            return result;
+            return Ok(result);
         }
     }
-    // The bitmap has already been read under the inspector's byte bound.
-    // Reconcile that entire actual domain rather than imposing a second,
-    // unrelated 2 MiB/16-million-cluster ceiling. Interval, name and sorting
-    // budgets remain independently bounded.
+    // Bitmap storage is streamed, so its logical size does not determine the
+    // working-buffer allocation. Interval/name/sorting budgets stay separate.
     let limits = Limits {
-        max_bitmap_bytes: bitmap.len(),
+        max_bitmap_bytes: usize::try_from(original.bitmap_bytes)
+            .context("bitmap exceeds stream addressability")?,
         max_cluster_checks: report.geometry.total_clusters,
         ..Limits::default()
     };
@@ -1506,13 +1508,13 @@ fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationRec
             };
             if intervals.len() >= limits.max_intervals {
                 result.detail = "Allocation interval budget exceeded".into();
-                return result;
+                return Ok(result);
             }
             name_units = match name_units.checked_add(attribute.name_utf16.len()) {
                 Some(total) if total <= limits.max_total_name_units => total,
                 _ => {
                     result.detail = "Allocation attribute-name budget exceeded".into();
-                    return result;
+                    return Ok(result);
                 }
             };
             if !extent.logical_offset.is_multiple_of(cluster)
@@ -1521,16 +1523,16 @@ fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationRec
                 || !extent.length.is_multiple_of(cluster)
             {
                 result.detail = "Attribute extent is not a nonempty cluster interval".into();
-                return result;
+                return Ok(result);
             }
             if intervals.try_reserve(1).is_err() {
                 result.detail = "Allocation interval storage unavailable".into();
-                return result;
+                return Ok(result);
             }
             let mut name = Vec::new();
             if name.try_reserve_exact(attribute.name_utf16.len()).is_err() {
                 result.detail = "Allocation attribute-name storage unavailable".into();
-                return result;
+                return Ok(result);
             }
             name.extend_from_slice(&attribute.name_utf16);
             intervals.push(PhysicalInterval {
@@ -1548,7 +1550,13 @@ fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationRec
         }
     }
     result.physical_intervals = intervals.len();
-    match ntfs_allocation::assess(result.domain_clusters, bitmap, &intervals, limits) {
+    let (assessment, current) =
+        ntfs_allocation::assess_stream(result.domain_clusters, bitmap, &intervals, limits)?;
+    ensure!(
+        current == *original,
+        "volume bitmap changed during allocation reconciliation"
+    );
+    match assessment {
         Assessment::Consistent(summary) => {
             result.status = AllocationReconciliationStatus::ConsistentRawModel;
             result.detail = format!(
@@ -1558,7 +1566,53 @@ fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationRec
         }
         Assessment::Rejected(reason) => result.detail = format!("{reason:?}"),
     }
-    result
+    Ok(result)
+}
+
+/// A bounded logical view of the initialized volume bitmap, backed by its runs.
+struct AttributeBitmapReader<'a, R> {
+    reader: &'a mut R,
+    attribute: &'a Attribute,
+    geometry: &'a NtfsGeometry,
+    length: u64,
+    position: u64,
+}
+
+impl<R: Read + Seek> Read for AttributeBitmapReader<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let count = (self.length - self.position).min(output.len() as u64) as usize;
+        if count == 0 {
+            return Ok(0);
+        }
+        read_attribute_range(
+            self.reader,
+            self.attribute,
+            self.position,
+            &mut output[..count],
+            self.geometry,
+        )
+        .map_err(io::Error::other)?;
+        self.position += count as u64;
+        Ok(count)
+    }
+}
+
+impl<R: Read + Seek> Seek for AttributeBitmapReader<'_, R> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let position = match from {
+            SeekFrom::Start(offset) => i128::from(offset),
+            SeekFrom::End(offset) => i128::from(self.length) + i128::from(offset),
+            SeekFrom::Current(offset) => i128::from(self.position) + i128::from(offset),
+        };
+        if position < 0 || position > i128::from(self.length) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bitmap seek escapes logical domain",
+            ));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
 }
 
 fn require_bitmap_bytes(attribute: &AttributeInventory, needed: u64) -> Result<()> {
@@ -2441,7 +2495,7 @@ pub fn read_plain_stream<R: Read + Seek>(
 }
 
 /// The report limit bounds retained inventory data, not the entire process's
-/// resident set. Bitmap reads are separately capped at 128 MiB; parser working
+/// resident set. Volume bitmap scans use a fixed 64 KiB window; parser working
 /// storage is limited to one 64 KiB-or-smaller file record and its attributes.
 /// Logical stream hashing uses a fixed 64 KiB buffer and a cumulative byte limit.
 /// Metadata ancestry adds at most MAX_MFT_RECORDS states and 4096 stack frames.
@@ -2625,22 +2679,8 @@ pub fn inspect_with_limits<R: Read + Seek>(
         if number == 6 {
             let bitmap_attr = unnamed(&record, 0x80)?;
             let needed = geometry.total_clusters.div_ceil(8);
-            ensure!(
-                needed <= MAX_BITMAP_BYTES && bitmap_attr.report.logical_size >= needed,
-                "volume allocation bitmap is too short or exceeds inspection limit"
-            );
             require_bitmap_bytes(&bitmap_attr.report, needed)?;
-            let mut bitmap = vec![0; needed as usize];
-            read_attribute_range(reader, bitmap_attr, 0, &mut bitmap, &geometry)?;
-            let mut allocated = 0u64;
-            for (i, byte) in bitmap.iter().enumerate() {
-                let remaining = geometry.total_clusters.saturating_sub(i as u64 * 8).min(8) as u32;
-                let mask = ((1u16 << remaining) - 1) as u8;
-                allocated += u64::from((byte & mask).count_ones());
-            }
-            report.allocated_clusters = Some(allocated);
-            report.free_clusters = Some(geometry.total_clusters - allocated);
-            volume_bitmap = Some(bitmap);
+            volume_bitmap = Some(bitmap_attr.clone());
         }
         let mut inventory = FileInventory {
             record_number: number,
@@ -2879,16 +2919,24 @@ pub fn inspect_with_limits<R: Read + Seek>(
             "consumed extension was not observed as an allocated physical segment"
         );
     }
+    let mut bitmap_reader = AttributeBitmapReader {
+        reader,
+        attribute: volume_bitmap.as_ref().context("missing volume bitmap")?,
+        geometry: &geometry,
+        length: geometry.total_clusters.div_ceil(8),
+        position: 0,
+    };
+    let bitmap_summary =
+        ntfs_allocation::summarize_stream(geometry.total_clusters, &mut bitmap_reader)?;
+    report.allocated_clusters = Some(bitmap_summary.allocated_clusters);
+    report.free_clusters = Some(bitmap_summary.free_clusters);
     ensure!(
         root_seen && report.volume_flags.is_some() && report.allocated_clusters.is_some(),
         "missing allocated root, volume-information, or allocation-bitmap records"
     );
     classify_metadata_roles(&mut report, &mut budget)?;
     validate_record_coverage(&report)?;
-    let allocation = reconcile_allocation(
-        &report,
-        volume_bitmap.as_deref().context("missing volume bitmap")?,
-    );
+    let allocation = reconcile_allocation(&report, &mut bitmap_reader, &bitmap_summary)?;
     budget.charge((allocation.bitmap_sha256.capacity() + allocation.detail.capacity()) as u64)?;
     report.allocation_reconciliation = Some(allocation);
     let namespace = namespace.finish(&report.files);

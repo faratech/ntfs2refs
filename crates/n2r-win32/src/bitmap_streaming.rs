@@ -43,6 +43,132 @@ pub struct Summary {
     pub allocated_ranges: Vec<ClusterRange>,
 }
 
+impl Summary {
+    /// Replay the retained actual first query and cross-check its allocation
+    /// prefix. Later-page acquisition is represented by the native transcript;
+    /// this method does not recreate missing pages or a native acquisition.
+    pub fn validate_source_first(&self, first: &IoctlQuery) -> io::Result<()> {
+        let limits = source_limits(self.cluster_count)?;
+        self.validate(self.cluster_count, limits)?;
+        let mut collector = Collector::new(self.cluster_count, limits)?;
+        let complete = collector.push(first, &[0; 8], &mut |_| Ok(()))?;
+        if complete {
+            if collector.finish()? != *self {
+                return Err(bad(
+                    "single-page bitmap summary differs from its actual response",
+                ));
+            }
+        } else {
+            if self.pages < 2
+                || self.returned_bytes <= first.bytes.len() as u64
+                || self.declared_clusters != collector.declared.unwrap()
+            {
+                return Err(bad("streamed bitmap summary disagrees with first page"));
+            }
+            let expected_prefix = self
+                .allocated_ranges
+                .iter()
+                .take_while(|range| range.starting_lcn < collector.covered)
+                .map(|range| {
+                    (
+                        range.starting_lcn,
+                        range.clusters.min(collector.covered - range.starting_lcn),
+                    )
+                });
+            let observed_prefix = collector
+                .ranges
+                .iter()
+                .map(|range| (range.starting_lcn, range.clusters));
+            if !expected_prefix.eq(observed_prefix) {
+                return Err(bad("streamed bitmap first-page allocation prefix differs"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Structural accounting only. Actual native acquisition and comparison
+    /// with the frozen source remain separate from deserializable summaries.
+    pub fn validate(&self, expected: u64, limits: Limits) -> io::Result<()> {
+        Collector::new(expected, limits)?;
+        let hash = |value: &str| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        if self.encoding != "streamed-volume-bitmap-v1"
+            || self.cluster_count != expected
+            || self.declared_clusters < expected
+            || self.declared_clusters > expected.div_ceil(8) * 8
+            || self.bitmap_bytes != expected.div_ceil(8)
+            || !hash(&self.bitmap_data_sha256)
+            || !hash(&self.canonical_bitmap_sha256)
+            || !hash(&self.page_transcript_sha256)
+            || self.pages == 0
+            || self.pages > limits.max_pages
+            || self.returned_bytes > limits.max_returned_bytes
+            || self
+                .pages
+                .checked_mul(17)
+                .is_none_or(|n| self.returned_bytes < n)
+            || self
+                .pages
+                .checked_mul(16)
+                .and_then(|n| n.checked_add(self.bitmap_bytes))
+                .is_none_or(|n| self.returned_bytes < n)
+            || self
+                .pages
+                .checked_mul((16 + PAGE_DATA_BYTES) as u64)
+                .is_none_or(|n| self.returned_bytes > n)
+            || self.allocated_clusters > expected
+            || self.free_clusters != expected - self.allocated_clusters
+            || self.padding_bits_set > ((8 - expected % 8) % 8) as u32
+            || self.allocated_ranges.len() > limits.max_allocated_ranges
+        {
+            return Err(bad("streamed bitmap summary accounting differs"));
+        }
+        let mut end = None;
+        let mut allocated = 0u64;
+        for range in &self.allocated_ranges {
+            let next = range
+                .starting_lcn
+                .checked_add(range.clusters)
+                .filter(|next| *next <= expected)
+                .ok_or_else(|| bad("streamed bitmap allocation range escapes domain"))?;
+            if range.clusters == 0 || end.is_some_and(|prior| range.starting_lcn <= prior) {
+                return Err(bad(
+                    "streamed bitmap allocation ranges overlap or are not maximal",
+                ));
+            }
+            allocated = allocated
+                .checked_add(range.clusters)
+                .ok_or_else(|| bad("bitmap allocation count overflow"))?;
+            end = Some(next);
+        }
+        if allocated != self.allocated_clusters {
+            return Err(bad("streamed bitmap allocated count differs from ranges"));
+        }
+        Ok(())
+    }
+}
+
+/// Source evidence limits are independent of the number of file identities.
+/// The complete map is never retained, and these bounds grant no write access.
+pub fn source_limits(expected_clusters: u64) -> io::Result<Limits> {
+    let max_pages = 131_072;
+    let max_returned_bytes = expected_clusters
+        .div_ceil(8)
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(16 * max_pages))
+        .ok_or_else(|| bad("source bitmap read budget overflow"))?;
+    Ok(Limits {
+        max_bitmap_bytes: 64 * 1024 * 1024 * 1024,
+        max_pages,
+        max_returned_bytes,
+        max_allocated_ranges: 65_536,
+    })
+}
+
 fn bad(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }

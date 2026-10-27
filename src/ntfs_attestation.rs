@@ -312,7 +312,7 @@ pub fn compare(
     }
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2..=8) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=9) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;

@@ -1094,7 +1094,7 @@ pub(crate) fn bind_large_native_profile(
     ensure!(
         assessment.profile == ResourceProfile::ExperimentalLargeTreeV1.ordinary_admission_profile()
             && assessment.source_inspection_sha256 == inspection
-            && native.schema_version == 8
+            && matches!(native.schema_version, 8 | 9)
             && native.request.schema_version == 3
             && native.request.resource_profile == Some(NativeProfile::ExperimentalLargeTreeV1)
             && native.request.source_inspection_sha256 == inspection
@@ -1176,7 +1176,10 @@ pub(crate) fn bind_large_native_profile(
     for gate in &mut assessment.gates {
         if gate.code == "native_profile" {
             gate.satisfied = true;
-            gate.detail = "schema-8 live native namespace and logical-data observations were independently reconciled against the frozen source".into();
+            gate.detail = format!(
+                "schema-{} live native namespace and logical-data observations were independently reconciled against the frozen source",
+                native.schema_version
+            );
             native_gate = true;
         } else if gate.code == "native_resource_profile_support" {
             gate.satisfied = true;

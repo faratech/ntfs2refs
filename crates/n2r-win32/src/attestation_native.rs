@@ -93,6 +93,12 @@ fn route(volume: &File, disk: &File, r: &Request) -> io::Result<Route> {
         Ok(_) => return Err(invalid("disk reports writable")),
         Err(e) => e.raw_os_error().ok_or(e)?,
     };
+    let cluster_bytes = u32le(&data, 44)?;
+    let supported_clusters = if r.resource_profile.is_some() {
+        cluster_bytes.is_power_of_two() && (4096..=2 * 1024 * 1024).contains(&cluster_bytes)
+    } else {
+        cluster_bytes == 4096
+    };
     if ext.len() != 32
         || u32le(&ext, 0)? != 1
         || u32le(&ext, 8)? != r.disk_number
@@ -101,7 +107,7 @@ fn route(volume: &File, disk: &File, r: &Request) -> io::Result<Route> {
         || data.len() < 96
         || u64le(&data, 0)? != r.ntfs_serial
         || u32le(&data, 40)? != 512
-        || u32le(&data, 44)? != 4096
+        || !supported_clusters
         || attrs.len() != 16
         || u32le(&attrs, 0)? != 16
         || u64le(&attrs, 8)? & 3 != 2
@@ -359,7 +365,15 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     let before = route(&volume, &disk, request)?;
     let mut privileges = Privileges::enable()?;
     let base_before = crate::stream_native::base(&volume);
-    let (bitmap_before, bitmap_before_continuation) = crate::stream_native::bitmap(&volume)?;
+    let clusters = u64le(&before.1, 16)?;
+    let (bitmap_before, bitmap_before_continuation, streamed_before) =
+        if request.resource_profile.is_some() {
+            let (first, summary) = crate::stream_native::bitmap_streamed(&volume, clusters)?;
+            (first, Vec::new(), Some(summary))
+        } else {
+            let (first, continuation) = crate::stream_native::bitmap(&volume)?;
+            (first, continuation, None)
+        };
     let bitmap_bytes = |first: &IoctlQuery, continuation: &Vec<IoctlQuery>| {
         std::iter::once(first).chain(continuation).fold(
             continuation.capacity() * std::mem::size_of::<IoctlQuery>(),
@@ -471,7 +485,14 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
         logical_files.push(logical);
     }
     let base_after = crate::stream_native::base(&volume);
-    let (bitmap_after, bitmap_after_continuation) = crate::stream_native::bitmap(&volume)?;
+    let (bitmap_after, bitmap_after_continuation, streamed_after) =
+        if request.resource_profile.is_some() {
+            let (first, summary) = crate::stream_native::bitmap_streamed(&volume, clusters)?;
+            (first, Vec::new(), Some(summary))
+        } else {
+            let (first, continuation) = crate::stream_native::bitmap(&volume)?;
+            (first, continuation, None)
+        };
     if bitmap_before_bytes.saturating_add(bitmap_bytes(&bitmap_after, &bitmap_after_continuation))
         > MAX_TOTAL_BITMAP_BYTES
     {
@@ -486,7 +507,7 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
     let after = route(&volume, &disk, request)?;
     let mut report = Report {
         schema_version: if request.resource_profile.is_some() {
-            8
+            9
         } else {
             7
         },
@@ -511,6 +532,8 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             bitmap_after,
             bitmap_before_continuation,
             bitmap_after_continuation,
+            streamed_before,
+            streamed_after,
         }),
         logical_data: Some(LogicalData {
             audit: read_budget.audit(),

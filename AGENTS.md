@@ -118,6 +118,13 @@ with 512-byte sectors, 1 KiB MFT records and 4 KiB indexes. Target clusters rema
 4 KiB; byte-based retention planning and geometry-sized MFT-mirror checks are
 required. This source change has compilation evidence only, no native run, and
 does not remove the 128 GiB partition or other resource ceilings.
+Its protected native source collector now emits schema 9 with compact streaming
+bitmap summaries. Both native bitmap data hashes/counts must match the frozen
+raw bitmap, and before/after transcript/first-page observations must agree.
+Only the real opaque live observation can satisfy the expanded admission gate;
+JSON summaries cannot issue it. Schema 8 replay remains available, and default
+alpha collection stays schema 7. Target bitmap collection is still bounded by
+its existing assembly profile, so the live partition ceiling is unchanged.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

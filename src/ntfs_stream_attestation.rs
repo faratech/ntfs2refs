@@ -136,6 +136,28 @@ pub fn check_bitmap_pages(
     );
     Ok(())
 }
+
+fn check_streamed_bitmap(
+    raw: &NtfsInspection,
+    first: &IoctlQuery,
+    summary: &n2r_win32::bitmap_streaming::Summary,
+) -> Result<()> {
+    summary.validate_source_first(first)?;
+    let source = raw
+        .allocation_reconciliation
+        .as_ref()
+        .context("missing raw allocation reconciliation")?;
+    ensure!(
+        source.status == AllocationReconciliationStatus::ConsistentRawModel
+            && source.domain_clusters == raw.geometry.total_clusters
+            && summary.cluster_count == raw.geometry.total_clusters
+            && summary.bitmap_data_sha256 == source.bitmap_sha256
+            && raw.allocated_clusters == Some(summary.allocated_clusters)
+            && raw.free_clusters == Some(summary.free_clusters),
+        "streamed native bitmap differs from the complete initialized frozen NTFS bitmap"
+    );
+    Ok(())
+}
 fn normalized(items: &[Extent], volume: u64, cluster: u64) -> Result<Vec<Extent>> {
     let mut out: Vec<Extent> = vec![];
     let mut next = 0;
@@ -350,7 +372,7 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         crate::ntfs_inspect::validate_record_coverage(raw)?;
     }
     ensure!(
-        matches!(native.schema_version, 3..=8),
+        matches!(native.schema_version, 3..=9),
         "native stream profile missing"
     );
     validate_paging_schema(native)?;
@@ -359,6 +381,23 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         .as_ref()
         .context("missing native volume allocation observations")?;
     let bitmap = Check::from((|| {
+        if native.schema_version == 9 {
+            let before = volume
+                .streamed_before
+                .as_ref()
+                .context("missing streamed bitmap before observation")?;
+            let after = volume
+                .streamed_after
+                .as_ref()
+                .context("missing streamed bitmap after observation")?;
+            check_streamed_bitmap(raw, &volume.bitmap_before, before)?;
+            check_streamed_bitmap(raw, &volume.bitmap_after, after)?;
+            ensure!(
+                before == after && volume.bitmap_before == volume.bitmap_after,
+                "streamed native bitmap changed across source observation"
+            );
+            return Ok(());
+        }
         check_bitmap_pages(
             raw,
             &volume.bitmap_before,

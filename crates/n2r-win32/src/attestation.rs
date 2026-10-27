@@ -365,6 +365,10 @@ pub struct VolumeAllocation {
     pub bitmap_before_continuation: Vec<IoctlQuery>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bitmap_after_continuation: Vec<IoctlQuery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streamed_before: Option<crate::bitmap_streaming::Summary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streamed_after: Option<crate::bitmap_streaming::Summary>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PrivilegeState {
@@ -515,6 +519,26 @@ impl Report {
             {
                 ioctl(&mut out.bitmap_evidence_bytes, q)?;
             }
+            for summary in a.streamed_before.iter().chain(a.streamed_after.iter()) {
+                summary.validate(
+                    summary.cluster_count,
+                    crate::bitmap_streaming::source_limits(summary.cluster_count)?,
+                )?;
+                add(
+                    &mut out.bitmap_evidence_bytes,
+                    summary.encoding.len()
+                        + summary.bitmap_data_sha256.len()
+                        + summary.canonical_bitmap_sha256.len()
+                        + summary.page_transcript_sha256.len()
+                        + 7 * 8
+                        + 4,
+                )?;
+                add(
+                    &mut out.bitmap_evidence_bytes,
+                    summary.allocated_ranges.len()
+                        * std::mem::size_of::<crate::bitmap_streaming::ClusterRange>(),
+                )?;
+            }
         }
         if let Some(data) = &self.namespace {
             for file in &data.files {
@@ -583,6 +607,10 @@ impl Report {
             return if (2..=7).contains(&self.schema_version)
                 && self.resources.is_none()
                 && matches!(self.request.schema_version, 1 | 2)
+                && self
+                    .allocation
+                    .as_ref()
+                    .is_none_or(|a| a.streamed_before.is_none() && a.streamed_after.is_none())
             {
                 Ok(())
             } else {
@@ -595,6 +623,18 @@ impl Report {
         let data = self.logical_data.as_ref().ok_or_else(invalid)?;
         let namespace = self.namespace.as_ref().ok_or_else(invalid)?;
         let allocation = self.allocation.as_ref().ok_or_else(invalid)?;
+        if self.schema_version == 9 {
+            allocation
+                .streamed_before
+                .as_ref()
+                .ok_or_else(invalid)?
+                .validate_source_first(&allocation.bitmap_before)?;
+            allocation
+                .streamed_after
+                .as_ref()
+                .ok_or_else(invalid)?
+                .validate_source_first(&allocation.bitmap_after)?;
+        }
         let ids: BTreeSet<_> = self
             .request
             .files
@@ -649,7 +689,17 @@ impl Report {
                 }
             }
         }
-        if self.schema_version != 8
+        let streaming_shape = match self.schema_version {
+            8 => allocation.streamed_before.is_none() && allocation.streamed_after.is_none(),
+            9 => {
+                allocation.streamed_before.is_some()
+                    && allocation.streamed_after.is_some()
+                    && allocation.bitmap_before_continuation.is_empty()
+                    && allocation.bitmap_after_continuation.is_empty()
+            }
+            _ => false,
+        };
+        if !streaming_shape
             || self.conversion_qualified
             || self.allocation.is_none()
             || a != &self.measured_resources(profile)?

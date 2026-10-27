@@ -46,3 +46,20 @@ all source candidates; a densely populated layout may not have enough. Bounded
 batch evacuation and retention interleaving are not implemented yet. The writer
 also still initializes a complete payload copy on the shadow. This is a placement
 improvement, not payload-independent scratch or zero-copy qualification.
+
+The next native case is prepared in `lab/Prepare-StreamingRetention8G.ps1`.
+It first requires the eight old checkpoints and OFF rollback-passed branch,
+then a 6 GiB storage allowance before creating an intent or touching the VM.
+Only after those gates, it returns the owned VM to its original clean NTFS
+baseline, checks all six original payloads, and appends 4 GiB of zeros normally
+to the existing 4 GiB+1 file. It moves no source extent, creates no allocation
+aging workload and reformats no disk. The new source manifest and OFF baseline
+are saved under `retention8g`; original fixtures/evidence stay unchanged.
+
+`Dispatch-StreamingV2Conversion.ps1 -Retention8G` binds that new baseline and
+records its fixture root. Mounted readback selects only the original streaming
+fixture or this exact new fixture scope. It cannot silently compare an 8 GiB
+file against the old 4 GiB fixture. Preparation/dispatch have syntax checks only
+and have not run. The current 224 GiB saved-lab cap lacks the requested 6 GiB
+allowance; the proposed 232 GiB increase remains pending. The 64 GiB host-free
+reserve and every old checkpoint remain protected.

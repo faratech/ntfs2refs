@@ -1,13 +1,14 @@
 # One public conversion on the separately enrolled streaming fixture.
 [CmdletBinding()]param([ValidatePattern('^candidate[1-9][0-9]*$')][string]$Candidate='candidate1',
-    [ValidateRange(0,4096)][int]$InterruptAfterWrites=0)
+    [ValidateRange(0,4096)][int]$InterruptAfterWrites=0,[switch]$Retention8G)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
 $workspace='D:\code\ntfs2refs';$root=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027'
 $m=Get-Content -LiteralPath (Join-Path $root 'manifest.json') -Raw|ConvertFrom-Json
-$baseline=Get-Content -LiteralPath (Join-Path $root 'baseline.json') -Raw|ConvertFrom-Json
+$fixtureRoot=if($Retention8G){Join-Path $root 'retention8g'}else{$root}
+$baseline=Get-Content -LiteralPath (Join-Path $fixtureRoot 'baseline.json') -Raw|ConvertFrom-Json
 $vm=Get-VM -Id $m.vm_id
 if($vm.Id-ne[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'-or$vm.Name-cne$m.name-or[guid]$vm.ParentSnapshotId-ne[guid]$baseline.checkpoint_id-or
     $vm.State.ToString()-notin@('Off','Running')-or-not$vm.Path.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Owned NTFS baseline required.'}
@@ -30,7 +31,7 @@ function Save-New([string]$Name,$Value){
     try{$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 14));$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}
 }
 $run=[guid]::NewGuid().ToString('N');$task='N2R-StreamingV2Convert-'+$run
-Save-New 'intent.json' @{vm_id=$m.vm_id;run_id=$run;task_name=$task;source_commit=(& git -C $workspace rev-parse HEAD).Trim();working_tree_clean=($patch.Length-eq0);working_tree_patch_sha256=$patchPin;binaries=$pins;capacity=$capacity;growth_budget_bytes=6GB;native_qualified=$false;binary_name=$binaryName;interrupt_after_writes=$InterruptAfterWrites;utc=[DateTime]::UtcNow.ToString('o')}
+Save-New 'intent.json' @{vm_id=$m.vm_id;run_id=$run;task_name=$task;source_commit=(& git -C $workspace rev-parse HEAD).Trim();working_tree_clean=($patch.Length-eq0);working_tree_patch_sha256=$patchPin;binaries=$pins;capacity=$capacity;growth_budget_bytes=6GB;native_qualified=$false;binary_name=$binaryName;interrupt_after_writes=$InterruptAfterWrites;retention_8g=[bool]$Retention8G;fixture_root=$fixtureRoot;utc=[DateTime]::UtcNow.ToString('o')}
 if($vm.State.ToString()-ceq'Off'){Start-VM -VM $vm -ErrorAction Stop|Out-Null}
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $s=$null;$deadline=[DateTime]::UtcNow.AddMinutes(4)
@@ -39,7 +40,7 @@ while($null-eq$s){
 }
 try{
     $stage='C:\ntfs2refs\streaming-v2-20261027\'+$Candidate
-    $fixture=Get-Content -LiteralPath (Join-Path $root 'fixture.json') -Raw
+    $fixture=Get-Content -LiteralPath (Join-Path $fixtureRoot 'fixture.json') -Raw
     $prior=Invoke-Command -Session $s -ArgumentList $stage,$fixture -ScriptBlock {
         param($Stage,$Fixture);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         if(@(Get-CimInstance Win32_Process|Where-Object {$_.Name-like'ntfs2refs*'}).Count-or@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.State-in@('Running','Queued')}).Count){throw 'Another guest worker is active.'}
@@ -81,6 +82,7 @@ try{
             source_resource_profile=$value.source_resource_profile;source_partition_bytes=52GB;utc=[DateTime]::UtcNow.ToString('o')}
     }
     $dispatch|Add-Member vm_id $m.vm_id
+    $dispatch|Add-Member fixture_root $fixtureRoot
     Save-New 'dispatch.json' $dispatch
     Copy-Item -LiteralPath $dispatch.guest_request -FromSession $s -Destination (Join-Path $candidateRoot 'request.json')
     if((Get-FileHash -LiteralPath (Join-Path $candidateRoot 'request.json')).Hash.ToLowerInvariant()-cne$dispatch.request_sha256){throw 'Exported discovery request differs; registered task remains unstarted.'}

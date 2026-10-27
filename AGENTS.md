@@ -252,6 +252,15 @@ native success qualifies this code. See [the scope](docs/shadow-user-evacuation.
 Batch evacuation for dense layouts and avoiding full shadow payload copies are
 still unfinished. Preserve all eight passed/interrupted checkpoints.
 
+The 8 GiB ordinary-append retention fixture is source-only preparation code in
+`Prepare-StreamingRetention8G.ps1`. It requires saved OFF rollback branch 40fb292c,
+all eight checkpoints and 6 GiB admission capacity before any action. It restores
+only the owned clean baseline, verifies original payloads, appends zeros with no
+source moves/aging, and saves new manifest/baseline under retention8g. The
+dispatcher/readback support that exact separate scope with `-Retention8G`.
+Nothing has executed. The requested cap increase from 224 to 232 GiB is still
+pending; never infer approval from a goal continuation or bypass the current cap.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

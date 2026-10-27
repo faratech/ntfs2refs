@@ -8,7 +8,12 @@ $workspace='D:\code\ntfs2refs'
 $betaRoot=Join-Path $workspace $(if($StreamingV2){'.lab\hyperv\streaming-v2-20261027'}else{'.lab\hyperv\shadow-large-beta-20261027'})
 $root=Join-Path $betaRoot $Candidate
 $dispatch=Get-Content -LiteralPath (Join-Path $root 'dispatch.json') -Raw|ConvertFrom-Json
-$fixture=Get-Content -LiteralPath (Join-Path $betaRoot $(if($StreamingV2){'fixture.json'}else{'guest-fixture.json'})) -Raw
+$fixtureRoot=$betaRoot
+if($StreamingV2-and$dispatch.PSObject.Properties.Name-contains'fixture_root'){
+    if($dispatch.fixture_root-cnotin@($betaRoot,(Join-Path $betaRoot 'retention8g'))){throw 'Unknown streaming fixture scope.'}
+    $fixtureRoot=$dispatch.fixture_root
+}
+$fixture=Get-Content -LiteralPath (Join-Path $fixtureRoot $(if($StreamingV2){'fixture.json'}else{'guest-fixture.json'})) -Raw
 $id=if($StreamingV2){[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'}else{[guid]'6c4793d2-cdee-468b-bf3b-1c11cae0b501'};$vm=Get-VM -Id $id
 $vmName=if($StreamingV2){'ntfs2refs-streaming-v2-20261027'}else{'ntfs2refs-shadow-large-beta-20261027'}
 if([guid]$dispatch.vm_id-ne$id-or$vm.Name-cne$vmName-or$vm.State.ToString()-cne'Running'-or

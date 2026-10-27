@@ -1,5 +1,6 @@
 //! Native creation on a separately bound empty ReFS volume. Never writes the
 //! source disk, manufactures ReFS bytes or grants conversion authority.
+mod evacuation;
 use crate::{
     attestation::{PrivilegeState, Snapshot},
     attestation_native::{Privileges, snapshot},
@@ -172,6 +173,8 @@ pub struct Report {
     pub retention_attempts: Vec<RetentionAttempt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post_mount_indexer_cache: Option<PostMountIndexerCache>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_user_evacuation: Option<evacuation::Report>,
 }
 
 /// A newly generated, source-absent filesystem cache on the converted volume.
@@ -2699,6 +2702,7 @@ fn run_role_profile(
     };
     let mut security_restorations = vec![];
     let mut retention_attempts = vec![];
+    let mut shadow_user_evacuation = None;
     let constructing = matches!(mode, Mode::Construct | Mode::ConstructRetaining);
     if mode == Mode::Verify && !matched_before {
         return Err(invalid("root security changed before verification"));
@@ -2726,6 +2730,7 @@ fn run_role_profile(
             security_repair_privileges: vec![],
             retention_attempts,
             post_mount_indexer_cache: None,
+            shadow_user_evacuation: None,
         });
     }
     if constructing || mode == Mode::RestoreRootOnly {
@@ -2786,6 +2791,7 @@ fn run_role_profile(
                 security_repair_privileges: vec![],
                 retention_attempts,
                 post_mount_indexer_cache: None,
+                shadow_user_evacuation: None,
             });
         }
         for (index, i) in input.iter().enumerate().skip(1) {
@@ -2822,6 +2828,16 @@ fn run_role_profile(
             }
         }
         if mode == Mode::ConstructRetaining {
+            if resource_profile
+                == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
+            {
+                shadow_user_evacuation = Some(evacuation::run(
+                    &volume,
+                    &root,
+                    input,
+                    binding.identity.partition_bytes,
+                )?);
+            }
             let mut planning_cache = None;
             for i in input.iter().filter(|i| !i.directory) {
                 if let Some(offset) = i.source_offset
@@ -3132,6 +3148,7 @@ fn run_role_profile(
         security_repair_privileges: vec![],
         retention_attempts,
         post_mount_indexer_cache,
+        shadow_user_evacuation,
     })
 }
 #[cfg(test)]

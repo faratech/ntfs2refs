@@ -26,6 +26,8 @@ pub mod retention_layout;
 pub mod retrieval_paging;
 #[cfg(windows)]
 pub mod sha256_native;
+#[cfg(windows)]
+pub(crate) mod shadow_evacuation;
 pub mod shadow_names;
 #[cfg(windows)]
 pub mod shadow_native;

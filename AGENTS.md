@@ -241,6 +241,17 @@ mapping checks. No metadata region is moved or bypassed, and no NTFS source
 extent is prearranged. Old profiles retain their single-pass behavior. Native
 qualification and low-scratch payload initialization remain incomplete.
 
+Later source wires streaming shadow-user evacuation before retention. The new
+interval planner uses complete native maps and measured file ownership; the
+executor accepts only the separately bound shadow and checks live ID/mapping,
+fresh dual-map free space and source-range exclusion before every native move,
+then measures the exact result. It never moves metadata or touches the NTFS
+source. Planning resource/space limits are recorded before any move and retain
+the old conversion path; execution failure aborts, without retry. No existing
+native success qualifies this code. See [the scope](docs/shadow-user-evacuation.md).
+Batch evacuation for dense layouts and avoiding full shadow payload copies are
+still unfinished. Preserve all eight passed/interrupted checkpoints.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

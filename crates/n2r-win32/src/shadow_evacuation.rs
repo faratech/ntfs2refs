@@ -1,4 +1,4 @@
-//! Research-only shadow-user-data evacuation planning. Never moves metadata,
+//! Shadow-user-data evacuation planning. Never moves metadata,
 //! mutates the NTFS source, or grants authority to execute the returned plan.
 use crate::bitmap_layout;
 use serde::Serialize;
@@ -7,7 +7,9 @@ use std::{collections::BTreeMap, io};
 const CLUSTER: u64 = 4096;
 pub const MAX_EXTENTS: usize = 1024;
 pub const MAX_MOVES: usize = 1024;
+#[cfg(test)]
 pub const MAX_SCAN_CLUSTERS: u64 = 16 * 1024 * 1024;
+#[cfg(test)]
 pub const MAX_EVACUATION_BYTES: u64 = 256 * 1024 * 1024;
 
 /// A caller-identified file's eligible source range or measured shadow extent.
@@ -22,11 +24,13 @@ pub struct Extent {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg(test)]
 pub struct Limits {
     pub max_moves: usize,
     pub max_scan_clusters: u64,
     pub max_evacuation_bytes: u64,
 }
+#[cfg(test)]
 impl Default for Limits {
     fn default() -> Self {
         Self {
@@ -59,11 +63,203 @@ pub struct Plan {
     pub moves: Vec<Move>,
 }
 
+/// Interval-based planning for the streaming native path. Complete maps are
+/// supplied by live observations; bitmap occupancy alone is never ownership.
+/// No volume-sized bitmap or per-cluster scan is assembled here.
+pub(crate) fn plan_ranges(
+    legacy: &bitmap_layout::AllocationMap,
+    metadata: &bitmap_layout::AllocationMap,
+    eligible_source: &[Extent],
+    shadow: &[Extent],
+    partition: u64,
+) -> io::Result<Plan> {
+    const MAX_MAP_RANGES: usize = 262_144;
+    const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024 * 1024;
+    if partition == 0 || partition > MAX_BYTES || !partition.is_multiple_of(CLUSTER) {
+        return Err(invalid("streaming evacuation geometry differs"));
+    }
+    for map in [legacy, metadata] {
+        if map.ranges.len() > MAX_MAP_RANGES {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "evacuation interval budget exceeded",
+            ));
+        }
+        if map.cluster_count != partition / CLUSTER
+            || map.ranges.len() > MAX_MAP_RANGES
+            || map.bitmap_sha256.len() != 64
+            || !map
+                .bitmap_sha256
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
+            return Err(invalid("streaming evacuation map domain or budget differs"));
+        }
+        let mut end = 0;
+        let mut allocated = 0u64;
+        for range in &map.ranges {
+            let next = range
+                .offset
+                .checked_add(range.length)
+                .filter(|next| *next <= partition)
+                .ok_or_else(|| invalid("evacuation allocation escapes partition"))?;
+            if range.offset < end
+                || range.length == 0
+                || !range.offset.is_multiple_of(CLUSTER)
+                || !range.length.is_multiple_of(CLUSTER)
+            {
+                return Err(invalid(
+                    "evacuation allocation ordering or alignment differs",
+                ));
+            }
+            allocated += range.length / CLUSTER;
+            end = next;
+        }
+        if allocated != map.allocated_clusters {
+            return Err(invalid("evacuation allocation count differs"));
+        }
+    }
+    let source = validated_extents_streamed(eligible_source, partition)?;
+    let owned = validated_extents_streamed(shadow, partition)?;
+    let mut blocked = Vec::new();
+    let mut already = 0u64;
+    for extent in &owned {
+        for map in [legacy, metadata] {
+            let end = extent.physical_offset + extent.length;
+            let first = map
+                .ranges
+                .partition_point(|r| r.offset + r.length <= extent.physical_offset);
+            let covered: u64 = map.ranges[first..]
+                .iter()
+                .take_while(|r| r.offset < end)
+                .map(|r| (r.offset + r.length).min(end) - r.offset.max(extent.physical_offset))
+                .sum();
+            if covered != extent.length {
+                return Err(invalid(
+                    "measured shadow extent is not allocated in both maps",
+                ));
+            }
+        }
+        for candidate in &source {
+            let start = extent.physical_offset.max(candidate.physical_offset);
+            let end = (extent.physical_offset + extent.length)
+                .min(candidate.physical_offset + candidate.length);
+            if start >= end {
+                continue;
+            }
+            let logical = extent.logical_offset + start - extent.physical_offset;
+            let desired = candidate.logical_offset + start - candidate.physical_offset;
+            if extent.file_index == candidate.file_index && logical == desired {
+                already += end - start;
+            } else {
+                if blocked.len() == MAX_MOVES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "evacuation intersection budget exceeded",
+                    ));
+                }
+                blocked.push(Extent {
+                    file_index: extent.file_index,
+                    logical_offset: logical,
+                    physical_offset: start,
+                    length: end - start,
+                });
+            }
+        }
+    }
+    let mut excluded: Vec<_> = legacy
+        .ranges
+        .iter()
+        .chain(&metadata.ranges)
+        .map(|r| (r.offset, r.offset + r.length))
+        .chain(
+            source
+                .iter()
+                .map(|r| (r.physical_offset, r.physical_offset + r.length)),
+        )
+        .collect();
+    excluded.sort_unstable();
+    let mut occupied: Vec<(u64, u64)> = Vec::new();
+    for (start, end) in excluded {
+        if let Some(last) = occupied.last_mut()
+            && start <= last.1
+        {
+            last.1 = last.1.max(end);
+        } else {
+            occupied.push((start, end));
+        }
+    }
+    let mut cursor = 0;
+    let mut index = 0;
+    let mut moves = Vec::new();
+    let mut total = 0u64;
+    for extent in blocked {
+        let mut done = 0;
+        while done < extent.length {
+            while index < occupied.len() && occupied[index].0 <= cursor {
+                cursor = cursor.max(occupied[index].1);
+                index += 1;
+            }
+            let free_end = occupied.get(index).map_or(partition, |r| r.0);
+            if cursor >= partition {
+                return Err(io::Error::new(
+                    io::ErrorKind::StorageFull,
+                    "no evacuation space outside source destinations",
+                ));
+            }
+            let length = (free_end - cursor)
+                .min(extent.length - done)
+                .min(u32::MAX as u64 * CLUSTER);
+            if length == 0 {
+                return Err(invalid("empty evacuation free interval"));
+            }
+            if moves.len() == MAX_MOVES {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "evacuation move budget exceeded",
+                ));
+            }
+            moves.push(Move {
+                file_index: extent.file_index,
+                logical_offset: extent.logical_offset + done,
+                source_offset: extent.physical_offset + done,
+                destination_offset: cursor,
+                length,
+                starting_vcn: (extent.logical_offset + done) / CLUSTER,
+                destination_lcn: cursor / CLUSTER,
+                clusters: (length / CLUSTER) as u32,
+            });
+            cursor += length;
+            done += length;
+            total += length;
+        }
+    }
+    Ok(Plan {
+        legacy_bitmap_sha256: legacy.bitmap_sha256.clone(),
+        metadata_bitmap_sha256: metadata.bitmap_sha256.clone(),
+        evacuated_bytes: total,
+        already_in_place_bytes: already,
+        scanned_clusters: 0,
+        moves,
+    })
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+#[cfg(test)]
 fn validated_extents(extents: &[Extent], partition: u64) -> io::Result<Vec<Extent>> {
+    if extents
+        .iter()
+        .any(|extent| u32::try_from(extent.length / CLUSTER).is_err())
+    {
+        return Err(invalid("legacy evacuation extent exceeds native move size"));
+    }
+    validated_extents_streamed(extents, partition)
+}
+
+fn validated_extents_streamed(extents: &[Extent], partition: u64) -> io::Result<Vec<Extent>> {
     if extents.len() > MAX_EXTENTS {
         return Err(invalid("evacuation extent budget exceeded"));
     }
@@ -84,7 +280,6 @@ fn validated_extents(extents: &[Extent], partition: u64) -> io::Result<Vec<Exten
             || !extent.physical_offset.is_multiple_of(CLUSTER)
             || physical_end > partition
             || logical_end > partition
-            || u32::try_from(extent.length / CLUSTER).is_err()
         {
             return Err(invalid("evacuation extent geometry exceeds profile"));
         }
@@ -109,6 +304,7 @@ fn validated_extents(extents: &[Extent], partition: u64) -> io::Result<Vec<Exten
     Ok(physical)
 }
 
+#[cfg(test)]
 struct Allocator<'a> {
     legacy: &'a [u8],
     metadata: &'a [u8],
@@ -119,6 +315,7 @@ struct Allocator<'a> {
     scanned: u64,
     budget: u64,
 }
+#[cfg(test)]
 impl Allocator<'_> {
     fn next_cluster(&mut self) -> io::Result<Option<(u64, bool)>> {
         if self.cursor == self.domain {
@@ -169,6 +366,7 @@ impl Allocator<'_> {
 /// destinations. Destinations are first-fit, free in both complete native maps,
 /// and outside every eligible source range. Already-correct same-file/VCN
 /// placement is left untouched. An error returns no partial relocation plan.
+#[cfg(test)]
 pub fn plan(
     legacy: &[u8],
     metadata: &[u8],

@@ -43,3 +43,20 @@ from the separately validated general binding; the original fixed-fixture
 validator remains unchanged. New candidates must use fresh stage/run paths,
 preserve earlier binaries/artifacts and confirm prior workers are terminal.
 This report records a refusal and a code fix, not a successful conversion.
+
+Candidate 2 preserves the first stage and failure artifacts. Its converter
+SHA-256 is `732932bd4e83c530c2562c93b8eb9863182d4125fa00dc8729a3d84a109dbbcb`,
+staged from source commit `d8056bde7d80de2118244ca7cbbe6632d86221f2` with the same
+recorded dirty capabilities patch. Run `76e37c16dfd4484e982ae21f44c4ed13` uses
+the public `convert` entry point with a fresh request/output, reusing the existing
+online fixture only after the earlier task was confirmed terminal. No reboot,
+reformat or source extent move was performed for this new attempt.
+
+The collector confirmed task `N2R-LargeBetaConvert-76e37c16dfd4484e982ae21f44c4ed13`
+Running and process 5608 created at `2026-10-27T08:40:33.321712Z`. At
+`2026-10-27T08:47:29.8151192Z`, cumulative process reads were 115,376,920,346
+bytes and the source disk was persistently offline/read-only. The initial full
+source hash was still in progress; no completed source-frozen artifact, journal
+or conversion result was present. This is live progress evidence only. Use the
+recorded task/process and current collector output rather than treating an
+observation timeout or missing later report as termination.

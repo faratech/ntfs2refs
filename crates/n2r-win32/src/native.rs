@@ -1094,6 +1094,9 @@ pub struct GeneralAllocationFreezeWitness {
     token: Arc<()>,
 }
 impl GeneralAllocationFreezeWitness {
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
     pub fn binding(&self) -> &GeneralDiskBinding {
         &self.binding
     }
@@ -1181,6 +1184,69 @@ fn capture_allocation(
 ) -> io::Result<GeneralAllocationSnapshot> {
     capture_allocation_queries(phase, partition_bytes, |name, input| {
         allocation_bitmap(volume, name, input, events)
+    })
+}
+
+fn capture_allocation_with_resource_profile(
+    volume: &File,
+    phase: GeneralAllocationPhase,
+    partition_bytes: u64,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<GeneralAllocationSnapshot> {
+    if resource_profile.is_none() {
+        return capture_allocation(volume, phase, partition_bytes, events);
+    }
+    let mut observe = |name: &str, input: &[u8]| {
+        let result =
+            crate::bitmap_observation::Observation::capture(volume, input, partition_bytes, true);
+        // This is a complete-scan event, not a claim that the first native
+        // control call succeeded without ERROR_MORE_DATA.
+        let output = match &result {
+            Ok(observation) => {
+                serde_json::to_vec(&observation.proof()).map_err(io::Error::other)?
+            }
+            Err(error) => error.to_string().bytes().take(1024).collect(),
+        };
+        events.push(NativeEvent {
+            operation: format!("{name}-streamed-complete"),
+            control_code: 0,
+            input: input.to_vec(),
+            succeeded: result.is_ok(),
+            native_error: result.as_ref().err().and_then(io::Error::raw_os_error),
+            output,
+        });
+        result
+    };
+    let prefix = match phase {
+        GeneralAllocationPhase::PostLockFlush => "general-post-lock",
+        GeneralAllocationPhase::PostDismount => "general-post-dismount",
+    };
+    let legacy = observe(&format!("{prefix}-legacy-bitmap"), &[0; 8]);
+    let mut metadata_input = [0; 16];
+    metadata_input[8] = 1;
+    let metadata = observe(
+        &format!("{prefix}-metadata-inclusive-bitmap"),
+        &metadata_input,
+    );
+    let legacy = legacy?;
+    let metadata = metadata?;
+    let legacy_proof = legacy.proof();
+    let metadata_proof = metadata.proof();
+    Ok(GeneralAllocationSnapshot {
+        phase,
+        legacy: legacy.allocation_map(partition_bytes)?,
+        metadata_inclusive: metadata.allocation_map(partition_bytes)?,
+        legacy_response_bytes: usize::try_from(
+            legacy_proof.streaming.as_ref().unwrap().returned_bytes,
+        )
+        .map_err(|_| invalid("streamed legacy byte accounting exceeds addressability"))?,
+        metadata_response_bytes: usize::try_from(
+            metadata_proof.streaming.as_ref().unwrap().returned_bytes,
+        )
+        .map_err(|_| invalid("streamed metadata byte accounting exceeds addressability"))?,
+        legacy_page_proof: Some(legacy_proof),
+        metadata_page_proof: Some(metadata_proof),
     })
 }
 
@@ -1304,11 +1370,29 @@ impl GeneralFrozenPartition {
         binding: GeneralDiskBinding,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<(Self, GeneralAllocationFreezeWitness)> {
+        Self::isolate_with_allocation_with_resource_profile(binding, None, events)
+    }
+
+    /// Explicit compact streaming observations; the default entry retains its
+    /// assembled maps, bounds and witness schema. Neither grants raw writes.
+    pub fn isolate_with_allocation_with_resource_profile(
+        binding: GeneralDiskBinding,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(Self, GeneralAllocationFreezeWitness)> {
         binding.validate()?;
-        if 16 + (binding.identity.partition_bytes / 4096).div_ceil(8)
-            > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
+        if resource_profile.is_none()
+            && 16 + (binding.identity.partition_bytes / 4096).div_ceil(8)
+                > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
         {
             return Err(invalid("allocation capture exceeds complete bitmap budget"));
+        }
+        if resource_profile.is_some() {
+            let clusters = binding.identity.partition_bytes / 4096;
+            crate::bitmap_streaming::Collector::new(
+                clusters,
+                crate::bitmap_streaming::source_limits(clusters)?,
+            )?;
         }
         let before = probe_general(binding.clone(), events)?;
         let management = device_file(
@@ -1350,10 +1434,11 @@ impl GeneralFrozenPartition {
             output: vec![],
         });
         flushed?;
-        let post_lock = capture_allocation(
+        let post_lock = capture_allocation_with_resource_profile(
             &volume,
             GeneralAllocationPhase::PostLockFlush,
             binding.identity.partition_bytes,
+            resource_profile,
             events,
         )?;
         let post_lock_state = general_disk_state(&management, &binding, events)?;
@@ -1380,10 +1465,11 @@ impl GeneralFrozenPartition {
             0,
             events,
         )?;
-        let (post_dismount, post_dismount_error) = match capture_allocation(
+        let (post_dismount, post_dismount_error) = match capture_allocation_with_resource_profile(
             &volume,
             GeneralAllocationPhase::PostDismount,
             binding.identity.partition_bytes,
+            resource_profile,
             events,
         ) {
             Ok(snapshot) => (Some(snapshot), None),
@@ -1413,7 +1499,7 @@ impl GeneralFrozenPartition {
         }
         let token = Arc::new(());
         let witness = GeneralAllocationFreezeWitness {
-            schema_version: 1,
+            schema_version: if resource_profile.is_some() { 2 } else { 1 },
             binding: binding.clone(),
             pre_lock_state: pre_lock,
             post_lock_state,
@@ -1428,7 +1514,12 @@ impl GeneralFrozenPartition {
             token: Arc::clone(&token),
         };
         let encoded = serde_json::to_vec_pretty(&witness).map_err(io::Error::other)?;
-        if encoded.len() > MAX_ALLOCATION_WITNESS_BYTES {
+        let witness_limit = if resource_profile.is_some() {
+            64 * 1024 * 1024
+        } else {
+            MAX_ALLOCATION_WITNESS_BYTES
+        };
+        if encoded.len() > witness_limit {
             return Err(invalid("allocation witness exceeds bounded output profile"));
         }
         Ok((

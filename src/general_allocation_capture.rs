@@ -16,13 +16,22 @@ pub struct Request {
     pub schema_version: u32,
     pub binding: GeneralDiskBinding,
     pub expected_label: VolumeLabel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
 }
 impl Request {
     pub fn validate(&self) -> Result<()> {
         self.binding.validate()?;
         self.expected_label.validate()?;
         ensure!(
-            self.schema_version == 1,
+            matches!(
+                (self.schema_version, self.resource_profile),
+                (1, None)
+                    | (
+                        2,
+                        Some(crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1)
+                    )
+            ),
             "allocation capture schema differs"
         );
         Ok(())
@@ -53,7 +62,17 @@ pub fn capture(request: &Request, output: &Path) -> Result<()> {
         artifacts::save(output, "mounted-before.json", &before)?;
         phase = "allocation-freeze";
         let (mut frozen, witness) =
-            GeneralFrozenPartition::isolate_with_allocation(request.binding.clone(), &mut events)?;
+            GeneralFrozenPartition::isolate_with_allocation_with_resource_profile(
+                request.binding.clone(),
+                request
+                    .resource_profile
+                    .and_then(|profile| profile.native_profile()),
+                &mut events,
+            )?;
+        ensure!(
+            witness.schema_version() == request.schema_version,
+            "allocation witness profile differs"
+        );
         frozen.validate_allocation_witness(&witness, &mut events)?;
         artifacts::save(output, "allocation-freeze.json", &witness)?;
         phase = "frozen-bootstrap";

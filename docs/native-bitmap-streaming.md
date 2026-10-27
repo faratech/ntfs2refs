@@ -77,9 +77,21 @@ Unprofiled shadow paths keep their assembled encoding with the new optional
 field absent. Target allocation ranges still represent occupancy, not a proof
 that every bootstrap structure can be omitted from reconstruction.
 
-Standalone lock/dismount allocation witnesses retain their existing assembly
-path. Larger-volume routing and remaining recovery/resource integration also
-remain separate work. The converter's 128 GiB partition limit is unchanged.
+Standalone lock/dismount allocation capture now has an explicit schema-2
+request profile: `resource_profile: "experimental_large_tree_v1"`. This queries
+both complete native views through the same locked/flushed handle, retaining
+compact proofs and allocation ranges. Post-lock maps are mandatory;
+post-dismount errors remain diagnostics. Complete-scan events are aggregate
+events (control code zero), not fabricated successful first native calls.
+Native error codes survive query failures. The schema-2 witness has a 64 MiB
+encoding ceiling and retains the same private in-process token binding to its
+actual frozen handle. Its maps do not prove equivalence with the final frozen
+metadata graph or confer raw write authority.
+
+Schema-1 requests without a resource profile retain assembled maps and the
+8 MiB witness ceiling. Larger-volume routing, raw container/allocator traversal
+bounds and remaining recovery/resource integration remain separate work. The
+converter's 128 GiB partition limit is unchanged.
 
 This code has compilation evidence only. No unit tests or native volume scan
 were run. Existing native evidence retains its original bounds and executable

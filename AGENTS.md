@@ -127,8 +127,12 @@ alpha collection stays schema 7. Expanded shadow retention planning/rechecks and
 protected target verification now stream both target bitmap views. Their compact
 proof encoding records a first-page receipt plus full transcript digest/counts;
 it must not be described as complete raw-page replay. Default target collection
-and standalone lock/dismount allocation witnesses retain assembled maps. The
-live partition ceiling remains unchanged pending remaining integration.
+retains assembled maps. Standalone lock/dismount capture has an explicit
+schema-2 streaming profile, with mandatory post-lock views, diagnostic-only
+post-dismount failures, preserved native errors and the same opaque frozen-handle
+token. Default schema-1 witnesses retain their assembled path and bounds.
+The live partition ceiling remains unchanged; raw ReFS container/allocator
+traversal bounds still need to scale before larger-volume routing is qualified.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

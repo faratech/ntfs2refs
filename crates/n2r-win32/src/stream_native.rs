@@ -86,6 +86,12 @@ pub(crate) fn bitmap_streamed_with_input(
             &input,
             collector.response_capacity(),
         );
+        if let Some(error) = query
+            .native_error
+            .filter(|error| *error != crate::bitmap_paging::MORE_DATA)
+        {
+            return Err(io::Error::from_raw_os_error(error));
+        }
         let complete = collector.push(&query, template, &mut |_| Ok(()))?;
         if first.is_none() {
             first = Some(query);

@@ -445,6 +445,9 @@ pub fn capture(
         let input = page_input(template, collector.next_lcn())?;
         let query =
             crate::stream_native::ioctl(volume, GET_BITMAP, &input, collector.response_capacity());
+        if let Some(error) = query.native_error.filter(|error| *error != MORE_DATA) {
+            return Err(io::Error::from_raw_os_error(error));
+        }
         if collector.push(&query, template, &mut on_page)? {
             break;
         }

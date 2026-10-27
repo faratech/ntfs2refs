@@ -8,11 +8,13 @@ $d=Get-Content -LiteralPath (Join-Path $root 'dispatch.json') -Raw|ConvertFrom-J
 $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599';$vm=Get-VM -Id $id
 if([guid]$d.vm_id-ne$id-or$vm.Name-cne'ntfs2refs-streaming-v2-20261027'-or$vm.State.ToString()-cne'Running'-or$d.task_name-cne('N2R-StreamingV2Convert-'+$d.run_id)){throw 'Recorded owned VM/task differs; inspect without inferring termination.'}
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
-$result=Invoke-Command -VMId $id -Credential $credential -ArgumentList $d.task_name,$d.guest_stage,$d.guest_output,$d.run_id -ScriptBlock {
-    param($TaskName,$Stage,$Output,$Run);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+$binaryName=if($d.PSObject.Properties.Name-contains'binary_name'){$d.binary_name}else{'ntfs2refs.exe'}
+if($binaryName-cnotin@('ntfs2refs.exe','lab-convert-admitted-tree.exe')){throw 'Unknown producer executable.'}
+$result=Invoke-Command -VMId $id -Credential $credential -ArgumentList $d.task_name,$d.guest_stage,$d.guest_output,$d.run_id,$binaryName -ScriptBlock {
+    param($TaskName,$Stage,$Output,$Run,$BinaryName);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
     $taskObject=Get-ScheduledTask -TaskName $TaskName;$info=Get-ScheduledTaskInfo -TaskName $TaskName
-    $all=@(Get-CimInstance Win32_Process|Where-Object {$_.Name-ceq'ntfs2refs.exe'})
-    $processes=@($all|Where-Object {$_.ExecutablePath-ceq(Join-Path $Stage 'ntfs2refs.exe')-and$_.CommandLine-like('*'+$Run+'*')}|ForEach-Object {
+    $all=@(Get-CimInstance Win32_Process|Where-Object {$_.Name-in@('ntfs2refs.exe','ntfs2refs-recover.exe','lab-convert-admitted-tree.exe')})
+    $processes=@($all|Where-Object {$_.ExecutablePath-ceq(Join-Path $Stage $BinaryName)-and$_.CommandLine-like('*'+$Run+'*')}|ForEach-Object {
         [pscustomobject]@{pid=$_.ProcessId;created=$_.CreationDate;read_bytes=[long]$_.ReadTransferCount;written_bytes=[long]$_.WriteTransferCount;
             working_set_bytes=[long]$_.WorkingSetSize;peak_working_set_kib=[long]$_.PeakWorkingSetSize;
             cpu_seconds=([double]$_.KernelModeTime+[double]$_.UserModeTime)/10000000}
@@ -28,7 +30,9 @@ $result=Invoke-Command -VMId $id -Credential $credential -ArgumentList $d.task_n
     }}
     $progress=$null;$path=Join-Path $Output 'journal-progress.json'
     if(Test-Path -LiteralPath $path){try{if((Get-Item -LiteralPath $path).Length-le4096){$progress=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json}}catch{}}
-    [pscustomobject]@{run_id=$Run;state=$taskObject.State.ToString();last_task_result=$info.LastTaskResult;terminal=(-not$live-and$info.LastRunTime.Year-ge2000);phase=$phase;
+    $interrupted= -not$live-and$info.LastTaskResult-eq86-and(Test-Path -LiteralPath (Join-Path $Output 'interruption-intent.json'))
+    if($interrupted){$phase='interrupted-before-handoff'}
+    [pscustomobject]@{run_id=$Run;state=$taskObject.State.ToString();last_task_result=$info.LastTaskResult;terminal=(-not$live-and$info.LastRunTime.Year-ge2000);phase=$phase;controlled_interruption_observed=$interrupted;
         processes=$processes;all_converter_count=$all.Count;artifacts=$artifacts;progress=$progress;details=$details;disks=@(Get-Disk|Select-Object Number,Guid,IsOffline,IsReadOnly,IsBoot,IsSystem);utc=[DateTime]::UtcNow.ToString('o')}
 }
 $capacity=Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)

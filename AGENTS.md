@@ -105,6 +105,15 @@ the guest run/stage. Rust postcheck tools are pinned in this candidate's
 the explicit `-StreamingV2` switch only after successful handoff. No native
 streaming conversion/recovery success is established yet.
 
+Later source adds CNG SHA-256 only to streaming V2's three full-source hash
+passes; see [the measured scope](docs/native-sha256-performance.md). The same
+real 1 GiB corpus image matched its pinned digest with both backends; native
+was about 1.66 times faster on this no-SHA-instruction host. This is a host
+observation, not native conversion or guest performance qualification. Candidate
+3 still uses its staged 98d02a4 engine. Do not replace/restart it or assign its
+future outcome to the newer binaries. Legacy profiles remain on their old hash
+path. No source exclusion, read coverage or recovery gate was removed.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

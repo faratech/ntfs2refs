@@ -24,6 +24,8 @@ pub mod reference_import;
 pub mod region_layout;
 pub mod retention_layout;
 pub mod retrieval_paging;
+#[cfg(windows)]
+pub mod sha256_native;
 pub mod shadow_names;
 #[cfg(windows)]
 pub mod shadow_native;

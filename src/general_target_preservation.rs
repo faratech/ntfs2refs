@@ -341,7 +341,12 @@ pub fn verify_and_freeze(
         before == after
             && before.disk_attributes == 3
             && source.state(events)? == source_before
-            && hex::encode(lab_reconstruct::hash_range(source, 0, source_length)?) == source_sha256,
+            && hex::encode(lab_reconstruct::hash_range_with_resource_profile(
+                source,
+                0,
+                source_length,
+                resources,
+            )?) == source_sha256,
         "source or frozen target changed during preservation verification"
     );
     let proof = FrozenTargetPreservation {

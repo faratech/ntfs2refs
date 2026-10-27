@@ -211,7 +211,12 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
         let mut source =
             GeneralFrozenPartition::isolate_observed_ntfs(pair.source.clone(), &mut events)?;
         let length = source.byte_len();
-        let source_hash = hex::encode(lab_reconstruct::hash_range(&mut source, 0, length)?);
+        let source_hash = hex::encode(lab_reconstruct::hash_range_with_resource_profile(
+            &mut source,
+            0,
+            length,
+            resources,
+        )?);
         save_source_frozen_then(
             output,
             &serde_json::json!({"schema_version":1,

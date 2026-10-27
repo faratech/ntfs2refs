@@ -170,7 +170,12 @@ pub fn assess(
         before.disk_attributes == 3,
         "general source is not offline read-only"
     );
-    let source_sha256 = hex::encode(lab_reconstruct::hash_range(source, 0, source.byte_len())?);
+    let source_sha256 = hex::encode(lab_reconstruct::hash_range_with_resource_profile(
+        source,
+        0,
+        source.byte_len(),
+        resources,
+    )?);
     let after = source.state(events)?;
     ensure!(
         before == after && source_sha256 == expected_source_sha256,

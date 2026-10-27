@@ -53,3 +53,16 @@ durability barriers remain in place. This reduces digest-call overhead without
 reducing the four full input passes or payload-proportional scratch. The change
 has compilation evidence only; no new unit tests, native run or measured speedup
 is claimed, and historical golden/test results do not qualify the new executable.
+
+The next source candidate overlaps the independent source and shadow SHA-256
+digests for images of at least 64 MiB when two CPUs are available. One named
+worker receives a single reusable, at-most-1-MiB buffer through bounded channels;
+the owning thread still performs the original ordered reads and comparisons.
+The shadow digest is joined before either full-image pin is accepted. Early
+errors close both channels before joining, including a worker returning its
+buffer. Worker startup, channel and panic failures refuse the comparison.
+Small/single-CPU comparisons remain serial. Both complete input rechecks,
+patch/retained hashes, four-pass I/O accounting and journal format are unchanged.
+This adds bounded CPU concurrency, not fewer reads or a low-scratch algorithm.
+It has compilation/format evidence only, no measured throughput or native
+qualification, and is not deployed into the running candidate-3 VM process.

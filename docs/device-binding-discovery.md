@@ -17,6 +17,12 @@ ancestry. The shadow must already be a separately prepared ReFS volume labeled
 `n2r-retained-shadow`; this command does not format or clear it. The source and
 shadow must use the current 512-byte logical-sector/4 KiB-cluster profile.
 
+Disk identity validation no longer requires a 1 GiB physical disk or a 256 MiB
+partition, and accepts physical disks beyond 64 TiB when their byte offsets fit
+Windows' signed 64-bit interface. The filesystem, GPT and target checks still
+apply; this does not establish that a particular 10 MiB ReFS volume is supported.
+Live source/shadow comparison remains limited to 128 GiB per partition.
+
 Before creating either output file, discovery also reads the source boot
 sector through the existing read-only partition reader and revalidates its
 device route. It refuses sources outside the 512-byte-sector, 4 KiB-cluster,

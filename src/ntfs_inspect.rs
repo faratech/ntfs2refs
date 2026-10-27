@@ -1463,7 +1463,15 @@ fn reconcile_allocation(report: &NtfsInspection, bitmap: &[u8]) -> AllocationRec
             return result;
         }
     }
-    let limits = Limits::default();
+    // The bitmap has already been read under the inspector's byte bound.
+    // Reconcile that entire actual domain rather than imposing a second,
+    // unrelated 2 MiB/16-million-cluster ceiling. Interval, name and sorting
+    // budgets remain independently bounded.
+    let limits = Limits {
+        max_bitmap_bytes: bitmap.len(),
+        max_cluster_checks: report.geometry.total_clusters,
+        ..Limits::default()
+    };
     let cluster = u64::from(report.geometry.cluster_size);
     let mut intervals = Vec::new();
     let mut name_units = 0usize;

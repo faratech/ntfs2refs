@@ -8,7 +8,11 @@ fn validate_source_geometry(
             && geometry.sectors_per_cluster == 8
             && geometry.cluster_size == 4096
             && geometry.file_record_size == 1024,
-        "source geometry preflight refused: supported source requires 512-byte logical sectors, 4-KiB clusters and 1-KiB MFT records; no output was created"
+        "source geometry preflight refused: volume {} bytes has {}-byte sectors, {}-byte clusters and {}-byte MFT records; the current converter requires 512-byte sectors, 4096-byte clusters and 1024-byte MFT records; no output was created",
+        geometry.volume_size,
+        geometry.bytes_per_sector,
+        geometry.cluster_size,
+        geometry.file_record_size,
     );
     Ok(())
 }
@@ -150,17 +154,12 @@ fn main() -> anyhow::Result<()> {
         source.filesystem == "NTFS"
             && shadow.filesystem == "ReFS"
             && shadow.label == "n2r-retained-shadow"
-            && source.bytes_per_sector == 512
-            && source
-                .sectors_per_cluster
-                .checked_mul(source.bytes_per_sector)
-                == Some(4096)
             && shadow.bytes_per_sector == 512
             && shadow
                 .sectors_per_cluster
                 .checked_mul(shadow.bytes_per_sector)
                 == Some(4096),
-        "source NTFS/shadow ReFS label or 512-byte/4-KiB filesystem profile differs"
+        "source must be NTFS and the prepared shadow must be 512-byte/4-KiB ReFS with the expected label"
     );
     ensure!(
         matches!(journal.filesystem.as_str(), "NTFS" | "ReFS"),

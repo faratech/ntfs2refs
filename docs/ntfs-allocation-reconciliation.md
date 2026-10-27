@@ -22,11 +22,14 @@ bitmap allocations beyond MFT EOF. Bitmap bytes must be fully initialized,
 unencoded and nonsparse for the requested domain; synthesized zeroes must never
 hide allocated file records or volume clusters.
 
-Limits are 4,096 physical intervals, 16,384 cumulative attribute-name units,
-2 MiB of bitmap and 16,777,216 cluster checks. Exceeding a bound produces a
-rejected diagnostic. The temporary model and sorting storage are bounded
-separately from retained report memory. Bits beyond the final cluster are
-padding and never become domain allocation.
+The standalone ledger's defaults are 4,096 physical intervals, 16,384
+cumulative attribute-name units, 2 MiB of bitmap and 16,777,216 cluster
+checks. The inspector supplies the full already-read bitmap and its actual
+cluster domain instead of reapplying those last two defaults; its bitmap read
+remains capped at 128 MiB. Reconciliation scans bitmap words across sorted
+ownership intervals and reports the first mismatched cluster. Interval, name
+and sorting limits still apply. Bits beyond the final cluster are padding and
+never become domain allocation.
 
 `consistent_raw_model` means the supplied decoded intervals reconcile with the
 bitmap. It does not establish a complete NTFS namespace, security descriptors,

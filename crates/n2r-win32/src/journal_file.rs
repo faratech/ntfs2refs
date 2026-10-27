@@ -83,7 +83,10 @@ impl GeneralJournalStorageBinding {
     pub fn validate(&self) -> io::Result<()> {
         self.disk.validate()?;
         require(
-            self.disk.identity.partition_bytes >= 1024 * 1024 * 1024
+            // Preparation reserves its bounded metadata plus both copies of
+            // at least one 4 KiB changed granule. Available filesystem space
+            // is checked separately and may be smaller than partition size.
+            self.disk.identity.partition_bytes >= JOURNAL_OVERHEAD_RESERVE + 2 * 4096
                 && !self.externally_enrolled_disk_unique_id.is_empty()
                 && self.externally_enrolled_disk_unique_id.len() <= 128
                 && self

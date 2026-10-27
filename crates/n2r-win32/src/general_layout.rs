@@ -5,9 +5,8 @@ use crate::layout::{self, PartitionIdentity, guid_bytes};
 use serde::{Deserialize, Serialize};
 use std::io;
 
-const MIN_DISK: u64 = 1 << 30;
-const MAX_DISK: u64 = 64 << 40;
-const MIN_PARTITION: u64 = 256 << 20;
+/// Current native bitmap/admission profile, not an on-disk format limit.
+pub const MAX_LIVE_PARTITION_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,7 +42,7 @@ impl GeneralSourceShadowBinding {
             s.partition_bytes == t.partition_bytes
                 && s.logical_sector_bytes == t.logical_sector_bytes
                 && s.physical_sector_bytes == t.physical_sector_bytes
-                && s.partition_bytes <= 128 * 1024 * 1024 * 1024,
+                && s.partition_bytes <= MAX_LIVE_PARTITION_BYTES,
             "source and shadow geometry exceeds comparison profile",
         )
     }
@@ -69,12 +68,16 @@ impl GeneralDiskBinding {
             "disk route exceeds bounded profile",
         )?;
         require(
-            (MIN_DISK..=MAX_DISK).contains(&p.disk_bytes)
+            // Windows disk offsets are signed 64-bit values. The partition
+            // and GPT checks below determine the actual minimum geometry;
+            // the physical disk may be small or substantially larger than the
+            // source partition without invalidating its identity.
+            p.disk_bytes <= i64::MAX as u64
                 && p.disk_bytes.is_multiple_of(512)
                 && (1..=128).contains(&p.partition_number)
                 && p.partition_offset >= 1 << 20
                 && p.partition_offset.is_multiple_of(4096)
-                && p.partition_bytes >= MIN_PARTITION
+                && p.partition_bytes >= 4096
                 && p.partition_bytes.is_multiple_of(4096)
                 && p.partition_offset
                     .checked_add(p.partition_bytes)

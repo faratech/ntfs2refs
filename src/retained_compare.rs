@@ -11,7 +11,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub(crate) const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+// Four full passes are included in the u64 I/O report, followed by 32 bytes of
+// file-container probes. The actual converter retains its own narrower live
+// admission limits; this streaming comparison does not need a 128 GiB cap.
+pub(crate) const MAX_IMAGE_BYTES: u64 = (u64::MAX - 32) / 4;
 const MAX_RETAINED_RANGES: usize = 1024;
 const MAX_PATCH_RANGES: u32 = 65_536;
 const BUFFER_BYTES: usize = 1024 * 1024;

@@ -47,6 +47,15 @@ The native shadow still initializes the logical file contents on separate
 storage. Eligible source extents can remain in place during cutover, but
 shadow I/O and scratch usage are not independent of payload size.
 
+The converter does not yet support arbitrary volume sizes. In particular, the
+live partition limit is 128 GiB, the source must use 4 KiB clusters, and the
+full-image comparison reads both partitions twice. A 1,000 TB NTFS volume
+requires larger source clusters under Windows' documented NTFS limits; merely
+removing an internal size check would not make it convertible. See
+[Microsoft's NTFS volume limits](https://learn.microsoft.com/en-us/windows-server/storage/file-server/ntfs-overview).
+The formatter and target profile must independently establish whether a small
+volume, including a 10 MiB example, can hold a valid ReFS filesystem.
+
 Journal profile 1 retains the existing 768 MiB journal ceiling. The opt-in
 profile 2 permits a maximum journal budget up to 16 GiB, with the changed-byte
 budget derived from that value after reserving metadata and both old and new

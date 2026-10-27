@@ -109,6 +109,52 @@ impl Assessment {
     }
 }
 
+/// Return the first bit whose allocation state differs from the expected state
+/// in a half-open cluster range. Whole words are checked together, while edge
+/// masks ensure that adjacent owners and out-of-domain padding are never read
+/// as part of the range.
+fn first_unexpected_bit(bitmap: &[u8], start: u64, end: u64, allocated: bool) -> Option<u64> {
+    let mut cursor = start;
+    if !cursor.is_multiple_of(8) && cursor < end {
+        let bit = (cursor % 8) as u32;
+        let count = (8 - u64::from(bit)).min(end - cursor) as u32;
+        let mask = (((1u16 << count) - 1) << bit) as u8;
+        let byte = bitmap[(cursor / 8) as usize];
+        let unexpected = (if allocated { !byte } else { byte }) & mask;
+        if unexpected != 0 {
+            return Some(cursor / 8 * 8 + u64::from(unexpected.trailing_zeros()));
+        }
+        cursor += u64::from(count);
+    }
+    while end - cursor >= 64 {
+        let at = (cursor / 8) as usize;
+        let word = u64::from_le_bytes(bitmap[at..at + 8].try_into().unwrap());
+        let unexpected = if allocated { !word } else { word };
+        if unexpected != 0 {
+            return Some(cursor + u64::from(unexpected.trailing_zeros()));
+        }
+        cursor += 64;
+    }
+    while end - cursor >= 8 {
+        let byte = bitmap[(cursor / 8) as usize];
+        let unexpected = if allocated { !byte } else { byte };
+        if unexpected != 0 {
+            return Some(cursor + u64::from(unexpected.trailing_zeros()));
+        }
+        cursor += 8;
+    }
+    if cursor < end {
+        let count = (end - cursor) as u32;
+        let mask = ((1u16 << count) - 1) as u8;
+        let byte = bitmap[(cursor / 8) as usize];
+        let unexpected = (if allocated { !byte } else { byte }) & mask;
+        if unexpected != 0 {
+            return Some(cursor + u64::from(unexpected.trailing_zeros()));
+        }
+    }
+    None
+}
+
 pub fn assess(
     domain_clusters: u64,
     bitmap: &[u8],
@@ -236,27 +282,22 @@ fn reconcile(
             });
         }
     }
-    let mut next = 0usize;
+    let mut cursor = 0u64;
     let mut allocated = 0u64;
-    for lcn in 0..domain {
-        while next < order.len() {
-            let interval = &intervals[order[next]];
-            if interval.lcn_start + interval.clusters > lcn {
-                break;
-            }
-            next += 1;
+    for &input in &order {
+        let interval = &intervals[input];
+        if let Some(lcn) = first_unexpected_bit(bitmap, cursor, interval.lcn_start, false) {
+            return Err(Refusal::AllocatedUnowned { lcn });
         }
-        let claim = order
-            .get(next)
-            .copied()
-            .filter(|&i| intervals[i].lcn_start <= lcn);
-        let bit = bitmap[(lcn / 8) as usize] & (1 << (lcn % 8)) != 0;
-        match (bit, claim) {
-            (true, None) => return Err(Refusal::AllocatedUnowned { lcn }),
-            (false, Some(input)) => return Err(Refusal::ClaimedFree { input, lcn }),
-            (true, Some(_)) => allocated += 1,
-            (false, None) => {}
+        let end = interval.lcn_start + interval.clusters;
+        if let Some(lcn) = first_unexpected_bit(bitmap, interval.lcn_start, end, true) {
+            return Err(Refusal::ClaimedFree { input, lcn });
         }
+        allocated += interval.clusters;
+        cursor = end;
+    }
+    if let Some(lcn) = first_unexpected_bit(bitmap, cursor, domain, false) {
+        return Err(Refusal::AllocatedUnowned { lcn });
     }
     let valid_last_bits = (domain % 8) as u32;
     let padding_bits_set = if valid_last_bits == 0 {

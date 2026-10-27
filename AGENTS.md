@@ -266,7 +266,8 @@ after a measured move aborts without retry/source execution. Mutation verificati
 also requires root birth/attribute bytes to match the original expectation,
 even when a pinned workload supplies new root runtime times. These are later
 build-only changes; none inherits the saved native results or authorizes a VM
-run while the 232 GiB cap request remains unanswered.
+run without the required capacity. Mike subsequently explicitly approved the
+232 GiB cap; the 64 GiB host-free reserve and all old checkpoints remain.
 
 The 8 GiB ordinary-append retention fixture is source-only preparation code in
 `Prepare-StreamingRetention8G.ps1`. It requires saved OFF rollback branch 40fb292c,
@@ -274,8 +275,10 @@ all eight checkpoints and 6 GiB admission capacity before any action. It restore
 only the owned clean baseline, verifies original payloads, appends zeros with no
 source moves/aging, and saves new manifest/baseline under retention8g. The
 dispatcher/readback support that exact separate scope with `-Retention8G`.
-Nothing has executed. The requested cap increase from 224 to 232 GiB is still
-pending; never infer approval from a goal continuation or bypass the current cap.
+At that preparation milestone nothing had executed. Mike subsequently approved
+raising the cap from 224 to 232 GiB specifically for this 6 GiB allowance. The
+64 GiB reserve remains unchanged. Record actual setup/dispatch state below;
+approval is not proof of native execution or success.
 
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.

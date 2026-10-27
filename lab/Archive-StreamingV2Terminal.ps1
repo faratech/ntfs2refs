@@ -17,7 +17,7 @@ try{
     $pins=Invoke-Command -Session $session -ArgumentList $dispatch.guest_output,$dispatch.guest_stage,$dispatch.task_name -ScriptBlock {
         param($Output,$Stage,$Task);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         if((Get-ScheduledTask -TaskName $Task).State.ToString()-in@('Running','Queued')-or
-            @(Get-CimInstance Win32_Process|Where-Object {$_.Name-like'ntfs2refs*'}).Count){throw 'Worker became active.'}
+            @(Get-CimInstance Win32_Process|Where-Object {$_.Name-like'ntfs2refs*'-or$_.Name-ceq'lab-convert-admitted-tree.exe'}).Count){throw 'Worker became active.'}
         $total=[long]0
         foreach($spec in @(@{kind='run';path=$Output},@{kind='stage';path=$Stage})){
             $base=Get-Item -LiteralPath $spec.path

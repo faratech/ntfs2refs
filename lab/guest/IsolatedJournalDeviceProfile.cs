@@ -86,6 +86,15 @@ namespace Ntfs2RefsResearch {
   // response, ordered device,length,alignment,layout,attributes,scsi,identifiers.
   // This is a deterministic observation token, never a live-device certificate.
   public static string ValidateSnapshot(byte[] device,byte[] length,byte[] alignment,byte[] layout,byte[] attributes,byte[] scsi,byte[] identifiers){
+   return ValidateSnapshotCore(device,length,alignment,layout,attributes,scsi,identifiers,false);
+  }
+  // Observation-only compatibility for the exact48-byte all-zero response
+  // recorded by the owned device's successful layout query. It is not a RAW
+  // initialization profile; callers separately observe current RAW/zero parts.
+  public static string ValidateObservationSnapshot(byte[] device,byte[] length,byte[] alignment,byte[] layout,byte[] attributes,byte[] scsi,byte[] identifiers){
+   return ValidateSnapshotCore(device,length,alignment,layout,attributes,scsi,identifiers,true);
+  }
+  static string ValidateSnapshotCore(byte[] device,byte[] length,byte[] alignment,byte[] layout,byte[] attributes,byte[] scsi,byte[] identifiers,bool observationOnly){
    Bounds(device,12,12,"STORAGE_DEVICE_NUMBER");
    Need(U32(device,0)==7&&U32(device,4)==2&&(U32(device,8)==0||U32(device,8)==UInt32.MaxValue),"Journal physical RAW device route differs.");
    Bounds(length,8,8,"GET_LENGTH_INFORMATION");Need(U64(length,0)==(ulong)JournalBytes,"Journal device length differs.");
@@ -93,7 +102,9 @@ namespace Ntfs2RefsResearch {
    Need(U32(alignment,0)==28&&U32(alignment,4)==28&&U32(alignment,16)==512&&U32(alignment,20)==4096&&U32(alignment,24)==0,"Journal access alignment differs.");
    uint cache=U32(alignment,8),cacheOffset=U32(alignment,12);
    Need(cache==0?cacheOffset==0:cache<=1048576&&(cache&(cache-1))==0&&cacheOffset<cache,"Invalid cache alignment.");Zero(alignment,28,alignment.Length,"Alignment response");
-   Bounds(layout,48,192,"DRIVE_LAYOUT_INFORMATION_EX");Need(U32(layout,0)==2&&U32(layout,4)==0,"Journal must remain RAW with no partitions.");Zero(layout,8,layout.Length,"RAW layout");
+   Bounds(layout,48,192,"DRIVE_LAYOUT_INFORMATION_EX");
+   if(U32(layout,0)==2&&U32(layout,4)==0){Zero(layout,8,layout.Length,"RAW layout");}
+   else{Need(observationOnly&&layout.Length==48,"Journal layout is outside the selected profile.");Zero(layout,0,layout.Length,"Exact observation-only MBR layout");}
    Bounds(attributes,16,16,"GET_DISK_ATTRIBUTES");Need(U32(attributes,0)==16&&U32(attributes,4)==0&&U64(attributes,8)==0,"Journal disk attributes differ.");
    Bounds(scsi,8,8,"SCSI_ADDRESS");Need(U32(scsi,0)==8&&scsi[4]==0&&scsi[5]==0&&scsi[6]==0&&scsi[7]==2,"Journal SCSI address differs.");
    Identifiers(identifiers);

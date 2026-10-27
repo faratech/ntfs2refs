@@ -27,6 +27,15 @@ namespace Ntfs2RefsResearch {
    return true;
   }
   public static IsolatedJournalStreamObservation ObserveJournal(Stream source,string identityToken){return ObserveRange(source,JournalBytes,identityToken);}
+  // The selected native review requires a complete zero read. This predicate
+  // is report consistency only; it never grants initialization/write authority.
+  // ObserveRange remains informational and can report nonzero managed ranges.
+  public static void RequireCompleteZeroObservation(IsolatedJournalStreamObservation value,string expectedIdentity){
+   if(value==null||!value.complete||value.requestedBytes!=JournalBytes||value.bytesRead!=JournalBytes||
+      value.readCalls<2||value.readCalls>MaximumReadCalls||!value.allZeroObserved||value.nonzeroBytes!=0||value.firstNonzeroOffset!=-1||
+      !Identity(expectedIdentity)||!String.Equals(value.identityToken,expectedIdentity,StringComparison.Ordinal)||!Identity(value.contentSha256))
+    throw new InvalidDataException("Complete zero-only8GiB observation required; no initialization/write authority is granted.");
+  }
   // The native entry uses only ObserveJournal. Small managed ranges exist for
   // pure error/boundary checks and carry no native-device observation claim.
   public static IsolatedJournalStreamObservation ObserveRange(Stream source,long expectedBytes,string identityToken){

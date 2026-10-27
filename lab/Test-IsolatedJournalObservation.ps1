@@ -69,4 +69,24 @@ foreach($reportType in @([Ntfs2RefsResearch.IsolatedJournalContentObservation],[
 Check (-not[Ntfs2RefsResearch.IsolatedJournalReader]::DurableWriterExclusionSupported) 'Observation enabled the durable proof path.'
 $type=[Ntfs2RefsResearch.IsolatedJournalContentObservation]::new()
 Check ($type.informationalOnly-and-not$type.grantsInitializationAuthority-and-not$type.grantsWriteAuthority-and-not$type.atomicImmutabilityClaimed-and-not$type.durableWriterFenceEstablished) 'Native report defaults claim authority.'
+# Synthetic report consistency tests only: these objects are not native reads
+# and this predicate grants no authority. The native caller invokes it only
+# after actual complete read coverage and before/after identity observations.
+$constructors=@([Ntfs2RefsResearch.IsolatedJournalStreamObservation].GetConstructors([Reflection.BindingFlags]'Instance,NonPublic'))
+Check ($constructors.Count-eq1) 'Bounded observation fixture constructor differs.'
+function Claimed([long]$Requested=8GB,[long]$Read=8GB,[long]$Calls=8193,[long]$Nonzero=0,[long]$First=-1,[string]$IdentityToken=$identity,[string]$Hash=('b'*64)){
+ return $constructors[0].Invoke([object[]]@($IdentityToken,$Hash,'2026-10-27T00:00:00Z','2026-10-27T00:00:01Z',$Requested,$Read,$Calls,$Nonzero,$First))
+}
+$claim=Claimed
+[Ntfs2RefsResearch.IsolatedJournalObservation]::RequireCompleteZeroObservation($claim,$identity)
+Check (-not$claim.grantsInitializationAuthority-and-not$claim.grantsWriteAuthority) 'Zero-only observation predicate granted authority.'
+Reject {[Ntfs2RefsResearch.IsolatedJournalObservation]::RequireCompleteZeroObservation($null,$identity)} 'Null native observation accepted.'
+foreach($fault in @('short-request','short-read','no-reads','over-budget','nonzero','bad-first','foreign-identity','bad-hash')){
+ $claim=switch($fault){
+  'short-request'{Claimed -Requested (8GB-512)} 'short-read'{Claimed -Read (8GB-512)} 'no-reads'{Claimed -Calls 0}
+  'over-budget'{Claimed -Calls ([Ntfs2RefsResearch.IsolatedJournalObservation]::MaximumReadCalls+1)}
+  'nonzero'{Claimed -Nonzero 1 -First 0} 'bad-first'{Claimed -First 0} 'foreign-identity'{Claimed -IdentityToken ('c'*64)} 'bad-hash'{Claimed -Hash ('z'*64)}
+ }
+ Reject {[Ntfs2RefsResearch.IsolatedJournalObservation]::RequireCompleteZeroObservation($claim,$identity)} ('Zero-only predicate accepted '+$fault)
+}
 [pscustomobject]@{checks=$checks;passed=$true;nativeObservationCalls=0;nativeApiCalls=0;deviceOpens=0;vmOperations=0;imageFilesCreated=0}

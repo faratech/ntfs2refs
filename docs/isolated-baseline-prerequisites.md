@@ -195,3 +195,67 @@ installed framework also passed.
 These checks establish source behavior only. Native reply compatibility, live
 identity acquisition and the actual device read remain unexecuted and must
 refuse unexpected replies without fallback or automatic retry.
+
+## Admitted observation refusal and bounded metadata diagnosis
+
+The original pinned launcher was invoked once at `2026-10-27T02:12:34Z`, under
+`.lab/hyperv/isolated-reference-20261026-review/journal-observation-review-20261027T021234092Z`.
+Host resource/worker checks and the fresh held identity graph passed; before/after
+inventory fingerprints agreed across 194 nodes/references. The native reader
+constructor then refused its layout response: `Journal must remain RAW with no
+partitions.` It never entered the 8 GiB payload loop. Launcher exit code was 1;
+no content hash, initialization proof, state setter or write followed.
+
+The original guest failure is pinned by SHA-256
+`70bac258f112e012858f322985e4ec59efc7330834e4526c0d8fbfa4d573132d`;
+`failed.json` is
+`2810c0f532ffe707e662cb138ba8b86cb2f288c42b5bfda2b01d2b67d98b825d`.
+Journal host identity, 4 MiB backing length and last-write timestamp were
+unchanged. File size and RAW state were not treated as blankness proofs.
+
+A separately admitted metadata-only query retained its partial result under
+`layout-metadata-review-20261027T022816440Z`. It decoded native style/count
+0/0, but remoting reduced nested reply objects to type-name strings. Its receipt
+is preserved. The one admitted diagnostic repeat fixed only serialization by
+converting the complete guest result to bounded JSON before transport. The
+diagnostic C# source stayed pinned to
+`ddc90d5a55f92cf66964f80e39eccfae650fcd5786ebbd8c9f374d7a82ddc629`.
+
+The complete response is under
+`layout-metadata-review-serialization-20261027T023841134Z/metadata-query.json`,
+SHA-256 `5cb7566f49288929d1e628a16ef8e9a23b56e2a823d61f222d9d3c9eae6453da`:
+
+- `IOCTL_DISK_GET_DRIVE_LAYOUT_EX` (`0x00070050`) succeeded, error 0.
+- Capacity 192 bytes; exactly 48 bytes returned, every byte zero.
+- Native DWORD offsets 0/4 decoded `PartitionStyle=0` / `PartitionCount=0`.
+- Independently bound Storage Management reported RAW and zero partitions,
+  before and after; its Disk 2 partition inventory was empty.
+- Device-number, length, SCSI and attributes queries matched the enrolled route;
+  no payload read, disk write, initialization, import or 8 GiB retry occurred.
+
+The refusal is an observational-profile representation mismatch, not evidence
+of a real partition or a marshalling-offset error. The existing Rust importer
+already documents the same exact 48-byte all-zero MBR-style header for a new
+VHDX; it never treats arbitrary MBR layouts as blank. Any observation correction
+must remain specific to this exact response plus fresh RAW/zero-partition
+Storage Management evidence, retain actual bytes in snapshot hashing, and
+preserve the separate initialization gate. No content-blankness conclusion
+follows from these metadata replies.
+
+The reviewed source correction adds only an observational compatibility path:
+`ValidateObservationSnapshot` accepts the exact 48-byte all-zero header in
+addition to the existing RAW form. It hashes the actual reply bytes and keeps
+the two representations distinct. The initialization `ValidateSnapshot`
+remains strict; `OpenReadOnly`/`ScanAndBind` still refuse without their durable
+proof capability. Fresh bound Storage Management RAW/zero-partition checks
+bracket the native observation, and both native/host completion predicates
+refuse nonzero or incomplete 8 GiB content. Those predicates issue no proof or
+write authority even after success.
+
+Focused source checks passed: 118 profile, 79 observation, 15 original-reader
+refusal and 140 launcher checks. The corrected launcher SHA-256 is
+`8285d58c92bdcb03b7036f3fa9ab09276395ea807250a32678d7e3c60ff81418`;
+reader/profile source pins are recorded by each fresh run. The one corrected
+observation is separately admitted after these checks. Original refusal and
+partial/corrected metadata receipts remain unchanged; no old retry field is
+rewritten and no automatic repeat is permitted on the corrected run's failure.

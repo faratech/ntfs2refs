@@ -23,6 +23,15 @@ function Assert-IsolatedObservationNoWorkers($Workers){
  if(-not($Workers.inventory_complete-is[bool])-or-not$Workers.inventory_complete-or
   @($Workers.active_tasks).Count-or@($Workers.known_project_processes).Count){throw 'Active, unknown or incomplete known-project worker inventory blocks observation.'}
 }
+function Assert-IsolatedObservationStorageManagement($Storage){
+ foreach($name in @('is_boot','is_system','is_offline','is_read_only','write_authority')){
+  if($Storage.$name-isnot[bool]-or$Storage.$name){throw 'Storage management flags must describe the unchanged ordinary RAW journal.'}
+ }
+ if($Storage.kind-cne'isolated-journal-storage-management-observation'-or$Storage.disk_number-ne2-or
+  $Storage.unique_id-cne'600224806AAC261F021F249596F332FC'-or$Storage.size_bytes-ne8GB-or
+  $Storage.logical_sector_bytes-ne512-or$Storage.physical_sector_bytes-ne4096-or$Storage.partition_style-cne'RAW'-or
+  $Storage.partition_count-ne0-or$Storage.cim_partition_count-ne0){throw 'Fresh independent Disk2 RAW/geometry/partition observation differs.'}
+}
 function Assert-IsolatedObservationReport($Report,[string]$Token){
  foreach($name in @('informationalOnly','grantsInitializationAuthority','grantsWriteAuthority','atomicImmutabilityClaimed','durableWriterFenceEstablished','identityMatchedBeforeAfter')){
   if($Report.$name-isnot[bool]){throw 'Observation flags must be actual Boolean values.'}
@@ -49,10 +58,8 @@ function Assert-IsolatedObservationReport($Report,[string]$Token){
   $Report.content.identityToken-cne$Token-or$Report.content.requestedBytes-ne8GB-or$Report.content.bytesRead-ne8GB-or$Report.content.complete-ne$true-or
   $Report.content.informationalOnly-ne$true-or$Report.content.grantsInitializationAuthority-ne$false-or$Report.content.grantsWriteAuthority-ne$false-or$Report.content.atomicImmutabilityClaimed-ne$false-or
   $Report.content.contentSha256-cnotmatch'\A[0-9a-f]{64}\z'-or$Report.content.readCalls-lt1-or$Report.content.readCalls-gt1048576-or
-  $Report.content.nonzeroBytes-lt0-or$Report.content.nonzeroBytes-gt8GB-or
+  $Report.content.nonzeroBytes-ne0-or$Report.content.firstNonzeroOffset-ne-1-or$Report.content.allZeroObserved-ne$true-or
   @($Report.queries).Count-lt1-or@($Report.queries).Count-gt32){throw 'Incomplete/out-of-profile journal observation or authority claim refused.'}
- if(($Report.content.nonzeroBytes-eq0-and($Report.content.allZeroObserved-ne$true-or$Report.content.firstNonzeroOffset-ne-1))-or
-  ($Report.content.nonzeroBytes-gt0-and($Report.content.allZeroObserved-ne$false-or$Report.content.firstNonzeroOffset-lt0-or$Report.content.firstNonzeroOffset-ge8GB))){throw 'Inconsistent nonzero-byte observation refused.'}
 }
 function Assert-IsolatedObservationFreshHostType($LoadedType=('Ntfs2RefsResearch.IsolatedHostFileIdentity' -as[type])){
  if($null-ne$LoadedType){throw 'Use a fresh PowerShell process: preloaded IsolatedHostFileIdentity type is refused before Add-Type.'}
@@ -129,11 +136,26 @@ $guestObservation={
    ($_.Name-match'\A(?:powershell|pwsh)\.exe\z'-and[string]$_.CommandLine-match'(?i)C:\\ntfs2refs\\')}|ForEach-Object {[pscustomobject]@{pid=$_.ProcessId;name=$_.Name;executable=$_.ExecutablePath}})
   [pscustomobject]@{inventory_complete=$true;active_tasks=$active;known_project_processes=$known;process_count=$processes.Count;project_task_count=$tasks.Count;observed_utc=[DateTime]::UtcNow.ToString('o')}
  }
- $before=Workers;$after=$null;$report=$null;$errorText=$null;$invocations=0;$loadedHash=$null
+ function StorageManagement {
+  $disks=@(Get-Disk -Number 2 -ErrorAction Stop)
+  if($disks.Count-ne1){throw 'Exactly one current Disk2 required.'};$disk=$disks[0]
+  $partitions=@(Get-CimInstance -Namespace 'root/Microsoft/Windows/Storage' -ClassName MSFT_Partition -Filter 'DiskNumber = 2' -ErrorAction Stop)
+  foreach($name in @('IsBoot','IsSystem','IsOffline','IsReadOnly')){if($disk.$name-isnot[bool]){throw 'Independent disk flags are incomplete.'}}
+  if($disk.Number-ne2-or$disk.UniqueId-cne'600224806AAC261F021F249596F332FC'-or$disk.Size-ne8GB-or
+   $disk.LogicalSectorSize-ne512-or$disk.PhysicalSectorSize-ne4096-or$disk.PartitionStyle.ToString()-cne'RAW'-or
+   $disk.NumberOfPartitions-ne0-or$partitions.Count-ne0-or$disk.IsBoot-or$disk.IsSystem-or$disk.IsOffline-or$disk.IsReadOnly){throw 'Independent current Disk2 RAW/geometry/partition/attribute flags differ.'}
+  [pscustomobject]@{kind='isolated-journal-storage-management-observation';disk_number=[int]$disk.Number;unique_id=[string]$disk.UniqueId;
+   size_bytes=[long]$disk.Size;logical_sector_bytes=[int]$disk.LogicalSectorSize;physical_sector_bytes=[int]$disk.PhysicalSectorSize;
+   partition_style=$disk.PartitionStyle.ToString();partition_count=[int]$disk.NumberOfPartitions;cim_partition_count=$partitions.Count;
+   is_boot=[bool]$disk.IsBoot;is_system=[bool]$disk.IsSystem;is_offline=[bool]$disk.IsOffline;is_read_only=[bool]$disk.IsReadOnly;
+   native_zero_attributes_still_required=$true;write_authority=$false;observed_utc=[DateTime]::UtcNow.ToString('o')}
+ }
+ $before=Workers;$after=$null;$storageBefore=$null;$storageAfter=$null;$report=$null;$errorText=$null;$invocations=0;$loadedHash=$null
  try{
   if([guid]$ExpectedVm-ne[guid]'8f7fc646-8c9f-41d0-b65a-ecfadccfc36a'-or$env:COMPUTERNAME-cne'N2R-WIN11'-or
    $ExpectedToken-cnotmatch'\A[0-9a-f]{64}\z'-or$AssemblySha256-cnotmatch'\A[0-9a-f]{64}\z'-or$AssemblyBase64.Length-gt4MB){throw 'Exact isolated guest and bounded pinned assembly required.'}
   if($before.active_tasks.Count-or$before.known_project_processes.Count){throw 'Known guest project worker blocks observation.'}
+  $storageBefore=StorageManagement
   foreach($name in @('IsolatedJournalReader','IsolatedJournalContentObservation','IsolatedJournalObservation','IsolatedJournalDeviceProfile','ZeroProof')){
    if(('Ntfs2RefsResearch.'+$name)-as[type]){throw 'A preloaded guest research type blocks assembly reuse.'}
   }
@@ -149,9 +171,12 @@ $guestObservation={
   if($null-eq$method-or$method.ReturnType.FullName-cne'Ntfs2RefsResearch.IsolatedJournalContentObservation'){throw 'Report-only observation API signature differs.'}
   $invocations=1;$report=$method.Invoke($null,[object[]]@($ExpectedVm,$ExpectedToken))
  }catch{$errorText=$_.Exception.ToString()}
- finally{try{$after=Workers}catch{$errorText=([string]$errorText+'; after-inventory: '+$_.Exception.Message)}}
+ finally{
+  try{$after=Workers}catch{$errorText=([string]$errorText+'; after-inventory: '+$_.Exception.Message)}
+  try{$storageAfter=StorageManagement}catch{$errorText=([string]$errorText+'; after-storage-management: '+$_.Exception.Message)}
+ }
  [pscustomobject]@{kind='isolated-journal-guest-observation-attempt';success=($null-eq$errorText);native_api_invocations=$invocations;
-  assembly_sha256=$loadedHash;before_workers=$before;after_workers=$after;report=$report;error=$errorText;
+  assembly_sha256=$loadedHash;before_workers=$before;after_workers=$after;storage_management_before=$storageBefore;storage_management_after=$storageAfter;report=$report;error=$errorText;
   guest_file_staging=$false;guest_attributes_changed=$false;privileges_changed=$false;initialization_authorized=$false;write_authority=$false;
   reader_lifetime='Private API using scope closes the native reader before its data-only return; transport failure does not establish worker termination.'}
 }
@@ -231,6 +256,8 @@ try{
  Save 'host-identity-after' @{host=$hostLease.snapshot;graph=$graphAfter;identity_pins_still_held=$true;durable_writer_fence=$false}
  Assert-IsolatedObservationNoWorkers $hostAfter
  Assert-IsolatedObservationNoWorkers $observed.before_workers;Assert-IsolatedObservationNoWorkers $observed.after_workers
+ Assert-IsolatedObservationStorageManagement $observed.storage_management_before
+ Assert-IsolatedObservationStorageManagement $observed.storage_management_after
  if($observed.success-ne$true-or$observed.native_api_invocations-ne1-or$observed.assembly_sha256-cne$dllHash-or$observed.guest_file_staging-or$observed.guest_attributes_changed-or$observed.privileges_changed-or$observed.write_authority){throw 'The one guest observation did not return its pinned data-only result.'}
  Assert-IsolatedObservationReport $observed.report $token
  $sameMetadata=$journalBefore.file_bytes-eq$journalAfter.file_bytes-and$journalBefore.last_write_ticks-eq$journalAfter.last_write_ticks
@@ -239,6 +266,7 @@ try{
   requested_bytes=8GB;bytes_read=$observed.report.content.bytesRead;content_sha256=$observed.report.content.contentSha256;
   nonzero_bytes=$observed.report.content.nonzeroBytes;first_nonzero_offset=$observed.report.content.firstNonzeroOffset;all_zero_observed=$observed.report.content.allZeroObserved;
   journal_backing_metadata_unchanged=$sameMetadata;known_project_workers_absent_before_after=$true;complete_host_identity_revalidated=$true;
+  independent_raw_disk2_before_after_verified=$true;zero_nonzero_bytes_required=$true;
   informational_only=$true;atomic_content_snapshot_claimed=$false;durable_writer_fence_established=$false;zero_proof_issued=$false;
   initialization_authorized=$false;write_authority=$false;device_attributes_changed=$false;guest_files_created=0;
   coverage='One sequential observation through Windows/Hyper-V; matching before/after identities and metadata do not exclude concurrent, alias, lower-stack, malicious administrator or kernel writers.';completed_utc=[DateTime]::UtcNow.ToString('o')}

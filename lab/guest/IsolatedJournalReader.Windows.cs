@@ -54,6 +54,7 @@ namespace Ntfs2RefsResearch {
   SafeFileHandle handle;
   readonly string identityToken, beforeDigest;
   readonly byte[] machineEvidence;
+  readonly bool observationOnly;
   long position, bytesRead, readCalls;
   long queryBytes;
   readonly List<IsolatedJournalReadQuery> queries=new List<IsolatedJournalReadQuery>();
@@ -73,8 +74,9 @@ namespace Ntfs2RefsResearch {
   [DllImport("kernel32.dll",SetLastError=true)]
   static extern uint GetSystemFirmwareTable(uint provider,uint table,IntPtr buffer,uint size);
 
-  IsolatedJournalReader(SafeFileHandle disk,string token,byte[] firmware) {
-   handle=disk;identityToken=token;machineEvidence=firmware;beforeDigest=Snapshot();
+  IsolatedJournalReader(SafeFileHandle disk,string token,byte[] firmware) : this(disk,token,firmware,false) {}
+  IsolatedJournalReader(SafeFileHandle disk,string token,byte[] firmware,bool forObservationOnly) {
+   handle=disk;identityToken=token;machineEvidence=firmware;observationOnly=forObservationOnly;beforeDigest=Snapshot();
   }
   public static string ExpectedIdentityToken() {
    string material="isolated-journal-zero-v1|8f7fc646-8c9f-41d0-b65a-ecfadccfc36a|"+
@@ -115,7 +117,7 @@ namespace Ntfs2RefsResearch {
    SafeFileHandle disk=CreateFileW(DevicePath,GenericRead,0,IntPtr.Zero,3,0,IntPtr.Zero);
    if(disk==null||disk.IsInvalid){int error=Marshal.GetLastWin32Error();if(disk!=null)disk.Dispose();throw new Win32Exception(error,"Open isolated journal for read-only observation");}
    try {
-    using(IsolatedJournalReader reader=new IsolatedJournalReader(disk,token,firmware)){
+    using(IsolatedJournalReader reader=new IsolatedJournalReader(disk,token,firmware,true)){
      return reader.ObserveContents(started);
     }
    }catch{disk.Dispose();throw;}
@@ -129,6 +131,7 @@ namespace Ntfs2RefsResearch {
    if(!Same(machineEvidence,firmware)||!String.Equals(after,beforeDigest,StringComparison.Ordinal)||
       bytesRead!=IsolatedJournalDeviceProfile.JournalBytes||position!=IsolatedJournalDeviceProfile.JournalBytes)
     throw new InvalidDataException("Native identity or complete observational byte coverage changed.");
+   IsolatedJournalObservation.RequireCompleteZeroObservation(content,identityToken);
    return new IsolatedJournalContentObservation {beforeSnapshotSha256=beforeDigest,afterSnapshotSha256=after,
     firmwareHex=Hex(machineEvidence),startedUtc=started,finishedUtc=DateTime.UtcNow.ToString("o"),
     nativeBytesRead=bytesRead,nativeReadCalls=readCalls,identityMatchedBeforeAfter=true,content=content,queries=CopyQueries()};
@@ -183,7 +186,9 @@ namespace Ntfs2RefsResearch {
    if(ids.Length!=size || BitConverter.ToUInt32(ids,0)!=BitConverter.ToUInt32(header,0) ||
       BitConverter.ToUInt32(ids,4)!=size)
     throw new InvalidDataException("Device-ID descriptor changed or was incomplete.");
-   return IsolatedJournalDeviceProfile.ValidateSnapshot(device,length,alignment,layout,attributes,scsi,ids);
+   return observationOnly
+    ? IsolatedJournalDeviceProfile.ValidateObservationSnapshot(device,length,alignment,layout,attributes,scsi,ids)
+    : IsolatedJournalDeviceProfile.ValidateSnapshot(device,length,alignment,layout,attributes,scsi,ids);
   }
   // Only the existing opaque same-stream proof is returned, after actual
   // before/after device queries and full read coverage agree. No write lease.

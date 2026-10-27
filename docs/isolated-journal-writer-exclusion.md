@@ -1,7 +1,10 @@
 # Parked independent-writer journal prerequisite
 
-This work is off the native-shadow alpha's critical path. No host identity
-collector, guest raw scan, initialization or writer trial was executed.
+This work is separate from the completed native-shadow alpha. A later admitted
+observation acquired host identities but refused native layout validation before
+its payload loop. Bounded metadata-only diagnosis recorded the exact response.
+No 8 GiB device scan, initialization or writer trial has completed; see
+[the prerequisite chronology](isolated-baseline-prerequisites.md#admitted-observation-refusal-and-bounded-metadata-diagnosis).
 
 The source collector joins current/checkpoint attachments and every VHD ancestor
 by native volume/file identity, retaining read-attributes handles and rechecking
@@ -25,7 +28,8 @@ informational zero/nonzero counts, and checks native identity before/after.
 It trusts Windows/Hyper-V and needs ordinary project-worker and route checks;
 it does not require a malicious-kernel/admin exclusion mechanism to report what
 was read. Matching identity/timestamp observations still do not prove an atomic
-immutable snapshot. No live observation has run from this source checkpoint.
+immutable snapshot. The first admitted attempt refused before payload reading;
+it did not create an observational hash or any initialization proof.
 
 The existing `OpenReadOnly` and `ScanAndBind` initialization-proof APIs retain
 their pre-native durable-fence refusal. An observational all-zero report cannot

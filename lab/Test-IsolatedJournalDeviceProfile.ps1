@@ -25,6 +25,7 @@ function Snapshot {
  [pscustomobject]@{device=$d;length=$l;alignment=$a;layout=$g;attributes=$r;scsi=$s;identifiers=$ids}
 }
 function Validate($s){[Ntfs2RefsResearch.IsolatedJournalDeviceProfile]::ValidateSnapshot($s.device,$s.length,$s.alignment,$s.layout,$s.attributes,$s.scsi,$s.identifiers)}
+function ValidateObservation($s){[Ntfs2RefsResearch.IsolatedJournalDeviceProfile]::ValidateObservationSnapshot($s.device,$s.length,$s.alignment,$s.layout,$s.attributes,$s.scsi,$s.identifiers)}
 function Smbios {
  $b=[byte[]]::new(41);$b[1]=2;$b[2]=6;U32 $b 4 33
  $b[8]=1;$b[9]=25;([guid][Ntfs2RefsResearch.IsolatedJournalDeviceProfile]::FirmwareUuid).ToByteArray().CopyTo($b,16)
@@ -121,4 +122,28 @@ foreach($key in @('device','length','alignment','layout','attributes','scsi','id
  $s=Snapshot;$s.$key=[byte[]]$s.$key[0..($s.$key.Length-2)];Reject {Validate $s} ('Truncated '+$key+' accepted.')
 }
 foreach($entry in @(@('alignment',65),@('layout',193),@('identifiers',65537))){$s=Snapshot;$s.($entry[0])=[byte[]]::new($entry[1]);Reject {Validate $s} ('Overcap '+$entry[0]+' accepted.')}
+$raw=Snapshot;$rawDigest=Validate $raw
+Check ((ValidateObservation $raw)-ceq$rawDigest) 'Observation changed genuine RAW48 hashing.'
+$raw.layout=[byte[]]::new(192);U32 $raw.layout 0 2
+Check ((ValidateObservation $raw)-ceq(Validate $raw)) 'Genuine RAW192 profile changed.'
+$observed=Snapshot;$observed.layout=[byte[]]::new(48);$observedDigest=ValidateObservation $observed
+Check ($observedDigest-cmatch'\A[0-9a-f]{64}\z'-and$observedDigest-cne$rawDigest) 'Exact observed MBR48 response was refused or normalized to RAW.'
+Reject {Validate $observed} 'Initialization profile accepted observation-only MBR48.'
+foreach($fault in @('padded-mbr','short','one-padding-byte','oversize','signature','checksum','reserved','last-reserved','gpt','unknown-style','partition-count')){
+ $bad=Snapshot;$bad.layout=[byte[]]::new(48)
+ switch($fault){
+  'padded-mbr'{$bad.layout=[byte[]]::new(192)} 'short'{$bad.layout=[byte[]]::new(47)}
+  'one-padding-byte'{$bad.layout=[byte[]]::new(49)} 'oversize'{$bad.layout=[byte[]]::new(193)}
+  'signature'{U32 $bad.layout 8 1} 'checksum'{U32 $bad.layout 12 1}
+  'reserved'{$bad.layout[16]=1} 'last-reserved'{$bad.layout[47]=1}
+  'gpt'{U32 $bad.layout 0 1} 'unknown-style'{U32 $bad.layout 0 3} 'partition-count'{U32 $bad.layout 4 1}
+ }
+ Reject {ValidateObservation $bad} ('Observation accepted foreign layout: '+$fault)
+}
+foreach($fault in @('device','length','logical-sector','scsi','naa','attributes')){
+ $bad=Snapshot;$bad.layout=[byte[]]::new(48)
+ switch($fault){'device'{U32 $bad.device 4 1};'length'{[BitConverter]::GetBytes([long](8GB-512)).CopyTo($bad.length,0)};
+  'logical-sector'{U32 $bad.alignment 16 4096};'scsi'{$bad.scsi[7]=1};'naa'{$bad.identifiers[43]=$bad.identifiers[43]-bxor1};'attributes'{$bad.attributes[8]=1}}
+ Reject {ValidateObservation $bad} ('Observation weakened shared identity checks: '+$fault)
+}
 [pscustomobject]@{checks=$checks;passed=$true;nativeOperations=0;deviceOperations=0;vmOperations=0;imageWrites=0}

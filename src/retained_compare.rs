@@ -352,6 +352,27 @@ struct PendingPatch {
     shadow: Sha256,
 }
 
+/// Append the contiguous changed portion of this buffer before finishing a
+/// patch or carrying it into the next buffer. Sector accounting stays in the
+/// comparison loop; digest calls operate on whole contiguous byte spans.
+fn append_patch_span(
+    pending: &mut Option<PendingPatch>,
+    start: &mut Option<usize>,
+    end: usize,
+    source: &[u8],
+    shadow: &[u8],
+) -> Result<()> {
+    if let Some(start) = start.take() {
+        let patch = pending
+            .as_mut()
+            .context("changed span has no pending patch")?;
+        patch.length += (end - start) as u64;
+        patch.source.update(&source[start..end]);
+        patch.shadow.update(&shadow[start..end]);
+    }
+    Ok(())
+}
+
 fn finish_patch(pending: &mut Option<PendingPatch>, patches: &mut Vec<ComparedPatch>) {
     if let Some(patch) = pending.take() {
         patches.push(ComparedPatch {
@@ -469,6 +490,9 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
             offset = end;
             continue;
         }
+        let mut patch_start = None;
+        let mut post_start = 0;
+        let mut post_retained = false;
         for index in (0..count).step_by(sector) {
             let position = offset + index as u64;
             let a = &left[index..index + sector];
@@ -493,7 +517,17 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
             }
             let in_retained = retained_index < request.retained_ranges.len()
                 && position >= request.retained_ranges[retained_index].offset;
+            if !wholly_shadow && in_retained != post_retained {
+                post_hash.update(if post_retained {
+                    &left[post_start..index]
+                } else {
+                    &right[post_start..index]
+                });
+                post_start = index;
+                post_retained = in_retained;
+            }
             if in_retained {
+                append_patch_span(&mut pending, &mut patch_start, index, &left, &right)?;
                 finish_patch(&mut pending, &mut patches);
                 let hashes = &mut retained[retained_index];
                 hashes.source.update(a);
@@ -501,12 +535,9 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
                 hashes.bytes += sector as u64;
                 hashes.differing_bytes += changed;
                 hashes.differing_sectors += u64::from(changed != 0);
-                post_hash.update(a);
             } else {
-                if !wholly_shadow {
-                    post_hash.update(b);
-                }
                 if changed == 0 {
+                    append_patch_span(&mut pending, &mut patch_start, index, &left, &right)?;
                     finish_patch(&mut pending, &mut patches);
                     continue;
                 }
@@ -529,11 +560,16 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
                         shadow: Sha256::new(),
                     });
                 }
-                let patch = pending.as_mut().expect("pending patch created");
-                patch.length += sector as u64;
-                patch.source.update(a);
-                patch.shadow.update(b);
+                patch_start.get_or_insert(index);
             }
+        }
+        append_patch_span(&mut pending, &mut patch_start, count, &left, &right)?;
+        if !wholly_shadow {
+            post_hash.update(if post_retained {
+                &left[post_start..count]
+            } else {
+                &right[post_start..count]
+            });
         }
         offset += count as u64;
     }

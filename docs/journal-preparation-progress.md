@@ -43,3 +43,13 @@ pre-change `ceef114` source blobs provide these small-fixture golden pins:
 Those pins use a memory backend whose successful `sync_all` is a no-op. They
 establish byte compatibility, not physical durability. No native disk test or
 speedup qualification is supplied by this source-only change.
+
+The later comparison implementation batches changed-patch SHA-256 updates by
+contiguous span within each 1 MiB input buffer, carrying a patch across buffer
+boundaries until an unchanged or retained sector ends it. Hybrid postimage
+hashing also batches contiguous source/shadow spans. Sector difference counts,
+patch boundaries, retained-range proofs, complete input rechecks and journal
+durability barriers remain in place. This reduces digest-call overhead without
+reducing the four full input passes or payload-proportional scratch. The change
+has compilation evidence only; no new unit tests, native run or measured speedup
+is claimed, and historical golden/test results do not qualify the new executable.

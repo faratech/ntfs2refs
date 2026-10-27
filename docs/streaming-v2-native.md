@@ -142,3 +142,19 @@ The refused branch is preserved OFF as
 its enrolled clean NTFS baseline; in-process Hyper-V observations stayed stale
 through the post-restore wait, but a fresh process confirmed OFF and baseline
 `775f4db8-8635-486c-b6eb-7098426b51a6`. No second restore was issued.
+
+Candidate 3 was dispatched once at 18:10:37 UTC, run
+`e5d4b7dfa9474dedb3e19b67c1b03f24`, request SHA-256
+`6b2d9eef8030430e8a9f564f93318e2aa6b2d953ba6152ee6a1beb8f9697cfa1`.
+Producer source is `98d02a4f698d44d7ba89c5a45c24b49422eae363` plus the
+unchanged capabilities-only dirty patch. Converter SHA-256 is
+`a28a4a5b74839754181f4cc9a44d97aab383b665f2249746418457c8bcde6f39`,
+binder `1260d6be04cb606e69de10d7132e25094b85beaf48d165c52c8af07f0f952cc5`,
+recovery `24c92454dd69c69dc9a7b9538e95722a1ce36936f6f418a866470a55709a2231`.
+PID 2540 remained live at 18:12 UTC in source qualification. The updated
+collector distinguishes source observation/admission from actual construction
+and records process working-set counters. It does not infer completion from I/O.
+Postcheck executables were built/pinned separately from the same source:
+verifier `7fb8d16a4a31009d2c054e09bc786a2d3747db20187104d7fdd4763d8f1b8957`,
+mutator `f73a8ad55923dcf88c58385de70a496ba85c9a1151b2c6aa9f8ab85fcd374517`.
+No outcome or expanded qualification is claimed for this live attempt.

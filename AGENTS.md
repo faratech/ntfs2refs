@@ -92,6 +92,19 @@ right and syscall-specific error context are now added. Candidate 2 is archived
 and preserved OFF at `beddfbe8-f40d-4903-9c2c-c6162b3b4349`; only this disposable
 VM was restored to its own original NTFS baseline. No old task is redispatched.
 
+Candidate 3 is now the only active streaming attempt: run
+`e5d4b7dfa9474dedb3e19b67c1b03f24`, PID 2540 created 18:10:37 UTC,
+producer `98d02a4f698d44d7ba89c5a45c24b49422eae363` plus the unchanged
+capabilities-only dirty patch. Converter SHA-256 is
+`a28a4a5b74839754181f4cc9a44d97aab383b665f2249746418457c8bcde6f39`.
+At 18:12 UTC the same task/process was live in source qualification. Observe
+with `Collect-StreamingV2Conversion.ps1 -Candidate candidate3`. Do not restart.
+After terminal state, `Archive-StreamingV2Terminal.ps1` preserves and rehashes
+the guest run/stage. Rust postcheck tools are pinned in this candidate's
+`rust-postcheck-tools`; use the existing beta postcheck/reboot scripts with
+the explicit `-StreamingV2` switch only after successful handoff. No native
+streaming conversion/recovery success is established yet.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

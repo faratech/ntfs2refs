@@ -6,7 +6,7 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{Read, Seek, SeekFrom},
 };
 
@@ -247,6 +247,18 @@ pub fn inspect_medium(
     reader: &mut (impl Read + Seek),
     image_bytes: u64,
 ) -> Result<MediumAllocatorObservation> {
+    inspect_medium_with_resource_profile(
+        reader,
+        image_bytes,
+        crate::ntfs_admission::ResourceProfile::AlphaV1,
+    )
+}
+
+pub fn inspect_medium_with_resource_profile(
+    reader: &mut (impl Read + Seek),
+    image_bytes: u64,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<MediumAllocatorObservation> {
     let refs = refs_inspect::inspect(reader, image_bytes)?;
     let geometry = &refs.geometry;
     ensure!(
@@ -340,6 +352,17 @@ pub fn inspect_medium(
         "Medium allocator root hash or CRC differs"
     );
     let root = refs_node::inspect_root_node(&root_bytes)?;
+    if resources != crate::ntfs_admission::ResourceProfile::AlphaV1 {
+        return inspect_medium_multilevel(
+            reader,
+            image_bytes,
+            checkpoint,
+            root_slots,
+            &root_bytes,
+            root,
+            &mappings,
+        );
+    }
     ensure!(
         root.table_id_low == 33 && root.node_level == 1,
         "unsupported Medium root shape"
@@ -406,6 +429,168 @@ pub fn inspect_medium(
     );
     Ok(MediumAllocatorObservation {
         profile: "candidate ReFS 3.14 Medium allocator one-level walk",
+        checkpoint_lcn: checkpoint.0,
+        checkpoint_clock: checkpoint.1,
+        root_physical_lcns: root_slots,
+        child_pages,
+        rows,
+        free_clusters: free,
+        allocated_clusters: covered - free,
+        allocated_ranges,
+        allocator_walk_complete: true,
+        whole_volume_ownership_verified: false,
+        windows_mount_qualified: false,
+    })
+}
+
+struct PendingAllocatorPage {
+    virtual_slots: [u64; 4],
+    crc64: u64,
+    expected_level: u8,
+}
+
+fn enqueue_allocator_children(
+    rows: &[refs_node::NodeRowObservation],
+    parent_level: u8,
+    pending: &mut Vec<PendingAllocatorPage>,
+    pages_read: usize,
+    max_pages: usize,
+) -> Result<()> {
+    ensure!(
+        parent_level > 0 && !rows.is_empty(),
+        "empty or leaf allocator index node"
+    );
+    ensure!(
+        pages_read + pending.len() + rows.len() <= max_pages,
+        "allocator page budget exhausted before following children"
+    );
+    for row in rows.iter().rev() {
+        let (_key, value) = row_parts(row)?;
+        ensure!(
+            value.len() == 48
+                && u16le(&value, 0x20) == 0
+                && value[0x22] == 2
+                && value[0x23] == 8
+                && u32le(&value, 0x24) == 8,
+            "allocator child reference format differs"
+        );
+        pending.push(PendingAllocatorPage {
+            virtual_slots: [
+                u64le(&value, 0),
+                u64le(&value, 8),
+                u64le(&value, 16),
+                u64le(&value, 24),
+            ],
+            crc64: u64le(&value, 0x28),
+            expected_level: parent_level - 1,
+        });
+    }
+    Ok(())
+}
+
+/// Only compact decoded allocator rows and intervals survive each page. The
+/// authenticated container map remains independently required and bounded.
+fn inspect_medium_multilevel(
+    reader: &mut (impl Read + Seek),
+    image_bytes: u64,
+    checkpoint: (u64, u64),
+    root_slots: [u64; 4],
+    root_bytes: &[u8; PAGE],
+    root: refs_node::RootNodeObservation,
+    mappings: &BTreeMap<u64, u64>,
+) -> Result<MediumAllocatorObservation> {
+    const MAX_PAGES: usize = 4096;
+    const MAX_ROWS: usize = 65536;
+    const MAX_DEPTH: u8 = 8;
+    ensure!(
+        root.table_id_low == 33
+            && root.node_level <= MAX_DEPTH
+            && root.whole_table_row_count <= MAX_ROWS as u64,
+        "experimental Medium allocator root exceeds traversal profile"
+    );
+    let domain = image_bytes / CLUSTER;
+    let volume_signature = u32le(root_bytes, 0xc);
+    let mut pending = Vec::new();
+    let mut seen: BTreeSet<u64> = root_slots.into_iter().collect();
+    let mut child_pages = Vec::new();
+    let mut rows = Vec::new();
+    let mut allocated_ranges = Vec::new();
+    let (mut covered, mut free) = (0u64, 0u64);
+    let mut consume_leaf = |leaf: &[refs_node::NodeRowObservation]| -> Result<()> {
+        ensure!(
+            rows.len() + leaf.len() <= MAX_ROWS,
+            "Medium allocator leaf-row budget exhausted"
+        );
+        for row in leaf {
+            let decoded = decode_leaf(row, domain, &mut allocated_ranges)?;
+            ensure!(
+                decoded.start_lcn == covered,
+                "Medium allocator gap or row disorder"
+            );
+            covered = covered
+                .checked_add(decoded.clusters)
+                .context("allocator coverage overflow")?;
+            free = free
+                .checked_add(decoded.free_clusters)
+                .context("allocator free count overflow")?;
+            rows.push(decoded);
+        }
+        Ok(())
+    };
+    if root.node_level == 0 {
+        consume_leaf(&root.rows)?;
+    } else {
+        enqueue_allocator_children(&root.rows, root.node_level, &mut pending, 1, MAX_PAGES)?;
+    }
+    while let Some(next) = pending.pop() {
+        ensure!(
+            child_pages.len() + 1 < MAX_PAGES,
+            "Medium allocator page budget exhausted"
+        );
+        let mut physical = [0; 4];
+        for (index, &vlcn) in next.virtual_slots.iter().enumerate() {
+            physical[index] = translate(vlcn, mappings, domain)?;
+            ensure!(
+                seen.insert(physical[index]),
+                "cyclic, shared or overlapping Medium allocator page"
+            );
+        }
+        let bytes = read_page(reader, &physical, image_bytes)?;
+        ensure!(
+            crc64_nvme(&bytes) == next.crc64
+                && &bytes[..4] == b"MSB+"
+                && u32le(&bytes, 4) == 2
+                && u32le(&bytes, 8) == 0
+                && u32le(&bytes, 0xc) == volume_signature
+                && u64le(&bytes, 0x40) == 0
+                && u64le(&bytes, 0x48) == 33
+                && (0..4).all(|i| u64le(&bytes, 0x20 + i * 8) == next.virtual_slots[i]),
+            "Medium allocator child CRC, header, table or self-location differs"
+        );
+        let node = refs_node::inspect_child_node(&bytes)?;
+        ensure!(
+            node.node_level == next.expected_level,
+            "Medium allocator child level differs from parent"
+        );
+        child_pages.push(physical);
+        if node.node_level == 0 {
+            consume_leaf(&node.rows)?;
+        } else {
+            enqueue_allocator_children(
+                &node.rows,
+                node.node_level,
+                &mut pending,
+                1 + child_pages.len(),
+                MAX_PAGES,
+            )?;
+        }
+    }
+    ensure!(
+        rows.len() as u64 == root.whole_table_row_count && covered == domain,
+        "Medium allocator row count or full-volume coverage differs"
+    );
+    Ok(MediumAllocatorObservation {
+        profile: "candidate ReFS 3.14 Medium allocator bounded multilevel walk",
         checkpoint_lcn: checkpoint.0,
         checkpoint_clock: checkpoint.1,
         root_physical_lcns: root_slots,

@@ -40,3 +40,17 @@ Windows-generated 3.14 corpus. Both tiers' free counts agree with REFSNT
 before and after one isolated extent adoption. Block refcounts, other
 reservations and the whole metadata/data reference graph remain outside that
 reader's proof.
+
+The later experimental larger-tree path adds a multilevel Medium allocator
+walk, connected to retained-payload coverage checks. It decodes each leaf as
+it arrives, retaining compact allocator rows/ranges instead of all raw leaf
+rows. Bounds are 4,096 pages including the root, 65,536 leaf rows and eight
+levels below the root. Every child must match its parent CRC, virtual self
+locations, table, volume signature and expected level. Repeated/overlapping
+physical page clusters, incomplete row counts and gaps in full-volume coverage
+refuse the entire observation. The default one-level reader is preserved.
+
+This expanded walk has compilation evidence only; the historical corpus results
+above do not qualify it. Container-table and Small-allocator traversal still have
+their existing bounds, and the live 128 GiB partition ceiling remains. No write-
+set omission, whole-volume ownership or native conversion claim is added.

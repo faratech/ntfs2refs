@@ -133,6 +133,11 @@ post-dismount failures, preserved native errors and the same opaque frozen-handl
 token. Default schema-1 witnesses retain their assembled path and bounds.
 The live partition ceiling remains unchanged; raw ReFS container/allocator
 traversal bounds still need to scale before larger-volume routing is qualified.
+The expanded retained-extent check now has a bounded multilevel Medium allocator
+walker (4,096 pages, 65,536 leaf rows, depth eight) that decodes leaves as they
+arrive and rejects repeated physical pages, bad child bindings and incomplete
+coverage. It has compilation evidence only. Default Medium traversal remains
+one-level; Container Table and Small allocator bounds still remain.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

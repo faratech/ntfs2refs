@@ -197,7 +197,8 @@ pub fn inspect_with_resource_profile<R: Read + Seek>(
                 .ok_or_else(|| anyhow::anyhow!("retained byte count overflow"))
         })?;
     validate_retained_budget(retained_bytes, resources)?;
-    let medium = refs_allocator::inspect_medium(reader, image_bytes)?;
+    let medium =
+        refs_allocator::inspect_medium_with_resource_profile(reader, image_bytes, resources)?;
     let small = refs_allocator::inspect_small(reader, image_bytes)?;
     ensure!(
         medium.checkpoint_lcn == small.checkpoint_lcn

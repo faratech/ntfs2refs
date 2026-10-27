@@ -1664,6 +1664,25 @@ pub fn observe_general_converted_ordinary_with_label(
     observe_general_converted_label_profile(pair, input, Some(expected_label), same_security, None)
 }
 
+pub fn observe_general_converted_ordinary_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
+    if let Some(label) = expected_label {
+        label.validate()?;
+    }
+    observe_general_converted_label_profile(
+        pair,
+        input,
+        expected_label,
+        same_security,
+        resource_profile,
+    )
+}
+
 fn observe_general_converted_label_profile(
     pair: GeneralSourceShadowBinding,
     input: &[Input<'_>],
@@ -1732,6 +1751,7 @@ pub fn verify_general_converted_after_mutation_ordinary(
         root_basic_after_mutation,
         None,
         same_security,
+        None,
     )
 }
 
@@ -1749,6 +1769,28 @@ pub fn verify_general_converted_after_mutation_ordinary_with_label(
         root_basic_after_mutation,
         Some(expected_label),
         same_security,
+        None,
+    )
+}
+
+pub fn verify_general_converted_after_mutation_ordinary_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    root_basic_after_mutation: [u8; 40],
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
+    if let Some(label) = expected_label {
+        label.validate()?;
+    }
+    verify_general_mutation_label_profile(
+        pair,
+        input,
+        root_basic_after_mutation,
+        expected_label,
+        same_security,
+        resource_profile,
     )
 }
 
@@ -1758,6 +1800,7 @@ fn verify_general_mutation_label_profile(
     root_basic_after_mutation: [u8; 40],
     expected_label: Option<&crate::volume_label::VolumeLabel>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralConvertedReport> {
     let root = input
         .first()
@@ -1779,8 +1822,13 @@ fn verify_general_mutation_label_profile(
             "post-mutation root creation, attributes or time order differs",
         ));
     }
-    let report =
-        observe_general_converted_label_profile(pair, input, expected_label, &same_security, None)?;
+    let report = observe_general_converted_label_profile(
+        pair,
+        input,
+        expected_label,
+        &same_security,
+        resource_profile,
+    )?;
     validate_existing(
         &report.native,
         input,

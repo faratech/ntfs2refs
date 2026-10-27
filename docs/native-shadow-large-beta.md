@@ -142,3 +142,21 @@ beta VM once and requires a newer UTC guest boot followed by all six payload
 hashes. It neither force-powers-off nor retries boot/recovery actions on an
 observation failure. Create-new intent/result files preserve partial attempts.
 This helper has syntax-check evidence only and has not rebooted the active VM.
+
+The later source candidate also repairs the standalone Rust post-handoff
+verifier's profile propagation: expected-tree validation, native observation
+and strict post-mutation checking now use the pinned request's resource profile.
+Legacy no-profile callers still select the alpha path. The Rust mutation
+workload has a separate `--experimental-large-beta` enrollment requiring this
+beta's exact 240 GiB partition/disk GUIDs, offset, source disk 1, guest name and
+larger-tree profile; its default 52 GiB enrollment remains. It retains the
+50/80/10 MiB create/grow/truncate workload, 128-entry directory workload and exact
+root-basic-info capture. New mutation reports bind the request hash and resource
+profile. Strict verification requires that binding on larger-profile reports;
+legacy reports lacking it are accepted only for unprofiled requests.
+
+These Rust helpers have release-build evidence, not execution evidence. No new
+helper binary has replaced the active conversion executable or run a mutation.
+At `2026-10-27T11:22:10Z`, the original candidate-3 converter was still live
+and had completed comparison, advancing to `rechecking-source`. No apply or
+conversion result existed. Continue observing the same process/run.

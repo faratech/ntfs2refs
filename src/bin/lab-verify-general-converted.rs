@@ -59,6 +59,10 @@ fn main() -> anyhow::Result<()> {
         only_new_test_paths_written: bool,
         root_basic_before: Vec<u8>,
         root_basic_after: Vec<u8>,
+        #[serde(default)]
+        request_sha256: Option<String>,
+        #[serde(default)]
+        source_resource_profile: Option<ntfs2refs::ntfs_admission::ResourceProfile>,
     }
     fn pinned(path: &PathBuf, expected: &str, max: u64) -> Result<Vec<u8>> {
         let metadata = fs::symlink_metadata(path)?;
@@ -97,6 +101,7 @@ fn main() -> anyhow::Result<()> {
     let request: general_reconstruct::Request =
         serde_json::from_slice(&pinned(&args.request, &args.request_sha256, 131072)?)?;
     request.validate()?;
+    let resources = request.source_resource_profile.unwrap_or_default();
     let expected_bytes = pinned(
         &args.expectation,
         &args.expectation_sha256,
@@ -107,11 +112,18 @@ fn main() -> anyhow::Result<()> {
         "post-handoff expected tree differs from request"
     );
     let expected: shadow_tree::ExpectedTree = serde_json::from_slice(&expected_bytes)?;
-    expected.validate()?;
+    expected.validate_with_resource_profile(resources)?;
     let mutation = if let (Some(path), Some(pin)) =
         (&args.mutation_report, &args.mutation_report_sha256)
     {
         let proof: MutationEvidence = serde_json::from_slice(&pinned(path, pin, 8 * 1024 * 1024)?)?;
+        ensure!(
+            proof.source_resource_profile == request.source_resource_profile
+                && (proof.request_sha256.as_deref() == Some(args.request_sha256.as_str())
+                    || (proof.request_sha256.is_none()
+                        && request.source_resource_profile.is_none())),
+            "mutation report request/profile binding differs"
+        );
         ensure!(
             proof.schema_version == 1
                 && proof.kind == "general-refs-mutation-workload"
@@ -184,45 +196,40 @@ fn main() -> anyhow::Result<()> {
     };
     let attempted = if filesystem == "ReFS" {
         if args.diagnose_only {
-            if let Some(label) = &request.expected_source_label {
-                shadow_native::observe_general_converted_ordinary_with_label(
-                    pair,
-                    &input,
-                    label,
-                    same_security,
-                )
-            } else {
-                shadow_native::observe_general_converted_ordinary(pair, &input, same_security)
-            }
+            shadow_native::observe_general_converted_ordinary_with_resource_profile(
+                pair,
+                &input,
+                request.expected_source_label.as_ref(),
+                same_security,
+                resources.native_profile(),
+            )
         } else if let Some(proof) = &mutation {
             let mut root_basic = [0u8; 40];
             root_basic.copy_from_slice(&proof.root_basic_after);
-            if let Some(label) = &request.expected_source_label {
-                shadow_native::verify_general_converted_after_mutation_ordinary_with_label(
-                    pair,
-                    &input,
-                    root_basic,
-                    label,
-                    same_security,
-                )
-            } else {
-                shadow_native::verify_general_converted_after_mutation_ordinary(
-                    pair,
-                    &input,
-                    root_basic,
-                    same_security,
-                )
-            }
+            shadow_native::verify_general_converted_after_mutation_ordinary_with_resource_profile(
+                pair,
+                &input,
+                root_basic,
+                request.expected_source_label.as_ref(),
+                same_security,
+                resources.native_profile(),
+            )
         } else {
             if let Some(label) = &request.expected_source_label {
-                shadow_native::verify_general_converted_ordinary_with_label(
+                shadow_native::verify_general_converted_ordinary_with_label_and_resource_profile(
                     pair,
                     &input,
                     label,
                     same_security,
+                    resources.native_profile(),
                 )
             } else {
-                shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
+                shadow_native::verify_general_converted_ordinary_with_resource_profile(
+                    pair,
+                    &input,
+                    same_security,
+                    resources.native_profile(),
+                )
             }
         }
     } else {

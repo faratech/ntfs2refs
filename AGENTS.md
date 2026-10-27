@@ -174,6 +174,12 @@ one flushed write, before handoff. Observe that exact task; do not redispatch.
 See [the recovery branch](docs/streaming-v2-recovery.md). No recovery outcome is
 recorded yet. Preserve the interrupted branch and verify persistent exclusion
 after reboot before executing explicit recovery with its original staged helper.
+It subsequently entered journal preparation; its initial CNG comparison passed
+and the existing full Rust source recheck was live. The interruption point has
+not yet been observed. Once terminal, use the archive/preservation controller,
+then the single-boot exclusion controller before explicit recovery. Recovery
+tasks have their own collector; never redispatch either producer or recovery on
+an observation timeout. Controller details are in the recovery branch document.
 
 Subsequent source caches the two planning bitmap views across V2 source runs
 only while no submitted move/mapping change occurred. Every actual move still

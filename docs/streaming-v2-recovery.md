@@ -53,3 +53,26 @@ Do not run recovery over any branch that crossed handoff.
 No unit tests were added or run. Source syntax/build checks are not native
 interruption/recovery qualification. Keep the completed native conversion case
 separate from this experiment and from subsequent builds.
+
+The same producer subsequently completed source/target qualification and entered
+journal preparation. Its native CNG comparison pass completed and the existing
+Rust full-source recheck was observed live; no recovery result or interruption
+is inferred from that intermediate state. Use the recorded task/PID, not a new
+dispatch, until it becomes terminal.
+
+`Preserve-StreamingV2Interruption.ps1` requires exit 86, the verified terminal
+archive, no completed apply/handoff and the expected persistent disk flags. It
+performs only a clean shutdown and OFF checkpoint. The new
+`Restart-StreamingV2Interrupted.ps1` records a single boot and confirms the same
+excluded source/shadow and terminal producer afterward, without source mount
+attempts by the controller. Resume and snapshot-forked rollback use separate
+reboot receipts. The 2 GiB restart/recovery forecast creates no new shadow or
+payload and is based on roughly 1 GiB observed growth for the same VM's earlier
+two-boot/mutation child; the global 224 GiB cap and 64 GiB free reserve remain.
+
+Recovery dispatch additionally requires that matching successful exclusion
+receipt. Observe an already dispatched operation with
+`Collect-StreamingV2Recovery.ps1`; it reads the recorded task, process counters,
+terminal results and live disk protection without restarting or repairing it.
+These controllers have syntax checks only until actual execution. No unit
+tests were added or run.

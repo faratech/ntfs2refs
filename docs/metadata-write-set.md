@@ -68,3 +68,17 @@ This Small-tier expansion has compilation evidence only. Its default entry
 still uses the original root-only profile, with no new field in legacy JSON
 when there are no child pages. Container traversal and larger-volume routing
 remain unfinished; native qualification and the partition ceiling are unchanged.
+
+Container lookup now borrows the validated, sorted mapping rows and uses binary
+search instead of constructing duplicate B-tree indexes in Medium/virtual-root
+readers. Container traversal retains rows in index order, rejecting duplicate
+or unsorted IDs; physical-overlap checks sort a compact vector of starts. Raw
+diagnostic hex is still retained, and container traversal budgets are unchanged.
+
+The experimental Small reader also uses a physical-bootstrap-only inspection,
+avoiding an extra container/virtual-root scan. This still reads the redundant
+headers, anchors, checkpoints and physical root pages needed for Small's own
+bindings. Skipped descendants are explicitly absent and remain unverified;
+retained coverage independently requires the Medium/container checks. Default
+inspection keeps its full bounded bootstrap path. These changes have compilation
+evidence only, with no new unit tests or native execution.

@@ -61,6 +61,23 @@ pub struct RefsInspection {
 /// supplied volume view. A whole-disk image must be sliced to its partition by
 /// the caller; a VHDX container is not a raw volume.
 pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<RefsInspection> {
+    inspect_profile(reader, length, true)
+}
+
+/// Read redundant headers and physical bootstrap structures without building
+/// container maps. This locates the Small root, not virtual metadata pages.
+pub fn inspect_physical_bootstrap<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+) -> Result<RefsInspection> {
+    inspect_profile(reader, length, false)
+}
+
+fn inspect_profile<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    include_virtual: bool,
+) -> Result<RefsInspection> {
     if length < HEADER_BYTES as u64 {
         bail!("ReFS header requires at least 512 bytes");
     }
@@ -103,7 +120,11 @@ pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<RefsInspec
                 .to_owned(),
         );
     }
-    let bootstrap = crate::refs_bootstrap::inspect(reader, &geometry, &primary)?;
+    let bootstrap = if include_virtual {
+        crate::refs_bootstrap::inspect(reader, &geometry, &primary)?
+    } else {
+        crate::refs_bootstrap::inspect_physical(reader, &geometry, &primary)?
+    };
     Ok(RefsInspection {
         geometry,
         backup_probe_offset,

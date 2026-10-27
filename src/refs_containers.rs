@@ -7,7 +7,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io::{Read, Seek, SeekFrom},
 };
 
@@ -362,8 +362,8 @@ pub fn inspect_container_tables<R: Read + Seek>(
             expected_level: None,
         }];
         let mut visited = BTreeSet::new();
-        let mut mappings = BTreeMap::new();
-        let mut extents = BTreeMap::<u64, u64>::new();
+        let mut mappings: Vec<ContainerMapping> = Vec::new();
+        let mut extents = Vec::new();
         while let Some(pending) = stack.pop() {
             let preflight = (|| -> Result<()> {
                 ensure!(
@@ -482,18 +482,12 @@ pub fn inspect_container_tables<R: Read + Seek>(
                         let mapping =
                             leaf_mapping(row, page_index, geometry.volume_bytes / CLUSTER)?;
                         ensure!(
-                            !mappings.contains_key(&mapping.container_id),
-                            "duplicate container key"
+                            mappings.last().is_none_or(|previous| previous.container_id < mapping.container_id),
+                            "duplicate or unsorted container key"
                         );
                         let start = mapping.physical_start_lcn;
-                        if let Some((before, _)) = extents.range(..=start).next_back() {
-                            ensure!(*before + CPC <= start, "container physical extents overlap");
-                        }
-                        if let Some((after, _)) = extents.range(start..).next() {
-                            ensure!(start + CPC <= *after, "container physical extents overlap");
-                        }
-                        extents.insert(start, mapping.container_id);
-                        mappings.insert(mapping.container_id, mapping);
+                        extents.push(start);
+                        mappings.push(mapping);
                     }
                 }
                 Ok(())
@@ -503,7 +497,13 @@ pub fn inspect_container_tables<R: Read + Seek>(
                 break;
             }
         }
-        tree.mappings = mappings.into_values().collect();
+        if tree.rejection.is_none() {
+            extents.sort_unstable();
+            if extents.windows(2).any(|pair| pair[0] + CPC > pair[1]) {
+                tree.rejection = Some("container physical extents overlap".into());
+            }
+        }
+        tree.mappings = mappings;
         tree.walk_finished = tree.rejection.is_none();
         if tree.walk_finished {
             tree.root_count_matches = tree

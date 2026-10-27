@@ -13,7 +13,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     io::{Read, Seek, SeekFrom},
 };
 const PAGE: usize = 16384;
@@ -166,7 +166,10 @@ fn validate_map(
         "container root CRC differs from checkpoint reference"
     );
     let mut previous_id = None;
-    let mut physical = BTreeSet::new();
+    let mut physical = Vec::new();
+    physical
+        .try_reserve_exact(tree.mappings.len())
+        .context("container extent-check storage unavailable")?;
     for mapping in &tree.mappings {
         ensure!(
             mapping.container_id >= 2 && previous_id.is_none_or(|id| id < mapping.container_id),
@@ -189,11 +192,9 @@ fn validate_map(
                 && hex::decode(&mapping.value_bytes_hex)?.len() == 160,
             "container raw value length differs"
         );
-        ensure!(
-            physical.insert(mapping.physical_start_lcn),
-            "duplicate container physical start"
-        );
+        physical.push(mapping.physical_start_lcn);
     }
+    physical.sort_unstable();
     let mut previous_end = None;
     for start in physical {
         ensure!(
@@ -204,7 +205,7 @@ fn validate_map(
     }
     Ok(())
 }
-type CommonMap<'a> = BTreeMap<u64, (&'a ContainerMapping, [usize; 2])>;
+type CommonMap<'a> = &'a [ContainerMapping];
 fn common_map<'a>(
     checkpoint: &AnchorProbe,
     containers: &'a ContainerTablesProbe,
@@ -271,9 +272,8 @@ fn common_map<'a>(
         first.mappings.len() == second.mappings.len(),
         "container failover row counts differ"
     );
-    let mut result = BTreeMap::new();
     let mut hash = Sha256::new();
-    for (i, (a, b)) in first.mappings.iter().zip(&second.mappings).enumerate() {
+    for (a, b) in first.mappings.iter().zip(&second.mappings) {
         ensure!(
             a.container_id == b.container_id
                 && a.physical_start_lcn == b.physical_start_lcn
@@ -285,13 +285,12 @@ fn common_map<'a>(
         hash.update(a.physical_start_lcn.to_le_bytes());
         hash.update(a.clusters_per_container.to_le_bytes());
         hash.update(hex::decode(&a.value_bytes_hex)?);
-        result.insert(a.container_id, (a, [i, i]));
     }
     binding.container_table_ids = Some([first.table_id, second.table_id]);
-    binding.mapping_rows = Some(result.len());
+    binding.mapping_rows = Some(first.mappings.len());
     binding.common_mapping_sha256 = Some(hex::encode(hash.finalize()));
     binding.both_complete_count_matching_maps_agree = true;
-    Ok(result)
+    Ok(first.mappings.as_slice())
 }
 fn translate(
     reference: &RootReference,
@@ -311,9 +310,10 @@ fn translate(
         );
         let id = virtual_lcn >> 15;
         let offset = virtual_lcn & 0x3fff;
-        let (mapping, rows) = map
-            .get(&id)
-            .context("virtual root names an absent container")?;
+        let index = map
+            .binary_search_by_key(&id, |mapping| mapping.container_id)
+            .map_err(|_| anyhow::anyhow!("virtual root names an absent container"))?;
+        let mapping = &map[index];
         let lcn = mapping
             .physical_start_lcn
             .checked_add(offset)
@@ -333,7 +333,7 @@ fn translate(
             container_id: id,
             offset_in_container: offset,
             physical_lcn: lcn,
-            source_mapping_row_indices: *rows,
+            source_mapping_row_indices: [index, index],
         });
     }
     Ok((physical, translations))

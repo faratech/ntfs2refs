@@ -142,6 +142,11 @@ The expanded Small allocator now also walks bounded multilevel trees, with
 physical child addressing, CRC/header/self-location/level checks and ordered
 disjoint managed ranges. Its default root-only entry is preserved. This path
 has compilation evidence only; Container Table scaling remains unfinished.
+Container consumers now borrow sorted mapping rows for binary lookup, with no
+duplicate B-tree map. The experimental Small path reads only physical bootstrap
+structures before its own walk; Medium still independently requires container
+validation. Diagnostic row hex and container budgets remain unchanged. No new
+native qualification follows from these memory/I/O changes.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

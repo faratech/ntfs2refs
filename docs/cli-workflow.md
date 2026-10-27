@@ -208,3 +208,14 @@ owning thread, with fixed-size buffers and one digest worker. Read/worker/pin
 failures leave the marker unwritten. Legacy profiles and small/single-CPU paths
 keep their existing order. This reduces serial CPU work without reducing image
 reads or shadow allocation, and has compilation evidence only.
+
+For streaming-payload v2, a wholly blocked placement plan now reuses its two
+complete planning bitmap observations in no-submit diagnostics. Wider runs use
+the same snapshots for their bounded diagnostic chunks. The native file mapping
+is still captured, and both candidate ranges/domain sizes must match the exact
+request. Reuse with a submitted move or an assembled-map path is rejected.
+Every actual move still captures fresh legacy and metadata-inclusive views.
+Final native semantics, actual mappings and frozen allocation/image checks stay
+independent. This removes duplicate diagnostic bitmap queries without treating
+their earlier observations as move authority. Alpha and larger-tree v1 retain
+their existing query order. The change has compilation evidence only.

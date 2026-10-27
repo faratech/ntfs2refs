@@ -510,7 +510,13 @@ fn retain_run_on_shadow(
     submit_if_free: bool,
     evidence_budget: usize,
     streaming: bool,
+    planning_candidate: Option<CandidateReport>,
 ) -> io::Result<RetentionAttempt> {
+    if planning_candidate.is_some() && (submit_if_free || !streaming) {
+        return Err(invalid(
+            "planning bitmap reuse is restricted to no-submit streaming diagnostics",
+        ));
+    }
     let offset = run
         .physical_offset
         .ok_or_else(|| invalid("source placement hole"))?;
@@ -518,20 +524,30 @@ fn retain_run_on_shadow(
     let h = open(&format!("{}{}", root, i.components.join("\\")), false, true)?;
     let before_capture = crate::stream_native::retrieval_capture(&h)?;
     let mapping_before = before_capture.canonical;
-    let legacy =
-        crate::bitmap_observation::Observation::capture(volume, &[0; 8], partition, streaming)?;
-    let mut ex = [0; 16];
-    ex[8] = 1;
-    let metadata =
-        crate::bitmap_observation::Observation::capture(volume, &ex, partition, streaming)?;
-    let candidate = CandidateReport {
-        legacy: legacy.view(partition)?.candidate(offset, run.length)?,
-        metadata_inclusive: metadata.view(partition)?.candidate(offset, run.length)?,
-        legacy_page_proof: legacy.proof(),
-        metadata_page_proof: metadata.proof(),
+    let candidate = match planning_candidate {
+        Some(candidate) => candidate,
+        None => {
+            let legacy = crate::bitmap_observation::Observation::capture(
+                volume, &[0; 8], partition, streaming,
+            )?;
+            let mut ex = [0; 16];
+            ex[8] = 1;
+            let metadata =
+                crate::bitmap_observation::Observation::capture(volume, &ex, partition, streaming)?;
+            CandidateReport {
+                legacy: legacy.view(partition)?.candidate(offset, run.length)?,
+                metadata_inclusive: metadata.view(partition)?.candidate(offset, run.length)?,
+                legacy_page_proof: legacy.proof(),
+                metadata_page_proof: metadata.proof(),
+            }
+        }
     };
     if candidate.legacy.declared_clusters != partition / 4096
         || candidate.metadata_inclusive.declared_clusters != partition / 4096
+        || candidate.legacy.start_lcn != offset / 4096
+        || candidate.metadata_inclusive.start_lcn != offset / 4096
+        || candidate.legacy.clusters != run.length / 4096
+        || candidate.metadata_inclusive.clusters != run.length / 4096
     {
         return Err(invalid("retention bitmap domain is incomplete or changed"));
     }
@@ -606,6 +622,7 @@ fn retain_source_run_on_shadow(
     run: &SourceRun,
     attempts: &mut Vec<RetentionAttempt>,
     streaming: bool,
+    reuse_no_submit_snapshot: bool,
 ) -> io::Result<()> {
     remaining_retention_evidence(attempts)?;
     // Bound the complete tree, including non-submitted collision diagnostics.
@@ -647,8 +664,30 @@ fn retain_source_run_on_shadow(
                 length: (run.length - offset).min(chunk_bytes),
             };
             let budget = remaining_retention_evidence(attempts)?;
+            let planning_candidate = if reuse_no_submit_snapshot {
+                Some(CandidateReport {
+                    legacy: legacy
+                        .view(partition)?
+                        .candidate(physical_offset + offset, subrun.length)?,
+                    metadata_inclusive: metadata
+                        .view(partition)?
+                        .candidate(physical_offset + offset, subrun.length)?,
+                    legacy_page_proof: legacy.proof(),
+                    metadata_page_proof: metadata.proof(),
+                })
+            } else {
+                None
+            };
             let attempt = retain_run_on_shadow(
-                volume, root, input, partition, &subrun, false, budget, streaming,
+                volume,
+                root,
+                input,
+                partition,
+                &subrun,
+                false,
+                budget,
+                streaming,
+                planning_candidate,
             )?;
             append_retention_attempt(attempts, attempt)?;
             offset += subrun.length;
@@ -662,7 +701,7 @@ fn retain_source_run_on_shadow(
             };
             let budget = remaining_retention_evidence(attempts)?;
             let attempt = retain_run_on_shadow(
-                volume, root, input, partition, &subrun, true, budget, streaming,
+                volume, root, input, partition, &subrun, true, budget, streaming, None,
             )?;
             append_retention_attempt(attempts, attempt)?;
         }
@@ -2446,6 +2485,10 @@ fn run_role_profile(
                         },
                         &mut retention_attempts,
                         resource_profile.is_some(),
+                        resource_profile
+                            == Some(
+                                crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
+                            ),
                     )?;
                 }
                 for run in &i.source_runs {
@@ -2457,6 +2500,10 @@ fn run_role_profile(
                         run,
                         &mut retention_attempts,
                         resource_profile.is_some(),
+                        resource_profile
+                            == Some(
+                                crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
+                            ),
                     )?;
                 }
             }

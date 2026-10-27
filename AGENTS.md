@@ -123,6 +123,13 @@ observation, not native conversion or guest performance qualification. Candidate
 future outcome to the newer binaries. Legacy profiles remain on their old hash
 path. No source exclusion, read coverage or recovery gate was removed.
 
+Later streaming V2 journal preparation also selects CNG for its initial full
+comparison/postimage hashes, including its existing bounded shadow worker.
+Native hash handles are created on that worker and errors propagate as Results.
+The two full Rust rechecks, patch/range hashes, I/O order and serialized journal
+remain unchanged. This is source/build work only; the live candidate 3 uses
+98d02a4 throughout. Do not assign its eventual outcome to these newer builds.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

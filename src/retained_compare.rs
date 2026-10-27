@@ -12,6 +12,7 @@ use std::{
 };
 
 pub(crate) mod digest_pipeline;
+mod stream_digest;
 
 // Four full passes are included in the u64 I/O report, followed by 32 bytes of
 // file-container probes. The actual converter retains its own narrower live
@@ -456,23 +457,44 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
     request: &RetainedCompareRequest,
     progress: &mut Reporter<'_>,
 ) -> Result<RetainedComparison> {
+    compare_streams_observed_with_resource_profile(
+        source,
+        shadow,
+        request,
+        progress,
+        crate::ntfs_admission::ResourceProfile::AlphaV1,
+    )
+}
+
+pub(crate) fn compare_streams_observed_with_resource_profile<R: Read + Seek, S: Read + Seek>(
+    source: &mut R,
+    shadow: &mut S,
+    request: &RetainedCompareRequest,
+    progress: &mut Reporter<'_>,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<RetainedComparison> {
     validate_request(request)?;
     progress.update(Subphase::Comparing, 0);
     source.seek(SeekFrom::Start(0))?;
     shadow.seek(SeekFrom::Start(0))?;
-    let mut source_hash = Sha256::new();
-    let mut shadow_hash = Sha256::new();
+    let native = cfg!(windows)
+        && resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2;
+    let mut source_hash = stream_digest::StreamDigest::new(native)?;
+    let mut shadow_hash = stream_digest::StreamDigest::new(native)?;
     // Keep small comparisons serial. Larger images can hash the independent
     // source and shadow chunks on separate cores without changing read order,
     // pins, patch hashes, progress accounting or the subsequent full rechecks.
     let mut shadow_pipeline = if request.expected_length >= 64 * 1024 * 1024
         && std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2)
     {
-        Some(digest_pipeline::Pipeline::new(BUFFER_BYTES)?)
+        Some(digest_pipeline::Pipeline::with_native_backend(
+            BUFFER_BYTES,
+            native,
+        )?)
     } else {
         None
     };
-    let mut post_hash = Sha256::new();
+    let mut post_hash = stream_digest::StreamDigest::new(native)?;
     let mut retained: Vec<_> = request
         .retained_ranges
         .iter()
@@ -496,9 +518,9 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
         if let Some(pipeline) = shadow_pipeline.as_mut() {
             pipeline.update(&right[..count])?;
         } else {
-            shadow_hash.update(&right[..count]);
+            shadow_hash.update(&right[..count])?;
         }
-        source_hash.update(&left[..count]);
+        source_hash.update(&left[..count])?;
         progress.update(Subphase::Comparing, (offset + count as u64) * 2);
         // Equal bytes have the same hybrid value regardless of ownership.
         // Keep every retained pin proof, but hash its exact overlap in bulk
@@ -506,7 +528,7 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
         if left[..count] == right[..count] {
             finish_patch(&mut pending, &mut patches);
             if !wholly_shadow {
-                post_hash.update(&left[..count]);
+                post_hash.update(&left[..count])?;
             }
             let end = offset + count as u64;
             while retained_index < request.retained_ranges.len()
@@ -569,7 +591,7 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
                     &left[post_start..index]
                 } else {
                     &right[post_start..index]
-                });
+                })?;
                 post_start = index;
                 post_retained = in_retained;
             }
@@ -616,20 +638,20 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
                 &left[post_start..count]
             } else {
                 &right[post_start..count]
-            });
+            })?;
         }
         offset += count as u64;
     }
     finish_patch(&mut pending, &mut patches);
-    let source_sha256 = hex::encode(source_hash.finalize());
+    let source_sha256 = hex::encode(source_hash.finish()?);
     let shadow_sha256 = match shadow_pipeline {
         Some(pipeline) => hex::encode(pipeline.finish()?),
-        None => hex::encode(shadow_hash.finalize()),
+        None => hex::encode(shadow_hash.finish()?),
     };
     let expected_postimage_sha256 = if wholly_shadow {
         shadow_sha256.clone()
     } else {
-        hex::encode(post_hash.finalize())
+        hex::encode(post_hash.finish()?)
     };
     ensure!(
         source_sha256 == request.source_sha256,

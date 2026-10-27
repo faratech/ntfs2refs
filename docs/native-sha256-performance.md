@@ -39,7 +39,16 @@ final target-preservation source recheck, and the before/after target hashes
 around its protected native semantic observation. Both old profiles retain
 their prior Rust path. Source exclusion,
 full-image equality, identity checks and recovery barriers are unchanged.
-The other stream, comparison and recovery digests remain unchanged.
+Streaming V2 journal preparation also selects CNG for the full source/shadow
+comparison hashes and the constructed full postimage hash. Its existing bounded
+shadow worker constructs/destroys CNG handles on that worker; no native handle
+crosses threads. Hashing errors propagate through the worker result and abort
+preparation. Both complete source/shadow rechecks still use Rust sha2 and must
+match, preserving an independent backend check before write authorization.
+The scan order, byte counts, patch hashes, retained-range hashes, serialized
+format, buffering bounds and all recovery digests remain unchanged. Legacy
+comparisons continue to select Rust, including their worker. The host timing
+above measures the native hasher, not this comparison or journal workflow.
 This source change builds, but has no native conversion qualification yet.
 No unit tests were added or run. The native streaming run already in progress
 is evidence only for its original 98d02a4 producer.

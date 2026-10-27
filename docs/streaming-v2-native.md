@@ -168,3 +168,10 @@ All six retention candidates were blocked by metadata-inclusive allocations;
 none was submitted or proved retained. Do not claim payload retention from this
 case. The live process then entered target preservation. That stage and the
 eventual journal/cutover/native readback are still pending in this observation.
+
+The live run subsequently completed target preservation and issued its source
+certificate. It entered journal preparation on the same PID/task. At the later
+observation, the journal reporter was in `comparing` with 104,119,402,496 scan
+bytes out of its 223,338,299,392-byte comparison/recheck budget. This is one
+preparation stage, not an overall conversion percentage, and execution was
+still unauthorized. No source cutover/native finalization is established yet.

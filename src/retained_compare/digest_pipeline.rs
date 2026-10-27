@@ -1,7 +1,7 @@
 //! One in-flight chunk, one reusable chunk and one SHA-256 worker. The caller
 //! still reads and compares every byte; this only overlaps independent digests.
+use super::stream_digest::StreamDigest;
 use anyhow::{Context, Result, anyhow};
-use sha2::{Digest, Sha256};
 use std::{
     sync::mpsc::{Receiver, SyncSender, sync_channel},
     thread::{self, JoinHandle},
@@ -11,25 +11,30 @@ pub(crate) struct Pipeline {
     input: Option<SyncSender<Vec<u8>>>,
     recycled: Option<Receiver<Vec<u8>>>,
     spare: Option<Vec<u8>>,
-    worker: Option<JoinHandle<[u8; 32]>>,
+    worker: Option<JoinHandle<Result<[u8; 32]>>>,
     chunk_bytes: usize,
 }
 
 impl Pipeline {
     pub(crate) fn new(chunk_bytes: usize) -> Result<Self> {
+        Self::with_native_backend(chunk_bytes, false)
+    }
+
+    pub(super) fn with_native_backend(chunk_bytes: usize, native: bool) -> Result<Self> {
         let (input, chunks) = sync_channel::<Vec<u8>>(1);
         let (buffers, recycled) = sync_channel(1);
         let worker = thread::Builder::new()
             .name("n2r-shadow-digest".into())
             .spawn(move || {
-                let mut hash = Sha256::new();
+                // Construct CNG handles on this worker; none crosses threads.
+                let mut hash = StreamDigest::new(native)?;
                 while let Ok(buffer) = chunks.recv() {
-                    hash.update(&buffer);
+                    hash.update(&buffer)?;
                     if buffers.send(buffer).is_err() {
                         break;
                     }
                 }
-                hash.finalize().into()
+                hash.finish()
             })
             .context("start bounded shadow digest worker")?;
         Ok(Self {
@@ -73,7 +78,7 @@ impl Pipeline {
             .take()
             .context("missing shadow digest worker")?
             .join()
-            .map_err(|_| anyhow!("shadow digest worker panicked"))
+            .map_err(|_| anyhow!("shadow digest worker panicked"))?
     }
 }
 

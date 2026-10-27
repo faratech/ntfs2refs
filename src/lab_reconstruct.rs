@@ -478,8 +478,13 @@ pub(crate) fn prepare_journal_with_profile_and_progress<R: ReadSeek, S: ReadSeek
         journal.byte_len()? == 0,
         "journal must be a newly created empty external file"
     );
-    let comparison =
-        retained_compare::compare_streams_observed(source, shadow, request, &mut progress)?;
+    let comparison = retained_compare::compare_streams_observed_with_resource_profile(
+        source,
+        shadow,
+        request,
+        &mut progress,
+        binding.source_resource_profile.unwrap_or_default(),
+    )?;
     ensure!(
         source.byte_len()? == request.expected_length
             && shadow.byte_len()? == request.expected_length,

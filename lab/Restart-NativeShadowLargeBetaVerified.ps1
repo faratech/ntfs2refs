@@ -21,7 +21,7 @@ function Save-NewRecord([string]$Path,$Record){
 }
 Save-NewRecord (Join-Path $root 'reboot-intent.json') @{vm_id=[string]$id;run_id=$dispatch.run_id;before_boot_utc=$before;utc=[DateTime]::UtcNow.ToString('o');force_power_off=$false}
 # A missing shutdown integration service is a refusal, not permission to force.
-$shutdown=@(Get-VMIntegrationService -VMId $id|Where-Object {$_.Id.ToString().EndsWith('\9f8233ac-be49-4c79-8ee3-e7e1985b2077',[StringComparison]::OrdinalIgnoreCase)})
+$shutdown=@(Get-VMIntegrationService -VM (Get-VM -Id $id)|Where-Object {$_.Id.ToString().EndsWith('\9f8233ac-be49-4c79-8ee3-e7e1985b2077',[StringComparison]::OrdinalIgnoreCase)})
 if($shutdown.Count-ne1-or-not$shutdown[0].Enabled){throw 'Enabled guest shutdown integration required.'}
 Stop-VM -VM (Get-VM -Id $id) -Confirm:$false -ErrorAction Stop
 $deadline=[DateTime]::UtcNow.AddMinutes(5)

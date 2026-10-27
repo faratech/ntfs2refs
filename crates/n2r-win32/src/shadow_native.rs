@@ -1237,6 +1237,8 @@ fn existing_system_entries(
     root: &str,
     initial: &[namespace_layout::Entry],
     input: &[Input<'_>],
+    normalize_indexer_cache: bool,
+    events: &mut Vec<NativeEvent>,
 ) -> io::Result<std::collections::BTreeMap<Vec<String>, Vec<u8>>> {
     let system = "System Volume Information";
     let mut existing = std::collections::BTreeMap::new();
@@ -1258,6 +1260,7 @@ fn existing_system_entries(
         vec![system.into()],
         query_bytes(&snapshot(&parent), 18, 24)?[8..24].to_vec(),
     );
+    let mut target_only = Vec::new();
     for entry in enumerate(&parent)? {
         if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
             continue;
@@ -1265,11 +1268,56 @@ fn existing_system_entries(
         let name = String::from_utf16(&entry.name_utf16)
             .map_err(|_| invalid("invalid target system filename"))?;
         let path = vec![system.into(), name.clone()];
-        if !formatter_target_reusable(
-            &name,
-            entry.attributes,
-            input.iter().any(|i| i.components == path && !i.directory),
-        ) {
+        let source_expected = input.iter().any(|i| i.components == path && !i.directory);
+        if normalize_indexer_cache && name == "IndexerVolumeGuid" && !source_expected {
+            // Only the separately enrolled streaming shadow may discard this
+            // formatter-generated identity cache. Never infer that arbitrary
+            // SVI data is disposable, and never modify the frozen source.
+            if entry.attributes & !0x2027 != 0 {
+                return Err(invalid("target-only indexer cache attributes differ"));
+            }
+            let mut file = File::options()
+                .access_mode(PROTECTED_READ_ACCESS | 0x10000) // DELETE on this file only
+                .share_mode(1)
+                .custom_flags(0x02200000)
+                .open(format!("{root}{system}\\{name}"))?;
+            suppress_access(&file)?;
+            validate_open_type(&file, false)?;
+            let state = snapshot(&file);
+            let standard = query_bytes(&state, 1, 24)?;
+            if query_bytes(&state, 18, 24)?[8..24] != entry.file_id
+                || layout::u64_at(standard, 8)? != 76
+                || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
+                || standard[20] != 0
+            {
+                return Err(invalid(
+                    "target-only indexer cache identity or size differs",
+                ));
+            }
+            let stream_bytes = info(&file, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let (streams, _) = stream_layout::parse_streams(&stream_bytes)?;
+            if streams.len() != 1 || !streams[0].name.is_empty() || streams[0].logical_size != 76 {
+                return Err(invalid("target-only indexer cache streams differ"));
+            }
+            let mut bytes = [0u8; 76];
+            file.read_exact(&mut bytes)?;
+            let guid: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect();
+            if guid.iter().enumerate().any(|(at, &c)| match at {
+                0 => c != u16::from(b'{'),
+                37 => c != u16::from(b'}'),
+                9 | 14 | 19 | 24 => c != u16::from(b'-'),
+                _ => c > 127 || !(c as u8).is_ascii_hexdigit(),
+            }) || file.read(&mut [0u8; 1])? != 0
+            {
+                return Err(invalid("target-only indexer cache GUID contents differ"));
+            }
+            target_only.push((file, entry.file_id, bytes));
+            continue;
+        }
+        if !formatter_target_reusable(&name, entry.attributes, source_expected) {
             return Err(invalid(
                 "target system-volume namespace contains unknown or unexpected data",
             ));
@@ -1280,6 +1328,25 @@ fn existing_system_entries(
             return Err(invalid("target system cache exceeds bounded profile"));
         }
         existing.insert(path, query_bytes(&state, 18, 24)?[8..24].to_vec());
+    }
+    // Finish validating the entire directory before any deletion. These live
+    // handles exclude other writers/deleters; Windows updates its own allocator.
+    for (file, id, bytes) in target_only {
+        let delete: u8 = 1; // FILE_DISPOSITION_INFO::DeleteFile
+        // SAFETY: a live DELETE-authorized file handle and a one-byte Windows
+        // BOOLEAN, with FileDispositionInfo (4). No raw filesystem edits.
+        check(unsafe {
+            SetFileInformationByHandle(file.as_raw_handle(), 4, (&delete as *const u8).cast(), 1)
+        })?;
+        drop(file);
+        events.push(NativeEvent {
+            operation: "remove-target-only-formatter-indexer-cache".into(),
+            control_code: 0,
+            input: format!("{root}{system}\\IndexerVolumeGuid").into_bytes(),
+            succeeded: true,
+            native_error: None,
+            output: [id.as_slice(), bytes.as_slice()].concat(),
+        });
     }
     Ok(existing)
 }
@@ -2409,7 +2476,14 @@ fn run_role_profile(
             return Err(invalid("independent shadow is not empty"));
         }
         let existing_system = if constructing {
-            existing_system_entries(&root, &initial, input)?
+            existing_system_entries(
+                &root,
+                &initial,
+                input,
+                resource_profile
+                    == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2),
+                &mut events,
+            )?
         } else {
             std::collections::BTreeMap::new()
         };

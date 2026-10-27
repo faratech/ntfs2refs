@@ -58,8 +58,9 @@ streaming-payload envelope beyond v1's unchanged 4 GiB budget. Bind selection
 requires `--experimental-streaming-payload --experimental-large-tree
 --experimental-large-journal`. Its 2 PiB payload/partition routing envelope is
 compilation evidence only; metadata/feature/count limits, actual scratch,
-16 GiB journal ceiling and live admission/recovery bindings remain. It has not
-run in a VM and must not inherit candidate 3 or frozen-alpha qualification.
+16 GiB journal ceiling and live admission/recovery bindings remain. Its first
+native attempt refused during shadow construction and must not inherit
+candidate 3 or frozen-alpha qualification.
 No unit tests have been added or run during this work, per Mike's instruction.
 
 The separate streaming v2 fixture is VM `2401593c-4b30-472e-9b6d-c9534cbaa599`,
@@ -69,11 +70,18 @@ two read-only parent ACL grants; exact descriptors/rule deltas are retained.
 It contains Unicode names and a 4 GiB+1-byte ordinary zero file, with no source
 extent moves or aging. Its clean NTFS baseline is
 `775f4db8-8635-486c-b6eb-7098426b51a6`. Candidate 1 run
-`8c9c50c1fc6c4fd3a0fc3aeadd61fb72`, PID 1552, was live at 17:39:32 UTC in
-shadow/target qualification. Producer SHA-256 is
+`8c9c50c1fc6c4fd3a0fc3aeadd61fb72`, PID 1552, terminated with a refusal at
+17:42:42 UTC during shadow construction. Its NTFS source lacks IndexerVolumeGuid,
+whereas the freshly formatted ReFS shadow contains that 76-byte cache. No raw
+apply or source payload write occurred. Terminal evidence is archived, and OFF
+checkpoint `2a265703-70bc-44fd-a0c5-49999384b9db` preserves the failed branch.
+Producer SHA-256 is
 `624405d2517a4ae51ccf83270eecfdb83ebccb8f8d726e25f2dc651a116e4076`.
-Use its dedicated collector, keep capacity within the unchanged 208 GiB/64 GiB
-limits, and never redispatch on an observation timeout. No successful conversion
+The V2-only normalization validates the exact target-only cache's identity,
+single-link ordinary-file type, sole unnamed stream, 76-byte GUID and absence
+from the source before deleting it through Windows. Unknown SVI entries still
+refuse. Legacy profiles retain their existing behavior. Use its dedicated
+collector and never redispatch on an observation timeout. No successful conversion
 or recovery is claimed yet; see [the run](docs/streaming-v2-native.md).
 
 Continue the existing implementation. Prioritize concrete code and the next
@@ -432,7 +440,9 @@ and UTC timestamp were compared incorrectly.
 
 ## Storage, provenance and repository hygiene
 
-`lab/lab.config.json` limits actual lab usage to 208 GiB and requires 64 GiB
+Mike explicitly approved raising the lab cap from 208 to 216 GiB on October 27
+to preserve the refused streaming branch and allow its next native run.
+`lab/lab.config.json` limits actual lab usage to 216 GiB and requires 64 GiB
 host free space. Check actual free space and backing allocation before large
 experiments. Sparse flags, logical lengths and reported sparse ranges alone
 have not provided reliable capacity accounting on this ReFS host.

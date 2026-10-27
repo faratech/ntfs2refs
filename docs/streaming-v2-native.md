@@ -69,3 +69,29 @@ unchanged limits. No conversion/native-mount result is established yet.
 Use `lab/Collect-StreamingV2Conversion.ps1`; it saves actual task/process,
 artifact, protection-state and capacity observations. Do not use the old beta
 collector or infer termination from an observer timeout.
+
+Candidate 1 subsequently refused at 17:42:42 UTC with `target system-volume
+namespace contains unknown or unexpected data`. A later live observation found
+the task Ready, exit 1, and no converter process. Qualification explicitly
+records zero source payload writes and no execution authorization; no journal
+or apply was produced. Its complete staged/run artifacts and per-file hashes
+are archived in `candidate1/terminal-evidence` and the adjacent manifest.
+The failed branch is preserved OFF as checkpoint
+`2a265703-70bc-44fd-a0c5-49999384b9db`.
+
+The raw source inventory contains SVI/WPSettings.dat and tracking.log, but no
+IndexerVolumeGuid. Backup-mode read-only directory listing found only the
+76-byte IndexerVolumeGuid and 12-byte WPSettings.dat in the target SVI. The
+original reuse rule required both cache files to exist in the source. The
+streaming-only correction recognizes the extra indexer identity cache by exact
+name, permitted attributes, pinned file ID, one link, no pending deletion, one
+unnamed stream, and exactly 76 bytes containing a UTF-16 braced GUID. It validates
+the entire SVI before deleting that cache through a DELETE-authorized handle
+that denies competing data writes/deletion. Its native construction event
+retains the ID and original cache bytes. The frozen NTFS source is untouched;
+unknown entries, extra streams, malformed contents and unsupported profiles
+continue to refuse. This is a construction fix, not conversion evidence.
+
+Mike approved increasing the saved-lab cap to 216 GiB for the next attempt,
+retaining every checkpoint and the 64 GiB host-free reserve. The prior 208 GiB
+counter would not admit another 6 GiB growth allowance after preservation.

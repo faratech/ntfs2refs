@@ -296,6 +296,37 @@ pub(crate) fn hash_reader<R: Read + Seek>(reader: &mut R, length: u64) -> Result
     hash_reader_observed(reader, length, &mut |_| {})
 }
 
+/// Hash two caller-bound, equally sized images while overlapping independent
+/// digest work. Every read stays on the owning thread. The caller establishes
+/// lengths/exclusion; this returns no storage identity or write capability.
+pub(crate) fn hash_pair_pipelined<R: Read + Seek, S: Read + Seek>(
+    source: &mut R,
+    shadow: &mut S,
+    length: u64,
+) -> Result<(String, String)> {
+    ensure!(
+        length <= MAX_IMAGE_BYTES,
+        "paired hash length exceeds bound"
+    );
+    source.seek(SeekFrom::Start(0))?;
+    shadow.seek(SeekFrom::Start(0))?;
+    let mut source_hash = Sha256::new();
+    let mut shadow_hash = digest_pipeline::Pipeline::new(BUFFER_BYTES)?;
+    let mut left = vec![0; BUFFER_BYTES];
+    let mut right = vec![0; BUFFER_BYTES];
+    let mut remaining = length;
+    while remaining != 0 {
+        let count = usize::try_from(remaining.min(BUFFER_BYTES as u64))?;
+        source.read_exact(&mut left[..count])?;
+        shadow.read_exact(&mut right[..count])?;
+        shadow_hash.update(&right[..count])?;
+        source_hash.update(&left[..count]);
+        remaining -= count as u64;
+    }
+    let shadow_sha256 = hex::encode(shadow_hash.finish()?);
+    Ok((hex::encode(source_hash.finalize()), shadow_sha256))
+}
+
 fn hash_reader_observed<R: Read + Seek>(
     reader: &mut R,
     length: u64,

@@ -1919,17 +1919,33 @@ pub fn mark_handoff<T: DurableIo, S: ReadSeek, J: DurableIo>(
             && shadow.byte_len()? == loaded.manifest.request.expected_length,
         "handoff data lengths changed"
     );
-    ensure!(
-        retained_compare::hash_reader(shadow, loaded.manifest.request.expected_length)?
-            == loaded.manifest.request.shadow_sha256,
-        "handoff shadow image changed"
-    );
-    // The complete expected-postimage check below is stronger than separately
-    // normalizing its patches back to the source. Avoid that redundant full
-    // target scan while retaining the pinned journal/shadow and flush barriers.
-    target.sync_all()?;
-    let target_sha256 =
-        retained_compare::hash_reader(target, loaded.manifest.request.expected_length)?;
+    let target_sha256 = if loaded.manifest.binding.source_resource_profile
+        == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+        && loaded.manifest.request.expected_length >= 64 * 1024 * 1024
+        && std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2)
+    {
+        target.sync_all()?;
+        let (target_hash, shadow_hash) = retained_compare::hash_pair_pipelined(
+            target,
+            shadow,
+            loaded.manifest.request.expected_length,
+        )?;
+        ensure!(
+            shadow_hash == loaded.manifest.request.shadow_sha256,
+            "handoff shadow image changed"
+        );
+        target_hash
+    } else {
+        ensure!(
+            retained_compare::hash_reader(shadow, loaded.manifest.request.expected_length)?
+                == loaded.manifest.request.shadow_sha256,
+            "handoff shadow image changed"
+        );
+        // The full expected-postimage check is stronger than independently
+        // normalizing its patches back to the source. Keep both full pins.
+        target.sync_all()?;
+        retained_compare::hash_reader(target, loaded.manifest.request.expected_length)?
+    };
     ensure!(
         target_sha256 == loaded.manifest.expected_postimage_sha256,
         "handoff requires the complete expected postimage"

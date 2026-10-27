@@ -199,3 +199,12 @@ patch-writing path is entered. Shadowless recovery and older profiles retain
 their sequential checks. This overlaps CPU work with a fixed extra buffer; it
 removes no reads, pin checks, patch checks, flushes or handoff barriers. The
 change has compilation/format evidence only and no measured native speedup.
+
+The same streaming profile now overlaps the final target/shadow digests at
+handoff for images of at least 64 MiB with two available CPUs. The target is
+flushed before both complete images are read; their separately checked pins
+still precede the irreversible handoff marker. All device reads remain on the
+owning thread, with fixed-size buffers and one digest worker. Read/worker/pin
+failures leave the marker unwritten. Legacy profiles and small/single-CPU paths
+keep their existing order. This reduces serial CPU work without reducing image
+reads or shadow allocation, and has compilation evidence only.

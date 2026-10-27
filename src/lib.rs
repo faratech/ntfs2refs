@@ -67,6 +67,7 @@ pub mod refs_allocator;
 pub mod refs_bootstrap;
 pub mod refs_containers;
 pub mod refs_cow_overlay;
+pub mod refs_hybrid;
 pub mod refs_inspect;
 pub mod refs_node;
 #[cfg(windows)]

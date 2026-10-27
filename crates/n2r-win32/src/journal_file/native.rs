@@ -183,6 +183,16 @@ pub fn observe_general_journal_file(
     file: &File,
     expected: &GeneralJournalStorageBinding,
 ) -> io::Result<JournalFileSnapshot> {
+    observe_general_journal_file_with_profile(file, expected, JournalProfile::LegacyV1)
+}
+
+/// Explicitly selected versioned capacity profile. The owning request/ticket
+/// must bind this profile independently before any write authorization.
+pub fn observe_general_journal_file_with_profile(
+    file: &File,
+    expected: &GeneralJournalStorageBinding,
+    profile: JournalProfile,
+) -> io::Result<JournalFileSnapshot> {
     expected.validate()?;
     let (before_path, mut before) = file_observation(file)?;
     let volume_path = final_volume_path(&before_path, &guid_bytes(&expected.disk.volume_guid)?)?;
@@ -195,7 +205,7 @@ pub fn observe_general_journal_file(
         .share_mode(3)
         .open(format!("\\\\.\\PhysicalDrive{}", expected.disk.disk_number))?;
     storage_observation(&volume, &disk, &mut before)?;
-    let snapshot = validate_general_evidence(expected, &before_path, before)?;
+    let snapshot = validate_general_evidence_for_profile(expected, &before_path, before, profile)?;
     let (after_path, mut after) = file_observation(file)?;
     storage_observation(&volume, &disk, &mut after)?;
     finish_observation(snapshot, &after_path, &after)

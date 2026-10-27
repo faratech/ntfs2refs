@@ -8,7 +8,9 @@ use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralDiskState, MountPathObservation, NativeEvent,
     general_layout::GeneralDiskBinding,
-    journal_file::{JournalFileSnapshot, observe_general_journal_file},
+    journal_file::{
+        JournalFileSnapshot, JournalProfile, observe_general_journal_file_with_profile,
+    },
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -216,7 +218,8 @@ pub(crate) fn load(inputs: &Inputs) -> Result<RunArtifacts> {
     if let Some(r) = &request {
         r.validate()?;
         ensure!(
-            r.experiment_id == intent.experiment_id
+            r.schema_version == intent.schema_version
+                && r.experiment_id == intent.experiment_id
                 && r.pair == intent.pair
                 && serde_json::to_vec(&r.journal)? == serde_json::to_vec(&intent.journal)?
                 && r.max_journal_bytes == intent.max_journal_bytes,
@@ -240,6 +243,12 @@ pub(crate) fn load(inputs: &Inputs) -> Result<RunArtifacts> {
         ticket.is_none() || request.is_some(),
         "ticket requires pinned reconstruction request"
     );
+    if let Some(ticket) = &ticket {
+        ensure!(
+            ticket.schema_version == intent.schema_version,
+            "journal ticket profile differs from public intent"
+        );
+    }
     let mut blocking_artifacts = vec![];
     for name in ["apply.json", "finalization.json", "result.json"] {
         match fs::symlink_metadata(inputs.run_directory.join(name)) {
@@ -393,7 +402,11 @@ pub(crate) fn open_journal(run: &RunArtifacts) -> Result<JournalLease> {
         }
         Err(e) => return Err(e.into()),
     };
-    let identity = observe_general_journal_file(&f, &run.intent.journal)?;
+    let identity = observe_general_journal_file_with_profile(
+        &f,
+        &run.intent.journal,
+        JournalProfile::from_schema(run.intent.schema_version)?,
+    )?;
     let len = identity.file_bytes;
     observation.file_bytes = Some(len);
     observation.identity = Some(identity.clone());
@@ -411,7 +424,9 @@ pub(crate) fn open_journal(run: &RunArtifacts) -> Result<JournalLease> {
             )?,
         };
         ensure!(
-            ticket.schema_version == 1 && ticket.binding == binding && ticket.journal_length == len,
+            ticket.schema_version == plan.schema_version
+                && ticket.binding == binding
+                && ticket.journal_length == len,
             "journal ticket/storage differs"
         );
         let descriptor = lab_reconstruct::inspect_completed_journal(&mut f, ticket, &binding)?;
@@ -495,7 +510,11 @@ pub(crate) fn require_no_activation(run: &RunArtifacts, journal: &JournalLease) 
 pub(crate) fn recheck_journal(run: &RunArtifacts, journal: &mut JournalLease) -> Result<()> {
     match &mut journal.file {
         Some(file) => {
-            let observed = observe_general_journal_file(file, &run.intent.journal)?;
+            let observed = observe_general_journal_file_with_profile(
+                file,
+                &run.intent.journal,
+                JournalProfile::from_schema(run.intent.schema_version)?,
+            )?;
             let before = journal
                 .observation
                 .identity

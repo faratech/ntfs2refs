@@ -241,6 +241,7 @@ pub struct WritePolicy {
     pub allowed: Vec<(u64, u64)>,
     pub retained: Vec<(u64, u64)>,
     pub maximum_bytes: u64,
+    pub journal_profile: crate::journal_file::JournalProfile,
 }
 
 impl WritePolicy {
@@ -262,7 +263,8 @@ impl WritePolicy {
                 }
             }
         }
-        if bytes > self.maximum_bytes || self.maximum_bytes > crate::journal_file::MAX_CHANGED_BYTES
+        if bytes > self.maximum_bytes
+            || self.maximum_bytes > self.journal_profile.max_changed_bytes()
         {
             return Err(invalid(
                 "native write policy exceeds the explicit journal-capacity profile",
@@ -3174,6 +3176,7 @@ mod tests {
             allowed: vec![(0, 4096)],
             retained: vec![(4096, 4096)],
             maximum_bytes: 4096,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         });
         target.write_all(&block).unwrap();
         assert_eq!(target.native_bytes_written, 4096);
@@ -3196,12 +3199,14 @@ mod tests {
             allowed: vec![(0, 4096), (8192, 4096)],
             retained: vec![(4096, 4096)],
             maximum_bytes: 8192,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         policy.validate(stream.byte_len()).unwrap();
         let bad = WritePolicy {
             allowed: vec![(0, 8192)],
             retained: vec![(4096, 4096)],
             maximum_bytes: 8192,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         assert!(bad.validate(stream.byte_len()).is_err());
         stream.policy = Some(policy);
@@ -3237,19 +3242,42 @@ mod tests {
             allowed: vec![(0, cap)],
             retained: vec![],
             maximum_bytes: cap,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         valid.validate(cap + 4096).unwrap();
         let excessive = WritePolicy {
             allowed: vec![(0, cap + 4096)],
             retained: vec![],
             maximum_bytes: cap + 4096,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         assert!(excessive.validate(cap + 4096).is_err());
         let underfunded = WritePolicy {
             allowed: vec![(0, cap)],
             retained: vec![],
             maximum_bytes: cap - 4096,
+            journal_profile: crate::journal_file::JournalProfile::LegacyV1,
         };
         assert!(underfunded.validate(cap + 4096).is_err());
+    }
+    #[test]
+    fn large_write_policy_requires_v2_and_keeps_overlap_and_budget_guards() {
+        use crate::journal_file::JournalProfile;
+        let large = crate::journal_file::MAX_CHANGED_BYTES + 4096;
+        let mut policy = WritePolicy {
+            allowed: vec![(4096, large)],
+            retained: vec![(0, 4096)],
+            maximum_bytes: large,
+            journal_profile: JournalProfile::LegacyV1,
+        };
+        assert!(policy.validate(large + 8192).is_err());
+        policy.journal_profile = JournalProfile::ExperimentalLargeV2;
+        policy.validate(large + 8192).unwrap();
+        let mut overlap = policy.clone();
+        overlap.retained = vec![(4096, 4096)];
+        assert!(overlap.validate(large + 8192).is_err());
+        let mut underfunded = policy;
+        underfunded.maximum_bytes -= 4096;
+        assert!(underfunded.validate(large + 8192).is_err());
     }
 }

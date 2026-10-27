@@ -21,15 +21,29 @@ const MAX_METADATA: usize = 1024 * 1024;
 /// Reserve covers the bounded manifest, every permitted patch record and
 /// fixed headers. Old and new payloads each consume the changed-byte count.
 const JOURNAL_OVERHEAD_RESERVE: u64 = n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE;
+#[cfg(test)]
 pub(crate) const MAX_CHANGE_BYTES: u64 = n2r_win32::journal_file::MAX_CHANGED_BYTES;
+#[cfg(test)]
 const MAX_JOURNAL_BYTES: u64 = 768 * 1024 * 1024;
 const BUFFER: usize = 1024 * 1024;
+
+pub use n2r_win32::journal_file::JournalProfile;
 
 /// Admission bound derived from independent journal capacity, not a promise
 /// that a particular source fits. Preparation still enforces the exact size.
 pub fn changed_byte_budget(max_journal_bytes: u64, image_bytes: u64) -> Result<u64> {
+    changed_byte_budget_for_profile(JournalProfile::LegacyV1, max_journal_bytes, image_bytes)
+}
+
+/// Calculates a conservative changed-byte budget for an explicitly selected
+/// core profile. It neither reserves storage nor authorizes native writes.
+pub fn changed_byte_budget_for_profile(
+    profile: JournalProfile,
+    max_journal_bytes: u64,
+    image_bytes: u64,
+) -> Result<u64> {
     ensure!(
-        max_journal_bytes <= MAX_JOURNAL_BYTES,
+        max_journal_bytes <= profile.max_journal_bytes(),
         "journal budget exceeds supported ceiling"
     );
     ensure!(
@@ -41,7 +55,11 @@ pub fn changed_byte_budget(max_journal_bytes: u64, image_bytes: u64) -> Result<u
         .checked_sub(JOURNAL_OVERHEAD_RESERVE)
         .context("journal budget cannot reserve metadata overhead")?
         / 2;
-    let budget = (payload_capacity.min(MAX_CHANGE_BYTES).min(image_bytes) / GRANULE) * GRANULE;
+    let budget = (payload_capacity
+        .min(profile.max_changed_bytes())
+        .min(image_bytes)
+        / GRANULE)
+        * GRANULE;
     ensure!(
         budget >= GRANULE,
         "journal budget cannot cover one changed granule and its recovery payload"
@@ -281,14 +299,14 @@ fn validate_binding(binding: &JournalBinding) -> Result<()> {
     );
     Ok(())
 }
-fn validate_profile(request: &RetainedCompareRequest) -> Result<()> {
+fn validate_profile(request: &RetainedCompareRequest, profile: JournalProfile) -> Result<()> {
     retained_compare::validate_request(request)?;
     ensure!(
         request.sector_size == GRANULE as u32,
         "reconstruction requires 4096-byte granules"
     );
     ensure!(
-        request.max_change_bytes <= MAX_CHANGE_BYTES,
+        request.max_change_bytes <= profile.max_changed_bytes(),
         "reconstruction changed-byte cap exceeds supported journal capacity"
     );
     Ok(())
@@ -350,12 +368,59 @@ pub fn prepare_journal_with_progress<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     max_journal_bytes: u64,
     progress: &mut dyn FnMut(crate::preparation_progress::Progress),
 ) -> Result<JournalSummary> {
+    prepare_journal_with_profile_and_progress(
+        source,
+        shadow,
+        journal,
+        request,
+        binding,
+        max_journal_bytes,
+        JournalProfile::LegacyV1,
+        progress,
+    )
+}
+
+/// Explicit experimental journal construction over caller-owned streams.
+/// This does not provide native-device write authority or widen production
+/// conversion's legacy profile. The resulting ticket records the profile.
+pub fn prepare_journal_with_profile<R: ReadSeek, S: ReadSeek, J: DurableIo>(
+    source: &mut R,
+    shadow: &mut S,
+    journal: &mut J,
+    request: &RetainedCompareRequest,
+    binding: &JournalBinding,
+    max_journal_bytes: u64,
+    profile: JournalProfile,
+) -> Result<JournalSummary> {
+    prepare_journal_with_profile_and_progress(
+        source,
+        shadow,
+        journal,
+        request,
+        binding,
+        max_journal_bytes,
+        profile,
+        &mut |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_journal_with_profile_and_progress<R: ReadSeek, S: ReadSeek, J: DurableIo>(
+    source: &mut R,
+    shadow: &mut S,
+    journal: &mut J,
+    request: &RetainedCompareRequest,
+    binding: &JournalBinding,
+    max_journal_bytes: u64,
+    profile: JournalProfile,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<JournalSummary> {
     use crate::preparation_progress::{Reporter, Subphase};
     let mut progress = Reporter::new(request.expected_length, progress);
-    validate_profile(request)?;
+    validate_profile(request, profile)?;
     validate_binding(binding)?;
     ensure!(
-        max_journal_bytes <= MAX_JOURNAL_BYTES,
+        max_journal_bytes <= profile.max_journal_bytes(),
         "journal budget exceeds hard cap"
     );
     ensure!(
@@ -375,7 +440,7 @@ pub fn prepare_journal_with_progress<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         "input length changed during preparation"
     );
     let manifest = Manifest {
-        schema_version: 1,
+        schema_version: profile.version(),
         binding: binding.clone(),
         request: request.clone(),
         expected_postimage_sha256: comparison.expected_postimage_sha256.clone(),
@@ -405,7 +470,7 @@ pub fn prepare_journal_with_progress<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     );
     let mut header = [0; HEADER_SIZE];
     header[..8].copy_from_slice(b"N2RPREP1");
-    put32(&mut header, 8, 1);
+    put32(&mut header, 8, profile.version());
     put32(&mut header, 12, metadata.len() as u32);
     put32(&mut header, 16, count);
     put64(&mut header, 24, comparison.patch_bytes);
@@ -466,7 +531,7 @@ pub fn prepare_journal_with_progress<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal.sync_all()?;
     progress.update(Subphase::VerifyingJournal, 0);
     let ticket = JournalTicket {
-        schema_version: 1,
+        schema_version: profile.version(),
         binding: binding.clone(),
         immutable_sha256: hex::encode(hash_range(
             journal,
@@ -504,10 +569,10 @@ fn load_journal_state<J: ReadSeek>(
     ticket: &JournalTicket,
     require_zero_handoff: bool,
 ) -> Result<Loaded> {
-    ensure!(ticket.schema_version == 1, "unsupported journal ticket");
+    let profile = JournalProfile::from_schema(ticket.schema_version)?;
     validate_binding(&ticket.binding)?;
     ensure!(
-        ticket.journal_length <= MAX_JOURNAL_BYTES
+        ticket.journal_length <= profile.max_journal_bytes()
             && ticket.immutable_length >= (HEADER_SIZE + FOOTER_SIZE) as u64
             && ticket.immutable_length.checked_add(BODY_START) == Some(ticket.journal_length),
         "invalid bounded journal length"
@@ -532,7 +597,7 @@ fn load_journal_state<J: ReadSeek>(
     read_at(journal, BODY_START, &mut header)?;
     ensure!(
         &header[..8] == b"N2RPREP1"
-            && u32_at(&header, 8) == 1
+            && u32_at(&header, 8) == profile.version()
             && header[20..24] == [0; 4]
             && header[72..96] == [0; 24]
             && header[96..] == digest(&header[..96]),
@@ -544,7 +609,7 @@ fn load_journal_state<J: ReadSeek>(
     ensure!(
         metadata_length <= MAX_METADATA
             && count <= 65_536
-            && changed <= MAX_CHANGE_BYTES
+            && changed <= profile.max_changed_bytes()
             && u64_at(&header, 32) == ticket.journal_length,
         "journal header exceeds bounds"
     );
@@ -556,10 +621,10 @@ fn load_journal_state<J: ReadSeek>(
     );
     let manifest: Manifest = serde_json::from_slice(&metadata)?;
     ensure!(
-        manifest.schema_version == 1 && manifest.binding == ticket.binding,
+        manifest.schema_version == profile.version() && manifest.binding == ticket.binding,
         "journal storage binding differs"
     );
-    validate_profile(&manifest.request)?;
+    validate_profile(&manifest.request, profile)?;
     pin(&manifest.expected_postimage_sha256)?;
     ensure!(
         count <= manifest.request.max_ranges && changed <= manifest.request.max_change_bytes,
@@ -1351,11 +1416,11 @@ pub fn verify_completed_marker<T: ReadSeek, S: ReadSeek, J: ReadSeek>(
     expected_shadow_sha256: &str,
 ) -> Result<CompletedMarkerProof> {
     validate_binding(observed_binding)?;
+    let profile = JournalProfile::from_schema(ticket.schema_version)?;
     ensure!(
-        ticket.schema_version == 1
-            && ticket.binding == *observed_binding
+        ticket.binding == *observed_binding
             && ticket.immutable_length.checked_add(BODY_START) == Some(ticket.journal_length)
-            && ticket.journal_length <= MAX_JOURNAL_BYTES
+            && ticket.journal_length <= profile.max_journal_bytes()
             && journal.byte_len()? == ticket.journal_length
             && target.byte_len()? == expected_length
             && shadow.byte_len()? == expected_length,
@@ -1453,11 +1518,11 @@ pub fn verify_completed_rollback_marker_without_shadow<T: ReadSeek, J: ReadSeek>
     expected_source_sha256: &str,
 ) -> Result<CompletedMarkerProof> {
     validate_binding(observed_binding)?;
+    let profile = JournalProfile::from_schema(ticket.schema_version)?;
     ensure!(
-        ticket.schema_version == 1
-            && ticket.binding == *observed_binding
+        ticket.binding == *observed_binding
             && ticket.immutable_length.checked_add(BODY_START) == Some(ticket.journal_length)
-            && ticket.journal_length <= MAX_JOURNAL_BYTES
+            && ticket.journal_length <= profile.max_journal_bytes()
             && journal.byte_len()? == ticket.journal_length
             && target.byte_len()? == expected_length,
         "shadowless rollback marker ticket or length differs"
@@ -1912,6 +1977,80 @@ fn write_rollback_completion_marker<T: DurableIo, J: DurableIo>(
 #[cfg(test)]
 mod capacity_budget_tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::io::Cursor;
+
+    #[derive(Clone)]
+    struct Memory {
+        bytes: Cursor<Vec<u8>>,
+        largest_read: usize,
+        largest_write: usize,
+    }
+    impl Memory {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes: Cursor::new(bytes),
+                largest_read: 0,
+                largest_write: 0,
+            }
+        }
+    }
+    impl Read for Memory {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.largest_read = self.largest_read.max(buffer.len());
+            self.bytes.read(buffer)
+        }
+    }
+    impl Seek for Memory {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.bytes.seek(position)
+        }
+    }
+    impl Write for Memory {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.largest_write = self.largest_write.max(bytes.len());
+            self.bytes.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl ReadSeek for Memory {
+        fn byte_len(&mut self) -> io::Result<u64> {
+            Ok(self.bytes.get_ref().len() as u64)
+        }
+    }
+    impl DurableIo for Memory {
+        fn sync_all(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_binding() -> JournalBinding {
+        JournalBinding {
+            experiment_id: "a".repeat(32),
+            target_identity_sha256: "1".repeat(64),
+            shadow_identity_sha256: "2".repeat(64),
+            journal_identity_sha256: "3".repeat(64),
+        }
+    }
+
+    fn fixture() -> (Vec<u8>, Vec<u8>, RetainedCompareRequest) {
+        let source = vec![0x31; 3 * BUFFER];
+        let mut shadow = source.clone();
+        shadow[4096..2 * BUFFER + 4096].fill(0x72);
+        let request = RetainedCompareRequest {
+            schema_version: 2,
+            sector_size: GRANULE as u32,
+            expected_length: source.len() as u64,
+            source_sha256: hex::encode(Sha256::digest(&source)),
+            shadow_sha256: hex::encode(Sha256::digest(&shadow)),
+            retained_ranges: vec![],
+            max_change_bytes: source.len() as u64,
+            max_ranges: 4,
+        };
+        (source, shadow, request)
+    }
     #[test]
     fn journal_capacity_reserves_both_payloads_and_worst_case_metadata() {
         let image = 52u64 << 30;
@@ -1972,5 +2111,365 @@ mod capacity_budget_tests {
                 "image {image}"
             );
         }
+    }
+
+    #[test]
+    fn experimental_profile_is_explicit_and_preserves_legacy_ceiling() {
+        let image = 52u64 << 30;
+        let large = JournalProfile::ExperimentalLargeV2;
+        assert_eq!(changed_byte_budget(768 << 20, image).unwrap(), 376 << 20);
+        assert!(changed_byte_budget((768 << 20) + 1, image).is_err());
+        assert_eq!(
+            changed_byte_budget_for_profile(large, 16 << 30, image).unwrap(),
+            ((16u64 << 30) - JOURNAL_OVERHEAD_RESERVE) / 2
+        );
+        assert!(changed_byte_budget_for_profile(large, (16u64 << 30) + 1, image).is_err());
+        assert!(changed_byte_budget_for_profile(large, u64::MAX, image).is_err());
+    }
+
+    #[test]
+    fn legacy_default_and_explicit_v1_produce_identical_journal_bytes() {
+        let (old, new, request) = fixture();
+        let binding = test_binding();
+        let mut source = Memory::new(old.clone());
+        let mut shadow = Memory::new(new.clone());
+        let mut default_journal = Memory::new(vec![]);
+        let default = prepare_journal(
+            &mut source,
+            &mut shadow,
+            &mut default_journal,
+            &request,
+            &binding,
+            MAX_JOURNAL_BYTES,
+        )
+        .unwrap();
+        let mut source = Memory::new(old);
+        let mut shadow = Memory::new(new);
+        let mut explicit_journal = Memory::new(vec![]);
+        let explicit = prepare_journal_with_profile(
+            &mut source,
+            &mut shadow,
+            &mut explicit_journal,
+            &request,
+            &binding,
+            MAX_JOURNAL_BYTES,
+            JournalProfile::LegacyV1,
+        )
+        .unwrap();
+        assert_eq!(default.ticket.schema_version, 1);
+        assert_eq!(
+            serde_json::to_vec(&default.ticket).unwrap(),
+            serde_json::to_vec(&explicit.ticket).unwrap()
+        );
+        assert_eq!(
+            default_journal.bytes.get_ref(),
+            explicit_journal.bytes.get_ref()
+        );
+    }
+
+    #[test]
+    fn version_two_streaming_replay_and_rollback_preserve_integrity() {
+        let (old, new, request) = fixture();
+        let mut source = Memory::new(old.clone());
+        let mut shadow = Memory::new(new.clone());
+        let mut journal = Memory::new(vec![]);
+        let binding = test_binding();
+        let summary = prepare_journal_with_profile(
+            &mut source,
+            &mut shadow,
+            &mut journal,
+            &request,
+            &binding,
+            16 << 30,
+            JournalProfile::ExperimentalLargeV2,
+        )
+        .unwrap();
+        assert_eq!(summary.ticket.schema_version, 2);
+        assert_eq!(summary.before_payload_bytes, 2 * BUFFER as u64);
+        assert_eq!(summary.after_payload_bytes, 2 * BUFFER as u64);
+        assert!(source.largest_read <= BUFFER && shadow.largest_read <= BUFFER);
+        assert!(journal.largest_read <= BUFFER && journal.largest_write <= BUFFER);
+        let descriptor = inspect_journal(&mut journal, &summary.ticket, &binding).unwrap();
+        assert_eq!(descriptor.changed_bytes, 2 * BUFFER as u64);
+
+        // A v2 journal cannot be replayed with a legacy/unknown ticket, even
+        // when its small fixture length also fits the old profile.
+        let mut wrong_version = summary.ticket.clone();
+        wrong_version.schema_version = 1;
+        assert!(inspect_journal(&mut journal, &wrong_version, &binding).is_err());
+        wrong_version.schema_version = 3;
+        assert!(inspect_journal(&mut journal, &wrong_version, &binding).is_err());
+
+        let mut target = Memory::new(old.clone());
+        let mut tampered = journal.clone();
+        let last = tampered.bytes.get_ref().len() - 1;
+        tampered.bytes.get_mut()[last] ^= 1;
+        assert!(
+            resume(
+                &mut target,
+                &mut shadow,
+                &mut tampered,
+                &summary.ticket,
+                &binding
+            )
+            .is_err()
+        );
+        assert_eq!(target.bytes.get_ref(), &old);
+        resume(
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &summary.ticket,
+            &binding,
+        )
+        .unwrap();
+        assert_eq!(target.bytes.get_ref(), &new);
+        rollback(
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &summary.ticket,
+            &binding,
+        )
+        .unwrap();
+        assert_eq!(target.bytes.get_ref(), &old);
+        mark_rollback_complete_without_shadow(&mut target, &mut journal, &summary.ticket, &binding)
+            .unwrap();
+        verify_completed_rollback_marker_without_shadow(
+            &mut target,
+            &mut journal,
+            &summary.ticket,
+            &binding,
+            old.len() as u64,
+            &request.source_sha256,
+        )
+        .unwrap();
+        assert!(
+            resume(
+                &mut target,
+                &mut shadow,
+                &mut journal,
+                &summary.ticket,
+                &binding
+            )
+            .is_err()
+        );
+        assert_eq!(target.bytes.get_ref(), &old);
+    }
+
+    // Run-compressed random-access storage exercises real multi-hundred-MiB
+    // journal offsets without a large disk artifact or per-byte allocation.
+    #[derive(Clone)]
+    enum TestPage {
+        Uniform(u8),
+        Mixed(Box<[u8; 4096]>),
+    }
+
+    #[derive(Clone)]
+    struct SparseTestIo {
+        length: u64,
+        position: u64,
+        default_byte: u8,
+        pages: BTreeMap<u64, TestPage>,
+        largest_read: usize,
+        largest_write: usize,
+    }
+    impl SparseTestIo {
+        fn new(length: u64, default_byte: u8) -> Self {
+            Self {
+                length,
+                position: 0,
+                default_byte,
+                pages: BTreeMap::new(),
+                largest_read: 0,
+                largest_write: 0,
+            }
+        }
+        fn page(&self, index: u64) -> [u8; 4096] {
+            match self.pages.get(&index) {
+                None => [self.default_byte; 4096],
+                Some(TestPage::Uniform(byte)) => [*byte; 4096],
+                Some(TestPage::Mixed(bytes)) => **bytes,
+            }
+        }
+        fn write_page(&mut self, index: u64, offset: usize, data: &[u8]) {
+            let mut bytes = self.page(index);
+            bytes[offset..offset + data.len()].copy_from_slice(data);
+            let byte = bytes[0];
+            if bytes.iter().all(|value| *value == byte) {
+                if byte == self.default_byte {
+                    self.pages.remove(&index);
+                } else {
+                    self.pages.insert(index, TestPage::Uniform(byte));
+                }
+            } else {
+                self.pages.insert(index, TestPage::Mixed(Box::new(bytes)));
+            }
+        }
+    }
+    impl Read for SparseTestIo {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            self.largest_read = self.largest_read.max(output.len());
+            let count = output
+                .len()
+                .min(self.length.saturating_sub(self.position) as usize);
+            let mut done = 0;
+            while done < count {
+                let index = self.position / 4096;
+                let offset = (self.position % 4096) as usize;
+                let step = (4096 - offset).min(count - done);
+                match self.pages.get(&index) {
+                    None => output[done..done + step].fill(self.default_byte),
+                    Some(TestPage::Uniform(byte)) => output[done..done + step].fill(*byte),
+                    Some(TestPage::Mixed(bytes)) => {
+                        output[done..done + step].copy_from_slice(&bytes[offset..offset + step])
+                    }
+                }
+                done += step;
+                self.position += step as u64;
+            }
+            Ok(count)
+        }
+    }
+    impl Seek for SparseTestIo {
+        fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+            let next = match from {
+                SeekFrom::Start(position) => i128::from(position),
+                SeekFrom::Current(delta) => i128::from(self.position) + i128::from(delta),
+                SeekFrom::End(delta) => i128::from(self.length) + i128::from(delta),
+            };
+            if !(0..=i128::from(JournalProfile::ExperimentalLargeV2.max_journal_bytes()))
+                .contains(&next)
+            {
+                return Err(io::Error::other("test seek out of range"));
+            }
+            self.position = next as u64;
+            Ok(self.position)
+        }
+    }
+    impl Write for SparseTestIo {
+        fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+            self.largest_write = self.largest_write.max(input.len());
+            let mut done = 0;
+            while done < input.len() {
+                let index = self.position / 4096;
+                let offset = (self.position % 4096) as usize;
+                let step = (4096 - offset).min(input.len() - done);
+                self.write_page(index, offset, &input[done..done + step]);
+                done += step;
+                self.position += step as u64;
+            }
+            self.length = self.length.max(self.position);
+            Ok(done)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl ReadSeek for SparseTestIo {
+        fn byte_len(&mut self) -> io::Result<u64> {
+            Ok(self.length)
+        }
+    }
+    impl DurableIo for SparseTestIo {
+        fn sync_all(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    #[ignore = "streams over the legacy journal limit through bounded in-memory pages"]
+    fn experimental_journal_over_legacy_limit_replays_and_rolls_back() {
+        let length = (384u64 << 20) + GRANULE;
+        let mut source = SparseTestIo::new(length, 0);
+        let mut shadow = SparseTestIo::new(length, 0x72);
+        let source_hash = retained_compare::hash_reader(&mut source, length).unwrap();
+        let shadow_hash = retained_compare::hash_reader(&mut shadow, length).unwrap();
+        let request = RetainedCompareRequest {
+            schema_version: 2,
+            sector_size: GRANULE as u32,
+            expected_length: length,
+            source_sha256: source_hash.clone(),
+            shadow_sha256: shadow_hash,
+            retained_ranges: vec![],
+            max_change_bytes: length,
+            max_ranges: 4,
+        };
+        let binding = test_binding();
+        let mut journal = SparseTestIo::new(0, 0);
+        assert!(
+            prepare_journal(
+                &mut source,
+                &mut shadow,
+                &mut journal,
+                &request,
+                &binding,
+                MAX_JOURNAL_BYTES
+            )
+            .is_err()
+        );
+        assert_eq!(journal.length, 0);
+        let summary = prepare_journal_with_profile(
+            &mut source,
+            &mut shadow,
+            &mut journal,
+            &request,
+            &binding,
+            16 << 30,
+            JournalProfile::ExperimentalLargeV2,
+        )
+        .unwrap();
+        assert!(summary.ticket.journal_length > MAX_JOURNAL_BYTES);
+        assert_eq!(summary.changed_bytes, length);
+        assert_eq!(summary.ticket.schema_version, 2);
+        let mut wrong_profile = summary.ticket.clone();
+        wrong_profile.schema_version = 1;
+        assert!(inspect_journal(&mut journal, &wrong_profile, &binding).is_err());
+        let mut target = SparseTestIo::new(length, 0);
+        resume(
+            &mut target,
+            &mut shadow,
+            &mut journal,
+            &summary.ticket,
+            &binding,
+        )
+        .unwrap();
+        assert_eq!(
+            retained_compare::hash_reader(&mut target, length).unwrap(),
+            request.shadow_sha256
+        );
+        rollback_without_shadow(&mut target, &mut journal, &summary.ticket, &binding).unwrap();
+        assert_eq!(
+            retained_compare::hash_reader(&mut target, length).unwrap(),
+            source_hash
+        );
+        mark_rollback_complete_without_shadow(&mut target, &mut journal, &summary.ticket, &binding)
+            .unwrap();
+        verify_completed_rollback_marker_without_shadow(
+            &mut target,
+            &mut journal,
+            &summary.ticket,
+            &binding,
+            length,
+            &source_hash,
+        )
+        .unwrap();
+        assert!(
+            resume(
+                &mut target,
+                &mut shadow,
+                &mut journal,
+                &summary.ticket,
+                &binding
+            )
+            .is_err()
+        );
+        assert!(
+            source.largest_read <= BUFFER
+                && shadow.largest_read <= BUFFER
+                && target.largest_read <= BUFFER
+                && journal.largest_read <= BUFFER
+        );
+        assert!(target.largest_write <= BUFFER && journal.largest_write <= BUFFER);
     }
 }

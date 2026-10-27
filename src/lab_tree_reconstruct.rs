@@ -384,6 +384,7 @@ fn run_with_interruption(
                             .map(|r| (r.offset, r.length))
                             .collect(),
                         maximum_bytes: descriptor.changed_bytes,
+                        journal_profile: n2r_win32::journal_file::JournalProfile::LegacyV1,
                     };
                     t.arm_writes(policy, &mut report.events)?;
                 }

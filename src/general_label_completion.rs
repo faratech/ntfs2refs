@@ -11,7 +11,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     NativeEvent,
-    journal_file::observe_general_journal_file,
+    journal_file::{JournalProfile, observe_general_journal_file_with_profile},
     shadow_native,
     volume_label::{self, VolumeLabel},
 };
@@ -141,7 +141,11 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
             .share_mode(0)
             .custom_flags(0x0020_0000)
             .open(&inputs.journal)?;
-        let observed = observe_general_journal_file(&journal, &request.journal)?;
+        let observed = observe_general_journal_file_with_profile(
+            &journal,
+            &request.journal,
+            JournalProfile::from_schema(request.schema_version)?,
+        )?;
         artifacts::save(output, "journal-identity.json", &observed)?;
         let binding = JournalBinding {
             experiment_id: request.experiment_id.clone(),
@@ -153,7 +157,7 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
             )?,
         };
         ensure!(
-            ticket.schema_version == 1
+            ticket.schema_version == request.schema_version
                 && ticket.binding == binding
                 && ticket.journal_length == observed.file_bytes
                 && ticket.immutable_length.checked_add(8192) == Some(ticket.journal_length),
@@ -217,7 +221,11 @@ pub fn complete(inputs: &Inputs, output: &Path) -> Result<()> {
             &same,
         )?;
         artifacts::save(output, "native-after.json", &native_after)?;
-        let journal_after = observe_general_journal_file(&journal, &request.journal)?;
+        let journal_after = observe_general_journal_file_with_profile(
+            &journal,
+            &request.journal,
+            JournalProfile::from_schema(request.schema_version)?,
+        )?;
         ensure!(
             journal_after.identity == observed.identity
                 && journal_after.file_bytes == observed.file_bytes,

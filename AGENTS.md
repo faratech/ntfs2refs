@@ -99,6 +99,22 @@ Use the detailed reports rather than inferring broader support:
 - [Device binding discovery](docs/device-binding-discovery.md)
 - [Strict writer research](research/refsnt-adopt/README.md)
 
+The post-freeze candidate adds an explicitly selected experimental journal
+profile 2, with a 16 GiB ceiling and request/ticket/header/manifest version
+binding throughout conversion and recovery. Profile 1 remains the default and
+the frozen alpha keeps its original binary and receipts. A bounded-memory
+synthetic journal larger than the old 768 MiB ceiling passed prepare, resume,
+shadowless rollback and marker verification. No profile-2 native VM conversion,
+interruption or power-loss qualification is claimed; see
+[the CLI workflow](docs/cli-workflow.md). Source content/file-count limits and
+the 128 GiB live partition limit remain unchanged.
+
+Separate opt-in source-stream and bitmap assembly primitives support larger
+logical ranges without enabling broader source admission. See
+[streaming budgets](docs/ntfs-streaming-budget.md) and
+[bitmap pagination](docs/native-bitmap-pagination.md). These primitives do not
+authorize conversion and are not part of the frozen alpha's native evidence.
+
 The bounded profile is NTFS 3.1, 512-byte logical sectors, 4 KiB clusters and
 1 KiB MFT records, targeting ReFS 3.14 with 4 KiB clusters. Current admission
 qualification targets Windows build 26300. Bounds include 128 ordinary files,

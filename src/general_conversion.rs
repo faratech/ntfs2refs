@@ -2,10 +2,14 @@
 //! preparation, durable recovery inputs and cutover stay in one process.
 use crate::{general_qualification as qualification, general_reconstruct as reconstruct};
 use anyhow::{Result, ensure};
+#[cfg(test)]
+use n2r_win32::journal_file::MAX_JOURNAL_BYTES;
 use n2r_win32::{
     NativeEvent,
     general_layout::GeneralSourceShadowBinding,
-    journal_file::{GeneralJournalStorageBinding, MAX_JOURNAL_BYTES, observe_general_journal_file},
+    journal_file::{
+        GeneralJournalStorageBinding, JournalProfile, observe_general_journal_file_with_profile,
+    },
     layout::guid_bytes,
 };
 use serde::{Deserialize, Serialize};
@@ -30,16 +34,16 @@ pub struct Request {
 }
 impl Request {
     pub fn validate(&self) -> Result<()> {
+        let profile = JournalProfile::from_schema(self.schema_version)?;
         self.pair.validate()?;
         self.journal.validate()?;
         ensure!(
-            self.schema_version == 1
-                && self.experiment_id.len() == 32
+            self.experiment_id.len() == 32
                 && self
                     .experiment_id
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                && (1..=MAX_JOURNAL_BYTES).contains(&self.max_journal_bytes),
+                && (1..=profile.max_journal_bytes()).contains(&self.max_journal_bytes),
             "conversion request profile differs"
         );
         for disk in [&self.pair.source, &self.pair.shadow] {
@@ -54,7 +58,8 @@ impl Request {
                 "journal storage must be independent of both data disks"
             );
         }
-        crate::lab_reconstruct::changed_byte_budget(
+        crate::lab_reconstruct::changed_byte_budget_for_profile(
+            profile,
             self.max_journal_bytes,
             self.pair.source.identity.partition_bytes,
         )?;
@@ -141,11 +146,18 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
         Interruption::None | Interruption::AfterSourceFreeze => None,
     };
     request.validate()?;
+    if request.schema_version == JournalProfile::ExperimentalLargeV2.version() {
+        eprintln!(
+            "Using experimental v2 journal profile; native conversion and recovery at this capacity are not yet qualified."
+        );
+    }
     qualification::create_output(output)?;
     qualification::save(output, "conversion-intent.json", request)?;
     let mut phase = "qualification";
     let attempted = (|| -> Result<()> {
-        let max_change_bytes = crate::lab_reconstruct::changed_byte_budget(
+        let profile = JournalProfile::from_schema(request.schema_version)?;
+        let max_change_bytes = crate::lab_reconstruct::changed_byte_budget_for_profile(
+            profile,
             request.max_journal_bytes,
             request.pair.source.identity.partition_bytes,
         )?;
@@ -154,6 +166,7 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
             &output.join("qualification"),
             request.verify_existing_shadow,
             max_change_bytes,
+            profile,
             |source, source_sha256, artifact_sha256| {
                 if matches!(interruption, Interruption::AfterSourceFreeze) {
                     interrupt_after_source_freeze(
@@ -177,7 +190,7 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
             source_label,
         } = qualified;
         let plan = reconstruct::Request {
-            schema_version: 1,
+            schema_version: request.schema_version,
             experiment_id: request.experiment_id.clone(),
             expected_tree_sha256: hex::encode(Sha256::digest(&expected)),
             expected_mount_paths: Some(mount_paths.paths),
@@ -219,7 +232,8 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
             .share_mode(0)
             .custom_flags(0x0020_0000)
             .open(&journal_path)?;
-        let observed = observe_general_journal_file(&journal, &request.journal)?;
+        let observed =
+            observe_general_journal_file_with_profile(&journal, &request.journal, profile)?;
         ensure!(observed.file_bytes == 0, "fresh empty journal required");
         qualification::save(
             output,
@@ -418,6 +432,20 @@ mod tests {
         let mut bad = good;
         bad.experiment_id = "..".repeat(16);
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn large_journal_requires_explicit_v2_request() {
+        let mut candidate = request();
+        candidate.max_journal_bytes = 2u64 << 30;
+        assert!(candidate.validate().is_err());
+        candidate.schema_version = 2;
+        candidate.validate().unwrap();
+        candidate.max_journal_bytes = (16u64 << 30) + 1;
+        assert!(candidate.validate().is_err());
+        candidate.schema_version = 3;
+        candidate.max_journal_bytes = 2u64 << 30;
+        assert!(candidate.validate().is_err());
     }
     #[test]
     fn invalid_interruption_count_is_refused_before_output_or_device_access() {

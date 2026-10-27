@@ -355,6 +355,7 @@ fn write_policy(
             .map(|p| (p.offset, p.length))
             .collect(),
         maximum_bytes: bytes,
+        journal_profile: n2r_win32::journal_file::JournalProfile::LegacyV1,
     };
     policy.validate(PARTITION_BYTES)?;
     Ok(Some(policy))

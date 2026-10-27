@@ -14,8 +14,8 @@ use n2r_win32::{
     NativeEvent, WritePolicy, capture_mount_paths_general,
     general_layout::GeneralSourceShadowBinding,
     journal_file::{
-        GeneralJournalStorageBinding, JournalFileIdentity, MAX_JOURNAL_BYTES,
-        observe_general_journal_file,
+        GeneralJournalStorageBinding, JournalFileIdentity, JournalFileSnapshot, JournalProfile,
+        observe_general_journal_file_with_profile,
     },
     layout::guid_bytes,
     mounted_filesystem_general, rediscover_general_volume_wait, shadow_native,
@@ -27,6 +27,14 @@ use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write},
 };
+
+fn observe_journal(file: &File, request: &Request) -> Result<JournalFileSnapshot> {
+    Ok(observe_general_journal_file_with_profile(
+        file,
+        &request.journal,
+        JournalProfile::from_schema(request.schema_version)?,
+    )?)
+}
 
 fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBinding> {
     Ok(JournalBinding {
@@ -47,16 +55,43 @@ fn validated_ticket(
     identity: &JournalFileIdentity,
     file_bytes: u64,
 ) -> Result<JournalDescriptor> {
+    validated_ticket_for_phase(request, journal, ticket, identity, file_bytes, false)
+}
+
+/// Completed markers must bind the same profile and complete immutable plan
+/// before any durability barrier can expose the target for a native mount.
+fn validated_completed_ticket(
+    request: &Request,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    identity: &JournalFileIdentity,
+    file_bytes: u64,
+) -> Result<JournalDescriptor> {
+    validated_ticket_for_phase(request, journal, ticket, identity, file_bytes, true)
+}
+
+fn validated_ticket_for_phase(
+    request: &Request,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    identity: &JournalFileIdentity,
+    file_bytes: u64,
+    completed: bool,
+) -> Result<JournalDescriptor> {
     let observed = binding(request, identity)?;
     ensure!(
-        ticket.schema_version == 1
+        ticket.schema_version == request.schema_version
             && ticket.binding == observed
             && ticket.journal_length == file_bytes
             && ticket.journal_length <= request.max_journal_bytes
             && ticket.immutable_length.checked_add(8192) == Some(ticket.journal_length),
         "general ticket, journal length or storage identity differs"
     );
-    let descriptor = lab_reconstruct::inspect_journal(journal, ticket, &observed)?;
+    let descriptor = if completed {
+        lab_reconstruct::inspect_completed_journal(journal, ticket, &observed)?
+    } else {
+        lab_reconstruct::inspect_journal(journal, ticket, &observed)?
+    };
     ensure!(
         serde_json::to_vec(&descriptor.request)? == serde_json::to_vec(&request.comparison)?,
         "general journal plan differs from request"
@@ -77,7 +112,7 @@ fn durable_marker_for_mount<'a>(
         observed_binding,
         proof,
         |file| {
-            let observed = observe_general_journal_file(file, &request.journal)?;
+            let observed = observe_journal(file, request)?;
             ensure!(
                 observed.file_bytes == ticket.journal_length,
                 "completed journal length changed around durability barrier"
@@ -105,9 +140,9 @@ pub struct Request {
 
 impl Request {
     pub fn validate(&self) -> Result<()> {
+        let profile = JournalProfile::from_schema(self.schema_version)?;
         ensure!(
-            self.schema_version == 1
-                && self.experiment_id.len() == 32
+            self.experiment_id.len() == 32
                 && self
                     .experiment_id
                     .bytes()
@@ -133,8 +168,8 @@ impl Request {
             self.comparison.schema_version == 2
                 && self.comparison.sector_size == 4096
                 && self.comparison.expected_length == self.pair.source.identity.partition_bytes
-                && self.comparison.max_change_bytes <= lab_reconstruct::MAX_CHANGE_BYTES
-                && (1..=MAX_JOURNAL_BYTES).contains(&self.max_journal_bytes),
+                && self.comparison.max_change_bytes <= profile.max_changed_bytes()
+                && (1..=profile.max_journal_bytes()).contains(&self.max_journal_bytes),
             "general comparison or journal budget differs"
         );
         for data in [&self.pair.source, &self.pair.shadow] {
@@ -201,7 +236,7 @@ pub fn prepare_with_progress(
     let mut events = Vec::new();
     let source_before = source.state(&mut events)?;
     let shadow_before = shadow.state(&mut events)?;
-    let journal_before = observe_general_journal_file(journal, &request.journal)?;
+    let journal_before = observe_journal(journal, request)?;
     ensure!(
         journal_before.file_bytes == 0,
         "journal is not a fresh empty file"
@@ -229,18 +264,19 @@ pub fn prepare_with_progress(
         Some(observed)
     };
     let observed_binding = binding(request, &journal_before.identity)?;
-    let summary = lab_reconstruct::prepare_journal_with_progress(
+    let summary = lab_reconstruct::prepare_journal_with_profile_and_progress(
         source,
         shadow,
         journal,
         &request.comparison,
         &observed_binding,
         request.max_journal_bytes,
+        JournalProfile::from_schema(request.schema_version)?,
         progress,
     )?;
     let source_after = source.state(&mut events)?;
     let shadow_after = shadow.state(&mut events)?;
-    let journal_after = observe_general_journal_file(journal, &request.journal)?;
+    let journal_after = observe_journal(journal, request)?;
     ensure!(
         source_before == source_after
             && shadow_before == shadow_after
@@ -293,7 +329,7 @@ pub(crate) fn activate(
     );
     source.state(events)?;
     let shadow_before = shadow.state(events)?;
-    let before = observe_general_journal_file(journal, &request.journal)?;
+    let before = observe_journal(journal, request)?;
     validated_ticket(
         request,
         journal,
@@ -306,7 +342,7 @@ pub(crate) fn activate(
         target.state(events)?.disk_attributes == 1 && shadow.state(events)? == shadow_before,
         "general activation lost disk exclusion"
     );
-    let after = observe_general_journal_file(journal, &request.journal)?;
+    let after = observe_journal(journal, request)?;
     ensure!(
         after.identity == before.identity && after.file_bytes == before.file_bytes,
         "general journal changed during activation"
@@ -390,7 +426,7 @@ pub fn rollback_without_shadow(
         before.disk_attributes == 1,
         "rollback target is not offline"
     );
-    let observed = observe_general_journal_file(journal, &request.journal)?;
+    let observed = observe_journal(journal, request)?;
     let descriptor = validated_ticket(
         request,
         journal,
@@ -413,6 +449,9 @@ pub fn rollback_without_shadow(
                     .map(|r| (r.offset, r.length))
                     .collect(),
                 maximum_bytes: descriptor.changed_bytes,
+                journal_profile: n2r_win32::journal_file::JournalProfile::from_schema(
+                    request.schema_version,
+                )?,
             },
             events,
         )?;
@@ -420,7 +459,7 @@ pub fn rollback_without_shadow(
     let bound = binding(request, &observed.identity)?;
     let result = lab_reconstruct::rollback_without_shadow(target, journal, ticket, &bound)?;
     let after = target.state(events)?;
-    let journal_after = observe_general_journal_file(journal, &request.journal)?;
+    let journal_after = observe_journal(journal, request)?;
     ensure!(
         before == after
             && observed.identity == journal_after.identity
@@ -551,7 +590,7 @@ fn execute_with_interruption(
         target_before.disk_attributes == 1 && shadow_before.disk_attributes == 3,
         "general execution requires an excluded target and shadow"
     );
-    let before = observe_general_journal_file(journal, &request.journal)?;
+    let before = observe_journal(journal, request)?;
     let descriptor = validated_ticket(
         request,
         journal,
@@ -574,6 +613,9 @@ fn execute_with_interruption(
                     .map(|r| (r.offset, r.length))
                     .collect(),
                 maximum_bytes: descriptor.changed_bytes,
+                journal_profile: n2r_win32::journal_file::JournalProfile::from_schema(
+                    request.schema_version,
+                )?,
             },
             events,
         )?;
@@ -605,7 +647,7 @@ fn execute_with_interruption(
     };
     let target_after = target.state(events)?;
     let shadow_after = shadow.state(events)?;
-    let after = observe_general_journal_file(journal, &request.journal)?;
+    let after = observe_journal(journal, request)?;
     ensure!(
         target_before == target_after
             && shadow_before == shadow_after
@@ -712,7 +754,7 @@ pub fn complete_rollback(
             && shadow.state(&mut events)?.disk_attributes == 3,
         "NTFS rollback completion requires excluded target and shadow"
     );
-    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_journal = observe_journal(journal, request)?;
     validated_ticket(
         request,
         journal,
@@ -787,7 +829,7 @@ pub fn complete_rollback_without_shadow(
         target.state(&mut events)?.disk_attributes == 1,
         "rollback target is not offline"
     );
-    let observed = observe_general_journal_file(journal, &request.journal)?;
+    let observed = observe_journal(journal, request)?;
     validated_ticket(
         request,
         journal,
@@ -863,7 +905,14 @@ pub fn resume_completed_rollback(
             && shadow.state(&mut events)?.disk_attributes == 3,
         "completed NTFS rollback requires excluded target and shadow"
     );
-    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_journal = observe_journal(journal, request)?;
+    validated_completed_ticket(
+        request,
+        journal,
+        ticket,
+        &observed_journal.identity,
+        observed_journal.file_bytes,
+    )?;
     let observed_binding = binding(request, &observed_journal.identity)?;
     let proof = lab_reconstruct::verify_completed_marker(
         &mut target,
@@ -931,7 +980,14 @@ pub fn resume_completed_rollback_without_shadow(
         target.state(&mut events)?.disk_attributes == 1,
         "completed rollback target is not offline"
     );
-    let observed = observe_general_journal_file(journal, &request.journal)?;
+    let observed = observe_journal(journal, request)?;
+    validated_completed_ticket(
+        request,
+        journal,
+        ticket,
+        &observed.identity,
+        observed.file_bytes,
+    )?;
     let bound = binding(request, &observed.identity)?;
     let proof = lab_reconstruct::verify_completed_rollback_marker_without_shadow(
         &mut target,
@@ -1102,7 +1158,7 @@ pub(crate) fn finalize(
             && shadow.state(&mut events)?.disk_attributes == 3,
         "general handoff requires excluded target and shadow"
     );
-    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_journal = observe_journal(journal, request)?;
     validated_ticket(
         request,
         journal,
@@ -1183,7 +1239,14 @@ pub fn finalize_after_marker(
             && shadow.state(&mut events)?.disk_attributes == 3,
         "completed ReFS handoff requires excluded target and shadow"
     );
-    let observed_journal = observe_general_journal_file(journal, &request.journal)?;
+    let observed_journal = observe_journal(journal, request)?;
+    validated_completed_ticket(
+        request,
+        journal,
+        ticket,
+        &observed_journal.identity,
+        observed_journal.file_bytes,
+    )?;
     let observed_binding = binding(request, &observed_journal.identity)?;
     let proof = lab_reconstruct::verify_completed_refs_marker_from_journal(
         &mut target,
@@ -1340,6 +1403,192 @@ mod tests {
         valid.validate().unwrap();
         valid.comparison.max_change_bytes += 4096;
         assert!(valid.validate().is_err());
+    }
+    #[test]
+    fn request_profile_and_write_budget_are_explicit() {
+        let mut value = request();
+        value.max_journal_bytes = 2u64 << 30;
+        value.comparison.max_change_bytes = 512u64 << 20;
+        assert!(value.validate().is_err());
+        value.schema_version = 2;
+        value.validate().unwrap();
+        value.schema_version = 3;
+        assert!(value.validate().is_err());
+    }
+    #[test]
+    fn completed_ticket_rejects_cross_profile_and_different_immutable_plan() {
+        use std::io::{Seek, SeekFrom, Write};
+        for version in [1, 2] {
+            let mut req = request();
+            req.schema_version = version;
+            let old = vec![0x31; 16384];
+            let mut new = old.clone();
+            new[8192..12288].fill(0x72);
+            req.comparison.expected_length = old.len() as u64;
+            req.comparison.max_change_bytes = old.len() as u64;
+            req.comparison.source_sha256 = hex::encode(Sha256::digest(&old));
+            req.comparison.shadow_sha256 = hex::encode(Sha256::digest(&new));
+            let identity = JournalFileIdentity {
+                volume_serial_number: 1,
+                file_id_128: [2; 16],
+                volume_guid: guid_bytes(&req.journal.disk.volume_guid).unwrap(),
+                disk_guid: guid_bytes(&req.journal.disk.identity.disk_guid).unwrap(),
+                partition_guid: guid_bytes(&req.journal.disk.identity.partition_guid).unwrap(),
+                partition_number: req.journal.disk.identity.partition_number,
+                disk_bytes: req.journal.disk.identity.disk_bytes,
+                partition_offset: req.journal.disk.identity.partition_offset,
+                partition_bytes: req.journal.disk.identity.partition_bytes,
+                logical_sector_bytes: req.journal.disk.identity.logical_sector_bytes,
+                physical_sector_bytes: req.journal.disk.identity.physical_sector_bytes,
+            };
+            let bound = binding(&req, &identity).unwrap();
+            let mut source = tempfile::tempfile().unwrap();
+            let mut shadow = tempfile::tempfile().unwrap();
+            let mut journal = tempfile::tempfile().unwrap();
+            source.write_all(&old).unwrap();
+            shadow.write_all(&new).unwrap();
+            source.seek(SeekFrom::Start(0)).unwrap();
+            shadow.seek(SeekFrom::Start(0)).unwrap();
+            let summary = lab_reconstruct::prepare_journal_with_profile(
+                &mut source,
+                &mut shadow,
+                &mut journal,
+                &req.comparison,
+                &bound,
+                req.max_journal_bytes,
+                JournalProfile::from_schema(version).unwrap(),
+            )
+            .unwrap();
+            let length = summary.ticket.journal_length;
+            validated_completed_ticket(&req, &mut journal, &summary.ticket, &identity, length)
+                .unwrap();
+            let mut crossed = req.clone();
+            crossed.schema_version = if version == 1 { 2 } else { 1 };
+            assert!(
+                validated_completed_ticket(
+                    &crossed,
+                    &mut journal,
+                    &summary.ticket,
+                    &identity,
+                    length
+                )
+                .is_err()
+            );
+            crossed = req.clone();
+            crossed.comparison.max_ranges -= 1;
+            assert!(
+                validated_completed_ticket(
+                    &crossed,
+                    &mut journal,
+                    &summary.ticket,
+                    &identity,
+                    length
+                )
+                .is_err()
+            );
+
+            // Exercise both ABT proof forms after the actual marker exists.
+            let mut target = tempfile::tempfile().unwrap();
+            target.write_all(&old).unwrap();
+            lab_reconstruct::mark_rollback_complete_without_shadow(
+                &mut target,
+                &mut journal,
+                &summary.ticket,
+                &bound,
+            )
+            .unwrap();
+            validated_completed_ticket(&req, &mut journal, &summary.ticket, &identity, length)
+                .unwrap();
+            lab_reconstruct::verify_completed_marker(
+                &mut target,
+                &mut shadow,
+                &mut journal,
+                &summary.ticket,
+                &bound,
+                lab_reconstruct::CompletionKind::NtfsRollback,
+                old.len() as u64,
+                &req.comparison.source_sha256,
+                &req.comparison.shadow_sha256,
+            )
+            .unwrap();
+            lab_reconstruct::verify_completed_rollback_marker_without_shadow(
+                &mut target,
+                &mut journal,
+                &summary.ticket,
+                &bound,
+                old.len() as u64,
+                &req.comparison.source_sha256,
+            )
+            .unwrap();
+            let mut crossed = req.clone();
+            crossed.schema_version = if version == 1 { 2 } else { 1 };
+            assert!(
+                validated_completed_ticket(
+                    &crossed,
+                    &mut journal,
+                    &summary.ticket,
+                    &identity,
+                    length
+                )
+                .is_err()
+            );
+
+            // The HND path must satisfy the same comparison and profile gate.
+            let mut handoff_journal = tempfile::tempfile().unwrap();
+            let handoff = lab_reconstruct::prepare_journal_with_profile(
+                &mut source,
+                &mut shadow,
+                &mut handoff_journal,
+                &req.comparison,
+                &bound,
+                req.max_journal_bytes,
+                JournalProfile::from_schema(version).unwrap(),
+            )
+            .unwrap();
+            lab_reconstruct::apply(
+                &mut target,
+                &mut shadow,
+                &mut handoff_journal,
+                &handoff.ticket,
+                &bound,
+            )
+            .unwrap();
+            lab_reconstruct::mark_handoff(
+                &mut target,
+                &mut shadow,
+                &mut handoff_journal,
+                &handoff.ticket,
+                &bound,
+            )
+            .unwrap();
+            validated_completed_ticket(
+                &req,
+                &mut handoff_journal,
+                &handoff.ticket,
+                &identity,
+                handoff.ticket.journal_length,
+            )
+            .unwrap();
+            lab_reconstruct::verify_completed_refs_marker_from_journal(
+                &mut target,
+                &mut shadow,
+                &mut handoff_journal,
+                &handoff.ticket,
+                &bound,
+                old.len() as u64,
+            )
+            .unwrap();
+            assert!(
+                validated_completed_ticket(
+                    &crossed,
+                    &mut handoff_journal,
+                    &handoff.ticket,
+                    &identity,
+                    handoff.ticket.journal_length
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn source_labels_preserve_legacy_request_bytes_and_validate_new_metadata() {

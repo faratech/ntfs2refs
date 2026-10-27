@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, GeneralJournaledPartition, NativeEvent,
-    journal_file::observe_general_journal_file,
+    journal_file::{JournalProfile, observe_general_journal_file_with_profile},
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -124,6 +124,10 @@ pub fn recover(operation: Operation, inputs: &Inputs, output: &Path) -> Result<(
     request.validate()?;
     let ticket_bytes = pinned(&inputs.ticket, &inputs.ticket_sha256, 65536)?;
     let ticket: JournalTicket = serde_json::from_slice(&ticket_bytes)?;
+    ensure!(
+        ticket.schema_version == request.schema_version,
+        "recovery ticket and request journal profiles differ"
+    );
     let expectation = match (&inputs.expectation, &inputs.expectation_sha256) {
         (Some(path), Some(pin)) => {
             ensure!(
@@ -185,7 +189,11 @@ fn run(
             .share_mode(0)
             .custom_flags(0x0020_0000)
             .open(&inputs.journal)?;
-        let identity = observe_general_journal_file(&journal, &request.journal)?;
+        let identity = observe_general_journal_file_with_profile(
+            &journal,
+            &request.journal,
+            JournalProfile::from_schema(request.schema_version)?,
+        )?;
         artifacts::save(output, "journal-identity.json", &identity)?;
         phase = "reopen-excluded-disks";
         let mut events = Vec::<NativeEvent>::new();

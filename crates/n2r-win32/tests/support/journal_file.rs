@@ -16,6 +16,30 @@ fn large_reference_observer_does_not_widen_journal_admission() {
     assert!(validate_file_fields(&evidence).is_err());
 }
 
+#[test]
+fn large_journal_file_requires_explicit_experimental_profile() {
+    let mut evidence = fixture(&binding());
+    let legacy_limit = MAX_JOURNAL_BYTES;
+    put64(&mut evidence.file_standard_info, 0, legacy_limit + 4096);
+    put64(&mut evidence.file_standard_info, 8, legacy_limit + 4096);
+    assert!(validate_file_fields(&evidence).is_err());
+    assert!(validate_file_fields_for_profile(&evidence, JournalProfile::LegacyV1).is_err());
+    validate_file_fields_for_profile(&evidence, JournalProfile::ExperimentalLargeV2).unwrap();
+    put64(
+        &mut evidence.file_standard_info,
+        0,
+        MAX_EXPERIMENTAL_JOURNAL_BYTES + 4096,
+    );
+    put64(
+        &mut evidence.file_standard_info,
+        8,
+        MAX_EXPERIMENTAL_JOURNAL_BYTES + 4096,
+    );
+    assert!(
+        validate_file_fields_for_profile(&evidence, JournalProfile::ExperimentalLargeV2).is_err()
+    );
+}
+
 fn put32(b: &mut [u8], at: usize, n: u32) {
     b[at..at + 4].copy_from_slice(&n.to_le_bytes());
 }

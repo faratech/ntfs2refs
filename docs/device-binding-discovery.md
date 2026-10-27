@@ -63,3 +63,10 @@ maximum journal size. The actual journal size is determined only after the
 frozen source and shadow are compared, and shadow construction has its own
 space requirements. These figures are point-in-time observations, not space
 reservations, conversion estimates or authorization to write.
+
+For experimental larger reconstruction journals, explicitly add
+`--experimental-large-journal --max-journal-bytes <bytes>` (at most 16 GiB).
+This generates a profile-2 request, which must be recovered with a matching
+profile-2-capable executable. The default remains the tested 768 MiB profile 1.
+Profile 2 is not yet qualified by a native conversion or recovery run and does
+not change the existing 256 MiB source-content or object-count limits.

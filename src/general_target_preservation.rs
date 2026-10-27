@@ -199,6 +199,7 @@ pub fn verify_and_freeze(
     source_views: &crate::ntfs_source_view::Analysis,
     pair: GeneralSourceShadowBinding,
     max_change_bytes: u64,
+    profile: n2r_win32::journal_file::JournalProfile,
     events: &mut Vec<NativeEvent>,
 ) -> Result<(GeneralFrozenPartition, FrozenTargetPreservation)> {
     pair.validate()?;
@@ -211,7 +212,7 @@ pub fn verify_and_freeze(
     .validate()?;
     ensure!(
         source.binding() == &pair.source
-            && (1..=lab_reconstruct::MAX_CHANGE_BYTES).contains(&max_change_bytes),
+            && (1..=profile.max_changed_bytes()).contains(&max_change_bytes),
         "target preservation source or comparison bound differs"
     );
     let source_before = source.state(events)?;

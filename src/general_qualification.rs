@@ -6,7 +6,8 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
-    GeneralFrozenPartition, NativeEvent, general_layout::GeneralSourceShadowBinding, shadow_native,
+    GeneralFrozenPartition, NativeEvent, general_layout::GeneralSourceShadowBinding,
+    journal_file::JournalProfile, shadow_native,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -105,6 +106,7 @@ pub(crate) fn prepare_with_budget(
         output,
         verify_existing,
         max_change_bytes,
+        JournalProfile::LegacyV1,
         |_, _, _| Ok(()),
     )
 }
@@ -117,11 +119,12 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
     output: &Path,
     verify_existing: bool,
     max_change_bytes: u64,
+    profile: JournalProfile,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
 ) -> Result<QualifiedTree> {
     pair.validate()?;
     ensure!(
-        (1..=lab_reconstruct::MAX_CHANGE_BYTES).contains(&max_change_bytes)
+        (1..=profile.max_changed_bytes()).contains(&max_change_bytes)
             && max_change_bytes <= pair.source.identity.partition_bytes,
         "qualification changed-byte budget differs"
     );
@@ -270,6 +273,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             views,
             pair.clone(),
             max_change_bytes,
+            profile,
             &mut events,
         )?;
         save(output, "target-preservation.json", &proof)?;

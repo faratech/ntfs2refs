@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
         GeneralPartitionReader,
         discovery::{self, Role},
         general_layout::GeneralSourceShadowBinding,
-        journal_file::{GeneralJournalStorageBinding, MAX_JOURNAL_BYTES},
+        journal_file::{GeneralJournalStorageBinding, JournalProfile, MAX_JOURNAL_BYTES},
     };
     use sha2::{Digest, Sha256};
     use std::{
@@ -43,6 +43,9 @@ fn main() -> anyhow::Result<()> {
         experiment_id: String,
         #[arg(long,default_value_t=MAX_JOURNAL_BYTES)]
         max_journal_bytes: u64,
+        /// Opt in to the experimental v2 journal profile (up to 16 GiB).
+        #[arg(long)]
+        experimental_large_journal: bool,
         /// Permit additional GPT partitions on journal storage, including the OS disk.
         #[arg(long)]
         journal_additional_partitions: bool,
@@ -100,13 +103,21 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     }
     let args = Args::parse();
+    let profile = if args.experimental_large_journal {
+        eprintln!(
+            "Using experimental v2 journal profile; native conversion and recovery at this capacity are not yet qualified."
+        );
+        JournalProfile::ExperimentalLargeV2
+    } else {
+        JournalProfile::LegacyV1
+    };
     ensure!(
         args.experiment_id.len() == 32
             && args
                 .experiment_id
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            && (1..=MAX_JOURNAL_BYTES).contains(&args.max_journal_bytes),
+            && (1..=profile.max_journal_bytes()).contains(&args.max_journal_bytes),
         "fresh lowercase experiment identifier and bounded journal budget required"
     );
     ordinary_output(&args.output)?;
@@ -188,7 +199,7 @@ fn main() -> anyhow::Result<()> {
         .as_deref()
         .unwrap_or(&derived_label);
     let request = ntfs2refs::general_conversion::Request {
-        schema_version: 1,
+        schema_version: profile.version(),
         experiment_id: args.experiment_id,
         pair: GeneralSourceShadowBinding {
             source: source.binding.clone(),

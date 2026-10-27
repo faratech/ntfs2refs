@@ -13,7 +13,8 @@ The output directory must be fresh, on the Windows OS volume, with ordinary
 directory ancestry; missing parents are created and checked before use. The request is a bounded ordinary JSON file, at most
 16 KiB, matching `general_conversion::Request`. Its fields are:
 
-- `schema_version`: `1`.
+- `schema_version`: `1` for the existing journal profile, or `2` for the
+  explicitly selected experimental large-journal profile.
 - `experiment_id`: a fresh 32-character lowercase hexadecimal identifier.
 - `pair`: actual source and shadow `GeneralDiskBinding` values, including disk
   number, volume GUID, GPT identities, partition bounds and sector geometry.
@@ -34,6 +35,17 @@ sectors, 4 KiB clusters and 1 KiB records; ReFS 3.14 with 4 KiB clusters; up to
 128 ordinary files, 32 directories and 256 MiB of logical contents. Source
 policy qualification currently targets Windows build 26300. Unsupported
 semantics and unknown layouts are refused. Boot/system volumes remain excluded.
+
+Journal profile 1 retains the existing 768 MiB journal ceiling. The opt-in
+profile 2 permits a maximum journal budget up to 16 GiB, with the changed-byte
+budget derived from that value after reserving metadata and both old and new
+bytes. Select it with `ntfs2refs-bind --experimental-large-journal` and an
+appropriate `--max-journal-bytes`. Conversion, resume, rollback and handoff bind
+the request and immutable journal ticket to the same profile. Profile 2 has not
+been qualified by a native VM conversion or interruption test; it does not raise
+the source file/tree limits or imply broader filesystem feature support. Older
+executables refuse its request/ticket version. Use the executable corresponding
+to the run for every recovery operation.
 
 The workflow captures a live source freeze, checks the semantic source model,
 constructs or verifies the native ReFS shadow, freezes it, and creates the

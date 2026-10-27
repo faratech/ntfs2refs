@@ -34,7 +34,14 @@ On this Windows host, also read `C:\Users\mfara\.codex\RTK.md` when present.
   Resume after the first-flushed-write process interruption also passed public
   resume/finalize, strict verification, mutation and reboot, and is saved OFF as
   checkpoint `072a065e-7f91-457f-ad27-709271b07014`. Preserve all three branches.
-  The separate shadowless rollback remains a pending qualification case.
+  The separate shadowless rollback also passed exact preimage/marker proof,
+  restored NTFS availability, seven payload checks and reboot; its OFF checkpoint
+  is `fc55b0d7-5899-4c1f-9404-4bf4a14b054c`. Three later read-only captures
+  verified the normal/resume handoff and rollback markers plus immutable journal
+  bodies. All nine alpha checkpoints remain; the alpha VM is OFF with its original
+  8 GiB configuration restored. Only the final read-only marker observer used
+  temporary 4 GiB due host memory pressure; this does not qualify conversion at
+  that resource profile. No broader power-loss/placement/profile claim follows.
   Use the exact frozen executable pins and fresh alpha dispatchers; no engine
   or independent-writer feature work belongs on this critical path.
 - Public `ntfs2refs convert --request` completed a fourteen-object tree on the
@@ -308,9 +315,9 @@ tests and release builds. Do not transfer that result to later changes.
 `evidence/qualification-registry.json` records bounded implementation/native
 claims and their exact evidence pins; it never grants execution authority.
 
-Immediate work is the frozen alpha's end-to-end interruption/resume/finalization
-and separate shadowless rollback tests. Preserve each completed branch before
-restoring its disposable baseline. Source/placement expansion, scratch/I/O
+The frozen alpha's four native paths and marker captures have completed; finish
+their evidence registry and reviewable frozen-alpha handoff before changing the
+engine. Preserve every case/observation checkpoint. Source/placement expansion, scratch/I/O
 optimization and independent-writer investigation follow that qualification. The
 fourteen-object aged-layout conversion, automatic label path, mutation and
 reboot now have bounded native evidence; do not repeat them without a concrete

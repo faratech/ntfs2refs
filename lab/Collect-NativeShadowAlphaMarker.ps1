@@ -194,8 +194,8 @@ try{
    if($bodyHash-cne$t.immutable_sha256-or$file.ReadByte()-ne-1-or$file.Length-ne$t.journal_length){throw 'Immutable body hash or exact journal length changed.'}
    # The prepared header starts at8192; the first8192 are mutable lifecycle data.
    if([Text.Encoding]::ASCII.GetString($header,0,8)-cne'N2RPREP1'-or[BitConverter]::ToUInt32($header,8)-ne1-or
-    [BitConverter]::ToUInt64($header,32)-ne[ulong]$t.journal_length-or[BitConverter]::ToUInt32($header,16)-ne$PatchCount-or
-    [BitConverter]::ToUInt64($header,24)-ne[ulong]$ChangedBytes-or[BitConverter]::ToUInt32($header,20)-ne0){throw 'Prepared header magic/version/count/length differs.'}
+    [BitConverter]::ToUInt64($header,32)-ne[System.UInt64]$t.journal_length-or[BitConverter]::ToUInt32($header,16)-ne$PatchCount-or
+    [BitConverter]::ToUInt64($header,24)-ne[System.UInt64]$ChangedBytes-or[BitConverter]::ToUInt32($header,20)-ne0){throw 'Prepared header magic/version/count/length differs.'}
    for($i=72;$i-lt96;$i++){if($header[$i]-ne0){throw 'Prepared header reserved bytes differ.'}}
    $sha=[Security.Cryptography.SHA256]::Create();try{$headerDigest=$sha.ComputeHash($header,0,96)}finally{$sha.Dispose()}
    for($i=0;$i-lt32;$i++){if($header[96+$i]-ne$headerDigest[$i]){throw 'Prepared header checksum differs.'}}

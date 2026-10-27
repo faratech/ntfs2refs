@@ -97,8 +97,54 @@ a fresh management observation confirmed the actual OFF normal branch before a
 guarded continuation dispatched the separate rollback case. The restore and
 successful resume operations were not repeated.
 
-Shadowless rollback uses another separate baseline branch; its outcome remains
-pending and is not inferred from resume. Standalone observed marker digests have
-not yet been collected. Power-loss safety,
-boot conversion, advanced source features and broader Windows compatibility
+The separate shadowless rollback case
+`d769b379604c46fd937d5f4fba3a236a` passed after its own first-flushed-write
+exit 86. The enrolled SCSI0/4 shadow attachment was removed; its backing remained
+preserved, and the guest's actual disk/partition inventory confirmed absence.
+Public `rollback --without-shadow` exited zero, wrote 139 ranges totaling
+231,391,232 bytes and proved the complete original NTFS preimage
+`bacb25054b3046b368e3ef2399e02b25988ed4c900544a0e05f616ee2f993e29`
+before writable mounting. The canonical version-4 rollback marker closed replay.
+Original partition/mount/label availability and seven user-file lengths/hashes
+matched before and after a clean reboot. Checkpoint
+`fc55b0d7-5899-4c1f-9404-4bf4a14b054c` preserves the branch OFF.
+
+This case used a 462,814,128-byte journal, request file pin
+`07fbed2d84cee0ffe0cff1c399f8778bd77cd494ab106d1a2186505ab14f9900`
+and ticket file pin
+`0966adacd5a4f71b51f2934124d443d6a896858f7b87f4bbdc5b36d45fed2f30`.
+Its public result pin is
+`f71cce07d32c910677c4c43b79a828f02817a6574d7d2983f60e2c2269d627c5`,
+and completion report pin is
+`37d69548090d3bbdb9313f2019b1d0736930a5d538b38845b68115a31059f1ff`.
+Controller `71c583b065014743946fa97976d44889` exported the nine public JSON
+artifacts and compared their hashes. Its first harness preflight stopped before
+detach/dispatch because PowerShell omitted a volume-GUID root's trailing slash.
+The corrected guard checked all nine paths and every ancestor, including the
+normalized root; the original interruption and journal were reused. No producer,
+restore, raw rollback or detached-shadow operation was repeated.
+
+All four qualification paths passed on the frozen executable. The separate
+read-only marker captures rehashed each completed journal's immutable body and
+preserved its exact 8 KiB prefix. Observed marker-sector SHA-256 values are:
+
+| Case | Marker-sector SHA-256 |
+|---|---|
+| Normal, `N2RHND01` v3 | `b1565e8c8b5aefecde9419ea03b7c14d647b733ca5c24625b9cef5b2929f65a9` |
+| Resume, `N2RHND01` v3 | `fb14e0cfb445dd20a845e732e82ea58b326bfefeb6b9c4653a06c19c314233b4` |
+| Rollback, `N2RABT01` v4 | `0d7fc4e09d38f7ba5f6fa524b521eb7ad665cb4141e57c099fae522083bb8a85` |
+
+Capture receipts are under `marker-pins` and
+`marker-capture-448ae48454814e75a45706b2807b8d78`. These are journal byte
+observations, not current raw target-image or native journal file-ID attestations.
+The read-only collector's first attempt used an unsupported PowerShell5.1
+`ulong` alias; its failure receipt remains, and the corrected `System.UInt64`
+collector passed. Host memory prevented the final 8 GiB observer boot, so that
+read-only capture used 4 GiB. All four qualification cases used 8 GiB. The original
+8 GiB configuration was restored before the final clean OFF observation snapshot.
+All nine alpha checkpoints remain: the original baseline/import, four case
+branches and three additional observation branches.
+
+Storage power-loss safety, boot conversion, advanced source features and broader
+Windows compatibility
 remain unqualified. Independent-writer research remains off the alpha path.

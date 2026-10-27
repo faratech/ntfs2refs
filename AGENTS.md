@@ -252,6 +252,14 @@ native success qualifies this code. See [the scope](docs/shadow-user-evacuation.
 Batch evacuation for dense layouts and avoiding full shadow payload copies are
 still unfinished. Preserve all eight passed/interrupted checkpoints.
 
+The later interval planner/executor now interleaves bounded evacuation batches
+and retention. A partial batch reports remaining blocked bytes, then the next
+batch is planned from freshly measured mappings/maps only after confirmed
+evacuation and retention progress. Workspace can be reused. Global evacuation
+move and retention/evidence limits remain; no native error is retried and no
+metadata reservation is bypassed. Reports retain each batch. This implementation
+has build evidence only and still copies the full shadow payload initially.
+
 The 8 GiB ordinary-append retention fixture is source-only preparation code in
 `Prepare-StreamingRetention8G.ps1`. It requires saved OFF rollback branch 40fb292c,
 all eight checkpoints and 6 GiB admission capacity before any action. It restores

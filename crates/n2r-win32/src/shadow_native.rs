@@ -173,8 +173,8 @@ pub struct Report {
     pub retention_attempts: Vec<RetentionAttempt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub post_mount_indexer_cache: Option<PostMountIndexerCache>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shadow_user_evacuation: Option<evacuation::Report>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shadow_user_evacuation: Vec<evacuation::Report>,
 }
 
 /// A newly generated, source-absent filesystem cache on the converted volume.
@@ -645,6 +645,7 @@ fn retain_source_run_on_shadow(
         crate::bitmap_observation::Observation,
         crate::bitmap_observation::Observation,
     )>,
+    cascade: bool,
 ) -> io::Result<()> {
     let mut first_pass = true;
     loop {
@@ -664,6 +665,7 @@ fn retain_source_run_on_shadow(
         // Replan from fresh maps instead of abandoning those newly free slots.
         // Never repeat a rejected/partial move or exhaust the fixed audit budget.
         if !reuse_no_submit_snapshot
+            || !cascade
             || !progress
             || attempts.len() == crate::retention_layout::MAX_SUBRUNS
         {
@@ -2702,7 +2704,7 @@ fn run_role_profile(
     };
     let mut security_restorations = vec![];
     let mut retention_attempts = vec![];
-    let mut shadow_user_evacuation = None;
+    let mut shadow_user_evacuation = Vec::new();
     let constructing = matches!(mode, Mode::Construct | Mode::ConstructRetaining);
     if mode == Mode::Verify && !matched_before {
         return Err(invalid("root security changed before verification"));
@@ -2730,7 +2732,7 @@ fn run_role_profile(
             security_repair_privileges: vec![],
             retention_attempts,
             post_mount_indexer_cache: None,
-            shadow_user_evacuation: None,
+            shadow_user_evacuation: Vec::new(),
         });
     }
     if constructing || mode == Mode::RestoreRootOnly {
@@ -2791,7 +2793,7 @@ fn run_role_profile(
                 security_repair_privileges: vec![],
                 retention_attempts,
                 post_mount_indexer_cache: None,
-                shadow_user_evacuation: None,
+                shadow_user_evacuation: Vec::new(),
             });
         }
         for (index, i) in input.iter().enumerate().skip(1) {
@@ -2828,23 +2830,36 @@ fn run_role_profile(
             }
         }
         if mode == Mode::ConstructRetaining {
-            if resource_profile
-                == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
-            {
-                shadow_user_evacuation = Some(evacuation::run(
-                    &volume,
-                    &root,
-                    input,
-                    binding.identity.partition_bytes,
-                )?);
-            }
-            let mut planning_cache = None;
-            for i in input.iter().filter(|i| !i.directory) {
-                if let Some(offset) = i.source_offset
-                    && i.logical_length() > 0
-                    && i.logical_length().is_multiple_of(4096)
+            let mut evacuation_budget = crate::shadow_evacuation::MAX_MOVES;
+            loop {
+                let first_retention_attempt = retention_attempts.len();
+                let mut more_evacuation = false;
+                let mut evacuated_bytes = 0;
+                if resource_profile
+                    == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
                 {
-                    retain_source_run_on_shadow(
+                    let report = evacuation::run(
+                        &volume,
+                        &root,
+                        input,
+                        binding.identity.partition_bytes,
+                        evacuation_budget,
+                    )?;
+                    evacuation_budget -= report.attempts.len();
+                    more_evacuation = report
+                        .plan
+                        .as_ref()
+                        .is_some_and(|plan| plan.remaining_blocked_bytes != 0);
+                    evacuated_bytes = report.completed_bytes;
+                    shadow_user_evacuation.push(report);
+                }
+                let mut planning_cache = None;
+                for i in input.iter().filter(|i| !i.directory) {
+                    if let Some(offset) = i.source_offset
+                        && i.logical_length() > 0
+                        && i.logical_length().is_multiple_of(4096)
+                    {
+                        retain_source_run_on_shadow(
                         &volume,
                         &root,
                         i,
@@ -2861,10 +2876,11 @@ fn run_role_profile(
                                 crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
                             ),
                         &mut planning_cache,
+                        !more_evacuation,
                     )?;
-                }
-                for run in &i.source_runs {
-                    retain_source_run_on_shadow(
+                    }
+                    for run in &i.source_runs {
+                        retain_source_run_on_shadow(
                         &volume,
                         &root,
                         i,
@@ -2877,7 +2893,23 @@ fn run_role_profile(
                                 crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
                             ),
                         &mut planning_cache,
+                        !more_evacuation,
                     )?;
+                    }
+                }
+                let retained_progress = retention_attempts[first_retention_attempt..]
+                    .iter()
+                    .all(|attempt| attempt.native_error.is_none())
+                    && retention_attempts[first_retention_attempt..]
+                        .iter()
+                        .any(|attempt| attempt.submitted && attempt.all_clusters_at_source);
+                if !more_evacuation
+                    || evacuated_bytes == 0
+                    || !retained_progress
+                    || evacuation_budget == 0
+                    || retention_attempts.len() == crate::retention_layout::MAX_SUBRUNS
+                {
+                    break;
                 }
             }
         }

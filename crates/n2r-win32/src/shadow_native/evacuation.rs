@@ -62,7 +62,13 @@ struct Prepared {
     plan: Plan,
 }
 
-fn prepare(volume: &File, root: &str, input: &[Input<'_>], partition: u64) -> io::Result<Prepared> {
+fn prepare(
+    volume: &File,
+    root: &str,
+    input: &[Input<'_>],
+    partition: u64,
+    move_budget: usize,
+) -> io::Result<Prepared> {
     let mut eligible = Vec::new();
     let mut owned = Vec::new();
     let mut files = Vec::new();
@@ -140,7 +146,14 @@ fn prepare(volume: &File, root: &str, input: &[Input<'_>], partition: u64) -> io
     let mut ex = [0; 16];
     ex[8] = 1;
     let metadata = Observation::capture(volume, &ex, partition, true)?.allocation_map(partition)?;
-    let plan = shadow_evacuation::plan_ranges(&legacy, &metadata, &eligible, &owned, partition)?;
+    let plan = shadow_evacuation::plan_ranges(
+        &legacy,
+        &metadata,
+        &eligible,
+        &owned,
+        partition,
+        move_budget,
+    )?;
     Ok(Prepared {
         eligible,
         files,
@@ -154,13 +167,14 @@ pub(super) fn run(
     root: &str,
     input: &[Input<'_>],
     partition: u64,
+    move_budget: usize,
 ) -> io::Result<Report> {
     let Prepared {
         eligible,
         files,
         ids,
         plan,
-    } = match prepare(volume, root, input, partition) {
+    } = match prepare(volume, root, input, partition, move_budget) {
         Ok(value) => value,
         Err(error)
             if matches!(
@@ -265,9 +279,13 @@ pub(super) fn run(
         completed_bytes += movement.length;
     }
     volume.sync_all()?;
+    let not_submitted_reason =
+        (plan.moves.is_empty() && plan.remaining_blocked_bytes != 0).then(|| {
+            "No safe evacuation workspace outside source candidates; no move submitted".into()
+        });
     Ok(Report {
         plan: Some(plan),
-        not_submitted_reason: None,
+        not_submitted_reason,
         attempts,
         completed_bytes,
         source_payload_writes: 0,

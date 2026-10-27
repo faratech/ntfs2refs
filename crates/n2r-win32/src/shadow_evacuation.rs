@@ -61,6 +61,7 @@ pub struct Plan {
     pub already_in_place_bytes: u64,
     pub scanned_clusters: u64,
     pub moves: Vec<Move>,
+    pub remaining_blocked_bytes: u64,
 }
 
 /// Interval-based planning for the streaming native path. Complete maps are
@@ -72,10 +73,15 @@ pub(crate) fn plan_ranges(
     eligible_source: &[Extent],
     shadow: &[Extent],
     partition: u64,
+    move_budget: usize,
 ) -> io::Result<Plan> {
     const MAX_MAP_RANGES: usize = 262_144;
     const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024 * 1024;
-    if partition == 0 || partition > MAX_BYTES || !partition.is_multiple_of(CLUSTER) {
+    if partition == 0
+        || partition > MAX_BYTES
+        || !partition.is_multiple_of(CLUSTER)
+        || !(1..=MAX_MOVES).contains(&move_budget)
+    {
         return Err(invalid("streaming evacuation geometry differs"));
     }
     for map in [legacy, metadata] {
@@ -193,7 +199,8 @@ pub(crate) fn plan_ranges(
     let mut index = 0;
     let mut moves = Vec::new();
     let mut total = 0u64;
-    for extent in blocked {
+    let blocked_bytes: u64 = blocked.iter().map(|extent| extent.length).sum();
+    'extents: for extent in blocked {
         let mut done = 0;
         while done < extent.length {
             while index < occupied.len() && occupied[index].0 <= cursor {
@@ -202,10 +209,7 @@ pub(crate) fn plan_ranges(
             }
             let free_end = occupied.get(index).map_or(partition, |r| r.0);
             if cursor >= partition {
-                return Err(io::Error::new(
-                    io::ErrorKind::StorageFull,
-                    "no evacuation space outside source destinations",
-                ));
+                break 'extents;
             }
             let length = (free_end - cursor)
                 .min(extent.length - done)
@@ -213,11 +217,8 @@ pub(crate) fn plan_ranges(
             if length == 0 {
                 return Err(invalid("empty evacuation free interval"));
             }
-            if moves.len() == MAX_MOVES {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "evacuation move budget exceeded",
-                ));
+            if moves.len() == move_budget {
+                break 'extents;
             }
             moves.push(Move {
                 file_index: extent.file_index,
@@ -241,6 +242,7 @@ pub(crate) fn plan_ranges(
         already_in_place_bytes: already,
         scanned_clusters: 0,
         moves,
+        remaining_blocked_bytes: blocked_bytes - total,
     })
 }
 
@@ -480,5 +482,6 @@ pub fn plan(
         already_in_place_bytes,
         scanned_clusters: allocator.scanned,
         moves,
+        remaining_blocked_bytes: 0,
     })
 }

@@ -41,11 +41,22 @@ claimed for this implementation. Existing eight VM checkpoints and prior
 qualified binaries remain untouched. In particular, the successful 4 GiB-zero
 case and its recovery run did not execute this feature.
 
-Remaining limits are material: a one-shot evacuation needs safe space outside
-all source candidates; a densely populated layout may not have enough. Bounded
-batch evacuation and retention interleaving are not implemented yet. The writer
-also still initializes a complete payload copy on the shadow. This is a placement
-improvement, not payload-independent scratch or zero-copy qualification.
+The streaming planner now returns a bounded partial batch when safe space runs
+out, together with remaining blocked bytes. The constructor runs one retention
+pass after that batch, then remeasures all live ownership/allocation state for
+another batch only when evacuation and measured retention both made progress.
+This reuses workspace released by retention instead of requiring room for the
+entire overlap at once. A tree-wide evacuation-move budget and the existing
+retention/evidence limits bound all batches. Every submitted move retains the
+same fresh checks. No progress, native failure or a spent budget stops further
+optimization; unknown execution completion still aborts construction.
+
+The report retains each batch separately. Old profiles keep their previous
+behavior. This source builds but has not executed natively. It still needs at
+least some safe workspace outside the source candidates and can hit bounded
+extent/evidence limits. The writer still initializes a complete payload copy
+on the shadow. This is a placement improvement, not payload-independent scratch
+or zero-copy qualification.
 
 The next native case is prepared in `lab/Prepare-StreamingRetention8G.ps1`.
 It first requires the eight old checkpoints and OFF rollback-passed branch,

@@ -7,6 +7,15 @@ its original label and all six user-file hashes matched. Strict verification
 also passed for the complete fourteen-object admitted tree: nine files including
 three Windows ancillary files, and five directories including root.
 
+The exact producer executables are available in a local beta bundle; see the
+[handoff instructions](native-shadow-beta-handoff.md). The retained ZIP is
+`.lab/releases/native-shadow-beta-20261027-5d070e5a1be04338b00b365b60a089f1/ntfs2refs-native-shadow-beta-20261027.zip`,
+3,265,386 bytes, SHA-256
+`f37a771f7d3b58648c0e2b00c699faffc68dd9d43a8ea28aa6232ec855d06a45`.
+Its three executable and two documentation entries were read back from the
+archive and matched their manifest hashes. It includes no device request,
+credential or image, and was not published. Later build outputs are excluded.
+
 The separate pinned Rust postcheck tools passed create/grow/truncate/rename,
 128-entry directory growth and deletion, strict verification afterward, and
 strict verification after a clean reboot at `13:52:44Z`. Only newly created

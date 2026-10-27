@@ -4,9 +4,12 @@ use super::{ctl, info, invalid, native, snapshot, wide};
 use crate::{attestation_native::Privileges, general_layout::GeneralSourceShadowBinding};
 use serde::Serialize;
 use std::{
-    fs::File,
+    fs::{File, OpenOptions},
     io, mem,
-    os::windows::io::{AsRawHandle, FromRawHandle},
+    os::windows::{
+        fs::OpenOptionsExt,
+        io::{AsRawHandle, FromRawHandle},
+    },
     ptr,
 };
 use windows_sys::Win32::{
@@ -184,6 +187,99 @@ pub fn run(pair: &GeneralSourceShadowBinding, experiment: &str) -> io::Result<se
         "source_before":source_before,"source_after":source_after,"shadow_before":shadow_before,
         "privileges":privilege.audit(),"events":events,"payload_write_calls":0,"payload_reads":0,
         "physical_payload_writes_measured":false,"file_retained_system_only":true,
+        "extent_adoption_qualified":false,"conversion_qualified":false
+    }))
+}
+
+/// Reopen only the exact previously created file, on a read-only shadow.
+/// No privilege change, payload read, flush, valid-data call or write occurs.
+pub fn observe_existing(
+    pair: &GeneralSourceShadowBinding,
+    experiment: &str,
+    expected_file_id_info: &[u8],
+) -> io::Result<serde_json::Value> {
+    pair.validate_with_resource_profile(Some(
+        crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
+    ))?;
+    if std::env::var("COMPUTERNAME").ok().as_deref() != Some("N2R-WIN11")
+        || pair.source.disk_number != 1
+        || pair.shadow.disk_number != 3
+        || pair
+            .source
+            .identity
+            .disk_guid
+            .trim_matches(['{', '}'])
+            .to_ascii_lowercase()
+            != "1b191872-c372-41ee-a416-e18863996f54"
+        || pair
+            .shadow
+            .identity
+            .disk_guid
+            .trim_matches(['{', '}'])
+            .to_ascii_lowercase()
+            != "c0f2cd39-ad3d-484e-9990-0e6eba74485f"
+        || experiment.len() != 32
+        || !experiment.bytes().all(|v| v.is_ascii_hexdigit())
+        || expected_file_id_info.len() != 24
+    {
+        return Err(invalid("exact private-file observation fixture required"));
+    }
+    let mut events = Vec::new();
+    let source_before =
+        native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
+    let shadow_before =
+        native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
+    if source_before.disk_attributes != 3
+        || shadow_before.disk_attributes != 2
+        || native::mounted_filesystem_general(pair.shadow.clone(), &mut events)? != "ReFS"
+    {
+        return Err(invalid(
+            "excluded source and read-only ReFS shadow required",
+        ));
+    }
+    let path = format!(
+        "{}\\n2r-valid-data-{experiment}.bin",
+        pair.shadow.volume_path()?
+    );
+    let file = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x00200000)
+        .open(&path)?;
+    let standard = info(&file, 1, 24)?;
+    if info(&file, 18, 24)?.as_slice() != expected_file_id_info
+        || u64::from_le_bytes(standard[..8].try_into().unwrap()) != FILE_BYTES
+        || u64::from_le_bytes(standard[8..16].try_into().unwrap()) != FILE_BYTES
+        || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
+        || standard[20] != 0
+        || standard[21] != 0
+    {
+        return Err(invalid(
+            "private file identity, allocation, EOF or type changed",
+        ));
+    }
+    let before = observation(&file);
+    let after = observation(&file);
+    let source_after =
+        native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
+    let shadow_after =
+        native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
+    if info(&file, 18, 24)?.as_slice() != expected_file_id_info
+        || info(&file, 1, 24)? != standard
+        || source_before != source_after
+        || shadow_before != shadow_after
+    {
+        return Err(invalid(
+            "private file or protected disk changed during observation",
+        ));
+    }
+    Ok(serde_json::json!({
+        "schema_version":1,"kind":"native-private-valid-data-observation",
+        "experiment_id":experiment,"path":path,"expected_file_id_info":hex::encode(expected_file_id_info),
+        "file_id_info_matches":true,"before":before,"after":after,
+        "source_before":source_before,"source_after":source_after,
+        "shadow_before":shadow_before,"shadow_after":shadow_after,"events":events,
+        "payload_write_calls":0,"payload_reads":0,"valid_data_calls":0,"privilege_changes":0,
         "extent_adoption_qualified":false,"conversion_qualified":false
     }))
 }

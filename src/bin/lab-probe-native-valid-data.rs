@@ -1,7 +1,7 @@
 //! Owning-guest private one-MiB ReFS validity experiment. No converter route.
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    use anyhow::ensure;
+    use anyhow::{Context, ensure};
     use clap::Parser;
     use sha2::{Digest, Sha256};
     use std::{
@@ -20,6 +20,10 @@ fn main() -> anyhow::Result<()> {
         experiment_id: String,
         #[arg(long)]
         output: PathBuf,
+        #[arg(long, requires = "expected_file_id_info")]
+        observe_existing: bool,
+        #[arg(long, requires = "observe_existing")]
+        expected_file_id_info: Option<String>,
     }
     let args = Args::parse();
     ensure!(
@@ -38,8 +42,24 @@ fn main() -> anyhow::Result<()> {
     );
     let request: ntfs2refs::general_reconstruct::Request = serde_json::from_slice(&bytes)?;
     request.validate()?;
-    let result =
-        n2r_win32::shadow_native::valid_data_probe::run(&request.pair, &args.experiment_id)?;
+    let result = if args.observe_existing {
+        let id = hex::decode(
+            args.expected_file_id_info
+                .as_deref()
+                .context("expected file ID required")?,
+        )?;
+        n2r_win32::shadow_native::valid_data_probe::observe_existing(
+            &request.pair,
+            &args.experiment_id,
+            &id,
+        )?
+    } else {
+        ensure!(
+            args.expected_file_id_info.is_none(),
+            "file ID is only valid for observation"
+        );
+        n2r_win32::shadow_native::valid_data_probe::run(&request.pair, &args.experiment_id)?
+    };
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

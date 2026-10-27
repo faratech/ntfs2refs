@@ -62,3 +62,17 @@ the planning cache before the next source run. Legacy profiles recapture on
 every call. Source retention, metadata reservation handling and final native/raw
 target proofs are unchanged. This source/build optimization has not run in a VM;
 the recovery producer was staged before it.
+
+Streaming retention now replans the same source interval after a confirmed
+successful move. A move can free another shadow allocation inside that interval;
+the previous single pass left those newly available destinations unused. New
+passes capture fresh planning maps through the existing invalidation path, and
+every submitted move still captures its own two fresh occupancy views. Already
+retained destinations are allocated and cannot become new free candidates.
+The loop advances only after a submitted, fully measured retained range, stops
+on any native error/no progress, and keeps the existing tree-wide attempt and
+evidence limits. It does not retry a rejected or partially completed move.
+An empty later pass emits no duplicate whole-run collision diagnostic. Old
+profiles keep one pass. This source change builds; no native retention result
+is assigned to it, and it does not remove the remaining payload-sized shadow
+initialization or mandatory metadata collisions.

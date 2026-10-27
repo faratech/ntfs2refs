@@ -234,6 +234,13 @@ only while no submitted move/mapping change occurred. Every actual move still
 rechecks fresh views; old profiles retain per-run capture. That cache did not
 produce candidate 4 and has compilation evidence only.
 
+Later source also replans the same V2 source run after confirmed successful
+retention to use newly freed shadow slots. It stops on native errors, lack of
+progress or the existing attempt cap; every move retains fresh dual-bitmap and
+mapping checks. No metadata region is moved or bypassed, and no NTFS source
+extent is prearranged. Old profiles retain their single-pass behavior. Native
+qualification and low-scratch payload initialization remain incomplete.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

@@ -643,6 +643,48 @@ fn retain_source_run_on_shadow(
         crate::bitmap_observation::Observation,
     )>,
 ) -> io::Result<()> {
+    let mut first_pass = true;
+    loop {
+        let progress = retain_source_run_once(
+            volume,
+            root,
+            input,
+            partition,
+            run,
+            attempts,
+            streaming,
+            reuse_no_submit_snapshot,
+            planning_cache,
+            first_pass,
+        )?;
+        // A confirmed move can free another part of this same source interval.
+        // Replan from fresh maps instead of abandoning those newly free slots.
+        // Never repeat a rejected/partial move or exhaust the fixed audit budget.
+        if !reuse_no_submit_snapshot
+            || !progress
+            || attempts.len() == crate::retention_layout::MAX_SUBRUNS
+        {
+            return Ok(());
+        }
+        first_pass = false;
+    }
+}
+
+fn retain_source_run_once(
+    volume: &File,
+    root: &str,
+    input: &Input<'_>,
+    partition: u64,
+    run: &SourceRun,
+    attempts: &mut Vec<RetentionAttempt>,
+    streaming: bool,
+    reuse_no_submit_snapshot: bool,
+    planning_cache: &mut Option<(
+        crate::bitmap_observation::Observation,
+        crate::bitmap_observation::Observation,
+    )>,
+    diagnose_blocked: bool,
+) -> io::Result<bool> {
     remaining_retention_evidence(attempts)?;
     let first_attempt = attempts.len();
     // Bound the complete tree, including non-submitted collision diagnostics.
@@ -678,6 +720,9 @@ fn retain_source_run_on_shadow(
         remaining,
     )?;
     if plan.subruns.is_empty() {
+        if !diagnose_blocked {
+            return Ok(false);
+        }
         // A later free-space change must not turn this diagnostic into an
         // unplanned move. Already-correct placement is still recorded.
         let chunk_bytes = crate::retention_layout::MAX_MOVE_BYTES;
@@ -734,8 +779,15 @@ fn retain_source_run_on_shadow(
             append_retention_attempt(attempts, attempt)?;
         }
     }
+    let new_attempts = &attempts[first_attempt..];
+    let progress = new_attempts
+        .iter()
+        .all(|attempt| attempt.native_error.is_none())
+        && new_attempts
+            .iter()
+            .any(|attempt| attempt.submitted && attempt.all_clusters_at_source);
     if !reuse_no_submit_snapshot
-        || attempts[first_attempt..]
+        || new_attempts
             .iter()
             .any(|attempt| attempt.submitted || attempt.mapping_before != attempt.mapping_after)
     {
@@ -743,7 +795,7 @@ fn retain_source_run_on_shadow(
         // allocation. Never carry its planning snapshot into another run.
         *planning_cache = None;
     }
-    Ok(())
+    Ok(progress)
 }
 #[derive(Debug, Serialize)]
 pub struct ObjectSecurityRestore {

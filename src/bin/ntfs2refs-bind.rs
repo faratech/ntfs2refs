@@ -1,9 +1,24 @@
 //! Read-only discovery of the device identities for an owning-machine run.
+#[cfg(any(windows, test))]
+fn validate_source_geometry(
+    geometry: &ntfs2refs::ntfs_inspect::NtfsGeometry,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        geometry.bytes_per_sector == 512
+            && geometry.sectors_per_cluster == 8
+            && geometry.cluster_size == 4096
+            && geometry.file_record_size == 1024,
+        "source geometry preflight refused: supported source requires 512-byte logical sectors, 4-KiB clusters and 1-KiB MFT records; no output was created"
+    );
+    Ok(())
+}
+
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     use anyhow::{Result, ensure};
     use clap::Parser;
     use n2r_win32::{
+        GeneralPartitionReader,
         discovery::{self, Role},
         general_layout::GeneralSourceShadowBinding,
         journal_file::{GeneralJournalStorageBinding, MAX_JOURNAL_BYTES},
@@ -11,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     use sha2::{Digest, Sha256};
     use std::{
         fs::OpenOptions,
-        io::Write,
+        io::{Read, Write},
         os::windows::fs::{MetadataExt, OpenOptionsExt},
         path::{Path, PathBuf},
     };
@@ -132,6 +147,38 @@ fn main() -> anyhow::Result<()> {
         matches!(journal.filesystem.as_str(), "NTFS" | "ReFS"),
         "journal requires local NTFS or ReFS storage"
     );
+    // Inspect only the source boot sector through the existing read-only raw
+    // boundary. Neither discovery nor this geometry check freezes the source.
+    let mut source_events = Vec::new();
+    let mut source_reader =
+        GeneralPartitionReader::open(source.binding.clone(), &mut source_events)?;
+    let source_before = source_reader.initial_probe().clone();
+    let mut boot = [0; 512];
+    source_reader.read_exact(&mut boot)?;
+    let source_geometry =
+        ntfs2refs::ntfs_inspect::inspect_boot_sector(&boot, source_reader.byte_len())?;
+    validate_source_geometry(&source_geometry)?;
+    ensure!(
+        u32::from(source_geometry.bytes_per_sector) == source.bytes_per_sector
+            && source_geometry.sectors_per_cluster == source.sectors_per_cluster
+            && source_geometry.serial_number as u32 == source.volume_serial_low32,
+        "source boot geometry or serial differs from mounted discovery; no output was created"
+    );
+    let source_after = source_reader.revalidate_route(&mut source_events)?;
+    let source_native_bytes_read = source_reader.native_bytes_read;
+    drop(source_reader);
+    let preflight_scope = "File features/contents, full live admission and source consistency remain unassessed. Live observations may change; this preflight does not authorize conversion or replace frozen admission.";
+    println!("Source geometry preflight: 512-byte sectors, 4-KiB clusters, 1-KiB MFT records.");
+    println!("{preflight_scope}");
+    let source_preflight = serde_json::json!({
+        "kind":"read-only-source-geometry-preflight",
+        "geometry":source_geometry,"before":source_before,"after":source_after,
+        "boot_bytes_requested":512,"native_bytes_read":source_native_bytes_read,
+        "events":source_events,"feature_contents_assessed":false,
+        "full_live_admission_assessed":false,"source_consistency_assessed":false,
+        "source_frozen":false,"source_admitted":false,"execution_authorized":false,
+        "scope":preflight_scope
+    });
     let derived_label = format!(
         "gpt-{}",
         journal.binding.identity.disk_guid.trim_matches(['{', '}'])
@@ -196,7 +243,7 @@ fn main() -> anyhow::Result<()> {
             &path,
             &serde_json::to_vec_pretty(
                 &serde_json::json!({"schema_version":1,"kind":"read-only-conversion-binding-discovery",
-            "source":source,"shadow":shadow,"journal":journal,"space_observations":{"shadow":shadow_space_report,"journal":journal_space_report},"journal_enrollment_source":if args.journal_enrollment_label.is_some(){"caller-supplied informational label"}else{"derived GPT label; not MSFT_Disk.UniqueId"},
+            "source":source,"shadow":shadow,"journal":journal,"source_geometry_preflight":source_preflight,"space_observations":{"shadow":shadow_space_report,"journal":journal_space_report},"journal_enrollment_source":if args.journal_enrollment_label.is_some(){"caller-supplied informational label"}else{"derived GPT label; not MSFT_Disk.UniqueId"},
             "request_sha256":hex::encode(Sha256::digest(&bytes)),"source_write_requests":0,"source_admitted":false,"execution_authorized":false}),
             )?,
         )?;
@@ -209,4 +256,82 @@ fn main() -> anyhow::Result<()> {
 fn main() {
     eprintln!("Native binding discovery requires Windows");
     std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ntfs2refs::ntfs_inspect::{NtfsGeometry, inspect_boot_sector};
+
+    fn geometry() -> NtfsGeometry {
+        NtfsGeometry {
+            bytes_per_sector: 512,
+            sectors_per_cluster: 8,
+            cluster_size: 4096,
+            total_sectors: 4096,
+            volume_size: 2 * 1024 * 1024,
+            total_clusters: 512,
+            mft_lcn: 4,
+            mftmirr_lcn: 30,
+            file_record_size: 1024,
+            index_record_size: 4096,
+            serial_number: 0x1122_3344_5566_7788,
+        }
+    }
+
+    #[test]
+    fn accepts_current_source_geometry() {
+        validate_source_geometry(&geometry()).unwrap();
+    }
+
+    #[test]
+    fn refuses_unsupported_source_geometry_without_device_access() {
+        let baseline = geometry();
+        for altered in [
+            NtfsGeometry {
+                bytes_per_sector: 4096,
+                ..baseline.clone()
+            },
+            NtfsGeometry {
+                sectors_per_cluster: 16,
+                ..baseline.clone()
+            },
+            NtfsGeometry {
+                cluster_size: 65536,
+                ..baseline.clone()
+            },
+            NtfsGeometry {
+                file_record_size: 4096,
+                ..baseline.clone()
+            },
+            NtfsGeometry {
+                file_record_size: 0,
+                ..baseline
+            },
+        ] {
+            let error = validate_source_geometry(&altered).unwrap_err();
+            assert!(error.to_string().contains("no output was created"));
+        }
+    }
+
+    #[test]
+    fn checks_the_decoded_boot_record_size_instead_of_assuming_one_kib() {
+        let mut boot = [0; 512];
+        boot[..3].copy_from_slice(&[0xeb, 0x52, 0x90]);
+        boot[3..11].copy_from_slice(b"NTFS    ");
+        boot[11..13].copy_from_slice(&512u16.to_le_bytes());
+        boot[13] = 8;
+        boot[40..48].copy_from_slice(&4096u64.to_le_bytes());
+        boot[48..56].copy_from_slice(&4u64.to_le_bytes());
+        boot[56..64].copy_from_slice(&30u64.to_le_bytes());
+        boot[64] = (-10i8) as u8;
+        boot[68] = 1;
+        boot[510..512].copy_from_slice(&[0x55, 0xaa]);
+        let accepted = inspect_boot_sector(&boot, 2 * 1024 * 1024).unwrap();
+        validate_source_geometry(&accepted).unwrap();
+        boot[64] = (-12i8) as u8;
+        let refused = inspect_boot_sector(&boot, 2 * 1024 * 1024).unwrap();
+        assert_eq!(refused.file_record_size, 4096);
+        assert!(validate_source_geometry(&refused).is_err());
+    }
 }

@@ -333,18 +333,27 @@ fn hash_reader_observed<R: Read + Seek>(
     length: u64,
     progress: &mut dyn FnMut(u64),
 ) -> Result<String> {
+    hash_reader_observed_backend(reader, length, progress, false)
+}
+
+fn hash_reader_observed_backend<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    progress: &mut dyn FnMut(u64),
+    native: bool,
+) -> Result<String> {
     reader.seek(SeekFrom::Start(0))?;
-    let mut hash = Sha256::new();
+    let mut hash = stream_digest::StreamDigest::new(native)?;
     let mut buffer = vec![0; BUFFER_BYTES];
     let mut remaining = length;
     while remaining != 0 {
         let count = usize::try_from(remaining.min(BUFFER_BYTES as u64))?;
         reader.read_exact(&mut buffer[..count])?;
-        hash.update(&buffer[..count]);
+        hash.update(&buffer[..count])?;
         remaining -= count as u64;
         progress(length - remaining);
     }
-    Ok(hex::encode(hash.finalize()))
+    Ok(hex::encode(hash.finish()?))
 }
 
 fn verify_input_binding(input: &Input) -> Result<()> {
@@ -686,16 +695,22 @@ pub(crate) fn compare_streams_observed_with_resource_profile<R: Read + Seek, S: 
     }
     progress.update(Subphase::RecheckingSource, 0);
     ensure!(
-        hash_reader_observed(source, request.expected_length, &mut |bytes| {
-            progress.update(Subphase::RecheckingSource, bytes);
-        })? == source_sha256,
+        hash_reader_observed_backend(
+            source,
+            request.expected_length,
+            &mut |bytes| progress.update(Subphase::RecheckingSource, bytes),
+            native,
+        )? == source_sha256,
         "source changed after comparison"
     );
     progress.update(Subphase::RecheckingShadow, 0);
     ensure!(
-        hash_reader_observed(shadow, request.expected_length, &mut |bytes| {
-            progress.update(Subphase::RecheckingShadow, bytes);
-        })? == shadow_sha256,
+        hash_reader_observed_backend(
+            shadow,
+            request.expected_length,
+            &mut |bytes| progress.update(Subphase::RecheckingShadow, bytes),
+            native,
+        )? == shadow_sha256,
         "shadow changed after comparison"
     );
     let retained_differing_bytes = observations.iter().map(|range| range.differing_bytes).sum();

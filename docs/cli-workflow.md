@@ -46,6 +46,18 @@ recovery inputs under the output directory.
 An image `plan` report remains non-executable. `convert --plan plan.json`
 retains its refusal behavior; it cannot be used to bypass live qualification.
 
+To inspect an existing public run, `operation-state` requires the intent file's
+SHA-256 and the exact pins of any frozen-source, mount-path, reconstruction-request
+and ticket artifacts already present. The separate Rust
+[`ntfs2refs-state-command` helper](operation-state-command.md) prepares this
+read-only command without executing it or changing the frozen alpha engine.
+It hashes artifact files themselves; the source image hash inside
+`source-frozen.json` is a different value. Run the prepared command in the owning
+machine's elevated context and use its observed lifecycle report before considering
+`cancel` or recovery. Preparing pins grants no mutation authority and does not
+establish that a conversion worker stopped. `cancel` is limited to unchanged NTFS
+before reconstruction activation; it cannot cancel an activated or handed-off run.
+
 For recovery, use the run's generated `request.json`, `ticket.json` and the
 journal location from `journal-location.json`. Each input is pinned separately:
 

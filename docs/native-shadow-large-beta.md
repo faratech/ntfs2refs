@@ -134,3 +134,11 @@ The admitted comparison has **zero retained ranges**. This particular natural
 placement exercises relocation/materialization on a larger source geometry;
 it cannot prove unchanged payload extents or efficient low-scratch conversion.
 Do not move source extents or change its active plan to manufacture retention.
+
+The prepared `lab/Restart-NativeShadowLargeBetaVerified.ps1` requires the
+matching successful mutation receipt and another original-payload readback.
+It requests one guest-integrated clean shutdown, waits for Off, starts the same
+beta VM once and requires a newer UTC guest boot followed by all six payload
+hashes. It neither force-powers-off nor retries boot/recovery actions on an
+observation failure. Create-new intent/result files preserve partial attempts.
+This helper has syntax-check evidence only and has not rebooted the active VM.

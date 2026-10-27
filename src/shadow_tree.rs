@@ -126,10 +126,13 @@ impl ExpectedTree {
                 ensure!(api.len() <= 65536, "API descriptor exceeds bound");
                 ntfs_security::parse_descriptor(api)?;
             }
-            let path_key = object.path.join("\\").to_ascii_uppercase();
+            let path_key = destination_key(&object.path, resources);
             ensure!(
                 object.path.len() <= 16
-                    && object.path.iter().all(|part| valid_component(part))
+                    && object
+                        .path
+                        .iter()
+                        .all(|part| valid_component_with_resources(part, resources))
                     && object
                         .stored_times
                         .iter()
@@ -141,9 +144,7 @@ impl ExpectedTree {
                 "expected general tree object is invalid or duplicated"
             );
             if !object.path.is_empty() {
-                let parent = object.path[..object.path.len() - 1]
-                    .join("\\")
-                    .to_ascii_uppercase();
+                let parent = destination_key(&object.path[..object.path.len() - 1], resources);
                 ensure!(
                     paths.get(&parent) == Some(&true),
                     "expected tree parent is missing, is not a directory, or follows its child"
@@ -284,11 +285,13 @@ fn derive_profile(
         }
         let p = ntfs_admission::path(raw, f).context("unresolved source path")?;
         ensure!(
-            p.len() <= 16 && p.iter().all(|c| valid_component(c)),
+            p.len() <= 16
+                && p.iter()
+                    .all(|c| valid_component_with_resources(c, resources)),
             "unsupported Windows path"
         );
         ensure!(
-            paths.insert(p.join("\\").to_ascii_uppercase()),
+            paths.insert(destination_key(&p, resources)),
             "colliding destination name"
         );
         if f.record_number == 5 {
@@ -465,6 +468,22 @@ pub(crate) fn valid_component(s: &str) -> bool {
             "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
         ]
         .contains(&upper.as_str())
+}
+
+fn valid_component_with_resources(s: &str, resources: ntfs_admission::ResourceProfile) -> bool {
+    if resources == ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2 {
+        n2r_win32::shadow_names::valid_unicode_component(s)
+    } else {
+        valid_component(s)
+    }
+}
+
+fn destination_key(path: &[String], resources: ntfs_admission::ResourceProfile) -> String {
+    if resources == ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2 {
+        n2r_win32::shadow_names::conservative_path_key(path)
+    } else {
+        path.join("\\").to_ascii_uppercase()
+    }
 }
 #[cfg(test)]
 mod tests {

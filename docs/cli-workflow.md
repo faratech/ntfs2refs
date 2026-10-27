@@ -229,3 +229,15 @@ Both expanded routes now use the same exact version/sector/cluster/partition
 checks. Unprofiled mounted access keeps its legacy query. This removes that
 specific representational limit, not other metadata/resource/capacity limits;
 volumes above the recorded native sizes remain unqualified.
+
+The streaming-payload v2 profile also accepts well-formed Unicode names up to
+255 UTF-16 code units per component, with the existing 16-component path bound.
+The original strings are preserved; no normalization or case rewrite is applied
+to filesystem paths. A conservative Unicode-uppercase key detects collisions
+in both semantic-tree construction and expected-tree validation. It can refuse
+pairs that Windows would distinguish; native CREATE_NEW remains the final
+compatibility check before any source reconstruction. Controls, separators,
+traversal/trailing-dot/space forms and reserved device names are refused.
+Unpaired UTF-16 surrogates remain refused by the existing strict path decoder.
+Alpha and larger-tree v1 keep their ASCII/100-byte naming policy. Unicode
+conversion has compilation evidence only; the passed beta used ASCII names.

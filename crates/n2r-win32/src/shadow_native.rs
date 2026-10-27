@@ -2178,7 +2178,15 @@ fn run_role_profile(
             return Err(invalid("streaming source lacks a hash-only expectation"));
         }
         if i.components.len() > 16
-            || i.components.iter().any(|s| !valid_shadow_component(s))
+            || i.components.iter().any(|s| {
+                if resource_profile
+                    == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
+                {
+                    !crate::shadow_names::valid_unicode_component(s)
+                } else {
+                    !valid_shadow_component(s)
+                }
+            })
             || i.times.iter().any(|t| *t == 0 || *t >= i64::MAX as u64)
             || i.attributes & !0x2037 != 0
             || (i.attributes & 16 != 0) != i.directory

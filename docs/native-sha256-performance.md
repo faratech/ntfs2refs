@@ -43,8 +43,10 @@ Streaming V2 journal preparation also selects CNG for the full source/shadow
 comparison hashes and the constructed full postimage hash. Its existing bounded
 shadow worker constructs/destroys CNG handles on that worker; no native handle
 crosses threads. Hashing errors propagate through the worker result and abort
-preparation. Both complete source/shadow rechecks still use Rust sha2 and must
-match, preserving an independent backend check before write authorization.
+preparation. In that producer, both complete source/shadow rechecks still use
+Rust sha2 and must match, preserving an independent backend check before write
+authorization. The later change described below selects CNG for those v2
+rechecks too; do not transfer the earlier producer's backend description.
 The scan order, byte counts, patch hashes, retained-range hashes, serialized
 format, buffering bounds and all recovery digests remain unchanged. Legacy
 comparisons continue to select Rust, including their worker. The host timing
@@ -76,3 +78,13 @@ An empty later pass emits no duplicate whole-run collision diagnostic. Old
 profiles keep one pass. This source change builds; no native retention result
 is assigned to it, and it does not remove the remaining payload-sized shadow
 initialization or mandatory metadata collisions.
+
+The later be43a24 change also selects CNG for streaming-v2 comparison's two
+complete source/shadow rechecks. Every byte is still reread and compared with
+the first-pass hash; no scan, hash equality, identity check, journal barrier
+or error is removed. Legacy/default hash readers retain Rust. Patch and
+retained-range hashes retain their existing Rust paths. Release builds passed
+for the public converter, recovery and frozen sizing command; native workflow
+qualification remains pending. The live candidate5 sizing task retains producer
+e1052f7 and binary 3a512078...96e4, including its slower Rust rechecks; it is
+not restarted or credited with this later change. No unit tests ran.

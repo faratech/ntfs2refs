@@ -43,20 +43,20 @@ reader's proof.
 
 The later experimental larger-tree path adds a multilevel Medium allocator
 walk, connected to retained-payload coverage checks. It decodes each leaf as
-it arrives, retaining compact allocator rows/ranges instead of all raw leaf
-rows. Bounds are 4,096 pages including the root, 65,536 leaf rows and eight
+it arrives, retaining allocated ranges, row/page counts and digests instead of
+all decoded rows. Bounds are 1,048,576 pages including the root, 33,554,432 leaf rows and eight
 levels below the root. Every child must match its parent CRC, virtual self
 locations, table, volume signature and expected level. Repeated/overlapping
 physical page clusters, incomplete row counts and gaps in full-volume coverage
 refuse the entire observation. The default one-level reader is preserved.
 
 This expanded walk has compilation evidence only; the historical corpus results
-above do not qualify it. Container-table traversal retains its existing bounds,
+above do not qualify it. Default container-table traversal retains its existing bounds,
 and the live 128 GiB partition ceiling remains. No write-
 set omission, whole-volume ownership or native conversion claim is added.
 
 The experimental Small allocator reader now also supports multilevel trees,
-with the same 4,096-page, 65,536-leaf-row and depth-eight bounds. It uses direct
+with separate 4,096-page, 65,536-leaf-row and depth-eight bounds. It uses direct
 physical child addresses, consistent with the [Small tier's documented address
 class](https://xbpt.gitlab.io/forefst/structures/allocators/). It validates each
 child's CRC, table/volume identity, physical self-address and parent-derived
@@ -97,3 +97,13 @@ retaining only live ID/address indexes while hashing all page and row-value data
 Serialized summaries cannot recreate those indexes. It is connected to bootstrap,
 virtual-root and allocator checks plus frozen reconstruction qualification; native
 qualification and the public partition ceiling remain unchanged.
+
+The streamed Medium result marks `rows` as an empty diagnostic collection and
+adds `streamed` accounting. `child_pages` contains at most the first 32 child
+addresses; `streamed.pages_read` counts the entire walk including the root.
+The leaf digest covers a version prefix followed by each actual row's 32-byte
+SHA-256 in traversal order. The page digest covers its version prefix, then
+each page's four physical LCNs, validated level byte and complete 16 KiB bytes.
+Default one-level results retain all original rows/pages and omit `streamed`.
+Allocated-range storage retains its existing 65,536-interval bound. No larger
+volume or native execution qualification follows from these resource changes.

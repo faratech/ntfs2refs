@@ -134,10 +134,13 @@ token. Default schema-1 witnesses retain their assembled path and bounds.
 The live partition ceiling remains unchanged; raw ReFS container/allocator
 traversal bounds still need to scale before larger-volume routing is qualified.
 The expanded retained-extent check now has a bounded multilevel Medium allocator
-walker (4,096 pages, 65,536 leaf rows, depth eight) that decodes leaves as they
+walker (1,048,576 pages, 33,554,432 leaf rows, depth eight) that decodes leaves as they
 arrive and rejects repeated physical pages, bad child bindings and incomplete
 coverage. It has compilation evidence only. Default Medium traversal remains
-one-level; Container Table scaling remains unfinished.
+one-level. Expanded Medium results retain counts/digests and allocated ranges,
+not all decoded rows; only the first 32 child addresses are diagnostic samples.
+Full page/row counts live in `streamed`, which default results omit. Allocated
+interval storage remains bounded; larger-volume routing remains unfinished.
 The expanded Small allocator now also walks bounded multilevel trees, with
 physical child addressing, CRC/header/self-location/level checks and ordered
 disjoint managed ranges. Its default root-only entry is preserved. This path

@@ -41,9 +41,21 @@ pub struct MediumAllocatorObservation {
     pub free_clusters: u64,
     pub allocated_clusters: u64,
     pub allocated_ranges: Vec<AllocatedRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub streamed: Option<AllocatorStreamSummary>,
     pub allocator_walk_complete: bool,
     pub whole_volume_ownership_verified: bool,
     pub windows_mount_qualified: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AllocatorStreamSummary {
+    pub encoding: &'static str,
+    pub leaf_rows: u64,
+    pub pages_read: u64,
+    pub covered_clusters: u64,
+    pub leaf_rows_sha256: String,
+    pub page_transcript_sha256: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -435,6 +447,7 @@ pub fn inspect_medium_with_resource_profile(
         free_clusters: free,
         allocated_clusters: covered - free,
         allocated_ranges,
+        streamed: None,
         allocator_walk_complete: true,
         whole_volume_ownership_verified: false,
         windows_mount_qualified: false,
@@ -497,13 +510,14 @@ fn inspect_medium_multilevel(
     root: refs_node::RootNodeObservation,
     mappings: &crate::refs_containers::ContainerAddressView<'_>,
 ) -> Result<MediumAllocatorObservation> {
-    const MAX_PAGES: usize = 4096;
-    const MAX_ROWS: usize = 65536;
+    const MAX_PAGES: usize = 1_048_576;
+    const MAX_ROWS: u64 = 33_554_432;
+    const RETAINED_CHILD_PAGES: usize = 32;
     const MAX_DEPTH: u8 = 8;
     ensure!(
         root.table_id_low == 33
             && root.node_level <= MAX_DEPTH
-            && root.whole_table_row_count <= MAX_ROWS as u64,
+            && root.whole_table_row_count <= MAX_ROWS,
         "experimental Medium allocator root exceeds traversal profile"
     );
     let domain = image_bytes / CLUSTER;
@@ -511,12 +525,24 @@ fn inspect_medium_multilevel(
     let mut pending = Vec::new();
     let mut seen: BTreeSet<u64> = root_slots.into_iter().collect();
     let mut child_pages = Vec::new();
-    let mut rows = Vec::new();
+    let mut pages_read = 1usize;
+    let mut row_count = 0u64;
+    let mut row_hash = Sha256::new();
+    row_hash.update(b"refs-medium-leaf-row-sha256-v1");
+    let mut page_hash = Sha256::new();
+    page_hash.update(b"refs-medium-page-transcript-v1");
+    for lcn in root_slots {
+        page_hash.update(lcn.to_le_bytes());
+    }
+    page_hash.update([root.node_level]);
+    page_hash.update(root_bytes);
     let mut allocated_ranges = Vec::new();
     let (mut covered, mut free) = (0u64, 0u64);
     let mut consume_leaf = |leaf: &[refs_node::NodeRowObservation]| -> Result<()> {
         ensure!(
-            rows.len() + leaf.len() <= MAX_ROWS,
+            row_count
+                .checked_add(leaf.len() as u64)
+                .is_some_and(|count| count <= MAX_ROWS),
             "Medium allocator leaf-row budget exhausted"
         );
         for row in leaf {
@@ -531,7 +557,11 @@ fn inspect_medium_multilevel(
             free = free
                 .checked_add(decoded.free_clusters)
                 .context("allocator free count overflow")?;
-            rows.push(decoded);
+            let mut digest = [0; 32];
+            hex::decode_to_slice(&row.row_sha256, &mut digest)
+                .context("allocator row digest differs")?;
+            row_hash.update(digest);
+            row_count += 1;
         }
         Ok(())
     };
@@ -542,7 +572,7 @@ fn inspect_medium_multilevel(
     }
     while let Some(next) = pending.pop() {
         ensure!(
-            child_pages.len() + 1 < MAX_PAGES,
+            pages_read < MAX_PAGES,
             "Medium allocator page budget exhausted"
         );
         let mut physical = [0; 4];
@@ -554,6 +584,12 @@ fn inspect_medium_multilevel(
             );
         }
         let bytes = read_page(reader, &physical, image_bytes)?;
+        pages_read += 1;
+        for lcn in physical {
+            page_hash.update(lcn.to_le_bytes());
+        }
+        page_hash.update([next.expected_level]);
+        page_hash.update(bytes);
         ensure!(
             crc64_nvme(&bytes) == next.crc64
                 && &bytes[..4] == b"MSB+"
@@ -570,7 +606,9 @@ fn inspect_medium_multilevel(
             node.node_level == next.expected_level,
             "Medium allocator child level differs from parent"
         );
-        child_pages.push(physical);
+        if child_pages.len() < RETAINED_CHILD_PAGES {
+            child_pages.push(physical);
+        }
         if node.node_level == 0 {
             consume_leaf(&node.rows)?;
         } else {
@@ -578,25 +616,33 @@ fn inspect_medium_multilevel(
                 &node.rows,
                 node.node_level,
                 &mut pending,
-                1 + child_pages.len(),
+                pages_read,
                 MAX_PAGES,
             )?;
         }
     }
     ensure!(
-        rows.len() as u64 == root.whole_table_row_count && covered == domain,
+        row_count == root.whole_table_row_count && covered == domain,
         "Medium allocator row count or full-volume coverage differs"
     );
     Ok(MediumAllocatorObservation {
-        profile: "candidate ReFS 3.14 Medium allocator bounded multilevel walk",
+        profile: "candidate ReFS 3.14 Medium allocator streamed multilevel walk",
         checkpoint_lcn: checkpoint.0,
         checkpoint_clock: checkpoint.1,
         root_physical_lcns: root_slots,
         child_pages,
-        rows,
+        rows: Vec::new(),
         free_clusters: free,
         allocated_clusters: covered - free,
         allocated_ranges,
+        streamed: Some(AllocatorStreamSummary {
+            encoding: "refs-medium-streamed-rows-v1",
+            leaf_rows: row_count,
+            pages_read: pages_read as u64,
+            covered_clusters: covered,
+            leaf_rows_sha256: hex::encode(row_hash.finalize()),
+            page_transcript_sha256: hex::encode(page_hash.finalize()),
+        }),
         allocator_walk_complete: true,
         whole_volume_ownership_verified: false,
         windows_mount_qualified: false,

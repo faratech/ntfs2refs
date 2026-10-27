@@ -21,6 +21,21 @@ namespace Ntfs2RefsResearch {
   public bool complete, nativeReadHandle, writeAuthority, diskAttributesChanged;
   public IsolatedJournalReadQuery[] queries;
  }
+ // Serializable observations only. This deliberately carries no native lease,
+ // Stream, ZeroProof, initialization permission or claim of atomic immutability.
+ public sealed class IsolatedJournalContentObservation {
+  public string kind="isolated-journal-readonly-content-observation";
+  public string beforeSnapshotSha256,afterSnapshotSha256,firmwareHex,startedUtc,finishedUtc;
+  public long nativeBytesRead,nativeReadCalls;
+  public bool identityMatchedBeforeAfter;
+  public bool informationalOnly {get{return true;}}
+  public bool grantsInitializationAuthority {get{return false;}}
+  public bool grantsWriteAuthority {get{return false;}}
+  public bool atomicImmutabilityClaimed {get{return false;}}
+  public bool durableWriterFenceEstablished {get{return false;}}
+  public IsolatedJournalStreamObservation content;
+  public IsolatedJournalReadQuery[] queries;
+ }
 
  // Private construction prevents deserialized observations and managed test
  // streams from becoming native read leases. Host backing ownership is still
@@ -86,6 +101,37 @@ namespace Ntfs2RefsResearch {
    }
    try {return new IsolatedJournalReader(disk,token,firmware);}
    catch {disk.Dispose();throw;}
+  }
+  // Observation has a separate boundary from the disabled durable-zero-proof
+  // path. It trusts the Windows/Hyper-V read path, opens GENERIC_READ with no
+  // sharing, and closes the device before returning primitive report data.
+  // Matching snapshots describe the observations; they do not fence writers.
+  public static IsolatedJournalContentObservation ObserveReadOnly(Guid expectedVmId,string token) {
+   if(expectedVmId!=new Guid(IsolatedJournalDeviceProfile.VmId)||
+      !String.Equals(token,ExpectedIdentityToken(),StringComparison.Ordinal))
+    throw new InvalidDataException("Exact isolated VM and journal token required before native observation.");
+   string started=DateTime.UtcNow.ToString("o");byte[] firmware=ReadFirmware();
+   IsolatedJournalDeviceProfile.ValidateCaller(expectedVmId,Environment.MachineName,firmware);
+   SafeFileHandle disk=CreateFileW(DevicePath,GenericRead,0,IntPtr.Zero,3,0,IntPtr.Zero);
+   if(disk==null||disk.IsInvalid){int error=Marshal.GetLastWin32Error();if(disk!=null)disk.Dispose();throw new Win32Exception(error,"Open isolated journal for read-only observation");}
+   try {
+    using(IsolatedJournalReader reader=new IsolatedJournalReader(disk,token,firmware)){
+     return reader.ObserveContents(started);
+    }
+   }catch{disk.Dispose();throw;}
+  }
+  IsolatedJournalContentObservation ObserveContents(string started) {
+   RequireOpen();if(scanAttempted)throw new InvalidOperationException("One observation attempt per private native reader.");scanAttempted=true;
+   if(!String.Equals(Snapshot(),beforeDigest,StringComparison.Ordinal))throw new InvalidDataException("Journal identity changed before observation.");
+   IsolatedJournalStreamObservation content=IsolatedJournalObservation.ObserveJournal(this,identityToken);
+   string after=Snapshot();byte[] firmware=ReadFirmware();
+   IsolatedJournalDeviceProfile.ValidateCaller(new Guid(IsolatedJournalDeviceProfile.VmId),Environment.MachineName,firmware);
+   if(!Same(machineEvidence,firmware)||!String.Equals(after,beforeDigest,StringComparison.Ordinal)||
+      bytesRead!=IsolatedJournalDeviceProfile.JournalBytes||position!=IsolatedJournalDeviceProfile.JournalBytes)
+    throw new InvalidDataException("Native identity or complete observational byte coverage changed.");
+   return new IsolatedJournalContentObservation {beforeSnapshotSha256=beforeDigest,afterSnapshotSha256=after,
+    firmwareHex=Hex(machineEvidence),startedUtc=started,finishedUtc=DateTime.UtcNow.ToString("o"),
+    nativeBytesRead=bytesRead,nativeReadCalls=readCalls,identityMatchedBeforeAfter=true,content=content,queries=CopyQueries()};
   }
   static void RequireDurableExclusion() {
    // No JSON flag, PID, heartbeat, stable before/after observation or caller

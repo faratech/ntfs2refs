@@ -117,3 +117,81 @@ states that the job did not start because recent account payments failed or the
 spending limit needs increasing; this does not identify a code/test failure.
 No CI rerun, billing or runner-policy change was performed. Chronology/ACL evidence
 correction `9684ae5` remains committed with original records untouched.
+
+## Separate observation-only proposal (not dispatched)
+
+`lab/Read-IsolatedJournalObservation.ps1` is a proposed one-shot observer for
+the existing isolated VM only. It does not initialize storage or obtain an
+initialization proof. The original `Read-IsolatedJournalPrerequisite.ps1
+-RequireZeroScan`, `IsolatedJournalReader.OpenReadOnly` and `ScanAndBind` retain
+their durable-fence refusal. No native observation or 8 GiB device scan has been
+executed from this source checkpoint.
+
+The proposed command, for review before any dispatch, is:
+
+```powershell
+& "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" `
+  -NoProfile -File D:\code\ntfs2refs\lab\Read-IsolatedJournalObservation.ps1 `
+  -OutputDirectory ("D:\code\ntfs2refs\.lab\hyperv\isolated-reference-20261026-review\journal-observation-review-" + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'))
+```
+
+The VM GUID is fixed to `8f7fc646-8c9f-41d0-b65a-ecfadccfc36a`; the device is
+fixed to guest `PhysicalDrive2`, 8,589,934,592 bytes, NAA
+`600224806AAC261F021F249596F332FC`. No caller-selected disk or old-VM route,
+execution-policy bypass, elevation, privilege setter or guest-file staging is
+available. The VM must already be running with the recorded 8 GiB/four-CPU,
+no-NIC configuration; the launcher cannot boot or reconfigure it.
+
+The launcher pins its source/framework inputs and compiles the reader into a
+fresh host-only CLR 4-compatible DLL for Windows PowerShell 5.1. This host has
+.NET Framework 4.8.1 (Release 534296, version 4.8.10008); the retained
+`v4.0.30319` directory name does not identify the obsolete 4.0 product release.
+[Microsoft's support policy](https://dotnet.microsoft.com/en-us/platform/support/policy/dotnet-framework)
+continues to support 4.8.1 with its supported Windows parent. The converter and
+recovery engine remain Rust. A fresh PowerShell process is required;
+preloaded host-identity types are refused. Default host identity acquisition
+joins all current/checkpoint attachments and ancestors by held native file
+identity, checks sole ownership of the isolated leaves, and retains those pins
+through the read. Known project leases and host/guest worker inventories are
+checked; unknown inventory errors refuse rather than become empty inventories.
+The DLL is hashed, sent through the exact VM-ID PowerShell Direct session and
+loaded in memory. There is exactly one `ObserveReadOnly(Guid, string)` invocation.
+
+The private native reader opens only `PhysicalDrive2` with `GENERIC_READ`,
+`OPEN_EXISTING` and no sharing. It reuses the native route/geometry/RAW-state/NAA
+and SMBIOS checks, observes the full length using one 1 MiB buffer, hashes every
+byte, and records informational zero/nonzero counts. Native identities and UTC
+timestamps are recorded before/after, then the private handle closes before
+the data-only report returns. Host namespace/controller/ancestor identities,
+known workers, and the journal backing's length/mtime are checked again.
+
+The trust boundary is Windows/Hyper-V plus ordinary project concurrency guards.
+This measurement does not require proving exclusion of a malicious kernel or
+administrator. Matching observations nevertheless do not prove atomic content,
+exclude every storage alias, or extend a durable writer fence. No `Stream`,
+native handle or `ZeroProof` escapes; even an all-zero result grants no
+initialization, format, import, repair or write authority.
+
+Observation needs no new VHDX or 8 GiB allocation. It retains the 208 GiB lab
+ceiling and 64 GiB host reserve with a 128 MiB allowance, bounds host output to
+16 MiB and compiles a DLL no larger than 2 MiB. The current metadata inventory
+found the isolated VM running, disk 1 RAW/64 GiB, disk 2 RAW/8 GiB, no J: and no
+active N2R tasks/processes. RAW is not blankness. These observations must be
+reacquired by the proposed command; they cannot substitute for its live checks.
+
+Expected host-only artifacts include source/framework hashes, compiler
+transcript, assembly hash, concurrency/worker reports, host identity graphs
+before/after, journal backing metadata, the explicit observation intent,
+guest hash/read/query/timestamp report, transcript and final result (or bounded
+failure/cleanup receipts). Credentials are never serialized. No guest file,
+scheduled task, layout, disk attribute or payload is created/changed by this path.
+
+Source checks passed: 68 pure observation checks, 15 original pre-native reader
+refusals and 111 launcher predicate/AST checks. An additional generated-stream
+test completed all 8 GiB with 8,193 managed read calls, SHA-256
+`ebfb4ef19ae410f190327b5ebd312711263bc7579970e87d9c1e2d84e06b3c25`
+and no image/device/native call. Host CLR 4 compatibility compilation using the
+installed framework also passed.
+These checks establish source behavior only. Native reply compatibility, live
+identity acquisition and the actual device read remain unexecuted and must
+refuse unexpected replies without fallback or automatic retry.

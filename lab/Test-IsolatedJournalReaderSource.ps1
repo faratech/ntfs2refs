@@ -4,6 +4,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Add-Type -Path @((Join-Path $PSScriptRoot 'guest/IsolatedJournalZero.cs'),
+    (Join-Path $PSScriptRoot 'guest/IsolatedJournalObservation.cs'),
     (Join-Path $PSScriptRoot 'guest/IsolatedJournalDeviceProfile.cs'),
     (Join-Path $PSScriptRoot 'guest/IsolatedJournalReader.Windows.cs'))
 Import-Module (Join-Path $PSScriptRoot 'IsolatedBaselineGuards.psm1') -Force

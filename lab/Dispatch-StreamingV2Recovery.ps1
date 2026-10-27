@@ -13,6 +13,8 @@ $intent=Get-Content -LiteralPath (Join-Path $root 'intent.json') -Raw|ConvertFro
 if([guid]$d.vm_id-ne[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'-or$d.expected_exit_code-ne86-or
     $d.interrupt_after_writes-ne1-or$d.binary_name-cne'lab-convert-admitted-tree.exe'){throw 'Enrolled one-write interruption required.'}
 $branch=if($Operation-ceq'Rollback'){'rollback'}else{'resume'}
+$exclusion=Get-Content -LiteralPath (Join-Path $root $(if($branch-ceq'rollback'){'exclusion-after-reboot-rollback.json'}else{'exclusion-after-reboot.json'})) -Raw|ConvertFrom-Json
+if(-not$exclusion.success-or$exclusion.run_id-cne$d.run_id-or[guid]$exclusion.vm_id-ne[guid]$d.vm_id){throw 'Matching persistent exclusion reboot observation required.'}
 $hostRoot=Join-Path $root ('recovery-'+$branch)
 if(-not(Test-Path -LiteralPath $hostRoot)){New-Item -ItemType Directory -Path $hostRoot|Out-Null}
 $dispatchPath=Join-Path $hostRoot ($Operation+'-dispatch.json')

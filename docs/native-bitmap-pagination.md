@@ -51,3 +51,14 @@ NTFS tail hashes, old-report compatibility and raw-page serialization. Locked
 capture checks preserve independent views and page provenance. No new large
 image, guest volume, conversion or native paging qualification is implied by
 these checks; the isolated guest's RAW disks have not been initialized.
+
+The low-level assembler also has an explicit `OneTiB` resource profile for
+future larger-volume work. It permits up to 32 MiB of bitmap payload (1 TiB at
+4 KiB per cluster), 64 response pages and a separate 64 MiB-plus-headers returned
+byte budget. A caller must opt in; default collection and existing replay retain
+the 4 MiB/eight-page limits. The proof records the expanded profile explicitly,
+while legacy proof serialization remains unchanged. The current native
+collector, report budgets and conversion admission still use the legacy
+profile, so this alone does not enable conversion of larger volumes. The same
+opt-in profile is available to the allocation-range and candidate-occupancy
+decoders; their existing entry points continue to enforce legacy limits.

@@ -2332,6 +2332,23 @@ fn run_role_profile(
         &metadata_bitmap.bitmap,
         binding.identity.partition_bytes,
     )?;
+    // These maps are immutable for the complete verification pass. Hash each
+    // only once even if many files report a source-placement candidate. Move
+    // attempts above still collect and recheck fresh native bitmaps separately.
+    let candidate_views = if input.iter().any(|i| i.source_offset.is_some()) {
+        Some((
+            crate::bitmap_layout::BitmapView::new(
+                &legacy_bitmap.bitmap,
+                binding.identity.partition_bytes,
+            )?,
+            crate::bitmap_layout::BitmapView::new(
+                &metadata_bitmap.bitmap,
+                binding.identity.partition_bytes,
+            )?,
+        ))
+    } else {
+        None
+    };
     let mut objects = vec![];
     for i in input {
         let path = format!("{}{}", root, i.components.join("\\"));
@@ -2498,19 +2515,14 @@ fn run_role_profile(
             source_candidate: i
                 .source_offset
                 .map(|offset| -> io::Result<_> {
+                    let (legacy_view, metadata_view) = candidate_views
+                        .as_ref()
+                        .ok_or_else(|| invalid("candidate bitmap views missing"))?;
                     Ok(CandidateReport {
-                        legacy: crate::bitmap_layout::candidate(
-                            &legacy_bitmap.bitmap,
-                            offset,
-                            i.logical_length().next_multiple_of(4096),
-                            binding.identity.partition_bytes,
-                        )?,
-                        metadata_inclusive: crate::bitmap_layout::candidate(
-                            &metadata_bitmap.bitmap,
-                            offset,
-                            i.logical_length().next_multiple_of(4096),
-                            binding.identity.partition_bytes,
-                        )?,
+                        legacy: legacy_view
+                            .candidate(offset, i.logical_length().next_multiple_of(4096))?,
+                        metadata_inclusive: metadata_view
+                            .candidate(offset, i.logical_length().next_multiple_of(4096))?,
                         legacy_page_proof: legacy_bitmap.proof.clone(),
                         metadata_page_proof: metadata_bitmap.proof.clone(),
                     })

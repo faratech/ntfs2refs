@@ -2,8 +2,9 @@
 use n2r_win32::{
     attestation::IoctlQuery,
     bitmap_paging::{
-        Assembler, ENCODING, MAX_COMPLETE_BYTES, MAX_DATA_BYTES, MAX_PAGES, MAX_RETURNED_BYTES,
-        MORE_DATA, PAGE_BYTES, assemble_queries, page_input,
+        Assembler, AssemblyProfile, ENCODING, MAX_COMPLETE_BYTES, MAX_DATA_BYTES, MAX_PAGES,
+        MAX_RETURNED_BYTES, MORE_DATA, PAGE_BYTES, assemble_queries, assemble_queries_for_profile,
+        page_input,
     },
     stream_layout::GET_BITMAP,
 };
@@ -345,4 +346,128 @@ fn equivalent_canonical_bitmaps_keep_distinct_native_page_proofs() {
         rounded.proof.pages[0].response_sha256
     );
     assert_ne!(direct.proof.pages[1].input, rounded.proof.pages[1].input);
+}
+
+#[test]
+fn explicit_larger_profile_replays_complete_map_without_widening_legacy() {
+    let template = [0; 8];
+    let bytes = vec![0xa5; MAX_DATA_BYTES + 1];
+    let clusters = bytes.len() as u64 * 8;
+    let chunk = PAGE_BYTES - 16;
+    let first = page(
+        &template,
+        0,
+        0,
+        clusters as i64,
+        &bytes[..chunk],
+        Some(MORE_DATA),
+    );
+    let second_lcn = chunk as u64 * 8;
+    let second = page(
+        &template,
+        second_lcn,
+        second_lcn as i64,
+        (clusters - second_lcn) as i64,
+        &bytes[chunk..2 * chunk],
+        Some(MORE_DATA),
+    );
+    let final_lcn = 2 * second_lcn;
+    let final_page = page(
+        &template,
+        final_lcn,
+        final_lcn as i64,
+        (clusters - final_lcn) as i64,
+        &bytes[2 * chunk..],
+        None,
+    );
+    assert!(assemble_queries(&first, &[second.clone(), final_page.clone()], &template).is_err());
+    let captured = assemble_queries_for_profile(
+        AssemblyProfile::OneTiB,
+        &first,
+        &[second, final_page],
+        &template,
+    )
+    .unwrap();
+    assert_eq!(captured.bitmap, canonical(clusters, &bytes));
+    assert_eq!(
+        captured.proof.canonical_bitmap_sha256,
+        sha(&captured.bitmap)
+    );
+    assert_eq!(captured.proof.assembly_profile, AssemblyProfile::OneTiB);
+    let encoded = serde_json::to_value(&captured.proof).unwrap();
+    assert_eq!(encoded["assembly_profile"], "one_tib");
+    let decoded: n2r_win32::bitmap_paging::Proof = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(decoded, captured.proof);
+    let mut unknown = encoded;
+    unknown["assembly_profile"] = "unbounded".into();
+    assert!(serde_json::from_value::<n2r_win32::bitmap_paging::Proof>(unknown).is_err());
+
+    let small = page(&template, 0, 0, 8, &[0xa5], None);
+    let legacy = assemble_queries(&small, &[], &template).unwrap();
+    let encoded = serde_json::to_value(&legacy.proof).unwrap();
+    assert!(encoded.get("assembly_profile").is_none());
+    let decoded: n2r_win32::bitmap_paging::Proof = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded.assembly_profile, AssemblyProfile::Legacy);
+}
+
+#[test]
+fn larger_profile_retains_a_hard_one_tib_domain_and_page_budget() {
+    let template = [0; 8];
+    let too_large = page(
+        &template,
+        0,
+        0,
+        ((32 * 1024 * 1024u64 + 1) * 8) as i64,
+        &[0],
+        Some(MORE_DATA),
+    );
+    let mut assembler = Assembler::for_profile(AssemblyProfile::OneTiB);
+    assert!(assembler.push(&too_large, &template).is_err());
+    assert!(assembler.finish().is_err());
+
+    let clusters = 65 * 8;
+    let mut assembler = Assembler::for_profile(AssemblyProfile::OneTiB);
+    for index in 0..64 {
+        let next = index * 8;
+        let query = page(
+            &template,
+            next,
+            next as i64,
+            (clusters - next) as i64,
+            &[0],
+            Some(MORE_DATA),
+        );
+        assert!(!assembler.push(&query, &template).unwrap());
+    }
+    assert_eq!(assembler.response_capacity(), 0);
+    let final_page = page(&template, 64 * 8, 64 * 8, 8, &[0], None);
+    assert!(assembler.push(&final_page, &template).is_err());
+    assert!(assembler.finish().is_err());
+}
+
+#[test]
+fn larger_profile_assembles_exact_one_tib_domain_from_bounded_pages() {
+    let template = [0; 8];
+    let data = vec![0xa5; PAGE_BYTES - 16];
+    let clusters = (32 * 1024 * 1024u64) * 8;
+    let clusters_per_page = data.len() as u64 * 8;
+    let mut assembler = Assembler::for_profile(AssemblyProfile::OneTiB);
+    for index in 0..16 {
+        let start = index * clusters_per_page;
+        let query = page(
+            &template,
+            start,
+            start as i64,
+            (clusters - start) as i64,
+            &data,
+            (index != 15).then_some(MORE_DATA),
+        );
+        assert_eq!(assembler.push(&query, &template).unwrap(), index == 15);
+    }
+    let capture = assembler.finish().unwrap();
+    assert_eq!(capture.proof.cluster_count, clusters);
+    assert_eq!(capture.proof.pages.len(), 16);
+    assert_eq!(capture.bitmap.len(), 16 + 32 * 1024 * 1024);
+    assert!(capture.bitmap[16..].iter().all(|byte| *byte == 0xa5));
+    assert_eq!(capture.proof.canonical_bitmap_sha256, sha(&capture.bitmap));
 }

@@ -470,7 +470,15 @@ pub(crate) fn compare_streams_observed<R: Read + Seek, S: Read + Seek>(
             let position = offset + index as u64;
             let a = &left[index..index + sector];
             let b = &right[index..index + sector];
-            let changed = a.iter().zip(b).filter(|(x, y)| x != y).count() as u64;
+            // A buffer with one changed sector often contains hundreds of
+            // unchanged sectors. Let the optimized slice comparison skip the
+            // byte-by-byte difference count for each unchanged sector; changed
+            // sectors still receive the exact count needed by the report.
+            let changed = if a == b {
+                0
+            } else {
+                a.iter().zip(b).filter(|(x, y)| x != y).count() as u64
+            };
             differing_bytes += changed;
             differing_sectors += u64::from(changed != 0);
             while retained_index < request.retained_ranges.len()

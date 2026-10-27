@@ -140,3 +140,33 @@ It was observed live in journal/normalized-target/shadow validation. No rollback
 completion is claimed yet. The hypervisor only supplied the same partial test
 input; the actual rollback runs inside the guest using the converter's journal.
 It is not a hypervisor rollback of the source to NTFS.
+
+Rollback subsequently exited 0. Its full restored image matched the original
+frozen source `097e11106a058e6a8acc0238bad00347761173161c95f11ea86fab081b6517c0`.
+NTFS structure, boot/MFT backups and clean-log checks passed, the rollback
+completion marker closed replay, and the original partition mounted as NTFS
+with label `n2r-stream-source`, 64 KiB clusters and unchanged partition GUID.
+All six original user files, including the Unicode paths and 4 GiB+1 file,
+matched their original lengths and SHA-256 values through mounted NTFS.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Rollback result | `61e3eeb4cec3376d084dc12041de2a01b8ef0e9cf0064debd5c61d49ae4102a4` |
+| Exact restored-image execution | `ba3ea5998b60458b4322a642089a0919943dea6c57555c783c9efd5384971c7c` |
+| Closed rollback/native NTFS completion | `dd60fc52e3d5e12a240df0e075cd2e9e3b88c96730dacb1477ca3f0abcf2d203` |
+| Archive and user-file readback | `66e9cda10ea5cefb53556766c3b3eb9bfc84cdca209b5b4dbda93e784b598ac4` |
+
+The restored NTFS branch is now OFF at checkpoint
+`40fb292c-0fd6-4048-bf40-93f2bc242ca3`, parent interrupted
+`713e5fad-45fe-4200-9f6c-dabb669cc9ad`. The independent resumed ReFS branch
+remains at `b4ef39f3-af21-404e-b9e1-68c65e3703e0`. All eight streaming
+checkpoints remain; neither completed outcome may receive old journal replay.
+The final conservative lab counter was 237,575,936,677 bytes under the
+240,518,168,576-byte cap, with 107,898,380,288 host bytes free.
+
+This qualifies one controlled process-exit point and guest-local resume/rollback
+on this exact producer/profile. It does not qualify torn writes, storage power
+loss, all interruption points, nonzero over-4-GiB data, other capacities, later
+binaries or the later planning-bitmap cache. Cold boots proved exclusion before
+recovery; the recovered mounted outcomes were not reboot-tested in this case.
+No unit tests were added or run.

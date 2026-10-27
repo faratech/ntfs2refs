@@ -216,6 +216,19 @@ do not restart it, replay on the saved resumed ReFS branch, or claim rollback
 success before the actual result. The kernel/hypervisor snapshot is test setup;
 the NTFS restoration itself must be performed by guest-local journal recovery.
 
+Rollback later exited 0 and restored the exact frozen NTFS image
+`097e11106a058e6a8acc0238bad00347761173161c95f11ea86fab081b6517c0`.
+Native NTFS availability and all six user-file lengths/hashes passed. The VM
+is now OFF at `40fb292c-0fd6-4048-bf40-93f2bc242ca3`, parent the saved partial
+`713e5fad-45fe-4200-9f6c-dabb669cc9ad`; native resumed ReFS remains at sibling
+`b4ef39f3-af21-404e-b9e1-68c65e3703e0`. Preserve all eight streaming checkpoints,
+both outcome archives and the partial state. Old journal replay is closed on
+both completed outcomes. The registry records one controlled flushed-write
+process fault, exclusion after reboot, exact resume/native ReFS and exact
+rollback/native NTFS. No storage-power-loss, exhaustive fault sweep or
+post-recovery mounted-outcome reboot qualification is claimed. Later cached
+retention planning builds inherit none of this producer's result.
+
 Subsequent source caches the two planning bitmap views across V2 source runs
 only while no submitted move/mapping change occurred. Every actual move still
 rechecks fresh views; old profiles retain per-run capture. That cache did not

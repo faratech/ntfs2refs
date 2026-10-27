@@ -108,3 +108,12 @@ Read-only copies under `candidate3/source-observed` have SHA-256:
 No raw reconstruction, native mount of the converted source, mutation, reboot
 or recovery success is established by this milestone. Continue by observing
 the same task and its actual terminal state.
+
+`lab/Invoke-NativeShadowLargeBetaMutation.ps1` prepares the next bounded mounted
+workload. It requires terminal successful handoff and the independent six-file
+readback before creating a fresh run-owned directory. It grows a file to 16 MiB,
+truncates and hashes it, renames it, creates 128 directory entries and deletes
+only those newly created objects. It repeats the original payload readback
+afterward. An exclusive durable host intent prevents accidental repetition.
+This helper has not run; it does not establish mutation or reboot success.
+The preserved alpha and other VM branches are outside its exact beta binding.

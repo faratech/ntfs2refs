@@ -23,7 +23,7 @@ $result=Invoke-Command -VMId $id -Credential $credential -ArgumentList $dispatch
     if($disk.IsOffline-or$disk.IsReadOnly-or$disk.IsBoot-or$disk.IsSystem-or$volume.FileSystem-cne'ReFS'-or
         $volume.FileSystemLabel-cne'n2r-beta-source'-or$volume.AllocationUnitSize-ne4096-or
         $partition.DiskNumber-ne1-or$partition.Offset-ne16MB-or$partition.Size-ne240GB-or
-        [string]$partition.Guid-cne'{489aced4-be82-4d61-a7a2-cdac24e3ebc3}'){throw 'Original converted partition identity/geometry differs.'}
+        [guid]$partition.Guid-ne[guid]'489aced4-be82-4d61-a7a2-cdac24e3ebc3'){throw 'Original converted partition identity/geometry differs.'}
     $expected=ConvertFrom-Json -InputObject $Fixture
     $files=@(foreach($row in $expected.files){
         if(-not([string]$row.path).StartsWith('F:\',[StringComparison]::OrdinalIgnoreCase)){throw 'Fixture path escaped source.'}

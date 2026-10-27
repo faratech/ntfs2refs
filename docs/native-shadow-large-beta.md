@@ -1,5 +1,56 @@
 # Disposable larger-volume beta
 
+**Candidate 3 passed conversion, strict native verification, mutation and clean
+reboot.** The public converter completed at `2026-10-27T13:11:45Z`, before Mike's
+host reboot. On the next guest boot, the original partition mounted as ReFS with
+its original label and all six user-file hashes matched. Strict verification
+also passed for the complete fourteen-object admitted tree: nine files including
+three Windows ancillary files, and five directories including root.
+
+The separate pinned Rust postcheck tools passed create/grow/truncate/rename,
+128-entry directory growth and deletion, strict verification afterward, and
+strict verification after a clean reboot at `13:52:44Z`. Only newly created
+workload paths were mutated. The exact source/target geometry is 240 GiB,
+NTFS/64 KiB to ReFS/4 KiB, on Windows 11 26300.9457. This is one bounded native
+result; it does not qualify every implementation limit, future executable,
+streaming-payload v2, arbitrary placements or expanded-geometry recovery.
+
+| Measurement | Recorded result |
+|---|---:|
+| Admitted logical bytes | 134,500,457 |
+| Retained payload bytes | 0 |
+| Relocated payload bytes | 134,500,352 |
+| Materialized bytes | 105 |
+| Shadow payload initialization | 134,500,457 bytes |
+| Raw target bytes written | 337,903,616 |
+| Journal | 675,831,546 bytes, 94 patches |
+
+This natural low-LCN placement exercises relocation, not efficient retention.
+Physical scratch backing and complete workflow physical I/O were not independently
+measured. Conversion elapsed about 3 h 40 min; repeated complete-volume scans are
+still a material efficiency limitation even with a small logical tree.
+
+Both passed branches are preserved, with the beta now **OFF**:
+
+- Pristine converted checkpoint: `2297eaff-fe69-4d2e-ad30-3f965f9024ff`.
+- Mutation/reboot-passed checkpoint: `cb6a32e9-f237-4d3f-a807-d97fc73f73a1`,
+  parent `2297eaff-fe69-4d2e-ad30-3f965f9024ff`.
+
+The initial clean and NTFS-baseline checkpoints and the candidate-2 refusal
+checkpoint also remain. No earlier protected VM or checkpoint was reset/deleted.
+The user host reboot occurred after the successful conversion; it is not an
+interruption/recovery or storage power-loss test. Native expanded-geometry fault
+recovery and efficient scratch/I/O remain open.
+
+The full producer/stage archive is under `candidate3/terminal-evidence`, with
+34 files totaling 13,596,445 bytes and manifest SHA-256
+`1946b246c149b0ac23e74551e97077cc293eee723ad9226124c6ce1737a3a7e1`.
+The observational qualification registry separately pins the successful result,
+finalization, strict-check wrappers, checkpoints and tools. The current source
+tree and new profiles do not inherit the pinned producer's result.
+
+The following chronology preserves the earlier refusals and intermediate states.
+
 The separate VM is `ntfs2refs-shadow-large-beta-20261027`, ID
 `6c4793d2-cdee-468b-bf3b-1c11cae0b501`, under
 `D:\code\ntfs2refs\.lab\hyperv\shadow-large-beta-20261027`.
@@ -42,7 +93,7 @@ The refusal exposed a general TxF path calling the old fixed 52 GiB binding's
 from the separately validated general binding; the original fixed-fixture
 validator remains unchanged. New candidates must use fresh stage/run paths,
 preserve earlier binaries/artifacts and confirm prior workers are terminal.
-This report records a refusal and a code fix, not a successful conversion.
+That first milestone recorded a refusal and a code fix, not conversion success.
 
 Candidate 2 preserves the first stage and failure artifacts. Its converter
 SHA-256 is `732932bd4e83c530c2562c93b8eb9863182d4125fa00dc8729a3d84a109dbbcb`,
@@ -105,9 +156,8 @@ Read-only copies under `candidate3/source-observed` have SHA-256:
 - `source-basis.json`: `d2ebbb6dfa18704813aaaf1ca6a2cf8e6c62b5392b37718add432d811b46061c`.
 - `native-source.json`: `c117653a6fa97a95d545b5494335ec986eefc6b0d20a110bcfa3147d9898e021`.
 
-No raw reconstruction, native mount of the converted source, mutation, reboot
-or recovery success is established by this milestone. Continue by observing
-the same task and its actual terminal state.
+That source-collection milestone did not establish reconstruction, native mount,
+mutation, reboot or recovery success. The same task was observed to completion.
 
 `lab/Invoke-NativeShadowLargeBetaMutation.ps1` prepares the next bounded mounted
 workload. It requires terminal successful handoff and the independent six-file
@@ -141,7 +191,8 @@ It requests one guest-integrated clean shutdown, waits for Off, starts the same
 beta VM once and requires a newer UTC guest boot followed by all six payload
 hashes. It neither force-powers-off nor retries boot/recovery actions on an
 observation failure. Create-new intent/result files preserve partial attempts.
-This helper has syntax-check evidence only and has not rebooted the active VM.
+At preparation this helper had syntax-check evidence only. It later performed
+the clean post-mutation reboot summarized above.
 
 The later source candidate also repairs the standalone Rust post-handoff
 verifier's profile propagation: expected-tree validation, native observation
@@ -155,8 +206,9 @@ root-basic-info capture. New mutation reports bind the request hash and resource
 profile. Strict verification requires that binding on larger-profile reports;
 legacy reports lacking it are accepted only for unprofiled requests.
 
-These Rust helpers have release-build evidence, not execution evidence. No new
-helper binary has replaced the active conversion executable or run a mutation.
+At that preparation milestone these Rust helpers had release-build evidence
+only. They were subsequently executed after conversion completed, without
+replacing the conversion executable.
 At `2026-10-27T11:22:10Z`, the original candidate-3 converter was still live
 and had completed comparison, advancing to `rechecking-source`. No apply or
 conversion result existed. Continue observing the same process/run.
@@ -168,15 +220,22 @@ are copied and pinned locally under `candidate3/rust-postcheck-tools`:
 - `lab-general-refs-mutation.exe`: `7e0fdeb9762213a97ed0347997ae093f18dbe945b4891e759e4a5701f81faa65`.
 
 `lab/Invoke-NativeShadowLargeBetaRustPostcheck.ps1` wires these through fresh,
-separate guest tool paths and ordered `BeforeMutation`, `Mutate`, `AfterMutation`
-and `AfterReboot` phases. Every phase first requires a terminal successful
+separate guest tool paths and ordered `BeforeMutation`, `AfterPreservationBoot`,
+`Mutate`, `AfterMutation` and `AfterReboot` phases. Every phase requires a terminal successful
 conversion and independent original-payload readback; actual request/tree bytes
 must match the preserved qualification pins. The mutation uses the enrolled
 Rust workload above. Exact strict post-mutation success creates the receipt
 consumed by the clean-reboot helper; strict verification runs again afterward.
 Create-new intent and result files prevent blind phase repetition after errors.
-The controller has syntax-check evidence only. These tools are not guest-staged,
-no phase has executed, and the earlier PowerShell-only workload remains unused.
+Initially the controller had syntax-check evidence only. All five phases later
+passed using the pinned Rust tools. The earlier PowerShell-only workload remains
+unused. The first `AfterPreservationBoot` observer refused before running its
+native verifier: PowerShell had deserialized the prior ISO boot time as a UTC
+`DateTime`, and implicit stringification dropped the timezone before remoting.
+The controller now serializes UTC kinds explicitly. Its original intent/failure
+record remains; a fresh read-only attempt 2 passed with unchanged filesystem
+expectations. Only read-only verification phases permit such fresh attempts;
+the mutation phase cannot be repeated through that option.
 
 At `2026-10-27T11:54:28Z`, candidate 3 had finished all comparison/recheck
 passes and durable journal preparation, with its same converter PID 2940 live

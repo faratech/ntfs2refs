@@ -85,6 +85,35 @@
         "No reference mutation, reboot or power-loss qualification",
         "No NTFS conversion or arbitrary-volume import qualification"
       ]
+    },
+    {
+      "id": "ordinary-ntfs31-64k-refs314-4k-beta-v1",
+      "description": "One 240 GiB nonboot same-partition conversion, NTFS 64 KiB to ReFS 4 KiB, explicit larger-tree v1/v2-journal. Listed limits are implementation ceilings, not tested maxima.",
+      "source_filesystem": "NTFS 3.1",
+      "target_filesystem": "ReFS 3.14",
+      "logical_sector_bytes": 512,
+      "cluster_bytes": 4096,
+      "source_cluster_bytes": 65536,
+      "mft_record_bytes": 1024,
+      "source_policy_windows_build": 26300,
+      "observed_partition_bytes": 257698037760,
+      "limits": {
+        "maximum_files": 1024,
+        "maximum_directories": 256,
+        "maximum_logical_bytes": 4294967296,
+        "ascii_names_only": true,
+        "maximum_component_bytes": 100,
+        "maximum_path_components": 16,
+        "unnamed_streams_per_file": 1,
+        "requires_absent_sacl": true
+      },
+      "exclusions": [
+        "Boot/system volumes and unsupported NTFS features remain excluded.",
+        "Only nine files/five directories in this corpus; no maximum-size/count qualification.",
+        "Zero retained payload bytes in this placement; no low-copy or payload-independent scratch proof.",
+        "No interruption/recovery or storage power-loss test of this beta profile.",
+        "Later executables and streaming-payload v2 do not inherit this result."
+      ]
     }
   ],
   "evidence": [
@@ -2385,6 +2414,136 @@
         "objects_verified": 7,
         "actual_shadow_backing_bytes": null
       }
+    },
+    {
+      "id": "large-beta-240g-64k-native-mutation-reboot",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-beta-v1",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Public convert inside the owned VM changed the original 240 GiB partition from NTFS/64 KiB to ReFS/4 KiB. Fourteen admitted objects passed strict native verification, bounded new-file mutation and clean reboot. Original source extents were not prearranged; this case relocated/materialized all payloads. A user host reboot occurred after the successful result, not during conversion.",
+      "repository_commit": "4befb3b92aa764a5dfe1eaf935380d75c9962909",
+      "executable": {
+        "name": "ntfs2refs.exe",
+        "sha256": "38b5b8d142e612000ee00385efc3b4414293b13abad23f71e576f1c5e412b5f2",
+        "retained_path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/terminal-evidence/stage/ntfs2refs.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": null
+      },
+      "corpus": {
+        "description": "Six deterministic user files plus three recognized Windows ancillary files, five directories including root; 134500457 logical bytes; ordinary create history without source extent moves. Separate 240 GiB ReFS shadow and independent journal storage.",
+        "source_image_sha256": "2eecb270e3dc011324da77dcdfb2eb40d3ca86ff7fb27e50d8009b9e644b67cf",
+        "expected_image_sha256": "f47ce622da431f3841dadec720da617519d0c5bd7027d0fbdd189e02aa3f5e8b",
+        "expected_semantic_manifest_sha256": "08c1fb268e3115619ed7d5a68805a4a8d97dd07ffb5963f3f2ee393db89903ab"
+      },
+      "artifacts": [
+        {
+          "role": "terminal-evidence/run/result.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/terminal-evidence/run/result.json",
+          "location_unknown_reason": null,
+          "sha256": "3d3f157afaf61b0ced96fcbdaef66a04254595d90a0c8fa3b37ce4fdd58f64f5"
+        },
+        {
+          "role": "terminal-evidence/run/apply.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/terminal-evidence/run/apply.json",
+          "location_unknown_reason": null,
+          "sha256": "4274d55241e731c7a65a1ac8c520ea6119398bc72444d72309b4c3724c35acbb"
+        },
+        {
+          "role": "terminal-evidence/run/finalization.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/terminal-evidence/run/finalization.json",
+          "location_unknown_reason": null,
+          "sha256": "8e763327d05ace3209c509db0f664e0bc3ef88ed28bf93e2e0116e9d5bc79daf"
+        },
+        {
+          "role": "rust-postcheck/BeforeMutation.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/BeforeMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "9852574b41bf08306f6bc5a7bf08c1434706232a077aa4215df5122445619cd8"
+        },
+        {
+          "role": "rust-postcheck/AfterPreservationBoot-attempt-2.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/AfterPreservationBoot-attempt-2.json",
+          "location_unknown_reason": null,
+          "sha256": "f36339c7cda0dd4dc5e57255385e688ae55d5aadfe4f19f4e571b74467bbaf2d"
+        },
+        {
+          "role": "rust-postcheck/Mutate.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/Mutate.json",
+          "location_unknown_reason": null,
+          "sha256": "de8b00268be8766c7385973356ff173e1ad071d9a09be939b3a4e3c7f1c20ea4"
+        },
+        {
+          "role": "rust-postcheck/AfterMutation.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/AfterMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "f6c63597b3bf844c1776314388431f5a4e8708a91b567d1d5f5c4c5ae8c25cf0"
+        },
+        {
+          "role": "rust-postcheck/AfterReboot.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck/AfterReboot.json",
+          "location_unknown_reason": null,
+          "sha256": "9cb43289f7a65f2a254bd1df385ac300bfdf7328f3c973a76a358ecebe6fbfc9"
+        },
+        {
+          "role": "converted-checkpoint.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/converted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "e68ebca78c606044f66685eaffc2092c566d01bcdaaf8c0e24840f1afda810dd"
+        },
+        {
+          "role": "passed-checkpoint.json",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "4db4ab23e8464c1fa8878422e31f9d735ef88b7511d06e3082735036c702338c"
+        },
+        {
+          "role": "runtime-readiness",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/guest-readiness.json",
+          "location_unknown_reason": null,
+          "sha256": "f29d27e5a1d89cb542d99bea76ba3c2c51665d5aa480e5a356e1e364c29a30e9"
+        },
+        {
+          "role": "producer-source-state",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "e55a3cc0e009f3b96a163e3519a5927df16dc5edd207339549b4ef35897da2e5"
+        },
+        {
+          "role": "postcheck-tools",
+          "path": ".lab/hyperv/shadow-large-beta-20261027/candidate3/rust-postcheck-tools/manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "af0dfb615c7eff8947c6dda9ed6291f15a91d29a6e1afc5b5fe7cfef4fc40b17"
+        }
+      ],
+      "source_documents": [
+        "docs/native-shadow-large-beta.md",
+        "docs/cli-workflow.md"
+      ],
+      "unknown_fields": {
+        "refs_driver": "Readiness records refs.sys SHA-256 3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4; exact file version was not retained, so no complete Driver identity is invented.",
+        "dirty_source_state": "Producer used the recorded capabilities-only src/main.rs patch SHA-256 d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9. Actual executable is pinned; clean-commit inheritance is not claimed.",
+        "postcheck_executables": "Strict verifier and mutation helper are separately pinned in postcheck-tools/manifest.json from commit 2d6fb355206e0499b1231aa3083b0009ee753fec.",
+        "actual_shadow_backing_bytes": "Not independently measured; reported shadow payload initialization is 134500457 bytes. Full workflow physical I/O was not measured.",
+        "unit_tests": "No unit tests were added or run for this milestone."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 134500457,
+        "retained_payload_bytes": 0,
+        "relocated_payload_bytes": 134500352,
+        "materialized_payload_bytes": 105,
+        "target_bytes_written": 337903616,
+        "journal_bytes": 675831546,
+        "objects_verified": 14,
+        "actual_shadow_backing_bytes": null
+      }
     }
   ],
   "claims": [
@@ -2659,6 +2818,25 @@
       "remaining_gates": [
         "Explain the rejected overlay-inclusive candidate separately",
         "Reference mutation/reboot qualification if later required"
+      ]
+    },
+    {
+      "id": "existing-tree-240g-64k-conversion",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-beta-v1",
+      "feature": "Existing-tree conversion on 240 GiB NTFS with 64 KiB clusters",
+      "statement": "The original partition mounted as ReFS through Microsoft refs.sys with the source label restored. Strict native verification passed before/after mutation and after clean reboot. Both pristine-converted and mutation/reboot-passed OFF checkpoints are preserved.",
+      "evidence_ids": [
+        "large-beta-240g-64k-native-mutation-reboot"
+      ],
+      "exclusions": [
+        "All payloads relocated/materialized in this case; no retention claim.",
+        "Process interruption and storage power loss were not exercised.",
+        "One exact build/geometry/producer; later source commits and new profiles remain separate."
+      ],
+      "remaining_gates": [
+        "Efficient payload-independent scratch and reduced full-volume I/O",
+        "Native interruption/recovery on this expanded geometry",
+        "Additional supported features, placements, counts and geometries"
       ]
     }
   ]

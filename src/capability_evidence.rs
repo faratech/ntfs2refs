@@ -44,7 +44,10 @@ pub struct Profile {
     pub source_filesystem: Option<String>,
     pub target_filesystem: String,
     pub logical_sector_bytes: u32,
+    /// Target allocation unit. Legacy equal-geometry profiles omit the source.
     pub cluster_bytes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_cluster_bytes: Option<u32>,
     pub mft_record_bytes: Option<u32>,
     pub source_policy_windows_build: Option<u32>,
     pub observed_partition_bytes: u64,
@@ -324,6 +327,14 @@ impl Registry {
                 "invalid profile geometry"
             );
             ensure!(
+                p.source_cluster_bytes.is_none_or(|bytes| {
+                    bytes.is_power_of_two()
+                        && bytes >= p.logical_sector_bytes
+                        && p.observed_partition_bytes.is_multiple_of(u64::from(bytes))
+                }),
+                "invalid source cluster geometry"
+            );
+            ensure!(
                 p.mft_record_bytes
                     .is_none_or(|n| n.is_power_of_two() && n >= p.logical_sector_bytes),
                 "invalid MFT record size"
@@ -570,10 +581,19 @@ pub fn render_markdown(registry: &Registry) -> Result<String> {
         "Recorded qualification only. Artifact bytes are not reverified by this command. No entry grants execution or admission authority. Unrecorded does not mean unsupported, and passed is limited to the linked evidence.\n",
     );
     for p in &registry.profiles {
+        let clusters = p.source_cluster_bytes.map_or_else(
+            || format!("cluster: {} bytes", p.cluster_bytes),
+            |source| {
+                format!(
+                    "source cluster: {source} bytes; target cluster: {} bytes",
+                    p.cluster_bytes
+                )
+            },
+        );
         output.push_str(&format!(
-            "\nProfile `{}`: {} Source: {}; target: {}; logical sector: {} bytes; cluster: {} bytes; observed partition: {} bytes. Limits: {} files, {} directories, {} logical bytes, {} unnamed stream per file, {} components of at most {} bytes, ASCII-only names: {}, absent SACL required: {}. Exclusions: {}.\n",
+            "\nProfile `{}`: {} Source: {}; target: {}; logical sector: {} bytes; {}; observed partition: {} bytes. Limits: {} files, {} directories, {} logical bytes, {} unnamed stream per file, {} components of at most {} bytes, ASCII-only names: {}, absent SACL required: {}. Exclusions: {}.\n",
             p.id, cell(&p.description), p.source_filesystem.as_deref().unwrap_or("none (reference image)"),
-            p.target_filesystem, p.logical_sector_bytes, p.cluster_bytes, p.observed_partition_bytes,
+            p.target_filesystem, p.logical_sector_bytes, clusters, p.observed_partition_bytes,
             p.limits.maximum_files, p.limits.maximum_directories, p.limits.maximum_logical_bytes,
             p.limits.unnamed_streams_per_file, p.limits.maximum_path_components, p.limits.maximum_component_bytes,
             p.limits.ascii_names_only, p.limits.requires_absent_sacl, cell(&p.exclusions.join("; "))

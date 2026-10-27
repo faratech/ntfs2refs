@@ -2,7 +2,8 @@
 # in order, only after terminal successful conversion. No recovery replay.
 [CmdletBinding()]param(
     [Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
-    [Parameter(Mandatory)][ValidateSet('BeforeMutation','Mutate','AfterMutation','AfterReboot')][string]$Phase
+    [Parameter(Mandatory)][ValidateSet('BeforeMutation','AfterPreservationBoot','Mutate','AfterMutation','AfterReboot')][string]$Phase,
+    [ValidateRange(1,9)][int]$Attempt=1
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -21,6 +22,9 @@ if([guid]$dispatch.vm_id-ne$id-or$manifest.kind-cne'large-beta-rust-postcheck-to
 $post=Join-Path $root 'rust-postcheck'
 $guestPost=Join-Path $dispatch.guest_stage 'rust-postcheck'
 $guestTools=Join-Path $guestPost 'tools'
+if($Attempt-gt1-and$Phase-notin@('AfterPreservationBoot','AfterMutation','AfterReboot')){throw 'Only read-only verification phases permit fresh observation attempts.'}
+$phaseKey=if($Attempt-eq1){$Phase}else{$Phase+'-attempt-'+$Attempt}
+if(Test-Path -LiteralPath (Join-Path $post ($Phase+'.json'))){throw 'Phase already completed; inspect its receipt.'}
 function Save-NewRecord([string]$Path,$Value){
     $stream=[IO.File]::Open($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
     try{$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 28));$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
@@ -29,12 +33,12 @@ if($Phase-ceq'BeforeMutation'){
     if(Test-Path -LiteralPath $post){throw 'Fresh postcheck directory required; inspect prior intent.'}
     New-Item -ItemType Directory -Path $post | Out-Null
 }else{
-    $previous=switch($Phase){'Mutate'{'BeforeMutation'}'AfterMutation'{'Mutate'}'AfterReboot'{'AfterMutation'}}
+    $previous=switch($Phase){'AfterPreservationBoot'{'BeforeMutation'}'Mutate'{'AfterPreservationBoot'}'AfterMutation'{'Mutate'}'AfterReboot'{'AfterMutation'}}
     $receipt=Get-Content -LiteralPath (Join-Path $post ($previous+'.json')) -Raw|ConvertFrom-Json
     if(-not$receipt.success-or$receipt.run_id-cne$dispatch.run_id){throw 'Successful matching prior phase required.'}
 }
 $mutation=if($Phase-in@('AfterMutation','AfterReboot')){Get-Content -LiteralPath (Join-Path $post 'Mutate.json') -Raw|ConvertFrom-Json}else{$null}
-Save-NewRecord (Join-Path $post ($Phase+'-intent.json')) @{phase=$Phase;run_id=$dispatch.run_id;utc=[DateTime]::UtcNow.ToString('o');tools=$manifest.tools}
+Save-NewRecord (Join-Path $post ($phaseKey+'-intent.json')) @{phase=$Phase;attempt=$Attempt;run_id=$dispatch.run_id;utc=[DateTime]::UtcNow.ToString('o');tools=$manifest.tools}
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $session=New-PSSession -VMId $id -Credential $credential
 try{
@@ -51,9 +55,20 @@ try{
             Copy-Item -LiteralPath $source -ToSession $session -Destination (Join-Path $guestTools $row.name)
         }
     }
-    $priorBoot=if($Phase-ceq'AfterReboot'){$receipt.guest_boot_utc}else{''}
-    $result=Invoke-Command -Session $session -ArgumentList $Phase,$guestPost,$guestTools,$dispatch.guest_output,$dispatch.run_id,($manifest.tools|ConvertTo-Json -Compress),($mutation|ConvertTo-Json -Depth 28 -Compress),$priorBoot,$requestPin,$treePin -ScriptBlock {
-        param($PhaseName,$Post,$Tools,$Output,$Run,$ToolJson,$MutationJson,$PriorBoot,$ExpectedRequestPin,$ExpectedTreePin)
+    $priorBoot=''
+    if($Phase-in@('AfterPreservationBoot','AfterReboot')){
+        $value=$receipt.guest_boot_utc
+        if($value-is[DateTime]){
+            if($value.Kind-eq[DateTimeKind]::Unspecified){throw 'Prior boot has no timezone.'}
+            $priorBoot=$value.ToUniversalTime().ToString('o')
+        }elseif($value-is[DateTimeOffset]){$priorBoot=$value.UtcDateTime.ToString('o')}
+        else{
+            if([string]$value-cnotmatch'(Z|[+-][0-9]{2}:[0-9]{2})$'){throw 'Prior boot lacks an explicit timezone.'}
+            $priorBoot=[DateTimeOffset]::Parse([string]$value,[Globalization.CultureInfo]::InvariantCulture).UtcDateTime.ToString('o')
+        }
+    }
+    $result=Invoke-Command -Session $session -ArgumentList $Phase,$guestPost,$guestTools,$dispatch.guest_output,$dispatch.run_id,($manifest.tools|ConvertTo-Json -Compress),($mutation|ConvertTo-Json -Depth 28 -Compress),$priorBoot,$requestPin,$treePin,$phaseKey -ScriptBlock {
+        param($PhaseName,$Post,$Tools,$Output,$Run,$ToolJson,$MutationJson,$PriorBoot,$ExpectedRequestPin,$ExpectedTreePin,$ReportKey)
         Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         $rows=ConvertFrom-Json -InputObject $ToolJson
         foreach($row in $rows){
@@ -65,14 +80,14 @@ try{
         $complete=Get-Content -LiteralPath (Join-Path $Output 'result.json') -Raw|ConvertFrom-Json
         if(-not$complete.success-or-not$complete.rollback_closed-or-not$complete.source_admitted){throw 'Successful handoff required.'}
         $boot=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')
-        if($PhaseName-ceq'AfterReboot'-and[DateTimeOffset]::Parse($boot)-le[DateTimeOffset]::Parse($PriorBoot)){throw 'New boot required.'}
+        if($PhaseName-in@('AfterPreservationBoot','AfterReboot')-and[DateTimeOffset]::Parse($boot)-le[DateTimeOffset]::Parse($PriorBoot)){throw 'New boot required.'}
         $request=Join-Path $Output 'request.json';$expectation=Join-Path $Output 'expectation.json'
         $requestPin=(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()
         $treePin=(Get-FileHash -LiteralPath $expectation).Hash.ToLowerInvariant()
         if($requestPin-cne$ExpectedRequestPin-or$treePin-cne$ExpectedTreePin){throw 'Qualified request/expectation pins differ.'}
         $requestValue=Get-Content -LiteralPath $request -Raw|ConvertFrom-Json
         if($requestValue.expected_tree_sha256-cne$treePin-or$complete.expected_tree_sha256-cne$treePin){throw 'Expected-tree binding differs.'}
-        $report=Join-Path $Post ($PhaseName+'.json')
+        $report=Join-Path $Post ($ReportKey+'.json')
         $arguments=@('--request',$request,'--request-sha256',$requestPin,'--output',$report)
         if($PhaseName-ceq'Mutate'){
             $binary=Join-Path $Tools 'lab-general-refs-mutation.exe'
@@ -88,7 +103,7 @@ try{
         $ErrorActionPreference='Continue'
         $log=@(& $binary @arguments 2>&1);$exit=$LASTEXITCODE
         $ErrorActionPreference='Stop'
-        $log|Out-String|Set-Content -LiteralPath (Join-Path $Post ($PhaseName+'.log')) -Encoding utf8
+        $log|Out-String|Set-Content -LiteralPath (Join-Path $Post ($ReportKey+'.log')) -Encoding utf8
         if($exit-ne0){throw ('Native '+$PhaseName+' refused with exit '+$exit+'; output preserved.')}
         $value=Get-Content -LiteralPath $report -Raw|ConvertFrom-Json
         if($PhaseName-ceq'Mutate'){
@@ -98,7 +113,8 @@ try{
         [pscustomobject]@{success=$true;phase=$PhaseName;run_id=$Run;guest_report=$report;report_sha256=(Get-FileHash -LiteralPath $report).Hash.ToLowerInvariant();
             request_sha256=$requestPin;expectation_sha256=$treePin;guest_boot_utc=$boot;report=$value;utc=[DateTime]::UtcNow.ToString('o')}
     }
-    Save-NewRecord (Join-Path $post ($Phase+'.json')) $result
+    Save-NewRecord (Join-Path $post ($phaseKey+'.json')) $result
+    if($phaseKey-cne$Phase){Save-NewRecord (Join-Path $post ($Phase+'.json')) $result}
     if($Phase-ceq'AfterMutation'){
         Save-NewRecord (Join-Path $root 'mutation-result.json') @{success=$true;kind='rust-large-beta-mutation';run_id=$dispatch.run_id;
             mutation_report_sha256=$mutation.report_sha256;strict_after_report_sha256=$result.report_sha256;full_semantics_independently_rechecked=$true}

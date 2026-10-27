@@ -34,11 +34,24 @@ redispatch an old run or infer any native conversion success from these fixes.
 
 Candidate 3 is run `dab1b80b92c2432e80a4052502f9165b`, original pinned converter
 `38b5b8d142e612000ee00385efc3b4414293b13abad23f71e576f1c5e412b5f2`.
-At 2026-10-27 11:54:28 UTC its same PID 2940 was live, with complete journal
-preparation and a ticket, in raw-apply stage. It has zero retained ranges and
-does not prove payload retention. Do not interrupt/reset/replace it or infer
-termination from an observer timeout. The Rust beta postcheck controller is
-prepared, not executed; it requires terminal successful handoff first.
+It completed successfully at 2026-10-27 13:11:45 UTC, before Mike's host reboot.
+The fourteen-object admitted tree passed strict native verification after boot,
+the Rust mutation workload, strict verification afterward and another clean
+reboot/strict verification. Source geometry is 240 GiB NTFS/64 KiB, target
+ReFS/4 KiB. The case retained zero bytes, relocated 134,500,352 and materialized
+105; 94 patches wrote 337,903,616 target bytes with a 675,831,546-byte journal.
+Shadow payload initialization was still 134,500,457 bytes; physical scratch and
+whole-workflow physical I/O remain unmeasured. Do not claim efficient retention,
+expanded-geometry interruption recovery or power-loss qualification from it.
+The beta is OFF, preserving converted checkpoint
+`2297eaff-fe69-4d2e-ad30-3f965f9024ff` and mutation/reboot-passed child
+`cb6a32e9-f237-4d3f-a807-d97fc73f73a1`. Preserve all five beta checkpoints.
+No old conversion task/journal may be replayed after its durable handoff.
+The post-preservation observer's first attempt refused a timezone-stringification
+bug before native verification or mutation; its intent/failure remains, and a
+fresh read-only attempt passed after UTC roundtrip handling was corrected.
+See the beta report/registry for exact producer and separate postcheck pins;
+later executable builds do not inherit this bounded result.
 
 The separate `experimental_streaming_tree_v2` source profile adds an explicit
 streaming-payload envelope beyond v1's unchanged 4 GiB budget. Bind selection
@@ -137,8 +150,9 @@ profile 2, with a 16 GiB ceiling and request/ticket/header/manifest version
 binding throughout conversion and recovery. Profile 1 remains the default and
 the frozen alpha keeps its original binary and receipts. A bounded-memory
 synthetic journal larger than the old 768 MiB ceiling passed prepare, resume,
-shadowless rollback and marker verification. No profile-2 native VM conversion,
-interruption or power-loss qualification is claimed; see
+shadowless rollback and marker verification. The beta later passed a native
+profile-2 conversion with a 675,831,546-byte journal, below the old size ceiling.
+Native larger-capacity, interruption and power-loss qualification remain open; see
 [the CLI workflow](docs/cli-workflow.md). The default source limits and the
 128 GiB live partition limit remain unchanged.
 The later explicit larger-tree profile now propagates a separate 2 PiB routing
@@ -150,13 +164,14 @@ unsupported or over-budget layouts must still refuse rather than force execution
 
 The current experimental larger-tree candidate separately opts into up to
 1,024 files, 256 directories and 4 GiB logical contents, bound to the v2 journal,
-native source observation and protected target observation. It has not passed
-a native conversion or interruption run, and does not widen the default alpha.
+native source observation and protected target observation. One 240 GiB/64 KiB
+case passed conversion, mutation and reboot; interruption remains unqualified.
+It does not widen the default alpha.
 Its later source geometry path accepts 4 KiB through 2 MiB power-of-two clusters
 with 512-byte sectors, 1 KiB MFT records and 4 KiB indexes. Target clusters remain
 4 KiB; byte-based retention planning and geometry-sized MFT-mirror checks are
-required. This source change has compilation evidence only, no native run, and
-does not remove the default 128 GiB partition ceiling or the other resource
+required. The 64 KiB source case now has bounded native evidence; other expanded
+source geometries remain unqualified. This does not remove the default 128 GiB partition ceiling or the other resource
 ceilings; the explicit expanded routing budget is described above.
 Its protected native source collector now emits schema 9 with compact streaming
 bitmap summaries. Both native bitmap data hashes/counts must match the frozen
@@ -173,7 +188,8 @@ post-dismount failures, preserved native errors and the same opaque frozen-handl
 token. Default schema-1 witnesses retain their assembled path and bounds.
 Default routing remains limited to 128 GiB. Expanded routing uses 2 PiB with
 streamed metadata; metadata-complexity and admission limits still apply, and
-native larger-volume conversion/recovery remain unqualified.
+only the recorded 240 GiB conversion/mutation/reboot case has native evidence;
+larger-volume and expanded recovery qualification remain open.
 The expanded retained-extent check now has a bounded multilevel Medium allocator
 walker (1,048,576 pages, 33,554,432 leaf rows, depth eight) that decodes leaves as they
 arrive and rejects repeated physical pages, bad child bindings and incomplete

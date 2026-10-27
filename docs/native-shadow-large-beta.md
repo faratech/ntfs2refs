@@ -117,3 +117,20 @@ only those newly created objects. It repeats the original payload readback
 afterward. An exclusive durable host intent prevents accidental repetition.
 This helper has not run; it does not establish mutation or reboot success.
 The preserved alpha and other VM branches are outside its exact beta binding.
+
+At `2026-10-27T10:57:39Z`, candidate 3 remained Running and had advanced
+to journal preparation. The source/target certificate, expectation and request
+were complete; comparison telemetry reported 123,102,822,400 of
+1,030,792,151,040 planned scan-input bytes. This is a comparison/recheck I/O
+budget, not an end-to-end completion percentage. No apply/result was present.
+Read-only copies are retained under `candidate3/qualified-observed`:
+
+- `certificate.json`: `25a357308fb5aca3772d6167db87946ffe9c27c48f6f8302b41f7605e2be31ff`.
+- `expectation.json`: `08c1fb268e3115619ed7d5a68805a4a8d97dd07ffb5963f3f2ee393db89903ab`.
+- `request.json`: `baa26a49238be1b7c8062d792f3bbfad656fe72f1600787800df9c645c28f770`.
+- `journal-location.json`: `ee63f11f638d1d9d133cbabbeff338cd3f0b304f76eb9484022fd7cf60fdd8f2`.
+
+The admitted comparison has **zero retained ranges**. This particular natural
+placement exercises relocation/materialization on a larger source geometry;
+it cannot prove unchanged payload extents or efficient low-scratch conversion.
+Do not move source extents or change its active plan to manufacture retention.

@@ -25,7 +25,7 @@ foreach($name in @('request.json','ticket.json','expectation.json','interruption
     $path=Join-Path $archive $name
     $pins[$name]=(Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant()
 }
-$helper=@($intent.binaries|Where-Object name -ceq'ntfs2refs-recover.exe')
+$helper=@($intent.binaries|Where-Object {$_.name-ceq'ntfs2refs-recover.exe'})
 if($helper.Count-ne1){throw 'Original recovery helper pin missing.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
 Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 2GB

@@ -72,8 +72,22 @@ records its fixture root. Mounted readback selects only the original streaming
 fixture or this exact new fixture scope. It cannot silently compare an 8 GiB
 file against the old 4 GiB fixture. Preparation/dispatch have syntax checks only
 and have not run. The current 224 GiB saved-lab cap lacks the requested 6 GiB
-allowance; the proposed 232 GiB increase remains pending. The 64 GiB host-free
+allowance; Mike subsequently explicitly approved 232 GiB. The 64 GiB host-free
 reserve and every old checkpoint remain protected.
+
+Preparation executed once and preserved all eight old checkpoints. The ordinary
+append produced an 8,589,934,593-byte zero file, SHA-256
+`b47800cd5a0c0bd2a7d6c2ac9402cc117bbe89363299bdc51f8a72aef8543693`.
+The new OFF NTFS baseline is `02036ef7-4010-4d0a-82d5-d632de1a2b39`.
+No source extents were moved and no allocation-aging workload was created.
+
+Candidate 5 was dispatched once at 22:29:22 UTC, run
+`dbd514da89ac4c44b16bde4f7e3a805c`, PID 4564 created 22:29:23 UTC.
+Request pin `588371f5f2d5aa2986d8d05605444f6699700b8d5561665bd1590902134d940d`,
+converter `78ed37fa9120ea10de481ebb4d14d580a48e2cac86051084f3ccc90592a54f3f`.
+Source is `fdf734bcb0e6a4d89160143e20d9bd6295f878e6` plus the unchanged
+capabilities-only dirty patch. It was observed live in source qualification;
+no native evacuation, retention or conversion result is claimed yet.
 
 Evacuation audit storage now has a 4 MiB tree-wide limit across batches. The
 accounting includes vector capacity, mapping/page-proof strings, file IDs and

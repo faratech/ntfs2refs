@@ -640,7 +640,7 @@ Mike explicitly approved raising the lab cap from 208 to 216 GiB on October 27
 to preserve the refused streaming branch and allow its next native run.
 Mike subsequently approved 224 GiB to preserve the converted streaming branch
 and allow its reboot/mutation child. The 64 GiB host reserve remains.
-`lab/lab.config.json` limits actual lab usage to 224 GiB and requires 64 GiB
+`lab/lab.config.json` limits actual lab usage to 232 GiB and requires 64 GiB
 host free space. Check actual free space and backing allocation before large
 experiments. Sparse flags, logical lengths and reported sparse ranges alone
 have not provided reliable capacity accounting on this ReFS host.
@@ -688,3 +688,13 @@ versioned profiles rather than deleting their enrollment checks. Follow
 Report payload retained, relocated and materialized, actual scratch allocation,
 changed bytes and journal capacity separately. Boot and broad production
 qualification remain separate objectives.
+
+The approved retention8g preparation executed once and saved OFF source baseline
+02036ef7-4010-4d0a-82d5-d632de1a2b39; all eight older checkpoints remain.
+The zero file is 8589934593 bytes, SHA-256
+b47800cd5a0c0bd2a7d6c2ac9402cc117bbe89363299bdc51f8a72aef8543693.
+Candidate 5 is active: run dbd514da89ac4c44b16bde4f7e3a805c, PID 4564 created
+22:29:23 UTC, source fdf734b plus the unchanged capabilities-only dirty patch.
+Converter hash 78ed37fa9120ea10de481ebb4d14d580a48e2cac86051084f3ccc90592a54f3f.
+Observe the existing task; do not redispatch. No evacuation/retention outcome
+is established yet. The cap is now 232 GiB with the 64 GiB reserve unchanged.

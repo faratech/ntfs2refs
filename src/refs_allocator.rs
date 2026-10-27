@@ -52,6 +52,8 @@ pub struct SmallAllocatorObservation {
     pub checkpoint_lcn: u64,
     pub checkpoint_clock: u64,
     pub root_physical_lcns: [u64; 4],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub child_pages: Vec<[u64; 4]>,
     pub rows: Vec<AllocatorRow>,
     pub managed_clusters: u64,
     pub free_clusters: u64,
@@ -444,7 +446,7 @@ pub fn inspect_medium_with_resource_profile(
 }
 
 struct PendingAllocatorPage {
-    virtual_slots: [u64; 4],
+    slots: [u64; 4],
     crc64: u64,
     expected_level: u8,
 }
@@ -475,7 +477,7 @@ fn enqueue_allocator_children(
             "allocator child reference format differs"
         );
         pending.push(PendingAllocatorPage {
-            virtual_slots: [
+            slots: [
                 u64le(&value, 0),
                 u64le(&value, 8),
                 u64le(&value, 16),
@@ -548,7 +550,7 @@ fn inspect_medium_multilevel(
             "Medium allocator page budget exhausted"
         );
         let mut physical = [0; 4];
-        for (index, &vlcn) in next.virtual_slots.iter().enumerate() {
+        for (index, &vlcn) in next.slots.iter().enumerate() {
             physical[index] = translate(vlcn, mappings, domain)?;
             ensure!(
                 seen.insert(physical[index]),
@@ -564,7 +566,7 @@ fn inspect_medium_multilevel(
                 && u32le(&bytes, 0xc) == volume_signature
                 && u64le(&bytes, 0x40) == 0
                 && u64le(&bytes, 0x48) == 33
-                && (0..4).all(|i| u64le(&bytes, 0x20 + i * 8) == next.virtual_slots[i]),
+                && (0..4).all(|i| u64le(&bytes, 0x20 + i * 8) == next.slots[i]),
             "Medium allocator child CRC, header, table or self-location differs"
         );
         let node = refs_node::inspect_child_node(&bytes)?;
@@ -611,6 +613,18 @@ fn inspect_medium_multilevel(
 pub fn inspect_small(
     reader: &mut (impl Read + Seek),
     image_bytes: u64,
+) -> Result<SmallAllocatorObservation> {
+    inspect_small_with_resource_profile(
+        reader,
+        image_bytes,
+        crate::ntfs_admission::ResourceProfile::AlphaV1,
+    )
+}
+
+pub fn inspect_small_with_resource_profile(
+    reader: &mut (impl Read + Seek),
+    image_bytes: u64,
+    resources: crate::ntfs_admission::ResourceProfile,
 ) -> Result<SmallAllocatorObservation> {
     let refs = refs_inspect::inspect(reader, image_bytes)?;
     let geometry = &refs.geometry;
@@ -676,6 +690,16 @@ pub fn inspect_small(
         "Small allocator root hash, table or CRC differs"
     );
     let root = refs_node::inspect_root_node(&page)?;
+    if resources != crate::ntfs_admission::ResourceProfile::AlphaV1 {
+        return inspect_small_multilevel(
+            reader,
+            image_bytes,
+            checkpoint,
+            reference.lcn_slots,
+            &page,
+            root,
+        );
+    }
     ensure!(
         root.table_id_low == 34
             && root.node_level == 0
@@ -702,6 +726,124 @@ pub fn inspect_small(
         checkpoint_lcn: checkpoint.0,
         checkpoint_clock: checkpoint.1,
         root_physical_lcns: reference.lcn_slots,
+        child_pages: Vec::new(),
+        rows,
+        managed_clusters: managed,
+        free_clusters: free,
+        allocated_clusters: managed - free,
+        allocated_ranges,
+        allocator_walk_complete: true,
+        whole_volume_ownership_verified: false,
+    })
+}
+
+/// Small allocator table pages are physically addressed. Reusing the Medium
+/// tier's virtual-container translation here would follow a different graph.
+fn inspect_small_multilevel(
+    reader: &mut (impl Read + Seek),
+    image_bytes: u64,
+    checkpoint: (u64, u64),
+    root_slots: [u64; 4],
+    root_bytes: &[u8; PAGE],
+    root: refs_node::RootNodeObservation,
+) -> Result<SmallAllocatorObservation> {
+    const MAX_PAGES: usize = 4096;
+    const MAX_ROWS: usize = 65536;
+    const MAX_DEPTH: u8 = 8;
+    ensure!(
+        root.table_id_low == 34
+            && root.node_level <= MAX_DEPTH
+            && root.whole_table_row_count <= MAX_ROWS as u64,
+        "experimental Small allocator root exceeds traversal profile"
+    );
+    let volume_signature = u32le(root_bytes, 0xc);
+    let mut pending = Vec::new();
+    let mut seen: BTreeSet<u64> = root_slots.into_iter().collect();
+    let mut child_pages = Vec::new();
+    let mut rows = Vec::new();
+    let mut allocated_ranges = Vec::new();
+    let (mut previous_end, mut managed, mut free) = (0u64, 0u64, 0u64);
+    let mut consume_leaf = |leaf: &[refs_node::NodeRowObservation]| -> Result<()> {
+        ensure!(
+            rows.len() + leaf.len() <= MAX_ROWS,
+            "Small allocator leaf-row budget exhausted"
+        );
+        for row in leaf {
+            let decoded = decode_leaf(row, image_bytes / CLUSTER, &mut allocated_ranges)?;
+            ensure!(
+                decoded.start_lcn >= previous_end,
+                "Small allocator rows overlap or are unsorted"
+            );
+            previous_end = decoded
+                .start_lcn
+                .checked_add(decoded.clusters)
+                .context("Small allocator range overflow")?;
+            managed = managed
+                .checked_add(decoded.clusters)
+                .context("Small managed count overflow")?;
+            free = free
+                .checked_add(decoded.free_clusters)
+                .context("Small free count overflow")?;
+            rows.push(decoded);
+        }
+        Ok(())
+    };
+    if root.node_level == 0 {
+        consume_leaf(&root.rows)?;
+    } else {
+        enqueue_allocator_children(&root.rows, root.node_level, &mut pending, 1, MAX_PAGES)?;
+    }
+    while let Some(next) = pending.pop() {
+        ensure!(
+            child_pages.len() + 1 < MAX_PAGES,
+            "Small allocator page budget exhausted"
+        );
+        for &lcn in &next.slots {
+            ensure!(
+                seen.insert(lcn),
+                "cyclic, shared or overlapping Small allocator page"
+            );
+        }
+        let bytes = read_page(reader, &next.slots, image_bytes)?;
+        ensure!(
+            crc64_nvme(&bytes) == next.crc64
+                && &bytes[..4] == b"MSB+"
+                && u32le(&bytes, 4) == 2
+                && u32le(&bytes, 8) == 0
+                && u32le(&bytes, 0xc) == volume_signature
+                && u64le(&bytes, 0x40) == 0
+                && u64le(&bytes, 0x48) == 34
+                && (0..4).all(|i| u64le(&bytes, 0x20 + i * 8) == next.slots[i]),
+            "Small allocator child CRC, header, table or physical self-location differs"
+        );
+        let node = refs_node::inspect_child_node(&bytes)?;
+        ensure!(
+            node.node_level == next.expected_level,
+            "Small allocator child level differs from parent"
+        );
+        child_pages.push(next.slots);
+        if node.node_level == 0 {
+            consume_leaf(&node.rows)?;
+        } else {
+            enqueue_allocator_children(
+                &node.rows,
+                node.node_level,
+                &mut pending,
+                1 + child_pages.len(),
+                MAX_PAGES,
+            )?;
+        }
+    }
+    ensure!(
+        rows.len() as u64 == root.whole_table_row_count,
+        "Small allocator leaf count differs from root descriptor"
+    );
+    Ok(SmallAllocatorObservation {
+        profile: "candidate ReFS 3.14 Small allocator bounded physical multilevel walk",
+        checkpoint_lcn: checkpoint.0,
+        checkpoint_clock: checkpoint.1,
+        root_physical_lcns: root_slots,
+        child_pages,
         rows,
         managed_clusters: managed,
         free_clusters: free,

@@ -51,6 +51,20 @@ physical page clusters, incomplete row counts and gaps in full-volume coverage
 refuse the entire observation. The default one-level reader is preserved.
 
 This expanded walk has compilation evidence only; the historical corpus results
-above do not qualify it. Container-table and Small-allocator traversal still have
-their existing bounds, and the live 128 GiB partition ceiling remains. No write-
+above do not qualify it. Container-table traversal retains its existing bounds,
+and the live 128 GiB partition ceiling remains. No write-
 set omission, whole-volume ownership or native conversion claim is added.
+
+The experimental Small allocator reader now also supports multilevel trees,
+with the same 4,096-page, 65,536-leaf-row and depth-eight bounds. It uses direct
+physical child addresses, consistent with the [Small tier's documented address
+class](https://xbpt.gitlab.io/forefst/structures/allocators/). It validates each
+child's CRC, table/volume identity, physical self-address and parent-derived
+level, rejects reused physical clusters and enforces ordered non-overlapping
+managed ranges. It compares total leaf count with the root descriptor without
+pretending that Small covers the entire volume. Leaves are decoded incrementally.
+
+This Small-tier expansion has compilation evidence only. Its default entry
+still uses the original root-only profile, with no new field in legacy JSON
+when there are no child pages. Container traversal and larger-volume routing
+remain unfinished; native qualification and the partition ceiling are unchanged.

@@ -199,7 +199,8 @@ pub fn inspect_with_resource_profile<R: Read + Seek>(
     validate_retained_budget(retained_bytes, resources)?;
     let medium =
         refs_allocator::inspect_medium_with_resource_profile(reader, image_bytes, resources)?;
-    let small = refs_allocator::inspect_small(reader, image_bytes)?;
+    let small =
+        refs_allocator::inspect_small_with_resource_profile(reader, image_bytes, resources)?;
     ensure!(
         medium.checkpoint_lcn == small.checkpoint_lcn
             && medium.checkpoint_clock == small.checkpoint_clock

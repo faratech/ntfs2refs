@@ -137,7 +137,11 @@ The expanded retained-extent check now has a bounded multilevel Medium allocator
 walker (4,096 pages, 65,536 leaf rows, depth eight) that decodes leaves as they
 arrive and rejects repeated physical pages, bad child bindings and incomplete
 coverage. It has compilation evidence only. Default Medium traversal remains
-one-level; Container Table and Small allocator bounds still remain.
+one-level; Container Table scaling remains unfinished.
+The expanded Small allocator now also walks bounded multilevel trees, with
+physical child addressing, CRC/header/self-location/level checks and ordered
+disjoint managed ranges. Its default root-only entry is preserved. This path
+has compilation evidence only; Container Table scaling remains unfinished.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

@@ -43,10 +43,29 @@ lab counter was 213,674,191,598 bytes of its 223,338,299,392-byte budget, with
 before construction or new snapshots. Preserve partial worker/intent records;
 do not redispatch a setup or conversion based only on an observer timeout.
 
-The completed source fixture is now preserved OFF as checkpoint
+The completed source fixture was preserved OFF as checkpoint
 `775f4db8-8635-486c-b6eb-7098426b51a6`,
 `streaming-v2-ntfs-unicode-4g`. A clean guest-integrated shutdown preceded the
-single checkpoint creation. No conversion has been dispatched for this fixture.
-Use fresh staged executables/run paths and bind the explicit streaming source
-profile before beginning the conversion; the passed 240 GiB producer does not
-support this fixture's names or payload budget.
+single checkpoint creation. Its new active child was then started for one
+explicit streaming-profile conversion; the passed 240 GiB producer was not used.
+
+Candidate 1 is run `8c9c50c1fc6c4fd3a0fc3aeadd61fb72`, task
+`N2R-StreamingV2Convert-8c9c50c1fc6c4fd3a0fc3aeadd61fb72`, request SHA-256
+`6052f162ae85b69ddb0a328b8e65f81f3a3fe66dcf37aab44db8006ec776ae36`.
+Its producer is source `97010e083cbb1dd2fdf9498de4c00115775b8e02` with the
+previous capabilities-only dirty patch digest
+`d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9`:
+
+- `ntfs2refs.exe`: `624405d2517a4ae51ccf83270eecfdb83ebccb8f8d726e25f2dc651a116e4076`.
+- `ntfs2refs-bind.exe`: `862617d623b8378cfdaccc71cfd2ade1c88ef3f49cb9160c21d597ad05c712eb`.
+- `ntfs2refs-recover.exe`: `bd5fc321e2fe0ad33d3d7b6ddb142adac5c6f1d6d5e9a16f2fe04b6c0e64bdaf`.
+
+PID 1552 was created at `2026-10-27T17:33:52.624051Z`. At `17:39:32Z` the same
+process/task remained live in shadow/target qualification with complete
+source-frozen, source-basis and native-source artifacts. Cumulative reads were
+83,076,462,622 bytes; these counters are not a completion percentage. Lab usage
+was 217,551,998,020 bytes with 128,010,690,560 host bytes free, within the
+unchanged limits. No conversion/native-mount result is established yet.
+Use `lab/Collect-StreamingV2Conversion.ps1`; it saves actual task/process,
+artifact, protection-state and capacity observations. Do not use the old beta
+collector or infer termination from an observer timeout.

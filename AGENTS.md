@@ -62,6 +62,20 @@ compilation evidence only; metadata/feature/count limits, actual scratch,
 run in a VM and must not inherit candidate 3 or frozen-alpha qualification.
 No unit tests have been added or run during this work, per Mike's instruction.
 
+The separate streaming v2 fixture is VM `2401593c-4b30-472e-9b6d-c9534cbaa599`,
+under `.lab/hyperv/streaming-v2-20261027`, with new independent data disks and
+a writable OS child of the content-hash-verified archive parent. Hyper-V added
+two read-only parent ACL grants; exact descriptors/rule deltas are retained.
+It contains Unicode names and a 4 GiB+1-byte ordinary zero file, with no source
+extent moves or aging. Its clean NTFS baseline is
+`775f4db8-8635-486c-b6eb-7098426b51a6`. Candidate 1 run
+`8c9c50c1fc6c4fd3a0fc3aeadd61fb72`, PID 1552, was live at 17:39:32 UTC in
+shadow/target qualification. Producer SHA-256 is
+`624405d2517a4ae51ccf83270eecfdb83ebccb8f8d726e25f2dc651a116e4076`.
+Use its dedicated collector, keep capacity within the unchanged 208 GiB/64 GiB
+limits, and never redispatch on an observation timeout. No successful conversion
+or recovery is claimed yet; see [the run](docs/streaming-v2-native.md).
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

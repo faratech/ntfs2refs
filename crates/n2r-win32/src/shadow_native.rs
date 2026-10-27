@@ -951,6 +951,15 @@ fn validate_existing(
     let mut unique = BTreeSet::new();
     for (i, o) in input.iter().zip(&report.objects) {
         let expected_owned = basic_bytes(i);
+        if i.components.is_empty()
+            && root_basic_after_mutation.is_some_and(|after| {
+                after[..8] != expected_owned[..8] || after[32..] != expected_owned[32..]
+            })
+        {
+            return Err(invalid(
+                "mutation root policy cannot change source creation time or attributes",
+            ));
+        }
         let expected_basic: &[u8] = if i.components.is_empty() {
             root_basic_after_mutation.map_or(&expected_owned, |bytes| bytes.as_slice())
         } else {
@@ -2831,6 +2840,7 @@ fn run_role_profile(
         }
         if mode == Mode::ConstructRetaining {
             let mut evacuation_budget = crate::shadow_evacuation::MAX_MOVES;
+            const EVACUATION_EVIDENCE_LIMIT: usize = 4 * 1024 * 1024;
             loop {
                 let first_retention_attempt = retention_attempts.len();
                 let mut more_evacuation = false;
@@ -2838,20 +2848,44 @@ fn run_role_profile(
                 if resource_profile
                     == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
                 {
-                    let report = evacuation::run(
-                        &volume,
-                        &root,
-                        input,
-                        binding.identity.partition_bytes,
-                        evacuation_budget,
-                    )?;
-                    evacuation_budget -= report.attempts.len();
-                    more_evacuation = report
-                        .plan
-                        .as_ref()
-                        .is_some_and(|plan| plan.remaining_blocked_bytes != 0);
-                    evacuated_bytes = report.completed_bytes;
-                    shadow_user_evacuation.push(report);
+                    let used = shadow_user_evacuation.iter().fold(
+                        0usize,
+                        |bytes, report: &evacuation::Report| {
+                            bytes.saturating_add(report.evidence_bytes())
+                        },
+                    );
+                    let remaining_evidence = EVACUATION_EVIDENCE_LIMIT.saturating_sub(used);
+                    if remaining_evidence >= 4096 {
+                        let report = evacuation::run(
+                            &volume,
+                            &root,
+                            input,
+                            binding.identity.partition_bytes,
+                            evacuation_budget,
+                            remaining_evidence,
+                        )?;
+                        shadow_user_evacuation
+                            .try_reserve_exact(1)
+                            .map_err(|_| invalid("evacuation batch report storage unavailable"))?;
+                        let total_evidence =
+                            used.saturating_add(report.evidence_bytes()).saturating_add(
+                                shadow_user_evacuation
+                                    .capacity()
+                                    .saturating_mul(std::mem::size_of::<evacuation::Report>()),
+                            );
+                        if total_evidence > EVACUATION_EVIDENCE_LIMIT {
+                            return Err(invalid(
+                                "global evacuation evidence budget exceeded; preserve shadow without retry",
+                            ));
+                        }
+                        evacuation_budget -= report.attempts.len();
+                        more_evacuation = report
+                            .plan
+                            .as_ref()
+                            .is_some_and(|plan| plan.remaining_blocked_bytes != 0);
+                        evacuated_bytes = report.completed_bytes;
+                        shadow_user_evacuation.push(report);
+                    }
                 }
                 let mut planning_cache = None;
                 for i in input.iter().filter(|i| !i.directory) {

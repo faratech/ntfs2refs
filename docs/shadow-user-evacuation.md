@@ -74,3 +74,17 @@ file against the old 4 GiB fixture. Preparation/dispatch have syntax checks only
 and have not run. The current 224 GiB saved-lab cap lacks the requested 6 GiB
 allowance; the proposed 232 GiB increase remains pending. The 64 GiB host-free
 reserve and every old checkpoint remain protected.
+
+Evacuation audit storage now has a 4 MiB tree-wide limit across batches. The
+accounting includes vector capacity, mapping/page-proof strings, file IDs and
+plan storage. It checks before another move and after measuring its result;
+unexpected post-move growth aborts without retry or source writes. A depleted
+global allowance stops the optional optimization while ordinary checked
+retention continues. This is separate from the existing retention audit bound.
+
+The native mutation verifier also explicitly binds root creation time and
+attributes to the original source expectation before accepting the recorded
+root runtime-time override. The workload receipt alone cannot authorize changes
+to those immutable source fields. Existing native artifacts already matched
+that predicate, but they do not qualify this later build. Release builds pass;
+no unit tests or VM runs were started for these changes.

@@ -260,6 +260,14 @@ move and retention/evidence limits remain; no native error is retried and no
 metadata reservation is bypassed. Reports retain each batch. This implementation
 has build evidence only and still copies the full shadow payload initially.
 
+Later source bounds aggregate evacuation audit heap to 4 MiB, including proof
+and vector capacities across batches, with pre/post-move checks. A budget failure
+after a measured move aborts without retry/source execution. Mutation verification
+also requires root birth/attribute bytes to match the original expectation,
+even when a pinned workload supplies new root runtime times. These are later
+build-only changes; none inherits the saved native results or authorizes a VM
+run while the 232 GiB cap request remains unanswered.
+
 The 8 GiB ordinary-append retention fixture is source-only preparation code in
 `Prepare-StreamingRetention8G.ps1`. It requires saved OFF rollback branch 40fb292c,
 all eight checkpoints and 6 GiB admission capacity before any action. It restores

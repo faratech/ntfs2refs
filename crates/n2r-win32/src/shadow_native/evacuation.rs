@@ -28,6 +28,42 @@ pub struct Report {
     pub source_payload_writes: u64,
 }
 
+impl Report {
+    pub(super) fn evidence_bytes(&self) -> usize {
+        let plan_bytes = self.plan.as_ref().map_or(0, |plan| {
+            plan.moves
+                .capacity()
+                .saturating_mul(std::mem::size_of::<shadow_evacuation::Move>())
+                .saturating_add(plan.legacy_bitmap_sha256.capacity())
+                .saturating_add(plan.metadata_bitmap_sha256.capacity())
+        });
+        self.attempts.iter().fold(
+            std::mem::size_of::<Self>()
+                .saturating_add(plan_bytes)
+                .saturating_add(
+                    self.not_submitted_reason
+                        .as_ref()
+                        .map_or(0, String::capacity),
+                )
+                .saturating_add(
+                    self.attempts
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<Attempt>()),
+                ),
+            |bytes, attempt| {
+                bytes
+                    .saturating_add(attempt.file_id.capacity())
+                    .saturating_add(attempt.mapping_before_sha256.capacity())
+                    .saturating_add(attempt.mapping_after_sha256.capacity())
+                    .saturating_add(attempt.destination_legacy_bitmap_sha256.capacity())
+                    .saturating_add(attempt.destination_metadata_bitmap_sha256.capacity())
+                    .saturating_add(retrieval_proof_heap(&attempt.before_page_proof))
+                    .saturating_add(retrieval_proof_heap(&attempt.after_page_proof))
+            },
+        )
+    }
+}
+
 fn push_extent(
     out: &mut Vec<Extent>,
     file_index: usize,
@@ -168,6 +204,7 @@ pub(super) fn run(
     input: &[Input<'_>],
     partition: u64,
     move_budget: usize,
+    evidence_budget: usize,
 ) -> io::Result<Report> {
     let Prepared {
         eligible,
@@ -198,6 +235,24 @@ pub(super) fn run(
     ex[8] = 1;
     let mut attempts = Vec::new();
     let mut completed_bytes = 0;
+    let plan_bytes = plan
+        .moves
+        .capacity()
+        .saturating_mul(std::mem::size_of::<shadow_evacuation::Move>());
+    let mut evidence_bytes = std::mem::size_of::<Report>()
+        .saturating_add(plan_bytes)
+        .saturating_add(128);
+    if evidence_bytes > evidence_budget {
+        return Ok(Report {
+            plan: None,
+            not_submitted_reason: Some(
+                "Evacuation evidence budget unavailable; no move submitted".into(),
+            ),
+            attempts: vec![],
+            completed_bytes: 0,
+            source_payload_writes: 0,
+        });
+    }
     for movement in &plan.moves {
         let index = movement.file_index as usize;
         let file = files
@@ -208,6 +263,15 @@ pub(super) fn run(
             return Err(invalid("evacuation file identity changed"));
         }
         let before = crate::stream_native::retrieval_capture(file)?;
+        if evidence_bytes
+            .saturating_add(retrieval_proof_heap(&before.proof))
+            .saturating_add(1024)
+            > evidence_budget
+        {
+            return Err(invalid(
+                "evacuation evidence exhausted before native move; preserve shadow",
+            ));
+        }
         if !mapping_matches_run(
             &stream_layout::parse_complete_retrieval(&before.canonical)?,
             movement.starting_vcn,
@@ -265,7 +329,7 @@ pub(super) fn run(
                 "native evacuation did not establish its exact destination mapping",
             ));
         }
-        attempts.push(Attempt {
+        let attempt = Attempt {
             file_index: movement.file_index,
             file_id: ids[index].clone(),
             mapping_before_sha256: hex::encode(Sha256::digest(&before.canonical)),
@@ -275,7 +339,27 @@ pub(super) fn run(
             destination_legacy_bitmap_sha256: live_legacy.proof().canonical_bitmap_sha256,
             destination_metadata_bitmap_sha256: live_metadata.proof().canonical_bitmap_sha256,
             moved_range_verified: true,
-        });
+        };
+        let growth = std::mem::size_of::<Attempt>()
+            .saturating_add(attempt.file_id.capacity())
+            .saturating_add(attempt.mapping_before_sha256.capacity())
+            .saturating_add(attempt.mapping_after_sha256.capacity())
+            .saturating_add(attempt.destination_legacy_bitmap_sha256.capacity())
+            .saturating_add(attempt.destination_metadata_bitmap_sha256.capacity())
+            .saturating_add(retrieval_proof_heap(&attempt.before_page_proof))
+            .saturating_add(retrieval_proof_heap(&attempt.after_page_proof));
+        evidence_bytes = evidence_bytes.saturating_add(growth);
+        if evidence_bytes > evidence_budget {
+            return Err(invalid(
+                "post-move evacuation evidence exceeded budget; preserve shadow without retry",
+            ));
+        }
+        // Reserve exactly one slot so growth in unused Vec capacity cannot
+        // silently exceed the evidence accounting.
+        attempts
+            .try_reserve_exact(1)
+            .map_err(|_| invalid("evacuation evidence storage unavailable"))?;
+        attempts.push(attempt);
         completed_bytes += movement.length;
     }
     volume.sync_all()?;

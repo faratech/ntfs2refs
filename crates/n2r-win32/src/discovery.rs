@@ -47,6 +47,18 @@ pub struct VolumeDiscovery {
     pub source_write_requests: u64,
 }
 
+/// A point-in-time filesystem capacity observation. This is advisory: other
+/// writers, quotas, metadata allocation and target construction can change it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct VolumeSpaceObservation {
+    pub available_bytes_to_caller: u64,
+    pub total_bytes_available_to_caller: u64,
+    pub total_free_bytes: u64,
+    pub informational_only: bool,
+    pub reserves_space: bool,
+    pub execution_authorized: bool,
+}
+
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -276,4 +288,4 @@ pub fn binding_from_evidence(
 #[path = "discovery_native.rs"]
 mod native;
 #[cfg(windows)]
-pub use native::discover;
+pub use native::{discover, observe_volume_space};

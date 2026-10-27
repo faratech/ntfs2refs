@@ -42,5 +42,13 @@ The generated JSON is at most 16 KiB and its SHA-256 is printed for the
 conversion command. `--evidence` saves the bounded read-only observations.
 Discovery uses no locks, dismounts, disk-attribute setters or payload writes.
 It does not admit the source, assert that the shadow is empty, or calculate
-final capacity requirements; the live conversion workflow performs those
-checks again.
+final capacity requirements. The conversion workflow performs its own live
+admission and enforces the configured journal budget.
+
+The command reports the available bytes on the shadow and journal volumes and,
+when `--evidence` is supplied, records the native space observations or query
+errors there. It warns if the journal's available space is below the configured
+maximum journal size. The actual journal size is determined only after the
+frozen source and shadow are compared, and shadow construction has its own
+space requirements. These figures are point-in-time observations, not space
+reservations, conversion estimates or authorization to write.

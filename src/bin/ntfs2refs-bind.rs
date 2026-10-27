@@ -161,12 +161,42 @@ fn main() -> anyhow::Result<()> {
         bytes.len() <= 16384,
         "generated request exceeds conversion-input bound"
     );
+    // Capacity is transient and the final journal length is determined later
+    // from the actual frozen comparison. Never treat this as a reservation or a
+    // reason to skip the existing live checks.
+    let shadow_space = discovery::observe_volume_space(&shadow.volume_guid_path);
+    let journal_space = discovery::observe_volume_space(&journal.volume_guid_path);
+    let space_report =
+        |name: &str, result: &std::io::Result<discovery::VolumeSpaceObservation>| match result {
+            Ok(space) => {
+                println!(
+                    "{name} available bytes: {}",
+                    space.available_bytes_to_caller
+                );
+                serde_json::json!({"observation":space,"error":null})
+            }
+            Err(error) => {
+                eprintln!("{name} available space could not be queried: {error}");
+                serde_json::json!({"observation":null,"error":error.to_string()})
+            }
+        };
+    let shadow_space_report = space_report("Shadow", &shadow_space);
+    let journal_space_report = space_report("Journal", &journal_space);
+    if journal_space
+        .as_ref()
+        .is_ok_and(|space| space.available_bytes_to_caller < request.max_journal_bytes)
+    {
+        eprintln!(
+            "Journal free space is below the configured maximum journal size; the actual journal size is determined during conversion."
+        );
+    }
+    println!("Space is a point-in-time observation, not a reservation or a conversion estimate.");
     if let Some(path) = args.evidence {
         save(
             &path,
             &serde_json::to_vec_pretty(
                 &serde_json::json!({"schema_version":1,"kind":"read-only-conversion-binding-discovery",
-            "source":source,"shadow":shadow,"journal":journal,"journal_enrollment_source":if args.journal_enrollment_label.is_some(){"caller-supplied informational label"}else{"derived GPT label; not MSFT_Disk.UniqueId"},
+            "source":source,"shadow":shadow,"journal":journal,"space_observations":{"shadow":shadow_space_report,"journal":journal_space_report},"journal_enrollment_source":if args.journal_enrollment_label.is_some(){"caller-supplied informational label"}else{"derived GPT label; not MSFT_Disk.UniqueId"},
             "request_sha256":hex::encode(Sha256::digest(&bytes)),"source_write_requests":0,"source_admitted":false,"execution_authorized":false}),
             )?,
         )?;

@@ -32,6 +32,23 @@ other discrepancies remain fatal. The beta alone was restored to its own
 baseline `506bf3fe-afac-40fb-bfe9-e357141506d2` after terminal proof. Do not
 redispatch an old run or infer any native conversion success from these fixes.
 
+Candidate 3 is run `dab1b80b92c2432e80a4052502f9165b`, original pinned converter
+`38b5b8d142e612000ee00385efc3b4414293b13abad23f71e576f1c5e412b5f2`.
+At 2026-10-27 11:54:28 UTC its same PID 2940 was live, with complete journal
+preparation and a ticket, in raw-apply stage. It has zero retained ranges and
+does not prove payload retention. Do not interrupt/reset/replace it or infer
+termination from an observer timeout. The Rust beta postcheck controller is
+prepared, not executed; it requires terminal successful handoff first.
+
+The separate `experimental_streaming_tree_v2` source profile adds an explicit
+streaming-payload envelope beyond v1's unchanged 4 GiB budget. Bind selection
+requires `--experimental-streaming-payload --experimental-large-tree
+--experimental-large-journal`. Its 2 PiB payload/partition routing envelope is
+compilation evidence only; metadata/feature/count limits, actual scratch,
+16 GiB journal ceiling and live admission/recovery bindings remain. It has not
+run in a VM and must not inherit candidate 3 or frozen-alpha qualification.
+No unit tests have been added or run during this work, per Mike's instruction.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

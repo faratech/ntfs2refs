@@ -96,8 +96,7 @@ impl LiveAssessment {
                 gate.detail = "actual native ReFS tree verified stored times, descriptors, attributes, namespace and contents; the same target was locked/dismounted and its complete image hash bound".into();
             } else if gate.code == "target_resource_profile_support" {
                 ensure!(
-                    self.context.resources
-                        == ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1,
+                    self.context.resources.native_profile().is_some(),
                     "unexpected expanded target gate on an alpha source"
                 );
                 gate.satisfied = true;
@@ -151,6 +150,9 @@ pub fn assess(
         (3, Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)) => {
             ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
         }
+        (3, Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2)) => {
+            ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
+        }
         _ => anyhow::bail!("unsupported or mismatched native source resource profile"),
     };
     ensure!(
@@ -192,7 +194,7 @@ pub fn assess(
             gate.detail = "actual dedicated disk remained offline/read-only and matched the complete pinned source hash after native collection".into();
         }
     }
-    if resources == ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1 {
+    if resources.native_profile().is_some() {
         ntfs_admission::bind_large_native_profile(&mut assessment, raw, observed, &source_sha256)?;
     }
     if let Some(proof) = log_restart {

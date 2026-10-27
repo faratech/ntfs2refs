@@ -1992,7 +1992,10 @@ fn run_role_profile(
 ) -> io::Result<Report> {
     let (maximum_objects, maximum_logical_bytes) = match resource_profile {
         None => (160usize, 256u64 * 1024 * 1024),
-        Some(crate::attestation::ResourceProfile::ExperimentalLargeTreeV1) => {
+        Some(
+            profile @ (crate::attestation::ResourceProfile::ExperimentalLargeTreeV1
+            | crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2),
+        ) => {
             if !ordinary || general_shadow.is_none() {
                 return Err(invalid(
                     "large-tree shadow profile requires an ordinary general volume",
@@ -2003,7 +2006,7 @@ fn run_role_profile(
             {
                 return Err(invalid("large-tree shadow object budget exceeded"));
             }
-            (1280usize, 4u64 * 1024 * 1024 * 1024)
+            (1280usize, profile.limits().maximum_stream_bytes)
         }
     };
     if protected.is_some() {

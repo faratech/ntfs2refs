@@ -166,3 +166,26 @@ setter call. See [the label contract](source-volume-label.md).
 
 `capabilities` reports command availability. It does not claim a production
 qualification matrix or a standalone raw ReFS formatter/writer.
+
+The separate, unqualified streaming-payload source profile is selected during
+binding with `--experimental-streaming-payload --experimental-large-tree
+--experimental-large-journal`. It serializes as
+`experimental_streaming_tree_v2`; the existing larger-tree v1 profile retains
+its 4 GiB payload budget. V2 bounds total/per-stream logical payload by the
+existing 2 PiB partition-routing envelope, using fixed-size streaming copy/hash
+buffers. Native/raw logical-read budgets allow four times that envelope for
+source collection/internal streams, with separately bounded read-call counts.
+The per-stream call guard scales for long streams rather than imposing the old
+roughly 64 GiB full-read ceiling; unprofiled and v1 effective guards remain.
+
+This is a resource envelope, not evidence that a volume of that size converts.
+The 1,024-file/256-directory and metadata-evidence limits, supported semantics,
+same-sized independent shadow, initialized shadow payload, complete image scans,
+dual target bitmap checks, exact changed-byte/journal capacity, and recovery
+barriers all still apply. The v2 journal still has a 16 GiB ceiling. A placement
+requiring too much relocation or free-space replacement must refuse. Requests,
+native observations, source/target certificates, expectation profiles, tickets
+and recovery retain the exact selected resource profile; imported JSON cannot
+substitute for live source/target capabilities. The new profile has compilation
+evidence only and has not run in the native lab. The active candidate-3 beta
+continues using v1 and its original executable.

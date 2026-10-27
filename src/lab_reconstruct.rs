@@ -133,7 +133,10 @@ pub fn validate_source_profile_binding(
                 (journal, source),
                 (
                     JournalProfile::ExperimentalLargeV2,
-                    Some(crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1)
+                    Some(
+                        crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
+                            | crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
+                    )
                 )
             ),
         "source resource profile requires the explicit v2 journal profile"

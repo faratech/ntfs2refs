@@ -29,7 +29,7 @@ impl Request {
                 (1, None)
                     | (
                         2,
-                        Some(crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1)
+                        Some(crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1 | crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
                     )
             ),
             "allocation capture schema differs"

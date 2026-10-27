@@ -16,6 +16,7 @@ pub const MAX_SERIALIZED_REPORT_BYTES: usize = 64 * 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum ResourceProfile {
     ExperimentalLargeTreeV1,
+    ExperimentalStreamingTreeV2,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceLimits {
@@ -30,7 +31,7 @@ pub struct ResourceLimits {
 impl ResourceProfile {
     pub const fn maximum_partition_bytes(self) -> u64 {
         match self {
-            Self::ExperimentalLargeTreeV1 => {
+            Self::ExperimentalLargeTreeV1 | Self::ExperimentalStreamingTreeV2 => {
                 crate::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES
             }
         }
@@ -42,6 +43,15 @@ impl ResourceProfile {
                 maximum_stream_bytes: 4 << 30,
                 logical_read_bytes: 16 << 30,
                 logical_read_calls: 4 * 1024 * 1024,
+                security_bytes: 32 << 20,
+                stream_evidence_bytes: 64 << 20,
+                namespace_evidence_bytes: 16 << 20,
+            },
+            Self::ExperimentalStreamingTreeV2 => ResourceLimits {
+                maximum_identities: 2048,
+                maximum_stream_bytes: self.maximum_partition_bytes(),
+                logical_read_bytes: self.maximum_partition_bytes() * 4,
+                logical_read_calls: self.maximum_partition_bytes() * 4 / 65536 + 4096,
                 security_bytes: 32 << 20,
                 stream_evidence_bytes: 64 << 20,
                 namespace_evidence_bytes: 16 << 20,
@@ -140,7 +150,14 @@ impl Request {
         if !geometry_profile
             || !matches!(
                 (self.schema_version, self.resource_profile),
-                (1 | 2, None) | (3, Some(ResourceProfile::ExperimentalLargeTreeV1))
+                (1 | 2, None)
+                    | (
+                        3,
+                        Some(
+                            ResourceProfile::ExperimentalLargeTreeV1
+                                | ResourceProfile::ExperimentalStreamingTreeV2
+                        )
+                    )
             )
             || !valid_guid
             || (self.schema_version == 1 && self.disk_number == 0)

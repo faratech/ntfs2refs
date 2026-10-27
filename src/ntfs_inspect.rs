@@ -54,6 +54,10 @@ pub fn limits_for_resource_profile(
             max_report_bytes: 64 * 1024 * 1024,
             max_stream_hash_bytes: 16 * 1024 * 1024 * 1024,
         },
+        crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2 => InspectionLimits {
+            max_report_bytes: 64 * 1024 * 1024,
+            max_stream_hash_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES * 4,
+        },
     }
 }
 

@@ -48,6 +48,7 @@ pub struct Budget {
     audit: Audit,
     maximum_stream_bytes: u64,
     maximum_read_calls: u64,
+    maximum_stream_read_calls: u64,
 }
 impl Budget {
     pub fn new(limit_bytes: u64) -> Self {
@@ -61,6 +62,7 @@ impl Budget {
             },
             maximum_stream_bytes: u64::MAX,
             maximum_read_calls: u64::MAX,
+            maximum_stream_read_calls: MAX_CALLS,
         }
     }
     /// Explicit collection envelope. The byte reservation includes each EOF
@@ -79,6 +81,12 @@ impl Budget {
         let mut budget = Self::new(limit_bytes);
         budget.maximum_stream_bytes = maximum_stream_bytes;
         budget.maximum_read_calls = maximum_read_calls;
+        budget.maximum_stream_read_calls = maximum_stream_bytes
+            .div_ceil(CHUNK as u64)
+            .saturating_mul(2)
+            .saturating_add(9)
+            .max(MAX_CALLS)
+            .min(maximum_read_calls);
         Ok(budget)
     }
     pub fn audit(&self) -> Audit {
@@ -123,7 +131,9 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
     let mut calls = 0;
     let mut interrupted = 0;
     loop {
-        if calls == MAX_CALLS || budget.audit.read_calls == budget.maximum_read_calls {
+        if calls == budget.maximum_stream_read_calls
+            || budget.audit.read_calls == budget.maximum_read_calls
+        {
             out.status = Status::CallBudgetExceeded;
             return out;
         }

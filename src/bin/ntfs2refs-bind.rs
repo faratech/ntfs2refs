@@ -53,6 +53,10 @@ fn main() -> anyhow::Result<()> {
         /// Opt in to experimental tree/volume budgets; requires a v2 journal.
         #[arg(long, requires = "experimental_large_journal")]
         experimental_large_tree: bool,
+        /// Stream payloads beyond the v1 4 GiB budget. Still requires exact
+        /// shadow/journal capacity and the bounded ordinary-tree feature set.
+        #[arg(long, requires = "experimental_large_tree")]
+        experimental_streaming_payload: bool,
         /// Permit additional GPT partitions on journal storage, including the OS disk.
         #[arg(long)]
         journal_additional_partitions: bool,
@@ -110,10 +114,19 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     }
     let args = Args::parse();
+    let resources = if args.experimental_streaming_payload {
+        ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
+    } else if args.experimental_large_tree {
+        ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
+    } else {
+        ntfs2refs::ntfs_admission::ResourceProfile::AlphaV1
+    };
     if args.experimental_large_tree {
         eprintln!(
             "Using experimental larger-source profile (partition routing budget {} bytes); native conversion and recovery have not been qualified for this profile.",
-            n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1
+            resources
+                .native_profile()
+                .unwrap()
                 .maximum_partition_bytes()
         );
     }
@@ -179,8 +192,7 @@ fn main() -> anyhow::Result<()> {
         ntfs2refs::ntfs_inspect::inspect_boot_sector(&boot, source_reader.byte_len())?;
     if args.experimental_large_tree {
         ensure!(
-            ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
-                .supports_source_geometry(&source_geometry),
+            resources.supports_source_geometry(&source_geometry),
             "source geometry preflight refused: experimental conversion requires 512-byte sectors, power-of-two clusters from 4 KiB through 2 MiB, 1 KiB MFT records and 4 KiB index records; no output was created"
         );
     } else {
@@ -222,9 +234,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(&derived_label);
     let request = ntfs2refs::general_conversion::Request {
         schema_version: profile.version(),
-        source_resource_profile: args
-            .experimental_large_tree
-            .then_some(ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1),
+        source_resource_profile: args.experimental_large_tree.then_some(resources),
         experiment_id: args.experiment_id,
         pair: GeneralSourceShadowBinding {
             source: source.binding.clone(),

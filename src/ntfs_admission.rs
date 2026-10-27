@@ -27,6 +27,7 @@ pub enum ResourceProfile {
     #[default]
     AlphaV1,
     ExperimentalLargeTreeV1,
+    ExperimentalStreamingTreeV2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,7 +49,7 @@ impl ResourceProfile {
             && geometry.index_record_size == 4096
             && match self {
                 Self::AlphaV1 => geometry.cluster_size == 4096,
-                Self::ExperimentalLargeTreeV1 => {
+                Self::ExperimentalLargeTreeV1 | Self::ExperimentalStreamingTreeV2 => {
                     geometry.cluster_size >= 4096
                         && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
                 }
@@ -60,6 +61,9 @@ impl ResourceProfile {
             Self::AlphaV1 => None,
             Self::ExperimentalLargeTreeV1 => {
                 Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)
+            }
+            Self::ExperimentalStreamingTreeV2 => {
+                Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
             }
         }
     }
@@ -78,6 +82,12 @@ impl ResourceProfile {
                 maximum_logical_bytes: 4 * 1024 * 1024 * 1024,
                 maximum_stream_bytes: 4 * 1024 * 1024 * 1024,
             },
+            Self::ExperimentalStreamingTreeV2 => ResourceLimits {
+                maximum_files: 1024,
+                maximum_directories: 256,
+                maximum_logical_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
+                maximum_stream_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
+            },
         }
     }
 
@@ -85,6 +95,7 @@ impl ResourceProfile {
         match self {
             Self::AlphaV1 => ORDINARY_PROFILE,
             Self::ExperimentalLargeTreeV1 => "ordinary-data-tree-large-v1",
+            Self::ExperimentalStreamingTreeV2 => "ordinary-data-tree-streaming-v2",
         }
     }
 
@@ -92,6 +103,7 @@ impl ResourceProfile {
         match self {
             Self::AlphaV1 => "native-ordinary-tree-shadow-v2",
             Self::ExperimentalLargeTreeV1 => "native-ordinary-tree-shadow-large-v1",
+            Self::ExperimentalStreamingTreeV2 => "native-ordinary-tree-shadow-streaming-v2",
         }
     }
 }
@@ -1090,13 +1102,20 @@ pub(crate) fn bind_large_native_profile(
     use n2r_win32::attestation::ResourceProfile as NativeProfile;
 
     let native = observed.report();
+    let resources = match native.request.resource_profile {
+        Some(NativeProfile::ExperimentalLargeTreeV1) => ResourceProfile::ExperimentalLargeTreeV1,
+        Some(NativeProfile::ExperimentalStreamingTreeV2) => {
+            ResourceProfile::ExperimentalStreamingTreeV2
+        }
+        None => anyhow::bail!("expanded source profile requires native resource evidence"),
+    };
     let inspection = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
     ensure!(
-        assessment.profile == ResourceProfile::ExperimentalLargeTreeV1.ordinary_admission_profile()
+        assessment.profile == resources.ordinary_admission_profile()
             && assessment.source_inspection_sha256 == inspection
             && matches!(native.schema_version, 8 | 9)
             && native.request.schema_version == 3
-            && native.request.resource_profile == Some(NativeProfile::ExperimentalLargeTreeV1)
+            && native.request.resource_profile == resources.native_profile()
             && native.request.source_inspection_sha256 == inspection
             && expected_source_sha256.len() == 64
             && expected_source_sha256
@@ -1127,7 +1146,7 @@ pub(crate) fn bind_large_native_profile(
         assessment.backup_evidence.as_ref(),
         Some(view),
         true,
-        ResourceProfile::ExperimentalLargeTreeV1,
+        resources,
     );
     ensure!(
         serde_json::to_vec(&fresh.objects)? == serde_json::to_vec(&assessment.objects)?

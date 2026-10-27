@@ -82,3 +82,12 @@ bindings. Skipped descendants are explicitly absent and remain unverified;
 retained coverage independently requires the Medium/container checks. Default
 inspection keeps its full bounded bootstrap path. These changes have compilation
 evidence only, with no new unit tests or native execution.
+
+Valid 160-byte container values now use fixed-size byte storage rather than a
+heap-allocated 320-character hex string. Copy comparison and mapping digests
+read those bytes directly, avoiding repeated hex decoding. JSON still emits the
+same `value_bytes_hex` string field. Imported malformed diagnostic strings remain
+representable and are explicitly refused before they can supply mapping bytes.
+This removes one retained heap allocation per valid mapping; it does not remove
+the diagnostic table's row-count limits or qualify larger volumes. Existing
+fixture assignments were adapted to the value type without adding or running tests.

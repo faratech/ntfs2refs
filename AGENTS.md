@@ -147,6 +147,10 @@ duplicate B-tree map. The experimental Small path reads only physical bootstrap
 structures before its own walk; Medium still independently requires container
 validation. Diagnostic row hex and container budgets remain unchanged. No new
 native qualification follows from these memory/I/O changes.
+Container values now retain their 160 bytes inline and expose hex only through
+diagnostic serialization. Comparisons/hashes consume actual bytes; malformed
+imported strings remain diagnostic-only and cannot supply mapping data. The JSON
+field name remains `value_bytes_hex`; container budgets are unchanged.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

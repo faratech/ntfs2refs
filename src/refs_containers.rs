@@ -16,6 +16,69 @@ const CLUSTER: u64 = 4096;
 const CPC: u64 = 16384;
 const KEY_TAG: u64 = 0x0000_0001_0000_0000;
 
+/// A container value has exactly 160 bytes in this format profile. Keep the
+/// actual bytes in memory and encode hex only at the diagnostic boundary.
+/// Malformed imported diagnostic strings remain representable so validation
+/// can refuse them explicitly; they never become a usable container value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerValue(ContainerValueStorage);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ContainerValueStorage {
+    Bytes([u8; 160]),
+    InvalidDiagnostic(String),
+}
+
+impl ContainerValue {
+    pub fn from_bytes(bytes: [u8; 160]) -> Self {
+        Self(ContainerValueStorage::Bytes(bytes))
+    }
+
+    pub fn bytes(&self) -> Result<&[u8; 160]> {
+        match &self.0 {
+            ContainerValueStorage::Bytes(bytes) => Ok(bytes),
+            ContainerValueStorage::InvalidDiagnostic(_) => {
+                anyhow::bail!("container raw value is not exactly 160 decoded bytes")
+            }
+        }
+    }
+}
+
+impl From<String> for ContainerValue {
+    fn from(value: String) -> Self {
+        let mut bytes = [0; 160];
+        if value.len() == 320 && hex::decode_to_slice(&value, &mut bytes).is_ok() {
+            Self::from_bytes(bytes)
+        } else {
+            Self(ContainerValueStorage::InvalidDiagnostic(value))
+        }
+    }
+}
+
+impl Serialize for ContainerValue {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match &self.0 {
+            ContainerValueStorage::Bytes(bytes) => {
+                let mut encoded = [0; 320];
+                hex::encode_to_slice(bytes, &mut encoded).expect("fixed container hex buffer");
+                serializer.serialize_str(std::str::from_utf8(&encoded).expect("hex is ASCII"))
+            }
+            ContainerValueStorage::InvalidDiagnostic(value) => serializer.serialize_str(value),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ContainerValue {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Ok(String::deserialize(deserializer)?.into())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ContainerLimits {
     pub max_pages_per_tree: u32,
@@ -103,7 +166,7 @@ pub struct ContainerMapping {
     pub raw_free_clusters_64: u64,
     pub raw_free_clusters_32: u32,
     pub free_clusters_64_is_sentinel: bool,
-    pub value_bytes_hex: String,
+    pub value_bytes_hex: ContainerValue,
     pub row_sha256: String,
     pub source_page_index: usize,
     pub source_row_index: usize,
@@ -270,7 +333,12 @@ fn leaf_mapping(
         raw_free_clusters_64: u64le(&value, 0x20),
         raw_free_clusters_32: u32le(&value, 0x28),
         free_clusters_64_is_sentinel: u64le(&value, 0x20) == u64::MAX,
-        value_bytes_hex: hex::encode(&value),
+        value_bytes_hex: ContainerValue::from_bytes(
+            value
+                .as_slice()
+                .try_into()
+                .context("container value size differs")?,
+        ),
         row_sha256: row.row_sha256.clone(),
         source_page_index: page,
         source_row_index: row.index,

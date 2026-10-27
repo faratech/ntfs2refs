@@ -188,8 +188,7 @@ fn validate_map(
             "container physical range exceeds volume"
         );
         ensure!(
-            mapping.value_bytes_hex.len() == 320
-                && hex::decode(&mapping.value_bytes_hex)?.len() == 160,
+            mapping.value_bytes_hex.bytes().is_ok(),
             "container raw value length differs"
         );
         physical.push(mapping.physical_start_lcn);
@@ -284,7 +283,7 @@ fn common_map<'a>(
         hash.update(a.container_id.to_le_bytes());
         hash.update(a.physical_start_lcn.to_le_bytes());
         hash.update(a.clusters_per_container.to_le_bytes());
-        hash.update(hex::decode(&a.value_bytes_hex)?);
+        hash.update(a.value_bytes_hex.bytes()?);
     }
     binding.container_table_ids = Some([first.table_id, second.table_id]);
     binding.mapping_rows = Some(first.mappings.len());

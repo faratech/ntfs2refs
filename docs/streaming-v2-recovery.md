@@ -76,3 +76,27 @@ receipt. Observe an already dispatched operation with
 terminal results and live disk protection without restarting or repairing it.
 These controllers have syntax checks only until actual execution. No unit
 tests were added or run.
+
+The producer reached its controlled boundary: task Ready, exit 86 and no worker.
+The complete terminal archive contains 32 hash-verified files, manifest SHA-256
+`08a9c88f2dd948c027e259b0390ae76fb9be0f470269eef9050a0084fbc1a3ed`.
+The partial pre-handoff branch was shut down cleanly and saved OFF as checkpoint
+`713e5fad-45fe-4200-9f6c-dabb669cc9ad`, parent the original NTFS baseline.
+The interrupted source stayed offline/writable and shadow offline/read-only.
+The journal is 679,651,453 bytes, immutable SHA-256
+`f044017d8e76428e6c1f1ed889804e59623657ecebab4d9111eba171d83af75f`;
+314 patches cover 339,795,968 bytes. Source preimage is
+`097e11106a058e6a8acc0238bad00347761173161c95f11ea86fab081b6517c0`,
+expected target `6fa71cb5281c1af88334260bd453eb8887996596f83f9f08498efe7493a08383`.
+
+A single new guest boot at 20:55:14 UTC preserved both exclusion states and
+producer exit 86 without another worker. The controller attempted no source
+mount or flag change. The first resume-dispatch invocation stopped on a
+PowerShell shorthand filter error before task registration/start; the filter
+was fixed and no boot was repeated. Resume was then dispatched once at
+20:56:58 UTC using recovery binary
+`595b5138a03076a7d4453df51c2a54697a27d018ee25daca58dcdf72f0e99f22`.
+Task `N2R-StreamingV2Recover-Resume-61d60b73d23b48dcb7e777328169ddc9`,
+PID 5052 created 20:56:59 UTC, was observed live validating journal/normalized
+target and shadow. No completed resume, finalize or rollback outcome is claimed.
+Observe that exact task with `Collect-StreamingV2Recovery.ps1 -Operation Resume`.

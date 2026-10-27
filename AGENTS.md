@@ -181,6 +181,18 @@ then the single-boot exclusion controller before explicit recovery. Recovery
 tasks have their own collector; never redispatch either producer or recovery on
 an observation timeout. Controller details are in the recovery branch document.
 
+Candidate 4 subsequently exited 86 at the one-flushed-write boundary. Its
+32-file terminal archive is verified and the interrupted OFF checkpoint is
+`713e5fad-45fe-4200-9f6c-dabb669cc9ad` (parent baseline 775f4db8). A clean boot
+at 20:55:14 UTC proved persistent source offline/writable and shadow
+offline/read-only, with no automatic producer restart or source mount attempt
+by the controller. After a pre-dispatch PowerShell filter correction, resume
+was dispatched once: task `N2R-StreamingV2Recover-Resume-61d60b73d23b48dcb7e777328169ddc9`,
+PID 5052 created 20:56:59 UTC. It was live in journal/target/shadow validation.
+Use the dedicated recovery collector; do not redispatch or finalize until the
+actual resume task succeeds. The old producer's exit 86 remains historical;
+it does not describe the later recovery state. No completed recovery is claimed.
+
 Subsequent source caches the two planning bitmap views across V2 source runs
 only while no submitted move/mapping change occurred. Every actual move still
 rechecks fresh views; old profiles retain per-run capture. That cache did not

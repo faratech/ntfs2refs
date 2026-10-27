@@ -2252,6 +2252,18 @@ pub fn copy_plain_stream_with_budget<R: Read + Seek, W: Write>(
     reader: &mut R,
     raw: &NtfsInspection,
     record_number: u64,
+    budget: &mut StreamTransferBudget,
+    output: &mut W,
+) -> Result<StreamCopyProof> {
+    copy_plain_named_stream_with_budget(reader, raw, record_number, &[], budget, output)
+}
+
+/// Copy one explicitly named (or unnamed) plain DATA stream under the same
+/// streaming budget. Name matching and source checks remain exact.
+pub fn copy_plain_named_stream_with_budget<R: Read + Seek, W: Write>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
     stream_name_utf16: &[u16],
     budget: &mut StreamTransferBudget,
     output: &mut W,

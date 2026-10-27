@@ -7,7 +7,8 @@ budget. Their call sites and the frozen alpha profile have not changed.
 
 `StreamTransferBudget::new(max_stream_bytes, max_total_bytes)` supplies an
 explicit per-stream logical-size ceiling and a separate cumulative logical-byte
-ceiling for `copy_plain_stream_with_budget` and
+ceiling for `copy_plain_stream_with_budget`,
+`copy_plain_named_stream_with_budget` and
 `hash_plain_stream_range_with_budget`. The copy routine holds a fixed 64 KiB
 payload buffer and writes to a caller-provided output; callers must select a
 bounded or file-backed output for large streams. The existing raw boot/MFT,

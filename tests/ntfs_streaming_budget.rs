@@ -153,15 +153,9 @@ fn larger_than_alpha_file_streams_with_bounded_memory_and_cumulative_budget() {
 
     let mut budget = StreamTransferBudget::new(size, size + 17).unwrap();
     let mut sink = CountingWriter::default();
-    let proof = ntfs_inspect::copy_plain_stream_with_budget(
-        &mut image,
-        &raw,
-        16,
-        &[],
-        &mut budget,
-        &mut sink,
-    )
-    .unwrap();
+    let proof =
+        ntfs_inspect::copy_plain_stream_with_budget(&mut image, &raw, 16, &mut budget, &mut sink)
+            .unwrap();
     assert_eq!(proof.logical_bytes, size);
     assert_eq!(proof.sha256, expected);
     assert_eq!(sink.bytes, size);
@@ -196,6 +190,18 @@ fn larger_than_alpha_file_streams_with_bounded_memory_and_cumulative_budget() {
     );
     assert_eq!(range_budget.reserved_bytes(), 17);
     assert!(image.total_read - reads_before > 17); // Metadata rereads are not charged.
+    assert!(
+        ntfs_inspect::hash_plain_stream_range_with_budget(
+            &mut image,
+            &raw,
+            16,
+            u64::MAX,
+            2,
+            &mut range_budget,
+        )
+        .is_err()
+    );
+    assert_eq!(range_budget.reserved_bytes(), 17);
 }
 
 #[test]
@@ -210,7 +216,6 @@ fn failed_transfer_keeps_its_budget_reservation_and_legacy_memory_limit() {
             &mut Cursor::new(&image),
             &raw,
             16,
-            &[],
             &mut budget,
             &mut sink,
         )
@@ -218,6 +223,19 @@ fn failed_transfer_keeps_its_budget_reservation_and_legacy_memory_limit() {
     );
     assert_eq!(budget.reserved_bytes(), 17);
     assert_eq!(sink.bytes, 17); // Caller must discard partial output on error.
+    let mut named = Vec::new();
+    let name: Vec<u16> = "note".encode_utf16().collect();
+    ntfs_inspect::copy_plain_named_stream_with_budget(
+        &mut Cursor::new(&image),
+        &raw,
+        16,
+        &name,
+        &mut budget,
+        &mut named,
+    )
+    .unwrap();
+    assert_eq!(named, b"metadata");
+    assert_eq!(budget.reserved_bytes(), 25);
     assert!(
         ntfs_inspect::read_plain_stream(&mut Cursor::new(&image), &raw, 16, 256 * 1024 * 1024 + 1,)
             .is_err()

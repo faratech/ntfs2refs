@@ -32,7 +32,13 @@ are checked. Conditional/resource application bytes are retained by offset
 and length, without evaluation or normalization. Compound and unknown ACE
 types are refused by this initial decoder.
 
-The profile uses 512-byte sectors and 4 KiB clusters/index records. Limits are
+The reader uses 512-byte sectors and 4 KiB index records. The inspector passes
+actual source cluster geometry to the shared index walker (512-byte through
+2 MiB power-of-two clusters); legacy entry points retain 4 KiB clusters. Bitmap
+slots and child/header addresses are kept in their respective units. Native
+stream comparison also converts retrieval VCN/LCN values with the actual source
+cluster size. These are reader/comparison capabilities, not wider conversion
+admission or native qualification. Limits are
 16 MiB of metadata reads, 4 MiB of descriptor bodies, 16,384 descriptors/files
 and 65,536 ACEs in total. Descriptor hex, decoded entries and strings count
 toward the inspector's shared 64 MiB report budget. Unsupported geometry,

@@ -275,10 +275,11 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
     crate::ntfs_inspect::revalidate_mft_mapping(reader, raw)?;
     crate::ntfs_inspect::validate_record_coverage(raw)?;
     ensure!(
-        raw.geometry.cluster_size == 4096
+        ntfs_index::supports_cluster_size(raw.geometry.cluster_size)
             && raw.geometry.bytes_per_sector == 512
-            && raw.geometry.file_record_size == 1024,
-        "bounded initial-profile MFT scan required"
+            && raw.geometry.file_record_size == 1024
+            && raw.geometry.index_record_size == 4096,
+        "bounded supported-cluster MFT scan with 512-byte sectors and 4 KiB indexes required"
     );
     let mut indexes = Vec::new();
     let mut quota_owners = Vec::new();
@@ -312,7 +313,7 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
             "internal index {role}/{name} exceeds resident-only replacement profile"
         );
         let root = ntfs_inspect::read_resident_inventory_attribute(reader, raw, file, attrs[0])?;
-        let parsed = ntfs_index::parse(
+        let parsed = ntfs_index::parse_with_cluster_size(
             Input {
                 root: &root,
                 allocation: &[],
@@ -320,6 +321,7 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
                 bitmap: &[],
             },
             profile,
+            raw.geometry.cluster_size,
             |_, key, value| Ok((key.to_vec(), value.to_vec())),
         )
         .with_context(|| format!("internal index {role}/{name}"))?;

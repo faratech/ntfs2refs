@@ -1664,9 +1664,9 @@ impl NamespaceCapture {
         use crate::ntfs_namespace as ns;
         ensure!(
             geometry.bytes_per_sector == 512
-                && geometry.cluster_size == 4096
+                && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
                 && geometry.index_record_size == 4096,
-            "raw namespace profile requires 512-byte sectors and 4 KiB clusters/index records"
+            "raw namespace requires supported clusters, 512-byte sectors and 4 KiB index records"
         );
         if number == 10 {
             let table = unnamed(record, 0x80)?;
@@ -1733,12 +1733,13 @@ impl NamespaceCapture {
         } else {
             Vec::new()
         };
-        let directory = ns::parse_directory(
+        let directory = ns::parse_directory_with_cluster_size(
             number | (u64::from(record.sequence) << 48),
             root_bytes,
             &allocation,
             initialized,
             &bitmap,
+            geometry.cluster_size,
         )?;
         self.entries = self
             .entries
@@ -1940,7 +1941,7 @@ impl SecurityCapture {
         } else {
             Vec::new()
         };
-        crate::ntfs_security::parse_index(
+        crate::ntfs_security::parse_index_with_cluster_size(
             crate::ntfs_index::Input {
                 root: &root,
                 allocation: &allocation,
@@ -1948,6 +1949,7 @@ impl SecurityCapture {
                 bitmap: &bitmap,
             },
             kind,
+            geometry.cluster_size,
         )
     }
     fn charge_descriptors(
@@ -1977,9 +1979,9 @@ impl SecurityCapture {
         if number == 9 {
             ensure!(
                 geometry.bytes_per_sector == 512
-                    && geometry.cluster_size == 4096
+                    && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
                     && geometry.index_record_size == 4096,
-                "security index profile requires 512-byte sectors and 4 KiB clusters/index records"
+                "security indexes require supported clusters, 512-byte sectors and 4 KiB index records"
             );
             let sds = Self::named(record, 0x80, "$SDS")?.context("$Secure lacks SDS data")?;
             let sds = self.bytes(reader, sds, geometry, "SDS", sec::MAX_METADATA_BYTES as u64)?;

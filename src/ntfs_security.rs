@@ -164,24 +164,38 @@ fn header(bytes: &[u8]) -> Result<Header> {
     Ok(h)
 }
 pub fn parse_index(input: Input<'_>, kind: IndexKind) -> Result<SecurityIndex> {
+    parse_index_with_cluster_size(input, kind, 4096)
+}
+
+/// Geometry-aware security indexes with the existing 4 KiB record profile.
+pub fn parse_index_with_cluster_size(
+    input: Input<'_>,
+    kind: IndexKind,
+    cluster_bytes: u32,
+) -> Result<SecurityIndex> {
     let profile = match kind {
         IndexKind::Id => Profile::SECURITY_ID,
         IndexKind::Hash => Profile::SECURITY_HASH,
     };
-    let index = ntfs_index::parse(input, profile, |_entry, key, value| {
-        let h = header(value)?;
-        match kind {
-            IndexKind::Id => ensure!(
-                key.len() == 4 && u32le(key, 0)? == h.id,
-                "SII key/value identity mismatch"
-            ),
-            IndexKind::Hash => ensure!(
-                key.len() == 8 && u32le(key, 0)? == h.hash && u32le(key, 4)? == h.id,
-                "SDH key/value mismatch"
-            ),
-        }
-        Ok(h)
-    })?;
+    let index = ntfs_index::parse_with_cluster_size(
+        input,
+        profile,
+        cluster_bytes,
+        |_entry, key, value| {
+            let h = header(value)?;
+            match kind {
+                IndexKind::Id => ensure!(
+                    key.len() == 4 && u32le(key, 0)? == h.id,
+                    "SII key/value identity mismatch"
+                ),
+                IndexKind::Hash => ensure!(
+                    key.len() == 8 && u32le(key, 0)? == h.hash && u32le(key, 4)? == h.id,
+                    "SDH key/value mismatch"
+                ),
+            }
+            Ok(h)
+        },
+    )?;
     for pair in index.entries.windows(2) {
         let ordered = match kind {
             IndexKind::Id => pair[0].id < pair[1].id,

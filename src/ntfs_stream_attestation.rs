@@ -240,7 +240,8 @@ pub fn check_file(
     );
     let cluster = u64::from(geometry.cluster_size);
     ensure!(
-        cluster == 4096 && geometry.bytes_per_sector == 512,
+        crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
+            && geometry.bytes_per_sector == 512,
         "unsupported native stream geometry"
     );
     let base_bytes = base_sectors

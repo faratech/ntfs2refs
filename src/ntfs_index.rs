@@ -259,12 +259,43 @@ fn walk<K: Clone>(
     Ok(())
 }
 
-/// Only the initial 4 KiB cluster/index, 512-byte-sector profile is decoded.
+/// Compatibility entry for 4 KiB clusters, 4 KiB indexes and 512-byte sectors.
 /// Every set allocation-bitmap slot must be initialized and root-reachable.
-pub fn parse<K: Clone, F>(input: Input<'_>, profile: Profile, mut decode: F) -> Result<Index<K>>
+pub fn parse<K: Clone, F>(input: Input<'_>, profile: Profile, decode: F) -> Result<Index<K>>
 where
     F: FnMut(&[u8], &[u8], &[u8]) -> Result<K>,
 {
+    parse_with_cluster_size(input, profile, 4096, decode)
+}
+
+/// Whether cluster geometry can be represented by this 512-byte-sector walker.
+/// Index records remain 4 KiB; this is not a conversion capability.
+pub fn supports_cluster_size(cluster_bytes: u32) -> bool {
+    cluster_bytes.is_power_of_two() && (512..=2 * 1024 * 1024).contains(&cluster_bytes)
+}
+
+/// Decode index addresses in clusters when an index record spans whole
+/// clusters, or in 512-byte units when clusters exceed the index-record size.
+/// Bitmap slots always count index records, regardless of either address unit.
+pub fn parse_with_cluster_size<K: Clone, F>(
+    input: Input<'_>,
+    profile: Profile,
+    cluster_bytes: u32,
+    mut decode: F,
+) -> Result<Index<K>>
+where
+    F: FnMut(&[u8], &[u8], &[u8]) -> Result<K>,
+{
+    ensure!(
+        supports_cluster_size(cluster_bytes),
+        "unsupported index cluster geometry"
+    );
+    let address_bytes = if cluster_bytes <= 4096 {
+        cluster_bytes
+    } else {
+        512
+    };
+    let units_per_record = 4096 / address_bytes;
     let Input {
         root,
         allocation,
@@ -279,7 +310,7 @@ where
         u32le(root, 0)? == profile.indexed_type
             && u32le(root, 4)? == profile.collation
             && u32le(root, 8)? == 4096
-            && root[12] == 1
+            && u32::from(root[12]) == units_per_record
             && root[13..16] == [0, 0, 0],
         "unsupported index type/collation/geometry"
     );
@@ -307,14 +338,14 @@ where
             ((slot + 1) * 4096) as u64 <= initialized,
             "allocated index block is uninitialized"
         );
-        let (bytes, usa_end) = fixup(
-            allocation[slot * 4096..(slot + 1) * 4096].to_vec(),
-            slot as u64,
-        )?;
+        let address = (slot as u64)
+            .checked_mul(u64::from(units_per_record))
+            .context("index address overflow")?;
+        let (bytes, usa_end) = fixup(allocation[slot * 4096..(slot + 1) * 4096].to_vec(), address)?;
         let parsed = node(&bytes, 24, usa_end, profile.encoding, &mut decode)?;
         total_entries += parsed.entries.len();
         ensure!(total_entries <= MAX_ENTRIES, "index entry limit exceeded");
-        nodes.insert(slot as u64, parsed);
+        nodes.insert(address, parsed);
     }
     let mut seen = BTreeSet::new();
     let mut entries = Vec::new();

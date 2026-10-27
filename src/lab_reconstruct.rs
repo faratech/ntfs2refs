@@ -113,6 +113,32 @@ pub struct JournalBinding {
     pub target_identity_sha256: String,
     pub shadow_identity_sha256: String,
     pub journal_identity_sha256: String,
+    /// Omitted for historical alpha/v2-journal-only artifacts. A selected
+    /// source/tree profile is pinned inside the immutable manifest and ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
+}
+
+/// Source-resource admission and journal sizing are distinct profiles. Only
+/// the large source profile is serializable here; absent means the legacy
+/// alpha profile and preserves old request/ticket bytes exactly.
+pub fn validate_source_profile_binding(
+    journal_schema: u32,
+    source: Option<crate::ntfs_admission::ResourceProfile>,
+) -> Result<()> {
+    let journal = JournalProfile::from_schema(journal_schema)?;
+    ensure!(
+        source.is_none()
+            || matches!(
+                (journal, source),
+                (
+                    JournalProfile::ExperimentalLargeV2,
+                    Some(crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1)
+                )
+            ),
+        "source resource profile requires the explicit v2 journal profile"
+    );
+    Ok(())
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -419,6 +445,7 @@ pub(crate) fn prepare_journal_with_profile_and_progress<R: ReadSeek, S: ReadSeek
     let mut progress = Reporter::new(request.expected_length, progress);
     validate_profile(request, profile)?;
     validate_binding(binding)?;
+    validate_source_profile_binding(profile.version(), binding.source_resource_profile)?;
     ensure!(
         max_journal_bytes <= profile.max_journal_bytes(),
         "journal budget exceeds hard cap"
@@ -571,6 +598,10 @@ fn load_journal_state<J: ReadSeek>(
 ) -> Result<Loaded> {
     let profile = JournalProfile::from_schema(ticket.schema_version)?;
     validate_binding(&ticket.binding)?;
+    validate_source_profile_binding(
+        ticket.schema_version,
+        ticket.binding.source_resource_profile,
+    )?;
     ensure!(
         ticket.journal_length <= profile.max_journal_bytes()
             && ticket.immutable_length >= (HEADER_SIZE + FOOTER_SIZE) as u64
@@ -1004,6 +1035,7 @@ mod handoff_receipt_tests {
     fn binding() -> JournalBinding {
         JournalBinding {
             experiment_id: "a".repeat(32),
+            source_resource_profile: None,
             target_identity_sha256: "1".repeat(64),
             shadow_identity_sha256: "2".repeat(64),
             journal_identity_sha256: "3".repeat(64),
@@ -2029,6 +2061,7 @@ mod capacity_budget_tests {
     fn test_binding() -> JournalBinding {
         JournalBinding {
             experiment_id: "a".repeat(32),
+            source_resource_profile: None,
             target_identity_sha256: "1".repeat(64),
             shadow_identity_sha256: "2".repeat(64),
             journal_identity_sha256: "3".repeat(64),

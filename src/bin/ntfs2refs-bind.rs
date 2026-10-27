@@ -46,6 +46,9 @@ fn main() -> anyhow::Result<()> {
         /// Opt in to the experimental v2 journal profile (up to 16 GiB).
         #[arg(long)]
         experimental_large_journal: bool,
+        /// Opt in to the experimental larger source tree; requires a v2 journal.
+        #[arg(long, requires = "experimental_large_journal")]
+        experimental_large_tree: bool,
         /// Permit additional GPT partitions on journal storage, including the OS disk.
         #[arg(long)]
         journal_additional_partitions: bool,
@@ -103,6 +106,11 @@ fn main() -> anyhow::Result<()> {
         Ok(())
     }
     let args = Args::parse();
+    if args.experimental_large_tree {
+        eprintln!(
+            "Using experimental larger-source profile; native conversion and recovery have not been qualified for this profile."
+        );
+    }
     let profile = if args.experimental_large_journal {
         eprintln!(
             "Using experimental v2 journal profile; native conversion and recovery at this capacity are not yet qualified."
@@ -200,6 +208,9 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or(&derived_label);
     let request = ntfs2refs::general_conversion::Request {
         schema_version: profile.version(),
+        source_resource_profile: args
+            .experimental_large_tree
+            .then_some(ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1),
         experiment_id: args.experiment_id,
         pair: GeneralSourceShadowBinding {
             source: source.binding.clone(),

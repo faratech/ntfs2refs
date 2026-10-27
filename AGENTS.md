@@ -106,11 +106,15 @@ the frozen alpha keeps its original binary and receipts. A bounded-memory
 synthetic journal larger than the old 768 MiB ceiling passed prepare, resume,
 shadowless rollback and marker verification. No profile-2 native VM conversion,
 interruption or power-loss qualification is claimed; see
-[the CLI workflow](docs/cli-workflow.md). Source content/file-count limits and
-the 128 GiB live partition limit remain unchanged.
+[the CLI workflow](docs/cli-workflow.md). The default source limits and the
+128 GiB live partition limit remain unchanged.
 
+The current experimental larger-tree candidate separately opts into up to
+1,024 files, 256 directories and 4 GiB logical contents, bound to the v2 journal,
+native source observation and protected target observation. It has not passed
+a native conversion or interruption run, and does not widen the default alpha.
 Separate opt-in source-stream and bitmap assembly primitives support larger
-logical ranges without enabling broader source admission. See
+logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and
 [bitmap pagination](docs/native-bitmap-pagination.md). These primitives do not
 authorize conversion and are not part of the frozen alpha's native evidence.

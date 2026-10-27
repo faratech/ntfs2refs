@@ -46,6 +46,8 @@ pub struct Audit {
 }
 pub struct Budget {
     audit: Audit,
+    maximum_stream_bytes: u64,
+    maximum_read_calls: u64,
 }
 impl Budget {
     pub fn new(limit_bytes: u64) -> Self {
@@ -57,12 +59,35 @@ impl Budget {
                 read_calls: 0,
                 eof_probes: 0,
             },
+            maximum_stream_bytes: u64::MAX,
+            maximum_read_calls: u64::MAX,
         }
+    }
+    /// Explicit collection envelope. The byte reservation includes each EOF
+    /// probe, and calls are cumulative across every stream and both passes.
+    pub fn with_limits(
+        limit_bytes: u64,
+        maximum_stream_bytes: u64,
+        maximum_read_calls: u64,
+    ) -> io::Result<Self> {
+        if limit_bytes == 0 || maximum_stream_bytes > limit_bytes || maximum_read_calls == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid logical-read limits",
+            ));
+        }
+        let mut budget = Self::new(limit_bytes);
+        budget.maximum_stream_bytes = maximum_stream_bytes;
+        budget.maximum_read_calls = maximum_read_calls;
+        Ok(budget)
     }
     pub fn audit(&self) -> Audit {
         self.audit.clone()
     }
     fn reserve(&mut self, expected: u64) -> bool {
+        if expected > self.maximum_stream_bytes {
+            return false;
+        }
         let Some(n) = expected
             .checked_add(1)
             .and_then(|n| self.audit.reserved_bytes.checked_add(n))
@@ -98,7 +123,7 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
     let mut calls = 0;
     let mut interrupted = 0;
     loop {
-        if calls == MAX_CALLS {
+        if calls == MAX_CALLS || budget.audit.read_calls == budget.maximum_read_calls {
             out.status = Status::CallBudgetExceeded;
             return out;
         }

@@ -97,7 +97,7 @@ fn pass(file: &File, budget: &mut usize) -> DirectoryCapture {
 }
 pub(crate) fn collect(volume: &File, request: &Request) -> NamespaceData {
     let mut files = vec![];
-    let mut budget = layout::MAX_EVIDENCE;
+    let mut budget = request.limits().namespace_evidence_bytes;
     for id in &request.files {
         let mut out = NamespaceFile {
             identity: id.clone(),

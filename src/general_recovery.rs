@@ -125,7 +125,8 @@ pub fn recover(operation: Operation, inputs: &Inputs, output: &Path) -> Result<(
     let ticket_bytes = pinned(&inputs.ticket, &inputs.ticket_sha256, 65536)?;
     let ticket: JournalTicket = serde_json::from_slice(&ticket_bytes)?;
     ensure!(
-        ticket.schema_version == request.schema_version,
+        ticket.schema_version == request.schema_version
+            && ticket.binding.source_resource_profile == request.source_resource_profile,
         "recovery ticket and request journal profiles differ"
     );
     let expectation = match (&inputs.expectation, &inputs.expectation_sha256) {
@@ -136,7 +137,9 @@ pub fn recover(operation: Operation, inputs: &Inputs, output: &Path) -> Result<(
             );
             let bytes = pinned(path, pin, 16 * 1024 * 1024)?;
             let value: crate::shadow_tree::ExpectedTree = serde_json::from_slice(&bytes)?;
-            value.validate()?;
+            value.validate_with_resource_profile(
+                request.source_resource_profile.unwrap_or_default(),
+            )?;
             Some(bytes)
         }
         (None, None) => None,

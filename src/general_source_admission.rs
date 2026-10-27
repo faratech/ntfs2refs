@@ -36,6 +36,7 @@ pub struct LiveAssessment {
 #[derive(Debug)]
 struct AdmissionContext {
     source_binding: n2r_win32::general_layout::GeneralDiskBinding,
+    resources: ntfs_admission::ResourceProfile,
     source_sha256: String,
     inspection_sha256: String,
     source_gates_satisfied: bool,
@@ -52,10 +53,13 @@ pub struct SourceCertificate {
     comparison: crate::retained_compare::RetainedCompareRequest,
     expected_tree_sha256: String,
     assessment_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_resource_profile: Option<ntfs_admission::ResourceProfile>,
 }
 impl SourceCertificate {
     pub fn binds_request(&self, request: &crate::general_reconstruct::Request) -> bool {
         self.pair == request.pair
+            && self.source_resource_profile == request.source_resource_profile
             && self.expected_tree_sha256 == request.expected_tree_sha256
             && self.source_sha256 == request.comparison.source_sha256
             && matches!((serde_json::to_vec(&self.comparison), serde_json::to_vec(&request.comparison)),
@@ -71,6 +75,7 @@ impl LiveAssessment {
         ensure!(
             self.context.source_gates_satisfied
                 && target.pair().source == self.context.source_binding
+                && target.native_resource_profile() == self.context.resources.native_profile()
                 && self.source_sha256 == self.context.source_sha256
                 && self.canonical_inspection_sha256 == self.context.inspection_sha256
                 && target.binds(raw, &self.source_sha256)
@@ -89,6 +94,14 @@ impl LiveAssessment {
             if gate.code == "security_timestamp_preservation" {
                 gate.satisfied = true;
                 gate.detail = "actual native ReFS tree verified stored times, descriptors, attributes, namespace and contents; the same target was locked/dismounted and its complete image hash bound".into();
+            } else if gate.code == "target_resource_profile_support" {
+                ensure!(
+                    self.context.resources
+                        == ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1,
+                    "unexpected expanded target gate on an alpha source"
+                );
+                gate.satisfied = true;
+                gate.detail = "the opaque protected ReFS target observation verified the same expanded resource profile and the exact frozen-source semantic tree".into();
             }
         }
         let refusals: Vec<_> = self
@@ -112,6 +125,10 @@ impl LiveAssessment {
             comparison: target.comparison().clone(),
             expected_tree_sha256: target.expected_tree_sha256().into(),
             assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
+            source_resource_profile: match self.context.resources {
+                ntfs_admission::ResourceProfile::AlphaV1 => None,
+                resource => Some(resource),
+            },
         })
     }
 }
@@ -126,10 +143,19 @@ pub fn assess(
     observed: &GeneralLiveNtfsObservation,
     events: &mut Vec<NativeEvent>,
 ) -> Result<LiveAssessment> {
+    let resources = match (
+        observed.report().request.schema_version,
+        observed.report().request.resource_profile,
+    ) {
+        (2, None) => ntfs_admission::ResourceProfile::AlphaV1,
+        (3, Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)) => {
+            ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
+        }
+        _ => anyhow::bail!("unsupported or mismatched native source resource profile"),
+    };
     ensure!(
         canonical_inspection_sha256 == hex::encode(Sha256::digest(serde_json::to_vec(raw)?))
             && backups.binds(raw)
-            && observed.report().request.schema_version == 2
             && observed.report().request.disk_number == source.binding().disk_number
             && observed.report().request.partition_offset
                 == source.binding().identity.partition_offset
@@ -152,18 +178,22 @@ pub fn assess(
         ntfs_attestation::compare(raw, canonical_inspection_sha256, observed.report())?;
     let mut view = ntfs_source_view::diagnose(raw, canonical_inspection_sha256, observed.report())?;
     view.bind_frozen_source(&source_sha256);
-    let mut assessment = ntfs_admission::assess_ordinary_source_view(
+    let mut assessment = ntfs_admission::assess_ordinary_source_view_with_resources(
         raw,
         &comparison,
         observed.report().schema_version,
         Some(backups),
         Some(view),
+        resources,
     );
     for gate in &mut assessment.gates {
         if gate.code == "frozen_device_basis" {
             gate.satisfied = true;
             gate.detail = "actual dedicated disk remained offline/read-only and matched the complete pinned source hash after native collection".into();
         }
+    }
+    if resources == ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1 {
+        ntfs_admission::bind_large_native_profile(&mut assessment, raw, observed, &source_sha256)?;
     }
     if let Some(proof) = log_restart {
         ntfs_admission::bind_clean_log(&mut assessment, raw, proof);
@@ -226,12 +256,16 @@ pub fn assess(
             &assessment.source_view,
         )?)),
         source_binding: source.binding().clone(),
+        resources,
         source_sha256: source_sha256.clone(),
         inspection_sha256: canonical_inspection_sha256.into(),
         source_gates_satisfied: assessment
             .gates
             .iter()
-            .filter(|g| g.code != "security_timestamp_preservation")
+            .filter(|g| {
+                g.code != "security_timestamp_preservation"
+                    && g.code != "target_resource_profile_support"
+            })
             .all(|g| g.satisfied),
     };
     Ok(LiveAssessment {

@@ -95,6 +95,7 @@ fn main() -> anyhow::Result<()> {
     let expected_sha256 = hex::encode(Sha256::digest(&expected_bytes));
     let request = general_reconstruct::Request {
         schema_version: 1,
+        source_resource_profile: None,
         experiment_id: old.experiment_id,
         expected_tree_sha256: expected_sha256.clone(),
         expected_mount_paths: None,

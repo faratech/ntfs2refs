@@ -298,6 +298,7 @@ pub(crate) fn capture(
     r: &Request,
     id: &FileIdentity,
     budget: &mut crate::logical_hash::Budget,
+    evidence_limit: usize,
 ) -> (StreamCapture, Vec<StreamHash>) {
     let mut hashes = vec![];
     let mut enumeration = info(file, 7, layout::MAX_STREAM_BUFFER);
@@ -372,7 +373,11 @@ pub(crate) fn capture(
         }
         q.identity_after = Some(after);
         result.streams.push(q);
-        if result.retained_bytes() > MAX_TOTAL_STREAM_BYTES {
+        if result
+            .retained_bytes()
+            .saturating_add(hash_retained_bytes(&hashes))
+            > evidence_limit
+        {
             result.parse_error = Some("native stream page evidence budget exhausted".into());
             break;
         }

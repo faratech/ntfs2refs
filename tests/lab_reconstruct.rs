@@ -24,6 +24,7 @@ fn rw(path: &Path) -> File {
 fn binding() -> JournalBinding {
     JournalBinding {
         experiment_id: "a".repeat(32),
+        source_resource_profile: None,
         target_identity_sha256: "1".repeat(64),
         shadow_identity_sha256: "2".repeat(64),
         journal_identity_sha256: "3".repeat(64),

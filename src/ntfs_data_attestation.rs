@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     attestation::{LogicalFile, Query, Report, StreamHash},
-    logical_hash::{DEFAULT_LIMIT, Status},
+    logical_hash::Status,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -135,7 +135,7 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         crate::ntfs_inspect::validate_record_coverage(raw)?;
     }
     ensure!(
-        matches!(native.schema_version, 4..=7),
+        matches!(native.schema_version, 4..=8),
         "native logical-data profile absent"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;
@@ -171,7 +171,7 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
     let audit = Check::from((|| {
         let a = &data.audit;
         ensure!(
-            a.limit_bytes == DEFAULT_LIMIT
+            a.limit_bytes == native.request.limits().logical_read_bytes
                 && a.reserved_bytes <= a.limit_bytes
                 && a.bytes_read <= a.reserved_bytes
                 && a.bytes_read == observed,

@@ -422,8 +422,10 @@ fn bitmap_report(raw: &NtfsInspection, before: &[IoctlQuery], after: &[IoctlQuer
         native_error: None,
     };
     Report {
+        resources: None,
         schema_version: 6,
         request: Request {
+            resource_profile: None,
             schema_version: 1,
             source_inspection_sha256: "a".repeat(64),
             volume: "\\\\?\\Volume{12345678-1234-5678-1234-567812345678}\\".into(),

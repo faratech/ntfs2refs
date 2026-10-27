@@ -69,4 +69,7 @@ For experimental larger reconstruction journals, explicitly add
 This generates a profile-2 request, which must be recovered with a matching
 profile-2-capable executable. The default remains the tested 768 MiB profile 1.
 Profile 2 is not yet qualified by a native conversion or recovery run and does
-not change the existing 256 MiB source-content or object-count limits.
+not by itself change the existing 256 MiB source-content or object-count limits.
+`--experimental-large-tree` explicitly selects the separate larger source
+profile, and requires the experimental journal flag. Its native conversion and
+recovery paths are also unqualified; see [the CLI workflow](cli-workflow.md).

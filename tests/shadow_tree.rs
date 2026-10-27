@@ -94,6 +94,191 @@ fn derives_stored_times_and_physical_payload_without_native_write_authority() {
     );
     assert_eq!(t.logical_bytes, 65536);
 }
+#[test]
+fn alpha_stream_plan_keeps_the_existing_serialized_contract() {
+    let plan = ntfs2refs::ntfs_stream_plan::classify(&model());
+    let expected = serde_json::json!({
+        "schema_version": 4,
+        "profile": "ntfs-4k-to-refs-4k-source-streams-v4",
+        "streams": [{
+            "record_number": 16,
+            "sequence_number": 1,
+            "name_utf16": [],
+            "logical_bytes": 65536,
+            "logical_sha256": "a".repeat(64),
+            "source_offset": 100 * 4096,
+            "disposition": "retain_candidate",
+            "target_named_stream_support_pending": false,
+            "reason": "initialized aligned physical runs may be adopted"
+        }],
+        "retained_candidate_bytes": 65536,
+        "materialized_candidate_bytes": 0,
+        "rejected_streams": 0,
+        "source_admitted": false,
+        "executable": false
+    });
+    assert_eq!(serde_json::to_value(plan).unwrap(), expected);
+}
+
+#[test]
+fn larger_stream_plan_refuses_the_1025th_user_file() {
+    use ntfs2refs::{ntfs_admission::ResourceProfile, ntfs_stream_plan};
+    let mut raw = model();
+    let template = raw.files[0].clone();
+    for index in 0..1024 {
+        let mut file = template.clone();
+        file.record_number = 17 + index;
+        let stream = &mut file.streams[0];
+        stream.logical_size = 0;
+        stream.initialized_size = 0;
+        stream.allocated_size = 0;
+        stream.extents.clear();
+        raw.files.push(file);
+    }
+    let plan = ntfs_stream_plan::classify_with_resource_profile(
+        &raw,
+        ResourceProfile::ExperimentalLargeTreeV1,
+    );
+    assert_eq!(plan.streams.len(), 1025);
+    assert_eq!(plan.rejected_streams, 1);
+    assert_eq!(
+        plan.streams[1024].disposition,
+        ntfs_stream_plan::Disposition::Reject
+    );
+    assert!(!plan.source_admitted && !plan.executable);
+}
+
+#[test]
+fn larger_tree_is_opt_in_and_rejected_by_the_legacy_target_contract() {
+    use ntfs2refs::{ntfs_admission::ResourceProfile, ntfs_stream_plan};
+    let mut raw = model();
+    raw.geometry.volume_size = 8 << 30;
+    let stream = &mut raw.files[0].streams[0];
+    stream.logical_size = 2 << 30;
+    stream.initialized_size = stream.logical_size;
+    stream.allocated_size = stream.logical_size;
+    stream.extents[0].physical_offset = Some(4096 * 100);
+    stream.extents[0].length = stream.logical_size;
+    assert!(shadow_tree::derive_ordinary(&raw).is_err());
+    let selected = ResourceProfile::ExperimentalLargeTreeV1;
+    let plan = ntfs_stream_plan::classify_with_resource_profile(&raw, selected);
+    assert_eq!(plan.retained_candidate_bytes, 2 << 30);
+    assert_eq!(plan.rejected_streams, 0);
+    assert!(!plan.source_admitted && !plan.executable);
+    let tree = shadow_tree::derive_ordinary_with_resource_profile(&raw, selected).unwrap();
+    let expected = shadow_tree::ExpectedTree::from(&tree);
+    assert_eq!(tree.profile, "native-ordinary-tree-shadow-large-v1");
+    assert!(expected.validate().is_err());
+    expected.validate_with_resource_profile(selected).unwrap();
+    let alpha_expected =
+        shadow_tree::ExpectedTree::from(&shadow_tree::derive_ordinary(&model()).unwrap());
+    assert!(
+        alpha_expected
+            .validate_with_resource_profile(selected)
+            .is_err()
+    );
+    let alpha = model();
+    assert_eq!(
+        serde_json::to_vec(&ntfs_stream_plan::classify(&alpha)).unwrap(),
+        serde_json::to_vec(&ntfs_stream_plan::classify_with_resource_profile(
+            &alpha,
+            ResourceProfile::AlphaV1
+        ))
+        .unwrap()
+    );
+    assert_eq!(
+        serde_json::to_vec(&shadow_tree::derive_ordinary(&alpha).unwrap()).unwrap(),
+        serde_json::to_vec(
+            &shadow_tree::derive_ordinary_with_resource_profile(&alpha, ResourceProfile::AlphaV1)
+                .unwrap()
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn large_stream_planning_checks_aggregate_bounds_and_keeps_encoding_refusals() {
+    use ntfs2refs::{
+        ntfs_admission::ResourceProfile,
+        ntfs_stream_plan::{self, Disposition},
+    };
+    let selected = ResourceProfile::ExperimentalLargeTreeV1;
+    let mut raw = model();
+    raw.geometry.volume_size = 16 << 30;
+    let stream = &mut raw.files[0].streams[0];
+    stream.logical_size = 3 << 30;
+    stream.initialized_size = stream.logical_size;
+    stream.allocated_size = stream.logical_size;
+    stream.extents[0].physical_offset = Some(4096);
+    stream.extents[0].length = stream.logical_size;
+    let mut extra = raw.files[0].clone();
+    extra.record_number = 17;
+    extra.streams[0].extents[0].physical_offset = Some(4 << 30);
+    raw.files.push(extra);
+    let plan = ntfs_stream_plan::classify_with_resource_profile(&raw, selected);
+    assert_eq!(plan.retained_candidate_bytes, 3 << 30);
+    assert_eq!(plan.rejected_streams, 1);
+    assert_eq!(plan.streams[1].disposition, Disposition::Reject);
+    raw.files[0].streams[0].flags = 1;
+    assert_eq!(
+        ntfs_stream_plan::classify_with_resource_profile(&raw, selected).streams[0].disposition,
+        Disposition::Reject
+    );
+    raw.files[0].streams[0].flags = 0;
+    raw.files[0].streams[0].logical_size = 4 << 30;
+    raw.files[0].streams[0].initialized_size = 4 << 30;
+    raw.files[0].streams[0].allocated_size = 4 << 30;
+    raw.files[0].streams[0].extents[0].length = 4 << 30;
+    assert_eq!(
+        ntfs_stream_plan::classify_with_resource_profile(&raw, selected).streams[0].disposition,
+        Disposition::RetainCandidate
+    );
+    raw.files[0].streams[0].logical_size = (4 << 30) + 1;
+    assert_eq!(
+        ntfs_stream_plan::classify_with_resource_profile(&raw, selected).streams[0].disposition,
+        Disposition::Reject
+    );
+}
+
+#[test]
+fn larger_expected_tree_enforces_file_directory_and_overflow_bounds() {
+    use ntfs2refs::ntfs_admission::ResourceProfile;
+    let selected = ResourceProfile::ExperimentalLargeTreeV1;
+    let mut expected =
+        shadow_tree::ExpectedTree::from(&shadow_tree::derive_ordinary(&model()).unwrap());
+    expected.profile = selected.ordinary_shadow_profile().into();
+    let mut template = expected.objects.pop().unwrap();
+    template.source_offset = None;
+    template.source_extents.clear();
+    template.length = 0;
+    for index in 0..1024 {
+        let mut file = template.clone();
+        file.record_number = 16 + index;
+        file.path = vec![format!("file_{index}.bin")];
+        expected.objects.push(file);
+    }
+    expected.logical_bytes = 0;
+    expected.validate_with_resource_profile(selected).unwrap();
+    let mut extra = template.clone();
+    extra.record_number = 2000;
+    extra.path = vec!["one_too_many.bin".into()];
+    expected.objects.push(extra);
+    assert!(expected.validate_with_resource_profile(selected).is_err());
+    expected.objects.truncate(1);
+    for index in 0..256 {
+        let mut directory = expected.objects[0].clone();
+        directory.record_number = 16 + index;
+        directory.path = vec![format!("directory_{index}")];
+        expected.objects.push(directory);
+    }
+    assert!(expected.validate_with_resource_profile(selected).is_err());
+    expected.objects.truncate(1);
+    template.length = u64::MAX;
+    template.path = vec!["overflow.bin".into()];
+    expected.objects.push(template);
+    expected.logical_bytes = u64::MAX;
+    assert!(expected.validate_with_resource_profile(selected).is_err());
+}
 
 #[test]
 fn pinned_ordinary_expectation_round_trips_and_rejects_changed_digest() {

@@ -278,6 +278,7 @@ fn observed_binding(
     );
     Ok(JournalBinding {
         experiment_id: request.experiment_id.clone(),
+        source_resource_profile: None,
         target_identity_sha256,
         shadow_identity_sha256,
         journal_identity_sha256: identity_hash(b"ntfs2refs/lab/journal-file-identity/v1", journal)?,

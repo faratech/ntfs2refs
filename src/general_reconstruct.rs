@@ -39,6 +39,7 @@ fn observe_journal(file: &File, request: &Request) -> Result<JournalFileSnapshot
 fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBinding> {
     Ok(JournalBinding {
         experiment_id: request.experiment_id.clone(),
+        source_resource_profile: request.source_resource_profile,
         target_identity_sha256: partition_hash(&request.pair.source.identity)?,
         shadow_identity_sha256: partition_hash(&request.pair.shadow.identity)?,
         journal_identity_sha256: identity_hash(
@@ -126,6 +127,8 @@ fn durable_marker_for_mount<'a>(
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
     pub experiment_id: String,
     pub expected_tree_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,6 +144,10 @@ pub struct Request {
 impl Request {
     pub fn validate(&self) -> Result<()> {
         let profile = JournalProfile::from_schema(self.schema_version)?;
+        lab_reconstruct::validate_source_profile_binding(
+            self.schema_version,
+            self.source_resource_profile,
+        )?;
         ensure!(
             self.experiment_id.len() == 32
                 && self
@@ -241,7 +248,13 @@ pub fn prepare_with_progress(
         journal_before.file_bytes == 0,
         "journal is not a fresh empty file"
     );
-    let ntfs = ntfs_inspect::inspect(source, source.byte_len())?;
+    let ntfs = ntfs_inspect::inspect_with_limits(
+        source,
+        source.byte_len(),
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     let refs = refs_inspect::inspect(shadow, shadow.byte_len())?;
     ensure!(
         ntfs.geometry.cluster_size == 4096
@@ -255,8 +268,12 @@ pub fn prepare_with_progress(
         None
     } else {
         let shadow_length = shadow.byte_len();
-        let observed =
-            refs_retained_allocation::inspect(shadow, shadow_length, &request.comparison)?;
+        let observed = refs_retained_allocation::inspect_with_resource_profile(
+            shadow,
+            shadow_length,
+            &request.comparison,
+            request.source_resource_profile.unwrap_or_default(),
+        )?;
         ensure!(
             observed.retained_allocator_coverage_verified,
             "retained data lacks unambiguous ReFS allocator coverage"
@@ -763,7 +780,13 @@ pub fn complete_rollback(
         observed_journal.file_bytes,
     )?;
     let length = target.byte_len();
-    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
     let observed_binding = binding(request, &observed_journal.identity)?;
@@ -838,7 +861,13 @@ pub fn complete_rollback_without_shadow(
         observed.file_bytes,
     )?;
     let length = target.byte_len();
-    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
     let bound = binding(request, &observed.identity)?;
@@ -926,7 +955,13 @@ pub fn resume_completed_rollback(
         &request.comparison.shadow_sha256,
     )?;
     let length = target.byte_len();
-    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
     let durable = durable_marker_for_mount(request, journal, ticket, &observed_binding, &proof)?;
@@ -998,7 +1033,13 @@ pub fn resume_completed_rollback_without_shadow(
         &request.comparison.source_sha256,
     )?;
     let length = target.byte_len();
-    let raw = ntfs_inspect::inspect(&mut target, length)?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
     ntfs_backup::verify(&mut target, length, &raw)?;
     ntfs_log::verify(&mut target, &raw)?;
     let durable = durable_marker_for_mount(request, journal, ticket, &bound, &proof)?;
@@ -1080,14 +1121,26 @@ fn verify_converted_tree(
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
     if restored_label && let Some(label) = &request.expected_source_label {
-        shadow_native::verify_general_converted_ordinary_with_label(
+        shadow_native::verify_general_converted_ordinary_with_label_and_resource_profile(
             pair,
             &input,
             label,
             same_security,
+            request
+                .source_resource_profile
+                .unwrap_or_default()
+                .native_profile(),
         )
     } else {
-        shadow_native::verify_general_converted_ordinary(pair, &input, same_security)
+        shadow_native::verify_general_converted_ordinary_with_resource_profile(
+            pair,
+            &input,
+            same_security,
+            request
+                .source_resource_profile
+                .unwrap_or_default()
+                .native_profile(),
+        )
     }
 }
 
@@ -1147,7 +1200,8 @@ pub(crate) fn finalize(
         "general target expectation pin differs"
     );
     let expectation: shadow_tree::ExpectedTree = serde_json::from_slice(expected_tree_bytes)?;
-    expectation.validate()?;
+    expectation
+        .validate_with_resource_profile(request.source_resource_profile.unwrap_or_default())?;
     ensure!(
         target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
         "general handoff data bindings differ"
@@ -1228,7 +1282,8 @@ pub fn finalize_after_marker(
         "completed ReFS target expectation pin differs"
     );
     let expectation: shadow_tree::ExpectedTree = serde_json::from_slice(expected_tree_bytes)?;
-    expectation.validate()?;
+    expectation
+        .validate_with_resource_profile(request.source_resource_profile.unwrap_or_default())?;
     ensure!(
         target.binding() == &request.pair.source && shadow.binding() == &request.pair.shadow,
         "completed ReFS handoff data bindings differ"
@@ -1332,6 +1387,7 @@ mod tests {
     fn request() -> Request {
         Request {
             schema_version: 1,
+            source_resource_profile: None,
             experiment_id: "a".repeat(32),
             expected_tree_sha256: "c".repeat(64),
             expected_mount_paths: None,

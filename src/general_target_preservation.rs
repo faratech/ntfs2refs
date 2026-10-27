@@ -56,8 +56,24 @@ pub fn verify_frozen_tree(
     expected: &shadow_tree::ExpectedTree,
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetSemantics> {
+    verify_frozen_tree_with_resource_profile(
+        target,
+        pair,
+        expected,
+        crate::ntfs_admission::ResourceProfile::AlphaV1,
+        events,
+    )
+}
+
+pub fn verify_frozen_tree_with_resource_profile(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    resources: crate::ntfs_admission::ResourceProfile,
+    events: &mut Vec<NativeEvent>,
+) -> Result<ProtectedTargetSemantics> {
     pair.validate()?;
-    expected.validate()?;
+    expected.validate_with_resource_profile(resources)?;
     ensure!(
         target.binding() == &pair.shadow,
         "protected target binding differs"
@@ -68,7 +84,7 @@ pub fn verify_frozen_tree(
         "target must be frozen before semantic observation"
     );
     let tree = shadow_tree::Tree {
-        profile: "native-ordinary-tree-shadow-v2",
+        profile: resources.ordinary_shadow_profile(),
         objects: expected.objects.clone(),
         logical_bytes: expected.logical_bytes,
         internal_replacement_pending: expected.internal_replacement_pending.clone(),
@@ -76,13 +92,14 @@ pub fn verify_frozen_tree(
     let input = general_shadow::native_inputs(&tree);
     let length = target.byte_len();
     let (native, target_sha256) = bracket_image(target, length, |target| {
-        Ok(target.observe_refs_files(
+        Ok(target.observe_refs_files_with_resource_profile(
             pair,
             &input,
             |a, b| {
                 ntfs_attestation::same_security(a, b)
                     .map_err(|error| std::io::Error::other(error.to_string()))
             },
+            resources.native_profile(),
             events,
         )?)
     })?;
@@ -190,6 +207,11 @@ impl FrozenTargetPreservation {
     pub(crate) fn source_views_sha256(&self) -> &str {
         &self.source_views_sha256
     }
+    pub(crate) fn native_resource_profile(
+        &self,
+    ) -> Option<n2r_win32::attestation::ResourceProfile> {
+        self.native.native().report().native.resource_profile
+    }
 }
 
 pub fn verify_and_freeze(
@@ -200,6 +222,7 @@ pub fn verify_and_freeze(
     pair: GeneralSourceShadowBinding,
     max_change_bytes: u64,
     profile: n2r_win32::journal_file::JournalProfile,
+    resources: crate::ntfs_admission::ResourceProfile,
     events: &mut Vec<NativeEvent>,
 ) -> Result<(GeneralFrozenPartition, FrozenTargetPreservation)> {
     pair.validate()?;
@@ -221,7 +244,11 @@ pub fn verify_and_freeze(
         "source must remain persistently excluded"
     );
     let source_length = source.byte_len();
-    let actual_raw = ntfs_inspect::inspect(source, source_length)?;
+    let actual_raw = ntfs_inspect::inspect_with_limits(
+        source,
+        source_length,
+        ntfs_inspect::limits_for_resource_profile(resources),
+    )?;
     let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
     ensure!(
         hex::encode(Sha256::digest(serde_json::to_vec(&actual_raw)?)) == inspection_sha256,
@@ -231,33 +258,55 @@ pub fn verify_and_freeze(
         source_views.binds_live_source(&inspection_sha256, source_sha256),
         "target requires the bound live source views"
     );
-    let mut tree = shadow_tree::derive_ordinary(raw)?;
+    let mut tree = shadow_tree::derive_ordinary_with_resource_profile(raw, resources)?;
     tree.bind_security_views(source_views)?;
     let expected = shadow_tree::ExpectedTree::from(&tree);
-    expected.validate()?;
+    expected.validate_with_resource_profile(resources)?;
     let mut target = GeneralFrozenPartition::isolate(pair.shadow.clone(), events)?;
     let before = target.state(events)?;
     let length = target.byte_len();
-    let native = verify_frozen_tree(&mut target, pair.clone(), &expected, events)?;
+    let native = verify_frozen_tree_with_resource_profile(
+        &mut target,
+        pair.clone(),
+        &expected,
+        resources,
+        events,
+    )?;
     let target_sha256 = native.target_sha256().to_owned();
     let target_sha256_before_observation = target_sha256.clone();
     // Derive placement from this protected observation of the exact frozen
     // image, never an earlier writable construction report.
     let mappings = tree_placement::mappings_from_native(&tree, &native.native().report().native)?;
+    let limits = resources.limits();
+    let mut range_budget = ntfs_inspect::StreamTransferBudget::new(
+        limits.maximum_stream_bytes,
+        limits.maximum_logical_bytes,
+    )?;
     let placement = tree_placement::diagnose_measured(
         &tree,
         &mappings,
         source,
         source_length,
         |reader, object, start, end| {
-            ntfs_inspect::hash_plain_stream_range(
-                reader,
-                raw,
-                object.record_number,
-                start,
-                end - start,
-                256 * 1024 * 1024,
-            )
+            if resources.native_profile().is_some() {
+                ntfs_inspect::hash_plain_stream_range_with_budget(
+                    reader,
+                    raw,
+                    object.record_number,
+                    start,
+                    end - start,
+                    &mut range_budget,
+                )
+            } else {
+                ntfs_inspect::hash_plain_stream_range(
+                    reader,
+                    raw,
+                    object.record_number,
+                    start,
+                    end - start,
+                    256 * 1024 * 1024,
+                )
+            }
         },
     )?;
     let refs = refs_inspect::inspect(&mut target, length)?;
@@ -275,7 +324,12 @@ pub fn verify_and_freeze(
     let retained_allocation = if comparison.retained_ranges.is_empty() {
         None
     } else {
-        let allocation = refs_retained_allocation::inspect(&mut target, length, &comparison)?;
+        let allocation = refs_retained_allocation::inspect_with_resource_profile(
+            &mut target,
+            length,
+            &comparison,
+            resources,
+        )?;
         ensure!(
             allocation.retained_allocator_coverage_verified,
             "frozen retained target ownership is incomplete"

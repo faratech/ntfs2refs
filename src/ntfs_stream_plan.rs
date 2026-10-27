@@ -1,10 +1,12 @@
 //! Read-only source payload classification for a 4 KiB ReFS target. This is
 //! not namespace admission or a target allocation/write plan.
-use crate::ntfs_inspect::{Extent, LogicalHashStatus, MetadataRole, NtfsInspection};
+use crate::{
+    ntfs_admission::ResourceProfile,
+    ntfs_inspect::{Extent, LogicalHashStatus, MetadataRole, NtfsInspection},
+};
 use serde::{Deserialize, Serialize};
 
 const CLUSTER: u64 = 4096;
-const MAX_MATERIALIZE: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -47,9 +49,25 @@ pub struct Plan {
 }
 
 pub fn classify(raw: &NtfsInspection) -> Plan {
+    classify_with_resource_profile(raw, ResourceProfile::AlphaV1)
+}
+
+/// Explicit larger resource planning only; named/encoded semantics and actual
+/// target ownership remain separate, and this report never authorizes writes.
+pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceProfile) -> Plan {
+    let limits = resources.limits();
     let mut plan = Plan {
-        schema_version: 4,
-        profile: "ntfs-4k-to-refs-4k-source-streams-v4".into(),
+        schema_version: if resources == ResourceProfile::AlphaV1 {
+            4
+        } else {
+            5
+        },
+        profile: if resources == ResourceProfile::AlphaV1 {
+            "ntfs-4k-to-refs-4k-source-streams-v4"
+        } else {
+            "ntfs-4k-to-refs-4k-large-source-streams-v1"
+        }
+        .into(),
         streams: Vec::new(),
         retained_candidate_bytes: 0,
         materialized_candidate_bytes: 0,
@@ -57,10 +75,11 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
         source_admitted: false,
         executable: false,
     };
-    for file in raw
+    for (file_index, file) in raw
         .files
         .iter()
         .filter(|f| !f.is_directory && f.metadata_role == MetadataRole::OutsideExtendCandidate)
+        .enumerate()
     {
         for stream in &file.streams {
             let named = !stream.name_utf16.is_empty();
@@ -88,7 +107,10 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                                     .checked_add(extent.length)
                                     .is_some_and(|end| end <= raw.geometry.volume_size)
                         });
-                    covered = covered.saturating_add(extent.length);
+                    let Some(next) = covered.checked_add(extent.length) else {
+                        return false;
+                    };
+                    covered = next;
                     valid
                 })
                 && covered == stream.allocated_size;
@@ -105,10 +127,11 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                         && stream.allocated_size.is_multiple_of(CLUSTER)
                 })
                 && physical_runs;
-            let (disposition, reason) = if u64::from(raw.geometry.cluster_size) != CLUSTER
+            let (mut disposition, mut reason) = if u64::from(raw.geometry.cluster_size) != CLUSTER
                 || stream.flags != 0
                 || !complete
-                || stream.logical_size > MAX_MATERIALIZE
+                || stream.logical_size > limits.maximum_stream_bytes
+                || (resources != ResourceProfile::AlphaV1 && file_index >= limits.maximum_files)
             {
                 (
                     Disposition::Reject,
@@ -130,18 +153,31 @@ pub fn classify(raw: &NtfsInspection) -> Plan {
                     "logical stream requires new ReFS allocation or inline data",
                 )
             };
-            match disposition {
-                Disposition::RetainCandidate => {
-                    plan.retained_candidate_bytes += stream.logical_size;
-                }
-                Disposition::MixedCandidate => {
-                    plan.retained_candidate_bytes += full_prefix;
-                    plan.materialized_candidate_bytes += stream.logical_size - full_prefix;
-                }
-                Disposition::MaterializeCandidate => {
-                    plan.materialized_candidate_bytes += stream.logical_size;
-                }
-                Disposition::Reject => plan.rejected_streams += 1,
+            let increment = match disposition {
+                Disposition::RetainCandidate => (stream.logical_size, 0),
+                Disposition::MixedCandidate => (full_prefix, stream.logical_size - full_prefix),
+                Disposition::MaterializeCandidate => (0, stream.logical_size),
+                Disposition::Reject => (0, 0),
+            };
+            let next_totals = plan
+                .retained_candidate_bytes
+                .checked_add(increment.0)
+                .zip(plan.materialized_candidate_bytes.checked_add(increment.1))
+                .filter(|(retained, materialized)| {
+                    retained.checked_add(*materialized).is_some_and(|total| {
+                        resources == ResourceProfile::AlphaV1
+                            || total <= limits.maximum_logical_bytes
+                    })
+                });
+            if next_totals.is_none() {
+                disposition = Disposition::Reject;
+                reason = "candidate byte totals overflow or exceed the explicit resource profile";
+            }
+            if disposition == Disposition::Reject {
+                plan.rejected_streams = plan.rejected_streams.saturating_add(1);
+            } else if let Some((retained, materialized)) = next_totals {
+                plan.retained_candidate_bytes = retained;
+                plan.materialized_candidate_bytes = materialized;
             }
             plan.streams.push(StreamDecision {
                 record_number: file.record_number,

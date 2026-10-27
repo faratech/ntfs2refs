@@ -71,6 +71,7 @@ pub fn base(q: &IoctlQuery) -> Result<u64> {
     Ok(n)
 }
 pub(crate) fn validate_paging_schema(native: &Report) -> Result<()> {
+    native.validate_resources()?;
     ensure!(
         native.schema_version >= 6
             || native.allocation.as_ref().is_none_or(|a| {
@@ -348,7 +349,7 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         crate::ntfs_inspect::validate_record_coverage(raw)?;
     }
     ensure!(
-        matches!(native.schema_version, 3..=7),
+        matches!(native.schema_version, 3..=8),
         "native stream profile missing"
     );
     validate_paging_schema(native)?;

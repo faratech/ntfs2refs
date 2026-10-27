@@ -36,6 +36,17 @@ sectors, 4 KiB clusters and 1 KiB records; ReFS 3.14 with 4 KiB clusters; up to
 policy qualification currently targets Windows build 26300. Unsupported
 semantics and unknown layouts are refused. Boot/system volumes remain excluded.
 
+The opt-in `--experimental-large-tree` binding profile raises the source tree
+budget to 1,024 ordinary files, 256 directories including the root, and 4 GiB
+of logical contents. It requires `--experimental-large-journal`. The source
+profile is bound to the journal and recovery ticket; use the same executable
+for conversion and recovery. The existing 128 GiB partition limit and other
+semantic, evidence and storage limits still apply. This larger-tree path has
+not yet been qualified by a native conversion or interruption run.
+The native shadow still initializes the logical file contents on separate
+storage. Eligible source extents can remain in place during cutover, but
+shadow I/O and scratch usage are not independent of payload size.
+
 Journal profile 1 retains the existing 768 MiB journal ceiling. The opt-in
 profile 2 permits a maximum journal budget up to 16 GiB, with the changed-byte
 budget derived from that value after reserving metadata and both old and new

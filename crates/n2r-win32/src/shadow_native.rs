@@ -150,6 +150,8 @@ pub struct ObjectReport {
 }
 #[derive(Debug, Serialize)]
 pub struct Report {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_profile: Option<crate::attestation::ResourceProfile>,
     pub binding: DiskBinding,
     pub before: crate::PartitionSnapshot,
     pub after: crate::PartitionSnapshot,
@@ -1420,13 +1422,33 @@ pub fn run_general_ordinary_streaming(
     payload_writer: &mut impl FnMut(usize, &mut File) -> io::Result<()>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<GeneralReport> {
+    run_general_ordinary_streaming_with_resource_profile(
+        pair,
+        input,
+        retain_eligible,
+        payload_writer,
+        same_security,
+        None,
+    )
+}
+
+/// Construct a separately bound shadow under an explicitly selected resource
+/// profile. This does not admit the source or authorize conversion.
+pub fn run_general_ordinary_streaming_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    retain_eligible: bool,
+    payload_writer: &mut impl FnMut(usize, &mut File) -> io::Result<()>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralReport> {
     pair.validate()?;
     let binding = DiskBinding {
         disk_number: pair.shadow.disk_number,
         volume_guid: pair.shadow.volume_guid.clone(),
         identity: pair.shadow.identity.clone(),
     };
-    let native = run_role(
+    let native = run_role_profile(
         binding,
         pair.source.disk_number,
         input,
@@ -1440,6 +1462,9 @@ pub fn run_general_ordinary_streaming(
         true,
         Some(payload_writer),
         Some(&pair.shadow),
+        None,
+        None,
+        resource_profile,
     )?;
     validate_existing(&native, input, &same_security, false, None)?;
     Ok(GeneralReport {
@@ -1456,13 +1481,22 @@ pub fn verify_general_ordinary(
     input: &[Input<'_>],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<GeneralReport> {
+    verify_general_ordinary_with_resource_profile(pair, input, same_security, None)
+}
+
+pub fn verify_general_ordinary_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralReport> {
     pair.validate()?;
     let binding = DiskBinding {
         disk_number: pair.shadow.disk_number,
         volume_guid: pair.shadow.volume_guid.clone(),
         identity: pair.shadow.identity.clone(),
     };
-    let native = run_role(
+    let native = run_role_profile(
         binding,
         pair.source.disk_number,
         input,
@@ -1472,6 +1506,9 @@ pub fn verify_general_ordinary(
         true,
         None,
         Some(&pair.shadow),
+        None,
+        None,
+        resource_profile,
     )?;
     validate_existing(&native, input, &same_security, false, None)?;
     Ok(GeneralReport {
@@ -1484,11 +1521,12 @@ pub fn verify_general_ordinary(
 /// This route is callable only with an actual borrowed native read-only
 /// volume capability. The enclosing freeze lease retains persistent READ_ONLY
 /// storage throughout this strict semantic observation.
-pub(crate) fn verify_general_ordinary_readonly(
+pub(crate) fn verify_general_ordinary_readonly_with_resource_profile(
     pair: GeneralSourceShadowBinding,
     input: &[Input<'_>],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralReport> {
     pair.validate()?;
     if protected.binding() != &pair.shadow {
@@ -1513,6 +1551,7 @@ pub(crate) fn verify_general_ordinary_readonly(
         Some(&pair.shadow),
         None,
         Some(protected),
+        resource_profile,
     )?;
     validate_existing(&native, input, &same_security, false, None)?;
     Ok(GeneralReport {
@@ -1530,7 +1569,22 @@ pub fn verify_general_converted_ordinary(
     input: &[Input<'_>],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<GeneralConvertedReport> {
-    let report = observe_general_converted_ordinary(pair, input, &same_security)?;
+    verify_general_converted_ordinary_with_resource_profile(pair, input, same_security, None)
+}
+
+pub fn verify_general_converted_ordinary_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
+    let report = observe_general_converted_label_profile(
+        pair,
+        input,
+        None,
+        &same_security,
+        resource_profile,
+    )?;
     validate_existing(&report.native, input, &same_security, false, None)?;
     Ok(report)
 }
@@ -1541,8 +1595,30 @@ pub fn verify_general_converted_ordinary_with_label(
     expected_label: &crate::volume_label::VolumeLabel,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<GeneralConvertedReport> {
-    let report =
-        observe_general_converted_ordinary_with_label(pair, input, expected_label, &same_security)?;
+    verify_general_converted_ordinary_with_label_and_resource_profile(
+        pair,
+        input,
+        expected_label,
+        same_security,
+        None,
+    )
+}
+
+pub fn verify_general_converted_ordinary_with_label_and_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    expected_label: &crate::volume_label::VolumeLabel,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
+    expected_label.validate()?;
+    let report = observe_general_converted_label_profile(
+        pair,
+        input,
+        Some(expected_label),
+        &same_security,
+        resource_profile,
+    )?;
     validate_existing(&report.native, input, &same_security, false, None)?;
     Ok(report)
 }
@@ -1555,7 +1631,7 @@ pub fn observe_general_converted_ordinary(
     input: &[Input<'_>],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<GeneralConvertedReport> {
-    observe_general_converted_label_profile(pair, input, None, same_security)
+    observe_general_converted_label_profile(pair, input, None, same_security, None)
 }
 
 pub fn observe_general_converted_ordinary_with_label(
@@ -1565,7 +1641,7 @@ pub fn observe_general_converted_ordinary_with_label(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<GeneralConvertedReport> {
     expected_label.validate()?;
-    observe_general_converted_label_profile(pair, input, Some(expected_label), same_security)
+    observe_general_converted_label_profile(pair, input, Some(expected_label), same_security, None)
 }
 
 fn observe_general_converted_label_profile(
@@ -1573,6 +1649,7 @@ fn observe_general_converted_label_profile(
     input: &[Input<'_>],
     expected_label: Option<&crate::volume_label::VolumeLabel>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralConvertedReport> {
     pair.validate()?;
     let binding = DiskBinding {
@@ -1580,7 +1657,7 @@ fn observe_general_converted_label_profile(
         volume_guid: pair.source.volume_guid.clone(),
         identity: pair.source.identity.clone(),
     };
-    let native = run_role_with_label(
+    let native = run_role_profile(
         binding,
         pair.source.disk_number,
         input,
@@ -1591,6 +1668,8 @@ fn observe_general_converted_label_profile(
         None,
         Some(&pair.source),
         expected_label,
+        None,
+        resource_profile,
     )?;
     Ok(GeneralConvertedReport {
         pair,
@@ -1681,7 +1760,7 @@ fn verify_general_mutation_label_profile(
         ));
     }
     let report =
-        observe_general_converted_label_profile(pair, input, expected_label, &same_security)?;
+        observe_general_converted_label_profile(pair, input, expected_label, &same_security, None)?;
     validate_existing(
         &report.native,
         input,
@@ -1792,6 +1871,7 @@ fn run_role_with_label(
         general_shadow,
         expected_label,
         None,
+        None,
     )
 }
 
@@ -1840,7 +1920,24 @@ fn run_role_profile(
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
     protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<Report> {
+    let (maximum_objects, maximum_logical_bytes) = match resource_profile {
+        None => (160usize, 256u64 * 1024 * 1024),
+        Some(crate::attestation::ResourceProfile::ExperimentalLargeTreeV1) => {
+            if !ordinary || general_shadow.is_none() {
+                return Err(invalid(
+                    "large-tree shadow profile requires an ordinary general volume",
+                ));
+            }
+            if input.iter().filter(|item| item.directory).count() > 256
+                || input.iter().filter(|item| !item.directory).count() > 1024
+            {
+                return Err(invalid("large-tree shadow object budget exceeded"));
+            }
+            (1280usize, 4u64 * 1024 * 1024 * 1024)
+        }
+    };
     if protected.is_some() {
         validate_protected_profile(
             mode,
@@ -1876,7 +1973,7 @@ fn run_role_profile(
             || binding.volume_guid != general.volume_guid
             || binding.identity != general.identity
             || input.is_empty()
-            || input.len() > 160
+            || input.len() > maximum_objects
         {
             return Err(invalid("general independent shadow profile differs"));
         }
@@ -1886,7 +1983,7 @@ fn run_role_profile(
             || (converted && mode != Mode::Verify)
             || source_disk != 1
             || input.is_empty()
-            || input.len() > 160
+            || input.len() > maximum_objects
             || std::env::var("COMPUTERNAME").ok().as_deref() != Some("N2R-WIN11")
         {
             return Err(invalid("restricted tree shadow lab profile differs"));
@@ -1899,7 +1996,7 @@ fn run_role_profile(
             "streaming payload callback is restricted to ordinary shadow construction",
         ));
     }
-    let mut total = 0usize;
+    let mut total = 0u64;
     let mut source_allocations = Vec::new();
     for i in input {
         if i.source_offset.is_some() && !i.source_runs.is_empty() {
@@ -1983,12 +2080,9 @@ fn run_role_profile(
             return Err(invalid("invalid bounded shadow input"));
         }
         total = total
-            .checked_add(
-                usize::try_from(i.logical_length())
-                    .map_err(|_| invalid("payload length overflow"))?,
-            )
+            .checked_add(i.logical_length())
             .ok_or_else(|| invalid("payload overflow"))?;
-        if total > 256 * 1024 * 1024 {
+        if total > maximum_logical_bytes {
             return Err(invalid("shadow payload budget"));
         }
         descriptor(i.security)?;
@@ -2159,6 +2253,7 @@ fn run_role_profile(
             observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
         privileges.restore()?;
         return Ok(Report {
+            resource_profile,
             binding,
             before,
             after,
@@ -2210,6 +2305,7 @@ fn run_role_profile(
             let after = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
             privileges.restore()?;
             return Ok(Report {
+                resource_profile,
                 binding,
                 before,
                 after,
@@ -2534,6 +2630,7 @@ fn run_role_profile(
     validate_observation_access(after.disk_attributes, flags, protected.is_some())?;
     privileges.restore()?;
     Ok(Report {
+        resource_profile,
         binding,
         before,
         after,

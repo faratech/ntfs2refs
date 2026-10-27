@@ -1736,7 +1736,7 @@ impl GeneralFrozenPartition {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveNtfsObservation> {
         request.validate()?;
-        if request.schema_version != 2
+        if !matches!(request.schema_version, 2 | 3)
             || request.disk_number != self.binding.disk_number
             || request.volume != format!("{}\\", self.binding.volume_path()?)
             || request.partition_offset != self.binding.identity.partition_offset
@@ -1808,8 +1808,18 @@ impl GeneralFrozenPartition {
                 "general source exclusion changed during native observation",
             ));
         }
+        let report = collected?;
+        if report.request != *request
+            || report.conversion_qualified
+            || report.schema_version != if request.schema_version == 3 { 8 } else { 7 }
+        {
+            return Err(invalid("general native source report profile differs"));
+        }
+        if request.schema_version == 3 {
+            report.validate_resources()?;
+        }
         Ok(GeneralLiveNtfsObservation {
-            report: collected?,
+            report,
             txf,
             txf_error,
             before,
@@ -1826,6 +1836,19 @@ impl GeneralFrozenPartition {
         pair: crate::general_layout::GeneralSourceShadowBinding,
         input: &[crate::shadow_native::Input<'_>],
         same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsObservation> {
+        self.observe_refs_files_with_resource_profile(pair, input, same_security, None, events)
+    }
+
+    /// Strictly observe the same protected ReFS volume with an explicitly
+    /// selected resource profile. It grants no source or write authority.
+    pub fn observe_refs_files_with_resource_profile(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &[crate::shadow_native::Input<'_>],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveRefsObservation> {
         pair.validate()?;
@@ -1893,12 +1916,14 @@ impl GeneralFrozenPartition {
                 volume: &volume,
                 expected_state: &expected_readonly,
             };
-            let observed = crate::shadow_native::verify_general_ordinary_readonly(
-                pair,
-                input,
-                &same_security,
-                &protected,
-            );
+            let observed =
+                crate::shadow_native::verify_general_ordinary_readonly_with_resource_profile(
+                    pair,
+                    input,
+                    &same_security,
+                    &protected,
+                    resource_profile,
+                );
             // All native file handles close before the persistent offline
             // transition; the retained read-only volume route closes once.
             close_file(

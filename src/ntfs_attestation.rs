@@ -28,6 +28,7 @@ pub fn request_for_inspection(
     );
     let request = n2r_win32::attestation::Request {
         schema_version: 1,
+        resource_profile: None,
         source_inspection_sha256: inspection_sha256.into(),
         volume: format!("{}\\", binding.volume_path()?),
         disk_number: binding.disk_number,
@@ -63,6 +64,7 @@ pub fn request_for_general_inspection(
     );
     let request = n2r_win32::attestation::Request {
         schema_version: 2,
+        resource_profile: None,
         source_inspection_sha256: inspection_sha256.into(),
         volume: format!("{}\\", binding.volume_path()?),
         disk_number: binding.disk_number,
@@ -75,6 +77,48 @@ pub fn request_for_general_inspection(
             .map(|file| n2r_win32::attestation::FileIdentity {
                 record_number: file.record_number,
                 sequence_number: file.sequence_number,
+            })
+            .collect(),
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+/// Opt-in collection request only. Larger native evidence cannot grant source
+/// admission or change the conversion profile by itself.
+pub fn request_for_general_inspection_with_profile(
+    raw: &NtfsInspection,
+    inspection_sha256: &str,
+    binding: &n2r_win32::general_layout::GeneralDiskBinding,
+    profile: n2r_win32::attestation::ResourceProfile,
+) -> Result<n2r_win32::attestation::Request> {
+    // Construct without the legacy identity-count check, then validate the
+    // explicitly selected profile. Geometry and route checks remain identical.
+    binding.validate()?;
+    ensure!(
+        raw.geometry.volume_size == binding.identity.partition_bytes
+            || raw.geometry.volume_size.checked_add(512) == Some(binding.identity.partition_bytes),
+        "general raw NTFS geometry differs from bound partition"
+    );
+    ensure!(
+        !raw.files.is_empty() && raw.files.len() <= profile.limits().maximum_identities,
+        "native resource profile identity budget exceeded"
+    );
+    let request = n2r_win32::attestation::Request {
+        schema_version: 3,
+        resource_profile: Some(profile),
+        source_inspection_sha256: inspection_sha256.into(),
+        volume: format!("{}\\", binding.volume_path()?),
+        disk_number: binding.disk_number,
+        partition_offset: binding.identity.partition_offset,
+        partition_length: binding.identity.partition_bytes,
+        ntfs_serial: raw.geometry.serial_number,
+        files: raw
+            .files
+            .iter()
+            .map(|f| n2r_win32::attestation::FileIdentity {
+                record_number: f.record_number,
+                sequence_number: f.sequence_number,
             })
             .collect(),
     };
@@ -268,7 +312,7 @@ pub fn compare(
     }
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2..=7) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=8) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;

@@ -91,10 +91,23 @@ impl From<&Tree> for ExpectedTree {
 }
 impl ExpectedTree {
     pub fn validate(&self) -> Result<()> {
+        self.validate_with_resource_profile(ntfs_admission::ResourceProfile::AlphaV1)
+    }
+    /// Explicit semantic validation only. Large-tree validation does not
+    /// attest native construction support or create source-write authority.
+    pub fn validate_with_resource_profile(
+        &self,
+        resources: ntfs_admission::ResourceProfile,
+    ) -> Result<()> {
+        let limits = resources.limits();
+        let object_limit = limits
+            .maximum_files
+            .checked_add(limits.maximum_directories)
+            .context("tree object budget overflow")?;
         ensure!(
-            self.profile == "native-ordinary-tree-shadow-v2"
+            self.profile == resources.ordinary_shadow_profile()
                 && !self.objects.is_empty()
-                && self.objects.len() <= 160
+                && self.objects.len() <= object_limit
                 && self.objects[0].directory
                 && self.objects[0].path.is_empty()
                 && self
@@ -138,6 +151,10 @@ impl ExpectedTree {
             }
             paths.insert(path_key, object.directory);
             if !object.directory {
+                ensure!(
+                    object.length <= limits.maximum_stream_bytes,
+                    "expected stream exceeds selected resource profile"
+                );
                 let digest = object.sha256.as_deref().unwrap_or("");
                 ensure!(
                     digest.len() == 64
@@ -186,21 +203,44 @@ impl ExpectedTree {
             }
         }
         ensure!(
-            bytes == self.logical_bytes && bytes <= ntfs_admission::MAX_LOGICAL_BYTES,
+            bytes == self.logical_bytes && bytes <= limits.maximum_logical_bytes,
             "expected logical byte total differs"
         );
+        if resources != ntfs_admission::ResourceProfile::AlphaV1 {
+            let directories = self
+                .objects
+                .iter()
+                .filter(|object| object.directory)
+                .count();
+            ensure!(
+                directories <= limits.maximum_directories
+                    && self.objects.len() - directories <= limits.maximum_files,
+                "expected file/directory counts exceed selected resource profile"
+            );
+        }
         Ok(())
     }
 }
 pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
-    derive_profile(raw, false)
+    derive_profile(raw, false, ntfs_admission::ResourceProfile::AlphaV1)
 }
 /// Additional ordinary stream forms are materialized from logical bytes. This
 /// constructs an independent shadow; it does not admit source-device writes.
 pub fn derive_ordinary(raw: &ntfs::NtfsInspection) -> Result<Tree> {
-    derive_profile(raw, true)
+    derive_ordinary_with_resource_profile(raw, ntfs_admission::ResourceProfile::AlphaV1)
 }
-fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
+pub fn derive_ordinary_with_resource_profile(
+    raw: &ntfs::NtfsInspection,
+    resources: ntfs_admission::ResourceProfile,
+) -> Result<Tree> {
+    derive_profile(raw, true, resources)
+}
+fn derive_profile(
+    raw: &ntfs::NtfsInspection,
+    ordinary: bool,
+    resources: ntfs_admission::ResourceProfile,
+) -> Result<Tree> {
+    let limits = resources.limits();
     ntfs::validate_record_coverage(raw)?;
     ensure!(
         raw.schema_version == 1
@@ -228,7 +268,7 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
     );
     let mut tree = Tree {
         profile: if ordinary {
-            "native-ordinary-tree-shadow-v2"
+            resources.ordinary_shadow_profile()
         } else {
             "native-existing-tree-shadow-v1"
         },
@@ -238,7 +278,7 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
     };
     let mut paths = BTreeSet::new();
     let mut source_ranges = vec![];
-    let source_plan = ntfs_stream_plan::classify(raw);
+    let source_plan = ntfs_stream_plan::classify_with_resource_profile(raw, resources);
     for f in &raw.files {
         if let Some(role) = ntfs_admission::internal_role(raw, f) {
             tree.internal_replacement_pending.push(role);
@@ -329,6 +369,13 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
                         && decision.sequence_number == f.sequence_number
                         && decision.name_utf16.is_empty()
                 });
+                if resources != ntfs_admission::ResourceProfile::AlphaV1 {
+                    ensure!(
+                        candidate.is_some_and(|decision| decision.disposition
+                            != ntfs_stream_plan::Disposition::Reject),
+                        "source stream is not a candidate under the selected resource profile"
+                    );
+                }
                 let offset = candidate
                     .filter(|decision| {
                         decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate
@@ -383,19 +430,24 @@ fn derive_profile(raw: &ntfs::NtfsInspection, ordinary: bool) -> Result<Tree> {
     }
     source_ranges.sort_unstable();
     ensure!(
-        source_ranges.windows(2).all(|p| p[0].0 + p[0].1 <= p[1].0),
+        source_ranges
+            .windows(2)
+            .all(|p| p[0].0.checked_add(p[0].1).is_some_and(|end| end <= p[1].0)),
         "overlapping user payloads"
     );
     let directories = tree.objects.iter().filter(|o| o.directory).count();
     ensure!(
         directories > 0
-            && directories <= ntfs_admission::MAX_DIRECTORIES
-            && tree.objects.len() - directories <= ntfs_admission::MAX_FILES
-            && tree.logical_bytes <= ntfs_admission::MAX_LOGICAL_BYTES
+            && directories <= limits.maximum_directories
+            && tree.objects.len() - directories <= limits.maximum_files
+            && tree.logical_bytes <= limits.maximum_logical_bytes
             && tree.objects.iter().filter(|o| o.path.is_empty()).count() == 1,
         "tree budget or root differs"
     );
     tree.objects.sort_by_key(|o| (o.path.len(), o.path.clone()));
+    if resources != ntfs_admission::ResourceProfile::AlphaV1 {
+        ExpectedTree::from(&tree).validate_with_resource_profile(resources)?;
+    }
     Ok(tree)
 }
 pub(crate) fn valid_component(s: &str) -> bool {

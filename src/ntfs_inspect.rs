@@ -43,6 +43,21 @@ impl Default for InspectionLimits {
     }
 }
 
+/// Keep the alpha inventory budget unchanged. The larger source profile uses
+/// a separate bounded logical-hash budget to cover ordinary data and internal
+/// NTFS streams; it does not itself authorize a conversion.
+pub fn limits_for_resource_profile(
+    profile: crate::ntfs_admission::ResourceProfile,
+) -> InspectionLimits {
+    match profile {
+        crate::ntfs_admission::ResourceProfile::AlphaV1 => InspectionLimits::default(),
+        crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1 => InspectionLimits {
+            max_report_bytes: 64 * 1024 * 1024,
+            max_stream_hash_bytes: 16 * 1024 * 1024 * 1024,
+        },
+    }
+}
+
 struct HashBudget {
     limit: u64,
     used: u64,

@@ -219,6 +219,7 @@ pub(crate) fn load(inputs: &Inputs) -> Result<RunArtifacts> {
         r.validate()?;
         ensure!(
             r.schema_version == intent.schema_version
+                && r.source_resource_profile == intent.source_resource_profile
                 && r.experiment_id == intent.experiment_id
                 && r.pair == intent.pair
                 && serde_json::to_vec(&r.journal)? == serde_json::to_vec(&intent.journal)?
@@ -245,7 +246,8 @@ pub(crate) fn load(inputs: &Inputs) -> Result<RunArtifacts> {
     );
     if let Some(ticket) = &ticket {
         ensure!(
-            ticket.schema_version == intent.schema_version,
+            ticket.schema_version == intent.schema_version
+                && ticket.binding.source_resource_profile == intent.source_resource_profile,
             "journal ticket profile differs from public intent"
         );
     }
@@ -416,6 +418,7 @@ pub(crate) fn open_journal(run: &RunArtifacts) -> Result<JournalLease> {
     if let (Some(plan), Some(ticket)) = (&run.request, &run.ticket) {
         let binding = lab_reconstruct::JournalBinding {
             experiment_id: plan.experiment_id.clone(),
+            source_resource_profile: plan.source_resource_profile,
             target_identity_sha256: partition_hash(&plan.pair.source.identity)?,
             shadow_identity_sha256: partition_hash(&plan.pair.shadow.identity)?,
             journal_identity_sha256: identity_hash(

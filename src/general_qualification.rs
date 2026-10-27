@@ -13,17 +13,62 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{self, Read, Write},
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
 };
 
-pub(crate) fn save(root: &Path, name: &str, value: &impl Serialize) -> Result<String> {
-    let bytes = serde_json::to_vec_pretty(value)?;
-    ensure!(
-        bytes.len() <= 64 * 1024 * 1024,
-        "qualification artifact exceeds bound"
-    );
+const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
+
+/// Bound serialization before opening the destination. `to_vec_pretty` followed
+/// by a length check can allocate an arbitrarily large buffer before refusing.
+struct BoundedJson {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for BoundedJson {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let needed = self.bytes.len().checked_add(bytes.len()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "qualification artifact exceeds bound",
+            )
+        })?;
+        if needed > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "qualification artifact exceeds bound",
+            ));
+        }
+        if needed > self.bytes.capacity() {
+            let desired = self
+                .bytes
+                .capacity()
+                .saturating_mul(2)
+                .max(4096)
+                .max(needed)
+                .min(self.limit);
+            self.bytes
+                .try_reserve_exact(desired - self.bytes.len())
+                .map_err(|_| io::Error::other("qualification artifact allocation failed"))?;
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn save_bounded(root: &Path, name: &str, value: &impl Serialize, limit: usize) -> Result<String> {
+    let mut output = BoundedJson {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer_pretty(&mut output, value)?;
+    let bytes = output.bytes;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -33,6 +78,10 @@ pub(crate) fn save(root: &Path, name: &str, value: &impl Serialize) -> Result<St
     file.write_all(&bytes)?;
     file.sync_all()?;
     Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+pub(crate) fn save(root: &Path, name: &str, value: &impl Serialize) -> Result<String> {
+    save_bounded(root, name, value, MAX_ARTIFACT_BYTES)
 }
 
 pub fn qualify(pair: GeneralSourceShadowBinding, output: &Path) -> Result<()> {
@@ -107,6 +156,7 @@ pub(crate) fn prepare_with_budget(
         verify_existing,
         max_change_bytes,
         JournalProfile::LegacyV1,
+        crate::ntfs_admission::ResourceProfile::AlphaV1,
         |_, _, _| Ok(()),
     )
 }
@@ -120,6 +170,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
     verify_existing: bool,
     max_change_bytes: u64,
     profile: JournalProfile,
+    resources: crate::ntfs_admission::ResourceProfile,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
 ) -> Result<QualifiedTree> {
     pair.validate()?;
@@ -170,7 +221,11 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             "state":source.state(&mut events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
             |artifact_sha256| after_source_freeze(&source, &source_hash, artifact_sha256),
         )?;
-        let raw = ntfs_inspect::inspect(&mut source, length)?;
+        let raw = ntfs_inspect::inspect_with_limits(
+            &mut source,
+            length,
+            ntfs_inspect::limits_for_resource_profile(resources),
+        )?;
         let source_label_frozen =
             crate::source_volume_label::verify(&mut source, &raw, source_label.label())?;
         save(output, "source-label-frozen.json", &source_label_frozen)?;
@@ -185,8 +240,16 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             "freeze_observation":source.freeze_observation(),"events":events}),
         )?;
         phase = "source-observation";
-        let request =
-            ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?;
+        let request = if let Some(native_profile) = resources.native_profile() {
+            ntfs_attestation::request_for_general_inspection_with_profile(
+                &raw,
+                &pin,
+                source.binding(),
+                native_profile,
+            )?
+        } else {
+            ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?
+        };
         let observed = source.observe_ntfs_files(&request, &mut events)?;
         save(output, "native-source.json", observed.report())?;
         let mut assessment = general_source_admission::assess(
@@ -206,7 +269,11 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             .assessment
             .gates
             .iter()
-            .filter(|g| g.code != "security_timestamp_preservation" && !g.satisfied)
+            .filter(|g| {
+                g.code != "security_timestamp_preservation"
+                    && g.code != "target_resource_profile_support"
+                    && !g.satisfied
+            })
             .map(|g| g.code.clone())
             .collect();
         ensure!(
@@ -218,25 +285,40 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             .source_view
             .as_ref()
             .context("live source views absent")?;
-        let mut tree = shadow_tree::derive_ordinary(&raw)?;
+        let mut tree = shadow_tree::derive_ordinary_with_resource_profile(&raw, resources)?;
         tree.bind_security_views(views)?;
         let expected = shadow_tree::ExpectedTree::from(&tree);
-        expected.validate()?;
+        expected.validate_with_resource_profile(resources)?;
         let expected_sha256 = save(output, "expectation.json", &expected)?;
         phase = "native-shadow-construction";
         let input = general_shadow::native_inputs(&tree);
+        let limits = resources.limits();
+        let mut transfer_budget = ntfs_inspect::StreamTransferBudget::new(
+            limits.maximum_stream_bytes,
+            limits.maximum_logical_bytes,
+        )?;
         let mut writer = |index: usize, target: &mut fs::File| -> std::io::Result<()> {
             let object = tree
                 .objects
                 .get(index)
                 .ok_or_else(|| std::io::Error::other("source object index differs"))?;
-            let copied = ntfs_inspect::copy_plain_stream(
-                &mut source,
-                &raw,
-                object.record_number,
-                256 * 1024 * 1024,
-                target,
-            )
+            let copied = if resources.native_profile().is_some() {
+                ntfs_inspect::copy_plain_stream_with_budget(
+                    &mut source,
+                    &raw,
+                    object.record_number,
+                    &mut transfer_budget,
+                    target,
+                )
+            } else {
+                ntfs_inspect::copy_plain_stream(
+                    &mut source,
+                    &raw,
+                    object.record_number,
+                    256 * 1024 * 1024,
+                    target,
+                )
+            }
             .map_err(|e| std::io::Error::other(e.to_string()))?;
             if copied.logical_bytes != object.length
                 || Some(&copied.sha256) != object.sha256.as_ref()
@@ -251,9 +333,14 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             ntfs_attestation::same_security(a, b).map_err(|e| std::io::Error::other(e.to_string()))
         };
         let native = if verify_existing {
-            shadow_native::verify_general_ordinary(pair.clone(), &input, same)?
+            shadow_native::verify_general_ordinary_with_resource_profile(
+                pair.clone(),
+                &input,
+                same,
+                resources.native_profile(),
+            )?
         } else {
-            shadow_native::run_general_ordinary_streaming(
+            shadow_native::run_general_ordinary_streaming_with_resource_profile(
                 pair.clone(),
                 &input,
                 true,
@@ -262,6 +349,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
                     ntfs_attestation::same_security(a, b)
                         .map_err(|e| std::io::Error::other(e.to_string()))
                 },
+                resources.native_profile(),
             )?
         };
         save(output, "native-shadow.json", &native)?;
@@ -274,6 +362,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             pair.clone(),
             max_change_bytes,
             profile,
+            resources,
             &mut events,
         )?;
         save(output, "target-preservation.json", &proof)?;
@@ -331,6 +420,30 @@ fn save_source_frozen_then(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_serialization_preserves_bytes_and_refuses_before_creating_files() {
+        let temporary = tempfile::tempdir().unwrap();
+        let value = serde_json::json!({"names":["abc", "a\nb", "😀"], "number": 42});
+        let expected = serde_json::to_vec_pretty(&value).unwrap();
+        let pin = save_bounded(temporary.path(), "exact.json", &value, expected.len()).unwrap();
+        assert_eq!(
+            fs::read(temporary.path().join("exact.json")).unwrap(),
+            expected
+        );
+        assert_eq!(pin, hex::encode(Sha256::digest(&expected)));
+
+        let error = save_bounded(
+            temporary.path(),
+            "too-large.json",
+            &value,
+            expected.len() - 1,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("qualification artifact exceeds bound"));
+        assert!(!temporary.path().join("too-large.json").exists());
+    }
+
     #[test]
     fn fresh_artifact_output_creates_missing_ordinary_parents_and_refuses_reuse() {
         let temporary = tempfile::tempdir().unwrap();

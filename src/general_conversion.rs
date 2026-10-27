@@ -25,6 +25,8 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
     pub experiment_id: String,
     pub pair: GeneralSourceShadowBinding,
     pub journal: GeneralJournalStorageBinding,
@@ -35,6 +37,10 @@ pub struct Request {
 impl Request {
     pub fn validate(&self) -> Result<()> {
         let profile = JournalProfile::from_schema(self.schema_version)?;
+        crate::lab_reconstruct::validate_source_profile_binding(
+            self.schema_version,
+            self.source_resource_profile,
+        )?;
         self.pair.validate()?;
         self.journal.validate()?;
         ensure!(
@@ -146,6 +152,11 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
         Interruption::None | Interruption::AfterSourceFreeze => None,
     };
     request.validate()?;
+    if request.source_resource_profile.is_some() {
+        eprintln!(
+            "Using experimental larger-source profile; native conversion and recovery have not been qualified for this profile."
+        );
+    }
     if request.schema_version == JournalProfile::ExperimentalLargeV2.version() {
         eprintln!(
             "Using experimental v2 journal profile; native conversion and recovery at this capacity are not yet qualified."
@@ -167,6 +178,7 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
             request.verify_existing_shadow,
             max_change_bytes,
             profile,
+            request.source_resource_profile.unwrap_or_default(),
             |source, source_sha256, artifact_sha256| {
                 if matches!(interruption, Interruption::AfterSourceFreeze) {
                     interrupt_after_source_freeze(
@@ -191,6 +203,7 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
         } = qualified;
         let plan = reconstruct::Request {
             schema_version: request.schema_version,
+            source_resource_profile: request.source_resource_profile,
             experiment_id: request.experiment_id.clone(),
             expected_tree_sha256: hex::encode(Sha256::digest(&expected)),
             expected_mount_paths: Some(mount_paths.paths),
@@ -376,6 +389,7 @@ mod tests {
     fn request() -> Request {
         Request {
             schema_version: 1,
+            source_resource_profile: None,
             experiment_id: "a".repeat(32),
             pair: GeneralSourceShadowBinding {
                 source: disk(

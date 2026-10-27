@@ -15,6 +15,7 @@ fn p64(b: &mut [u8], o: usize, n: u64) {
 fn request() -> Request {
     Request {
         schema_version: 1,
+        resource_profile: None,
         source_inspection_sha256: "a".repeat(64),
         volume: "\\\\?\\Volume{12345678-1234-5678-1234-567812345678}\\".into(),
         disk_number: 1,
@@ -190,6 +191,7 @@ fn fixture() -> (ntfs_inspect::NtfsInspection, Report) {
     p32(&mut attrs, 0, 16);
     p64(&mut attrs, 8, 2);
     let report = Report {
+        resources: None,
         namespace: None,
         schema_version: 2,
         request: r.clone(),

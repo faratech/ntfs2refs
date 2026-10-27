@@ -64,6 +64,121 @@ fn comparison(r: &n::NtfsInspection) -> Comparison {
     }
 }
 #[test]
+fn explicit_resource_profiles_keep_alpha_serialization_and_refuse_unqualified_large_native_support()
+{
+    use a::ResourceProfile::{AlphaV1, ExperimentalLargeTreeV1};
+    let mut raw = fixture();
+    raw.files[1].streams[0].logical_size = a::MAX_LOGICAL_BYTES + 4096;
+    let native = comparison(&raw);
+    let default = a::assess_ordinary_with_backups(&raw, &native, 7, None);
+    let explicit = a::assess_ordinary_with_resource_profile(&raw, &native, 7, None, AlphaV1);
+    assert_eq!(
+        serde_json::to_vec(&default).unwrap(),
+        serde_json::to_vec(&explicit).unwrap()
+    );
+    assert!(
+        !default
+            .gates
+            .iter()
+            .find(|gate| gate.code == "resource_limits")
+            .unwrap()
+            .satisfied
+    );
+    let large =
+        a::assess_ordinary_with_resource_profile(&raw, &native, 8, None, ExperimentalLargeTreeV1);
+    assert_eq!(large.profile, "ordinary-data-tree-large-v1");
+    assert!(
+        large
+            .gates
+            .iter()
+            .find(|gate| gate.code == "resource_limits")
+            .unwrap()
+            .satisfied
+    );
+    assert!(
+        !large
+            .gates
+            .iter()
+            .find(|gate| gate.code == "native_resource_profile_support")
+            .unwrap()
+            .satisfied
+    );
+    assert!(!large.source_admitted && !large.certificate_issued && !large.execution_authorized);
+    assert_eq!(
+        serde_json::to_string(&ExperimentalLargeTreeV1).unwrap(),
+        "\"experimental_large_tree_v1\""
+    );
+    assert!(serde_json::from_str::<a::ResourceProfile>("\"journal_v2\"").is_err());
+    let limits = ExperimentalLargeTreeV1.limits();
+    assert_eq!(
+        (limits.maximum_files, limits.maximum_directories),
+        (1024, 256)
+    );
+    assert_eq!(
+        (limits.maximum_logical_bytes, limits.maximum_stream_bytes),
+        (4 << 30, 4 << 30)
+    );
+}
+
+#[test]
+fn larger_resource_assessment_refuses_byte_overflow_without_panicking() {
+    let mut raw = fixture();
+    raw.files[1].streams[0].logical_size = u64::MAX;
+    let mut extra = raw.files[1].streams[0].clone();
+    extra.logical_size = 1;
+    raw.files[1].streams.push(extra);
+    let result = a::assess_ordinary_with_resource_profile(
+        &raw,
+        &comparison(&raw),
+        8,
+        None,
+        a::ResourceProfile::ExperimentalLargeTreeV1,
+    );
+    assert_eq!(result.user_logical_bytes, u64::MAX);
+    assert!(
+        !result
+            .gates
+            .iter()
+            .find(|gate| gate.code == "resource_limits")
+            .unwrap()
+            .satisfied
+    );
+    assert!(!result.source_admitted && !result.certificate_issued);
+}
+
+#[test]
+fn larger_resource_gate_enforces_the_exact_four_gib_logical_limit() {
+    let mut raw = fixture();
+    for (logical_bytes, expected) in [(4u64 << 30, true), ((4u64 << 30) + 1, false)] {
+        raw.files[1].streams[0].logical_size = logical_bytes;
+        let result = a::assess_ordinary_with_resource_profile(
+            &raw,
+            &comparison(&raw),
+            8,
+            None,
+            a::ResourceProfile::ExperimentalLargeTreeV1,
+        );
+        assert_eq!(
+            result
+                .gates
+                .iter()
+                .find(|gate| gate.code == "resource_limits")
+                .unwrap()
+                .satisfied,
+            expected
+        );
+        assert!(
+            !result
+                .gates
+                .iter()
+                .find(|gate| gate.code == "native_resource_profile_support")
+                .unwrap()
+                .satisfied
+        );
+        assert!(!result.source_admitted && !result.certificate_issued);
+    }
+}
+#[test]
 fn internal_role_requires_exact_identity_name_type_and_ancestry() {
     let mut r = fixture();
     let mut f = r.files[1].clone();

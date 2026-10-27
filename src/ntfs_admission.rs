@@ -6,7 +6,11 @@ use crate::{
     ntfs_inspect::{self as ntfs, AttributeInventory, FileInventory, MetadataRole},
     ntfs_namespace, ntfs_security,
 };
-use serde::Serialize;
+#[cfg(windows)]
+use anyhow::{Result, ensure};
+use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROFILE: &str = "existing-data-tree-v1";
@@ -14,6 +18,67 @@ pub const ORDINARY_PROFILE: &str = "ordinary-data-tree-v2";
 pub const MAX_FILES: usize = 128;
 pub const MAX_DIRECTORIES: usize = 32;
 pub const MAX_LOGICAL_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Explicit source/tree budgets, independent of journal format or capacity.
+/// Selecting a larger profile supplies no native evidence or certificate.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceProfile {
+    #[default]
+    AlphaV1,
+    ExperimentalLargeTreeV1,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResourceLimits {
+    pub maximum_files: usize,
+    /// Includes the root directory.
+    pub maximum_directories: usize,
+    pub maximum_logical_bytes: u64,
+    pub maximum_stream_bytes: u64,
+}
+
+impl ResourceProfile {
+    pub const fn native_profile(self) -> Option<n2r_win32::attestation::ResourceProfile> {
+        match self {
+            Self::AlphaV1 => None,
+            Self::ExperimentalLargeTreeV1 => {
+                Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)
+            }
+        }
+    }
+
+    pub const fn limits(self) -> ResourceLimits {
+        match self {
+            Self::AlphaV1 => ResourceLimits {
+                maximum_files: MAX_FILES,
+                maximum_directories: MAX_DIRECTORIES,
+                maximum_logical_bytes: MAX_LOGICAL_BYTES,
+                maximum_stream_bytes: MAX_LOGICAL_BYTES,
+            },
+            Self::ExperimentalLargeTreeV1 => ResourceLimits {
+                maximum_files: 1024,
+                maximum_directories: 256,
+                maximum_logical_bytes: 4 * 1024 * 1024 * 1024,
+                maximum_stream_bytes: 4 * 1024 * 1024 * 1024,
+            },
+        }
+    }
+
+    pub const fn ordinary_admission_profile(self) -> &'static str {
+        match self {
+            Self::AlphaV1 => ORDINARY_PROFILE,
+            Self::ExperimentalLargeTreeV1 => "ordinary-data-tree-large-v1",
+        }
+    }
+
+    pub const fn ordinary_shadow_profile(self) -> &'static str {
+        match self {
+            Self::AlphaV1 => "native-ordinary-tree-shadow-v2",
+            Self::ExperimentalLargeTreeV1 => "native-ordinary-tree-shadow-large-v1",
+        }
+    }
+}
 
 /// Windows-generated root transaction metadata is an internal replacement
 /// obligation, not an ordinary user stream. Recognition alone never admits
@@ -630,7 +695,32 @@ pub fn assess_ordinary_with_backups(
     native_schema: u32,
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
 ) -> Assessment {
-    assess_source_view_profile(raw, comparison, native_schema, backups, None, true)
+    assess_ordinary_with_resource_profile(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        ResourceProfile::AlphaV1,
+    )
+}
+/// Resource opt-in changes only bounded diagnostics. It does not supply the
+/// matching complete native/target evidence needed for source admission.
+pub fn assess_ordinary_with_resource_profile(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    native_schema: u32,
+    backups: Option<&crate::ntfs_backup::VerifiedBackups>,
+    resources: ResourceProfile,
+) -> Assessment {
+    assess_source_view_profile(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        None,
+        true,
+        resources,
+    )
 }
 /// The opaque live observer is the only caller supplying a frozen-bound view.
 /// Replay diagnostics cannot remove strict native object refusals.
@@ -641,7 +731,15 @@ pub(crate) fn assess_source_view(
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
     source_view: Option<crate::ntfs_source_view::Analysis>,
 ) -> Assessment {
-    assess_source_view_profile(raw, comparison, native_schema, backups, source_view, false)
+    assess_source_view_profile(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        source_view,
+        false,
+        ResourceProfile::AlphaV1,
+    )
 }
 pub(crate) fn assess_ordinary_source_view(
     raw: &ntfs::NtfsInspection,
@@ -650,7 +748,32 @@ pub(crate) fn assess_ordinary_source_view(
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
     source_view: Option<crate::ntfs_source_view::Analysis>,
 ) -> Assessment {
-    assess_source_view_profile(raw, comparison, native_schema, backups, source_view, true)
+    assess_ordinary_source_view_with_resources(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        source_view,
+        ResourceProfile::AlphaV1,
+    )
+}
+pub(crate) fn assess_ordinary_source_view_with_resources(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    native_schema: u32,
+    backups: Option<&crate::ntfs_backup::VerifiedBackups>,
+    source_view: Option<crate::ntfs_source_view::Analysis>,
+    resources: ResourceProfile,
+) -> Assessment {
+    assess_source_view_profile(
+        raw,
+        comparison,
+        native_schema,
+        backups,
+        source_view,
+        true,
+        resources,
+    )
 }
 fn assess_source_view_profile(
     raw: &ntfs::NtfsInspection,
@@ -659,7 +782,9 @@ fn assess_source_view_profile(
     backups: Option<&crate::ntfs_backup::VerifiedBackups>,
     source_view: Option<crate::ntfs_source_view::Analysis>,
     ordinary: bool,
+    resources: ResourceProfile,
 ) -> Assessment {
+    let limits = resources.limits();
     let backups = backups.filter(|b| b.binds(raw));
     let view_is_live = source_view
         .as_ref()
@@ -855,9 +980,9 @@ fn assess_source_view_profile(
     gate(
         "resource_limits",
         files > 0
-            && files <= MAX_FILES
-            && directories <= MAX_DIRECTORIES
-            && bytes <= MAX_LOGICAL_BYTES,
+            && files <= limits.maximum_files
+            && directories <= limits.maximum_directories
+            && bytes <= limits.maximum_logical_bytes,
         "limit ordinary files/directories/logical bytes; no automatic budget widening",
     );
     gate(
@@ -903,9 +1028,26 @@ fn assess_source_view_profile(
         false,
         "capture and revalidate the actual device after lock/flush and persistent exclusion; a JSON flag is insufficient",
     );
+    if resources != ResourceProfile::AlphaV1 {
+        gate(
+            "native_resource_profile_support",
+            false,
+            "matching complete live native attestation for this exact source profile is required; target preservation remains a separate gate",
+        );
+        gate(
+            "target_resource_profile_support",
+            false,
+            "the same resource profile requires actual protected native target preservation before a certificate can issue",
+        );
+    }
     Assessment {
         schema_version: 1,
-        profile: if ordinary { ORDINARY_PROFILE } else { PROFILE }.into(),
+        profile: if ordinary {
+            resources.ordinary_admission_profile()
+        } else {
+            PROFILE
+        }
+        .into(),
         source_inspection_sha256: comparison.source_inspection_sha256.clone(),
         objects,
         gates,
@@ -918,4 +1060,119 @@ fn assess_source_view_profile(
         backup_evidence: backups.cloned(),
         source_view,
     }
+}
+
+/// Bind the expanded source profile only to an opaque native observation of
+/// the excluded source. Recompute the comparison and projected source view
+/// from the actual report and raw inventory; serialized success flags cannot
+/// satisfy this gate. Target preservation remains independently required.
+#[cfg(windows)]
+pub(crate) fn bind_large_native_profile(
+    assessment: &mut Assessment,
+    raw: &ntfs::NtfsInspection,
+    observed: &n2r_win32::GeneralLiveNtfsObservation,
+    expected_source_sha256: &str,
+) -> Result<()> {
+    use n2r_win32::attestation::ResourceProfile as NativeProfile;
+
+    let native = observed.report();
+    let inspection = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
+    ensure!(
+        assessment.profile == ResourceProfile::ExperimentalLargeTreeV1.ordinary_admission_profile()
+            && assessment.source_inspection_sha256 == inspection
+            && native.schema_version == 8
+            && native.request.schema_version == 3
+            && native.request.resource_profile == Some(NativeProfile::ExperimentalLargeTreeV1)
+            && native.request.source_inspection_sha256 == inspection
+            && expected_source_sha256.len() == 64
+            && expected_source_sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            && assessment
+                .source_view
+                .as_ref()
+                .is_some_and(|view| view.binds_live_source(&inspection, expected_source_sha256))
+            && assessment
+                .gates
+                .iter()
+                .any(|gate| gate.code == "frozen_device_basis" && gate.satisfied),
+        "large native resource profile is not bound to the current frozen source"
+    );
+    native.validate_resources()?;
+    let comparison = crate::ntfs_attestation::compare(raw, &inspection, native)?;
+    let mut view = crate::ntfs_source_view::diagnose(raw, &inspection, native)?;
+    view.bind_frozen_source(expected_source_sha256);
+    ensure!(
+        serde_json::to_vec(&view)? == serde_json::to_vec(assessment.source_view.as_ref().unwrap())?,
+        "large native source-view evidence differs from the live observation"
+    );
+    let fresh = assess_source_view_profile(
+        raw,
+        &comparison,
+        native.schema_version,
+        assessment.backup_evidence.as_ref(),
+        Some(view),
+        true,
+        ResourceProfile::ExperimentalLargeTreeV1,
+    );
+    ensure!(
+        serde_json::to_vec(&fresh.objects)? == serde_json::to_vec(&assessment.objects)?
+            && [
+                "native_identity_coverage",
+                "native_volume_allocation",
+                "objects",
+                "resource_limits"
+            ]
+            .iter()
+            .all(|code| fresh
+                .gates
+                .iter()
+                .any(|gate| gate.code == *code && gate.satisfied))
+            && comparison.native_namespace.is_some()
+            && comparison
+                .native_logical_data
+                .as_ref()
+                .is_some_and(|data| data.audit.matched),
+        "large native resource evidence does not completely reconcile with source objects"
+    );
+    ensure!(
+        ["native_profile", "native_resource_profile_support"]
+            .iter()
+            .all(|code| assessment
+                .gates
+                .iter()
+                .filter(|gate| gate.code == *code && !gate.satisfied)
+                .count()
+                == 1)
+            && [
+                "security_timestamp_preservation",
+                "target_resource_profile_support"
+            ]
+            .iter()
+            .all(|code| assessment
+                .gates
+                .iter()
+                .filter(|gate| gate.code == *code && !gate.satisfied)
+                .count()
+                == 1),
+        "large native or independent target-preservation gates differ"
+    );
+    let mut native_gate = false;
+    let mut resource_gate = false;
+    for gate in &mut assessment.gates {
+        if gate.code == "native_profile" {
+            gate.satisfied = true;
+            gate.detail = "schema-8 live native namespace and logical-data observations were independently reconciled against the frozen source".into();
+            native_gate = true;
+        } else if gate.code == "native_resource_profile_support" {
+            gate.satisfied = true;
+            gate.detail = "the exact schema-3 large-resource request, schema-8 native evidence, resource accounting and user-object coverage match the bound frozen source; target preservation is still required".into();
+            resource_gate = true;
+        }
+    }
+    ensure!(
+        native_gate && resource_gate,
+        "large native assessment gates are absent"
+    );
+    Ok(())
 }

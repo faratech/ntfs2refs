@@ -204,6 +204,18 @@ the recovery collector `-Operation Finalize`; do not repeat resume or finalize.
 No mounted recovery result is established yet. Preserve the successful branch
 before later rollback qualification on a restored partial-snapshot fork.
 
+Finalize later exited 0 with native ReFS verification and restored source label.
+The recovered branch is preserved OFF at
+`b4ef39f3-af21-404e-b9e1-68c65e3703e0`, parent interrupted 713e5fad. Its
+handoff is closed. Only afterward, the full owned VM snapshot was restored once
+to that partial pre-handoff checkpoint for a separate rollback fork. Exclusion
+survived boot at 21:12:08 UTC. Rollback is now active: task
+`N2R-StreamingV2Recover-Rollback-61d60b73d23b48dcb7e777328169ddc9`,
+PID 676 created 21:12:47 UTC, original helper. Observe with `-Operation Rollback`;
+do not restart it, replay on the saved resumed ReFS branch, or claim rollback
+success before the actual result. The kernel/hypervisor snapshot is test setup;
+the NTFS restoration itself must be performed by guest-local journal recovery.
+
 Subsequent source caches the two planning bitmap views across V2 source runs
 only while no submitted move/mapping change occurred. Every actual move still
 rechecks fresh views; old profiles retain per-run capture. That cache did not

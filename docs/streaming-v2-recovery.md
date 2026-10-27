@@ -119,3 +119,24 @@ PID 580 created 21:05:14 UTC, was observed live in finalization validation.
 No final handoff/native result is claimed until that task becomes terminal.
 Never replay the old journal after a successful handoff; preserve this branch
 before any separate snapshot-forked rollback case.
+
+Finalize subsequently exited 0 and passed native ReFS verification with restored
+`n2r-stream-source` label and 4 KiB clusters. Its result hash is
+`4251ad39812f8815274456e3d53609b93fff2c1add7c74281859741aea54c057`.
+Resume and finalization artifacts/manifests are retained under
+`recovery-resume/Resume-terminal` and `recovery-resume/Finalize-terminal`.
+The recovered ReFS branch was shut down cleanly and preserved OFF as
+`b4ef39f3-af21-404e-b9e1-68c65e3703e0`, parent the interrupted checkpoint
+`713e5fad-45fe-4200-9f6c-dabb669cc9ad`. Its handoff is closed and must not
+receive old journal replay.
+
+Only after preserving that branch, the complete owned VM/disk snapshot was
+restored once to the saved pre-handoff partial state, creating a separate
+rollback fork. Both excluded disk states survived another clean boot at
+21:12:08 UTC. Rollback was dispatched once at 21:12:46 UTC, task
+`N2R-StreamingV2Recover-Rollback-61d60b73d23b48dcb7e777328169ddc9`,
+PID 676 created 21:12:47 UTC, same pinned original recovery executable.
+It was observed live in journal/normalized-target/shadow validation. No rollback
+completion is claimed yet. The hypervisor only supplied the same partial test
+input; the actual rollback runs inside the guest using the converter's journal.
+It is not a hypervisor rollback of the source to NTFS.

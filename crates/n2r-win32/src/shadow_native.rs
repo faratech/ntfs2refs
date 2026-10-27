@@ -2258,7 +2258,10 @@ fn run_role_profile(
     let mut label = [0u16; 128];
     let (mut serial, mut component, mut flags) = (0, 0, 0);
     let root_w = wide(&root);
-    let (mut spc, mut bps, mut free, mut clusters) = (0, 0, 0, 0);
+    let (mut spc, mut bps, mut free, mut legacy_clusters) = (0, 0, 0, 0);
+    // GetDiskFreeSpaceW exposes only a DWORD total-cluster count. Expanded
+    // profiles need the same checked 64-bit ReFS data used by protected access.
+    let use_volume_data = protected.is_some() || resource_profile.is_some();
     // SAFETY: initialized fixed output buffers and NUL-terminated volume path.
     unsafe {
         if protected.is_some() {
@@ -2283,16 +2286,18 @@ fn run_role_profile(
                 fs.as_mut_ptr(),
                 32,
             ))?;
-            check(GetDiskFreeSpaceW(
-                root_w.as_ptr(),
-                &mut spc,
-                &mut bps,
-                &mut free,
-                &mut clusters,
-            ))?;
+            if !use_volume_data {
+                check(GetDiskFreeSpaceW(
+                    root_w.as_ptr(),
+                    &mut spc,
+                    &mut bps,
+                    &mut free,
+                    &mut legacy_clusters,
+                ))?;
+            }
         }
     }
-    if protected.is_some() {
+    let clusters = if use_volume_data {
         let data = ctl(volume, 0x000902d8, &[], 256)?;
         if data.len() < 64
             || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))
@@ -2309,9 +2314,10 @@ fn run_role_profile(
             return Err(invalid("protected ReFS allocation geometry differs"));
         }
         spc = cluster_bytes / bps;
-        clusters = u32::try_from(layout::u64_at(&data, 32)?)
-            .map_err(|_| invalid("protected ReFS cluster count exceeds observation profile"))?;
-    }
+        layout::u64_at(&data, 32)?
+    } else {
+        u64::from(legacy_clusters)
+    };
     let text = |b: &[u16]| {
         String::from_utf16_lossy(&b[..b.iter().position(|c| *c == 0).unwrap_or(b.len())])
     };
@@ -2618,10 +2624,8 @@ fn run_role_profile(
                 let mut end = 0u64;
                 for r in runs {
                     if r.vcn != end
-                        || r.lcn.is_none_or(|l| {
-                            l.checked_add(r.clusters)
-                                .is_none_or(|e| e > clusters as u64)
-                        })
+                        || r.lcn
+                            .is_none_or(|l| l.checked_add(r.clusters).is_none_or(|e| e > clusters))
                     {
                         return Err(invalid("shadow physical mapping is invalid"));
                     }

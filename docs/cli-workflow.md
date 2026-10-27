@@ -219,3 +219,13 @@ Final native semantics, actual mappings and frozen allocation/image checks stay
 independent. This removes duplicate diagnostic bitmap queries without treating
 their earlier observations as move authority. Alpha and larger-tree v1 retain
 their existing query order. The change has compilation evidence only.
+
+Expanded native shadow/converted-volume observation now obtains geometry from
+the already checked ReFS volume-data query, keeping the total cluster count as
+64 bits through retrieval-map bounds checking. The previous protected route
+narrowed that count to a DWORD, imposing a roughly 16 TiB ceiling at 4 KiB;
+the unprotected expanded route also relied on `GetDiskFreeSpaceW`'s DWORD count.
+Both expanded routes now use the same exact version/sector/cluster/partition
+checks. Unprofiled mounted access keeps its legacy query. This removes that
+specific representational limit, not other metadata/resource/capacity limits;
+volumes above the recorded native sizes remain unqualified.

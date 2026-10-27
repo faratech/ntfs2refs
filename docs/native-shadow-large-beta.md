@@ -160,3 +160,20 @@ helper binary has replaced the active conversion executable or run a mutation.
 At `2026-10-27T11:22:10Z`, the original candidate-3 converter was still live
 and had completed comparison, advancing to `rechecking-source`. No apply or
 conversion result existed. Continue observing the same process/run.
+
+The postcheck executables from source `2d6fb355206e0499b1231aa3083b0009ee753fec`
+are copied and pinned locally under `candidate3/rust-postcheck-tools`:
+
+- `lab-verify-general-converted.exe`: `02d844f815a101cc0b1b4e16002ae1e35b50a79872ab3b2565802993bcd79ade`.
+- `lab-general-refs-mutation.exe`: `7e0fdeb9762213a97ed0347997ae093f18dbe945b4891e759e4a5701f81faa65`.
+
+`lab/Invoke-NativeShadowLargeBetaRustPostcheck.ps1` wires these through fresh,
+separate guest tool paths and ordered `BeforeMutation`, `Mutate`, `AfterMutation`
+and `AfterReboot` phases. Every phase first requires a terminal successful
+conversion and independent original-payload readback; actual request/tree bytes
+must match the preserved qualification pins. The mutation uses the enrolled
+Rust workload above. Exact strict post-mutation success creates the receipt
+consumed by the clean-reboot helper; strict verification runs again afterward.
+Create-new intent and result files prevent blind phase repetition after errors.
+The controller has syntax-check evidence only. These tools are not guest-staged,
+no phase has executed, and the earlier PowerShell-only workload remains unused.

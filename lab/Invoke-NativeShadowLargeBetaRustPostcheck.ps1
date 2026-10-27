@@ -3,22 +3,24 @@
 [CmdletBinding()]param(
     [Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
     [Parameter(Mandatory)][ValidateSet('BeforeMutation','AfterPreservationBoot','Mutate','AfterMutation','AfterReboot')][string]$Phase,
-    [ValidateRange(1,9)][int]$Attempt=1
+    [ValidateRange(1,9)][int]$Attempt=1,
+    [switch]$StreamingV2
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
-$root=Join-Path $workspace ('.lab\hyperv\shadow-large-beta-20261027\'+$Candidate)
+$root=Join-Path $workspace ($(if($StreamingV2){'.lab\hyperv\streaming-v2-20261027\'}else{'.lab\hyperv\shadow-large-beta-20261027\'})+$Candidate)
 if((Get-PSDrive D).Free-lt64GB){throw 'The 64 GiB host reserve is required.'}
 $toolsRoot=Join-Path $root 'rust-postcheck-tools'
 $manifest=Get-Content -LiteralPath (Join-Path $toolsRoot 'manifest.json') -Raw|ConvertFrom-Json
 $dispatch=Get-Content -LiteralPath (Join-Path $root 'dispatch.json') -Raw|ConvertFrom-Json
-$qualified=Join-Path $root 'qualified-observed'
+$qualified=Join-Path $root $(if($StreamingV2){'terminal-evidence\run'}else{'qualified-observed'})
 $requestPin=(Get-FileHash -LiteralPath (Join-Path $qualified 'request.json')).Hash.ToLowerInvariant()
 $treePin=(Get-FileHash -LiteralPath (Join-Path $qualified 'expectation.json')).Hash.ToLowerInvariant()
-$id=[guid]'6c4793d2-cdee-468b-bf3b-1c11cae0b501'
-if([guid]$dispatch.vm_id-ne$id-or$manifest.kind-cne'large-beta-rust-postcheck-tools'){throw 'Beta/tool enrollment differs.'}
-& (Join-Path $PSScriptRoot 'Verify-NativeShadowLargeBetaPayload.ps1') -Candidate $Candidate | Out-Null
+$id=if($StreamingV2){[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'}else{[guid]'6c4793d2-cdee-468b-bf3b-1c11cae0b501'}
+$kind=if($StreamingV2){'streaming-v2-rust-postcheck-tools'}else{'large-beta-rust-postcheck-tools'}
+if([guid]$dispatch.vm_id-ne$id-or$manifest.kind-cne$kind){throw 'Fixture/tool enrollment differs.'}
+& (Join-Path $PSScriptRoot 'Verify-NativeShadowLargeBetaPayload.ps1') -Candidate $Candidate -StreamingV2:$StreamingV2 | Out-Null
 $post=Join-Path $root 'rust-postcheck'
 $guestPost=Join-Path $dispatch.guest_stage 'rust-postcheck'
 $guestTools=Join-Path $guestPost 'tools'
@@ -67,8 +69,8 @@ try{
             $priorBoot=[DateTimeOffset]::Parse([string]$value,[Globalization.CultureInfo]::InvariantCulture).UtcDateTime.ToString('o')
         }
     }
-    $result=Invoke-Command -Session $session -ArgumentList $Phase,$guestPost,$guestTools,$dispatch.guest_output,$dispatch.run_id,($manifest.tools|ConvertTo-Json -Compress),($mutation|ConvertTo-Json -Depth 28 -Compress),$priorBoot,$requestPin,$treePin,$phaseKey -ScriptBlock {
-        param($PhaseName,$Post,$Tools,$Output,$Run,$ToolJson,$MutationJson,$PriorBoot,$ExpectedRequestPin,$ExpectedTreePin,$ReportKey)
+    $result=Invoke-Command -Session $session -ArgumentList $Phase,$guestPost,$guestTools,$dispatch.guest_output,$dispatch.run_id,($manifest.tools|ConvertTo-Json -Compress),($mutation|ConvertTo-Json -Depth 28 -Compress),$priorBoot,$requestPin,$treePin,$phaseKey,[bool]$StreamingV2 -ScriptBlock {
+        param($PhaseName,$Post,$Tools,$Output,$Run,$ToolJson,$MutationJson,$PriorBoot,$ExpectedRequestPin,$ExpectedTreePin,$ReportKey,$Streaming)
         Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         $rows=ConvertFrom-Json -InputObject $ToolJson
         foreach($row in $rows){
@@ -87,11 +89,13 @@ try{
         if($requestPin-cne$ExpectedRequestPin-or$treePin-cne$ExpectedTreePin){throw 'Qualified request/expectation pins differ.'}
         $requestValue=Get-Content -LiteralPath $request -Raw|ConvertFrom-Json
         if($requestValue.expected_tree_sha256-cne$treePin-or$complete.expected_tree_sha256-cne$treePin){throw 'Expected-tree binding differs.'}
+        if($Streaming-and$requestValue.source_resource_profile-cne'experimental_streaming_tree_v2'){throw 'Streaming source profile required.'}
         $report=Join-Path $Post ($ReportKey+'.json')
         $arguments=@('--request',$request,'--request-sha256',$requestPin,'--output',$report)
         if($PhaseName-ceq'Mutate'){
             $binary=Join-Path $Tools 'lab-general-refs-mutation.exe'
-            $arguments+=@('--experimental-large-beta','--run-id',([guid]::NewGuid().ToString('N')))
+            $arguments+=@('--run-id',([guid]::NewGuid().ToString('N')))
+            if(-not$Streaming){$arguments+='--experimental-large-beta'}
         }else{
             $binary=Join-Path $Tools 'lab-verify-general-converted.exe'
             $arguments+=@('--expectation',$expectation,'--expectation-sha256',$treePin)
@@ -116,7 +120,7 @@ try{
     Save-NewRecord (Join-Path $post ($phaseKey+'.json')) $result
     if($phaseKey-cne$Phase){Save-NewRecord (Join-Path $post ($Phase+'.json')) $result}
     if($Phase-ceq'AfterMutation'){
-        Save-NewRecord (Join-Path $root 'mutation-result.json') @{success=$true;kind='rust-large-beta-mutation';run_id=$dispatch.run_id;
+        Save-NewRecord (Join-Path $root 'mutation-result.json') @{success=$true;kind=$(if($StreamingV2){'rust-streaming-v2-mutation'}else{'rust-large-beta-mutation'});run_id=$dispatch.run_id;
             mutation_report_sha256=$mutation.report_sha256;strict_after_report_sha256=$result.report_sha256;full_semantics_independently_rechecked=$true}
     }
     [pscustomobject]@{phase=$Phase;success=$result.success;report_sha256=$result.report_sha256;guest_boot_utc=$result.guest_boot_utc}|ConvertTo-Json -Compress

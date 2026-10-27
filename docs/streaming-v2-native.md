@@ -95,3 +95,24 @@ continue to refuse. This is a construction fix, not conversion evidence.
 Mike approved increasing the saved-lab cap to 216 GiB for the next attempt,
 retaining every checkpoint and the 64 GiB host-free reserve. The prior 208 GiB
 counter would not admit another 6 GiB growth allowance after preservation.
+
+Candidate 2 was dispatched once at 17:56:43 UTC, run
+`b82e5dbbdd1d4ae899315954c37a2609`, request SHA-256
+`335dd9072ecee03bc8cbdd93c96ecfd9c3aa1a7baf2d10b132c899e324d83d7a`.
+The producer source is `f6feddc64f14453be0743a7893119b8a9747b52c`
+plus the same existing capabilities-only dirty patch. Converter SHA-256 is
+`9f6619aa74ba07cac302b69f88f930ffee0e71eac4743b1efe545188c2bf4b2b`;
+binder `46f9951071ed24b753ec01384a779f4defe861bec0feb380c903e652883b6f6d`,
+recovery `bba657ec1006f5005784b373b2db1ea451046ee6b8f89cb0651302a4da772bb1`.
+PID 3524 was observed live in source qualification; no outcome is claimed yet.
+
+Postcheck orchestration reuses the beta's strict Rust verification/mutation
+phases through an explicit `-StreamingV2` switch. That switch enrolls only this
+VM, its 52 GiB original partition GUID and V2 request, and does not expand the
+old beta route. `Stage-StreamingV2Postcheck.ps1` pins the two host-built Rust
+executables without guest execution. After successful terminal collection and
+archival into `candidate2/terminal-evidence/run`, use
+`Invoke-NativeShadowLargeBetaRustPostcheck.ps1 -Candidate candidate2 -StreamingV2`
+with its ordered phases. Preserve the successful converted branch before
+mutation. Use `Restart-NativeShadowLargeBetaVerified.ps1 -StreamingV2` only
+after successful mutation and its strict readback. No unit tests were run.

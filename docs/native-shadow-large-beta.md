@@ -88,3 +88,23 @@ The refused beta branch is saved OFF as checkpoint
 its own baseline `506bf3fe-afac-40fb-bfe9-e357141506d2`, after terminal-worker
 proof and archival. Hyper-V parent publication lag was observed without repeating
 the completed restore. Earlier protected VMs/checkpoints were not restored.
+
+Candidate 3 is converter SHA-256
+`38b5b8d142e612000ee00385efc3b4414293b13abad23f71e576f1c5e412b5f2`,
+run `dab1b80b92c2432e80a4052502f9165b`, task
+`N2R-LargeBetaConvert-dab1b80b92c2432e80a4052502f9165b`. Process 2940 was
+created at `2026-10-27T09:32:00.157116Z`. At `09:48:35Z` it remained Running
+and had produced complete source-frozen, source-basis and native-source artifacts.
+The backup check accepted four exact bootstrap mirror records, 32 equal extra
+slots and 28 recognized inactive format-padding slots. This proves that the
+previous mirror refusal was passed, not that conversion completed.
+
+Read-only copies under `candidate3/source-observed` have SHA-256:
+
+- `source-frozen.json`: `c64710d9916a0e985061ce8d238dedfb7583627a7f61437aba0b67b8996e9c18`.
+- `source-basis.json`: `d2ebbb6dfa18704813aaaf1ca6a2cf8e6c62b5392b37718add432d811b46061c`.
+- `native-source.json`: `c117653a6fa97a95d545b5494335ec986eefc6b0d20a110bcfa3147d9898e021`.
+
+No raw reconstruction, native mount of the converted source, mutation, reboot
+or recovery success is established by this milestone. Continue by observing
+the same task and its actual terminal state.

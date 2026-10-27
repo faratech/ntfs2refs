@@ -42,3 +42,11 @@ lab counter was 213,674,191,598 bytes of its 223,338,299,392-byte budget, with
 131,887,734,784 host bytes free; no reserve/budget was raised. Recheck capacity
 before construction or new snapshots. Preserve partial worker/intent records;
 do not redispatch a setup or conversion based only on an observer timeout.
+
+The completed source fixture is now preserved OFF as checkpoint
+`775f4db8-8635-486c-b6eb-7098426b51a6`,
+`streaming-v2-ntfs-unicode-4g`. A clean guest-integrated shutdown preceded the
+single checkpoint creation. No conversion has been dispatched for this fixture.
+Use fresh staged executables/run paths and bind the explicit streaming source
+profile before beginning the conversion; the passed 240 GiB producer does not
+support this fixture's names or payload budget.

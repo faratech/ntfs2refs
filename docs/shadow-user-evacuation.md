@@ -115,3 +115,29 @@ shadow-user obstruction was reported by that batch. This is construction-stage
 placement evidence only: protected-target/raw-graph checks, cutover, native
 readback and scratch/I/O qualification remain pending. Full payload-sized shadow
 initialization has not been eliminated. The same task/PID remains authoritative.
+
+## Frozen target passed; journal budget refused
+
+Candidate 5 subsequently passed protected target preservation. The copied proof
+is `candidate5/target-preservation-observed.json`, SHA-256
+`c5888ad091298db95a6a7ca5f5b055f60ace832d2dea90aab42bcf028cc0fd0a`.
+It records 2,721,431,552 retained bytes, 5,868,785,664 relocated bytes and 30
+materialized bytes. Retained allocator coverage passed with zero unallocated
+retained clusters; whole-volume ownership remains unproven. The frozen source
+hash is `fcda0a665e8ff6eb17b74c39a698ff995be6d65c13275683537bed2391b42a4e`,
+target `664331e3aa9ad08c1a14b6ae7440f6ee457123665d32c1b8a692abed77141c8a`.
+
+The task then exited 1 during journal preparation: its one-GiB selected budget
+allowed only 528,482,304 changed-sector bytes. That limit was exceeded before
+creating a ticket or applying any source patches. This is not a completed
+conversion. The 29-file terminal archive verified, manifest SHA-256
+`9111ccf1119a22f2dd4b667fa86fd800d78e94fc0fa15537ea2517714d5161d9`.
+Both data disks remain offline/read-only.
+
+The new `lab-measure-general-journal` command measures this existing frozen pair
+without creating a journal or changing either data disk. It keeps complete
+image/retained-range hash checks and reports exact changed bytes plus a
+conservative old/new payload and metadata budget. It grants no admission or
+execution authority. The separately pinned sizing task is currently active;
+the failed converter is not restarted. The dispatcher now accepts an explicit
+`JournalBudgetMiB` and charges its increase to the required lab growth allowance.

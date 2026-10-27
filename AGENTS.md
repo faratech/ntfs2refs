@@ -706,3 +706,22 @@ construction report hash is a258b91f69e07aaf4b5064ecdf553332757e7b665a46ab3c783a
 It is still live in target preservation; do not infer completed conversion or
 low-scratch qualification from those intermediate observations. Continue
 monitoring the existing candidate5 task and the 232 GiB/64 GiB storage limits.
+
+Candidate 5 is now terminal at journal preparation, exit 1: the selected one-GiB
+journal implied a 528,482,304-byte changed-sector budget, which was exceeded.
+There is no apply, ticket or handoff. Both data disks remain offline/read-only.
+The 29-file terminal archive verified, manifest SHA-256
+9111ccf1119a22f2dd4b667fa86fd800d78e94fc0fa15537ea2517714d5161d9.
+Frozen target preservation passed: 2,721,431,552 bytes retained, 5,868,785,664
+relocated and 30 materialized; retained allocator coverage passed with no
+unallocated retained clusters. Whole-volume ownership remains unproven.
+Do not describe this as a completed conversion or replay the failed task.
+The read-only sizing task N2R-StreamingV2Size-dbd514da89ac4c44b16bde4f7e3a805c
+is running on those same frozen images, with separate journal-sizing intent,
+dispatch and progress. Its executable is
+3a51207877c604c93887cafcbda95040882cf57143bca020f6d8041cf11096e4.
+It creates no journal and grants no write authority. Observe it to obtain the
+actual changed bytes and conservative journal requirement before choosing the
+next budget. Preserve the failed branch before any restore or new conversion.
+The dispatcher now accepts JournalBudgetMiB and increases its required lab
+growth allowance along with that budget; never bypass the approved cap.

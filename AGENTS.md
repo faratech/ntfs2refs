@@ -16,6 +16,14 @@ The frozen engine is tagged `alpha-native-shadow-20261026`; follow
 [the alpha scope](docs/native-shadow-alpha.md). Work on its native harness and
 conversion/recovery results before adding more parser or writer features.
 
+The later disposable large beta is VM `6c4793d2-cdee-468b-bf3b-1c11cae0b501`,
+240 GiB NTFS/64 KiB to ReFS/4 KiB, fixed 4 GiB RAM, no NIC. See
+[its actual state](docs/native-shadow-large-beta.md). Its first public run
+refused before source freeze on a legacy fixed-layout TxF path; failure receipts
+and staged binaries are preserved. New attempts must first prove the prior task
+terminal and use fresh candidate/run paths. Do not reset any earlier protected VM
+or transfer the frozen alpha's qualification to this engine/profile.
+
 Continue the existing implementation. Prioritize concrete code and the next
 bounded experiment over repeating general research or restarting the writer.
 Run checks appropriate to the change; repeat expensive native scans only when

@@ -381,7 +381,8 @@ pub fn observe(binding: DiskBinding) -> io::Result<Observation> {
     let extents =
         control(&volume, 0x00560000).map_err(|code| io::Error::from_raw_os_error(code as i32))?;
     crate::layout::validate_volume_extent(&extents, &binding)?;
-    observe_volume(binding, volume)
+    let volume_path = binding.volume_path()?;
+    observe_volume(binding, volume, &volume_path)
 }
 
 /// The same read-only TxF and persistent-policy queries on a separately bound
@@ -406,14 +407,22 @@ pub fn observe_general(binding: GeneralDiskBinding) -> io::Result<GeneralObserva
         volume_guid: binding.volume_guid.clone(),
         identity: binding.identity.clone(),
     };
-    let observation = observe_volume(proxy, volume)?;
+    // The diagnostic proxy preserves the binding's serialized fields, but
+    // its legacy volume_path() enforces the old fixed fixture geometry.
+    // Use the path from the independently validated general binding instead.
+    let volume_path = binding.volume_path()?;
+    let observation = observe_volume(proxy, volume, &volume_path)?;
     Ok(GeneralObservation {
         binding,
         observation,
     })
 }
 
-fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation> {
+fn observe_volume(
+    binding: DiskBinding,
+    volume: File,
+    volume_path: &str,
+) -> io::Result<Observation> {
     let windows_version = windows_version()?;
     let disk = File::options()
         .read(true)
@@ -426,7 +435,7 @@ fn observe_volume(binding: DiskBinding, volume: File) -> io::Result<Observation>
         .access_mode(if disk_read_only { 0x81 } else { 0x181 })
         .share_mode(3)
         .custom_flags(0x0220_0000)
-        .open(format!("{}\\", binding.volume_path()?))?;
+        .open(format!("{volume_path}\\"))?;
     let suppress = FILETIME {
         dwLowDateTime: u32::MAX,
         dwHighDateTime: u32::MAX,

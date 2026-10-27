@@ -1449,7 +1449,7 @@ pub fn run_general_ordinary_streaming_with_resource_profile(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralReport> {
-    pair.validate()?;
+    pair.validate_with_resource_profile(resource_profile)?;
     let binding = DiskBinding {
         disk_number: pair.shadow.disk_number,
         volume_guid: pair.shadow.volume_guid.clone(),
@@ -1497,7 +1497,7 @@ pub fn verify_general_ordinary_with_resource_profile(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralReport> {
-    pair.validate()?;
+    pair.validate_with_resource_profile(resource_profile)?;
     let binding = DiskBinding {
         disk_number: pair.shadow.disk_number,
         volume_guid: pair.shadow.volume_guid.clone(),
@@ -1535,7 +1535,7 @@ pub(crate) fn verify_general_ordinary_readonly_with_resource_profile(
     protected: &native::GeneralReadonlyRefsVolume<'_>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralReport> {
-    pair.validate()?;
+    pair.validate_with_resource_profile(resource_profile)?;
     if protected.binding() != &pair.shadow {
         return Err(invalid(
             "protected ReFS lease does not bind the expected shadow",
@@ -1658,7 +1658,7 @@ fn observe_general_converted_label_profile(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralConvertedReport> {
-    pair.validate()?;
+    pair.validate_with_resource_profile(resource_profile)?;
     let binding = DiskBinding {
         disk_number: pair.source.disk_number,
         volume_guid: pair.source.volume_guid.clone(),

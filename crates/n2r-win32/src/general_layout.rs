@@ -7,6 +7,10 @@ use std::io;
 
 /// Current native bitmap/admission profile, not an on-disk format limit.
 pub const MAX_LIVE_PARTITION_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+/// Experimental routing bound derived from the complete 4 KiB target bitmap
+/// read budget. Format, tree/data and exact journal-space checks remain separate.
+pub const MAX_EXPERIMENTAL_PARTITION_BYTES: u64 =
+    crate::bitmap_streaming::MAX_STREAM_BITMAP_BYTES * 8 * 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +31,13 @@ pub struct GeneralSourceShadowBinding {
 
 impl GeneralSourceShadowBinding {
     pub fn validate(&self) -> io::Result<()> {
+        self.validate_with_resource_profile(None)
+    }
+
+    pub fn validate_with_resource_profile(
+        &self,
+        resources: Option<crate::attestation::ResourceProfile>,
+    ) -> io::Result<()> {
         self.source.validate()?;
         self.shadow.validate()?;
         let s = &self.source.identity;
@@ -42,7 +53,10 @@ impl GeneralSourceShadowBinding {
             s.partition_bytes == t.partition_bytes
                 && s.logical_sector_bytes == t.logical_sector_bytes
                 && s.physical_sector_bytes == t.physical_sector_bytes
-                && s.partition_bytes <= MAX_LIVE_PARTITION_BYTES,
+                && s.partition_bytes
+                    <= resources.map_or(MAX_LIVE_PARTITION_BYTES, |profile| {
+                        profile.maximum_partition_bytes()
+                    }),
             "source and shadow geometry exceeds comparison profile",
         )
     }

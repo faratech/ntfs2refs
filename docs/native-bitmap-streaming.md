@@ -91,7 +91,9 @@ metadata graph or confer raw write authority.
 Schema-1 requests without a resource profile retain assembled maps and the
 8 MiB witness ceiling. Larger-volume routing, raw container/allocator traversal
 bounds and remaining recovery/resource integration remain separate work. The
-converter's 128 GiB partition limit is unchanged.
+default converter's 128 GiB partition limit is unchanged. Explicit experimental
+routing now uses the 2 PiB budget derived from streaming target bitmap capacity;
+that does not establish native acceptance or adequate journal/scratch capacity.
 
 This code has compilation evidence only. No unit tests or native volume scan
 were run. Existing native evidence retains its original bounds and executable

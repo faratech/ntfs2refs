@@ -1942,7 +1942,7 @@ impl GeneralFrozenPartition {
         resource_profile: Option<crate::attestation::ResourceProfile>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveRefsObservation> {
-        pair.validate()?;
+        pair.validate_with_resource_profile(resource_profile)?;
         if pair.shadow != self.binding {
             return Err(invalid(
                 "protected ReFS observation is not the frozen shadow",

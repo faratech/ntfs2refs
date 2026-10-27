@@ -41,7 +41,11 @@ impl Request {
             self.schema_version,
             self.source_resource_profile,
         )?;
-        self.pair.validate()?;
+        self.pair.validate_with_resource_profile(
+            self.source_resource_profile
+                .unwrap_or_default()
+                .native_profile(),
+        )?;
         self.journal.validate()?;
         ensure!(
             self.experiment_id.len() == 32

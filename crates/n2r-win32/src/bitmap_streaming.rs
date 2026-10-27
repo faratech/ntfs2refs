@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::io;
 
 pub const PAGE_DATA_BYTES: usize = 1024 * 1024;
+pub const MAX_STREAM_BITMAP_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -166,7 +167,7 @@ pub fn source_limits(expected_clusters: u64) -> io::Result<Limits> {
         .and_then(|n| n.checked_add(16 * max_pages))
         .ok_or_else(|| bad("source bitmap read budget overflow"))?;
     Ok(Limits {
-        max_bitmap_bytes: 64 * 1024 * 1024 * 1024,
+        max_bitmap_bytes: MAX_STREAM_BITMAP_BYTES,
         max_pages,
         max_returned_bytes,
         max_allocated_ranges: 65_536,

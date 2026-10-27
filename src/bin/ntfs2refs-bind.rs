@@ -50,7 +50,7 @@ fn main() -> anyhow::Result<()> {
         /// Opt in to the experimental v2 journal profile (up to 16 GiB).
         #[arg(long)]
         experimental_large_journal: bool,
-        /// Opt in to the experimental larger source tree; requires a v2 journal.
+        /// Opt in to experimental tree/volume budgets; requires a v2 journal.
         #[arg(long, requires = "experimental_large_journal")]
         experimental_large_tree: bool,
         /// Permit additional GPT partitions on journal storage, including the OS disk.
@@ -112,7 +112,9 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     if args.experimental_large_tree {
         eprintln!(
-            "Using experimental larger-source profile; native conversion and recovery have not been qualified for this profile."
+            "Using experimental larger-source profile (partition routing budget {} bytes); native conversion and recovery have not been qualified for this profile.",
+            n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1
+                .maximum_partition_bytes()
         );
     }
     let profile = if args.experimental_large_journal {

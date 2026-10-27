@@ -43,6 +43,8 @@ was mechanically updated with `compact: None`; no tests were added or run.
 
 This implementation has compilation evidence only. It does not qualify a native
 mount, whole-volume ownership, source admission from JSON, write-set omissions,
-or arbitrary-volume conversion. The public 128 GiB partition ceiling, tree/data
-budgets, allocator-row limits, journal ceiling and scratch/I/O costs remain.
+or arbitrary-volume conversion. Default routing remains limited to 128 GiB;
+the explicit experimental resource profile now routes up to 2 PiB, with no
+native qualification at that size. Tree/data budgets, allocator complexity,
+journal capacity and scratch/I/O costs still apply and can refuse the run.
 The frozen alpha and its original evidence/executable pins are unchanged.

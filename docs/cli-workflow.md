@@ -49,20 +49,24 @@ record discrepancy still refuses conversion. The mirror sizing follows the
 documented [NTFS mirror layout](https://flatcap.github.io/linux-ntfs/ntfs/files/mftmirr.html);
 other layouts remain refused rather than reducing coverage to four records.
 The source profile is bound to the journal and recovery ticket; use the same executable
-for conversion and recovery. The existing 128 GiB partition limit and other
-semantic, evidence and storage limits still apply. This larger-tree path has
+for conversion and recovery. Its partition routing budget is 2 PiB, derived from
+the streaming 4 KiB target-bitmap budget. Default/unprofiled routes retain the
+128 GiB limit. Other semantic, evidence and storage limits still apply. This larger-tree path has
 not yet been qualified by a native conversion or interruption run.
 The native shadow still initializes the logical file contents on separate
 storage. Eligible source extents can remain in place during cutover, but
 shadow I/O and scratch usage are not independent of payload size.
 
 The converter does not yet support arbitrary volume sizes. In particular, the
-live partition limit is 128 GiB, the default source uses 4 KiB clusters, and the
+default live partition limit is 128 GiB, the default source uses 4 KiB clusters, and the
 full-image comparison reads both partitions twice. A 1,000 TB NTFS volume
 requires larger source clusters under Windows' documented NTFS limits; merely
 removing an internal size check would not make it convertible. The experimental
-larger-cluster implementation does not remove the native bitmap, partition,
-tree, journal or scratch limits and has no native geometry qualification. See
+routing budget is not native large-volume qualification. It does
+not remove tree/data, journal or scratch constraints, and full-image scans and
+shadow construction remain expensive. All exact admission and recovery checks
+still apply. A small or large volume can still be refused by format, layout or
+capacity checks. See
 [Microsoft's NTFS volume limits](https://learn.microsoft.com/en-us/windows-server/storage/file-server/ntfs-overview).
 The formatter and target profile must independently establish whether a small
 volume, including a 10 MiB example, can hold a valid ReFS filesystem.

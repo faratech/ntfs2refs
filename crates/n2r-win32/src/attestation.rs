@@ -28,6 +28,13 @@ pub struct ResourceLimits {
     pub namespace_evidence_bytes: usize,
 }
 impl ResourceProfile {
+    pub const fn maximum_partition_bytes(self) -> u64 {
+        match self {
+            Self::ExperimentalLargeTreeV1 => {
+                crate::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES
+            }
+        }
+    }
     pub fn limits(self) -> ResourceLimits {
         match self {
             Self::ExperimentalLargeTreeV1 => ResourceLimits {
@@ -111,12 +118,22 @@ impl Request {
                         .checked_add(self.partition_length)
                         .is_some_and(|n| n <= 64 * 1024 * 1024 * 1024)
             }
-            2 | 3 => {
+            2 => {
                 self.disk_number <= 4095
                     && self
                         .partition_offset
                         .checked_add(self.partition_length)
                         .is_some_and(|n| n <= 64 * 1024 * 1024 * 1024 * 1024)
+            }
+            3 => {
+                self.disk_number <= 4095
+                    && self.resource_profile.is_some_and(|profile| {
+                        self.partition_length <= profile.maximum_partition_bytes()
+                    })
+                    && self
+                        .partition_offset
+                        .checked_add(self.partition_length)
+                        .is_some_and(|end| end <= i64::MAX as u64)
             }
             _ => false,
         };

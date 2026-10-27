@@ -104,7 +104,15 @@ pub struct Request {
 
 impl Request {
     pub fn validate(&self) -> Result<()> {
-        self.pair.validate()?;
+        self.validate_with_resource_profile(crate::ntfs_admission::ResourceProfile::AlphaV1)
+    }
+
+    pub fn validate_with_resource_profile(
+        &self,
+        resources: crate::ntfs_admission::ResourceProfile,
+    ) -> Result<()> {
+        self.pair
+            .validate_with_resource_profile(resources.native_profile())?;
         ensure!(
             self.schema_version == 1
                 && self.source_sha256.len() == 64

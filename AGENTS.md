@@ -108,6 +108,12 @@ shadowless rollback and marker verification. No profile-2 native VM conversion,
 interruption or power-loss qualification is claimed; see
 [the CLI workflow](docs/cli-workflow.md). The default source limits and the
 128 GiB live partition limit remain unchanged.
+The later explicit larger-tree profile now propagates a separate 2 PiB routing
+budget through pair validation, source requests, shadow work and recovery. It
+is derived from streaming target bitmap capacity, not native qualification.
+Unprofiled/default routes retain 128 GiB. Resource-profile journal/ticket binding,
+exact space/format/ownership checks, file/data budgets and scratch costs remain;
+unsupported or over-budget layouts must still refuse rather than force execution.
 
 The current experimental larger-tree candidate separately opts into up to
 1,024 files, 256 directories and 4 GiB logical contents, bound to the v2 journal,
@@ -117,7 +123,8 @@ Its later source geometry path accepts 4 KiB through 2 MiB power-of-two clusters
 with 512-byte sectors, 1 KiB MFT records and 4 KiB indexes. Target clusters remain
 4 KiB; byte-based retention planning and geometry-sized MFT-mirror checks are
 required. This source change has compilation evidence only, no native run, and
-does not remove the 128 GiB partition or other resource ceilings.
+does not remove the default 128 GiB partition ceiling or the other resource
+ceilings; the explicit expanded routing budget is described above.
 Its protected native source collector now emits schema 9 with compact streaming
 bitmap summaries. Both native bitmap data hashes/counts must match the frozen
 raw bitmap, and before/after transcript/first-page observations must agree.
@@ -131,8 +138,9 @@ retains assembled maps. Standalone lock/dismount capture has an explicit
 schema-2 streaming profile, with mandatory post-lock views, diagnostic-only
 post-dismount failures, preserved native errors and the same opaque frozen-handle
 token. Default schema-1 witnesses retain their assembled path and bounds.
-The live partition ceiling remains unchanged; raw ReFS container/allocator
-traversal bounds still need to scale before larger-volume routing is qualified.
+Default routing remains limited to 128 GiB. Expanded routing uses 2 PiB with
+streamed metadata; metadata-complexity and admission limits still apply, and
+native larger-volume conversion/recovery remain unqualified.
 The expanded retained-extent check now has a bounded multilevel Medium allocator
 walker (1,048,576 pages, 33,554,432 leaf rows, depth eight) that decodes leaves as they
 arrive and rejects repeated physical pages, bad child bindings and incomplete
@@ -160,8 +168,9 @@ and page-transcript digests plus the root observation. Lookup data and its
 private root/volume binding are not serialized; imported JSON cannot recreate
 them. Both container copies must agree, with every followed page authenticated.
 See [compact traversal](docs/refs-compact-containers.md). This has compilation
-evidence only. The public partition ceiling and other conversion/resource
-limits remain; no native qualification is inherited from the frozen alpha.
+evidence only. Default routing and other conversion/resource limits remain;
+the explicit expanded routing budget is not native qualification and inherits
+no driver acceptance or recovery result from the frozen alpha.
 Separate opt-in source-stream and bitmap assembly primitives support larger
 logical ranges. See
 [streaming budgets](docs/ntfs-streaming-budget.md) and

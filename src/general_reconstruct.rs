@@ -164,7 +164,11 @@ impl Request {
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
             "missing pinned general target expectation"
         );
-        self.pair.validate()?;
+        self.pair.validate_with_resource_profile(
+            self.source_resource_profile
+                .unwrap_or_default()
+                .native_profile(),
+        )?;
         crate::general_shadow::validate_mount_paths(&self.expected_mount_paths)?;
         if let Some(label) = &self.expected_source_label {
             label.validate()?;

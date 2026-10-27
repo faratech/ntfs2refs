@@ -173,7 +173,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
     resources: crate::ntfs_admission::ResourceProfile,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
 ) -> Result<QualifiedTree> {
-    pair.validate()?;
+    pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
         (1..=profile.max_changed_bytes()).contains(&max_change_bytes)
             && max_change_bytes <= pair.source.identity.partition_bytes,

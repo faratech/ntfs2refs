@@ -72,7 +72,7 @@ pub fn verify_frozen_tree_with_resource_profile(
     resources: crate::ntfs_admission::ResourceProfile,
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetSemantics> {
-    pair.validate()?;
+    pair.validate_with_resource_profile(resources.native_profile())?;
     expected.validate_with_resource_profile(resources)?;
     ensure!(
         target.binding() == &pair.shadow,
@@ -225,14 +225,14 @@ pub fn verify_and_freeze(
     resources: crate::ntfs_admission::ResourceProfile,
     events: &mut Vec<NativeEvent>,
 ) -> Result<(GeneralFrozenPartition, FrozenTargetPreservation)> {
-    pair.validate()?;
+    pair.validate_with_resource_profile(resources.native_profile())?;
     general_shadow::Request {
         schema_version: 1,
         pair: pair.clone(),
         source_sha256: source_sha256.into(),
         expected_mount_paths: None,
     }
-    .validate()?;
+    .validate_with_resource_profile(resources)?;
     ensure!(
         source.binding() == &pair.source
             && (1..=profile.max_changed_bytes()).contains(&max_change_bytes),

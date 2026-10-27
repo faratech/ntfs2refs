@@ -52,7 +52,7 @@ refuse the entire observation. The default one-level reader is preserved.
 
 This expanded walk has compilation evidence only; the historical corpus results
 above do not qualify it. Default container-table traversal retains its existing bounds,
-and the live 128 GiB partition ceiling remains. No write-
+and the default 128 GiB partition ceiling remains. No write-
 set omission, whole-volume ownership or native conversion claim is added.
 
 The experimental Small allocator reader now also supports multilevel trees,
@@ -67,7 +67,7 @@ pretending that Small covers the entire volume. Leaves are decoded incrementally
 This Small-tier expansion has compilation evidence only. Its default entry
 still uses the original root-only profile, with no new field in legacy JSON
 when there are no child pages. Larger-volume routing
-remain unfinished; native qualification and the partition ceiling are unchanged.
+remains unfinished; native qualification and default routing are unchanged.
 
 Container lookup now borrows the validated, sorted mapping rows and uses binary
 search instead of constructing duplicate B-tree indexes in Medium/virtual-root
@@ -96,7 +96,10 @@ The larger-tree profile now uses a separate [compact container walk](refs-compac
 retaining only live ID/address indexes while hashing all page and row-value data.
 Serialized summaries cannot recreate those indexes. It is connected to bootstrap,
 virtual-root and allocator checks plus frozen reconstruction qualification; native
-qualification and the public partition ceiling remain unchanged.
+qualification remains unchanged. Default routing retains 128 GiB, while the
+explicit experimental profile propagates a 2 PiB routing budget through the
+streaming paths. This is not a guarantee that format, data, metadata-complexity
+or journal/scratch limits admit a particular volume.
 
 The streamed Medium result marks `rows` as an empty diagnostic collection and
 adds `streamed` accounting. `child_pages` contains at most the first 32 child

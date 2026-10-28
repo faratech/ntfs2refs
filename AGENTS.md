@@ -1,5 +1,17 @@
 # ntfs2refs project guidance
 
+LATEST INTERRUPT949 LIVE20:26:54Z: same5364creation1793217057038/wrapper700,
+taskRunning/source3/shadow3. Fresh qualification certificate/admitted-assessment/
+target-preservation/capture/result completed; request/backing/journal-location/
+progress emitted, journal preparation started. Reads597.547GB/write73.443MB,
+peak68.7MiB. Native+wrapper86 has NOT occurred; no source apply/recovery yet.
+Preservation/recovery helpers remain unexecuted until realterminal86 proof.
+Normal43/44 and all44 snapshots remain protected. Evidence manifest
+evidence/native-composite-alpha-20261028.json independently rehashed7completed
+normal artifacts; current recovery/unsafe-case gates explicitly incomplete.
+Do NOT reset one50GBbudget or touch originalmain.rs diff. Source/J/packed must
+not be opened by observers while writer lives. delta_artifact_reader monitors.
+
 INTERRUPT949... VERIFIED LIVE20:18:07Z:5364creation1793217057038/wrapper700;
 source3/shadow3, taskRunning, read436.628GBapprox/write72.685MB, peak68.7MiB.
 Packed capture completed70,729,728B; no certificate/journal/source apply yet.

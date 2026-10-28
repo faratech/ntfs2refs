@@ -922,3 +922,36 @@ no source writes yet. Lab248,358,640,428 bytes, host free97,110,806,528 bytes.
 Continue this same task; do not restart it. Stage1 Rust postcheck tools are
 separately pinned for candidate11 (fcd65fdd...c661b1, ffc00654...d5335), with
 no guest execution. Native cutover/application results remain pending.
+
+Candidate11 is now TERMINAL, exit1 after writing its complete journal but before
+ticket persistence/activation. Native file observation incorrectly applied the
+legacy768-MiB bound before explicit v2 validation. The real journal is an
+ordinary archive file, length1,219,848,954, allocation1,219,850,240, links1.
+Its 33-file terminal archive verified, manifest
+929f9ca94dc03224237be092cc0689d43b5e5c48c702f21d09368041fe9cf68c.
+No source payload write occurred. OFF checkpoint
+6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3 preserves it and the journal; fifteen
+checkpoints remain. Never activate/replay this unticketed old journal.
+The native file observer now receives the explicit profile in BOTH before and
+after snapshots; legacy/default observers retain their original limit and all
+link/type/attribute/storage guards remain. Metadata-only native probe on the
+same journal accepted v2, rejected legacy, observed stable identity and links1,
+and read/wrote zero journal content bytes. Binary
+3191346e84bc3910e4213f8715653a42a3ebbb5e1f3d496dddd71b9b75b5e29f,
+result5d3103fbfa224dd02014979010fc7657d0398c7fb14d72cf8b3475eb8bdb6db3,
+under candidate11/journal-profile-probe. No unit tests were added/run.
+
+Candidate12 is LIVE: cb25d12237454c3999f319547f48b057, PID724 created
+2026-10-28 02:46:06.952459 UTC, lab-convert-admitted-tree.exe
+cc02ca4075e0d5bb5d95da964a8033d648d299704a80d77aceeccd3eebf7476b.
+Source3d4fb8217f88bc4001ebcc71436d8ff0bd24aed6 plus unchanged d99591b5 patch;
+request12bf6a6eab29f0514a23816df5b872ab6b2454a1a33e3deed4702ab6b4b7f082.
+Binder1e693cc992ca4d8f0c4871ee66459572778fd30a522adc358e7fdd77a5b6887a;
+recovery980849e702ed542942b407430b5948110fdfbf06c5206012803d5d0bf4f3c5f5.
+It is a fresh operation with explicit tiny-cache sync, existing large payload,
+1536-MiB journal and20-GiB growth allowance; no interruption/no source moves.
+At02:46:53 UTC the same PID was in source qualification; source frozen RO,
+shadow writable for later metadata sync. Lab249,565,790,317 bytes, host free
+95,900,852,224 bytes; cap256 GiB/reserve64 GiB/RAM4 GiB. Observe the same task
+with Collect-StreamingV2Conversion.ps1 -Candidate candidate12; do not redispatch.
+Native application/cutover results remain pending. Preserve every prior branch.

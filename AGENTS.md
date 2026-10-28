@@ -1,5 +1,32 @@
 # ntfs2refs project guidance
 
+LATEST — SELECTED60GiB SOURCE CONVERSION PRESERVED48 / AFFIRMATIVE MAIN CLI LIVE:
+Selected4d3 native reports PASS exacttarget13184ed404e1ce882bd5248a90d0a8450317f034544edb87a8981be7befcac4b,
+106patches205,512,704B/J411,051,645B;12objects/7fullhashes/all5users matched,
+HNDclosed/label/G preserved. Wrappertask1 missingExitCode is retained separately,
+notchangedto0. Explicitackpreservation archivedclosedmetadata andsaved48=
+9e63e9d2-a0e4-408f-87b5-26d31fbdcc24,parentc670...,ALL48 retained/OFF0RAM.
+Rootsinglebooted48 once;5usercoldbootreadbackpassedSHAf1508477acc256e02092a92040517bf6e52860b7884d14cbdfb1a9e873aef22b.
+
+MainCLIaffirmative case drive-cli-affirmative-20261028-b is NOW LIVE. Firstcase
+without-b failed onlypreflight(Smoke disk6 notattachedafterreboot), no native
+conversiondispatch/sourcewrites; retainedthatintent/failure. Smoke backingCfile
+100MiB stillretained; doNOT assume permanentattachment survivesOSreboot.
+New run d33d2e04518346f8bac2ca4bbfb757b3, taskN2R-DriveCliAffirmative-d33d2e04518346f8bac2ca4bbfb757b3,
+guestC:\ntfs2refs\drive-cli-affirmative-d33d2e04518346f8bac2ca4bbfb757b3.
+ActualmainPID3660creation1793228776720 LIVE23:08:01Z(read49GB/write154214),
+parent4948; main866fc5bbf0f95ef5a091eb211e846573197f7b9bd27c9a1848f45e8ba6951627.
+Exact --drive F --partition2,stdinyes; prompt+AUTOMATICscratchcreationpassed.
+EngineRootC:\ProgramData\ntfs2refs\runs\58877faed3f4dc12e7e9605ebf717826\conversion.
+SOURCE NOWoldFdisk1/GPT1b191872... attrs3. SHADOW NOWnewmanageddisk6/GPT
+96c193ff-1f57-4ea3-b050-1d72bc456f9b,partition7789c136-b310-4ed2-8497-f2dd3d1f4be7,
+52GiB at32MiB; JOURNAL NOWOSdisk0/C,allowadditionaltrue,max10,223,894,528B.
+OldselectedG4ReFS andshadow5off3 are preserved, NOT currenttargets. No binder,
+manualshadow orjournal was supplied to mainCLI. DoNOT stop/restart/restore/
+format/replay/openSource/J/packed whilelive. delta_artifact_reader metadata-only
+monitor nowtracks1/6/main3660; rootcontrols. One50GBepoch unchanged/all48preserved.
+User main.rs originalcapabilities1line diff remains unstaged; CLIedits committed.
+
 LATEST22:49:23Z selected4d3... apply.json/apply-events.json nowpersisted;
 FINALIZATION stillLIVE same3332/1793224099967. Source4 remainsOFFLINE1/shadow5=3,
 read1,133.735GB/write828.566MB. No terminal/nativehandoff outcome yet. Do NOT

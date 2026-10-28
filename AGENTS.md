@@ -1,5 +1,17 @@
 # ntfs2refs project guidance
 
+Native compact postcheck controller ready: lab/CompactPostcheck.ps1 phases
+BootVerify/Mutate/AfterMutation/RebootVerify/Preserve, exact f5ad/all37 branch,
+pinned toolset2, strict semantic/native hashes, fresh boot proof, no journal
+replay. Recovery dispatcher lab/Start-CompactFixtureRecovery.ps1 ready separately,
+never restores VM itself. Interrupt ONLY preserved preapply5971/all expected
+count, controlled exit86 after1 flushed write, requires source3; resume/rollback
+require source1+shadow3 and zero handoff, exact prepared request/ticket and
+fresh per-role output. Uses compiled exact-fixture gate, no production admission.
+Syntax passed; no unit tests/builds needed. Root must preserve converted branch
+and completed postcheck checkpoint BEFORE restoring ONLY5971 for recovery.
+Do not run parallel mutation/conversion jobs or repeat stateful phases.
+
 COMPACT IN-PLACE FIXTURE CONVERSION NATIVE PASSED c75ec9ec8a104f99b630c92343b44ca1.
 Raw138 patches/70,406,144 source bytes, full premount target2b2aa8c51a0ed3676a31255f6121152fedfb29b459c20246c1546135fe769391.
 Real driver mounted ORIGINAL disk1/GPT1b191872/partitionf06075a8 as ReFS4K,

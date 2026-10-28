@@ -8,7 +8,7 @@ use std::{fs::File, path::Component, time::SystemTime};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ExperimentalCompactOperation {
+pub enum ExperimentalCompactOperation {
     /// Finish journal writes, leaving the exact ReFS image offline and unmounted.
     Resume,
     /// Restore the complete original, close replay with ABT, then verify NTFS.
@@ -22,7 +22,7 @@ pub(crate) enum ExperimentalCompactOperation {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ExperimentalCompactInputs {
+pub struct ExperimentalCompactInputs {
     pub request: PathBuf,
     pub request_sha256: String,
     pub ticket: PathBuf,
@@ -139,7 +139,7 @@ impl HeldInput {
 /// protocol gates independently recheck complete immutable contents, exact
 /// delta coverage, normalized original bytes and candidate image hashes before
 /// writing. Serialized source-admitted/success booleans are never authority.
-pub(crate) fn recover_compact_experimental(
+pub fn recover_compact_experimental(
     operation: ExperimentalCompactOperation,
     inputs: &ExperimentalCompactInputs,
     output: &Path,

@@ -1,5 +1,43 @@
 # ntfs2refs project guidance
 
+FRESH ADMITTED COMPACT RUN LIVE: 2ba889b74885441195fd5d075b4ab1d5, task
+N2R-AdmittedCompact-2ba889b74885441195fd5d075b4ab1d5, PID5568 creation1793209871984,
+producer e2a4f0e7343fa5a2f9e609c2aabcdf4caa5773111219c7696a4be895ee1c5342
+(b784c65 plus unchanged pre-existing main.rs diff). Host
+compact-admitted-20261028; guest C:\ntfs2refs\compact-admitted-2ba889b74885441195fd5d075b4ab1d5\result.
+VM2401593c RUNNING4GiB from saved6348491e/all41; no restore performed. Added
+F:\notes\compact-nonzero.bin 4,194,341B through ordinary NTFS writes, SHA
+cbad760982dc9f68b3e65e77dc6cab7d77db005bbe561af55a1be76f498b37db,
+native VCN0/clusters0x41/NTFS LCN0x21237; NO source extent rearrangement.
+Only independently bound R scratch reformatted DevDrive/ReFS4K. New actual
+binding request2a3d5d3543676120bb613fbba17337d4b72f3a17bcd6b51e5cef1263738bca49,
+binding evidence4b0ea2d978fcef95f9557c7402e82dd3a204b712fcbf44fbc11454e85aa99b60.
+Original controller36871 TERMINAL1 on benign binder stderr under PS5 ErrorAction
+Stop; actual binder finished/published both files, process absent/no task.
+Reused completed pins WITHOUT repeating binder/source prep/format; existing
+continue-prepared.ps1 dispatched converter once and returned0. Start17:51:11Z.
+At17:57:05Z SAME PID read100,484,933,887/write1,423,179, source3 OFFLINE/READ_ONLY,
+shadow0. Earlier source2 ONLINE/READ_ONLY was its legitimate native observation
+lease. Source-basis/frozen/label/mount artifacts exist; qualification/construction
+outcome remains pending. Do NOT stop/restore/reformat/redispatch or open source/
+journal while live. Root controls; delta_artifact_reader monitors read-only.
+Fresh live source certificate is required; no old fixed-image exception used.
+Initial1.5GiB and remaining768MiB admissions passed; cap258GiB/reserve64GiB
+unchanged, journal max256MiB. Do not start more VM work.
+
+Code b784c65 adds consuming constructor-owned metadata completion with full
+input digest/held IDs, fresh one-process constructor/admission/compact journal/
+apply, and separate pinned compact restart library. Allocation still retains
+exact disposable enrollment; no general/production scope is claimed. Fresh
+converter+binder release builds passed; no units. Host wrapper now captures
+native stderr notices and checks actual exit status. Typed experimental restart
+has lab-recover-native-composite entry, build passed, SHA
+6b4c087b95f40262475ea2f61b671d4d06a546809e43c87e22662e59e42293f7;
+NOT native-qualified or the live producer. Do not replace live binary.
+Automatic approval review blocked deleting rebuildable target/debug and
+target/release/build with only "blocked by policy"; nothing deleted. Do NOT
+retry via another mechanism. All41 checkpoints/evidence remain. main.rs unstaged.
+
 COMPACT ROLLBACK RESTORED EXACT EC5 + NATIVE READBACK PASSED. Run386c482e1fd348a4bf0e95f27d8a1ce4
 restored138 patches/70,406,144B, exact full source
 ec5b89de85e24bbb0cdc5f99e907450dc847228ca997465961ab22f89d983dac,

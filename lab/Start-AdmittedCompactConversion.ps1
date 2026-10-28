@@ -64,13 +64,14 @@ try{
         param($Stage,$Run,$BinaryPin,$BinderPin,$Source,$Shadow,$Journal);$ErrorActionPreference='Stop'
         $binary=Join-Path $Stage 'lab-convert-native-composite.exe';$binder=Join-Path $Stage 'ntfs2refs-bind.exe';$request=Join-Path $Stage 'conversion.json';$task='N2R-AdmittedCompact-'+$Run
         if((Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant() -cne $BinaryPin -or (Get-FileHash -LiteralPath $binder).Hash.ToLowerInvariant() -cne $BinderPin -or (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue)){throw 'Fresh pinned task/tools required.'}
+        $ErrorActionPreference='Continue'
         $log=@(& $binder --source $Source --shadow $Shadow --journal $Journal --experiment-id $Run --experimental-large-journal --experimental-large-tree --experimental-streaming-payload --max-journal-bytes 268435456 --output $request --evidence (Join-Path $Stage 'binding.json') 2>&1)
-        $exit=$LASTEXITCODE;$log|Out-String|Set-Content -LiteralPath (Join-Path $Stage 'binding.log') -Encoding UTF8
+        $exit=$LASTEXITCODE;$ErrorActionPreference='Stop';$log|Out-String|Set-Content -LiteralPath (Join-Path $Stage 'binding.log') -Encoding UTF8
         if($exit -ne 0){throw 'Read-only actual binding refused; preserve log.'}
         $pin=(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant();$out=Join-Path $Stage 'result'
         $cli=@('--request',$request,'--request-sha256',$pin,'--output',$out,'--acknowledge-enrolled-disposable-devices','--maximum-placement-bytes','12884901888','--maximum-placement-submissions','4096','--maximum-exception-bytes','16777216')
-        $args=($cli|ForEach-Object {'"'+$_.Replace('"','\"')+'"'}) -join ' '
-        Register-ScheduledTask -TaskName $task -Action (New-ScheduledTaskAction -Execute $binary -Argument $args) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null
+        $argumentText=($cli|ForEach-Object {'"'+$_.Replace('"','\"')+'"'}) -join ' '
+        Register-ScheduledTask -TaskName $task -Action (New-ScheduledTaskAction -Execute $binary -Argument $argumentText) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null
         @{task_name=$task;guest_stage=$Stage;run_id=$Run;output_dir=$out;binary=$binary;binary_sha256=$BinaryPin;arguments=$cli;request=$request;request_sha256=$pin;max_journal_bytes=268435456;source_writes_require_live_certificate=$true}
     }
     Save-New 'dispatch.json' $dispatch

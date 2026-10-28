@@ -17,16 +17,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[allow(
-    dead_code,
-    reason = "experimental composite restart entry awaits native qualification"
-)]
 mod compact;
-#[allow(
-    unused_imports,
-    reason = "typed restart entry retained for owning-guest qualification"
-)]
-pub(crate) use compact::{
+pub use compact::{
     ExperimentalCompactInputs, ExperimentalCompactOperation, recover_compact_experimental,
 };
 

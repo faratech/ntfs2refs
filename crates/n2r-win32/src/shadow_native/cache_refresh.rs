@@ -256,6 +256,27 @@ pub fn run(
         metadata_updated += 1;
     }
     volume.sync_all()?;
+    // Recheck every object after restoring parent/root metadata as well. This
+    // catches late inheritance or timestamp changes without reading payload.
+    let mut metadata_verified = 0;
+    for item in input {
+        let handle = open(
+            &format!("{}{}", root, item.components.join("\\")),
+            item.directory,
+            false,
+        )?;
+        let actual = snapshot(&handle);
+        if Some(query_bytes(&actual, 18, 24)?[8..24].to_vec()).as_ref()
+            != identities.get(item.components)
+            || query_bytes(&actual, 0, 40)? != basic_bytes(item)
+            || !security_matches(item, &actual, &same_security)?
+        {
+            return Err(invalid(
+                "final shadow metadata readback differs from source",
+            ));
+        }
+        metadata_verified += 1;
+    }
     target.revalidate_route(&mut events)?;
     if native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?
         != source_before
@@ -267,6 +288,7 @@ pub fn run(
         serde_json::json!({"schema_version":1,"kind":"reused-shadow-small-cache-refresh",
         "cache_created":!cache_exists,"cache_payload_bytes_written":payload_written,
         "unchanged_user_payload_bytes_written":0,"metadata_objects_updated":metadata_updated,
+        "metadata_objects_verified":metadata_verified,"metadata_readback_verified":true,
         "source_payload_writes":0,"source_before":source_before,"events":events,
         "privileges":privileges.audit(),"requires_fresh_conversion_admission":true,"conversion_qualified":false}),
     )

@@ -1,5 +1,5 @@
 //! Immutable request shared by general native shadow construction and freeze.
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use n2r_win32::general_layout::GeneralSourceShadowBinding;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -80,6 +80,123 @@ pub fn allocate_private_tree(
         pair,
         &native_inputs(tree),
     )?)
+}
+
+/// Copy only bounded recognized system streams; large user streams remain
+/// source-backed. All source bytes are checked through the existing NTFS reader.
+#[cfg(windows)]
+pub fn materialize_private_system_payloads(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    raw: &crate::ntfs_inspect::NtfsInspection,
+    tree: &crate::shadow_tree::Tree,
+    template: &mut n2r_win32::shadow_native::private_tree::PrivateTree,
+    budget: &mut crate::ntfs_inspect::StreamTransferBudget,
+) -> Result<(serde_json::Value, Vec<u8>)> {
+    ensure!(
+        source.binding() == template.source_binding(),
+        "system source binding differs"
+    );
+    let mut events = Vec::new();
+    let before = source.state(&mut events)?;
+    ensure!(
+        before.disk_attributes == 3,
+        "system payload source must stay excluded"
+    );
+    let selected: Vec<_> = tree
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| {
+            !o.directory
+                && o.path
+                    .first()
+                    .is_some_and(|s| s == "System Volume Information")
+        })
+        .collect();
+    for (_, object) in &selected {
+        ensure!(
+            object.length <= 1024 * 1024,
+            "system stream exceeds bounded materialization profile"
+        );
+        let identities: Vec<_> = raw
+            .files
+            .iter()
+            .filter(|f| f.record_number == object.record_number)
+            .collect();
+        ensure!(
+            identities.len() == 1 && identities[0].sequence_number == object.sequence_number,
+            "system source identity differs"
+        );
+        let proof = crate::ntfs_inspect::copy_plain_stream_with_budget(
+            source,
+            raw,
+            object.record_number,
+            budget,
+            &mut std::io::sink(),
+        )?;
+        ensure!(
+            proof.logical_bytes == object.length && Some(&proof.sha256) == object.sha256.as_ref(),
+            "system source preflight differs from canonical tree"
+        );
+    }
+    let mut receipts = Vec::new();
+    let mut writer = |index: usize, file: &mut std::fs::File| -> std::io::Result<()> {
+        let object = tree
+            .objects
+            .get(index)
+            .ok_or_else(|| std::io::Error::other("system source index absent"))?;
+        if object.directory
+            || !object
+                .path
+                .first()
+                .is_some_and(|s| s == "System Volume Information")
+        {
+            return Err(std::io::Error::other("non-system payload refused"));
+        }
+        let proof = crate::ntfs_inspect::copy_plain_stream_with_budget(
+            source,
+            raw,
+            object.record_number,
+            budget,
+            file,
+        )
+        .map_err(std::io::Error::other)?;
+        if proof.logical_bytes != object.length || Some(&proof.sha256) != object.sha256.as_ref() {
+            return Err(std::io::Error::other("system source transfer differs"));
+        }
+        receipts.push(proof);
+        Ok(())
+    };
+    let native = template.materialize_system_payloads(&native_inputs(tree), &mut writer)?;
+    drop(writer);
+    let cache = selected
+        .iter()
+        .find(|(_, o)| o.path == ["System Volume Information", "IndexerVolumeGuid"])
+        .context("source indexer cache required by bounded metadata restorer")?
+        .1;
+    ensure!(cache.length == 76, "source indexer cache length differs");
+    let mut payload = vec![0u8; 76];
+    let proof = crate::ntfs_inspect::read_plain_stream_range_into(
+        source,
+        raw,
+        cache.record_number,
+        0,
+        &mut payload,
+        budget,
+    )?;
+    ensure!(
+        Some(&proof.sha256) == cache.sha256.as_ref(),
+        "source indexer cache digest differs"
+    );
+    ensure!(
+        source.state(&mut events)? == before,
+        "system source state changed"
+    );
+    Ok((
+        serde_json::json!({"native":native,"source_receipts":receipts,"source_payload_writes":0,
+        "conversion_qualified":false}),
+        payload,
+    ))
 }
 
 /// Supply only a bounded exception range to its same named private file.

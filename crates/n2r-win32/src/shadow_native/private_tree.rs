@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod placement;
 mod source_backed;
 mod supply;
+mod system_payloads;
 pub use source_backed::{MountedAllocation, PayloadRoute, SourceBackedRoutes};
 pub use supply::{SupplyPlan, SupplyRange};
 
@@ -23,9 +24,20 @@ pub struct PrivateTree {
     placement_started: bool,
     placement_complete: bool,
     placement_progress: serde_json::Value,
+    system_identities: BTreeMap<Vec<String>, Vec<u8>>,
+    system_payloads_started: bool,
+    system_payloads_complete: bool,
 }
 
 impl PrivateTree {
+    /// Only bounded recognized SVI files, not user payload or raw source writes.
+    pub fn materialize_system_payloads(
+        &mut self,
+        input: &[Input<'_>],
+        writer: &mut dyn FnMut(usize, &mut File) -> io::Result<()>,
+    ) -> io::Result<serde_json::Value> {
+        system_payloads::run(self, input, writer)
+    }
     pub fn mounted_allocation_snapshot(&self) -> io::Result<MountedAllocation> {
         source_backed::allocation(self)
     }
@@ -301,6 +313,7 @@ impl PrivateTree {
             "hybrid_shadow_verification_bytes_read":verification_read_bytes,
             "formatter_preflight_may_read_cache":true,"source_payload_writes":0,
             "security_timestamps_attributes_pending":true,"system_objects_pending":true,
+            "system_payloads_pending":!self.system_payloads_complete,
             "physical_payload_io_measured":false,"conversion_qualified":false}),
         )
     }
@@ -591,7 +604,7 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
     // Reuse the existing narrow formatter-cache preflight; unknown SVI entries
     // refuse. Target-only IndexerVolumeGuid normalization is already scoped to
     // these enrolled disks and never touches the excluded source.
-    let _existing = existing_system_entries(&root, &initial, input, true, &mut events)?;
+    let system_identities = existing_system_entries(&root, &initial, input, true, &mut events)?;
     let volume = File::options()
         .read(true)
         .write(true)
@@ -666,6 +679,9 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
         placement_started: false,
         placement_complete: false,
         placement_progress: serde_json::Value::Null,
+        system_identities,
+        system_payloads_started: false,
+        system_payloads_complete: false,
     };
     tree.require_source_excluded()?;
     Ok(tree)

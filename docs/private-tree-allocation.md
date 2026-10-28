@@ -1,5 +1,35 @@
 # Allocation-only canonical tree staging
 
+## Canonical metadata and small system payloads
+
+The compact staging path now supports explicit `--restore-source-metadata`.
+Before publishing source metadata, it copies only the recognized bounded SVI
+streams through the checked NTFS reader. Existing formatter objects must retain
+their measured IDs, single-stream/link shape and bounded length; missing known
+objects are created privately. Every supplied stream is flushed and fully hashed
+back. Supply is one-attempt only, with at most1 MiB per stream/3 MiB total; unknown
+system paths refuse. The current three source streams total20,568 bytes.
+
+After closing the private user handles, the existing exact-enrolled-guest
+`cache_refresh` restorer checks the complete canonical namespace, restores both
+security descriptor views plus basic metadata, and now performs a final all-
+object identity/basic/security readback after parent/root restoration. It writes
+no large user payload. This publication path remains confined to the existing
+isolated disposable guest/disks; it is not an online production exposure policy
+for uninitialized scratch files.
+
+Source-backed routes now record native file IDs. After restoration, each owning
+file's ID/EOF/link state and every tracked physical range are rechecked before
+and after a fresh mounted bitmap capture. Allocation observations therefore
+follow all small system writes and metadata COW, rather than predating them.
+The shadow is then frozen and captured through the existing difference reader.
+Source admission, frozen graph completeness and cutover/recovery remain separate.
+
+The controller's fresh `-RestoreSourceMetadata` case requires all32 preserved
+snapshots/restored6ff, the same4-GiB forecast/768-MiB changed-byte cap, and a new
+root. Release build and controller syntax passed; native new-path result pending.
+No unit tests added/run.
+
 ## Native frozen difference capture passed
 
 Run98c2e2625f94488b8dfbb85eb3118184 PASSED end-to-end private staging,

@@ -48,6 +48,8 @@ fn main() -> anyhow::Result<()> {
         compact_output: Option<PathBuf>,
         #[arg(long, default_value_t = 805306368)]
         max_changed_bytes: u64,
+        #[arg(long, requires = "compact_output")]
+        restore_source_metadata: bool,
         #[arg(long, requires = "materialize_relocations")]
         verify_logical_hybrid: bool,
         #[arg(long, default_value_t = 268435456)]
@@ -121,6 +123,7 @@ fn main() -> anyhow::Result<()> {
         "place_source_prefixes":args.place_source_prefixes,
         "source_backed_payloads":args.source_backed_payloads,
         "compact_output":args.compact_output,"max_changed_bytes":args.max_changed_bytes,
+        "restore_source_metadata":args.restore_source_metadata,
         "max_placement_bytes":args.max_placement_bytes,"max_placement_moves":args.max_placement_moves,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "verify_logical_hybrid":args.verify_logical_hybrid,
@@ -278,7 +281,22 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            let (system_supply, indexer_payload) = if args.restore_source_metadata {
+                let (receipt, payload) = general_shadow::materialize_private_system_payloads(
+                    source.as_mut().context("system source reader absent")?,
+                    inspection
+                        .as_ref()
+                        .context("system source inspection absent")?,
+                    &tree,
+                    &mut template,
+                    &mut budget,
+                )?;
+                (Some(receipt), Some(payload))
+            } else {
+                (None, None)
+            };
             let mut report = template.report()?;
+            report["system_payload_supply"] = serde_json::to_value(system_supply)?;
             report["source_materialization_ranges"] = serde_json::to_value(transfers)?;
             report["private_unverified_prefixes"] = serde_json::to_value(unverified_prefixes)?;
             report["source_prefix_placement"] = serde_json::to_value(placement)?;
@@ -295,12 +313,32 @@ fn main() -> anyhow::Result<()> {
                     // Preserve diagnostics before closing every native staging
                     // handle. Only the disposable shadow is locked/frozen.
                     save(&args.output.with_extension("pre-freeze.json"), &report)?;
-                    let allocation = template.mounted_allocation_snapshot()?;
+                    drop(template);
+                    if let Some(payload) = &indexer_payload {
+                        // Existing exact-lab-only restorer; no raw source write.
+                        // Its full namespace and both security views are checked.
+                        let metadata = n2r_win32::shadow_native::cache_refresh::run(
+                            routes.pair(),
+                            &general_shadow::native_inputs(&tree),
+                            payload,
+                            |a, b| {
+                                ntfs2refs::ntfs_attestation::same_security(a, b)
+                                    .map_err(std::io::Error::other)
+                            },
+                        )?;
+                        save(
+                            &args.output.with_extension("metadata-restoration.json"),
+                            &metadata,
+                        )?;
+                        report["source_metadata_restoration"] = metadata;
+                        report["security_timestamps_attributes_pending"] = false.into();
+                        report["system_objects_pending"] = false.into();
+                    }
+                    let allocation = routes.revalidate_mounted_and_capture()?;
                     save(
                         &args.output.with_extension("mounted-allocation.json"),
                         &allocation,
                     )?;
-                    drop(template);
                     let mut events = Vec::new();
                     let frozen = n2r_win32::GeneralFrozenPartition::isolate(
                         routes.pair().shadow.clone(),
@@ -386,6 +424,7 @@ fn main() -> anyhow::Result<()> {
         "place_source_prefixes":args.place_source_prefixes,
         "source_backed_payloads":args.source_backed_payloads,
         "compact_output":args.compact_output,"max_changed_bytes":args.max_changed_bytes,
+        "restore_source_metadata":args.restore_source_metadata,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,

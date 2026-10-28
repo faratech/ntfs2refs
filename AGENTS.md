@@ -1,5 +1,21 @@
 # ntfs2refs project guidance
 
+Canonical metadata integration IMPLEMENTED/build+controller syntax passed;
+native new-path pending. --restore-source-metadata copies only recognized
+SVI streams via checked NTFS preflight/transfer+native full readback (current
+20568 bytes, <=1 MiB/file,3 MiB total), preserving/rechecking formatter IDs and
+refusing unknown objects/ADS/aliases. User prefixes remain source-backed.
+After private handles close, reuse exact-enrolled-guest cache_refresh to restore
+full canonical namespace/root/SD views/times/attrs, now final all-object basic/
+security/ID readback after parent restoration. This is isolated disposable lab
+publication, NOT production online scratch exposure policy. Routes carry native
+file IDs and recheck IDs/EOF/links/all physical mappings after metadata COW,
+then take FRESH mounted allocation and freeze before difference capture.
+Controller -RestoreSourceMetadata requires fresh difference-capture-metadata-
+20261028 root/restored6ff/all32 snapshots, same4-GiB forecast/768-MiB output cap.
+Do not reuse constructors/evidence. Source admission/full frozen graph/compact
+journal cutover/recovery remain. No unit tests added/run.
+
 FROZEN SOURCE-BACKED DIFFERENCE CAPTURE PASSED, run98c2e2625f94488b8dfbb85eb3118184,
 source0d2e0f6+pre-existing main.rs change, producer7249c42533a88a2f1262ca01a6101f960176b679f14a96852dc5f6e5a9967b53.
 Result1f4cac974ccee3e36108c33ccf51d4d3a4a6cd416d6e0d8e168b795e9d595086;

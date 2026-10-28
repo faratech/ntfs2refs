@@ -1,5 +1,24 @@
 # Allocation-only canonical tree staging
 
+The metadata/system runf9c4577e923142f486a49b50be4fc50e copied/hashed all three
+system streams successfully, then refused a descriptor-view mismatch during
+the old child-first restoration. Result92574939fad21584b373fd8a7ea0605ae2910ab11f905e9d388a584bc7f5fc94
+and read-only user-metadata observation416b1f2707b9abf0fa93ec1c006e27ecc5037de00a7593fa8e6e48fa6e86123a
+are preserved OFF at63b6e205-f174-4600-8c2b-253a37c94cf1, all34 checkpoints.
+The observation confirmed four child files already had matching kernel/API
+control9404 while untouched root-level files remained private9004. It did not
+query SVI, so it does not establish the exact failed descriptor component.
+
+The restorer now performs security parent-first, explicitly aligns DACL
+protection using the source's real non-null ACL when that bit differs, then
+uses BackupWrite for the full descriptor. Basic metadata follows child-first,
+with exact final ID/basic/both-security-view comparisons still required. This
+uses the documented [protection flags](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-information)
+and [SetSecurityInfo inheritance behavior](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo);
+no mismatched bits are masked. Build passed; fresh `-ParentFirstMetadata`
+requires all34 checkpoints/restored6ff/new output root. Native result pending.
+No unit tests added/run.
+
 ## Canonical metadata and small system payloads
 
 The compact staging path now supports explicit `--restore-source-metadata`.

@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+System supply f9c4577e923142f486a49b50be4fc50e PASSED3 streams/20568 bytes then
+metadata restoration refused descriptor views. Result92574939fad21584b373fd8a7ea0605ae2910ab11f905e9d388a584bc7f5fc94.
+Readonly observation416b1f2707b9abf0fa93ec1c006e27ecc5037de00a7593fa8e6e48fa6e86123a
+confirmed4 child SDcontrols9404, untouchedrootfiles9004; SVI not queried.
+Both tasks TERMINAL, OFF at63b6e205-f174-4600-8c2b-253a37c94cf1, all34/source3.
+Restorer NOW security parent-first, explicitly applies source DACL protection
+state with real source ACL/SetSecurityInfo only when bit differs, then BackupWrite
+full SD; basic times/attrs child-first, final exact SD/basic/ID readback remains.
+No masking/normalization to pass. Build passed. Fresh -ParentFirstMetadata
+requires all34/restored6ff/difference-capture-parent-metadata-20261028 new root.
+Same4-GiB forecast/768-MiB delta cap/8.25-GiB move cap; native result pending.
+No unit tests added/run. Preserve all proofs and source protection.
+
 Metadata run78bf6520896940fbac88bcac59b5e2c2 TERMINAL1 before system writes:
 preflight incorrectly applied FORMATTER whitelist to admitted source tracking.log.
 Fixed distinction: existing formatter reuse stays narrowly bounded; absent

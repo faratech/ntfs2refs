@@ -3,6 +3,53 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+fn restore_dacl_protection(file: &File, item: &Input<'_>) -> io::Result<bool> {
+    use windows_sys::Win32::Security::{
+        Authorization::{SE_FILE_OBJECT, SetSecurityInfo},
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    let actual = snapshot(file);
+    let kernel = actual
+        .kernel_security
+        .as_ref()
+        .ok_or_else(|| invalid("kernel descriptor absent during protection restore"))?;
+    if kernel.native_error.is_some() || kernel.bytes.len() < 20 {
+        return Err(invalid("kernel protection query failed"));
+    }
+    let want = u16::from_le_bytes(item.security[2..4].try_into().unwrap()) & 0x1000 != 0;
+    let got = u16::from_le_bytes(kernel.bytes[2..4].try_into().unwrap()) & 0x1000 != 0;
+    if want == got {
+        return Ok(false);
+    }
+    let mut sd = descriptor(item.security)?;
+    let offset = u32::from_le_bytes(item.security[16..20].try_into().unwrap()) as usize;
+    let flags = DACL_SECURITY_INFORMATION
+        | if want {
+            PROTECTED_DACL_SECURITY_INFORMATION
+        } else {
+            UNPROTECTED_DACL_SECURITY_INFORMATION
+        };
+    // SAFETY: descriptor validated self-relative ACL bounds/alignment; the
+    // backing allocation outlives the synchronous call. This sets the actual
+    // source DACL/protection state, never a null/everyone DACL.
+    let result = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle(),
+            SE_FILE_OBJECT,
+            flags,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            sd.as_mut_ptr().cast::<u8>().add(offset).cast(),
+            ptr::null_mut(),
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result as i32));
+    }
+    Ok(true)
+}
+
 fn guid_payload(bytes: &[u8]) -> bool {
     if bytes.len() != 76 {
         return false;
@@ -227,8 +274,12 @@ pub fn run(
             query_bytes(&snapshot(&file), 18, 24)?[8..24].to_vec(),
         );
     }
-    let mut metadata_updated = 0;
-    for item in input.iter().rev() {
+    // Private staging starts with protected SYSTEM-only directories. Restore
+    // parent security first so child API inheritance views use source context.
+    let mut ordered: Vec<_> = input.iter().collect();
+    ordered.sort_by_key(|i| i.components.len());
+    let mut protection_updates = 0;
+    for item in &ordered {
         let handle = open(
             &format!("{}{}", root, item.components.join("\\")),
             item.directory,
@@ -241,10 +292,32 @@ pub fn run(
             return Err(invalid("shadow identity changed before metadata refresh"));
         }
         if !security_matches(item, &before, &same_security)? {
+            protection_updates += usize::from(restore_dacl_protection(&handle, item)?);
             backup_security(&handle, item.security)?;
             if !security_matches(item, &snapshot(&handle), &same_security)? {
-                return Err(invalid("refreshed descriptor views differ"));
+                return Err(io::Error::other(format!(
+                    "refreshed descriptor views differ at {}",
+                    item.components.join("\\")
+                )));
             }
+        }
+    }
+    let mut metadata_updated = 0;
+    // All child creation/security propagation is finished before restoring
+    // timestamps and attributes, with root/parents finalized last.
+    for item in ordered.into_iter().rev() {
+        let handle = open(
+            &format!("{}{}", root, item.components.join("\\")),
+            item.directory,
+            true,
+        )?;
+        let before = snapshot(&handle);
+        if Some(query_bytes(&before, 18, 24)?[8..24].to_vec()).as_ref()
+            != identities.get(item.components)
+        {
+            return Err(invalid(
+                "identity changed before basic metadata restoration",
+            ));
         }
         basic(&handle, item)?;
         if !item.directory {
@@ -289,6 +362,7 @@ pub fn run(
         "cache_created":!cache_exists,"cache_payload_bytes_written":payload_written,
         "unchanged_user_payload_bytes_written":0,"metadata_objects_updated":metadata_updated,
         "metadata_objects_verified":metadata_verified,"metadata_readback_verified":true,
+        "dacl_protection_states_restored":protection_updates,
         "source_payload_writes":0,"source_before":source_before,"events":events,
         "privileges":privileges.audit(),"requires_fresh_conversion_admission":true,"conversion_qualified":false}),
     )

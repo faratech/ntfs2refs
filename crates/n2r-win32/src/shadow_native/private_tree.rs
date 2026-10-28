@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod placement;
 mod source_backed;
 mod supply;
-pub use source_backed::{PayloadRoute, SourceBackedRoutes};
+pub use source_backed::{MountedAllocation, PayloadRoute, SourceBackedRoutes};
 pub use supply::{SupplyPlan, SupplyRange};
 
 pub struct PrivateTree {
@@ -26,6 +26,9 @@ pub struct PrivateTree {
 }
 
 impl PrivateTree {
+    pub fn mounted_allocation_snapshot(&self) -> io::Result<MountedAllocation> {
+        source_backed::allocation(self)
+    }
     /// Prepare storage-valid private prefixes without filling either retained
     /// or relocated payload. Payload must subsequently be supplied from NTFS.
     pub fn prepare_source_backed_prefixes(&mut self) -> io::Result<()> {

@@ -49,6 +49,21 @@ saved even when freeze returns an error, with explicit filesystem-query evidence
 `-RootHandleFreeze` uses a separate fresh branch/root and all30 saved snapshots;
 it does not retry the previous constructor. Native corrected capture pending.
 
+The traced run5db90571a9c24aaaaccdaa7742df2468 established the actual ordering
+failure: root filesystem query, LOCK and explicit flush all succeeded; both
+post-lock bitmap queries returned21. Result
+e93d524fbac4a197f53d583a6012746bf61e5a21551ac77701fcdb7f3fcf3e64 and
+freeze-events were preserved OFF atba9d58cf-7123-4bae-8f01-1864d832c3ba,
+all31 snapshots. The prior root-handle correction did not resolve the refusal.
+
+The candidate flow now captures a separately typed `MountedAllocation` through
+the live owning tree before closing handles, then uses the existing basic
+LOCK/dismount/exclusion path. Its phase is `mounted-before-lock` and its frozen
+graph flag is false. No post-lock witness is fabricated; the old allocation
+witness API still refuses failed captures. New `-MountedBitmapFreeze` uses a
+fresh root and all31 snapshots; build/controller syntax passed, native result
+pending. Independent frozen graph reconciliation remains required for cutover.
+
 ## Source-backed relocated payload and compact capture
 
 `PrivateTree::prepare_source_backed_prefixes` makes complete measured prefixes

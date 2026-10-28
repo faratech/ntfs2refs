@@ -32,6 +32,43 @@ impl SourceBackedRoutes {
     }
 }
 
+/// Actual mounted allocation observations. Captured before LOCK because this
+/// ReFS profile refuses bitmap queries through the successfully locked handle.
+/// This type deliberately cannot masquerade as a frozen allocation witness.
+#[derive(Debug, Serialize)]
+pub struct MountedAllocation {
+    pair: GeneralSourceShadowBinding,
+    phase: &'static str,
+    legacy: crate::bitmap_layout::AllocationMap,
+    metadata: crate::bitmap_layout::AllocationMap,
+    frozen_graph_verified: bool,
+}
+impl MountedAllocation {
+    pub fn metadata(&self) -> &crate::bitmap_layout::AllocationMap {
+        &self.metadata
+    }
+}
+
+pub(super) fn allocation(tree: &PrivateTree) -> io::Result<MountedAllocation> {
+    tree.require_source_excluded()?;
+    let bytes = tree.pair.shadow.identity.partition_bytes;
+    let legacy =
+        crate::bitmap_observation::Observation::capture(&tree.volume, &[0; 8], bytes, true)?;
+    let mut input = [0u8; 16];
+    input[8] = 1;
+    let metadata =
+        crate::bitmap_observation::Observation::capture(&tree.volume, &input, bytes, true)?;
+    let result = MountedAllocation {
+        pair: tree.pair.clone(),
+        phase: "mounted-before-lock",
+        legacy: legacy.allocation_map(bytes)?,
+        metadata: metadata.allocation_map(bytes)?,
+        frozen_graph_verified: false,
+    };
+    tree.require_source_excluded()?;
+    Ok(result)
+}
+
 pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<SourceBackedRoutes> {
     tree.require_source_excluded()?;
     if !tree.placement_complete || input.len() != tree.initial_objects.len() {

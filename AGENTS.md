@@ -1,5 +1,17 @@
 # ntfs2refs project guidance
 
+Traced difference run5db90571a9c24aaaaccdaa7742df2468 TERMINAL1: filesystem
+root query/LOCK/explicit flush SUCCEEDED; BOTH post-lock bitmap queries returned
+21. Root-handle correction did NOT fix refusal. Resulte93d524fbac4a197f53d583a6012746bf61e5a21551ac77701fcdb7f3fcf3e64,
+trace/result archived; preserved OFF atba9d58cf-7123-4bae-8f01-1864d832c3ba,
+all31 snapshots, RAM released, source stayed3. Candidate now captures typed
+MountedAllocation from live private volume BEFORE LOCK, tagged mounted-before-
+lock/frozen_graph_verified=false, then basic proven LOCK/dismount/exclusion.
+Never fabricates post-lock witness or grants conversion. -MountedBitmapFreeze
+requires fresh difference-capture-mounted-bitmap-20261028/restored6ff/all31,
+same4-GiB forecast/768-MiB output cap/8.25-GiB move bound. Build/syntax passed,
+native result pending. Do not retry old constructors. No unit tests added/run.
+
 First native difference capture7ce7e8282ef04fab865a950020d88ea5 TERMINAL1:
 device-not-ready21 before allocation witness/output. Source stayed3, shadow0,
 no worker; preserved OFF at423b20f5-e254-4d52-bdf7-f990a5f5866c, ALL30 snapshots.

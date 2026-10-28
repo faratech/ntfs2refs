@@ -295,18 +295,20 @@ fn main() -> anyhow::Result<()> {
                     // Preserve diagnostics before closing every native staging
                     // handle. Only the disposable shadow is locked/frozen.
                     save(&args.output.with_extension("pre-freeze.json"), &report)?;
+                    let allocation = template.mounted_allocation_snapshot()?;
+                    save(
+                        &args.output.with_extension("mounted-allocation.json"),
+                        &allocation,
+                    )?;
                     drop(template);
                     let mut events = Vec::new();
-                    let frozen = n2r_win32::GeneralFrozenPartition::isolate_with_allocation_with_resource_profile(
-                        routes.pair().shadow.clone(),resources.native_profile(),&mut events);
+                    let frozen = n2r_win32::GeneralFrozenPartition::isolate(
+                        routes.pair().shadow.clone(),
+                        &mut events,
+                    );
                     save(&args.output.with_extension("freeze-events.json"), &events)?;
-                    let (mut shadow, witness) =
+                    let mut shadow =
                         frozen.map_err(|e| anyhow::anyhow!("shadow allocation freeze: {e}"))?;
-                    shadow.validate_allocation_witness(&witness, &mut events)?;
-                    save(
-                        &args.output.with_extension("allocation-freeze.json"),
-                        &witness,
-                    )?;
                     let length = shadow.byte_len();
                     let refs = ntfs2refs::refs_inspect::inspect_with_resource_profile(
                         &mut shadow,
@@ -315,22 +317,19 @@ fn main() -> anyhow::Result<()> {
                     )?;
                     save(&args.output.with_extension("frozen-refs.json"), &refs)?;
                     let anchors = ntfs2refs::refs_write_set::observed_anchors(&refs)?;
-                    // Post-lock fallback remains explicitly non-authoritative:
-                    // neither observation proves the frozen required-byte graph.
-                    let allocation = witness
-                        .post_dismount()
-                        .unwrap_or_else(|| witness.post_lock());
+                    // Mounted allocation does not certify the frozen graph.
+                    // It remains conservative candidate input, never authority.
                     let plan = ntfs2refs::refs_write_set::plan(
                         length,
                         4096,
-                        allocation.metadata_inclusive(),
+                        allocation.metadata(),
                         &anchors,
                     )?;
                     save(
                         &args.output.with_extension("freeze.json"),
                         &serde_json::json!({
-                        "witness":witness,"inspection":refs,"plan":plan,
-                        "allocation_phase":allocation.phase(),"events":events,
+                        "mounted_allocation":allocation,"inspection":refs,"plan":plan,
+                        "frozen_state":shadow.state(&mut events)?,"events":events,
                         "frozen_required_byte_graph_verified":false,"conversion_qualified":false}),
                     )?;
                     let source = source.as_mut().context("frozen source reader absent")?;

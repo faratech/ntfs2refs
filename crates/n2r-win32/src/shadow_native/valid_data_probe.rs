@@ -64,6 +64,30 @@ fn observation(file: &File) -> serde_json::Value {
 /// on error/reboot, because successful valid-data advancement can expose old
 /// contents. A returned success is not an extent-adoption or I/O-cost proof.
 pub fn run(pair: &GeneralSourceShadowBinding, experiment: &str) -> io::Result<serde_json::Value> {
+    run_inner(pair, experiment, None)
+}
+
+/// Try placement while VDL is zero, then advance VDL only after native mapping
+/// confirmation. Only the new private file on the enrolled shadow is moved.
+pub fn run_placed(
+    pair: &GeneralSourceShadowBinding,
+    experiment: &str,
+    destination_lcn: u64,
+) -> io::Result<serde_json::Value> {
+    let end = destination_lcn
+        .checked_mul(4096)
+        .and_then(|v| v.checked_add(VALID_BYTES));
+    if destination_lcn < 256 || end.is_none_or(|v| v > pair.shadow.identity.partition_bytes) {
+        return Err(invalid("private placement outside enrolled partition"));
+    }
+    run_inner(pair, experiment, Some(destination_lcn))
+}
+
+fn run_inner(
+    pair: &GeneralSourceShadowBinding,
+    experiment: &str,
+    destination_lcn: Option<u64>,
+) -> io::Result<serde_json::Value> {
     pair.validate_with_resource_profile(Some(
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
     ))?;
@@ -165,11 +189,69 @@ pub fn run(pair: &GeneralSourceShadowBinding, experiment: &str) -> io::Result<se
     }
     file.set_len(FILE_BYTES)?;
     let before = observation(&file);
+    let placement = if let Some(lcn) = destination_lcn {
+        let volume = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .open(pair.shadow.volume_path()?)?;
+        pair.shadow
+            .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
+        let partition = pair.shadow.identity.partition_bytes;
+        let legacy =
+            crate::bitmap_observation::Observation::capture(&volume, &[0; 8], partition, true)?;
+        let mut extended = [0u8; 16];
+        extended[8] = 1;
+        let metadata =
+            crate::bitmap_observation::Observation::capture(&volume, &extended, partition, true)?;
+        let old = legacy.view(partition)?.candidate(lcn * 4096, VALID_BYTES)?;
+        let all = metadata
+            .view(partition)?
+            .candidate(lcn * 4096, VALID_BYTES)?;
+        if old.declared_clusters != partition / 4096
+            || all.declared_clusters != partition / 4096
+            || old.allocated_clusters != 0
+            || all.allocated_clusters != 0
+        {
+            return Err(invalid(
+                "private placement requires both live bitmap views free",
+            ));
+        }
+        let mut input = [0u8; 32];
+        input[..8].copy_from_slice(&(file.as_raw_handle() as usize as u64).to_le_bytes());
+        input[16..24].copy_from_slice(&lcn.to_le_bytes());
+        input[24..28].copy_from_slice(&((VALID_BYTES / 4096) as u32).to_le_bytes());
+        let moved = ctl(&volume, 0x90074, &input, 0);
+        let capture = crate::stream_native::retrieval_capture(&file)?;
+        let mapped = super::mapping_matches_run(
+            &crate::stream_layout::parse_complete_retrieval(&capture.canonical)?,
+            0,
+            lcn,
+            (VALID_BYTES / 4096) as u32,
+        )?;
+        Some(
+            serde_json::json!({"destination_lcn":lcn,"clusters":VALID_BYTES/4096,
+            "starting_vcn":0,"submitted_once":true,"before_valid_data_advance":true,
+            "native_error":moved.err().map(|e| e.raw_os_error().unwrap_or(31)),
+            "mapping_matches":mapped,"mapping_after":capture.canonical,
+            "mapping_page_proof":capture.proof,"legacy_candidate":old,
+            "metadata_candidate":all,"after_move":observation(&file)}),
+        )
+    } else {
+        None
+    };
+    let may_advance = placement
+        .as_ref()
+        .is_none_or(|p| p["mapping_matches"] == true && p["native_error"].is_null());
     // SAFETY: live new private file; manage-volume privilege was enabled when
     // opened. The positive VDL is strictly below EOF. Contents are never read.
-    let ok = unsafe { SetFileValidData(file.as_raw_handle(), VALID_BYTES as i64) };
+    let ok = if may_advance {
+        unsafe { SetFileValidData(file.as_raw_handle(), VALID_BYTES as i64) }
+    } else {
+        0
+    };
     let valid_data_error =
-        (ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
+        (may_advance && ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
     let immediate = observation(&file);
     file.sync_all()?;
     let after_flush = observation(&file);
@@ -183,6 +265,7 @@ pub fn run(pair: &GeneralSourceShadowBinding, experiment: &str) -> io::Result<se
         "schema_version":1,"kind":"native-private-valid-data-probe","experiment_id":experiment,
         "path":path,"file_bytes":FILE_BYTES,"requested_valid_bytes":VALID_BYTES,
         "set_valid_data_succeeded":ok!=0,"set_valid_data_error":valid_data_error,
+        "valid_data_call_submitted":may_advance,"placement":placement,
         "before":before,"immediate":immediate,"after_flush":after_flush,
         "source_before":source_before,"source_after":source_after,"shadow_before":shadow_before,
         "privileges":privilege.audit(),"events":events,"payload_write_calls":0,"payload_reads":0,

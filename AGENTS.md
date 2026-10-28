@@ -1,5 +1,27 @@
 # ntfs2refs project guidance
 
+METADATA-PRESERVING COMPACT CANDIDATE NATIVE PASSED3c9f174567bf48f5b9957e3f1ec48011.
+Producerbe41bedaa3734d880b3de4fdd84a58820040186eba981ed939380d43c04b8989
+(afc2982+pre-existing main.rs). All14 metadata/IDs/basic/both SD views matched;
+3 source DACL protection states restored, system20568/private18 bytes copied/
+flushed/readback, source materialization budget41248. No large prefix copy.
+Compared14,764,269,568, equal14,693,863,424, changed70,406,144/138 ranges.
+Resulta480fe897a0c76a92822d5312f5cde27dea341a296b9db16dae9386d81fc4b0f;
+metadataa9342d0fd9534b3ecb32a4604a0bc0a2709477df5e67639c69807ae674d2588e;
+packed dc5d6e1df69e72c85df7df5da83a51f50317c6b7cb82becd79b58ebb1390a8d8
+rehashed in guest. Packed file stays C:\ntfs2refs\private-tree-3c9f174567bf48f5b9957e3f1ec48011\changed-clusters.bin
+inside saved checkpoint; host evidence difference-capture-parent-metadata-20261028.
+Source stayed NTFS/3, shadow froze3; difference-image bootstrap inspection passed,
+NOT native mount/whole graph/cutover. Source source-backed prefix reads8,590,196,736.
+OFF at43cc982a-91e4-4012-97f5-f318373f895b, parent6ffb6bdc, ALL35 snapshots,
+RAM released. New child OS798/source4/J13/shadow142 MiB=957 MiB EXCLUDES parents/
+base/device IO; cap256/reserve64 unchanged. Zero-filled large file, not generic
+scratch bound. PID1872/task3c9... TERMINAL0; controller42455/probe92125/preservation
+78200 all complete. Do NOT restart. NEXT highest-impact gate: connect exact
+metadata-preserving delta target to existing journal (fresh source/capture hashes),
+then same-partition native file/metadata/position readback and process recovery.
+No blind serialized flags/writer authority or independent-writer detour. No units.
+
 System supply f9c4577e923142f486a49b50be4fc50e PASSED3 streams/20568 bytes then
 metadata restoration refused descriptor views. Result92574939fad21584b373fd8a7ea0605ae2910ab11f905e9d388a584bc7f5fc94.
 Readonly observation416b1f2707b9abf0fa93ec1c006e27ecc5037de00a7593fa8e6e48fa6e86123a

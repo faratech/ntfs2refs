@@ -1,5 +1,59 @@
 # Allocation-only canonical tree staging
 
+## Native metadata-preserving compact candidate passed
+
+Run3c9f174567bf48f5b9957e3f1ec48011 PASSED source-backed staging, all three
+system-stream copies, canonical metadata restoration/readback, file-ID/physical-
+mapping revalidation, final freeze, difference capture and difference-image
+bootstrap inspection. Producer
+be41bedaa3734d880b3de4fdd84a58820040186eba981ed939380d43c04b8989
+was built fromafc2982 plus the pre-existing main.rs change.
+
+All14 objects matched exact identity/basic metadata and both source descriptor
+views after parent-first restoration. Three system-file DACL protection states
+were explicitly restored. System payload writes/readback totaled20,568 bytes;
+private small/tail writes/readback totaled18 bytes. No large user prefix was
+initialized with copied payload. Source materialization budget charges41,248
+bytes include system preflight, transfer, cache read and small/tail handling.
+
+| Difference capture | Bytes |
+|---|---:|
+| Conservative selected set compared | 14,764,269,568 |
+| Equal selected bytes served by original | 14,693,863,424 |
+| Changed file,138 ranges | 70,406,144 |
+| Logical source-prefix reads | 8,590,196,736 |
+| Actual shadow metadata/tail reads | 6,174,072,832 |
+
+Result SHA-256:
+a480fe897a0c76a92822d5312f5cde27dea341a296b9db16dae9386d81fc4b0f.
+Native metadata-restoration report SHA-256:
+a9342d0fd9534b3ecb32a4604a0bc0a2709477df5e67639c69807ae674d2588e.
+Packed SHA-256 (independently rehashed in the guest):
+dc5d6e1df69e72c85df7df5da83a51f50317c6b7cb82becd79b58ebb1390a8d8.
+Input-plan SHA-256:
+79e10fe60a0e3c88ae0fb56dd16588b3b0d98fa8df9a55e37c2ac4f4dd44a341.
+
+Evidence root:
+`.lab/hyperv/streaming-v2-20261027/difference-capture-parent-metadata-20261028`.
+Packed data remains in the preserved guest at
+`C:\ntfs2refs\private-tree-3c9f174567bf48f5b9957e3f1ec48011\changed-clusters.bin`;
+no redundant host copy. Source and shadow stayed offline/read-only during
+capture; source remained NTFS and received no payload/conversion writes.
+
+After clean shutdown, checkpoint43cc982a-91e4-4012-97f5-f318373f895b retained
+all35 checkpoints, parent6ffb6bdc, and released4-GiB RAM. New child backing was
+OS798/source4/journal13/shadow142 MiB, total957 MiB, excluding every parent/base,
+host reports and physical-device I/O. Cap256 GiB/reserve64 GiB unchanged.
+The changed file is67.1 MiB; this zero-filled large-file fixture is not a bound
+for arbitrary nonzero data or geometry. No unit tests added/run.
+
+Next acceptance gate: feed this metadata-preserving difference target to the
+existing external journal, perform same-partition apply and native full-tree
+readback, then interrupted apply/resume/rollback. Preparation must bind fresh
+source identity/content and the exact changed file; diagnostic JSON flags must
+not grant write authority. Full frozen-graph and production exposure/geometry
+qualification remain incomplete. No native mount/cutover claim is added here.
+
 The metadata/system runf9c4577e923142f486a49b50be4fc50e copied/hashed all three
 system streams successfully, then refused a descriptor-view mismatch during
 the old child-first restoration. Result92574939fad21584b373fd8a7ea0605ae2910ab11f905e9d388a584bc7f5fc94

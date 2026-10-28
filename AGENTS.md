@@ -1,5 +1,27 @@
 # ntfs2refs project guidance
 
+LATEST SELECTED-DEVICE RUN LIVE; supersedes old OFF/state instructions below:
+Codef1f1f47491e0c64255b6e75eac77cd7873c5fe47 release build passed(cargo/rustc1.98.1).
+New public ntfs2refs-compact uses actual original-freeze/held-shadow enrollment;
+legacy lab/frozen alpha unchanged. Toolsetmanifest6a8a39773268f686b91fc74f29ea56d5dee31dbf5033d1f247bd6ddcf3d1ae81,
+EXEf41b47c931989aa451a398993982b20b319eb35d0f5d32fffc7e3de9ba79cbc1.
+All47 preserved; same isolated4GiB VM Running, parentc670839d...; two NEW thin80GiB
+disks at slots5/6, actual source NOW4/G(e1f3b9d3-979f-4123-9fee-399640c25092),
+shadow NOW5/T(ad077674-6305-4767-a2aa-6ded3b707e36), journal still2/J. Old1/3
+are NOT current targets. Equal60GiB partitions; NTFS4KiB→ReFS3.14/4KiB.
+Five ordinary native-created userfiles68,223,117B, largest64MiB+123 nonzero,
+Unicode/resident/empty; zero source extent moves/aging. PS5 report-summing error
+after creation preserved/fixed; ONLY reporting completed, no reformat/rewrites.
+Hostcase selected-native-alpha-20261028; SINGLE run4d3e5772bb5c4641b956119b8019f642,
+taskN2R-SelectedCompact-4d3e5772bb5c4641b956119b8019f642. Guest output
+C:\ntfs2refs\selected-native-alpha-20261028\conversion-4d3e5772bb5c4641b956119b8019f642\result.
+ActualPID3332creation1793224099967 LIVE21:50:56Z read68.457GB/write5.134MB,
+peak71,112KiB. Native source observation completed; source4 attrs3/shadow5 attrs0.
+NOT complete or admitted yet. Rootcontrols; delta_artifact_reader metadata-only
+monitor. Do NOT stop/restart/restore/reformat/redispatch/open Source/J/packed.
+One50GB epoch329374052988/max,17179869184/free floor unchanged;7GiB forecast
+admitted. No unit tests. main.rs original user diff remains unstaged/unchanged.
+
 CURRENT AUTHORITY — NATIVE RESUME AND NTFS ROLLBACK PASSED; VM OFF:
 Normal admitted composite conversion5e156f... passed native ReFS readback,
 mutation and post-mutation reboot. Controlled interrupt949dbc... exited86 after

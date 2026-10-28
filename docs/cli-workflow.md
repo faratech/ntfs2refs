@@ -1,5 +1,55 @@
 # Owning-machine conversion and recovery CLI
 
+## Experimental compact backend
+
+`ntfs2refs-compact` exposes native-shadow compact construction and its typed
+recovery operations in a separate executable. It runs on the Windows machine
+owning the disks and does not depend on Hyper-V. The original frozen laboratory
+alpha and the older `ntfs2refs convert` backend remain separate.
+
+The selected-device path replaces fixture computer names, disk numbers and GUIDs
+with live construction enrollment from the original observed NTFS freeze. It
+checks the selected shadow's actual GPT/volume route, root identity, writable
+ReFS3.14/4KiB/512-byte geometry and zero retrieval base, then transfers its held
+handles into the private constructor. It still requires a fresh prepared shadow
+labelled `n2r-retained-shadow`, a separate journal disk, matching source/shadow
+partition lengths, supported source semantics and the original source certificate.
+Current Windows disks and incompatible dedicated-data GPT layouts remain refused.
+
+After preparing those volumes, use the existing read-only binder with the
+explicit streaming profile. These letters are placeholders for selected volumes:
+
+```powershell
+ntfs2refs-bind --source X:\ --shadow Y:\ --journal Z:\ `
+  --experimental-large-journal --experimental-large-tree --experimental-streaming-payload `
+  --experiment-id 0123456789abcdef0123456789abcdef --max-journal-bytes 1073741824 `
+  --output C:\ntfs2refs\devices.json
+
+$pin = (Get-FileHash -LiteralPath C:\ntfs2refs\devices.json).Hash.ToLowerInvariant()
+ntfs2refs-compact convert --acknowledge-experimental-compact `
+  --request C:\ntfs2refs\devices.json --request-sha256 $pin `
+  --maximum-placement-bytes 1073741824 --output C:\ntfs2refs\runs\fresh-run
+```
+
+Use a new experiment ID and output paths for every operation. Placement and
+journal ceilings are explicit budgets, not reservations or universal estimates.
+`profile` prints the shared implementation bounds without opening devices.
+Conversion checks live routing, filesystem and source geometry before freezing;
+neither binder output nor an acknowledgment supplies source-write authority.
+
+`resume`, `rollback`, `finalize`, `finalize-after-marker` and `finalize-rollback`
+take the original request, ticket, capture, packed backing and expectation with
+their independent SHA-256 pins, plus the actual journal and a fresh output path.
+They use the existing compact recovery engine; none can activate a new Apply.
+HND/ABT replay boundaries still apply. See `ntfs2refs-compact <operation> --help`
+and [the recovery contract](native-composite-experimental.md#recovery).
+
+This selected-device implementation has release-build evidence; its native
+qualification is separate from the earlier pinned laboratory executables.
+Boot volumes, arbitrary geometry and general low-scratch behavior are unfinished.
+
+## Existing full-shadow backend
+
 `ntfs2refs convert --request` runs the certificate-backed workflow on the
 machine owning the disks. It has no Hyper-V dependency. Run it in an elevated
 Windows process with the required volume/backup/security privileges.

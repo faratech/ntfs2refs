@@ -1,20 +1,24 @@
 # Preserve the source-cache refusal before a fresh, explicit tiny-cache sync.
-[CmdletBinding()]param()
+[CmdletBinding()]param([ValidateSet(1,2)][int]$Version=1)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs';$base=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027'
-$candidate=Join-Path $base 'candidate9';$d=Get-Content -LiteralPath (Join-Path $candidate 'dispatch.json') -Raw|ConvertFrom-Json
+$candidateName=if($Version-eq1){'candidate9'}else{'candidate10'}
+$candidate=Join-Path $base $candidateName;$d=Get-Content -LiteralPath (Join-Path $candidate 'dispatch.json') -Raw|ConvertFrom-Json
 $archive=Get-Content -LiteralPath (Join-Path $candidate 'terminal-evidence-manifest.json') -Raw|ConvertFrom-Json
 $failed=Get-Content -LiteralPath (Join-Path $candidate 'terminal-evidence\run\failed.json') -Raw|ConvertFrom-Json
-if($d.run_id-cne'9cfeda0cdcd9449f8e3342d31c23eed7'-or-not$archive.verified-or$archive.run_id-cne$d.run_id-or
-    $failed.phase-cne'qualification'-or$failed.error-cne'The system cannot find the file specified. (os error 2)'){throw 'Exact archived pre-write cache refusal required.'}
-$root=Join-Path $base 'cache-sync-retry-preparation'
+$expectedRun=if($Version-eq1){'9cfeda0cdcd9449f8e3342d31c23eed7'}else{'e8455536ad3b4bf189b2a07d67b3af42'}
+$expectedError=if($Version-eq1){'The system cannot find the file specified. (os error 2)'}else{'native control budget exceeded'}
+if($d.run_id-cne$expectedRun-or-not$archive.verified-or$archive.run_id-cne$d.run_id-or
+    $failed.phase-cne'qualification'-or$failed.error-cne$expectedError){throw 'Exact archived pre-write refusal required.'}
+$root=Join-Path $base $(if($Version-eq1){'cache-sync-retry-preparation'}else{'cache-sync-retry-preparation-v2'})
 if(Test-Path -LiteralPath $root){throw 'Cache-sync preparation has state; inspect without repeating.'}
 $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599';$vm=Get-VM -Id $id
-if($vm.State.ToString()-cne'Running'-or$vm.ParentSnapshotId-ne[guid]'b3aee3e3-a5e1-4cf2-b69d-c1903a885bff'-or
+$expectedParent=if($Version-eq1){[guid]'b3aee3e3-a5e1-4cf2-b69d-c1903a885bff'}else{[guid]'51626f1f-5778-4106-a61c-cb509d80e5b4'}
+if($vm.State.ToString()-cne'Running'-or$vm.ParentSnapshotId-ne$expectedParent-or
     $vm.MemoryStartup-ne4GB-or$vm.DynamicMemoryEnabled-or@(Get-VMNetworkAdapter -VM $vm).Count){throw 'Owned isolated refused child required.'}
 $old=@(Get-VMSnapshot -VM $vm)
-if($old.Count-ne12){throw 'Twelve preserved checkpoints required.'}
+if($old.Count-ne(11+$Version)){throw 'All earlier checkpoints are required.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
 Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 20GB
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
@@ -37,10 +41,10 @@ Save-New 'intent.json' @{vm_id=$id;prior_run=$d.run_id;state=$state;preserved_ch
 Stop-VM -VM $vm -Confirm:$false -ErrorAction Stop
 $off=Get-CimInstance -Namespace 'root/virtualization/v2' -ClassName Msvm_ComputerSystem -Filter "Name='2401593c-4b30-472e-9b6d-c9534cbaa599'"
 if($off.EnabledState-ne3-or(Get-VM -Id $id).State.ToString()-cne'Off'){throw 'Clean OFF required; no force stop.'}
-$saved=Checkpoint-VM -VM (Get-VM -Id $id) -SnapshotName 'streaming-v2-candidate9-source-cache-refused' -Passthru
+$saved=Checkpoint-VM -VM (Get-VM -Id $id) -SnapshotName $(if($Version-eq1){'streaming-v2-candidate9-source-cache-refused'}else{'streaming-v2-candidate10-audit-budget-refused'}) -Passthru
 Save-New 'refused-checkpoint.json' @{checkpoint_id=$saved.Id;parent=$saved.ParentSnapshotId;name=$saved.Name;state='Off';utc=[DateTime]::UtcNow.ToString('o')}
 $now=@(Get-VMSnapshot -VM (Get-VM -Id $id))
-if($now.Count-ne13-or@($old|Where-Object {$now.Id-notcontains$_.Id}).Count){throw 'Checkpoint preservation differs.'}
+if($now.Count-ne(12+$Version)-or@($old|Where-Object {$now.Id-notcontains$_.Id}).Count){throw 'Checkpoint preservation differs.'}
 Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 20GB
 Start-VM -VM (Get-VM -Id $id) -ErrorAction Stop|Out-Null
 $s=$null;$deadline=[DateTime]::UtcNow.AddMinutes(8)

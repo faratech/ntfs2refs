@@ -28,6 +28,8 @@ pub(super) struct Placement {
     pub before_valid_data_advance: bool,
     pub native_error: Option<i32>,
     pub mapping_matches: bool,
+    pub all_placements_match: bool,
+    pub reposition: bool,
     pub mapping_after: Vec<u8>,
     pub mapping_page_proof: crate::retrieval_paging::Proof,
     pub legacy_candidate: Candidate,
@@ -45,6 +47,7 @@ pub(super) struct PrivatePlaceholder {
     materialized_bytes: u64,
     readback_bytes: u64,
     poisoned: bool,
+    move_submissions: usize,
 }
 
 impl PrivatePlaceholder {
@@ -160,6 +163,7 @@ impl PrivatePlaceholder {
             materialized_bytes: 0,
             readback_bytes: 0,
             poisoned: false,
+            move_submissions: 0,
         })
     }
 
@@ -258,24 +262,95 @@ impl PrivatePlaceholder {
         destination_lcn: u64,
         clusters: u32,
     ) -> io::Result<Placement> {
+        self.move_unwritten(volume, starting_vcn, destination_lcn, clusters, false)
+    }
+
+    /// Planned second-stage movement, never a retry after failure. Only a
+    /// completely tracked, freshly verified unwritten range may be replaced.
+    pub fn reposition(
+        &mut self,
+        volume: &File,
+        starting_vcn: u64,
+        destination_lcn: u64,
+        clusters: u32,
+    ) -> io::Result<Placement> {
+        self.move_unwritten(volume, starting_vcn, destination_lcn, clusters, true)
+    }
+
+    fn move_unwritten(
+        &mut self,
+        volume: &File,
+        starting_vcn: u64,
+        destination_lcn: u64,
+        clusters: u32,
+        reposition: bool,
+    ) -> io::Result<Placement> {
         let logical_end = starting_vcn.checked_add(u64::from(clusters));
         let physical_end = destination_lcn.checked_add(u64::from(clusters));
         if self.poisoned
             || self.valid_data_submitted
             || self.valid_prefix != 0
-            || self.placed.len() >= 1024
+            || self.move_submissions >= 1024
             || clusters == 0
             || destination_lcn < 256
             || logical_end.is_none_or(|v| v > self.bytes / 4096)
             || physical_end.is_none_or(|v| v > self.partition / 4096)
             || self.placed.iter().any(|(v, l, n)| {
-                starting_vcn < *v + u64::from(*n) && *v < logical_end.unwrap_or(0)
+                (!reposition && starting_vcn < *v + u64::from(*n) && *v < logical_end.unwrap_or(0))
                     || destination_lcn < *l + u64::from(*n) && *l < physical_end.unwrap_or(0)
             })
         {
             return Err(invalid(
                 "private unwritten placement state, overlap or bounds differ",
             ));
+        }
+        if let Err(error) = self.verify_placements() {
+            self.poisoned = true;
+            return Err(error);
+        }
+        let end = logical_end.unwrap();
+        let mut next = Vec::new();
+        let mut previous = self.placed.clone();
+        previous.sort_by_key(|r| r.0);
+        let mut covered = starting_vcn;
+        for &(v, l, n) in &previous {
+            let old_end = v + u64::from(n);
+            if old_end <= starting_vcn || v >= end {
+                next.push((v, l, n));
+                continue;
+            }
+            if reposition {
+                let from = v.max(starting_vcn);
+                let to = old_end.min(end);
+                if from != covered {
+                    return Err(invalid("private reposition has untracked logical gap"));
+                }
+                covered = to;
+                if v < starting_vcn {
+                    next.push((
+                        v,
+                        l,
+                        u32::try_from(starting_vcn - v)
+                            .map_err(|_| invalid("private left split overflow"))?,
+                    ));
+                }
+                if old_end > end {
+                    next.push((
+                        end,
+                        l + end - v,
+                        u32::try_from(old_end - end)
+                            .map_err(|_| invalid("private right split overflow"))?,
+                    ));
+                }
+            }
+        }
+        if reposition && covered != end {
+            return Err(invalid("private reposition range is not fully tracked"));
+        }
+        next.push((starting_vcn, destination_lcn, clusters));
+        next.sort_by_key(|r| r.0);
+        if next.len() > 1024 {
+            return Err(invalid("private reposition split budget exceeded"));
         }
         let legacy = Observation::capture(volume, &[0; 8], self.partition, true)?;
         let mut ex = [0u8; 16];
@@ -303,6 +378,7 @@ impl PrivatePlaceholder {
         input[16..24].copy_from_slice(&destination_lcn.to_le_bytes());
         input[24..28].copy_from_slice(&clusters.to_le_bytes());
         self.poisoned = true; // Any missing post-I/O evidence must fail closed.
+        self.move_submissions += 1;
         let moved = ctl(volume, 0x90074, &input, 0);
         let capture = crate::stream_native::retrieval_capture(&self.file)?;
         let mapped = mapping_matches_run(
@@ -312,8 +388,13 @@ impl PrivatePlaceholder {
             clusters,
         )?;
         let native_error = moved.err().map(|e| e.raw_os_error().unwrap_or(31));
-        if native_error.is_none() && mapped {
-            self.placed.push((starting_vcn, destination_lcn, clusters));
+        let runs = crate::stream_layout::parse_complete_retrieval(&capture.canonical)?;
+        let mut all_placements_match = true;
+        for &(v, l, n) in &next {
+            all_placements_match &= mapping_matches_run(&runs, v, l, n)?;
+        }
+        if native_error.is_none() && mapped && all_placements_match {
+            self.placed = next;
             self.poisoned = false;
         }
         Ok(Placement {
@@ -324,6 +405,8 @@ impl PrivatePlaceholder {
             before_valid_data_advance: true,
             native_error,
             mapping_matches: mapped,
+            all_placements_match,
+            reposition,
             mapping_after: capture.canonical,
             mapping_page_proof: capture.proof,
             legacy_candidate: old,

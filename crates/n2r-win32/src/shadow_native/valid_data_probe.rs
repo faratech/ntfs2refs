@@ -53,7 +53,7 @@ fn observation(file: &File) -> serde_json::Value {
 /// on error/reboot, because successful valid-data advancement can expose old
 /// contents. A returned success is not an extent-adoption or I/O-cost proof.
 pub fn run(pair: &GeneralSourceShadowBinding, experiment: &str) -> io::Result<serde_json::Value> {
-    run_inner(pair, experiment, &[])
+    run_inner(pair, experiment, &[], false)
 }
 
 /// Try placement while VDL is zero, then advance VDL only after native mapping
@@ -73,6 +73,7 @@ pub fn run_placed(
         pair,
         experiment,
         &[(0, destination_lcn, (VALID_BYTES / 4096) as u32)],
+        false,
     )
 }
 
@@ -90,6 +91,25 @@ pub fn run_split(
             (0, first_lcn, clusters),
             (u64::from(clusters), second_lcn, clusters),
         ],
+        false,
+    )
+}
+
+pub fn run_repositioned(
+    pair: &GeneralSourceShadowBinding,
+    experiment: &str,
+    temporary_lcn: u64,
+    final_lcn: u64,
+) -> io::Result<serde_json::Value> {
+    let clusters = (VALID_BYTES / 4096) as u32;
+    run_inner(
+        pair,
+        experiment,
+        &[
+            (0, temporary_lcn, clusters),
+            (u64::from(clusters / 4), final_lcn, clusters / 4),
+        ],
+        true,
     )
 }
 
@@ -97,6 +117,7 @@ fn run_inner(
     pair: &GeneralSourceShadowBinding,
     experiment: &str,
     requested: &[(u64, u64, u32)],
+    reposition: bool,
 ) -> io::Result<serde_json::Value> {
     pair.validate_with_resource_profile(Some(
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
@@ -152,9 +173,15 @@ fn run_inner(
             .open(pair.shadow.volume_path()?)?;
         pair.shadow
             .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
-        for &(vcn, lcn, clusters) in requested {
-            let attempt = placeholder.place(&volume, vcn, lcn, clusters)?;
-            let matched = attempt.mapping_matches && attempt.native_error.is_none();
+        for (index, &(vcn, lcn, clusters)) in requested.iter().enumerate() {
+            let attempt = if reposition && index > 0 {
+                placeholder.reposition(&volume, vcn, lcn, clusters)?
+            } else {
+                placeholder.place(&volume, vcn, lcn, clusters)?
+            };
+            let matched = attempt.mapping_matches
+                && attempt.all_placements_match
+                && attempt.native_error.is_none();
             let mut value = serde_json::to_value(attempt).map_err(io::Error::other)?;
             value["after_move"] = observation(placeholder.metadata_handle());
             placements.push(value);
@@ -164,9 +191,11 @@ fn run_inner(
         }
     }
     let may_advance = placements.len() == requested.len()
-        && placements
-            .iter()
-            .all(|p| p["mapping_matches"] == true && p["native_error"].is_null());
+        && placements.iter().all(|p| {
+            p["mapping_matches"] == true
+                && p["all_placements_match"] == true
+                && p["native_error"].is_null()
+        });
     let advancement =
         may_advance.then(|| placeholder.advance_valid_data(VALID_BYTES, !requested.is_empty()));
     let ok = advancement.as_ref().is_some_and(|result| result.is_ok());
@@ -189,6 +218,7 @@ fn run_inner(
         "set_valid_data_succeeded":ok,"set_valid_data_error":valid_data_error,
         "valid_data_call_submitted":may_advance,"placement":if placements.len()==1 {placements.first()}else{None},
         "placements":placements,"advance_includes_flush_and_mapping_recheck":true,
+        "planned_repositioning":reposition,
         "before":before,"immediate":immediate,"after_flush":after_flush,
         "source_before":source_before,"source_after":source_after,"shadow_before":shadow_before,
         "privileges":privilege.audit(),"events":events,"payload_write_calls":0,"payload_reads":0,

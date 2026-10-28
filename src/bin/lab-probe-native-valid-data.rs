@@ -32,6 +32,12 @@ fn main() -> anyhow::Result<()> {
             conflicts_with = "observe_existing"
         )]
         second_destination_lcn: Option<u64>,
+        #[arg(
+            long,
+            requires = "second_destination_lcn",
+            conflicts_with = "observe_existing"
+        )]
+        reposition: bool,
     }
     let args = Args::parse();
     ensure!(
@@ -68,12 +74,21 @@ fn main() -> anyhow::Result<()> {
         );
         if let Some(lcn) = args.destination_lcn {
             if let Some(second) = args.second_destination_lcn {
-                n2r_win32::shadow_native::valid_data_probe::run_split(
-                    &request.pair,
-                    &args.experiment_id,
-                    lcn,
-                    second,
-                )
+                if args.reposition {
+                    n2r_win32::shadow_native::valid_data_probe::run_repositioned(
+                        &request.pair,
+                        &args.experiment_id,
+                        lcn,
+                        second,
+                    )
+                } else {
+                    n2r_win32::shadow_native::valid_data_probe::run_split(
+                        &request.pair,
+                        &args.experiment_id,
+                        lcn,
+                        second,
+                    )
+                }
             } else {
                 n2r_win32::shadow_native::valid_data_probe::run_placed(
                     &request.pair,

@@ -1,19 +1,20 @@
 # One private 1 MiB placement before valid-data advancement. Restores only an
 # owned saved research branch; all successful conversion checkpoints remain.
-[CmdletBinding()]param([switch]$ContinueRestored,[switch]$SplitPlacement)
+[CmdletBinding()]param([switch]$ContinueRestored,[switch]$SplitPlacement,[switch]$Reposition)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
 $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'
 $converted=[guid]'ae80bfd5-7b8d-4e60-80b4-6e236c841390'
-$baseline=if($SplitPlacement){[guid]'80907930-4a43-4cbc-b26b-dafd14dea4e8'}else{[guid]'24cfdd12-9b9c-4bd0-8322-a94da6d98708'}
-$root=Join-Path $workspace $(if($SplitPlacement){'.lab\hyperv\streaming-v2-20261027\unwritten-placement-split-20261028'}else{'.lab\hyperv\streaming-v2-20261027\unwritten-placement-20261028'})
-$expectedCount=if($SplitPlacement){17}else{16}
-$destination=if($SplitPlacement){10485760}else{8388608}
+if($Reposition-and$SplitPlacement){throw 'Choose one enrolled placement mode.'}
+$baseline=if($Reposition){[guid]'6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3'}elseif($SplitPlacement){[guid]'80907930-4a43-4cbc-b26b-dafd14dea4e8'}else{[guid]'24cfdd12-9b9c-4bd0-8322-a94da6d98708'}
+$root=Join-Path $workspace $(if($Reposition){'.lab\hyperv\streaming-v2-20261027\unwritten-reposition-20261028'}elseif($SplitPlacement){'.lab\hyperv\streaming-v2-20261027\unwritten-placement-split-20261028'}else{'.lab\hyperv\streaming-v2-20261027\unwritten-placement-20261028'})
+$expectedCount=if($Reposition){25}elseif($SplitPlacement){17}else{16}
+$destination=if($Reposition-or$SplitPlacement){10485760}else{8388608}
 if((Test-Path -LiteralPath $root)-and-not$ContinueRestored){throw 'Existing placement experiment; observe it without redispatch.'}
 $vm=Get-VM -Id $id
 $old=@(Get-VMSnapshot -VM $vm)
-$expectedParent=if($ContinueRestored-or$SplitPlacement){$baseline}else{$converted}
+$expectedParent=if($ContinueRestored-or$SplitPlacement){$baseline}elseif($Reposition){[guid]'1da04080-dceb-4127-9540-c6826e45c543'}else{$converted}
 if($vm.State.ToString()-cne'Off'-or$vm.ParentSnapshotId-ne$expectedParent-or$old.Count-ne$expectedCount-or
     $old.Id-notcontains$baseline-or$old.Id-notcontains$converted-or$vm.MemoryStartup-ne4GB-or
     $vm.DynamicMemoryEnabled-or@(Get-VMNetworkAdapter -VM $vm).Count){throw 'Exact preserved isolated branch required.'}
@@ -46,7 +47,7 @@ if($ContinueRestored){
     Save-New 'intent.json' @{vm_id=$id.ToString();baseline_id=$baseline.ToString();converted_checkpoint=$converted.ToString();
     old_checkpoint_ids=@($old.Id|ForEach-Object {$_.ToString()});experiment_id=$experiment;binary_sha256=$pin;
     request_sha256=$requestPin;source_commit=(& git -C $workspace rev-parse HEAD).Trim();destination_lcn=$destination;
-        split_placement=[bool]$SplitPlacement;second_destination_lcn=$(if($SplitPlacement){11010048}else{$null});
+        split_placement=[bool]$SplitPlacement;planned_reposition=[bool]$Reposition;second_destination_lcn=$(if($SplitPlacement-or$Reposition){11010048}else{$null});
         source_payload_writes_authorized=$false;payload_reads_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
     Copy-Item -LiteralPath $binary -Destination (Join-Path $root 'producer.exe')
     if((Get-FileHash -LiteralPath (Join-Path $root 'producer.exe')).Hash.ToLowerInvariant()-cne$pin){throw 'Producer archive differs.'}
@@ -81,13 +82,13 @@ try{
     Save-New 'mounted.json' $mounted
     Copy-Item -LiteralPath $binary -ToSession $s -Destination (Join-Path $stage 'probe.exe')
     Copy-Item -LiteralPath $request -ToSession $s -Destination (Join-Path $stage 'request.json')
-    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,$experiment,$pin,$requestPin,$destination,([bool]$SplitPlacement) -ScriptBlock {
-        param($Stage,$Experiment,$Pin,$RequestPin,$Destination,$Split);$ErrorActionPreference='Stop'
+    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,$experiment,$pin,$requestPin,$destination,([bool]$SplitPlacement),([bool]$Reposition) -ScriptBlock {
+        param($Stage,$Experiment,$Pin,$RequestPin,$Destination,$Split,$Reposition);$ErrorActionPreference='Stop'
         $binary=Join-Path $Stage 'probe.exe';$request=Join-Path $Stage 'request.json'
         if((Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant()-cne$Pin-or(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()-cne$RequestPin){throw 'Staged pins differ.'}
         $task='N2R-UnwrittenPlacement-'+$Experiment
         if(Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue){throw 'Fresh task required.'}
-        $arguments='--request "'+$request+'" --request-sha256 '+$RequestPin+' --experiment-id '+$Experiment+' --destination-lcn '+$Destination+$(if($Split){' --second-destination-lcn 11010048'}else{''})+' --output "'+(Join-Path $Stage 'result.json')+'"'
+        $arguments='--request "'+$request+'" --request-sha256 '+$RequestPin+' --experiment-id '+$Experiment+' --destination-lcn '+$Destination+$(if($Split-or$Reposition){' --second-destination-lcn 11010048'}else{''})+$(if($Reposition){' --reposition'}else{''})+' --output "'+(Join-Path $Stage 'result.json')+'"'
         Register-ScheduledTask -TaskName $task -Action (New-ScheduledTaskAction -Execute $binary -Argument $arguments) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null
         @{task_name=$task;experiment_id=$Experiment;guest_stage=$Stage;binary=$binary;binary_sha256=$Pin;request_sha256=$RequestPin;arguments=$arguments}
     }

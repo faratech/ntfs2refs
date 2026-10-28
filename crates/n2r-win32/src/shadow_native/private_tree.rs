@@ -36,6 +36,26 @@ impl PrivateTree {
         Ok(result)
     }
 
+    /// Relocate a previously tracked unwritten range to its final placement.
+    /// Native failure poisons the file; it cannot become a retry loop.
+    pub fn reposition(
+        &mut self,
+        object_index: usize,
+        vcn: u64,
+        lcn: u64,
+        clusters: u32,
+    ) -> io::Result<serde_json::Value> {
+        self.require_source_excluded()?;
+        let file = self
+            .files
+            .get_mut(&object_index)
+            .ok_or_else(|| invalid("private reposition file absent"))?;
+        let proof = serde_json::to_value(file.reposition(&self.volume, vcn, lcn, clusters)?)
+            .map_err(io::Error::other)?;
+        self.require_source_excluded()?;
+        Ok(proof)
+    }
+
     /// All prefix clusters must already be placed. This never restores ACLs
     /// or claims that the scratch file contains the original logical bytes.
     pub fn advance_placed_prefix(&mut self, object_index: usize, bytes: u64) -> io::Result<()> {

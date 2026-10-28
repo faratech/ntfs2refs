@@ -874,3 +874,32 @@ At 01:55:32 UTC the same PID 872 was live in existing-shadow verification,
 writable for the pre-freeze verification. Lab counter247,361,356,901 bytes,
 host free98,105,909,248 bytes. Continue the same task; full target verification,
 journal/application, cutover and native postchecks are still pending.
+
+Candidate10 then passed complete target preservation and certificate creation
+but failed its final qualification state queries: native control audit budget
+exceeded. Its saved target audit already contained 119 events; two final device
+state observations exhausted the per-vector 128-event bound. No journal,
+activation or source payload write occurred. The 29-file terminal archive
+verified, manifest 37cd07ccef35c653f5c2998e1b312b1f840774f9dbc42af05fe23c73a2b559de.
+Target proof cf500e07c347262c52f9ca13454591a34ac7c6dea968d2087ba4519d760db4a6
+confirmed retained2,721,431,552 bytes, relocated5,868,785,664, materialized106,
+retained allocator coverage=true. Source4a1809e2...ce40447,
+targetd56733acbef825308d4ddea7c44e9c80dd313fcb960668ab699df247d7ecd9c1.
+The complete target audit is now saved before clearing its phase-local vector
+for final state observations; the native bound and every query remain.
+OFF checkpoint ba9654d9-7a50-4b7b-bbd7-50cde85d0e0f preserves this refusal,
+all fourteen checkpoints remain. No old task/journal was replayed.
+
+Candidate11 is LIVE: run6e45d7f749da4687b4e862f6498945d4, PID3784 created
+2026-10-28 02:11:53.084071 UTC, lab-convert-admitted-tree.exe
+b82fda2bd79e86735903e5509f14ad835ccd8400213604c098adcb7b0d61e187,
+source db915d8cbf6f5576e01a48781af9db83dcc08d53 plus unchanged d99591b5 patch.
+Request f3ea50cadfaba389f3137bb74f9c1ac856c936b227186d345fcd4bd09c30b4d0;
+binder a0ce4f666f7c140001f29848412e7752ec98c3589d09747dc780e9d5376c1786;
+recovery2b5b92aea6b9aa353fd1873c716513ab6d087bba59f3dac7c48fdd029a8a114f.
+The new operation explicitly synchronizes the tiny cache, reuses the large
+payload, binds1536-MiB journal and20-GiB growth budget. At02:12:44 UTC the same
+PID was live in source qualification, source frozen read-only, shadow writable
+for metadata. Lab248,120,269,720 bytes, host free97,349,869,568 bytes, cap256 GiB,
+reserve64 GiB, RAM4 GiB. Observe with Collect-StreamingV2Conversion.ps1
+-Candidate candidate11; no cutover/native result is established yet.

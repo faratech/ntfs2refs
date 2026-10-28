@@ -1,5 +1,21 @@
 # ntfs2refs project guidance
 
+Compact journal preparation implemented/build passed. VerifiedDeltaArtifact
+reopens bounded pinned report/backing under held read-only/no-writer-delete
+handles, exact hashes/layout/accounting, actual held-file IDs in pins. New
+compact binding domain hashes native shadow identity AND artifact identity into
+immutable journal/ticket; old raw-shadow binding/wrappers remain unchanged.
+Shared preparation checks still inspect NTFS/ReFS and retain full comparison/
+durability verification. CLI lab-prepare-compact-journal generates target hash,
+prepares external J journal, rechecks artifact/device state and requires journal
+patches cover EXACT delta ranges (no complement writes). All admission/write
+authority flags remain false. GeneralJournalReadView now gives future apply/
+recovery a separate bounded read-only attrs1 handle; NEVER reuse stale frozen3
+view after activation. Existing normalized-source/full candidate hash checks
+must remain. Native preparation pending. Start-CompactJournalPreparation.ps1
+boots existing43cc/all35 once, no restore/format,2-GiB allowance/512-MiB journal.
+Do not rerun constructors; no unit tests added/run. Source cutover still pending.
+
 METADATA-PRESERVING COMPACT CANDIDATE NATIVE PASSED3c9f174567bf48f5b9957e3f1ec48011.
 Producerbe41bedaa3734d880b3de4fdd84a58820040186eba981ed939380d43c04b8989
 (afc2982+pre-existing main.rs). All14 metadata/IDs/basic/both SD views matched;

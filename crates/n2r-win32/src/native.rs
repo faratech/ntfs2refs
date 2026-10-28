@@ -1034,6 +1034,94 @@ pub struct GeneralFrozenPartition {
     allocation_capture: Option<Arc<()>>,
 }
 
+/// Read-only view of an activated, persistently offline journal target. Unlike
+/// GeneralFrozenPartition, this does not assert READ_ONLY or immutable bytes:
+/// the owning journal writer may change its admitted patch ranges. Callers
+/// must bracket operations with state() and independently prove any complement
+/// they reuse is unchanged. No Write, mount or disk-attribute setter is exposed.
+pub struct GeneralJournalReadView {
+    file: File,
+    binding: GeneralDiskBinding,
+    expected_state: GeneralDiskState,
+    position: u64,
+    buffer: AlignedBuffer,
+    native_bytes_read: u64,
+}
+
+impl GeneralJournalReadView {
+    pub fn byte_len(&self) -> u64 {
+        self.binding.identity.partition_bytes
+    }
+
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        &self.binding
+    }
+
+    pub fn native_bytes_read(&self) -> u64 {
+        self.native_bytes_read
+    }
+
+    pub fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<GeneralDiskState> {
+        let actual = general_disk_state(&self.file, &self.binding, events)?;
+        if actual != self.expected_state || actual.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "journal read view lost offline state or device identity",
+            ));
+        }
+        Ok(actual)
+    }
+}
+
+impl Read for GeneralJournalReadView {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() || self.position == self.byte_len() {
+            return Ok(0);
+        }
+        let aligned = self.position / GRANULE * GRANULE;
+        let prefix = (self.position - aligned) as usize;
+        let wanted = output
+            .len()
+            .min(MAX_IO - prefix)
+            .min((self.byte_len() - self.position).min(MAX_IO as u64) as usize);
+        let count = (prefix + wanted).div_ceil(GRANULE as usize) * GRANULE as usize;
+        if aligned + count as u64 > self.byte_len() {
+            return Err(invalid("aligned journal view read escapes partition"));
+        }
+        self.file.seek(SeekFrom::Start(
+            self.binding.identity.partition_offset + aligned,
+        ))?;
+        let read = self.file.read(&mut self.buffer.bytes_mut()[..count])?;
+        self.native_bytes_read = self
+            .native_bytes_read
+            .checked_add(read as u64)
+            .ok_or_else(|| invalid("journal read view byte accounting overflow"))?;
+        if read != count {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short journal view aligned read",
+            ));
+        }
+        output[..wanted].copy_from_slice(&self.buffer.bytes_mut()[prefix..prefix + wanted]);
+        self.position += wanted as u64;
+        Ok(wanted)
+    }
+}
+
+impl Seek for GeneralJournalReadView {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let position = match from {
+            SeekFrom::Start(value) => i128::from(value),
+            SeekFrom::Current(value) => i128::from(self.position) + i128::from(value),
+            SeekFrom::End(value) => i128::from(self.byte_len()) + i128::from(value),
+        };
+        if position < 0 || position > i128::from(self.byte_len()) {
+            return Err(invalid("seek escapes journal read view"));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
+}
+
 /// The point at which a complete pair of native allocation maps was queried.
 /// Neither point certifies the allocation graph of the final frozen image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -2109,6 +2197,39 @@ impl GeneralFrozenPartition {
 }
 
 impl GeneralJournaledPartition {
+    /// Open a separate read-only native handle/cursor for a compact target's
+    /// source-backed complement. This derives only from this live writer and
+    /// does not reopen an activated disk as an allegedly frozen partition.
+    pub fn read_only_view(
+        &self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralJournalReadView> {
+        let expected_state = self.state(events)?;
+        if expected_state.disk_attributes != OFFLINE {
+            return Err(invalid(
+                "journal read view requires an activated offline target",
+            ));
+        }
+        let file = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding().disk_number),
+            false,
+            true,
+        )?;
+        if general_disk_state(&file, self.binding(), events)? != expected_state
+            || self.state(events)? != expected_state
+        {
+            return Err(invalid("journal read view route changed while opening"));
+        }
+        Ok(GeneralJournalReadView {
+            file,
+            binding: self.binding().clone(),
+            expected_state,
+            position: 0,
+            buffer: AlignedBuffer::new()?,
+            native_bytes_read: 0,
+        })
+    }
+
     /// Reopen an already activated target after an interruption. A missing
     /// OFFLINE attribute is a hard refusal; no attribute repair is attempted.
     pub fn reopen(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> io::Result<Self> {

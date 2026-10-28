@@ -1,5 +1,26 @@
 # Candidate ReFS target write set
 
+## Compact journal preparation
+
+`lab-prepare-compact-journal` now reopens the pinned persisted difference report
+and backing under read-only handles, validates actual backing hashes/lengths
+and held-file identities, generates the complete candidate target hash, and
+feeds `DifferenceImage` into the existing journal comparison/preparation core.
+Source/native-shadow device states remain separately bracketed and excluded.
+The journal's shadow identity uses a new compact domain including both native
+partition identity and exact artifact pins. An ordinary raw-shadow ticket does
+not become a compact ticket, or vice versa. Preparation requires journal ranges
+to cover exactly the changed-cluster set, protecting the source-backed complement.
+Outputs still grant no admission, activation or conversion authority.
+
+For subsequent execution/recovery, `GeneralJournalReadView` derives a separate
+bounded read-only handle/cursor from an activated offline target (attrs1).
+Reusing a `GeneralFrozenPartition` with stale attrs3 state is explicitly avoided.
+Existing full target hash/normalized-source checks and handoff barrier must stay
+in the compact execution path. The full-shadow wrappers retain their behavior.
+Release build/controller syntax passed; native preparation pending. No unit
+tests added/run. Existing journaled cutover/recovery still needs connection.
+
 ## Source-backed difference representation
 
 The native low-scratch experiment now constructs private unwritten user

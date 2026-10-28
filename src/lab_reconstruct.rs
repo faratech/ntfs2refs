@@ -100,6 +100,13 @@ impl ReadSeek for n2r_win32::GeneralJournaledPartition {
 }
 
 #[cfg(windows)]
+impl ReadSeek for n2r_win32::GeneralJournalReadView {
+    fn byte_len(&mut self) -> io::Result<u64> {
+        Ok(n2r_win32::GeneralJournalReadView::byte_len(self))
+    }
+}
+
+#[cfg(windows)]
 impl DurableIo for n2r_win32::GeneralJournaledPartition {
     fn sync_all(&mut self) -> io::Result<()> {
         n2r_win32::GeneralJournaledPartition::sync_all(self)

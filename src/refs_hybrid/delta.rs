@@ -4,6 +4,9 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
 
+mod artifact;
+pub use artifact::{DeltaArtifactPins, VerifiedDeltaArtifact};
+
 #[derive(Debug, Serialize)]
 pub struct ChangedRange {
     pub(crate) offset: u64,
@@ -60,6 +63,43 @@ impl DeltaLayout {
     }
     pub fn changed_ranges(&self) -> usize {
         self.ranges.len()
+    }
+
+    /// Journal patch splitting may differ, but its write set must cover exactly
+    /// these changed bytes. No source-backed complement byte may be armed.
+    pub fn require_exact_write_ranges(&self, patches: &[(u64, u64)]) -> Result<()> {
+        ensure!(
+            patches.len() <= 65536,
+            "delta journal range budget exceeded"
+        );
+        let mut index = 0usize;
+        let mut cursor = self.ranges.first().map_or(0, |r| r.offset);
+        for &(offset, length) in patches {
+            let range = self
+                .ranges
+                .get(index)
+                .context("journal writes beyond delta set")?;
+            let end = offset
+                .checked_add(length)
+                .context("journal range overflow")?;
+            ensure!(
+                length > 0 && offset == cursor && end <= range.offset + range.length,
+                "journal patch escapes or skips delta bytes"
+            );
+            cursor = end;
+            if cursor == range.offset + range.length {
+                index += 1;
+                cursor = self.ranges.get(index).map_or(0, |r| r.offset);
+            }
+        }
+        ensure!(
+            index == self.ranges.len(),
+            "journal does not cover all delta bytes"
+        );
+        Ok(())
+    }
+    pub fn partition_bytes(&self) -> u64 {
+        self.partition_bytes
     }
 }
 
@@ -137,5 +177,13 @@ impl<R: Read + Seek, S: Read + Seek> Seek for DifferenceImage<'_, R, S> {
         }
         self.position = next as u64;
         Ok(self.position)
+    }
+}
+
+impl<R: Read + Seek, S: Read + Seek> crate::lab_reconstruct::ReadSeek
+    for DifferenceImage<'_, R, S>
+{
+    fn byte_len(&mut self) -> io::Result<u64> {
+        Ok(self.layout.partition_bytes)
     }
 }

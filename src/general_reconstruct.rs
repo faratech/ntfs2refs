@@ -49,6 +49,26 @@ fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBi
     })
 }
 
+fn compact_binding(
+    request: &Request,
+    journal: &JournalFileIdentity,
+    artifact_identity: &str,
+) -> Result<JournalBinding> {
+    ensure!(
+        artifact_identity.len() == 64
+            && artifact_identity
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "compact artifact identity digest invalid"
+    );
+    let mut bound = binding(request, journal)?;
+    bound.shadow_identity_sha256 = identity_hash(
+        b"ntfs2refs/compact-shadow-backing/v1",
+        &serde_json::json!({"native_shadow_identity":bound.shadow_identity_sha256,"artifact_identity":artifact_identity}),
+    )?;
+    Ok(bound)
+}
+
 fn validated_ticket(
     request: &Request,
     journal: &mut File,
@@ -315,54 +335,13 @@ pub fn prepare_with_progress(
         journal_before.file_bytes == 0,
         "journal is not a fresh empty file"
     );
-    let ntfs = ntfs_inspect::inspect_with_limits(
-        source,
-        source.byte_len(),
-        ntfs_inspect::limits_for_resource_profile(
-            request.source_resource_profile.unwrap_or_default(),
-        ),
-    )?;
-    let refs = refs_inspect::inspect_with_resource_profile(
-        shadow,
-        shadow.byte_len(),
-        request.source_resource_profile.unwrap_or_default(),
-    )?;
-    ensure!(
-        request
-            .source_resource_profile
-            .unwrap_or_default()
-            .supports_source_geometry(&ntfs.geometry)
-            && refs.geometry.major_version == 3
-            && refs.geometry.minor_version == 14
-            && refs.geometry.bytes_per_cluster == 4096
-            && refs.geometry.volume_bytes == shadow.byte_len(),
-        "initial NTFS/ReFS format geometry differs"
-    );
-    let retained_allocation = if request.comparison.retained_ranges.is_empty() {
-        None
-    } else {
-        let shadow_length = shadow.byte_len();
-        let observed = refs_retained_allocation::inspect_with_resource_profile(
-            shadow,
-            shadow_length,
-            &request.comparison,
-            request.source_resource_profile.unwrap_or_default(),
-        )?;
-        ensure!(
-            observed.retained_allocator_coverage_verified,
-            "retained data lacks unambiguous ReFS allocator coverage"
-        );
-        Some(observed)
-    };
-    let observed_binding = binding(request, &journal_before.identity)?;
-    let summary = lab_reconstruct::prepare_journal_with_profile_and_progress(
+    let (ntfs, refs, retained_allocation, observed_binding, summary) = prepare_image_content(
+        request,
         source,
         shadow,
         journal,
-        &request.comparison,
-        &observed_binding,
-        request.max_journal_bytes,
-        JournalProfile::from_schema(request.schema_version)?,
+        &journal_before,
+        None,
         progress,
     )?;
     let source_after = source.state(&mut events)?;
@@ -397,6 +376,158 @@ pub fn prepare_with_progress(
         target_profile_qualified: false,
         execution_authorized: false,
     })
+}
+
+type PreparedImageContent = (
+    ntfs_inspect::NtfsInspection,
+    refs_inspect::RefsInspection,
+    Option<refs_retained_allocation::Coverage>,
+    JournalBinding,
+    JournalSummary,
+);
+
+/// Prepare from a separately authenticated compact view while retaining the
+/// native frozen shadow as a provenance/device guard. No source writes or
+/// activation are exposed; ordinary full-shadow preparation is unchanged.
+pub fn prepare_compact_with_progress<S: lab_reconstruct::ReadSeek>(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    native_shadow: &GeneralFrozenPartition,
+    image: &mut S,
+    journal: &mut File,
+    artifact_identity_sha256: &str,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<Preparation> {
+    request.validate()?;
+    ensure!(
+        source.binding() == &request.pair.source
+            && native_shadow.binding() == &request.pair.shadow
+            && image.byte_len()? == native_shadow.byte_len(),
+        "compact preparation bindings/length differ"
+    );
+    let mut events = Vec::new();
+    let source_before = source.state(&mut events)?;
+    let shadow_before = native_shadow.state(&mut events)?;
+    ensure!(
+        source_before.disk_attributes == 3 && shadow_before.disk_attributes == 3,
+        "compact preparation requires both data disks excluded read-only"
+    );
+    let journal_before = observe_journal(journal, request)?;
+    ensure!(
+        journal_before.file_bytes == 0,
+        "compact preparation needs fresh journal"
+    );
+    let compact_bound =
+        compact_binding(request, &journal_before.identity, artifact_identity_sha256)?;
+    let (ntfs, refs, retained_allocation, observed_binding, summary) = prepare_image_content(
+        request,
+        source,
+        image,
+        journal,
+        &journal_before,
+        Some(&compact_bound),
+        progress,
+    )?;
+    let source_after = source.state(&mut events)?;
+    let shadow_after = native_shadow.state(&mut events)?;
+    let after = observe_journal(journal, request)?;
+    ensure!(
+        source_before == source_after
+            && shadow_before == shadow_after
+            && journal_before.identity == after.identity
+            && after.file_bytes == summary.ticket.journal_length,
+        "compact preparation device/journal state changed"
+    );
+    Ok(Preparation {
+        schema_version: 1,
+        kind: "general-compact-candidate-journal-preparation",
+        request: request.clone(),
+        observed_binding,
+        source_before,
+        source_after,
+        shadow_before,
+        shadow_after,
+        source_ntfs_dirty: ntfs.dirty,
+        source_ntfs_volume_flags: ntfs.volume_flags,
+        shadow_refs_version: format!(
+            "{}.{}",
+            refs.geometry.major_version, refs.geometry.minor_version
+        ),
+        retained_allocation,
+        journal: summary,
+        events,
+        source_admitted: false,
+        target_profile_qualified: false,
+        execution_authorized: false,
+    })
+}
+
+/// Shared content checks for raw-shadow and compact target views. This does
+/// not grant activation; callers retain and bracket actual device leases.
+fn prepare_image_content<S: lab_reconstruct::ReadSeek>(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    shadow: &mut S,
+    journal: &mut File,
+    journal_before: &JournalFileSnapshot,
+    explicit_binding: Option<&JournalBinding>,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<PreparedImageContent> {
+    let shadow_length = shadow.byte_len()?;
+    let ntfs = ntfs_inspect::inspect_with_limits(
+        source,
+        source.byte_len(),
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
+    let refs = refs_inspect::inspect_with_resource_profile(
+        shadow,
+        shadow_length,
+        request.source_resource_profile.unwrap_or_default(),
+    )?;
+    ensure!(
+        request
+            .source_resource_profile
+            .unwrap_or_default()
+            .supports_source_geometry(&ntfs.geometry)
+            && refs.geometry.major_version == 3
+            && refs.geometry.minor_version == 14
+            && refs.geometry.bytes_per_cluster == 4096
+            && refs.geometry.volume_bytes == shadow_length,
+        "initial NTFS/ReFS format geometry differs"
+    );
+    let retained_allocation = if request.comparison.retained_ranges.is_empty() {
+        None
+    } else {
+        let shadow_length = shadow_length;
+        let observed = refs_retained_allocation::inspect_with_resource_profile(
+            shadow,
+            shadow_length,
+            &request.comparison,
+            request.source_resource_profile.unwrap_or_default(),
+        )?;
+        ensure!(
+            observed.retained_allocator_coverage_verified,
+            "retained data lacks unambiguous ReFS allocator coverage"
+        );
+        Some(observed)
+    };
+    let observed_binding = match explicit_binding {
+        Some(bound) => bound.clone(),
+        None => binding(request, &journal_before.identity)?,
+    };
+    let summary = lab_reconstruct::prepare_journal_with_profile_and_progress(
+        source,
+        shadow,
+        journal,
+        &request.comparison,
+        &observed_binding,
+        request.max_journal_bytes,
+        JournalProfile::from_schema(request.schema_version)?,
+        progress,
+    )?;
+    Ok((ntfs, refs, retained_allocation, observed_binding, summary))
 }
 
 /// Only a separately pinned, fully inspected journal can remove READ_ONLY

@@ -24,6 +24,24 @@ pub struct StorageUse {
     pub data_bytes_written: u64,
 }
 
+/// Stable volume/file identity from the caller's already-held handle. No path
+/// reopen, payload I/O or permission changes occur here.
+pub fn file_id_info(file: &std::fs::File) -> io::Result<String> {
+    let mut info = [0u64; 3];
+    // SAFETY: live handle and aligned initialized FILE_ID_INFO buffer.
+    if unsafe {
+        GetFileInformationByHandleEx(file.as_raw_handle(), 18, info.as_mut_ptr().cast(), 24)
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(hex::encode(
+        info.iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    ))
+}
+
 pub fn observe(path: &Path) -> io::Result<StorageUse> {
     let file = OpenOptions::new()
         .access_mode(0x80)

@@ -1,5 +1,12 @@
 # ntfs2refs project guidance
 
+Post-recovery native semantics/retained-position verification is prepared in
+Verify-StreamingV2RecoveredTree.ps1 (9bbadaa). It is NOT dispatched yet: it
+requires actual successful closed Finalize result/completion and pins the old
+8f3675 verifier. Never synthesize a normal conversion result to reuse another
+harness. Candidate13 remains live under PID1424/monitor session42487; latest
+observed phase target-preservation with increasing reads and no interruption.
+
 The candidate13 monitor is also LIVE: host exec session42487 runs
 Wait-StreamingV2RetainedInterruption.ps1 (cbda368), polling only the recorded
 run2fa6edb2e7ac464ca863a5db6dbd6f5c. It archives and preserves a partial OFF

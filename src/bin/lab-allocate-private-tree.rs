@@ -34,6 +34,8 @@ fn main() -> anyhow::Result<()> {
         place_source_prefixes: bool,
         #[arg(long, requires = "place_source_prefixes")]
         materialize_relocations: bool,
+        #[arg(long, requires = "materialize_relocations")]
+        verify_logical_hybrid: bool,
         #[arg(long, default_value_t = 268435456)]
         max_materialize_bytes: u64,
         #[arg(long, requires = "materialize_small")]
@@ -104,6 +106,7 @@ fn main() -> anyhow::Result<()> {
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
+        "verify_logical_hybrid":args.verify_logical_hybrid,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,
         "tree_sha256":args.tree_sha256,"source_writes_authorized":false,
@@ -195,6 +198,7 @@ fn main() -> anyhow::Result<()> {
             let mut transfers = Vec::new();
             let mut unverified_prefixes = Vec::new();
             let mut relocation_materialization = None;
+            let mut logical_hybrid = None;
             if let (Some(source), Some(raw)) = (source.as_mut(), inspection.as_ref()) {
                 if args.materialize_relocations {
                     relocation_materialization =
@@ -206,6 +210,13 @@ fn main() -> anyhow::Result<()> {
                             args.max_materialize_bytes,
                             &mut budget,
                         )?);
+                    if args.verify_logical_hybrid {
+                        logical_hybrid = Some(general_shadow::verify_private_hybrid_contents(
+                            source,
+                            &tree,
+                            &mut template,
+                        )?);
+                    }
                 } else {
                     for &(index, offset, length) in &selected {
                         if offset > 0 {
@@ -239,6 +250,7 @@ fn main() -> anyhow::Result<()> {
             report["source_prefix_placement"] = serde_json::to_value(placement)?;
             report["relocation_materialization"] =
                 serde_json::to_value(relocation_materialization)?;
+            report["logical_hybrid_verification"] = serde_json::to_value(logical_hybrid)?;
             report["source_logical_range_bytes_charged"] = budget.reserved_bytes().into();
             report["large_payload_initialization_selected"] = false.into();
             Ok(report)
@@ -255,6 +267,7 @@ fn main() -> anyhow::Result<()> {
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"private-tree-allocation",
         "success":failure.is_none(),"observe_existing":args.observe_existing,
+        "verify_logical_hybrid":args.verify_logical_hybrid,
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,

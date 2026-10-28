@@ -1,5 +1,17 @@
 # ntfs2refs project guidance
 
+Source-backed logical hybrid verification is now implemented/wired through
+explicit --verify-logical-hybrid after planned materialization. It hashes all
+user streams from live original-coordinate source reads plus initialized
+private-shadow gap reads, validates exact logical coverage/EOF/canonical SHA,
+and brackets native shape/mapping/source state. Shadow reads of source refs
+or uninitialized bytes are prohibited; separate verify-read accounting.
+Release build passed, but native full mixed-path execution is NOT qualified.
+This is NOT frozen metadata-graph validation, source admission or cutover
+authority. Source/system metadata, required-byte capture and recoverable
+compact conversion remain. All26 snapshots preserved/VM OFF. No unit tests
+added/run; details in docs/private-tree-allocation.md.
+
 Live SupplyPlan plus streamed relocation materialization is implemented.
 PrivateTree stores successful original-coordinate ranges internally, requires
 complete one-time placement, rechecks native mappings, and partitions all user

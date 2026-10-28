@@ -1,5 +1,32 @@
 # Allocation-only canonical tree staging
 
+## Source-backed logical hybrid verification
+
+`general_shadow::verify_private_hybrid_contents` now verifies each user
+stream from the live supply plan without a duplicate payload image. It reads
+original-coordinate ranges at their measured physical offsets from the actual
+excluded source and reads only initialized materialization ranges through the
+private shadow file handles. Every logical byte must be covered once, within
+EOF, and the complete stream SHA-256 must match the canonical source digest.
+An empty stream still requires its canonical empty hash. Buffer size is64 KiB.
+
+Native path/length/type/link/deletion and tracked mappings bracket each file;
+the complete live supply plan and excluded-source state bracket the pass.
+Read accounting must equal the plan's reference/materialization totals. Shadow
+reads intersecting source references or exceeding its initialized prefix are
+refused, so the verifier cannot accidentally authenticate garbage placeholder
+bytes instead of retained source bytes. Dedicated verification-read counters
+remain separate from materialization readback. Source VDL/encoding mismatch
+that makes raw referenced bytes differ from canonical logical data fails the
+whole-stream digest; this function does not silently normalize those cases.
+
+The staging CLI selects this only with explicit `--verify-logical-hybrid`
+after `--materialize-relocations`. This is a logical payload proof, **not** a
+frozen on-disk ReFS graph or source-admission certificate. System metadata,
+source ACL/time restoration, complete required-byte capture, storage admission
+and recoverable cutover remain pending. Release build passed; native execution
+of the whole-tree mixed path remains unqualified. No unit tests added/run.
+
 ## Live payload-supply plan and relocation streaming
 
 The private tree now retains original-coordinate ranges as internal state

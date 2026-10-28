@@ -23,6 +23,65 @@ pub struct PrivateTree {
 }
 
 impl PrivateTree {
+    pub fn validate_stream_shape(
+        &self,
+        index: usize,
+        components: &[String],
+        length: u64,
+    ) -> io::Result<()> {
+        self.require_source_excluded()?;
+        let file = self
+            .files
+            .get(&index)
+            .ok_or_else(|| invalid("private verification stream absent"))?;
+        let path = format!(
+            "{}\\{}",
+            self.pair.shadow.volume_path()?,
+            components.join("\\")
+        );
+        let standard = info(file.metadata_handle(), 1, 24)?;
+        if file.path != path
+            || file.logical_length() != length
+            || layout::u64_at(&standard, 8)? != length
+            || layout::u32_at(&standard, 16)? != 1
+            || standard[20] != 0
+            || standard[21] != 0
+        {
+            return Err(invalid("private verification stream shape differs"));
+        }
+        file.check_placements()
+    }
+
+    /// Only materialization data is readable from the shadow in a hybrid
+    /// session. Source-reference bytes must come from the frozen original.
+    pub fn read_materialized_range(
+        &mut self,
+        index: usize,
+        offset: u64,
+        output: &mut [u8],
+    ) -> io::Result<()> {
+        if !self.placement_complete {
+            return Err(invalid("live complete placement required for hybrid read"));
+        }
+        let end = offset
+            .checked_add(output.len() as u64)
+            .ok_or_else(|| invalid("hybrid read overflow"))?;
+        if !output.is_empty()
+            && self.original_coordinates.get(&index).is_some_and(|ranges| {
+                ranges
+                    .iter()
+                    .any(|(start, _, len)| offset < *start + *len && *start < end)
+            })
+        {
+            return Err(invalid(
+                "hybrid source reference cannot read shadow placeholder bytes",
+            ));
+        }
+        self.files
+            .get_mut(&index)
+            .ok_or_else(|| invalid("private materialized stream absent"))?
+            .read_initialized_at(offset, output)
+    }
     pub fn supply_plan(&self) -> io::Result<SupplyPlan> {
         supply::plan(self)
     }
@@ -177,6 +236,7 @@ impl PrivateTree {
             row["materialized_bytes"] = file.materialized_bytes().into();
             row["readback_bytes"] = file.readback_bytes().into();
             row["valid_prefix_bytes"] = file.valid_prefix().into();
+            row["verification_read_bytes"] = file.verification_read_bytes().into();
             files.push(row);
         }
         let readback_bytes = self.files.values().try_fold(0u64, |n, f| {
@@ -187,6 +247,10 @@ impl PrivateTree {
             n.checked_add(f.materialized_bytes())
                 .ok_or_else(|| invalid("private materialization total overflow"))
         })?;
+        let verification_read_bytes = self.files.values().try_fold(0u64, |n, f| {
+            n.checked_add(f.verification_read_bytes())
+                .ok_or_else(|| invalid("private verify total overflow"))
+        })?;
         self.require_source_excluded()?;
         Ok(
             serde_json::json!({"schema_version":1,"kind":"native-private-tree-allocation-template",
@@ -194,6 +258,7 @@ impl PrivateTree {
             "files":files,"events":self.events,"privileges":self.privileges.audit(),
             "user_payload_bytes_read":readback_bytes,
             "user_payload_bytes_written":materialized_bytes,
+            "hybrid_shadow_verification_bytes_read":verification_read_bytes,
             "formatter_preflight_may_read_cache":true,"source_payload_writes":0,
             "security_timestamps_attributes_pending":true,"system_objects_pending":true,
             "physical_payload_io_measured":false,"conversion_qualified":false}),

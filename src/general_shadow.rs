@@ -263,6 +263,126 @@ pub fn materialize_private_supply_plan(
     )
 }
 
+/// Verify mixed logical data without copying original-coordinate payload.
+/// This checks live stream mappings, not the frozen ReFS metadata graph.
+#[cfg(windows)]
+pub fn verify_private_hybrid_contents(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    tree: &crate::shadow_tree::Tree,
+    template: &mut n2r_win32::shadow_native::private_tree::PrivateTree,
+) -> Result<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Seek, SeekFrom};
+    ensure!(
+        source.binding() == template.source_binding(),
+        "hybrid source binding differs"
+    );
+    let mut events = Vec::new();
+    let before = source.state(&mut events)?;
+    ensure!(
+        before.disk_attributes == 3,
+        "hybrid verification requires excluded source"
+    );
+    let plan = template.supply_plan()?;
+    let mut ranges: Vec<_> = plan
+        .materialization_ranges()
+        .iter()
+        .chain(plan.source_reference_ranges())
+        .collect();
+    ranges.sort_by_key(|r| (r.object_index, r.logical_offset));
+    let mut grouped = std::collections::BTreeMap::<usize, Vec<_>>::new();
+    for range in ranges {
+        grouped.entry(range.object_index).or_default().push(range);
+    }
+    let mut files = Vec::new();
+    let mut source_bytes = 0u64;
+    let mut shadow_bytes = 0u64;
+    let mut buffer = [0u8; 65536];
+    for (index, ranges) in grouped {
+        let object = tree
+            .objects
+            .get(index)
+            .context("hybrid stream outside canonical tree")?;
+        ensure!(
+            !object.directory,
+            "hybrid data stream cannot be a directory"
+        );
+        template.validate_stream_shape(index, &object.path, object.length)?;
+        let mut cursor = 0u64;
+        let mut hash = Sha256::new();
+        for range in ranges {
+            ensure!(
+                range.logical_offset == cursor,
+                "hybrid logical range gap or overlap"
+            );
+            let end = cursor
+                .checked_add(range.length)
+                .context("hybrid range overflow")?;
+            ensure!(end <= object.length, "hybrid logical range exceeds EOF");
+            let mut done = 0;
+            while done < range.length {
+                let count = (range.length - done).min(buffer.len() as u64) as usize;
+                if let Some(physical) = range.source_physical_offset {
+                    let offset = physical
+                        .checked_add(done)
+                        .context("hybrid physical offset overflow")?;
+                    ensure!(
+                        offset
+                            .checked_add(count as u64)
+                            .is_some_and(|v| v <= source.byte_len()),
+                        "hybrid source reference escapes partition"
+                    );
+                    source.seek(SeekFrom::Start(offset))?;
+                    source.read_exact(&mut buffer[..count])?;
+                    source_bytes = source_bytes
+                        .checked_add(count as u64)
+                        .context("hybrid source read accounting overflow")?;
+                } else {
+                    template.read_materialized_range(index, cursor + done, &mut buffer[..count])?;
+                    shadow_bytes = shadow_bytes
+                        .checked_add(count as u64)
+                        .context("hybrid shadow read accounting overflow")?;
+                }
+                hash.update(&buffer[..count]);
+                done += count as u64;
+            }
+            cursor = end;
+        }
+        ensure!(cursor == object.length, "hybrid stream coverage incomplete");
+        let actual = hex::encode(hash.finalize());
+        ensure!(
+            Some(&actual) == object.sha256.as_ref(),
+            "hybrid logical stream differs: {:?}",
+            object.path
+        );
+        template.validate_stream_shape(index, &object.path, object.length)?;
+        files.push(
+            serde_json::json!({"object_index":index,"components":object.path,
+            "record_number":object.record_number,"logical_bytes":cursor,"sha256":actual}),
+        );
+    }
+    let after = template.supply_plan()?;
+    ensure!(
+        serde_json::to_vec(&plan)? == serde_json::to_vec(&after)?,
+        "hybrid native mapping changed around verification"
+    );
+    ensure!(
+        source.state(&mut events)? == before,
+        "hybrid source state changed during verification"
+    );
+    ensure!(
+        source_bytes == plan.source_reference_bytes && shadow_bytes == plan.materialize_bytes,
+        "hybrid read accounting differs from live supply plan"
+    );
+    Ok(
+        serde_json::json!({"kind":"private-logical-hybrid-verification","success":true,
+        "files":files,"source_reference_bytes_read":source_bytes,"shadow_materialization_bytes_read":shadow_bytes,
+        "logical_bytes_verified":plan.logical_bytes,"payload_bytes_written":0,
+        "frozen_metadata_graph_verified":false,"source_metadata_restoration_pending":true,
+        "conversion_qualified":false}),
+    )
+}
+
 pub fn validate_mount_paths(paths: &Option<Vec<String>>) -> Result<()> {
     let Some(paths) = paths else { return Ok(()) };
     ensure!(paths.len() <= 128, "too many source mount paths");

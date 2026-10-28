@@ -46,6 +46,7 @@ pub(super) struct PrivatePlaceholder {
     valid_prefix: u64,
     materialized_bytes: u64,
     readback_bytes: u64,
+    verification_read_bytes: u64,
     poisoned: bool,
     move_submissions: usize,
 }
@@ -162,6 +163,7 @@ impl PrivatePlaceholder {
             valid_prefix: 0,
             materialized_bytes: 0,
             readback_bytes: 0,
+            verification_read_bytes: 0,
             poisoned: false,
             move_submissions: 0,
         })
@@ -184,6 +186,39 @@ impl PrivatePlaceholder {
     }
     pub fn valid_prefix(&self) -> u64 {
         self.valid_prefix
+    }
+    pub fn verification_read_bytes(&self) -> u64 {
+        self.verification_read_bytes
+    }
+
+    /// Bounded initialized-data read for logical hybrid verification. Native
+    /// map/shape/exclusion bracketing is performed by the owning tree/session.
+    pub fn read_initialized_at(&mut self, offset: u64, output: &mut [u8]) -> io::Result<()> {
+        let end = offset
+            .checked_add(output.len() as u64)
+            .ok_or_else(|| invalid("private verify read overflow"))?;
+        if self.poisoned || output.len() > 65536 || end > self.bytes || end > self.valid_prefix {
+            return Err(invalid(
+                "private verification read escapes initialized bytes",
+            ));
+        }
+        self.verification_read_bytes
+            .checked_add(output.len() as u64)
+            .ok_or_else(|| invalid("private verification read accounting overflow"))?;
+        self.file.seek(SeekFrom::Start(offset))?;
+        let mut read = 0;
+        while read < output.len() {
+            let n = self.file.read(&mut output[read..])?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "private verification ended before EOF",
+                ));
+            }
+            read += n;
+            self.verification_read_bytes += n as u64;
+        }
+        Ok(())
     }
 
     /// Write only an explicitly supplied exception range. Never bridge an

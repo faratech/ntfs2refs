@@ -122,3 +122,14 @@ The reconstruction request is
 it is distinct from the earlier conversion/discovery request. No resume,
 native post-recovery or rollback outcome is established yet. Do not redispatch
 this task; observe its actual process and durable results.
+
+Resume subsequently completed successfully with actual and expected target
+SHA-256`1e938b2038047af353a01953569fbf62edd4d53015a3c7460b32cec5f2a69710`.
+The target remained offline and rollback was not yet closed. Archived result
+SHA-256`e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a`;
+execution SHA-256
+`2b2fb05b47240c96a6529e0a67b2b2cebdac8094c16e39639af262fc02b3960a`.
+The existing host chain then dispatched Finalize once, underPID5216 from
+2026-10-28T06:20:14.118556Z. Native handoff, independent recovered-tree
+verification and the separate NTFS rollback fork remain pending. Preserve the
+original partial checkpoint; do not replay rollback over a handed-off branch.

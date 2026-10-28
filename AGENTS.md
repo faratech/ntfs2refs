@@ -1,5 +1,17 @@
 # ntfs2refs project guidance
 
+Candidate13 Resume SUCCEEDED, proving exact expected/actual target SHA-256
+1e938b2038047af353a01953569fbf62edd4d53015a3c7460b32cec5f2a69710 while
+the target remained offline and rollback unclosed. Archived Resume-result.json
+SHA e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a;
+Resume-execution.json SHA2b2fb05b47240c96a6529e0a67b2b2cebdac8094c16e39639af262fc02b3960a.
+The SAME host chain46262 then dispatched Finalize exactly once:
+taskN2R-StreamingV2Recover-Finalize-2fa6edb2e7ac464ca863a5db6dbd6f5c,
+PID5216 created2026-10-28T06:20:14.118556Z, original5bd69d5b helper.
+Observe its recorded Finalize task; never repeat Resume or Finalize. No native
+handoff/independent post-recovery/rollback success is claimed yet. Partial
+checkpoint4d73dd8d remains the ONLY eligible source for the later rollback fork.
+
 Resume/finalize chain is LIVE in host exec session46262. It observes only the
 already dispatched Resume task, requires terminal0/offline/unclosed result
 and execution.result.target_sha256==fresh1e938b20...69710 before archiving

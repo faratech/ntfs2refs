@@ -45,8 +45,11 @@ try{
     $cli=@('convert','--acknowledge-experimental-compact','--request',$binding,'--request-sha256',$pin,'--maximum-placement-bytes','1073741824','--maximum-placement-submissions','1024','--maximum-exception-bytes','16777216','--output',$c.output)
     $arguments=($cli|ForEach-Object {if($_.Contains('"')){throw 'Embedded quote refused.'};'"'+$_+'"'}) -join ' '
     $process=Start-Process -FilePath $binary -ArgumentList $arguments -WorkingDirectory $c.stage -RedirectStandardOutput (Join-Path $c.stage 'converter.stdout.log') -RedirectStandardError (Join-Path $c.stage 'converter.stderr.log') -PassThru -WindowStyle Hidden
+    # Retain the process handle before waiting: Windows PowerShell5 may otherwise
+    # return a blank ExitCode after a long-running child has already disappeared.
+    $null=$process.Handle
     Save-New 'converter-process.json' @{pid=$process.Id;creation_ms=([DateTimeOffset]$process.StartTime).ToUnixTimeMilliseconds();binary=$binary;sha256=(Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant();arguments=$cli;request_sha256=$pin;utc=[DateTime]::UtcNow.ToString('o')}
-    $process.WaitForExit();$exit=$process.ExitCode;if($exit -ne 0){throw ('Public converter exit '+$exit)}
+    $process.WaitForExit();$exit=$process.ExitCode;if($null -eq $exit){throw 'Public converter exit status unavailable; preserve reports without retry.'};if($exit -ne 0){throw ('Public converter exit '+$exit)}
     $result=Get-Content -LiteralPath (Join-Path $c.output 'result.json') -Raw -Encoding UTF8|ConvertFrom-Json
     if(-not$result.success -or -not$result.source_admitted -or -not$result.rollback_closed){throw 'Successful admitted compact handoff required.'}
     Save-New 'wrapper-result.json' @{success=$true;run_id=$c.run_id;phase=$phase;exit=0;source_extent_moves=0;utc=[DateTime]::UtcNow.ToString('o')};exit 0

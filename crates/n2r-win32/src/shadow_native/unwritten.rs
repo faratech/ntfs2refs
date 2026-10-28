@@ -51,11 +51,35 @@ impl PrivatePlaceholder {
             || !experiment.bytes().all(|b| b.is_ascii_hexdigit())
             || bytes < 4096
             || !bytes.is_multiple_of(4096)
+        {
+            return Err(invalid("private allocation geometry or identity differs"));
+        }
+        Self::allocate_named(
+            root,
+            &[format!("n2r-valid-data-{experiment}.bin")],
+            bytes,
+            partition,
+        )
+    }
+
+    /// Preserve source names while retaining private permissions. No source
+    /// security descriptor is restored over an uninitialized placeholder.
+    pub fn allocate_named(
+        root: &str,
+        components: &[String],
+        bytes: u64,
+        partition: u64,
+    ) -> io::Result<Self> {
+        if components.is_empty()
+            || components.len() > 16
+            || components
+                .iter()
+                .any(|s| !crate::shadow_names::valid_unicode_component(s))
             || bytes > partition
             || partition > crate::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES
             || i64::try_from(bytes).is_err()
         {
-            return Err(invalid("private allocation geometry or identity differs"));
+            return Err(invalid("private named allocation geometry or path differs"));
         }
         let sddl = wide("O:SYG:SYD:P(A;;FA;;;SY)");
         let mut descriptor = ptr::null_mut();
@@ -76,9 +100,9 @@ impl PrivatePlaceholder {
             lpSecurityDescriptor: descriptor,
             bInheritHandle: 0,
         };
-        let path = format!("{root}\\n2r-valid-data-{experiment}.bin");
+        let path = format!("{}\\{}", root.trim_end_matches('\\'), components.join("\\"));
         let name = wide(&path);
-        // SAFETY: caller-bound volume root, generated filename, CREATE_NEW,
+        // SAFETY: caller-bound volume root, validated components, CREATE_NEW,
         // sharing disabled and SYSTEM-only protected security descriptor.
         let handle = unsafe {
             CreateFileW(
@@ -101,12 +125,24 @@ impl PrivatePlaceholder {
         // SAFETY: unique ownership of the successfully created native handle.
         let file = unsafe { File::from_raw_handle(handle) };
         ctl(&file, 0x9c280, &[0; 8], 0)?;
-        // SAFETY: aligned FILE_ALLOCATION_INFO and synchronous live handle.
-        if unsafe {
-            SetFileInformationByHandle(file.as_raw_handle(), 5, (&bytes as *const u64).cast(), 8)
-        } == 0
-        {
-            return Err(io::Error::last_os_error());
+        if bytes >= 4096 {
+            let allocation = bytes
+                .checked_add(4095)
+                .ok_or_else(|| invalid("private allocation overflow"))?
+                / 4096
+                * 4096;
+            // SAFETY: aligned FILE_ALLOCATION_INFO and synchronous live handle.
+            if unsafe {
+                SetFileInformationByHandle(
+                    file.as_raw_handle(),
+                    5,
+                    (&allocation as *const u64).cast(),
+                    8,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
         }
         file.set_len(bytes)?;
         Ok(Self {

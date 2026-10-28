@@ -2,6 +2,7 @@
 //! source disk, manufactures ReFS bytes or grants conversion authority.
 mod evacuation;
 mod unwritten;
+pub mod private_tree;
 pub mod valid_data_probe;
 pub mod cache_refresh;
 use crate::{

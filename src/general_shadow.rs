@@ -62,6 +62,23 @@ pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_n
         .collect()
 }
 
+/// Allocation-only staging on the enrolled shadow, never source admission or
+/// conversion authority. Original metadata remains in the canonical tree;
+/// the native placeholders stay private while payload supply is pending.
+#[cfg(windows)]
+pub fn allocate_private_tree(
+    pair: &GeneralSourceShadowBinding,
+    tree: &crate::shadow_tree::Tree,
+) -> Result<n2r_win32::shadow_native::private_tree::PrivateTree> {
+    crate::shadow_tree::ExpectedTree::from(tree).validate_with_resource_profile(
+        crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
+    )?;
+    Ok(n2r_win32::shadow_native::private_tree::allocate(
+        pair,
+        &native_inputs(tree),
+    )?)
+}
+
 pub fn validate_mount_paths(paths: &Option<Vec<String>>) -> Result<()> {
     let Some(paths) = paths else { return Ok(()) };
     ensure!(paths.len() <= 128, "too many source mount paths");

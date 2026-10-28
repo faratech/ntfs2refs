@@ -120,6 +120,11 @@ fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<SourceRun>> {
 
 pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
+    if tree.placement_started {
+        return Err(invalid(
+            "tree placement already attempted; preserve without retry",
+        ));
+    }
     if input.len() != tree.initial_objects.len() {
         return Err(invalid("private placement object count differs"));
     }
@@ -163,6 +168,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
         return Err(invalid("source desired physical ownership overlaps"));
     }
     let mut moves = Vec::new();
+    tree.placement_started = true;
     let mut evidence_bytes = 0usize;
     let mut parked = Vec::new();
     let indexes: Vec<_> = tree.files.keys().copied().collect();
@@ -200,6 +206,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
         parked.push(serde_json::json!({"object_index":index,"prefix_bytes":prefix,"temporary_offset":destination}));
     }
     let mut retained = Vec::new();
+    let mut original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>> = BTreeMap::new();
     let mut retained_bytes = 0u64;
     for index in indexes {
         for run in &desired[&index] {
@@ -253,6 +260,10 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
                     retained.push(serde_json::json!({"object_index":index,"logical_offset":logical,
                         "source_physical_offset":physical,"target_physical_offset":physical,"length":length,
                         "source_contents_verified":false}));
+                    original_coordinates
+                        .entry(index)
+                        .or_default()
+                        .push((logical, physical, length));
                     retained_bytes = retained_bytes
                         .checked_add(length)
                         .ok_or_else(|| invalid("retained byte overflow"))?;
@@ -262,6 +273,8 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
         }
     }
     tree.require_source_excluded()?;
+    tree.original_coordinates = original_coordinates;
+    tree.placement_complete = true;
     Ok(
         serde_json::json!({"kind":"private-unwritten-tree-placement","parked":parked,"moves":moves,
         "original_coordinate_ranges":retained,"original_coordinate_bytes":retained_bytes,

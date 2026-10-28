@@ -481,4 +481,11 @@ impl PrivatePlaceholder {
         }
         Ok(())
     }
+
+    pub fn check_placements(&self) -> io::Result<()> {
+        if self.poisoned {
+            return Err(invalid("poisoned private placement cannot supply data"));
+        }
+        self.verify_placements()
+    }
 }

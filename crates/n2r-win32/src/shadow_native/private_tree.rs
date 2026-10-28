@@ -4,6 +4,8 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 mod placement;
+mod supply;
+pub use supply::{SupplyPlan, SupplyRange};
 
 pub struct PrivateTree {
     // Files close before the volume and privilege lease on drop. No drop path
@@ -15,9 +17,15 @@ pub struct PrivateTree {
     initial_objects: Vec<serde_json::Value>,
     events: Vec<NativeEvent>,
     privileges: Privileges,
+    original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>>,
+    placement_started: bool,
+    placement_complete: bool,
 }
 
 impl PrivateTree {
+    pub fn supply_plan(&self) -> io::Result<SupplyPlan> {
+        supply::plan(self)
+    }
     pub fn place_source_prefixes(&mut self, input: &[Input<'_>]) -> io::Result<serde_json::Value> {
         placement::run(self, input)
     }
@@ -30,6 +38,8 @@ impl PrivateTree {
         clusters: u32,
     ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
+        self.placement_complete = false;
+        self.original_coordinates.clear();
         let file = self
             .files
             .get_mut(&object_index)
@@ -50,6 +60,8 @@ impl PrivateTree {
         clusters: u32,
     ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
+        self.placement_complete = false;
+        self.original_coordinates.clear();
         let file = self
             .files
             .get_mut(&object_index)
@@ -102,6 +114,24 @@ impl PrivateTree {
         bytes: &[u8],
     ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
+        let end = offset
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| invalid("materialization range overflow"))?;
+        if !bytes.is_empty()
+            && self.placement_complete
+            && self
+                .original_coordinates
+                .get(&object_index)
+                .is_some_and(|ranges| {
+                    ranges
+                        .iter()
+                        .any(|(start, _, len)| offset < *start + *len && *start < end)
+                })
+        {
+            return Err(invalid(
+                "materialization overlaps an original-coordinate source reference",
+            ));
+        }
         let expected_path = format!(
             "{}\\{}",
             self.pair.shadow.volume_path()?,
@@ -526,6 +556,9 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
         initial_objects: objects,
         events,
         privileges,
+        original_coordinates: BTreeMap::new(),
+        placement_started: false,
+        placement_complete: false,
     };
     tree.require_source_excluded()?;
     Ok(tree)

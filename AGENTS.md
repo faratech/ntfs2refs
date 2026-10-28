@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+Live SupplyPlan plus streamed relocation materialization is implemented.
+PrivateTree stores successful original-coordinate ranges internally, requires
+complete one-time placement, rechecks native mappings, and partitions all user
+logical bytes into source references or materialization (<=4,096 ranges).
+No deserializer. Additional placement invalidates the plan; materialization
+cannot overlap source references. general_shadow streams only gaps/tails with
+64-KiB buffers, explicit byte budget, prefix-validity/source-exclusion checks,
+flush/readback and bounded receipt samples+ordered digest. CLI opts in via
+--materialize-relocations --place-source-prefixes/--max-materialize-bytes.
+Release build passed, but native whole-tree path remains unqualified. Plan
+physical movement/backing growth before execution: preserve all26 snapshots
+and64-GiB reserve. VM remains OFF; no unit tests added/run. Details in
+docs/private-tree-allocation.md. Source-backed hybrid verification, canonical
+admission, metadata restoration and compact cutover are NOT complete.
+
 Tree-wide unwritten parking/original-coordinate placement is implemented in
 private_tree/placement.rs and wired to explicit --place-source-prefixes.
 All prefixes park before final moves; scratch excludes desired source ranges

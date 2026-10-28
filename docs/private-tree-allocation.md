@@ -1,5 +1,39 @@
 # Allocation-only canonical tree staging
 
+## Live payload-supply plan and relocation streaming
+
+The private tree now retains original-coordinate ranges as internal state
+derived from successful native moves, rather than consuming serialized
+`success` flags. A complete placement attempt creates a non-deserializable
+`SupplyPlan`; subsequent placement invalidates it. Planning rechecks all native
+mappings and accounts for every user logical byte as either an original-source
+reference or materialization. Partial final clusters always remain in the
+materialization set. Bounds/overlaps and at most4,096 supply ranges are checked.
+Failure/partial placement cannot produce a complete plan.
+
+`materialize_private_supply_plan` admits an explicit materialization-byte
+budget before data writes, advances every fully tracked prefix (including
+fully referenced files), then streams only the materialization gaps through
+the64-KiB checked-source/private-readback path. Writes overlapping live
+original-coordinate references are refused. Source binding/exclusion and
+native placement are checked around the operation. The output retains up to32
+sample receipts plus a length-delimited ordered SHA-256 receipt digest, rather
+than storing all chunk receipts or file-sized buffers. It does not claim that
+the unfilled shadow references contain source bytes: source-backed hybrid
+verification and canonical source admission are still pending.
+
+The CLI requires explicit `--materialize-relocations --place-source-prefixes`
+and a `--max-materialize-bytes` budget (default256 MiB). This replaces the
+small-only loop for that mode and does not duplicate retained payload.
+Metadata/physical IO can exceed selected logical-byte accounting; the current
+source reader revalidates metadata per chunk. Source/system metadata
+restoration and recoverable required-byte cutover remain incomplete.
+
+Release build passed; native whole-tree placement/materialization has not yet
+been executed. Admission must forecast possible internal move traffic and
+actual backing growth, preserving the64-GiB host reserve and all snapshots.
+No unit tests added/run. The working full-shadow path is unchanged.
+
 ## Tree-wide unwritten placement implementation
 
 `PrivateTree::place_source_prefixes` now parks every user-file full-cluster

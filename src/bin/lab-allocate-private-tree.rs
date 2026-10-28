@@ -32,6 +32,10 @@ fn main() -> anyhow::Result<()> {
         prepare_large_tails: bool,
         #[arg(long, requires = "materialize_small")]
         place_source_prefixes: bool,
+        #[arg(long, requires = "place_source_prefixes")]
+        materialize_relocations: bool,
+        #[arg(long, default_value_t = 268435456)]
+        max_materialize_bytes: u64,
         #[arg(long, requires = "materialize_small")]
         inspection: Option<PathBuf>,
         #[arg(long, requires = "materialize_small")]
@@ -99,6 +103,7 @@ fn main() -> anyhow::Result<()> {
         "observe_existing":args.observe_existing,"allocation_writes_authorized":!args.observe_existing,
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
+        "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,
         "tree_sha256":args.tree_sha256,"source_writes_authorized":false,
@@ -143,7 +148,13 @@ fn main() -> anyhow::Result<()> {
             };
             let mut budget = ntfs2refs::ntfs_inspect::StreamTransferBudget::new(
                 resources.limits().maximum_stream_bytes,
-                8 * 1024 * 1024,
+                if args.materialize_relocations {
+                    args.max_materialize_bytes
+                        .checked_add(8 * 1024 * 1024)
+                        .ok_or_else(|| anyhow::anyhow!("materialization budget overflow"))?
+                } else {
+                    8 * 1024 * 1024
+                },
             )?;
             // Check all source ranges before creating a namespace. A stale
             // raw model must not cause needless partial shadow allocation.
@@ -183,36 +194,51 @@ fn main() -> anyhow::Result<()> {
             };
             let mut transfers = Vec::new();
             let mut unverified_prefixes = Vec::new();
+            let mut relocation_materialization = None;
             if let (Some(source), Some(raw)) = (source.as_mut(), inspection.as_ref()) {
-                for &(index, offset, length) in &selected {
-                    if offset > 0 {
-                        if args.place_source_prefixes {
-                            template.advance_placed_prefix(index, offset)?;
-                            unverified_prefixes.push(serde_json::json!({"object_index":index,
+                if args.materialize_relocations {
+                    relocation_materialization =
+                        Some(general_shadow::materialize_private_supply_plan(
+                            source,
+                            raw,
+                            &tree,
+                            &mut template,
+                            args.max_materialize_bytes,
+                            &mut budget,
+                        )?);
+                } else {
+                    for &(index, offset, length) in &selected {
+                        if offset > 0 {
+                            if args.place_source_prefixes {
+                                template.advance_placed_prefix(index, offset)?;
+                                unverified_prefixes.push(serde_json::json!({"object_index":index,
                                 "storage_valid_prefix_bytes":offset,"native_placements_complete":true,
                                 "source_prefix_contents_verified":false,"private_scratch_only":true,
                                 "conversion_qualified":false}));
-                        } else {
-                            unverified_prefixes
-                                .push(template.prepare_unplaced_prefix(index, offset)?);
+                            } else {
+                                unverified_prefixes
+                                    .push(template.prepare_unplaced_prefix(index, offset)?);
+                            }
                         }
+                        transfers.push(general_shadow::materialize_private_range(
+                            source,
+                            raw,
+                            &tree,
+                            &mut template,
+                            index,
+                            offset,
+                            length,
+                            &mut budget,
+                        )?);
                     }
-                    transfers.push(general_shadow::materialize_private_range(
-                        source,
-                        raw,
-                        &tree,
-                        &mut template,
-                        index,
-                        offset,
-                        length,
-                        &mut budget,
-                    )?);
                 }
             }
             let mut report = template.report()?;
             report["source_materialization_ranges"] = serde_json::to_value(transfers)?;
             report["private_unverified_prefixes"] = serde_json::to_value(unverified_prefixes)?;
             report["source_prefix_placement"] = serde_json::to_value(placement)?;
+            report["relocation_materialization"] =
+                serde_json::to_value(relocation_materialization)?;
             report["source_logical_range_bytes_charged"] = budget.reserved_bytes().into();
             report["large_payload_initialization_selected"] = false.into();
             Ok(report)
@@ -231,6 +257,7 @@ fn main() -> anyhow::Result<()> {
         "success":failure.is_none(),"observe_existing":args.observe_existing,
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
+        "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,
         "request":request,"native":native,"source_image_hash_reverified":false,

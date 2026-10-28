@@ -2132,6 +2132,36 @@ impl GeneralFrozenPartition {
         })
     }
 
+    /// Composite-only layout observation additionally hashes initialized
+    /// suffixes against source-derived expectations. Full-cluster placeholder
+    /// prefixes remain unread. The zero-payload layout API is unchanged.
+    pub fn observe_refs_layout_residuals_with_resource_profile(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &[crate::shadow_native::Input<'_>],
+        residuals: &[crate::shadow_native::LayoutResidualExpectation],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        let (report, before, observed_readonly, after) = self.with_readonly_refs_observation(
+            &pair,
+            resource_profile,
+            events,
+            |protected| {
+                crate::shadow_native::observe_general_layout_residuals_readonly_with_resource_profile(
+                    pair.clone(), input, residuals, &same_security, protected, resource_profile,
+                )
+            },
+        )?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
     fn with_readonly_refs_observation<T>(
         &mut self,
         pair: &crate::general_layout::GeneralSourceShadowBinding,

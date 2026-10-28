@@ -114,6 +114,30 @@ pub fn verify_frozen_layout_with_resource_profile(
     resources: crate::ntfs_admission::ResourceProfile,
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetLayout> {
+    verify_frozen_layout_profile(target, pair, expected, resources, None, events)
+}
+
+/// Opt-in initialized-suffix verification for a source-backed composite. The
+/// caller freshly obtains each expectation through the frozen NTFS reader.
+pub fn verify_frozen_layout_residuals_with_resource_profile(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    resources: crate::ntfs_admission::ResourceProfile,
+    residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
+    events: &mut Vec<NativeEvent>,
+) -> Result<ProtectedTargetLayout> {
+    verify_frozen_layout_profile(target, pair, expected, resources, Some(residuals), events)
+}
+
+fn verify_frozen_layout_profile(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    resources: crate::ntfs_admission::ResourceProfile,
+    residuals: Option<&[n2r_win32::shadow_native::LayoutResidualExpectation]>,
+    events: &mut Vec<NativeEvent>,
+) -> Result<ProtectedTargetLayout> {
     pair.validate_with_resource_profile(resources.native_profile())?;
     expected.validate_with_resource_profile(resources)?;
     ensure!(
@@ -136,16 +160,27 @@ pub fn verify_frozen_layout_with_resource_profile(
     let length = target.byte_len();
     let (native, raw_sha256) =
         bracket_image_with_resource_profile(target, length, resources, |target| {
-            Ok(target.observe_refs_layout_with_resource_profile(
-                pair.clone(),
-                &input,
-                |a, b| {
-                    ntfs_attestation::same_security(a, b)
-                        .map_err(|error| std::io::Error::other(error.to_string()))
-                },
-                resources.native_profile(),
-                events,
-            )?)
+            let same_security = |a: &[u8], b: &[u8]| {
+                ntfs_attestation::same_security(a, b)
+                    .map_err(|error| std::io::Error::other(error.to_string()))
+            };
+            Ok(match residuals {
+                Some(residuals) => target.observe_refs_layout_residuals_with_resource_profile(
+                    pair.clone(),
+                    &input,
+                    residuals,
+                    same_security,
+                    resources.native_profile(),
+                    events,
+                )?,
+                None => target.observe_refs_layout_with_resource_profile(
+                    pair.clone(),
+                    &input,
+                    same_security,
+                    resources.native_profile(),
+                    events,
+                )?,
+            })
         })?;
     ensure!(
         native.before() == &before

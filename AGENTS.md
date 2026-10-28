@@ -1,5 +1,26 @@
 # ntfs2refs project guidance
 
+COMPACT RESUME NATIVE PASSED after interrupted partial +reboot. Run5c9045e3a4c44e46a7d25751939d1b15,
+execution90c77b31ecf154f531c975930057abe6c789f2260f0f5c5adca298db83dc7763,
+finalafd2f8ba8f3ae8595507fe9c537d93dea83e6dbc3f3ad988c5ceed1c473bc761,
+result055bc95334af585905dc5ed3a6eb9943962faa3102f3c0b92ec399405583c917.
+Exact2b2a postimage/HNDclosed/native all14 metadata/9file hashes passed;
+label/mounts preserved. OFF/9e25f048-a121-4317-997c-c4dee0810b16 parentb6b2,
+ALL40 snapshots/RAM released; NEVER replay on resumed ReFS. SourcePID4684
+TERMINAL0/controller70548/archive22234 done. Only separate partialb6b2 restored
+for rollback, currently OFF/b6b2/all40. Explicit user approval cap256→258 GiB
+applied277025390592,64-GiB host reserve unchanged. Fresh actual274177984707/
+free71343308800; rollback1.5-GiB allowance admitted. No deletion; rollback pending.
+
+New general composite proof BUILDS, not native-qualified: opaque builder fresh
+source hash/inventory/live views/tree + protected metadata/maps and initialized
+residual-only reads + complete address-space delta/held backing/full composite
+hash/final device brackets. Native zero-payload API unchanged. New
+LiveAssessment::qualify_composite_target still requires ORIGINAL live source
+context/all old source gates and exact opaque proof ties; reopened source/JSON
+cannot issue certificate. Source/target orchestration/generic native tests remain
+unfinished. No unit tests added/run. Existing full-shadow source path unchanged.
+
 COMPACT RESUME LIVE after clean boot of saved partialb6b2a81a/all39. Boot
 exclusion and real zero HND passed before single dispatch. Task
 N2R-CompactRecovery-Resume-5c9045e3a4c44e46a7d25751939d1b15,

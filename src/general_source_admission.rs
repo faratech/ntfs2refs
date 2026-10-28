@@ -68,6 +68,77 @@ impl SourceCertificate {
     }
 }
 impl LiveAssessment {
+    /// Qualify the complete native metadata image with verified source-backed
+    /// payload substitution. The ORIGINAL live source context is still needed;
+    /// persisted JSON and reopened frozen-source diagnostics cannot issue this.
+    pub fn qualify_composite_target(
+        &mut self,
+        raw: &ntfs_inspect::NtfsInspection,
+        target: &crate::general_composite_target::FrozenCompositeTargetPreservation,
+    ) -> Result<SourceCertificate> {
+        ensure!(
+            self.context.source_gates_satisfied
+                && target.pair().source == self.context.source_binding
+                && target.resource_profile() == self.context.resources
+                && target.native_resource_profile() == self.context.resources.native_profile()
+                && target.data_ties_verified()
+                && target.source_sha256() == self.context.source_sha256
+                && target.inspection_sha256() == self.context.inspection_sha256
+                && target.source_views_sha256() == self.context.source_views_sha256
+                && target.binds(raw, &self.source_sha256)
+                && self.source_sha256 == self.context.source_sha256
+                && self.canonical_inspection_sha256 == self.context.inspection_sha256
+                && self.canonical_inspection_sha256 == self.assessment.source_inspection_sha256
+                && self.assessment.source_view.as_ref().is_some_and(|view| view
+                    .binds_live_source(&self.canonical_inspection_sha256, &self.source_sha256)
+                    && serde_json::to_vec(view).is_ok_and(|bytes| hex::encode(Sha256::digest(
+                        bytes
+                    )) == self
+                        .context
+                        .source_views_sha256)),
+            "composite target differs from the admitted original live source context"
+        );
+        for gate in &mut self.assessment.gates {
+            if gate.code == "security_timestamp_preservation" {
+                gate.satisfied = true;
+                gate.detail="protected native metadata/namespace/security/maps plus actual initialized residual reads and complete source-backed image comparison bind all logical payload to the same frozen source".into();
+            } else if gate.code == "target_resource_profile_support" {
+                ensure!(
+                    self.context.resources.native_profile().is_some(),
+                    "unexpected expanded composite target gate"
+                );
+                gate.satisfied = true;
+                gate.detail="opaque post-freeze native layout and complete composite target use the same explicit resource profile".into();
+            }
+        }
+        let refused: Vec<_> = self
+            .assessment
+            .gates
+            .iter()
+            .filter(|g| !g.satisfied)
+            .map(|g| g.code.as_str())
+            .collect();
+        ensure!(
+            refused.is_empty(),
+            "composite source admission remains refused: {refused:?}"
+        );
+        self.source_admitted = true;
+        self.assessment.source_admitted = true;
+        self.assessment.certificate_issued = true;
+        Ok(SourceCertificate {
+            source_sha256: self.source_sha256.clone(),
+            inspection_sha256: self.canonical_inspection_sha256.clone(),
+            pair: target.pair().clone(),
+            comparison: target.comparison().clone(),
+            expected_tree_sha256: target.expected_tree_sha256().into(),
+            assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
+            source_resource_profile: match self.context.resources {
+                ntfs_admission::ResourceProfile::AlphaV1 => None,
+                resource => Some(resource),
+            },
+        })
+    }
+
     pub fn qualify_target(
         &mut self,
         raw: &ntfs_inspect::NtfsInspection,

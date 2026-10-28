@@ -14,6 +14,8 @@ pub mod general_allocation_capture;
 #[cfg(windows)]
 pub mod general_cancel;
 #[cfg(windows)]
+pub mod general_composite_target;
+#[cfg(windows)]
 pub mod general_conversion;
 #[cfg(windows)]
 pub mod general_lab;

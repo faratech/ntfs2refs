@@ -217,6 +217,8 @@ pub struct GeneralLayoutReport {
     storage_validity_verified: bool,
     data_integrity_disabled: bool,
     payload_bytes_read: u64,
+    residuals: Vec<LayoutResidualExpectation>,
+    residual_contents_verified: bool,
     logical_contents_verified: bool,
     raw_image_equality_verified: bool,
     complete_allocation_graph_verified: bool,
@@ -230,6 +232,22 @@ impl GeneralLayoutReport {
     pub fn native(&self) -> &Report {
         &self.native
     }
+    pub fn residuals(&self) -> &[LayoutResidualExpectation] {
+        &self.residuals
+    }
+    pub fn residual_contents_verified(&self) -> bool {
+        self.residual_contents_verified
+    }
+}
+
+/// Source-derived expectation for the initialized suffix outside the routed
+/// full-cluster prefix. Never permits reading any byte before that suffix.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct LayoutResidualExpectation {
+    pub object_index: usize,
+    pub logical_offset: u64,
+    pub length: u64,
+    pub sha256: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -2071,11 +2089,88 @@ pub(crate) fn observe_general_layout_readonly_with_resource_profile(
         storage_validity_verified: true,
         data_integrity_disabled: true,
         payload_bytes_read: 0,
+        residuals: Vec::new(),
+        residual_contents_verified: false,
         logical_contents_verified: false,
         raw_image_equality_verified: false,
         complete_allocation_graph_verified: false,
         conversion_qualified: false,
     })
+}
+
+/// Composite-only extension of the zero-payload layout observer. Reads exactly
+/// the source-hashed initialized suffix of each file, never the placeholder
+/// prefix. The raw-image bracket and source binding remain caller-owned.
+pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    residuals: &[LayoutResidualExpectation],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralLayoutReport> {
+    let mut report = observe_general_layout_readonly_with_resource_profile(
+        pair, input, &same_security, protected, resource_profile,
+    )?;
+    let required: Vec<_> = input.iter().enumerate()
+        .filter(|(_, item)| !item.directory && item.logical_length() % 4096 != 0)
+        .collect();
+    if required.len() != residuals.len() {
+        return Err(invalid("composite residual stream coverage differs"));
+    }
+    for ((index, item), expected) in required.iter().zip(residuals) {
+        let length = item.logical_length();
+        if expected.object_index != *index
+            || expected.logical_offset != length / 4096 * 4096
+            || expected.length != length % 4096
+            || expected.length == 0
+            || expected.sha256.len() != 64
+            || !expected.sha256.bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(invalid("composite residual expectation escapes initialized suffix"));
+        }
+    }
+    let binding = &report.native.binding;
+    let before = protected.snapshot(binding, &mut report.native.events)?;
+    if before.disk_attributes != 2 || before.device != report.native.before.device
+        || before.layout != report.native.before.layout
+    {
+        return Err(invalid("composite residual native binding changed"));
+    }
+    let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
+    let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
+    let mut buffer = [0u8; 4096];
+    let mut bytes_read = 0u64;
+    for expected in residuals {
+        let object = &report.native.objects[expected.object_index];
+        let path = format!("{}{}", root, object.components.join("\\"));
+        let mut file = open_protected_readonly(&path, false)?;
+        if snapshot(&file) != object.before {
+            return Err(invalid("composite residual identity or metadata changed before read"));
+        }
+        file.seek(SeekFrom::Start(expected.logical_offset))?;
+        let count = expected.length as usize;
+        file.read_exact(&mut buffer[..count])?;
+        if file.read(&mut buffer[..1])? != 0
+            || hex::encode(Sha256::digest(&buffer[..count])) != expected.sha256
+            || snapshot(&file) != object.after
+        {
+            return Err(invalid("composite initialized suffix contents, EOF or metadata differ"));
+        }
+        bytes_read = bytes_read.checked_add(expected.length)
+            .ok_or_else(|| invalid("composite residual byte count overflow"))?;
+    }
+    privileges.restore()?;
+    report.native.privilege_states.extend_from_slice(privileges.audit());
+    let after = protected.snapshot(binding, &mut report.native.events)?;
+    if serde_json::to_vec(&before)? != serde_json::to_vec(&after)? {
+        return Err(invalid("composite residual protection changed"));
+    }
+    report.payload_bytes_read = bytes_read;
+    report.residuals = residuals.to_vec();
+    report.residual_contents_verified = true;
+    Ok(report)
 }
 
 /// Inspect the original data disk after the journal handoff has been made

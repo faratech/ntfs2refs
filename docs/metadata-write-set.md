@@ -1,5 +1,40 @@
 # Candidate ReFS target write set
 
+## Compact resumed conversion passed
+
+After controlled interruption and a clean reboot, run5c9045e3a4c44e46a7d25751939d1b15
+passed persistent exclusion, normalized source/full candidate checks, resume,
+exact2b2a postimage, HND and native all14 objects/9 full file hashes. Label/mount
+paths were preserved. Saved OFF/9e25f048-a121-4317-997c-c4dee0810b16, parentb6b2,
+all40 snapshots retained. Never replay that operational resumed ReFS journal.
+Execution90c77b31ecf154f531c975930057abe6c789f2260f0f5c5adca298db83dc7763;
+finalizationafd2f8ba8f3ae8595507fe9c537d93dea83e6dbc3f3ad988c5ceed1c473bc761;
+result055bc95334af585905dc5ed3a6eb9943962faa3102f3c0b92ec399405583c917.
+Evidence compact-recovery-20261028/resume; guest output
+C:\ntfs2refs\compact-recovery-5c9045e3a4c44e46a7d25751939d1b15\result.
+This proves process recovery, not physical power-loss/general qualification.
+
+The user explicitly approved cap256→258 GiB when rollback1.5-GiB allowance
+exceeded667-MiB cap headroom. Configured cap is277,025,390,592;64-GiB host reserve
+retained. Only the separately saved partialb6b2 was restored for rollback.
+Native rollback outcome pending. No checkpoints/evidence were deleted.
+
+## Opaque complete composite target proof
+
+`general_composite_target::verify_and_capture` builds a non-deserializable proof
+from actual frozen devices: fresh source hash/inventory/live views/tree,
+protected native metadata/maps plus source-derived small/tail slice hashes,
+complete-address-space delta, held backing identity/hash and complete reopened
+composite hash, final source/shadow brackets. The residual observer never reads
+full placeholder prefixes; the zero-payload layout API remains separate.
+
+`LiveAssessment::qualify_composite_target` accepts it only with the ORIGINAL
+live source context and all existing source gates. No saved JSON or reopened
+diagnostic recreates a certificate. Existing full-shadow qualification stays
+intact. Build passed; generic orchestration/native qualification pending. Dirty
+free space can enlarge full-address-space deltas and remains budget-admitted.
+No unit tests added/run.
+
 ## Compact interruption reached recovery boundary
 
 Run4539fe2de48e4c33a8db4d733fe859a7 exited86 after the first complete flushed

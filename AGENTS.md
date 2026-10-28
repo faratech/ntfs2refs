@@ -1,5 +1,29 @@
 # ntfs2refs project guidance
 
+LIVE RETRY SUPERSEDES STOPPED NOTES BELOW: ac098b7437e04d2d928bc2e18f3b5218,
+SYSTEMtaskN2R-AdmittedCompact-Retry-ac098b7437e04d2d928bc2e18f3b5218, wrapper4892
+creation1793212768546. Parentcfe0b326/all42, VM2401593c RUNNING4GiB/noNIC.
+Controller67702 TERMINAL0 dispatched ONCE; no restore/source append/source moves.
+Host compact-admitted-retry-20261028, guest
+C:\ntfs2refs\compact-admitted-retry-ac098b7437e04d2d928bc2e18f3b5218.
+Abort3548creation1793212769105 finished0 after complete original40fe hash/state
+checks; source-aborted.json exists. Fresh binder completed; converter
+PID5108creation1793212966572 LIVE, producer
+5e156f089b0fc6a67788154e841a74daad4a61028b16ea41391dc8f84e06f524.
+Abortc4d2d2a9d4b1926c09dcc0ed94d9008f56b7e79692fe916130de40eeaa06d69b,
+binder2af7d8b8e4b9735cd23ec27cba2518228198c51f4b6e9b47b83fdcc23897afe9;
+sourcefe7b9bc plus unchanged pre-existing main.rs. WrapperSHA
+a402fac8a88c495b2408a53d76c93ca0f5bb03d40dd7d636180502453020a03d.
+At18:45:12Z same5108 read62,058,665,753/write90,963, WS3,858,432/private2,514,944,
+peakWS7888KiB. Fresh source-frozen exists; source inspection/observation ongoing.
+Source3 (temporary2 is legitimate native observation), shadow0. DO NOT restart/
+restore/format/shutdown or open source/journal while live. Rootcontrols;
+delta_artifact_reader records small host IO/RAM observations. Fixed1024 placement
+limit validates before staging; actual4MiB37 nonzero source is unchanged.
+Initial7GiB and remaining-dispatch admission passed under NEW50GB authorization;
+lastactual280173188122/free65343586304/max329374052988/min17179869184. Do NOT reset
+budget baseline. Native outcome remains pending/unqualified. No units.
+
 CURRENT STOPPED STATE / NEW STORAGE AUTHORIZATION (later than entries below):
 Run2ba889b74885441195fd5d075b4ab1d5 TERMINAL1, PID5568 absent, exact refusal
 "explicit placement limits differ" BEFORE source reconstruction/journal/apply.

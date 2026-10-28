@@ -1,5 +1,19 @@
 # ntfs2refs project guidance
 
+Later separate managed_shadow::reattach_existing API IS NOW implemented and
+releasebuilt(main8ffdf13986c7d410701003d558c5eae169e00733f01a444cf83d9cb5451c2099,
+compactbd8dbfd8f6ae114faf52f192916e8584bd12714bf5c0c6124c47177c2e590db7).
+No native qualification/CLI recovery wiring yet. Pinned existing VHDX only,
+READ_ONLY attachment, exact provider ID/geometry/disk number/GPT and attrs3;
+no create/format/attribute repair/certificate/replay route. It relies on persisted
+OFFLINE state at arrival and refuses route drift; no silent rebinding.
+23:41:35Z affirmative866 run emitted original live source certificate, admitted
+assessment/composite capture/target preservation and STARTED journal preparation.
+Same3660/1793228776720, source1/shadow6 attrs3; all48 preserved. No completion yet.
+Tracked evidence/selected-native-compact-20261028.json now pins earlier60GiB
+source/apply/HND/native+five-user coldboot, explicitly retaining wrappertask1/
+missing native ExitCode observation. This does NOT qualify automatic UI run.
+
 Releasebuild main/compact passed23:38Z after managed-shadow location receipt;
 mainSHAf5af3d437fe14825d653f7c0227c3cacba685b50c0a753b85bae7a027d452b20,
 compact571c7e1d1f0603c491e336301dde62172add4053991a35d51f1a9bb1932a6a21.

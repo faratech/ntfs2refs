@@ -39,6 +39,9 @@ const OFFSET: u64 = 32 << 20;
 const MARGIN: u64 = 64 << 20;
 const MAX_LAYOUT: usize = 48 + 128 * 144;
 
+mod recovery;
+pub use recovery::{ReattachedShadow, reattach_existing};
+
 pub struct ManagedShadow {
     pub binding: GeneralDiskBinding,
     pub path: PathBuf,

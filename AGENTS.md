@@ -1,5 +1,19 @@
 # ntfs2refs project guidance
 
+COMPACT RESUME LIVE after clean boot of saved partialb6b2a81a/all39. Boot
+exclusion and real zero HND passed before single dispatch. Task
+N2R-CompactRecovery-Resume-5c9045e3a4c44e46a7d25751939d1b15,
+PID4684 creation1793205780331, producer704cc2850bfe90e3fd38a662355f75b6bf15e6b9c3dc4f9e198b3df03341ccc0.
+Host compact-recovery-20261028/resume; guest
+C:\ntfs2refs\compact-recovery-5c9045e3a4c44e46a7d25751939d1b15\result.
+At16:43:51Z process read24,343,204,172/write199 bytes, only intent; source1
+OFFLINE/shadow3, no completion/failure. Do NOT restart/restore/mount manually.
+Controller70548 completed dispatch once. Full candidate/normalized-source
+preflight must finish before resume writes; native finalization then follows.
+Preserve completed resumed ReFS as separate checkpoint BEFORE restoring ONLY
+saved partialb6b2 for rollback fork. Preserve all39 checkpoints and evidence.
+No units. This remains exact disposable fixture, not general-drive admission.
+
 COMPACT INTERRUPT REACHED TERMINAL86 after controlled one flushed write; no
 worker. Actual post-terminal journal marker4096 bytes ZERO (not dummy earlier
 failed-open buffer), operation intent N2RINT01. Source remains OFFLINE attrs1,

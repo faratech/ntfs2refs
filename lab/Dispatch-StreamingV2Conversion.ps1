@@ -2,7 +2,7 @@
 [CmdletBinding()]param([ValidatePattern('^candidate[1-9][0-9]*$')][string]$Candidate='candidate1',
     [ValidateRange(0,4096)][int]$InterruptAfterWrites=0,[switch]$Retention8G,
     [ValidateRange(32,7168)][int]$JournalBudgetMiB=1024,[switch]$FrozenShadowReuse,
-    [switch]$RefreshExistingSystemCache,[ValidateSet(1,2)][int]$CacheSyncPreparationVersion=1)
+    [switch]$RefreshExistingSystemCache,[ValidateSet(1,2,3)][int]$CacheSyncPreparationVersion=1)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop
@@ -17,7 +17,7 @@ if($FrozenShadowReuse){
 }
 if($RefreshExistingSystemCache){
     if(-not$FrozenShadowReuse){throw 'Cache refresh requires the enrolled existing-shadow path.'}
-    $cachePreparation=if($CacheSyncPreparationVersion-eq1){'cache-sync-retry-preparation'}else{'cache-sync-retry-preparation-v2'}
+    $cachePreparation=if($CacheSyncPreparationVersion-eq1){'cache-sync-retry-preparation'}else{'cache-sync-retry-preparation-v'+$CacheSyncPreparationVersion}
     $baseline=Get-Content -LiteralPath (Join-Path $root ($cachePreparation+'\refused-checkpoint.json')) -Raw|ConvertFrom-Json
 }
 $vm=Get-VM -Id $m.vm_id

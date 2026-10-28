@@ -104,6 +104,12 @@ mod app {
         expectation: PathBuf,
         #[arg(long, value_parser = canonical_pin)]
         expectation_sha256: String,
+        /// Optional existing staging VHDX to reattach read-only after restart.
+        #[arg(long, requires = "managed_shadow_id")]
+        managed_shadow: Option<PathBuf>,
+        /// Pinned provider VirtualDiskId from the original managed-shadow receipt.
+        #[arg(long, requires = "managed_shadow")]
+        managed_shadow_id: Option<String>,
         /// Fresh ordinary recovery-artifact directory on the Windows OS volume.
         #[arg(long)]
         output: PathBuf,
@@ -207,9 +213,46 @@ mod app {
             args.experimental.acknowledge_experimental_compact,
             "explicit experimental compact data-device acknowledgment required"
         );
-        // Typed recovery holds/verifies its inputs and native state itself.
-        // No entry here can activate or start a fresh Apply.
-        recover_compact_experimental(
+        let managed = match (&args.managed_shadow, &args.managed_shadow_id) {
+            (Some(path), Some(provider_id)) => {
+                // Read the ORIGINAL pinned reconstruction request under a
+                // retained no-writer/delete handle before using its shadow
+                // binding. Native reattachment refuses route/identity drift.
+                let mut input = OpenOptions::new()
+                    .read(true)
+                    .share_mode(1)
+                    .custom_flags(0x0020_0000)
+                    .open(&args.request)?;
+                let snapshot = n2r_win32::reference_file::observe_reference_file_handle(&input)?;
+                ensure!(
+                    snapshot.file_bytes <= 131072 && snapshot.number_of_links == 1,
+                    "bounded ordinary original reconstruction request required"
+                );
+                let mut bytes = Vec::new();
+                (&mut input).take(131073).read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() as u64 == snapshot.file_bytes
+                        && hex::encode(Sha256::digest(&bytes)) == args.request_sha256
+                        && n2r_win32::reference_file::observe_reference_file_handle(&input)?
+                            == snapshot,
+                    "original recovery request pin or held identity differs"
+                );
+                let request: ntfs2refs::general_reconstruct::Request =
+                    serde_json::from_slice(&bytes)?;
+                request.validate()?;
+                let owner = n2r_win32::managed_shadow::reattach_existing(
+                    path,
+                    provider_id,
+                    &request.pair.shadow,
+                )?;
+                Some((owner, input))
+            }
+            (None, None) => None,
+            _ => anyhow::bail!("--managed-shadow and --managed-shadow-id are required together"),
+        };
+        // Typed recovery still holds/verifies all original inputs and native
+        // state itself. No entry here can activate or start a fresh Apply.
+        let result = recover_compact_experimental(
             operation,
             &ExperimentalCompactInputs {
                 request: args.request,
@@ -225,7 +268,11 @@ mod app {
                 expectation_sha256: args.expectation_sha256,
             },
             &args.output,
-        )
+        );
+        // Retain the attachment and original request guard until the typed
+        // recovery/finalization call has returned, including its error path.
+        drop(managed);
+        result
     }
 
     pub(super) fn run() -> Result<()> {

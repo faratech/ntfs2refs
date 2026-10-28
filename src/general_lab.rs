@@ -86,6 +86,31 @@ pub fn convert_fresh_compact(
     )
 }
 
+/// Controlled selected-device experiment only. Actual enrollment is rechecked
+/// by selected_device_preflight; the shared flow must obtain its genuine fresh
+/// SourceCertificate before activation. No public conversion fault flag exists.
+pub fn convert_fresh_compact_selected(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    request.validate()?;
+    budget.validate(request.pair.source.identity.partition_bytes)?;
+    ensure!(
+        request.source_resource_profile
+            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+            && !request.verify_existing_shadow,
+        "selected compact lab exercise requires the explicit streaming profile and a fresh shadow"
+    );
+    crate::general_conversion::convert_compact_selected_for_lab(
+        request,
+        budget,
+        output,
+        interrupt_after_writes,
+    )
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApplyReport {
     pub kind: &'static str,

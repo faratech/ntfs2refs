@@ -39,6 +39,24 @@ pub(super) fn convert_compact_selected(
     convert_composite(request, output, Some(construction), None, true)
 }
 
+/// Lab-only selected-device fault entry. The public selected conversion above
+/// always passes None; both use the same preflight and original live certificate.
+pub(crate) fn convert_compact_selected_for_lab(
+    request: &Request,
+    construction: qualification::CompactConstructionBudget,
+    output: &Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    construction.validate(request.pair.source.identity.partition_bytes)?;
+    convert_composite(
+        request,
+        output,
+        Some(construction),
+        interrupt_after_writes,
+        true,
+    )
+}
+
 fn selected_device_preflight(request: &Request) -> Result<serde_json::Value> {
     use n2r_win32::discovery::{self, Role};
     let source = discovery::discover(

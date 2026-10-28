@@ -88,6 +88,17 @@ They use the existing compact recovery engine; none can activate a new Apply.
 HND/ABT replay boundaries still apply. See `ntfs2refs-compact <operation> --help`
 and [the recovery contract](native-composite-experimental.md#recovery).
 
+If a reboot removed an automatically managed shadow's attachment, recovery can
+also take the paired `--managed-shadow <original.vhdx>` and
+`--managed-shadow-id <original-provider-GUID>` options. The original provider ID
+is saved in `managed-shadow.json` by the drive workflow. Reattachment opens the
+existing backing read-only and checks its provider identity, geometry, exact
+original disk number, GPT layout and persisted offline/read-only state. It
+cannot create, format, repair attributes or rewrite a stale request/ticket.
+All existing recovery inputs and independent pins are still required. This
+reattachment path has release-build evidence; native recovery qualification
+remains pending. Windows must retain the shadow's offline state across restart.
+
 The selected-device backend completed a separately prepared 60 GiB native
 conversion, with five ordinary user files and a successful cold-boot hash
 readback. The [selected native observation](../evidence/selected-native-compact-20261028.json)

@@ -31,7 +31,8 @@ mod composite;
     reason = "experimental entry point retained for the next owning-guest integration"
 )]
 pub(crate) use composite::{
-    convert_composite_existing_experimental, convert_composite_fresh_experimental,
+    convert_compact_selected_for_lab, convert_composite_existing_experimental,
+    convert_composite_fresh_experimental,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -106,7 +107,8 @@ pub fn convert_compact_experimental(
     request.validate()?;
     budget.validate(request.pair.source.identity.partition_bytes)?;
     ensure!(
-        request.source_resource_profile == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+        request.source_resource_profile
+            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
             && !request.verify_existing_shadow,
         "selected compact conversion requires the explicit streaming profile and a fresh shadow"
     );

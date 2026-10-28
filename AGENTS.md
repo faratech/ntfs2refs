@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+Latest release build passed for main, compact recovery and lab-convert-native-composite.
+Compact recovery now accepts paired --managed-shadow/--managed-shadow-id, retains
+an original request handle with verified SHA/file identity, and uses its exact
+shadow binding for read-only reattachment. Existing pinned typed recovery gates
+are unchanged. Native reattachment/recovery qualification remains pending.
+Lab-only --selected-devices now forwards checked interruption counts through
+the same selected preflight/fresh-certificate path. Public conversions still
+pass None; no public fault flag. No tests. Neither change replaces live866.
+Readback-DriveCliColdBoot.ps1 is committed e84d818, parsed only, NOT executed:
+requires actual saved49 receipt SHA and already-running49; seven-user full hashes,
+no raw/J/packed/power/checkpoint operations. Guest PS5 completed-byte accounting
+uses an explicit accumulator rather than Measure-Object on hashtables.
+
 Later separate managed_shadow::reattach_existing API IS NOW implemented and
 releasebuilt(main8ffdf13986c7d410701003d558c5eae169e00733f01a444cf83d9cb5451c2099,
 compactbd8dbfd8f6ae114faf52f192916e8584bd12714bf5c0c6124c47177c2e590db7).

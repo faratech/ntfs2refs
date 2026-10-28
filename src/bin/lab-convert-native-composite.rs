@@ -18,6 +18,10 @@ fn main() -> anyhow::Result<()> {
         output: PathBuf,
         #[arg(long)]
         acknowledge_enrolled_disposable_devices: bool,
+        /// Use actual selected-device preflight instead of fixed fixture enrollment.
+        /// Still requires disposable acknowledgment and genuine fresh admission.
+        #[arg(long)]
+        selected_devices: bool,
         #[arg(long)]
         maximum_placement_bytes: u64,
         #[arg(long, default_value_t = n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS)]
@@ -51,16 +55,26 @@ fn main() -> anyhow::Result<()> {
         "conversion request pin or identity differs"
     );
     let request: Request = serde_json::from_slice(&bytes)?;
-    ntfs2refs::general_lab::convert_fresh_compact(
-        &request,
-        CompactConstructionBudget {
-            maximum_placement_bytes: args.maximum_placement_bytes,
-            maximum_placement_submissions: args.maximum_placement_submissions,
-            maximum_exception_bytes: args.maximum_exception_bytes,
-        },
-        &args.output,
-        args.interrupt_after_writes,
-    )
+    let budget = CompactConstructionBudget {
+        maximum_placement_bytes: args.maximum_placement_bytes,
+        maximum_placement_submissions: args.maximum_placement_submissions,
+        maximum_exception_bytes: args.maximum_exception_bytes,
+    };
+    if args.selected_devices {
+        ntfs2refs::general_lab::convert_fresh_compact_selected(
+            &request,
+            budget,
+            &args.output,
+            args.interrupt_after_writes,
+        )
+    } else {
+        ntfs2refs::general_lab::convert_fresh_compact(
+            &request,
+            budget,
+            &args.output,
+            args.interrupt_after_writes,
+        )
+    }
 }
 #[cfg(not(windows))]
 fn main() {

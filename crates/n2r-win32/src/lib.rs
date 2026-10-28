@@ -10,6 +10,9 @@ mod bitmap_observation;
 pub mod bitmap_paging;
 pub mod bitmap_streaming;
 pub mod discovery;
+pub mod drive_inventory;
+#[cfg(windows)]
+pub mod managed_shadow;
 #[cfg(windows)]
 pub mod file_storage;
 pub mod general_layout;

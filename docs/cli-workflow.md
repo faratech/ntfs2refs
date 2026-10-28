@@ -1,5 +1,40 @@
 # Owning-machine conversion and recovery CLI
 
+## Drive selection
+
+```powershell
+ntfs2refs --list
+ntfs2refs --drive d
+ntfs2refs --drive d --partition 2
+ntfs2refs --drive 3 partition 2
+```
+
+`--list` shows disks, partition numbers, drive letters/mounts, filesystems,
+sizes, labels and available status, including unmounted partitions and query
+errors. Listing does not lock, dismount or modify a disk. Numeric disk selection
+requires an explicit partition number. When a drive letter and partition are
+both supplied, the number must match that letter's actual partition.
+
+The drive workflow shows the selected identity and asks `[y/N]` before creating
+working storage or starting conversion. No, empty input and EOF cancel. After
+an affirmative response, the source identity is checked again. Eligible NTFS
+data volumes use the same live source admission and compact conversion engine;
+running Windows volumes and unsupported layouts/features still refuse.
+
+Working storage is prepared automatically on the Windows OS volume under
+`ProgramData\ntfs2refs\runs`: a new dynamic VHDX holds the native ReFS shadow,
+and the journal/recovery artifacts stay independent of the selected source.
+The native formatter receives only the partition on that newly created owned
+virtual disk. [Windows format supports volume names and ReFS Dev Drives](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/format).
+The provider and formatter must support the requested geometry; staging is kept
+on failure for inspection. This automatic staging path has separate native
+qualification from the earlier manually prepared shadow experiments.
+
+Run conversion from an elevated Windows terminal. `--scratch-directory` can
+choose another ordinary working folder on the Windows OS volume. The current
+experimental filesystem and resource limits remain visible through
+`ntfs2refs-compact profile`; drive selection does not bypass them.
+
 ## Experimental compact backend
 
 `ntfs2refs-compact` exposes native-shadow compact construction and its typed

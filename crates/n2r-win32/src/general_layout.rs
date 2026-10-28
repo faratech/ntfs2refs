@@ -95,11 +95,12 @@ impl GeneralDiskBinding {
                 && p.partition_bytes.is_multiple_of(4096)
                 && p.partition_offset
                     .checked_add(p.partition_bytes)
-                    .and_then(|end| end.checked_add(1 << 20))
                     .is_some_and(|end| end <= p.disk_bytes)
                 && matches!(p.logical_sector_bytes, 512 | 4096)
                 && matches!(p.physical_sector_bytes, 512 | 4096)
                 && p.physical_sector_bytes >= p.logical_sector_bytes,
+            // Actual GPT usable bounds are enforced by validate_layout;
+            // ordinary last-sector partitions need no arbitrary trailing gap.
             "unsupported dedicated data-disk geometry",
         )?;
         require(

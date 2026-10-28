@@ -7,6 +7,7 @@ pub mod capability_evidence;
 #[cfg(windows)]
 pub mod compact_fixture;
 pub mod corpus;
+pub mod drive_cli;
 pub mod extent_adoption;
 pub mod fixed_vhd;
 #[cfg(windows)]

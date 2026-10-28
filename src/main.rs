@@ -12,11 +12,15 @@ use std::{
 #[derive(Parser)]
 #[command(
     version,
-    about = "NTFS/ReFS inspection and experimental certificate-backed data-volume conversion."
+    about = "NTFS/ReFS inspection and experimental certificate-backed data-volume conversion.",
+    args_conflicts_with_subcommands = true,
+    arg_required_else_help = true
 )]
 struct Cli {
+    #[command(flatten)]
+    drive: ntfs2refs::drive_cli::DriveArgs,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 #[derive(Clone, ValueEnum)]
 enum Target {
@@ -349,7 +353,11 @@ fn recover(args: RecoveryArgs, operation: &str) -> Result<()> {
     }
 }
 fn run() -> Result<u8> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    if cli.drive.requested() {
+        return ntfs2refs::drive_cli::run(cli.drive);
+    }
+    match cli.command.context("use --list, --drive, or a subcommand")? {
         Command::Inspect {
             image,
             output: destination,

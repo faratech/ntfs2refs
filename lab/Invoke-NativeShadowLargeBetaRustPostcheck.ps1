@@ -5,7 +5,8 @@
     [Parameter(Mandatory)][ValidateSet('BeforeMutation','AfterPreservationBoot','Mutate','AfterMutation','AfterReboot')][string]$Phase,
     [ValidateRange(1,9)][int]$Attempt=1,
     [switch]$StreamingV2,
-    [ValidateRange(1,9)][int]$ToolsetVersion=1
+    [ValidateRange(1,9)][int]$ToolsetVersion=1,
+    [switch]$VerifyRetainedPositions
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -15,6 +16,13 @@ if((Get-PSDrive D).Free-lt64GB){throw 'The 64 GiB host reserve is required.'}
 if($ToolsetVersion-gt1-and-not$StreamingV2){throw 'Versioned observers require the separate streaming fixture.'}
 $toolsRoot=Join-Path $root $(if($ToolsetVersion-eq1){'rust-postcheck-tools'}else{'rust-postcheck-tools-v'+$ToolsetVersion})
 $manifest=Get-Content -LiteralPath (Join-Path $toolsRoot 'manifest.json') -Raw|ConvertFrom-Json
+if($VerifyRetainedPositions){
+    $verifier=@($manifest.tools|Where-Object name -ceq 'lab-verify-general-converted.exe')
+    if(-not$StreamingV2-or$ToolsetVersion-lt2-or$Phase-ceq'Mutate'-or$verifier.Count-ne1-or
+        $verifier[0].sha256-cne'8f3675076a34bd977245744af702c82d7bf2b6c662e757246b153fcaf6840f9a'){
+        throw 'Retained-position recheck requires the pinned streaming v2 verifier and an observation phase.'
+    }
+}
 $dispatch=Get-Content -LiteralPath (Join-Path $root 'dispatch.json') -Raw|ConvertFrom-Json
 $qualified=Join-Path $root $(if($StreamingV2){'terminal-evidence\run'}else{'qualified-observed'})
 $requestPin=(Get-FileHash -LiteralPath (Join-Path $qualified 'request.json')).Hash.ToLowerInvariant()
@@ -46,7 +54,8 @@ if($Phase-ceq'BeforeMutation'){
 }
 $mutation=if($Phase-in@('AfterMutation','AfterReboot')){Get-Content -LiteralPath (Join-Path $post 'Mutate.json') -Raw|ConvertFrom-Json}else{$null}
 Save-NewRecord (Join-Path $post ($phaseKey+'-intent.json')) @{phase=$Phase;attempt=$Attempt;run_id=$dispatch.run_id;utc=[DateTime]::UtcNow.ToString('o');tools=$manifest.tools;
-    toolset_version=$ToolsetVersion;tools_manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $toolsRoot 'manifest.json')).Hash.ToLowerInvariant()}
+    toolset_version=$ToolsetVersion;verify_retained_positions_requested=[bool]$VerifyRetainedPositions;
+    tools_manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $toolsRoot 'manifest.json')).Hash.ToLowerInvariant()}
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $session=New-PSSession -VMId $id -Credential $credential
 try{
@@ -80,8 +89,8 @@ try{
             $priorBoot=[DateTimeOffset]::Parse([string]$value,[Globalization.CultureInfo]::InvariantCulture).UtcDateTime.ToString('o')
         }
     }
-    $result=Invoke-Command -Session $session -ArgumentList $Phase,$guestPost,$guestTools,$dispatch.guest_output,$dispatch.run_id,($manifest.tools|ConvertTo-Json -Compress),($mutation|ConvertTo-Json -Depth 28 -Compress),$priorBoot,$requestPin,$treePin,$phaseKey,[bool]$StreamingV2 -ScriptBlock {
-        param($PhaseName,$Post,$Tools,$Output,$Run,$ToolJson,$MutationJson,$PriorBoot,$ExpectedRequestPin,$ExpectedTreePin,$ReportKey,$Streaming)
+    $result=Invoke-Command -Session $session -ArgumentList $Phase,$guestPost,$guestTools,$dispatch.guest_output,$dispatch.run_id,($manifest.tools|ConvertTo-Json -Compress),($mutation|ConvertTo-Json -Depth 28 -Compress),$priorBoot,$requestPin,$treePin,$phaseKey,([bool]$StreamingV2),([bool]$VerifyRetainedPositions) -ScriptBlock {
+        param($PhaseName,$Post,$Tools,$Output,$Run,$ToolJson,$MutationJson,$PriorBoot,$ExpectedRequestPin,$ExpectedTreePin,$ReportKey,$Streaming,$RetainedPositions)
         Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         $rows=ConvertFrom-Json -InputObject $ToolJson
         foreach($row in $rows){
@@ -110,7 +119,8 @@ try{
         }else{
             $binary=Join-Path $Tools 'lab-verify-general-converted.exe'
             $arguments+=@('--expectation',$expectation,'--expectation-sha256',$treePin)
-            if($PhaseName-ceq'BeforeMutation'-and@($requestValue.comparison.retained_ranges).Count-gt0){
+            if($RetainedPositions-and@($requestValue.comparison.retained_ranges).Count-eq0){throw 'Retained ranges required for the requested recheck.'}
+            if(($PhaseName-ceq'BeforeMutation'-or$RetainedPositions)-and@($requestValue.comparison.retained_ranges).Count-gt0){
                 $arguments+='--verify-retained-positions'
             }
             if($PhaseName-in@('AfterMutation','AfterReboot')){
@@ -128,6 +138,8 @@ try{
             if($value.kind-cne'general-refs-mutation-workload'-or$value.request_sha256-cne$requestPin-or
                 -not$value.only_new_test_paths_written-or-not$value.mutation_directory_removed){throw 'Mutation report differs.'}
         }elseif(-not$value.success-or-not$value.ordinary_tree_verified-or$value.diagnostic_only-or$value.request_sha256-cne$requestPin){throw 'Strict verification did not pass.'}
+        if($RetainedPositions-and(-not$value.retained_physical_positions.original_physical_positions_verified-or
+            -not$value.retained_physical_positions.native_whole_stream_hashes_matched)){throw 'Requested physical retained proof did not pass.'}
         [pscustomobject]@{success=$true;phase=$PhaseName;run_id=$Run;guest_report=$report;report_sha256=(Get-FileHash -LiteralPath $report).Hash.ToLowerInvariant();
             request_sha256=$requestPin;expectation_sha256=$treePin;guest_boot_utc=$boot;report=$value;utc=[DateTime]::UtcNow.ToString('o')}
     }

@@ -1,5 +1,13 @@
 # ntfs2refs project guidance
 
+CURRENT SELECTED RUN ACTIVATED22:40:25Z: preparation COMPLETE257.698GB in465862ms;
+source4 nowOFFLINE attrs1 forauthorized journal apply, shadow5 stays3. SamePID
+3332/1793224099967, task4d3...Running, nativepeak69.4MiB. Do NOT restart/restore/
+replay/mount/format/openSource/J/packed whilelive. ticket.json is HELD/LOCKED:
+root'sCmetadata readgotSharingViolation; do notretryit untilactualterminal.
+Preparation/certificate reports exist; no completion/handoff result yet.
+All47 snapshots and managedscratchdisk6 retained. Rootcontrols, delta monitors.
+
 Selected4d3... ORIGINAL LIVE SOURCE CERTIFICATE PASSED22:32:35Z; admitted-
 assessment/target-preservation/composite-capture now persisted. Journal preparation
 LIVE22:37:49Z rechecking-shadow200.816/257.698GB scanned, same3332/1793224099967,

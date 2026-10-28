@@ -2,6 +2,17 @@
 
 ## Exact-fixture cutover experiment
 
+The first native launch did not start its PowerShell wrapper under the guest's
+default execution policy. It was replaced by a direct native scheduled task,
+with no policy change. That exact acknowledged task matched the full source hash
+then refused before activation: artifact pins were serialized in different key
+orders by preparation versus execution. A single canonical Value-map identity
+method now serves preparation, activation, recovery and finalization, reproducing
+the existing prepared journal identity instead of changing the immutable ticket.
+Source stayed read-only and no data writes occurred. A fresh continuation is
+limited to this proved preactivation failure, with a new output and full source
+hash check; original artifacts remain preserved. New native outcome pending.
+
 Compact native finalization now uses the same durable HND/full-image checks
 and native verification helpers as the original path, with the composite backing
 binding and exact delta policy. The attrs1 read view closes before mounting.

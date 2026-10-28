@@ -30,7 +30,7 @@ fn bound(
     observed: &JournalFileSnapshot,
     artifact: &VerifiedDeltaArtifact,
 ) -> Result<JournalBinding> {
-    let identity = hex::encode(Sha256::digest(serde_json::to_vec(artifact.pins())?));
+    let identity = artifact.identity_sha256()?;
     compact_binding(request, &observed.identity, &identity)
 }
 fn exact_ranges(

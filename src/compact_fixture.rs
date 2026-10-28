@@ -20,6 +20,7 @@ pub enum Operation {
     Resume,
     Rollback,
     Finalize,
+    FinalizeRollback,
 }
 fn save(root: &Path, name: &str, value: &impl Serialize) -> Result<()> {
     let mut f = OpenOptions::new()
@@ -135,7 +136,27 @@ pub fn run(
         } else {
             GeneralJournaledPartition::reopen(r.pair.source.clone(), &mut events)?
         };
-        if matches!(op, Operation::Finalize) {
+        if matches!(op, Operation::FinalizeRollback) {
+            ensure!(
+                interrupt.is_none(),
+                "rollback finalization cannot inject interruption"
+            );
+            let f = protocol::compact_finalize::resume_completed_rollback(
+                r,
+                target,
+                &shadow,
+                a,
+                j,
+                t,
+                std::mem::take(&mut events),
+            )?;
+            save(out, "rollback-finalization.json", &f)?;
+            ensure!(
+                f.success,
+                "completed compact NTFS rollback failed: {:?}",
+                f.error
+            );
+        } else if matches!(op, Operation::Finalize) {
             ensure!(interrupt.is_none(), "finalize cannot inject interruption");
             let f = protocol::compact_finalize::finalize_after_marker(
                 r, target, &shadow, a, j, t, expected,
@@ -162,14 +183,29 @@ pub fn run(
             )?;
             save(out, "execution.json", &execution)?;
             if finalize {
-                ensure!(
-                    !matches!(op, Operation::Rollback),
-                    "compact rollback native completion remains separate"
-                );
-                let f =
-                    protocol::compact_finalize::finalize(r, target, &shadow, a, j, t, expected)?;
-                save(out, "finalization.json", &f)?;
-                ensure!(f.success, "compact native handoff failed: {:?}", f.error);
+                if matches!(op, Operation::Rollback) {
+                    let f = protocol::compact_finalize::complete_rollback(
+                        r,
+                        target,
+                        &shadow,
+                        a,
+                        j,
+                        t,
+                        std::mem::take(&mut events),
+                    )?;
+                    save(out, "rollback-finalization.json", &f)?;
+                    ensure!(
+                        f.success,
+                        "compact native NTFS rollback failed: {:?}",
+                        f.error
+                    );
+                } else {
+                    let f = protocol::compact_finalize::finalize(
+                        r, target, &shadow, a, j, t, expected,
+                    )?;
+                    save(out, "finalization.json", &f)?;
+                    ensure!(f.success, "compact native handoff failed: {:?}", f.error);
+                }
             }
         }
         save(out, "events.json", &events)?;

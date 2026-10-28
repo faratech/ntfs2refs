@@ -21,7 +21,7 @@ fn checked_binding(
     completed: bool,
 ) -> Result<(JournalBinding, String)> {
     let observed = observe_journal(journal, request)?;
-    let identity = hex::encode(Sha256::digest(serde_json::to_vec(artifact.pins())?));
+    let identity = artifact.identity_sha256()?;
     let bound = compact_binding(request, &observed.identity, &identity)?;
     ensure!(
         ticket.schema_version == request.schema_version
@@ -236,5 +236,193 @@ pub(crate) fn finalize_after_marker(
         false
     };
     verify_native(request, &expected, &mut result, restored_label);
+    Ok(result)
+}
+
+fn inspect_restored_ntfs(request: &Request, target: &mut GeneralJournaledPartition) -> Result<()> {
+    let length = target.byte_len();
+    let raw = ntfs_inspect::inspect_with_limits(
+        target,
+        length,
+        ntfs_inspect::limits_for_resource_profile(
+            request.source_resource_profile.unwrap_or_default(),
+        ),
+    )?;
+    ntfs_backup::verify(target, length, &raw)?;
+    ntfs_log::verify(target, &raw)?;
+    Ok(())
+}
+
+fn rollback_report(events: Vec<NativeEvent>) -> RollbackFinalization {
+    RollbackFinalization {
+        success: false,
+        // A partial marker also closes replay. Never repair it here.
+        replay_closed: true,
+        shadow_available: true,
+        marker: None,
+        completed_marker_proof: None,
+        mounted_filesystem: None,
+        error: None,
+        events,
+        production_conversion_qualified: false,
+    }
+}
+
+fn verify_native_ntfs(request: &Request, report: &mut RollbackFinalization) {
+    let mounted = rediscover_general_volume_wait(request.pair.source.clone(), &mut report.events)
+        .and_then(|binding| mounted_filesystem_general(binding, &mut report.events));
+    match mounted {
+        Ok(name) if name == "NTFS" => {
+            report.mounted_filesystem = Some(name);
+            report.success = true;
+        }
+        Ok(name) => {
+            report.mounted_filesystem = Some(name);
+            report.error = Some("compact restored original did not mount as NTFS".into());
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+}
+
+/// Close replay only after the complete original NTFS and compact candidate
+/// have been rehashed. The existing marker writer flushes the restored target,
+/// then durably records/readbacks ABT before any writable native NTFS mount.
+#[allow(dead_code, reason = "compact rollback completion not yet connected")]
+pub(crate) fn complete_rollback(
+    request: &Request,
+    mut target: GeneralJournaledPartition,
+    native_shadow: &GeneralFrozenPartition,
+    artifact: &mut VerifiedDeltaArtifact,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    mut events: Vec<NativeEvent>,
+) -> Result<RollbackFinalization> {
+    request.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source && native_shadow.binding() == &request.pair.shadow,
+        "compact NTFS rollback completion device bindings differ"
+    );
+    let target_before = target.state(&mut events)?;
+    let shadow_before = native_shadow.state(&mut events)?;
+    ensure!(
+        target_before.disk_attributes == 1 && shadow_before.disk_attributes == 3,
+        "compact NTFS rollback requires offline target/frozen native shadow"
+    );
+    artifact.revalidate()?;
+    let (bound, _) = checked_binding(request, artifact, journal, ticket, false)?;
+    inspect_restored_ntfs(request, &mut target)?;
+    let mut original = target.read_only_view(&mut events)?;
+    let read_before = original.state(&mut events)?;
+    let mut image = artifact.image(&mut original)?;
+    let mut result = rollback_report(events);
+    let marker =
+        lab_reconstruct::mark_rollback_complete(&mut target, &mut image, journal, ticket, &bound);
+    drop(image);
+    let read_after = original.state(&mut result.events);
+    drop(original);
+    match marker {
+        Ok(marker) => result.marker = Some(marker),
+        Err(error) => {
+            result.error = Some(format!("{error:#}"));
+            return Ok(result);
+        }
+    }
+    if let Err(error) = (|| -> Result<()> {
+        ensure!(
+            read_after? == read_before && target.state(&mut result.events)? == target_before,
+            "compact rollback target/read-view route changed"
+        );
+        artifact.revalidate()?;
+        ensure!(
+            native_shadow.state(&mut result.events)? == shadow_before,
+            "compact native shadow route changed during rollback completion"
+        );
+        Ok(())
+    })() {
+        result.error = Some(format!("{error:#}"));
+        return Ok(result);
+    }
+    if let Err(error) = target.bring_online(&mut result.events) {
+        result.error = Some(error.to_string());
+        return Ok(result);
+    }
+    verify_native_ntfs(request, &mut result);
+    Ok(result)
+}
+
+/// Resume an exact completed ABT after process death. Full source/candidate
+/// proofs and a fresh composite-bound journal durability gate precede mount;
+/// readable partial/foreign markers are never repaired or promoted.
+#[allow(dead_code, reason = "compact rollback recovery not yet connected")]
+pub(crate) fn resume_completed_rollback(
+    request: &Request,
+    mut target: GeneralJournaledPartition,
+    native_shadow: &GeneralFrozenPartition,
+    artifact: &mut VerifiedDeltaArtifact,
+    journal: &mut File,
+    ticket: &JournalTicket,
+    mut events: Vec<NativeEvent>,
+) -> Result<RollbackFinalization> {
+    request.validate()?;
+    ensure!(
+        target.binding() == &request.pair.source && native_shadow.binding() == &request.pair.shadow,
+        "completed compact NTFS rollback device bindings differ"
+    );
+    let target_before = target.state(&mut events)?;
+    let shadow_before = native_shadow.state(&mut events)?;
+    ensure!(
+        target_before.disk_attributes == 1 && shadow_before.disk_attributes == 3,
+        "completed compact NTFS rollback requires offline target/frozen shadow"
+    );
+    artifact.revalidate()?;
+    let (bound, artifact_identity) = checked_binding(request, artifact, journal, ticket, true)?;
+    let mut original = target.read_only_view(&mut events)?;
+    let read_before = original.state(&mut events)?;
+    let mut image = artifact.image(&mut original)?;
+    let proof = lab_reconstruct::verify_completed_marker(
+        &mut target,
+        &mut image,
+        journal,
+        ticket,
+        &bound,
+        lab_reconstruct::CompletionKind::NtfsRollback,
+        request.comparison.expected_length,
+        &request.comparison.source_sha256,
+        &request.comparison.shadow_sha256,
+    )?;
+    drop(image);
+    ensure!(
+        original.state(&mut events)? == read_before,
+        "completed compact rollback read-view route changed"
+    );
+    drop(original);
+    inspect_restored_ntfs(request, &mut target)?;
+    artifact.revalidate()?;
+    ensure!(
+        target.state(&mut events)? == target_before
+            && native_shadow.state(&mut events)? == shadow_before,
+        "completed compact rollback device route changed"
+    );
+    let durable = lab_reconstruct::guard_completed_marker_durability(
+        journal,
+        ticket,
+        &bound,
+        &proof,
+        |file| {
+            let observed = observe_journal(file, request)?;
+            ensure!(
+                observed.file_bytes == ticket.journal_length,
+                "completed compact rollback journal length changed"
+            );
+            compact_binding(request, &observed.identity, &artifact_identity)
+        },
+    )?;
+    let mut result = rollback_report(events);
+    result.completed_marker_proof = Some(proof);
+    if let Err(error) = durable.with_mount(|| target.bring_online(&mut result.events)) {
+        result.error = Some(error.to_string());
+        return Ok(result);
+    }
+    verify_native_ntfs(request, &mut result);
     Ok(result)
 }

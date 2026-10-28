@@ -128,7 +128,7 @@ fn main() -> anyhow::Result<()> {
     ensure!(!a.output_dir.exists(), "fresh output directory required");
     std::fs::create_dir(&a.output_dir)?;
     let artifact_pins = serde_json::to_value(artifact.pins())?;
-    let artifact_identity = hex::encode(Sha256::digest(serde_json::to_vec(&artifact_pins)?));
+    let artifact_identity = artifact.identity_sha256()?;
     save(
         &a.output_dir.join("intent.json"),
         &serde_json::json!({"kind":"compact-journal-preparation-intent","artifact":artifact_pins,"artifact_identity_sha256":artifact_identity,"source_writes_authorized":false,"max_journal_bytes":a.max_journal_bytes}),

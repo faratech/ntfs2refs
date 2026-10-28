@@ -370,6 +370,12 @@ impl VerifiedDeltaArtifact {
     pub fn pins(&self) -> &DeltaArtifactPins {
         &self.pins
     }
+    /// One canonical encoding for journal binding in preparation, execution and
+    /// handoff. Value-map ordering preserves the first prepared compact ticket.
+    pub fn identity_sha256(&self) -> Result<String> {
+        let value = serde_json::to_value(&self.pins)?;
+        Ok(hex::encode(Sha256::digest(serde_json::to_vec(&value)?)))
+    }
     pub fn layout(&self) -> &DeltaLayout {
         &self.layout
     }

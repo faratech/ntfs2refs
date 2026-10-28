@@ -16,6 +16,7 @@ fn main() -> anyhow::Result<()> {
         Resume,
         Rollback,
         Finalize,
+        FinalizeRollback,
     }
     #[derive(Parser)]
     struct Args {
@@ -103,6 +104,7 @@ fn main() -> anyhow::Result<()> {
         Mode::Resume => ntfs2refs::compact_fixture::Operation::Resume,
         Mode::Rollback => ntfs2refs::compact_fixture::Operation::Rollback,
         Mode::Finalize => ntfs2refs::compact_fixture::Operation::Finalize,
+        Mode::FinalizeRollback => ntfs2refs::compact_fixture::Operation::FinalizeRollback,
     };
     ntfs2refs::compact_fixture::run(
         op,

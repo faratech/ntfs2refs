@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+First exact compact apply experiment66d5aa40fec6464ba6bef76d6daad96f did NOT
+write source: wrapper PowerShell file never ran (default policy unchanged),
+then direct native task safely refused before activation with compact ticket
+identity/length mismatch; source full EC5 hash matched and attrs remained3.
+Cause fixed: prep hashed pins through serde_json::Value (sorted map), execution/
+handoff hashed typed-struct order. All now use VerifiedDeltaArtifact::identity_sha256
+canonical Value encoding, preserving existing19f64... journal binding. Do NOT
+regenerate/alter immutable journal. Direct executable launcher replaces wrapper;
+no execution policy change. Fresh -CanonicalIdentity continuation allowed ONLY
+exact prior preactivation refusal/no execution artifact/both disks3/all36, new
+stage/output/root, same saved journal and fresh source hash again. Build/syntax
+passed. Compact rollback completion/after-marker helpers added and wired only
+to acknowledged fixture command; general source admission stays false. Native
+canonical apply result pending; no unit tests added/run. No old apply redispatch.
+
 Compact native finalization/after-marker plumbing implemented; preserves full
 image/HND proofs, composite binding and exact delta coverage, drops attrs1 read
 view BEFORE native mount, reuses existing native all-tree/label/mount helpers.

@@ -45,8 +45,8 @@ mod windows {
     use sha2::{Digest, Sha256};
     use std::{
         fs,
-        io::{self, Read, Write},
-        time::{SystemTime, UNIX_EPOCH},
+        io::{self, IsTerminal, Read, Write},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
     fn clean(value: &str) -> String {
         value
@@ -190,6 +190,97 @@ mod windows {
             );
         }
         Ok(())
+    }
+
+    // These are observations of fixed local artifact names only. They neither
+    // read payload/recovery storage nor grant permission to advance a phase.
+    fn conversion_phase(output: &std::path::Path) -> &'static str {
+        use std::os::windows::fs::MetadataExt;
+        let exists = |name| {
+            fs::symlink_metadata(output.join(name)).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.file_attributes() & 0x400 == 0
+            })
+        };
+        if exists("apply.json") {
+            "Verifying files"
+        } else if exists("activation-events.json") {
+            "Applying conversion"
+        } else if exists("journal-progress.json")
+            || exists("journal-location.json")
+            || exists("compact-backing.json")
+        {
+            "Preparing recovery journal"
+        } else if exists("qualification/construction-freeze.json")
+            || exists("qualification/target-freeze-events.json")
+        {
+            "Verifying target"
+        } else if exists("qualification/construction-intent.json") {
+            "Building ReFS metadata"
+        } else {
+            "Inspecting NTFS"
+        }
+    }
+
+    fn convert_with_progress(
+        request: crate::general_conversion::Request,
+        budget: crate::general_qualification::CompactConstructionBudget,
+        output: PathBuf,
+    ) -> Result<()> {
+        let worker_output = output.clone();
+        std::thread::scope(|scope| {
+            // All source handles, assessment and SourceCertificate are created
+            // and retained in this same worker. Only routing data crosses in.
+            let worker = scope.spawn(move || {
+                crate::general_conversion::convert_compact_experimental(
+                    &request,
+                    budget,
+                    &worker_output,
+                )
+            });
+            let started = Instant::now();
+            let mut previous = "";
+            let interactive = io::stdout().is_terminal();
+            while !worker.is_finished() {
+                let phase = conversion_phase(&output);
+                let mut console = io::stdout().lock();
+                if !interactive {
+                    if phase != previous {
+                        let _ = writeln!(console, "{phase} ({}s elapsed)", started.elapsed().as_secs());
+                    }
+                    previous = phase;
+                    drop(console);
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+                if phase != previous && !previous.is_empty() {
+                    let _ = writeln!(console);
+                }
+                let _ = write!(
+                    console,
+                    "\r{phase} ({}s elapsed)   ",
+                    started.elapsed().as_secs()
+                );
+                let _ = console.flush();
+                previous = phase;
+                drop(console);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            let _ = writeln!(io::stdout());
+            let result = worker.join().map_err(|panic| {
+                let detail = panic
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("unexpected worker panic");
+                anyhow::anyhow!("conversion worker panicked: {}", clean(detail))
+            })?;
+            if result.is_ok() {
+                // Completion comes from the actual worker result, never from
+                // a filename or a parsed serialized success flag.
+                let _ = writeln!(io::stdout(), "Complete");
+            }
+            result
+        })
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         let inventory = drive_inventory::inventory_drives_readonly()?;
@@ -368,21 +459,21 @@ mod windows {
         request.validate()?;
         save_new(&run.join("devices.json"), &request)?;
         let output = run.join("conversion");
-        let result = crate::general_conversion::convert_compact_experimental(
-            &request,
-            crate::general_qualification::CompactConstructionBudget {
-                maximum_placement_bytes: request
-                    .pair
-                    .source
-                    .identity
-                    .partition_bytes
-                    .saturating_mul(4),
-                maximum_placement_submissions:
-                    n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS,
-                maximum_exception_bytes: 16 * 1024 * 1024,
-            },
-            &output,
-        );
+        let budget = crate::general_qualification::CompactConstructionBudget {
+            maximum_placement_bytes: request
+                .pair
+                .source
+                .identity
+                .partition_bytes
+                .saturating_mul(4),
+            maximum_placement_submissions:
+                n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS,
+            maximum_exception_bytes: 16 * 1024 * 1024,
+        };
+        // Keep the native attachment owner on this thread until the conversion
+        // worker has returned, including error/panic handling.
+        let result = convert_with_progress(request, budget, output.clone());
+        drop(staged);
         match result {
             Ok(()) => {
                 println!(

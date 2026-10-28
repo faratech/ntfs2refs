@@ -1,5 +1,25 @@
 # ntfs2refs project guidance
 
+Candidate13 Finalize SUCCEEDED (real closed recovery handoff), then the pinned
+independent verifier passed full native tree semantics/hashes and original
+retained positions for2,721,431,552 bytes. Native proof SHA
+65b35722b3faaaa4fd8ff34e906489876eac542c9e6c6ea9dd5aae8db22c3929.
+Resumed ReFS outcome is preserved OFF at4aa9e176-decf-4cb1-85fb-6b3fe0aed0c4,
+parent4d73dd8d; all22 checkpoints retained. Nineteen recovery files/binary
+archived/rehashed, manifestcc7804a893fab6f21863c053bc423efb4beb6dc0c03539cfcf2c31bed1f24221.
+ONLY saved partial checkpoint4d73dd8d was then restored for the separate rollback
+fork. Persistent exclusion passed again after boot at06:30:23.6728600 UTC.
+The first rollback dispatch attempt failed at New-PSSession BEFORE registration;
+a successful read-only connection proved no task/record/worker existed, then
+Rollback was dispatched ONCE. No credential reset/security change occurred.
+Rollback is now LIVE: taskN2R-StreamingV2Recover-Rollback-2fa6edb2e7ac464ca863a5db6dbd6f5c,
+PID928 created2026-10-28T06:33:43.305755Z, pinned original5bd69d5b helper.
+Observe Collect-StreamingV2Recovery.ps1 -Candidate candidate13 -Operation Rollback;
+never repeat it. Latest read count61,930,395,585, target remains excluded.
+After terminal success, Verify-StreamingV2RolledBackPayload.ps1 (013112f) requires
+exact newly admitted NTFS imageD8fd89...661c1 plus closed rollback completion,
+then hashes all six native user files. No rollback success claimed yet.
+
 Candidate13 Resume SUCCEEDED, proving exact expected/actual target SHA-256
 1e938b2038047af353a01953569fbf62edd4d53015a3c7460b32cec5f2a69710 while
 the target remained offline and rollback unclosed. Archived Resume-result.json

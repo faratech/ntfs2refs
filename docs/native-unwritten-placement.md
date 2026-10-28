@@ -1,5 +1,46 @@
 # Native placement before valid-data advancement
 
+## Reusable constructor and two-run native result
+
+Source4a58ed2 replaces the probe's duplicated creation/move code with
+`shadow_native/unwritten.rs::PrivatePlaceholder`. It reserves an aligned
+file, keeps it SYSTEM-only with sharing disabled, supports bounded multiple
+placements, and exposes no payload interface outside the native shadow module.
+The caller must already bind the independent shadow and enable the required
+privilege. This internal constructor does not independently bind an arbitrary
+volume or authorize conversion of the source.
+
+Logical and physical overlaps, out-of-volume ranges and more than1,024 moves
+are refused. A submitted move starts in a poisoned state: only a successful
+native result and complete matching retrieval evidence clear it. A partial or
+unobserved move prohibits further moves and VDL advancement. Construction can
+require complete placed-prefix coverage before a single valid-data call;
+flush and a fresh verification of every placed mapping are part of that
+operation. The older allocation-only probe explicitly retains its separate
+unplaced-prefix policy. Failure leaves the private file for diagnosis.
+
+The new implementation passed native experiment
+`354242846218460bb0f6ebc065d5b518`, executable SHA-256
+`e9c7d1a9fe0dd714ba3079ee74721708d6ec5bd3d15451c29088708bbda2ee47`.
+VCNs0..127 moved toLCN10,485,760 (40 GiB); VCNs128..255 moved toLCN11,010,048
+(42 GiB). Both fresh bitmap views admitted each destination, both native calls
+succeeded and the complete post-VDL/flush mapping retained both locations.
+The1-MiB prefix became storage-valid, with its4-KiB tail still invalid. Tool
+payload reads/writes remained zero; physical I/O and scratch cost were not
+measured. This is the new reusable constructor's exact native scope.
+
+The95,217-byte result SHA-256 is
+`45bd03b3ad2504fb59b29f7c96b2f2540a326ee887d88aa80ed4b2b1d23b5d68`,
+archived with decoded mapping/validity evidence under
+`.lab/hyperv/streaming-v2-20261027/unwritten-placement-split-20261028`.
+Clean OFF checkpoint`524c530e-2f6e-4ff6-849d-3bf7a9af71bf`, parent
+`80907930-4a43-4cbc-b26b-dafd14dea4e8`, preserves it. All17 earlier checkpoints
+remain (18 total); VM assigned RAM is0. No storage cap was increased.
+
+This is not yet an admitted-tree constructor, native compact conversion,
+reboot-readback qualification or a physical-space bound. Initial full-shadow
+conversion still uses its working payload writer. No unit tests added/run.
+
 The owning-guest experiment on2026-10-28 accepted a1 MiB extent placement
 while its new private file was still storage-invalid. Windows then accepted
 `SetFileValidData`, and the requested physical mapping survived the explicit

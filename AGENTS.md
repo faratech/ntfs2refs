@@ -1,5 +1,21 @@
 # ntfs2refs project guidance
 
+The private allocation primitive is now reusable in shadow_native/unwritten.rs
+(source4a58ed2), with multi-run placement, complete placed-prefix gating,
+poison-on-partial/missing native result, and flush/mapping recheck. It stays
+internal to the native shadow module; no source write authority or payload
+interface was added. The real two-run experiment354242846218460bb0f6ebc065d5b518
+passed: two512-KiB halves at40/42 GiB,1-MiB valid prefix,4-KiB invalid tail,
+zero tool payload reads/writes. Producer e9c7d1a9fe0dd714ba3079ee74721708d6ec5bd3d15451c29088708bbda2ee47,
+result45bd03b3ad2504fb59b29f7c96b2f2540a326ee887d88aa80ed4b2b1d23b5d68.
+Evidence is unwritten-placement-split-20261028. Current VM is OFF at
+524c530e-2f6e-4ff6-849d-3bf7a9af71bf, parent80907930-4a43-4cbc-b26b-dafd14dea4e8,
+all18 checkpoints preserved/RAM released. No native compact conversion,
+physical cost bound, tree construction or reboot-readback claim follows.
+Next use the stored file identity for read-only reopened mapping/validity;
+then integrate private allocation into admitted-tree construction. Do not
+redispatch either completed placement task. No unit tests added/run.
+
 Latest low-scratch native primitive: experimentfb2e6b960b224a58a7a588b591f57e52
 successfully moved a private1-MiB zero-VDL shadow extent toLCN8388608, then
 advanced VDL and flushed. Both pre-move bitmap views were free; post-flush

@@ -1,5 +1,31 @@
 # ntfs2refs project guidance
 
+CONTROLLED INTERRUPT TERMINAL86 + PARTIAL45 SAVED / RESUME LIVE:
+949dbc... native5364/wrapper700 ended86 with no completion/handoff. Actual
+allzero4096HND +exactINT01code1 and full/immutableJhash verified AFTERterminal.
+PreservedOFF/RAM0 checkpoint554482bb-f2a4-4185-8023-09d60465137f, parentcfe0,
+ALL45 snapshots retained. PartialJSHAd5ee6d26793d8495490794fa91ec18ac21c284533f11ad67c7370e8e14d9e60c;
+ticketimmutableverified, deeprecordvalidation explicitlyfalse(helpernotrecoveryauth).
+Sourcea90a9cd8f9fca6037b396127d161f56cc5698cae832c6bd3872d38378a367c6e,
+candidate419515e9efd3bb265738b32e351624637a4da91553eccb2acce1cfbec642be72,
+160patches/70,729,728B, J141,494,333B. Ticket09f4932d49b049bd97fc389d962fef2e451acf341af27d4ec6e2f2c51864df8c.
+Only savedpartial45 booted ONCE for Resume; controller93899 TERMINAL0 single
+dispatchN2R-AdmittedCompactRecovery-Resume-9e8d88a9964b406bb3673324f10e6960.
+Host compact-admitted-recovery-20261028/resume; guest
+C:\ntfs2refs\admitted-compact-recovery-resume-9e8d88a9964b406bb3673324f10e6960\result.
+Actual RECOVERY PID4696creation1793219978096 LIVE20:40:10Z, binaryd48a46b...,
+read15,754,420,059/write62295, WS12.8MB, source1/shadow3, only preflight/input
+metadata. Do NOT restart/restore/shutdown/open Source/J/packed whilelive.
+Resume only completes offline image; separate Finalize mustrecordHND+native
+verify, then preserve resumed46 BEFORErestoreONLYpartial45 for rollbackfork.
+Normal43/44 MUSTremain and NEVERreceiveoldrawJ. CurrentgenericresumerequestSHA
+38e12f06afe7fc4a5e4ef3f1c100ea3cb2b5d941f908c65b149dc08ccef38246,
+capture997bca91b3fe66298169865efa7c3b568def450a895eeb2de03557186f734fe1,
+packedfc0dbad69109b096b38de79b3798ee1a78b3ddae6d8606d745e3cb6113ba4b64,
+tree149c4aae5f788d5e78b2cee0f057049caf3d5241c6556edeba9e33eedbef6bbe.
+Rootcontrols/delta_artifact_reader monitors. Same50GBbaseline/max/floor, no
+reset/units/deletions. Original main.rs remains unchangedunstaged.
+
 LATEST INTERRUPT949 LIVE20:26:54Z: same5364creation1793217057038/wrapper700,
 taskRunning/source3/shadow3. Fresh qualification certificate/admitted-assessment/
 target-preservation/capture/result completed; request/backing/journal-location/

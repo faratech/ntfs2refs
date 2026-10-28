@@ -1,14 +1,20 @@
-# Retry only the preserved preactivation refusal, using the unchanged existing
-# source fixture. Original abort, fresh binding and conversion run once in SYSTEM.
-[CmdletBinding()]param()
+# Use only the preserved preactivation refusal branch and unchanged source.
+# Future Normal/Interrupt modes each run original abort, fresh binding and live
+# source-admitted conversion once in SYSTEM. Branch restoration is external.
+[CmdletBinding()]param(
+    [ValidateSet('Normal','Interrupt')][string]$Mode='Normal',
+    [ValidateRange(42,200)][int]$ExpectedCheckpointCount=42
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+$Mode=if($Mode -ieq 'Interrupt'){'Interrupt'}else{'Normal'}
+$isInterrupt=$Mode -ceq 'Interrupt'
 $workspace='D:\code\ntfs2refs';$id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'
 $parent=[guid]'cfe0b326-7308-4a58-810d-9730ff8152b4'
-$root=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027\compact-admitted-retry-20261028'
+$root=Join-Path $workspace $(if($isInterrupt){'.lab\hyperv\streaming-v2-20261027\compact-admitted-interrupt-20261028'}else{'.lab\hyperv\streaming-v2-20261027\compact-admitted-retry-20261028'})
 if(Test-Path -LiteralPath $root){throw 'Retry has state; inspect without redispatch.'}
 $vm=Get-VM -Id $id;$old=@(Get-VMSnapshot -VM $vm|ForEach-Object {$_.Id.ToString()})
-if($vm.State.ToString() -ne 'Off' -or $vm.ParentSnapshotId -ne $parent -or $old.Count -ne 42 -or $vm.MemoryStartup -ne 4GB -or $vm.DynamicMemoryEnabled -or @(Get-VMNetworkAdapter -VM $vm).Count){throw 'Exact preserved refusal branch/all42 required.'}
+if($vm.State.ToString() -ne 'Off' -or $vm.ParentSnapshotId -ne $parent -or $old.Count -ne $ExpectedCheckpointCount -or @($old|Sort-Object -Unique).Count -ne $ExpectedCheckpointCount -or $old -notcontains $parent.ToString('D') -or $vm.MemoryStartup -ne 4GB -or $vm.DynamicMemoryEnabled -or @(Get-VMNetworkAdapter -VM $vm).Count){throw 'Exact OFF preserved refusal parent and supplied checkpoint count required; this dispatcher never restores a branch.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
 Import-Module (Join-Path $PSScriptRoot 'CompactCapacity.psm1') -Force
 $capacity=Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)
@@ -17,16 +23,17 @@ Assert-LabCapacity -Capacity $capacity -AdditionalBytes $forecast.additionalByte
 $run=[guid]::NewGuid().ToString('N')
 $tools=@('lab-convert-native-composite.exe','lab-abort-general-source.exe','ntfs2refs-bind.exe')
 $pins=@{};foreach($name in $tools){$pins[$name]=(Get-FileHash -LiteralPath (Join-Path $workspace ('target\release\'+$name))).Hash.ToLowerInvariant()}
+if($pins['lab-convert-native-composite.exe'] -cne '5e156f089b0fc6a67788154e841a74daad4a61028b16ea41391dc8f84e06f524'){throw 'The same reviewed 5e156f native converter is required; no substitute or rebuild is selected.'}
 New-Item -ItemType Directory -Path $root|Out-Null
 function Save-New([string]$Name,$Value){$f=[IO.File]::Open((Join-Path $root $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 20));$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}}
-Save-New 'intent.json' @{run_id=$run;vm_id=$id.ToString();parent_id=$parent.ToString();old_checkpoint_ids=$old;source_commit=(& git -C $workspace rev-parse HEAD).Trim();pins=$pins;capacity=$capacity;forecast=$forecast;fixture_reused_without_source_moves=$true;source_append_bytes=0;shadow_format_authorized=$true;utc=[DateTime]::UtcNow.ToString('o')}
+Save-New 'intent.json' @{run_id=$run;mode=$Mode;expected_checkpoint_count=$ExpectedCheckpointCount;expected_native_exit=$(if($isInterrupt){86}else{0});interrupt_after_writes=$(if($isInterrupt){1}else{$null});vm_id=$id.ToString();parent_id=$parent.ToString();old_checkpoint_ids=$old;source_commit=(& git -C $workspace rev-parse HEAD).Trim();pins=$pins;capacity=$capacity;forecast=$forecast;fixture_reused_without_source_moves=$true;source_append_bytes=0;shadow_format_authorized=$true;restore_performed=$false;utc=[DateTime]::UtcNow.ToString('o')}
 foreach($name in $tools){Copy-Item -LiteralPath (Join-Path $workspace ('target\release\'+$name)) -Destination (Join-Path $root $name)}
 Start-VM -VM $vm|Out-Null
 $cred=Import-Clixml -LiteralPath (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $session=$null;$deadline=[DateTime]::UtcNow.AddMinutes(5)
 while($null -eq $session){try{$session=New-PSSession -VMId $id -Credential $cred -ErrorAction Stop}catch{if([DateTime]::UtcNow -ge $deadline){throw 'Single boot unavailable; do not restart.'};Start-Sleep -Seconds 3}}
 try{
-    $stage='C:\ntfs2refs\compact-admitted-retry-'+$run
+    $stage=$(if($isInterrupt){'C:\ntfs2refs\compact-admitted-interrupt-'}else{'C:\ntfs2refs\compact-admitted-retry-'})+$run
     $prepared=Invoke-Command -Session $session -ArgumentList $stage -ScriptBlock {
         param($Stage);$ErrorActionPreference='Stop'
         if(Test-Path -LiteralPath $Stage){throw 'Fresh stage required.'}
@@ -50,36 +57,49 @@ try{
     }
     Save-New 'prepared.json' $prepared
     foreach($name in $tools){Copy-Item -LiteralPath (Join-Path $root $name) -ToSession $session -Destination ([IO.Path]::Combine($stage,$name))}
-    $configuration=@{stage=$stage;run=$run;pins=$pins;prepared=$prepared}
+    $configuration=@{stage=$stage;run=$run;mode=$Mode;pins=$pins;prepared=$prepared}
     $encodedConfig=[Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes(($configuration|ConvertTo-Json -Depth 14)))
     $body=@'
 $ErrorActionPreference='Stop'
 $c=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__CONFIG__'))|ConvertFrom-Json
 $phase='tools';$exit=0
 function Save-New([string]$Name,$Value){$f=[IO.File]::Open((Join-Path $c.stage $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 16));$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}}
-function Run-Native([string]$Binary,[string[]]$Cli,[string]$Log){$ErrorActionPreference='Continue';$lines=@(& $Binary @Cli 2>&1);$script:exit=$LASTEXITCODE;$ErrorActionPreference='Stop';$lines|Out-String|Set-Content -LiteralPath (Join-Path $c.stage $Log) -Encoding UTF8;if($script:exit -ne 0){throw ('Native phase '+$script:phase+' exit '+$script:exit)}}
+function Run-Native([string]$Binary,[string[]]$Cli,[string]$Log){$ErrorActionPreference='Continue';$global:LASTEXITCODE=$null;$lines=@(& $Binary @Cli 2>&1);$script:exit=$global:LASTEXITCODE;$ErrorActionPreference='Stop';$lines|Out-String|Set-Content -LiteralPath (Join-Path $c.stage $Log) -Encoding UTF8;$expected=if($c.mode -ceq 'Interrupt' -and $script:phase -ceq 'controlled-interrupted-admitted-conversion'){86}else{0};if($null -eq $script:exit -or $script:exit -ne $expected){throw ('Native phase '+$script:phase+' exit '+$script:exit+'; expected '+$expected)}}
 try {
+    if($c.mode -cnotin @('Normal','Interrupt')){throw 'Explicit wrapper mode required.'}
     foreach($name in @('lab-convert-native-composite.exe','lab-abort-general-source.exe','ntfs2refs-bind.exe')){if((Get-FileHash -LiteralPath (Join-Path $c.stage $name)).Hash.ToLowerInvariant() -cne $c.pins.$name){throw 'Pinned tool changed.'}}
     $phase='abort-original-source'
     Run-Native (Join-Path $c.stage 'lab-abort-general-source.exe') @('--binding',$c.prepared.binding,'--binding-sha256',$c.prepared.binding_pin,'--frozen-report',$c.prepared.frozen,'--frozen-report-sha256',$c.prepared.frozen_pin,'--output',(Join-Path $c.stage 'source-aborted.json')) 'source-abort.log'
     if((Get-FileHash -LiteralPath 'F:\notes\compact-nonzero.bin').Hash.ToLowerInvariant() -cne 'cbad760982dc9f68b3e65e77dc6cab7d77db005bbe561af55a1be76f498b37db'){throw 'Unchanged existing source fixture differs.'}
     $phase='fresh-binding';$request=Join-Path $c.stage 'conversion.json'
     Run-Native (Join-Path $c.stage 'ntfs2refs-bind.exe') @('--source',$c.prepared.source_volume,'--shadow',$c.prepared.shadow_volume,'--journal',$c.prepared.journal_volume,'--experiment-id',$c.run,'--experimental-large-journal','--experimental-large-tree','--experimental-streaming-payload','--max-journal-bytes','268435456','--output',$request,'--evidence',(Join-Path $c.stage 'binding.json')) 'binding.log'
-    $phase='fresh-admitted-conversion';$pin=(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()
-    Save-New 'conversion-start.json' @{request_sha256=$pin;maximum_placement_submissions=1024;utc=[DateTime]::UtcNow.ToString('o')}
-    Run-Native (Join-Path $c.stage 'lab-convert-native-composite.exe') @('--request',$request,'--request-sha256',$pin,'--output',(Join-Path $c.stage 'result'),'--acknowledge-enrolled-disposable-devices','--maximum-placement-bytes','12884901888','--maximum-placement-submissions','1024','--maximum-exception-bytes','16777216') 'conversion.log'
-    Save-New 'wrapper-result.json' @{success=$true;phase=$phase;exit=0;utc=[DateTime]::UtcNow.ToString('o')}
-}catch{Save-New 'wrapper-failed.json' @{phase=$phase;native_exit=$exit;error=$_.Exception.Message;automatic_retry=$false;utc=[DateTime]::UtcNow.ToString('o')};exit 1}
+    $phase=if($c.mode -ceq 'Interrupt'){'controlled-interrupted-admitted-conversion'}else{'fresh-admitted-conversion'};$pin=(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()
+    Save-New 'conversion-start.json' @{mode=$c.mode;request_sha256=$pin;maximum_placement_submissions=1024;expected_native_exit=$(if($c.mode -ceq 'Interrupt'){86}else{0});interrupt_after_writes=$(if($c.mode -ceq 'Interrupt'){1}else{$null});utc=[DateTime]::UtcNow.ToString('o')}
+    $conversionCli=@('--request',$request,'--request-sha256',$pin,'--output',(Join-Path $c.stage 'result'),'--acknowledge-enrolled-disposable-devices','--maximum-placement-bytes','12884901888','--maximum-placement-submissions','1024','--maximum-exception-bytes','16777216')
+    if($c.mode -ceq 'Interrupt'){$conversionCli+=@('--interrupt-after-writes','1')}
+    Run-Native (Join-Path $c.stage 'lab-convert-native-composite.exe') $conversionCli 'conversion.log'
+    if($c.mode -ceq 'Interrupt'){
+        # The synchronous native child has returned86. Query only persistent
+        # disk state here; no journal/raw marker read or HND claim is made.
+        $phase='controlled-interruption-state'
+        if(@(Get-CimInstance Win32_Process|Where-Object Name -eq 'lab-convert-native-composite.exe').Count){throw 'Native worker remains present; terminal interruption is not established.'}
+        $source=Get-Disk -Number 1;$shadow=Get-Disk -Number 3
+        if([guid]$source.Guid -ne [guid]'1b191872-c372-41ee-a416-e18863996f54' -or -not $source.IsOffline -or $source.IsReadOnly -or [guid]$shadow.Guid -ne [guid]'c0f2cd39-ad3d-484e-9990-0e6eba74485f' -or -not $shadow.IsOffline -or -not $shadow.IsReadOnly){throw 'Terminal interruption requires exact source1/shadow3 persistent state.'}
+        Save-New 'wrapper-controlled-interruption.json' @{mode=$c.mode;controlled_interruption_observed=$true;conversion_success=$false;phase=$phase;native_exit=$exit;expected_native_exit=86;interrupt_after_writes=1;request_sha256=$pin;source_disk_guid=[string]$source.Guid;source_offline=[bool]$source.IsOffline;source_readonly=[bool]$source.IsReadOnly;shadow_disk_guid=[string]$shadow.Guid;shadow_offline=[bool]$shadow.IsOffline;shadow_readonly=[bool]$shadow.IsReadOnly;journal_marker_observed=$false;raw_journal_read_performed=$false;automatic_retry=$false;utc=[DateTime]::UtcNow.ToString('o')}
+        exit 86
+    }
+    Save-New 'wrapper-result.json' @{success=$true;conversion_success=$true;mode=$c.mode;phase=$phase;exit=0;utc=[DateTime]::UtcNow.ToString('o')}
+}catch{Save-New 'wrapper-failed.json' @{mode=$c.mode;phase=$phase;native_exit=$exit;error=$_.Exception.Message;automatic_retry=$false;utc=[DateTime]::UtcNow.ToString('o')};exit 1}
 '@
     $body=$body.Replace('__CONFIG__',$encodedConfig)
     [IO.File]::WriteAllText((Join-Path $root 'guest-wrapper.ps1'),$body,[Text.UTF8Encoding]::new($false))
     $bodyPin=(Get-FileHash -LiteralPath (Join-Path $root 'guest-wrapper.ps1')).Hash.ToLowerInvariant()
     $encodedBody=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($body))
-    $dispatch=Invoke-Command -Session $session -ArgumentList $stage,$run,$encodedBody,$bodyPin -ScriptBlock {
-        param($Stage,$Run,$Body,$BodyPin);$ErrorActionPreference='Stop';$task='N2R-AdmittedCompact-Retry-'+$Run
+    $dispatch=Invoke-Command -Session $session -ArgumentList $stage,$run,$encodedBody,$bodyPin,$Mode -ScriptBlock {
+        param($Stage,$Run,$Body,$BodyPin,$Mode);$ErrorActionPreference='Stop';$task=$(if($Mode -ceq 'Interrupt'){'N2R-AdmittedCompact-Interrupt-'}else{'N2R-AdmittedCompact-Retry-'})+$Run
         if(Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue){throw 'Fresh wrapper task required.'}
         Register-ScheduledTask -TaskName $task -Action (New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -NonInteractive -EncodedCommand '+$Body)) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null
-        @{task_name=$task;run_id=$Run;guest_stage=$Stage;output_dir=([IO.Path]::Combine($Stage,'result'));wrapper_sha256=$BodyPin;maximum_placement_submissions=1024}
+        @{task_name=$task;mode=$Mode;run_id=$Run;guest_stage=$Stage;output_dir=([IO.Path]::Combine($Stage,'result'));wrapper_sha256=$BodyPin;maximum_placement_submissions=1024;expected_native_exit=$(if($Mode -ceq 'Interrupt'){86}else{0});expected_wrapper_exit=$(if($Mode -ceq 'Interrupt'){86}else{0})}
     }
     Save-New 'dispatch.json' $dispatch
     $current=Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)

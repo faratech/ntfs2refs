@@ -27,8 +27,12 @@ and the journal/recovery artifacts stay independent of the selected source.
 The native formatter receives only the partition on that newly created owned
 virtual disk. [Windows format supports volume names and ReFS Dev Drives](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/format).
 The provider and formatter must support the requested geometry; staging is kept
-on failure for inspection. This automatic staging path has separate native
-qualification from the earlier manually prepared shadow experiments.
+on failure for inspection. The isolated native staging smoke passed on the
+current Windows11 guest: owned VHDX creation, attachment, empty-GPT/MSR setup,
+native formatting and ReFS3.14/4KiB verification all succeeded for60GiB. Its
+backing file was100MiB. This proves staging on that profile, independently of
+the manually prepared shadow experiments; the complete interactive affirmative
+conversion workflow remains a separate end-to-end qualification.
 
 Run conversion from an elevated Windows terminal. `--scratch-directory` can
 choose another ordinary working folder on the Windows OS volume. The current

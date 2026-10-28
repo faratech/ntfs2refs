@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "kind": "observational-native-managed-shadow",
+  "scope": "New owned scratch provision only; no full source conversion inferred",
+  "source_commit": "cfc48ff",
+  "binary_sha256": "09355163db2dd8ab47250bcf68d51cdde4e41596bed83e5677ca6caf2d081ebc",
+  "windows_build": "26300.9457",
+  "task": "N2R-ManagedShadow-Smoke-20261028",
+  "exit": 0,
+  "partition_bytes": 64424509440,
+  "backing_file_bytes": 104857600,
+  "binding": {
+    "disk_number": 6,
+    "identity": {
+      "disk_bytes": 64491618304,
+      "disk_guid": "d524dca6-5eb5-4d68-8b35-1b4c86685ba8",
+      "logical_sector_bytes": 512,
+      "partition_bytes": 64424509440,
+      "partition_guid": "d8ecbb6f-b2ba-4f6b-8775-ed75f46e8c32",
+      "partition_number": 2,
+      "partition_offset": 33554432,
+      "physical_sector_bytes": 4096
+    },
+    "volume_guid": "d8ecbb6f-b2ba-4f6b-8775-ed75f46e8c32"
+  },
+  "virtual_disk_id": "4b35d308-786b-46a8-8f2f-833c21c954ec",
+  "native_format_complete": true,
+  "format_profile": "ReFS3.14/4096-byte clusters/512-byte logical sectors",
+  "permanent_attachment_retained": true,
+  "source_binding_supplied": false,
+  "source_conversion_authorized": false,
+  "full_drive_cli_conversion_verified": false,
+  "artifacts": [
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/managed-shadow-smoke-20261028/dispatch.json",
+      "bytes": 456,
+      "sha256": "61adf976ed28d39aae6ac330c76b73d567d935bc5fb9e943191b41ad6665e087"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/managed-shadow-smoke-20261028/result.json",
+      "bytes": 741,
+      "sha256": "5e6c5a158f7d0c9a7260d780b95dafe9240d11354b71bd537935385408a7947b"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/managed-shadow-smoke-20261028/shadow.format.stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/managed-shadow-smoke-20261028/shadow.format.stdout.log",
+      "bytes": 232,
+      "sha256": "77a4e9857ccaebac386ddfb1575ec0f7390861a443e050614139326a8b9b32c9"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/managed-shadow-smoke-20261028/shadow.formatted-volume.jsonl",
+      "bytes": 7435,
+      "sha256": "3d40669c845a461f30f3294d0238eb4db1f66237bebf2d92469f4445405b1819"
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/managed-shadow-smoke-20261028/shadow.partition-volume.jsonl",
+      "bytes": 10845,
+      "sha256": "d3912851933d87c42d352bf563d292c999ad8dce1dbaf536e3c822f78d1599bb"
+    }
+  ],
+  "utc": "2026-10-28T22:36:19.8715630Z"
+}

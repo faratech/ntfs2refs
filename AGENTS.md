@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+Managed scratch native smoke PASSED: taskN2R-ManagedShadow-Smoke-20261028 Ready0,
+helper09355163db2dd8ab47250bcf68d51cdde4e41596bed83e5677ca6caf2d081ebc.
+Owned new guest virtual disk6, GPTd524dca6-5eb5-4d68-8b35-1b4c86685ba8,
+partitiond8ecbb6f-b2ba-4f6b-8775-ed75f46e8c32,60GiB at32MiB, ReFS3.14/4K,
+C:\ntfs2refs\managed-shadow-smoke-20261028\shadow.vhdx actual100MiB.
+Permanent attachment intentionally retained; NO detach/delete. Source binding
+not supplied; no second conversion launched. Current3332 source4/shadow5/J2
+run remains separate/live. Smoke reports copied to host managed-shadow-smoke-
+20261028 and pinned in evidence/managed-shadow-native-20261028.json.
+Fixescfc48ff handle emptyGPT byexplicit ownedMSR, per-attemptrediscoveryaudits,
+privilegeprecheck and retainedformatterlogs. AutomaticUI affirmative fullconversion
+is notyetqualified. Never treat smoke as SourceCertificate or newApplyauthority.
+
 User-requested drive CLI now implemented, commit5caa632: ntfs2refs --list,
 --drive d [partition N] /--partition N and numeric disk+partition selection.
 Native read-only inventory includes all partitions/query errors; confirmation

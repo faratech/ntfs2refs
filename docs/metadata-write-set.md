@@ -1,5 +1,49 @@
 # Candidate ReFS target write set
 
+## Native compact journal preparation passed
+
+Runa1aa7a957b094f7bbe9af154ee7270eb successfully reopened the metadata-complete
+candidate, checked actual capture/backing hashes and file identities, hashed
+the complete52-GiB target, and prepared/reinspected a durable external journal.
+The original source remained NTFS/offline/read-only; native shadow stayed
+offline/read-only. Source was clean, target header3.14, and all admission,
+activation and conversion flags remain false.
+
+The journal contains138 patches,70,406,144 old bytes and70,406,144 new bytes,
+plus31,356 overhead bytes: total140,843,644 bytes (134.3 MiB). Its patch coverage
+was checked against the exact compact delta before publishing ticket/report.
+The existing full comparison/rechecks scanned223,338,299,392 bytes; progress
+elapsed443,153 ms excludes the preceding complete target-hash pass and some
+other reads. This is space qualification, not an optimized I/O claim.
+
+Source full SHA-256:
+ec5b89de85e24bbb0cdc5f99e907450dc847228ca997465961ab22f89d983dac.
+Candidate/expected postimage:
+2b2aa8c51a0ed3676a31255f6121152fedfb29b459c20246c1546135fe769391.
+Journal immutable length140,835,452/SHA-256:
+4b1353889efb1ee328286da224e105733d4f622f8ebca4a46f4147ecc0d56c94.
+Full journal SHA-256:
+a2a2271ef9a4d382147103d40f6bb5a16289e063cce6dc77c963548391fa6e9f.
+Preparation report:
+c8f7d7d838a8994f190db468d77a68458285e751b5f23a8dd41b920602b1f1ad.
+Request33d18d9f77ebeba339feb71cc4471852bb2c3f3b6edc283fff93fc3f9d7e27d7;
+ticketc07d1a49e8ba36b843214dab822ab8c335dfd51146f144bd5f64d2c37fc5f2c4.
+
+Host evidence: `.lab/hyperv/streaming-v2-20261027/compact-journal-20261028`.
+Guest journal/materials remain at
+`J:\n2r-compact-journal-a1aa7a957b094f7bbe9af154ee7270eb`, alongside the original
+candidate still onC:. No redundant host payload copies were made. Producer
+7fa4bb96c86edfaca675c8b5458b1be291ac2a397430de59f5fbbb0a0d31a5f6
+was from658a09a plus the pre-existing main.rs change; later private execution
+plumbing was not used in this run.
+
+After clean shutdown, checkpoint5971d348-3f8b-4696-bef6-4c1f164fbf64 retained
+all36 snapshots, parent43cc982a, and released4-GiB RAM. New child backing was
+OS638/source4/journal91/shadow4 MiB (737 MiB total), excluding all parents/base,
+host reports and physical device I/O. The configured256-GiB cap/64-GiB host
+reserve were retained. Source admission, compact native finalization, actual
+apply and interruption/recovery still need connection. No unit tests added/run.
+
 ## Compact journal preparation
 
 Internal compact activation/execution plumbing now repeats exact journal/delta

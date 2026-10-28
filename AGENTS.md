@@ -1,5 +1,30 @@
 # ntfs2refs project guidance
 
+COMPACT JOURNAL NATIVE PREPARATION PASSED a1aa7a957b094f7bbe9af154ee7270eb.
+Producer7fa4bb96c86edfaca675c8b5458b1be291ac2a397430de59f5fbbb0a0d31a5f6
+(658a09a+pre-existing main.rs; later b358b54 execution plumbing NOT exercised).
+138 patches/70,406,144 changed; old/new eachsame; journal140,843,644 bytes,
+immutable140,835,452 SHA4b1353889efb1ee328286da224e105733d4f622f8ebca4a46f4147ecc0d56c94.
+Sourcefullec5b89de85e24bbb0cdc5f99e907450dc847228ca997465961ab22f89d983dac;
+target/postimage2b2aa8c51a0ed3676a31255f6121152fedfb29b459c20246c1546135fe769391.
+Reportc8f7d7d838a8994f190db468d77a68458285e751b5f23a8dd41b920602b1f1ad;
+request33d18d9f77ebeba339feb71cc4471852bb2c3f3b6edc283fff93fc3f9d7e27d7;
+ticketc07d1a49e8ba36b843214dab822ab8c335dfd51146f144bd5f64d2c37fc5f2c4;
+fullJ a2a2271ef9a4d382147103d40f6bb5a16289e063cce6dc77c963548391fa6e9f.
+J materials remain J:\n2r-compact-journal-a1aa7a957b094f7bbe9af154ee7270eb;
+host metadata compact-journal-20261028. No host duplicate payload copies.
+Source stayed NTFS3, shadow3; source clean. Exact delta coverage/full comparison
+and rechecks passed (223,338,299,392 scan bytes/443153ms excludes initial hash).
+NO source admission/write/execution/conversion flags enabled. Internal compact
+activation/execute is compiled/reviewed but remains private/unconnected; source
+admission and compact finalization still required before raw apply.
+OFF at5971d348-3f8b-4696-bef6-4c1f164fbf64, parent43cc982a, ALL36 snapshots,
+RAM released. New childOS638/source4/J91/shadow4 MiB=737 MiB EXCLUDES parents/
+deviceIO. Cap256/reserve64 unchanged. PID4584/taskN2R-CompactPrepare-a1aa... is
+TERMINAL0, controller42026/probe34649/preservation45301 done. NEVER restart.
+No unit tests added/run. Next gate: admitted compact same-partition apply,
+native all-file metadata/content/position verification, process recovery.
+
 Internal compact execution plumbing now builds: general_reconstruct/compact.rs
 derives the compact binding from held artifact pins, validates immutable ticket/
 journal and exact delta coverage AGAIN at activation and every execute/recovery

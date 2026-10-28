@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+Rollback execution has proved exact original NTFS SHA-256
+d8fd89c7779af5304fc4e5d00fbc15ab61155830b6613842c962baae6d9661c1;
+archived recovery-rollback/Rollback-execution.json SHA
+959f6cc9e014f0adb89768be9662da2e93ab31df0806683f4ea1c285ff3eea60.
+Completion/replay-marker/native availability remains pending, so no final
+rollback qualification yet. OriginalPID928 remains active with increasing
+reads. Host exec94431 is LIVE: it observes only that recorded rollback, then
+requires terminal success, calls native six-file NTFS readback, archives bounded
+guest evidence, cleanly shuts down and preserves a23rd checkpoint. Durable
+intent: recovery-rollback/completion-readback-chain-intent.json. Do NOT start
+another chain/rollback/readback. Last observed06:50 UTC read301,382,511,491;
+cap256 GiB/reserve64 GiB intact. No unit tests added/run.
+
 Candidate13 Finalize SUCCEEDED (real closed recovery handoff), then the pinned
 independent verifier passed full native tree semantics/hashes and original
 retained positions for2,721,431,552 bytes. Native proof SHA

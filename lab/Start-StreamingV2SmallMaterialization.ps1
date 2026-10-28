@@ -1,11 +1,12 @@
 # Materialize only bounded small user streams; large payload stays unwritten. Only
 # the disposable shadow is formatted; all saved branches/source stay intact.
-[CmdletBinding()]param([switch]$PrepareLargeTails,[switch]$PlaceSourcePrefixes,[switch]$DirectDeferredPlacement,[switch]$SourceBackedPayloads,[switch]$CaptureSourceBackedDifferences,[switch]$RootHandleFreeze,[switch]$MountedBitmapFreeze,[switch]$RestoreSourceMetadata)
+[CmdletBinding()]param([switch]$PrepareLargeTails,[switch]$PlaceSourcePrefixes,[switch]$DirectDeferredPlacement,[switch]$SourceBackedPayloads,[switch]$CaptureSourceBackedDifferences,[switch]$RootHandleFreeze,[switch]$MountedBitmapFreeze,[switch]$RestoreSourceMetadata,[switch]$AdmittedSystemFiles)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
 $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'
 $parent=[guid]'6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3'
+if($AdmittedSystemFiles){$RestoreSourceMetadata=[switch]$true}
 if($RestoreSourceMetadata){$MountedBitmapFreeze=[switch]$true}
 if($MountedBitmapFreeze){$RootHandleFreeze=[switch]$true}
 if($RootHandleFreeze){$CaptureSourceBackedDifferences=[switch]$true}
@@ -13,8 +14,8 @@ if($CaptureSourceBackedDifferences){$SourceBackedPayloads=[switch]$true}
 if($SourceBackedPayloads){$DirectDeferredPlacement=[switch]$true}
 if($DirectDeferredPlacement){$PlaceSourcePrefixes=[switch]$true}
 if($PlaceSourcePrefixes-and$PrepareLargeTails){throw 'This bounded placement qualification does not select tail validity.'}
-$root=Join-Path $workspace $(if($RestoreSourceMetadata){'.lab\hyperv\streaming-v2-20261027\difference-capture-metadata-20261028'}elseif($MountedBitmapFreeze){'.lab\hyperv\streaming-v2-20261027\difference-capture-mounted-bitmap-20261028'}elseif($RootHandleFreeze){'.lab\hyperv\streaming-v2-20261027\difference-capture-root-handle-20261028'}elseif($CaptureSourceBackedDifferences){'.lab\hyperv\streaming-v2-20261027\source-backed-difference-capture-20261028'}elseif($SourceBackedPayloads){'.lab\hyperv\streaming-v2-20261027\private-tree-source-backed-20261028'}elseif($DirectDeferredPlacement){'.lab\hyperv\streaming-v2-20261027\private-tree-direct-placement-20261028'}elseif($PlaceSourcePrefixes){'.lab\hyperv\streaming-v2-20261027\private-tree-placement-20261028'}elseif($PrepareLargeTails){'.lab\hyperv\streaming-v2-20261027\private-tree-tail-materialization-20261028'}else{'.lab\hyperv\streaming-v2-20261027\private-tree-small-materialization-20261028'})
-$expectedCount=if($RestoreSourceMetadata){32}elseif($MountedBitmapFreeze){31}elseif($RootHandleFreeze){30}elseif($CaptureSourceBackedDifferences){29}elseif($SourceBackedPayloads){28}elseif($DirectDeferredPlacement){27}elseif($PlaceSourcePrefixes){26}elseif($PrepareLargeTails){24}else{23}
+$root=Join-Path $workspace $(if($AdmittedSystemFiles){'.lab\hyperv\streaming-v2-20261027\difference-capture-source-system-20261028'}elseif($RestoreSourceMetadata){'.lab\hyperv\streaming-v2-20261027\difference-capture-metadata-20261028'}elseif($MountedBitmapFreeze){'.lab\hyperv\streaming-v2-20261027\difference-capture-mounted-bitmap-20261028'}elseif($RootHandleFreeze){'.lab\hyperv\streaming-v2-20261027\difference-capture-root-handle-20261028'}elseif($CaptureSourceBackedDifferences){'.lab\hyperv\streaming-v2-20261027\source-backed-difference-capture-20261028'}elseif($SourceBackedPayloads){'.lab\hyperv\streaming-v2-20261027\private-tree-source-backed-20261028'}elseif($DirectDeferredPlacement){'.lab\hyperv\streaming-v2-20261027\private-tree-direct-placement-20261028'}elseif($PlaceSourcePrefixes){'.lab\hyperv\streaming-v2-20261027\private-tree-placement-20261028'}elseif($PrepareLargeTails){'.lab\hyperv\streaming-v2-20261027\private-tree-tail-materialization-20261028'}else{'.lab\hyperv\streaming-v2-20261027\private-tree-small-materialization-20261028'})
+$expectedCount=if($AdmittedSystemFiles){33}elseif($RestoreSourceMetadata){32}elseif($MountedBitmapFreeze){31}elseif($RootHandleFreeze){30}elseif($CaptureSourceBackedDifferences){29}elseif($SourceBackedPayloads){28}elseif($DirectDeferredPlacement){27}elseif($PlaceSourcePrefixes){26}elseif($PrepareLargeTails){24}else{23}
 $placementBytes=if($SourceBackedPayloads){[long]8.25GB}elseif($DirectDeferredPlacement){9GB}else{10GB}
 $additionalBytes=if($CaptureSourceBackedDifferences){4GB}elseif($SourceBackedPayloads){[long]10.25GB}elseif($DirectDeferredPlacement){11GB}else{12GB}
 if(Test-Path -LiteralPath $root){throw 'Private-tree run has state; observe without redispatch.'}
@@ -41,6 +42,7 @@ Save-New 'intent.json' @{vm_id=$id.ToString();parent_id=$parent.ToString();old_c
     root_handle_freeze=[bool]$RootHandleFreeze;
     mounted_bitmap_freeze=[bool]$MountedBitmapFreeze;
     restore_source_metadata=[bool]$RestoreSourceMetadata;
+    admitted_system_files=[bool]$AdmittedSystemFiles;
     forecast_basis=$(if($CaptureSourceBackedDifferences){'Prior same-profile prefix run:156 MiB shadow child, about0.7 GiB OS; output capped768 MiB;4 GiB allowance includes margin. Virtual move bytes are not predicted physical backing growth.'}else{$null});
     place_source_prefixes=[bool]$PlaceSourcePrefixes;max_placement_bytes=$(if($PlaceSourcePrefixes){$placementBytes}else{$null});
     max_placement_moves=$(if($PlaceSourcePrefixes){64}else{$null});additional_bytes=$additionalBytes;utc=[DateTime]::UtcNow.ToString('o')}

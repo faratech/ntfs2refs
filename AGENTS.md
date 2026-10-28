@@ -1,5 +1,15 @@
 # ntfs2refs project guidance
 
+Metadata run78bf6520896940fbac88bcac59b5e2c2 TERMINAL1 before system writes:
+preflight incorrectly applied FORMATTER whitelist to admitted source tracking.log.
+Fixed distinction: existing formatter reuse stays narrowly bounded; absent
+admitted source system files create normally. Unknown target objects still
+refuse. Result797a34b7ccdc5a9ddd9a665f46b70431a739cd2185f449e82dafde4723fa61e5
+preserved OFF at40da8cfb-e985-46a8-ad4a-2508ff0fe46b, all33 snapshots/source3.
+Fresh -AdmittedSystemFiles requires restored6ff/all33/new difference-capture-
+source-system-20261028 root, same4-GiB capacity allowance/768-MiB delta cap.
+Release build passed, native fixed metadata/capture case pending. No unit tests.
+
 Canonical metadata integration IMPLEMENTED/build+controller syntax passed;
 native new-path pending. --restore-source-metadata copies only recognized
 SVI streams via checked NTFS preflight/transfer+native full readback (current

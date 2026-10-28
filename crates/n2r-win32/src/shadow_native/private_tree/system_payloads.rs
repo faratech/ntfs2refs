@@ -27,12 +27,13 @@ pub(super) fn run(
                 return Err(invalid("nested system directory unsupported"));
             }
         } else if item.components.len() != 2
-            || !formatter_cache_name(&item.components[1])
+            || (tree.system_identities.contains_key(item.components)
+                && !formatter_cache_name(&item.components[1]))
             || item.logical_length() > 1024 * 1024
             || item.expected_sha256.is_none()
         {
             return Err(invalid(
-                "system payload outside explicit formatter-cache profile",
+                "system payload outside bounded admitted-source profile",
             ));
         } else {
             total = total

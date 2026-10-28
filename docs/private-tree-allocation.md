@@ -30,6 +30,17 @@ snapshots/restored6ff, the same4-GiB forecast/768-MiB changed-byte cap, and a ne
 root. Release build and controller syntax passed; native new-path result pending.
 No unit tests added/run.
 
+The initial metadata run78bf6520896940fbac88bcac59b5e2c2 refused `tracking.log`
+before system writes because its preflight incorrectly reused the two-name
+formatter-cache whitelist for newly created admitted source files. Result
+797a34b7ccdc5a9ddd9a665f46b70431a739cd2185f449e82dafde4723fa61e5 was preserved
+OFF at40da8cfb-e985-46a8-ad4a-2508ff0fe46b, all33 checkpoints, source stayed3.
+The preflight now distinguishes existing formatter objects from absent admitted
+source files, matching the established full-shadow policy. Unknown existing
+target objects still refuse; bounded admitted source files are created normally.
+The fresh `-AdmittedSystemFiles` controller uses all33 saved snapshots and a new
+root. Release build passed; native result pending. No unit tests added/run.
+
 ## Native frozen difference capture passed
 
 Run98c2e2625f94488b8dfbb85eb3118184 PASSED end-to-end private staging,

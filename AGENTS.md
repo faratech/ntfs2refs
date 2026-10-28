@@ -15,9 +15,14 @@ after creation preserved/fixed; ONLY reporting completed, no reformat/rewrites.
 Hostcase selected-native-alpha-20261028; SINGLE run4d3e5772bb5c4641b956119b8019f642,
 taskN2R-SelectedCompact-4d3e5772bb5c4641b956119b8019f642. Guest output
 C:\ntfs2refs\selected-native-alpha-20261028\conversion-4d3e5772bb5c4641b956119b8019f642\result.
-ActualPID3332creation1793224099967 LIVE21:50:56Z read68.457GB/write5.134MB,
-peak71,112KiB. Native source observation completed; source4 attrs3/shadow5 attrs0.
-NOT complete or admitted yet. Rootcontrols; delta_artifact_reader metadata-only
+ActualPID3332creation1793224099967 LIVE21:56:10Z read166.792GB/write5.635MB.
+Native source collection AND selected-device shadow construction/placement/
+owned metadata/freeze passed. Bothsource4/shadow5 attrs3. Actual enrollment
+audit72 events, constructor38;141 user exception bytes+88 system bytes supplied,
+full-cluster shadow user payload writes0. Closed private reportSHA
+4892efdaca8ca60e55930286c686b59fe02d8cf2a813248b052026a258267698.
+Complete candidate verification still runs; NOT complete/admitted yet. Rootcontrols;
+delta_artifact_reader metadata-only
 monitor. Do NOT stop/restart/restore/reformat/redispatch/open Source/J/packed.
 One50GB epoch329374052988/max,17179869184/free floor unchanged;7GiB forecast
 admitted. No unit tests. main.rs original user diff remains unstaged/unchanged.

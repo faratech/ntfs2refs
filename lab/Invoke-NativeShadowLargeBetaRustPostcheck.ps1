@@ -89,7 +89,7 @@ try{
             if($item.PSIsContainer-or($item.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$item.Length-ne$row.bytes-or
                 (Get-FileHash -LiteralPath $item.FullName).Hash.ToLowerInvariant()-cne$row.sha256){throw 'Guest executable differs.'}
         }
-        if(@(Get-CimInstance Win32_Process|Where-Object {$_.Name-like'ntfs2refs*'}).Count){throw 'Converter is active.'}
+        if(@(Get-CimInstance Win32_Process|Where-Object {$_.Name-like'ntfs2refs*'-or$_.Name-ceq'lab-convert-admitted-tree.exe'}).Count){throw 'Converter is active.'}
         $complete=Get-Content -LiteralPath (Join-Path $Output 'result.json') -Raw|ConvertFrom-Json
         if(-not$complete.success-or-not$complete.rollback_closed-or-not$complete.source_admitted){throw 'Successful handoff required.'}
         $boot=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')

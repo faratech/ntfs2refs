@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+The candidate13 monitor is also LIVE: host exec session42487 runs
+Wait-StreamingV2RetainedInterruption.ps1 (cbda368), polling only the recorded
+run2fa6edb2e7ac464ca863a5db6dbd6f5c. It archives and preserves a partial OFF
+checkpoint only on terminal exit86 + matching interruption intent + zero
+workers, using the unchanged archive/preservation guards. It never restarts
+conversion or recovery. On a monitor error/deadline, inspect its actual state
+and the same guest task; do not rerun it blindly. Existing monitor intent is
+candidate13/interruption-monitor-intent.json. No second monitor may start.
+Latest verified guest progress advanced to existing-shadow verification;
+the completed cache sync updated14 metadata objects with zero cache payload
+or unchanged user-payload bytes written. Interruption/resume/rollback remain
+pending. No unit tests added/run.
+
 Candidate13 is LIVE on the saved pre-apply NTFS branch6ffb6bdc, while all20
 checkpoints including passed candidate12 remain preserved. Run
 2fa6edb2e7ac464ca863a5db6dbd6f5c, taskN2R-StreamingV2Convert-2fa6edb2e7ac464ca863a5db6dbd6f5c,

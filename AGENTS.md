@@ -822,3 +822,41 @@ never rewrite the recorded running request or stage to pick it up.
 Use Collect-StreamingV2Conversion.ps1 -Candidate candidate9 and preserve all
 twelve checkpoints, including the private probe observation branch. The source
 is the original ordinary-appended 8-GiB tree; no source extents were prearranged.
+
+Candidate9 is now TERMINAL, exit 1 at target-preservation-freeze before any
+journal/activation. Fresh source admission found 14 objects: NTFS remount had
+created a 76-byte SVI/IndexerVolumeGuid and changed SVI/WPSettings timestamps.
+The existing 13-object shadow lacked that file. Failure was OS error 2; no
+source payload writes. The 22-file archive verified with manifest
+b91e09b1788618d83b58d1b6bc8a3124f644cae6549c59e4d34070b3961c3d2a.
+OFF checkpoint 51626f1f-5778-4106-a61c-cb509d80e5b4 preserves it; all thirteen
+checkpoints remain. No old task was restarted or old admission reused.
+
+The explicit lab cache-sync mode now runs inside common conversion AFTER fresh
+source freeze/admission. It validates the source's GUID bytes, bounded target
+namespace, file IDs, links and streams; creates/updates only that 76-byte cache
+and synchronizes source metadata. It never rewrites large user payloads. Changed
+identity, unknown names or unsupported metadata refuse. The normal complete
+source/target, checksum, allocator and journal gates follow; public verify-only
+mode retains its behavior. Source FILE parsing now rejects word-misaligned USAs
+or offsets below the common 42-byte fixed header, preserving the older header
+form and the 48-byte extended form. Native dirty-state evidence is correctly
+described as the separate bound transaction_freeze gate, not raw $Volume flags.
+No unit tests were added/run; release builds passed. Malformed-record native
+regression qualification remains separate from the successful release build.
+
+Candidate10 is LIVE, run e8455536ad3b4bf189b2a07d67b3af42, PID 872 created
+2026-10-28 01:46:59.828318 UTC. Observe the same task; never redispatch it.
+Source commit 2331c9db860dcce08dead8ff3eede24fb6260e40 plus unchanged d99591b5
+capabilities-only dirty patch. Executed lab-convert-admitted-tree.exe pin
+af7a4bc45bc9f3031da38f6435bd77192876e2a0cd537189207458b35071812e;
+request 11c3b01b4aab119dda3bf45f9299d15277fa4f333fd4529faf61f4faba19e81f,
+explicit --refresh-existing-system-cache, no controlled interruption.
+Binder 4e522859e3e33839b9439e5c9995c5543c13cad6350e69deed46794d69e6a02f;
+recovery 2286fd32ee70baf9450524560e7dc8d1a126e19f3be268489c88f7828b570aad.
+At 01:48:27 UTC it was in source qualification, source OFFLINE|READ_ONLY,
+shadow writable for the later bounded cache refresh; no raw cutover yet.
+Lab counter 247,227,132,011 bytes; host free 98,240,077,824 bytes; cap256 GiB,
+reserve64 GiB, VM fixed4 GiB. Journal1536 MiB; conservative growth20 GiB.
+Use Collect-StreamingV2Conversion.ps1 -Candidate candidate10. Preserve every
+earlier branch and read-only probe. Native conversion result remains pending.

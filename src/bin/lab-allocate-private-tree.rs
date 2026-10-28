@@ -2,7 +2,7 @@
 //! input, not admission; this command cannot write or convert the source.
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    use anyhow::{Result, ensure};
+    use anyhow::{ensure, Result};
     use clap::Parser;
     use ntfs2refs::{general_shadow, ntfs_admission::ResourceProfile, shadow_tree};
     use sha2::{Digest, Sha256};
@@ -117,6 +117,7 @@ fn main() -> anyhow::Result<()> {
         "tree_sha256":args.tree_sha256,"source_writes_authorized":false,
         "source_image_hash_reverified":false,"source_admitted":false,"conversion_qualified":false}),
     )?;
+    let mut failed_placement = None;
     let attempt = if args.observe_existing {
         n2r_win32::shadow_native::private_tree::observe_existing(
             &request.pair,
@@ -196,11 +197,18 @@ fn main() -> anyhow::Result<()> {
             }
             let mut template = general_shadow::allocate_private_tree(&request.pair, &tree)?;
             let placement = if args.place_source_prefixes {
-                Some(template.place_source_prefixes_with_limits(
+                let result = template.place_source_prefixes_with_limits(
                     &general_shadow::native_inputs(&tree),
                     args.max_placement_bytes,
                     args.max_placement_moves,
-                )?)
+                );
+                match result {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        failed_placement = Some(template.placement_progress().clone());
+                        return Err(error.into());
+                    }
+                }
             } else {
                 None
             };
@@ -269,7 +277,8 @@ fn main() -> anyhow::Result<()> {
     let native = match attempt {
         Ok(value) => value,
         Err(error) => {
-            serde_json::json!({"kind":"private-tree-allocation-failure","error":error.to_string()})
+            serde_json::json!({"kind":"private-tree-allocation-failure","error":error.to_string(),
+                "placement_progress":failed_placement})
         }
     };
     save(

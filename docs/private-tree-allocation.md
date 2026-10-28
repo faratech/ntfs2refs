@@ -1,5 +1,28 @@
 # Allocation-only canonical tree staging
 
+## Direct placement of deferred allocations
+
+Deferred zero-VDL holes now first intersect the desired source coordinates
+with both live ReFS allocation views. Eligible free subranges allocate directly
+at those coordinates; only the remaining holes use scratch, in chunks no
+larger than512 MiB. This avoids parking and moving the same deferred bytes a
+second time. Every submission retains the native destination/mapping checks,
+bootstrap margins, poisoning rules and explicit byte/submission budgets.
+
+Failures now retain bounded placement diagnostics (phase, charged byte count,
+verified submission count, sixteen recent phase/object entries and a pending
+request). Those observations grant neither resume nor conversion authority.
+They distinguish a budget refusal before submission from verified completed
+placement; an unrecorded result is not evidence that native I/O never occurred.
+
+The previous whole-tree attempt3eae73c3c92f4517b53f482160d8737f stopped at its
+10-GiB budget, preserved OFF atf9976b33-de16-4b00-af74-24d60dcf9b77 with all27
+checkpoints. Its new shadow child used155,189,248 backing bytes (148 MiB),
+excluding parents, OS, journal and evidence; physical device I/O was not measured.
+The direct-placement controller uses a fresh branch/root, a LOWER9-GiB move
+budget and11-GiB capacity allowance; it does not retry the partial namespace.
+Native direct-placement results remain pending. No unit tests added/run.
+
 ## Selective unwritten evacuation
 
 The tree-wide placement implementation now supersedes blanket whole-prefix

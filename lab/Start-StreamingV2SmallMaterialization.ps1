@@ -1,20 +1,23 @@
 # Materialize only bounded small user streams; large payload stays unwritten. Only
 # the disposable shadow is formatted; all saved branches/source stay intact.
-[CmdletBinding()]param([switch]$PrepareLargeTails,[switch]$PlaceSourcePrefixes)
+[CmdletBinding()]param([switch]$PrepareLargeTails,[switch]$PlaceSourcePrefixes,[switch]$DirectDeferredPlacement)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
 $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'
 $parent=[guid]'6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3'
+if($DirectDeferredPlacement){$PlaceSourcePrefixes=[switch]$true}
 if($PlaceSourcePrefixes-and$PrepareLargeTails){throw 'This bounded placement qualification does not select tail validity.'}
-$root=Join-Path $workspace $(if($PlaceSourcePrefixes){'.lab\hyperv\streaming-v2-20261027\private-tree-placement-20261028'}elseif($PrepareLargeTails){'.lab\hyperv\streaming-v2-20261027\private-tree-tail-materialization-20261028'}else{'.lab\hyperv\streaming-v2-20261027\private-tree-small-materialization-20261028'})
-$expectedCount=if($PlaceSourcePrefixes){26}elseif($PrepareLargeTails){24}else{23}
+$root=Join-Path $workspace $(if($DirectDeferredPlacement){'.lab\hyperv\streaming-v2-20261027\private-tree-direct-placement-20261028'}elseif($PlaceSourcePrefixes){'.lab\hyperv\streaming-v2-20261027\private-tree-placement-20261028'}elseif($PrepareLargeTails){'.lab\hyperv\streaming-v2-20261027\private-tree-tail-materialization-20261028'}else{'.lab\hyperv\streaming-v2-20261027\private-tree-small-materialization-20261028'})
+$expectedCount=if($DirectDeferredPlacement){27}elseif($PlaceSourcePrefixes){26}elseif($PrepareLargeTails){24}else{23}
+$placementBytes=if($DirectDeferredPlacement){9GB}else{10GB}
+$additionalBytes=if($DirectDeferredPlacement){11GB}else{12GB}
 if(Test-Path -LiteralPath $root){throw 'Private-tree run has state; observe without redispatch.'}
 $vm=Get-VM -Id $id;$old=@(Get-VMSnapshot -VM $vm|ForEach-Object {$_.Id.ToString()})
 if($vm.State.ToString()-cne'Off'-or$vm.ParentSnapshotId-ne$parent-or$old.Count-ne$expectedCount-or
     $vm.MemoryStartup-ne4GB-or$vm.DynamicMemoryEnabled-or@(Get-VMNetworkAdapter -VM $vm).Count){throw 'Exact isolated saved branch required.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
-Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 12GB
+Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes $additionalBytes
 $binary=Join-Path $workspace 'target\release\lab-allocate-private-tree.exe'
 $tree=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027\candidate11\terminal-evidence\run\expectation.json'
 $inspection=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027\candidate11\terminal-evidence\run\qualification\source-basis.json'
@@ -27,8 +30,9 @@ $run=[guid]::NewGuid().ToString('N')
 Save-New 'intent.json' @{vm_id=$id.ToString();parent_id=$parent.ToString();old_checkpoint_ids=$old;run_id=$run;
     binary_sha256=$pin;tree_sha256=$treePin;inspection_sha256=$inspectionPin;source_commit=(& git -C $workspace rev-parse HEAD).Trim();
     shadow_format_authorized=$true;source_writes_authorized=$false;prepare_large_tails=[bool]$PrepareLargeTails;
-    place_source_prefixes=[bool]$PlaceSourcePrefixes;max_placement_bytes=$(if($PlaceSourcePrefixes){10GB}else{$null});
-    max_placement_moves=$(if($PlaceSourcePrefixes){64}else{$null});additional_bytes=12GB;utc=[DateTime]::UtcNow.ToString('o')}
+    direct_deferred_placement=[bool]$DirectDeferredPlacement;
+    place_source_prefixes=[bool]$PlaceSourcePrefixes;max_placement_bytes=$(if($PlaceSourcePrefixes){$placementBytes}else{$null});
+    max_placement_moves=$(if($PlaceSourcePrefixes){64}else{$null});additional_bytes=$additionalBytes;utc=[DateTime]::UtcNow.ToString('o')}
 Copy-Item -LiteralPath $binary -Destination (Join-Path $root 'producer.exe')
 Copy-Item -LiteralPath $tree -Destination (Join-Path $root 'expectation.json')
 Copy-Item -LiteralPath $inspection -Destination (Join-Path $root 'source-inspection.json')
@@ -74,8 +78,8 @@ try{
     Copy-Item -LiteralPath $request -ToSession $s -Destination (Join-Path $stage 'request.json')
     Copy-Item -LiteralPath $tree -ToSession $s -Destination (Join-Path $stage 'expectation.json')
     Copy-Item -LiteralPath $inspection -ToSession $s -Destination (Join-Path $stage 'source-inspection.json')
-    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,$run,$pin,$requestPin,$treePin,$inspectionPin,([bool]$PrepareLargeTails),([bool]$PlaceSourcePrefixes) -ScriptBlock {
-        param($Stage,$Run,$Pin,$RequestPin,$TreePin,$InspectionPin,$Tails,$Place);$ErrorActionPreference='Stop'
+    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,$run,$pin,$requestPin,$treePin,$inspectionPin,([bool]$PrepareLargeTails),([bool]$PlaceSourcePrefixes),$placementBytes -ScriptBlock {
+        param($Stage,$Run,$Pin,$RequestPin,$TreePin,$InspectionPin,$Tails,$Place,$PlacementBytes);$ErrorActionPreference='Stop'
         $binary=Join-Path $Stage 'lab-allocate-private-tree.exe';$request=Join-Path $Stage 'request.json';$tree=Join-Path $Stage 'expectation.json'
         $inspection=Join-Path $Stage 'source-inspection.json'
         if((Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant()-cne$Pin-or(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()-cne$RequestPin-or(Get-FileHash -LiteralPath $tree).Hash.ToLowerInvariant()-cne$TreePin-or(Get-FileHash -LiteralPath $inspection).Hash.ToLowerInvariant()-cne$InspectionPin){throw 'Staged pins differ.'}
@@ -83,7 +87,7 @@ try{
         if(Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue){throw 'Fresh task required.'}
         $arguments='--request "'+$request+'" --request-sha256 '+$RequestPin+' --tree "'+$tree+'" --tree-sha256 '+$TreePin+' --materialize-small --inspection "'+$inspection+'" --inspection-sha256 '+$InspectionPin+' --output "'+(Join-Path $Stage 'result.json')+'"'
         if($Tails){$arguments+=' --prepare-large-tails'}
-        if($Place){$arguments+=' --place-source-prefixes --max-placement-bytes 10737418240 --max-placement-moves 64'}
+        if($Place){$arguments+=' --place-source-prefixes --max-placement-bytes '+$PlacementBytes+' --max-placement-moves 64'}
         Register-ScheduledTask -TaskName $task -Action (New-ScheduledTaskAction -Execute $binary -Argument $arguments) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null
         @{task_name=$task;run_id=$Run;guest_stage=$Stage;binary=$binary;binary_sha256=$Pin;arguments=$arguments;request_sha256=$RequestPin;tree_sha256=$TreePin;inspection_sha256=$InspectionPin}
     }

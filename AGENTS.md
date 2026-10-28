@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+Deferred zero-VDL allocation now tries desired original coordinates directly
+where BOTH live ReFS bitmap views are free, retaining bootstrap margins and
+per-move native checks. Only remaining holes use <=512-MiB scratch chunks.
+Failure reports preserve bounded phase/charged-byte/verified-count/pending
+diagnostics; they never authorize resume or conversion. Previous placement
+run3eae73c3c92f4517b53f482160d8737f budget-refused/preserved OFF atf9976b33
+with all27 snapshots. New shadow child148 MiB excludes parents/other disks;
+no physical-I/O or low-scratch conversion claim. Fresh controller mode
+-DirectDeferredPlacement uses LOWER9-GiB move budget/11-GiB capacity allowance,
+requires exact restored6ff baseline/all27 snapshots and a fresh output root.
+Do not reuse the previous partial constructor. Native result pending; no
+unit tests added/run. See docs/private-tree-allocation.md.
+
 Tree placement now uses SELECTIVE unwritten evacuation, superseding blanket
 whole-prefix parking. PrivatePlaceholder binds allocated runs from its actual
 zero-VDL handle; deferred holes are distinct/explicitly placed. Measured global

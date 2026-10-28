@@ -1,4 +1,4 @@
-//! Tree-wide zero-VDL parking and original-coordinate placement. Only the
+//! Tree-wide zero-VDL allocation and original-coordinate placement. Only the
 //! independent shadow moves; source data and conversion authority are absent.
 use super::*;
 use crate::{bitmap_observation::Observation, retention_layout};
@@ -6,6 +6,28 @@ use crate::{bitmap_observation::Observation, retention_layout};
 const MOVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MOVES: usize = 1024;
 const MAX_MOVE_EVIDENCE: usize = 16 * 1024 * 1024;
+
+fn progress(
+    tree: &mut PrivateTree,
+    phase: &str,
+    charged_bytes: u64,
+    verified: &[serde_json::Value],
+    pending: Option<serde_json::Value>,
+) {
+    // Keep a bounded tail, not a second copy of the complete mapping proofs.
+    let phases: Vec<_> = verified
+        .iter()
+        .rev()
+        .take(16)
+        .map(|m| serde_json::json!({"object_index":m["object_index"],"phase":m["phase"]}))
+        .collect();
+    tree.placement_progress = serde_json::json!({
+        "kind":"private-placement-progress","phase":phase,
+        "charged_move_bytes":charged_bytes,"verified_move_submissions":verified.len(),
+        "recent_verified_phases_newest_first":phases,"pending":pending,
+        "placement_complete":false,"resume_authorized":false,"conversion_qualified":false
+    });
+}
 
 fn charge_move(used: &mut u64, length: u64, limit: u64) -> io::Result<()> {
     let next = used
@@ -185,6 +207,7 @@ pub(super) fn run(
     let mut moves = Vec::new();
     let mut move_bytes = 0u64;
     tree.placement_started = true;
+    progress(tree, "track-zero-vdl", 0, &moves, None);
     let mut evidence_bytes = 0usize;
     let mut parked = Vec::new();
     let indexes: Vec<_> = tree.files.keys().copied().collect();
@@ -193,19 +216,91 @@ pub(super) fn run(
     for index in &indexes {
         let holes = tree.files.get_mut(index).unwrap().track_current_prefix()?;
         for (vcn, clusters) in holes {
-            let bytes = u64::from(clusters) * 4096;
-            let destination = scratch(tree, bytes, &avoid)?;
-            let mut offset = 0;
-            while offset < bytes {
+            let start = vcn * 4096;
+            let end = start + u64::from(clusters) * 4096;
+            // A deferred range has no old physical ownership to evacuate.
+            // Allocate it at the wanted coordinates first where both native
+            // views agree they are free, rather than parking the entire range
+            // and submitting the same bytes a second time during final placement.
+            let mut direct = Vec::new();
+            for run in &desired[index] {
+                let from = start.max(run.logical_offset);
+                let to = end.min(run.logical_offset + run.length);
+                if from >= to {
+                    continue;
+                }
+                let (a, b) = views(tree)?;
+                let plan = a.plan_free_subruns(
+                    &b,
+                    retention_layout::SourceRun {
+                        logical_offset: from,
+                        physical_offset: run.physical_offset.unwrap() + from - run.logical_offset,
+                        length: to - from,
+                    },
+                    partition,
+                    max_moves,
+                )?;
+                for subrun in plan.subruns {
+                    // Keep the same bootstrap margins as scratch allocation.
+                    let physical_start = subrun.physical_offset.max(1024 * 1024);
+                    let physical_end = (subrun.physical_offset + subrun.length)
+                        .min(partition.saturating_sub(1024 * 1024));
+                    if physical_start < physical_end {
+                        direct.push((
+                            subrun.logical_offset + physical_start - subrun.physical_offset,
+                            physical_start,
+                            physical_end - physical_start,
+                        ));
+                    }
+                    if direct.len() > MAX_MOVES {
+                        return Err(invalid("direct deferred allocation range budget exhausted"));
+                    }
+                }
+            }
+            direct.sort_unstable_by_key(|r| r.0);
+            let mut cursor = start;
+            let mut next_direct = 0;
+            while cursor < end {
                 if moves.len() >= max_moves {
                     return Err(invalid("deferred allocation move budget exhausted"));
                 }
-                let length = (bytes - offset).min(MOVE_BYTES);
+                while next_direct < direct.len()
+                    && direct[next_direct].0 + direct[next_direct].2 <= cursor
+                {
+                    next_direct += 1;
+                }
+                let (destination, length, phase) = match direct.get(next_direct) {
+                    Some(&(logical, physical, bytes)) if logical <= cursor => (
+                        physical + cursor - logical,
+                        (logical + bytes - cursor).min(MOVE_BYTES),
+                        "allocate-deferred-original",
+                    ),
+                    candidate => {
+                        let stop = candidate.map_or(end, |r| r.0.min(end));
+                        let length = (stop - cursor).min(MOVE_BYTES);
+                        (
+                            scratch(tree, length, &avoid)?,
+                            length,
+                            "allocate-deferred-scratch",
+                        )
+                    }
+                };
+                progress(
+                    tree,
+                    phase,
+                    move_bytes,
+                    &moves,
+                    Some(serde_json::json!({
+                    "object_index":index,"logical_offset":cursor,"destination":destination,"length":length,
+                    "placement_result_recorded":false,"budget_charged":false})),
+                );
                 charge_move(&mut move_bytes, length, max_move_bytes)?;
+                tree.placement_progress["charged_move_bytes"] = move_bytes.into();
+                tree.placement_progress["pending"]["budget_charged"] = true.into();
                 let proof = tree.place(
                     *index,
-                    vcn + offset / 4096,
-                    (destination + offset) / 4096,
+                    cursor / 4096,
+                    destination / 4096,
                     (length / 4096) as u32,
                 )?;
                 if proof["native_error"] != serde_json::Value::Null
@@ -218,9 +313,10 @@ pub(super) fn run(
                 append_move(
                     &mut moves,
                     &mut evidence_bytes,
-                    serde_json::json!({"object_index":index,"phase":"allocate-deferred","proof":proof}),
+                    serde_json::json!({"object_index":index,"phase":phase,"proof":proof}),
                 )?;
-                offset += length;
+                progress(tree, phase, move_bytes, &moves, None);
+                cursor += length;
             }
         }
     }
@@ -250,6 +346,7 @@ pub(super) fn run(
         return Err(invalid("global tracked ownership range budget exceeded"));
     }
     let (legacy, metadata) = views(tree)?;
+    progress(tree, "plan-evacuation", move_bytes, &moves, None);
     let remaining = max_moves
         .checked_sub(moves.len())
         .filter(|v| *v > 0)
@@ -286,7 +383,19 @@ pub(super) fn run(
         let mut offset = 0;
         while offset < movement.length {
             let length = (movement.length - offset).min(MOVE_BYTES);
+            progress(
+                tree,
+                "evacuate-blocker",
+                move_bytes,
+                &moves,
+                Some(serde_json::json!({
+                "object_index":movement.file_index,"logical_offset":movement.logical_offset+offset,
+                "destination":movement.destination_offset+offset,"length":length,
+                "placement_result_recorded":false,"budget_charged":false})),
+            );
             charge_move(&mut move_bytes, length, max_move_bytes)?;
+            tree.placement_progress["charged_move_bytes"] = move_bytes.into();
+            tree.placement_progress["pending"]["budget_charged"] = true.into();
             let proof = tree.reposition(
                 movement.file_index as usize,
                 (movement.logical_offset + offset) / 4096,
@@ -305,6 +414,7 @@ pub(super) fn run(
                 &mut evidence_bytes,
                 serde_json::json!({"object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof}),
             )?;
+            progress(tree, "evacuate-blocker", move_bytes, &moves, None);
             offset += length;
         }
     }
@@ -344,15 +454,27 @@ pub(super) fn run(
                 let mut offset = 0;
                 while offset < subrun.length {
                     let length = (subrun.length - offset).min(MOVE_BYTES);
-                    charge_move(&mut move_bytes, length, max_move_bytes)?;
                     let logical = subrun.logical_offset + offset;
                     let physical = subrun.physical_offset + offset;
+                    progress(
+                        tree,
+                        "original-coordinate",
+                        move_bytes,
+                        &moves,
+                        Some(serde_json::json!({
+                        "object_index":index,"logical_offset":logical,"destination":physical,"length":length,
+                        "placement_result_recorded":false,"budget_charged":false})),
+                    );
+                    charge_move(&mut move_bytes, length, max_move_bytes)?;
+                    tree.placement_progress["charged_move_bytes"] = move_bytes.into();
+                    tree.placement_progress["pending"]["budget_charged"] = true.into();
                     let proof = tree.reposition(
                         index,
                         logical / 4096,
                         physical / 4096,
                         (length / 4096) as u32,
                     )?;
+                    progress(tree, "original-coordinate", move_bytes, &moves, None);
                     if proof["native_error"] != serde_json::Value::Null
                         || proof["all_placements_match"] != true
                     {
@@ -418,6 +540,8 @@ pub(super) fn run(
     tree.require_source_excluded()?;
     tree.original_coordinates = original_coordinates;
     tree.placement_complete = true;
+    progress(tree, "complete", move_bytes, &moves, None);
+    tree.placement_progress["placement_complete"] = true.into();
     Ok(
         serde_json::json!({"kind":"private-unwritten-tree-placement","parked":parked,"moves":moves,
         "original_coordinate_ranges":retained,"original_coordinate_bytes":retained_bytes,

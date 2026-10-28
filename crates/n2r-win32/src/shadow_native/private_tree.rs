@@ -20,9 +20,15 @@ pub struct PrivateTree {
     original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>>,
     placement_started: bool,
     placement_complete: bool,
+    placement_progress: serde_json::Value,
 }
 
 impl PrivateTree {
+    /// Diagnostic progress only; partial attempts never supply conversion or
+    /// resume authority. Available even when a native file has been poisoned.
+    pub fn placement_progress(&self) -> &serde_json::Value {
+        &self.placement_progress
+    }
     pub fn validate_stream_shape(
         &self,
         index: usize,
@@ -632,6 +638,7 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
         original_coordinates: BTreeMap::new(),
         placement_started: false,
         placement_complete: false,
+        placement_progress: serde_json::Value::Null,
     };
     tree.require_source_excluded()?;
     Ok(tree)

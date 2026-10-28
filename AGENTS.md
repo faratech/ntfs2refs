@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+Unwritten planned second-stage repositioning is implemented/native observed
+(e778f7c). PrivateTree can move a fully tracked still-zero-VDL range again,
+preserving left/right offset-adjusted fragments. This is NOT retrying failed
+IO: prior mappings and destination bitmaps are rechecked; partial/missing
+results poison; valid/materialized files refuse placement. Move/fragment
+budgets1,024. Native1-MiB middle-range experiment6f48efa1de114dcbb1072f989bb86501
+passed exact three-prefix mappings plus VDL/flush, zero tool payload reads/
+writes. Producer549931b53bba0102dc23b534248f5c3be02a605a22b1ed94ef0149d458dc665d;
+result3bcc51898f70433582dd07332adf294f8d00f522c4d36eb97a3db8e343b932ee.
+Evidence unwritten-reposition-20261028. Current VM OFF at4de54cba-235b-4d49-9b90-4508b9fcd44c,
+parent6ffb6bdc, all26 snapshots preserved/RAM released. Contents/NTFS adoption
+and physical IO are unqualified. Next integrate tree-wide scratch/free-space
+planning and original-source placement before VDL/materialization. See
+docs/native-unwritten-placement.md. No unit tests added/run.
+
 Native partial-tail staging PASSED (c079e47), runcc4109eec29a4643ae5a7e4d1021f8e6.
 Actual source one-byte tail at8 GiB was copied/flushed/read back, plus17-byte
 café/empty stream. Target payload writes/readback18, source logical charges36.

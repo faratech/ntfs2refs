@@ -1,5 +1,38 @@
 # Native placement before valid-data advancement
 
+## Planned second-stage repositioning
+
+Sourcee778f7c adds `PrivateTree::reposition` and a distinct unwritten
+constructor operation. It is not a retry after a failed move. It requires a
+fully tracked logical range, rechecks every old native mapping, checks both
+fresh destination bitmap views, and computes bounded left/right fragments
+before IO. Both move submissions and resulting fragments are bounded at1,024.
+All resulting native placements must match after the move, including untouched
+fragments. Errors/partial or missing observations poison the file. Any VDL
+advancement or materialized bytes prohibit further placement. The ordinary
+single-placement checks remain. No source write authority is introduced.
+
+Native experiment`6f48efa1de114dcbb1072f989bb86501` passed with producer
+`549931b53bba0102dc23b534248f5c3be02a605a22b1ed94ef0149d458dc665d`.
+The private1-MiB zero-VDL prefix first moved toLCN10,485,760 (40 GiB).
+VCNs64..127 then moved toLCN11,010,048 (42 GiB). Final mapping after VDL
+advancement/flush was VCN0..63 at10,485,760, VCN64..127 at11,010,048,
+and VCN128..255 at10,485,888. Thus both unchanged outer fragments retained
+their exact offset-adjusted physical addresses. Both calls and all-placement
+checks succeeded. Tool payload reads/writes were zero; physical IO remains
+unmeasured. This does not adopt NTFS data or validate prefix contents.
+
+Result SHA-256:
+`3bcc51898f70433582dd07332adf294f8d00f522c4d36eb97a3db8e343b932ee`.
+Evidence:`.lab/hyperv/streaming-v2-20261027/unwritten-reposition-20261028`.
+The controller's immediate post-restore inventory guard refused before boot;
+the fresh-process reconciliation confirmed all25 prior snapshots and the
+correct OFF baseline, then continued the same unstarted intent exactly once.
+OFF checkpoint`4de54cba-235b-4d49-9b90-4508b9fcd44c`, parent
+`6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3`, preserves the outcome. All26 snapshots
+remain, RAM released. No unit tests added/run. Tree-wide scratch planning,
+source-coordinate retention, payload supply and cutover remain to integrate.
+
 ## Reusable constructor and two-run native result
 
 Source4a58ed2 replaces the probe's duplicated creation/move code with

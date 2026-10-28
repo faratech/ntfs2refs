@@ -1,9 +1,10 @@
 # A fresh metadata-only observation. Never reruns the allocation API or a boot.
-[CmdletBinding()]param([ValidateSet(2)][int]$Version=2)
+[CmdletBinding()]param([ValidateRange(2,9)][int]$Version=2)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs';$root=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027\candidate5\valid-data-probe'
-$previous=Get-Content -LiteralPath (Join-Path $root 'reopen-v1\dispatch.json') -Raw|ConvertFrom-Json
+$original=Get-Content -LiteralPath (Join-Path $root 'reopen-v1\dispatch.json') -Raw|ConvertFrom-Json
+$previous=Get-Content -LiteralPath (Join-Path $root ('reopen-v'+($Version-1)+'\dispatch.json')) -Raw|ConvertFrom-Json
 $bootPin=(Get-FileHash -LiteralPath (Join-Path $root 'reopen-v1\boot.json')).Hash.ToLowerInvariant()
 $stage=Join-Path $root ('reopen-v'+$Version)
 if(Test-Path -LiteralPath $stage){throw 'Observation attempt exists; do not redispatch.'}
@@ -32,14 +33,14 @@ try{
         try{$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 10));$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}
     }
     Save-New 'intent.json' @{vm_id=$id;version=$Version;previous_task=$previous.task_name;previous_boot_record_sha256=$bootPin;state=$state;
-        binary_sha256=$pin;expected_file_id_info=$previous.expected_file_id_info;source_commit=(& git -C $workspace rev-parse HEAD).Trim();
+        binary_sha256=$pin;expected_file_id_info=$original.expected_file_id_info;source_commit=(& git -C $workspace rev-parse HEAD).Trim();
         source_payload_writes_authorized=$false;valid_data_calls_authorized=$false;payload_reads_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
     $guestStage=Join-Path (Split-Path $previous.guest_stage -Parent) ('reopen-v'+$Version)
     Invoke-Command -Session $s -ArgumentList $guestStage -ScriptBlock {param($Stage);$ErrorActionPreference='Stop';if(Test-Path -LiteralPath $Stage){throw 'Guest attempt exists'};New-Item -ItemType Directory -Path $Stage|Out-Null}
     Copy-Item -LiteralPath $binary -ToSession $s -Destination (Join-Path $guestStage 'lab-probe-native-valid-data.exe')
     Copy-Item -LiteralPath $request -ToSession $s -Destination (Join-Path $guestStage 'request.json')
     $task='N2R-NativeValidDataObserve-a060e73a480440a3af174f4c98af60c8-v'+$Version
-    $record=Invoke-Command -Session $s -ArgumentList $guestStage,$task,$pin,$previous.request_sha256,$previous.expected_file_id_info -ScriptBlock {
+    $record=Invoke-Command -Session $s -ArgumentList $guestStage,$task,$pin,$previous.request_sha256,$original.expected_file_id_info -ScriptBlock {
         param($Stage,$Task,$Pin,$RequestPin,$ExpectedId);$ErrorActionPreference='Stop'
         $binary=Join-Path $Stage 'lab-probe-native-valid-data.exe';$request=Join-Path $Stage 'request.json'
         if((Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant()-cne$Pin-or(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()-cne$RequestPin){throw 'Observer pins differ.'}

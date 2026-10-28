@@ -1,6 +1,6 @@
 //! Bounded owning-guest experiment, outside the converter construction path.
 //! Creates one SYSTEM-only file on the enrolled shadow; never reads its data.
-use super::{ctl, info, invalid, native, snapshot, wide};
+use super::{GetVolumeInformationByHandleW, ctl, info, invalid, native, snapshot, wide};
 use crate::{attestation_native::Privileges, general_layout::GeneralSourceShadowBinding};
 use serde::Serialize;
 use std::{
@@ -230,13 +230,36 @@ pub fn observe_existing(
         native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
     let shadow_before =
         native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
-    if source_before.disk_attributes != 3
-        || shadow_before.disk_attributes != 2
-        || native::mounted_filesystem_general(pair.shadow.clone(), &mut events)? != "ReFS"
-    {
+    if source_before.disk_attributes != 3 || shadow_before.disk_attributes != 2 {
         return Err(invalid(
             "excluded source and read-only ReFS shadow required",
         ));
+    }
+    let volume = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(pair.shadow.volume_path()?)?;
+    pair.shadow
+        .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
+    let mut filesystem = [0u16; 32];
+    // SAFETY: live read-only volume handle and bounded initialized output.
+    if unsafe {
+        GetVolumeInformationByHandleW(
+            volume.as_raw_handle(),
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            filesystem.as_mut_ptr(),
+            32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if filesystem[..5] != [b'R' as u16, b'e' as u16, b'F' as u16, b'S' as u16, 0] {
+        return Err(invalid("read-only probe volume is not ReFS"));
     }
     let path = format!(
         "{}\\n2r-valid-data-{experiment}.bin",

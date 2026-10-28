@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "kind": "selected-native-compact-conversion-observation",
+  "observation_only": true,
+  "grants_source_or_recovery_authority": false,
+  "run_id": "4d3e5772bb5c4641b956119b8019f642",
+  "source_revision": "f1f1f47491e0c64255b6e75eac77cd7873c5fe47",
+  "converter_sha256": "f41b47c931989aa451a398993982b20b319eb35d0f5d32fffc7e3de9ba79cbc1",
+  "source_binding": {
+    "disk_number": 4,
+    "volume_guid": "21445e3a-b435-4978-ba01-2ae217f66f6a",
+    "identity": {
+      "disk_guid": "e1f3b9d3-979f-4123-9fee-399640c25092",
+      "partition_guid": "21445e3a-b435-4978-ba01-2ae217f66f6a",
+      "partition_number": 2,
+      "disk_bytes": 85899345920,
+      "partition_offset": 16777216,
+      "partition_bytes": 64424509440,
+      "logical_sector_bytes": 512,
+      "physical_sector_bytes": 4096
+    }
+  },
+  "shadow_binding": {
+    "disk_number": 5,
+    "volume_guid": "02ce9ac0-6d6f-43ff-b758-a1e08ea585e9",
+    "identity": {
+      "disk_guid": "ad077674-6305-4767-a2aa-6ded3b707e36",
+      "partition_guid": "02ce9ac0-6d6f-43ff-b758-a1e08ea585e9",
+      "partition_number": 2,
+      "disk_bytes": 85899345920,
+      "partition_offset": 16777216,
+      "partition_bytes": 64424509440,
+      "logical_sector_bytes": 512,
+      "physical_sector_bytes": 4096
+    }
+  },
+  "partition_bytes": 64424509440,
+  "source_sha256": "799d748480f7bba021538d6b611dda06a07bba130aedf6c9f1dc52feafe9e353",
+  "pre_mount_target_sha256": "13184ed404e1ce882bd5248a90d0a8450317f034544edb87a8981be7befcac4b",
+  "changed_bytes": 205512704,
+  "journal_bytes": 411051645,
+  "native_source_admitted": true,
+  "handoff_closes_rollback": true,
+  "native_objects": 12,
+  "native_complete_stream_hashes": 7,
+  "user_files": 5,
+  "user_logical_bytes": 68223117,
+  "source_extents_prearranged": false,
+  "coldboot_user_hashes_match": true,
+  "coldboot_readback_sha256": "f1508477acc256e02092a92040517bf6e52860b7884d14cbdfb1a9e873aef22b",
+  "checkpoint_id": "9e63e9d2-a0e4-408f-87b5-26d31fbdcc24",
+  "all_prior47_checkpoints_preserved": true,
+  "actual_wrapper_task_result": 1,
+  "converter_exit_observed": false,
+  "converter_exit": null,
+  "wrapper_failure": "Missing Process.ExitCode observation after process termination; original terminal1 failure retained.",
+  "complete_native_address_space_compared": true,
+  "general_conversion_qualified": false,
+  "automatic_drive_cli_qualified_by_this_run": false,
+  "post_mutation_reboot_qualified_by_this_run": false,
+  "recovery_qualified_by_this_run": false,
+  "payload_independent_scratch_proven": false,
+  "retained_ranges_empty": true,
+  "closed_metadata_pins": [
+    {
+      "bytes": 343,
+      "sha256": "dd2e3e6989559d69b38056ad41ab290fd4540c886a841c7f92118ec71083fedb",
+      "name": "wrapper-failed.json"
+    },
+    {
+      "bytes": 1275,
+      "sha256": "eb5fab2d8ae6bc566ca907bf75e68ed3da05f8ac24c19b8cb9e623f5f21c12ae",
+      "name": "converter-process.json"
+    },
+    {
+      "bytes": 291,
+      "sha256": "02b0d931c3a1ec7f63d345dbeea907095b2974d73123d4c4086102d8fc9aa8a5",
+      "name": "binding-pin.json"
+    },
+    {
+      "bytes": 1818,
+      "sha256": "9870ebf0b415f9ffd2b90d46e84f224ebf91652616fcf7721f276f33f472b4c4",
+      "name": "initial-request.json"
+    },
+    {
+      "bytes": 2552,
+      "sha256": "be75f7c080a6efb825d1e628517bc87455d83823f1bbb819fc07e34675c68bb1",
+      "name": "request.json"
+    },
+    {
+      "bytes": 615,
+      "sha256": "0465506655a58ccc2a679f16787021cee1ffca31069b9ef7493f6e4de779f6de",
+      "name": "ticket.json"
+    },
+    {
+      "bytes": 22731,
+      "sha256": "64a2f2d2dc93e559ec154db0be21c0054139f246019be299c2e96ac3eaaf9a34",
+      "name": "expectation.json"
+    },
+    {
+      "bytes": 15940,
+      "sha256": "fc9ba59673554f70d269d772f1849baf3b449c7e8685b9b98e83946bfc13d2d5",
+      "name": "apply.json"
+    },
+    {
+      "bytes": 471731,
+      "sha256": "e78c0b3c8ef2b6cb50f2276421ae7058208e2092bcc4fae276c29cb96045c205",
+      "name": "finalization.json"
+    },
+    {
+      "bytes": 1086,
+      "sha256": "0e44b92a266181ff1cd92a545776dcc547d0747edab219e6c10fe510dd42758c",
+      "name": "result.json"
+    },
+    {
+      "bytes": 2423,
+      "sha256": "423f8c96eda2537f2803e3948cd854e6df556cfd9c83314a0c622833ea3e26e6",
+      "name": "conversion-intent.json"
+    },
+    {
+      "bytes": 44837,
+      "sha256": "82fb08130bb2c0e78cd21d6953012c4f9ca01d3010ce122639a39d69d6e7b1ce",
+      "name": "selected-device-preflight.json"
+    },
+    {
+      "bytes": 1619,
+      "sha256": "fd29c5731530025f80de35e559265e78faf2ae744909316ec1782bfc701f0b19",
+      "name": "compact-backing.json"
+    },
+    {
+      "bytes": 1159,
+      "sha256": "ba592649c0779a1c502239547271cc0847cf362ee81f34b01587115b218fa7c9",
+      "name": "journal-location.json"
+    },
+    {
+      "bytes": 20007,
+      "sha256": "9de5c4123d84ef9f484e0197ba6ff8d1c18c858bdcdacf84847ad1d27b153379",
+      "name": "qualification-result.json"
+    },
+    {
+      "bytes": 1781,
+      "sha256": "89d696fe36b6aada6bb1439bcf768555eca90983588119a26c2ad4f10e1ec6aa",
+      "name": "qualification-certificate.json"
+    },
+    {
+      "bytes": 266907,
+      "sha256": "05d8e5b2b3205cc0e1224b6056a1c31b6bbc93a6151ae7cefbf7a317a66e3deb",
+      "name": "qualification-source-basis.json"
+    },
+    {
+      "bytes": 13510,
+      "sha256": "051dbe12286d78453a4989396851ce25e17d6543191d38a3de4c1ade1e32f8ad",
+      "name": "qualification-source-frozen.json"
+    },
+    {
+      "bytes": 94283,
+      "sha256": "cd358432ed63c42bc7826e2865ef6afc508c011984f45ea6c92da03e5b0ecac7",
+      "name": "qualification-admitted-assessment.json"
+    }
+  ],
+  "scope": "Bounded selected-device60GiB native conversion and five-user-file cold boot. Empty retained_ranges is not a physical-placement proof. Actual wrapper exit1 is preserved separately from successful source/apply/HND/native reports."
+}

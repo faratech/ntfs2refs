@@ -90,8 +90,9 @@ and [the recovery contract](native-composite-experimental.md#recovery).
 
 The selected-device backend completed a separately prepared 60 GiB native
 conversion, with five ordinary user files and a successful cold-boot hash
-readback. The exact executable and scope are recorded in the selected native
-experiment reports. This result is separate from the automatic drive workflow
+readback. The [selected native observation](../evidence/selected-native-compact-20261028.json)
+pins the exact executable and closed reports, including the separate wrapper's
+missing exit-code observation and terminal status 1. This result is separate from the automatic drive workflow
 and the earlier pinned laboratory executables.
 Boot volumes, arbitrary geometry and general low-scratch behavior are unfinished.
 

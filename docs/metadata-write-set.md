@@ -1,5 +1,31 @@
 # Candidate ReFS target write set
 
+## Compact candidate backing
+
+`refs_hybrid::packed` now streams selected shadow ranges into a dense scratch
+file using a 64 KiB buffer. Its index is bounded by the candidate's 65,536-range
+limit rather than partition capacity. `PackedShadow` exposes their original
+partition addresses to `CandidateHybrid`; reads into omitted ranges fail unless
+the hybrid supplies the original source bytes. Omitted ranges are never
+implicitly zero-filled. The compact file has a SHA-256 receipt, exact byte
+count and `executable: false`. Caller-owned durable storage and authenticating
+the exact plan remain necessary.
+
+`lab-refs-write-set` accepts optional `--shadow <frozen-raw-image>
+--packed-output <new-file> --max-packed-bytes <budget>`. It refuses excessive
+selected bytes before opening the scratch destination, requires ordinary image
+input, creates outputs exclusively, flushes the compact file, and only then
+writes its completion report. Failure preserves partial artifacts rather than
+presenting a success receipt. Optional `--original <raw-ntfs-image>` connects
+the compact backing to the existing read-only hybrid ReFS inspector.
+
+This eliminates unselected bytes from the compact artifact, not from initial
+native shadow construction. Selected ranges still include allocated payload;
+the module does not establish metadata completeness or independently authorize
+retained-payload subtraction. The existing full-shadow conversion/recovery
+path is unchanged. Initial evidence is a release build, not native compact
+conversion qualification. No unit tests were added or run.
+
 The current journal compares every sector of a frozen NTFS partition with a
 native ReFS shadow. On a previously used volume, stale bytes in free sectors
 can make the journal much larger than the ReFS metadata and live payloads.

@@ -1,5 +1,21 @@
 # ntfs2refs project guidance
 
+Latest candidate12 state supersedes its historical LIVE entries below: task
+cb25d12237454c3999f319547f48b057 exited0, conversion success and rollback closed.
+The terminal archive exists; never replay its journal after handoff. Separately
+pinned Rust toolset2 BeforeMutation passed, report SHA-256
+ae22236dfe394aec136c8fb672f9d73adad167d3657afda08f21bf14b5cfebf0.
+Fresh native retrieval mappings confirm both original retained physical ranges,
+2,721,431,552 bytes total, with supported-tree readback. This does not qualify
+post-mutation/reboot behavior of candidate12; those phases remain pending.
+
+Low-scratch work adds refs_hybrid/packed.rs and optional compact extraction to
+lab-refs-write-set. It uses a64-KiB transfer buffer, packs selected ranges only,
+and can inspect the resulting hybrid against an original ordinary image. This
+is a non-executable candidate representation; it neither eliminates initial
+shadow payload allocation nor authorizes selective drive writes. Keep the
+full-shadow path and all native evidence intact. No unit tests added/run.
+
 ## Objective and working approach
 
 Build an offline NTFS-to-ReFS converter that runs on the machine owning the

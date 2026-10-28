@@ -7,6 +7,8 @@ use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
 
+pub mod packed;
+
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct ReadCounts {
     pub original_bytes: u64,

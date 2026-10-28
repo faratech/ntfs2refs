@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+Source-backed relocation path IMPLEMENTED/build passed: opaque native route
+snapshot covers full measured storage-valid user prefixes, canonical inputs,
+nonoverlapping target mappings. GeneralShadow source_backed reader binds both
+frozen excluded disks and logical NTFS semantics, redirects ALL mapped payload
+(including relocated) without filling shadow data; other bytes use shadow.
+64-KiB read cap, explicit source-byte budget, failed-read poison/final bracket.
+capture_to_new_file streams existing compact pack, only omits retained bytes
+after comparing logical source vs actual original physical bytes, enforces
+output cap/new regular file/durable flush. No frozen graph/cutover authority.
+CLI --source-backed-payloads stages prefixes+small/tails only, incompatible with
+full relocation materialization. Native new-path result pending. Controller
+-SourceBackedPayloads requires fresh root/all28 snapshots/restored6ff baseline,
+8.25-GiB movement and10.25-GiB capacity allowance. Cap/reserve unchanged.
+Do not rerun constructors. No unit tests added/run. See allocation doc.
+
 Direct deferred allocation NATIVE PASSED, run40733b161431410192f7dcaafbb99f61,
 producer41fe513fdc32ff709289ddcc6e48ccf5a91edade4c1e436e5f54d08e81a45f51
 (614c158+pre-existing main.rs patch). Result916d453e2daddb107d7160489684ce0ce17e0f0ee7a14c38f4b01db2e1a38531.

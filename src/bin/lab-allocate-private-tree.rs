@@ -38,6 +38,12 @@ fn main() -> anyhow::Result<()> {
         max_placement_moves: usize,
         #[arg(long, requires = "place_source_prefixes")]
         materialize_relocations: bool,
+        #[arg(
+            long,
+            requires = "place_source_prefixes",
+            conflicts_with = "materialize_relocations"
+        )]
+        source_backed_payloads: bool,
         #[arg(long, requires = "materialize_relocations")]
         verify_logical_hybrid: bool,
         #[arg(long, default_value_t = 268435456)]
@@ -109,6 +115,7 @@ fn main() -> anyhow::Result<()> {
         "observe_existing":args.observe_existing,"allocation_writes_authorized":!args.observe_existing,
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
+        "source_backed_payloads":args.source_backed_payloads,
         "max_placement_bytes":args.max_placement_bytes,"max_placement_moves":args.max_placement_moves,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "verify_logical_hybrid":args.verify_logical_hybrid,
@@ -132,7 +139,9 @@ fn main() -> anyhow::Result<()> {
                 .enumerate()
                 .filter(|(_, o)| {
                     !o.directory
-                        && (o.length <= 4096 || (args.prepare_large_tails && o.length % 4096 != 0))
+                        && (o.length <= 4096
+                            || ((args.prepare_large_tails || args.source_backed_payloads)
+                                && o.length % 4096 != 0))
                         && !o
                             .path
                             .first()
@@ -216,6 +225,9 @@ fn main() -> anyhow::Result<()> {
             let mut unverified_prefixes = Vec::new();
             let mut relocation_materialization = None;
             let mut logical_hybrid = None;
+            if args.source_backed_payloads {
+                template.prepare_source_backed_prefixes()?;
+            }
             if let (Some(source), Some(raw)) = (source.as_mut(), inspection.as_ref()) {
                 if args.materialize_relocations {
                     relocation_materialization =
@@ -236,7 +248,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 } else {
                     for &(index, offset, length) in &selected {
-                        if offset > 0 {
+                        if offset > 0 && !args.source_backed_payloads {
                             if args.place_source_prefixes {
                                 template.advance_placed_prefix(index, offset)?;
                                 unverified_prefixes.push(serde_json::json!({"object_index":index,
@@ -268,6 +280,13 @@ fn main() -> anyhow::Result<()> {
             report["relocation_materialization"] =
                 serde_json::to_value(relocation_materialization)?;
             report["logical_hybrid_verification"] = serde_json::to_value(logical_hybrid)?;
+            if args.source_backed_payloads {
+                report["source_backed_payload_routes"] = serde_json::to_value(
+                    template.source_backed_routes(&general_shadow::native_inputs(&tree))?,
+                )?;
+                report["relocated_payload_shadow_initialization_skipped"] = true.into();
+                report["frozen_required_byte_capture_pending"] = true.into();
+            }
             report["source_logical_range_bytes_charged"] = budget.reserved_bytes().into();
             report["large_payload_initialization_selected"] = false.into();
             Ok(report)
@@ -288,6 +307,7 @@ fn main() -> anyhow::Result<()> {
         "verify_logical_hybrid":args.verify_logical_hybrid,
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
+        "source_backed_payloads":args.source_backed_payloads,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,

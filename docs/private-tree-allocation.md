@@ -1,5 +1,36 @@
 # Allocation-only canonical tree staging
 
+## Source-backed relocated payload and compact capture
+
+`PrivateTree::prepare_source_backed_prefixes` makes complete measured prefixes
+storage-valid while their files remain private; it does not fill relocated
+payload. `source_backed_routes` captures every full-cluster user mapping from
+live handles, with complete logical coverage, disjoint physical ownership,
+canonical name/length/digest binding and the enrolled source/shadow pair.
+The returned type has no deserializer and does not certify a frozen graph.
+
+`general_shadow::source_backed::SourceBackedShadow` is a seekable read-only
+candidate over two frozen read-only/offline disks. At measured target payload
+destinations it supplies logical NTFS bytes (including sparse/VDL zero rules);
+elsewhere it reads shadow metadata/tails. It binds canonical record sequence,
+name, length/digest and device identity, caps reads at64 KiB and poisons itself
+on a failed read. `finish` checks disk-state and byte-accounting brackets.
+
+`capture_to_new_file` connects this reader to existing compact packing without
+first initializing relocated bytes in a shadow. It requires an explicit output
+budget and a fresh ordinary file, checks every measured payload is covered by
+the proposed write set, compares omitted retained bytes with actual original
+physical bytes, writes only selected remaining ranges and durably flushes the
+file. Thus logical VDL zeroes cannot silently authorize retaining stale raw
+bytes. A failed capture yields no completion receipt. This candidate still
+requires a complete frozen required-byte graph, source metadata restoration
+and recovery integration before conversion; no new write authority is granted.
+
+Lab `--source-backed-payloads` opts into full private-prefix preparation and
+small/tail-only copies, preserving large relocated data as source-backed routes.
+It conflicts with full relocation materialization. Native qualification of this
+mode and compact capture is pending; release build passed. No unit tests added/run.
+
 ## Direct placement of deferred allocations
 
 Deferred zero-VDL holes now first intersect the desired source coordinates

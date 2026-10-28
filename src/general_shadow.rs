@@ -1,8 +1,11 @@
 //! Immutable request shared by general native shadow construction and freeze.
-use anyhow::{Context, Result, ensure};
+use anyhow::{ensure, Context, Result};
 use n2r_win32::general_layout::GeneralSourceShadowBinding;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+
+#[cfg(windows)]
+pub mod source_backed;
 
 /// Capture both descriptor views for the canonical source tree. The returned
 /// analysis is diagnostic; source admission separately binds actual image bytes.

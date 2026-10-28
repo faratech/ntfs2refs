@@ -4,7 +4,9 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 mod placement;
+mod source_backed;
 mod supply;
+pub use source_backed::{PayloadRoute, SourceBackedRoutes};
 pub use supply::{SupplyPlan, SupplyRange};
 
 pub struct PrivateTree {
@@ -24,6 +26,27 @@ pub struct PrivateTree {
 }
 
 impl PrivateTree {
+    /// Prepare storage-valid private prefixes without filling either retained
+    /// or relocated payload. Payload must subsequently be supplied from NTFS.
+    pub fn prepare_source_backed_prefixes(&mut self) -> io::Result<()> {
+        self.require_source_excluded()?;
+        if !self.placement_complete {
+            return Err(invalid(
+                "complete placement required for source-backed preparation",
+            ));
+        }
+        for file in self.files.values_mut() {
+            let prefix = file.logical_length() / 4096 * 4096;
+            if prefix > 0 {
+                file.advance_valid_data(prefix, true)?;
+            }
+        }
+        self.require_source_excluded()
+    }
+
+    pub fn source_backed_routes(&self, input: &[Input<'_>]) -> io::Result<SourceBackedRoutes> {
+        source_backed::capture(self, input)
+    }
     /// Diagnostic progress only; partial attempts never supply conversion or
     /// resume authority. Available even when a native file has been poisoned.
     pub fn placement_progress(&self) -> &serde_json::Value {
@@ -622,6 +645,7 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
         objects.push(
             serde_json::json!({"object_index":index,"components":item.components,
             "logical_length":item.logical_length(),"disposition":"private-uninitialized",
+            "payload_expected_sha256":item.expected_sha256,
             "source_security_sha256":hex::encode(Sha256::digest(item.security)),
             "source_metadata_restoration_pending":true,"payload_supply_pending":!item.directory}),
         );

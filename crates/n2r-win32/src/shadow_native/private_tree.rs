@@ -67,11 +67,7 @@ impl PrivateTree {
         self.require_source_excluded()?;
         let mut files = Vec::with_capacity(self.files.len());
         for (&index, file) in &self.files {
-            let capture = crate::stream_native::retrieval_capture(file.metadata_handle())?;
-            files.push(serde_json::json!({"object_index":index,"path":file.path,
-                "snapshot":snapshot(file.metadata_handle()),"retrieval":capture.canonical,
-                "retrieval_page_proof":capture.proof,"source_security_restoration_pending":true,
-                "logical_content_verification_pending":true}));
+            files.push(file_observation(index, &file.path, file.metadata_handle())?);
         }
         self.require_source_excluded()?;
         Ok(
@@ -84,6 +80,154 @@ impl PrivateTree {
             "physical_payload_io_measured":false,"conversion_qualified":false}),
         )
     }
+}
+
+fn file_observation(index: usize, path: &str, file: &File) -> io::Result<serde_json::Value> {
+    let standard = info(file, 1, 24)?;
+    let logical = layout::u64_at(&standard, 8)?;
+    let allocated = layout::u64_at(&standard, 0)?;
+    if layout::u32_at(&standard, 16)? != 1 || standard[20] != 0 || standard[21] != 0 {
+        return Err(invalid("private file type, deletion or link count differs"));
+    }
+    // Empty and subcluster allocations have no promised nonresident retrieval
+    // map. They will be materialized, rather than admitted as retained runs.
+    let capture = if logical == 0 || (logical < 4096 && allocated < 4096) {
+        None
+    } else {
+        Some(
+            crate::stream_native::retrieval_capture(file)
+                .map_err(|e| io::Error::new(e.kind(), format!("private mapping {path}: {e}")))?,
+        )
+    };
+    Ok(
+        serde_json::json!({"object_index":index,"path":path,"logical_length":logical,
+        "allocated_length":allocated,"snapshot":snapshot(file),
+        "data_form":if logical==0 {"empty"}else if capture.is_none(){"subcluster-allocation"}else{"nonresident"},
+        "retrieval":capture.as_ref().map(|c| &c.canonical),
+        "retrieval_page_proof":capture.as_ref().map(|c| &c.proof),
+        "source_security_restoration_pending":true,"logical_content_verification_pending":true}),
+    )
+}
+
+/// Metadata-only recovery observation after a constructor/report refusal.
+/// Existing files are never recreated, resized, initialized or deleted.
+pub fn observe_existing(
+    pair: &GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+) -> io::Result<serde_json::Value> {
+    pair.validate_with_resource_profile(Some(
+        crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
+    ))?;
+    if std::env::var("COMPUTERNAME").ok().as_deref() != Some("N2R-WIN11")
+        || pair.source.disk_number != 1
+        || pair.shadow.disk_number != 3
+        || pair
+            .source
+            .identity
+            .disk_guid
+            .trim_matches(['{', '}'])
+            .to_ascii_lowercase()
+            != "1b191872-c372-41ee-a416-e18863996f54"
+        || pair
+            .shadow
+            .identity
+            .disk_guid
+            .trim_matches(['{', '}'])
+            .to_ascii_lowercase()
+            != "c0f2cd39-ad3d-484e-9990-0e6eba74485f"
+        || input.is_empty()
+        || input.len() > 1280
+        || !input[0].directory
+        || !input[0].components.is_empty()
+    {
+        return Err(invalid("enrolled private tree observation required"));
+    }
+    for item in input {
+        if item.components.len() > 16
+            || item
+                .components
+                .iter()
+                .any(|s| !crate::shadow_names::valid_unicode_component(s))
+        {
+            return Err(invalid("private observation path differs"));
+        }
+    }
+    let mut events = Vec::new();
+    let before = native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
+    let target_before =
+        native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
+    if before.disk_attributes != 3
+        || target_before.disk_attributes != 0
+        || native::mounted_filesystem_general(pair.shadow.clone(), &mut events)? != "ReFS"
+    {
+        return Err(invalid("private observation disk state differs"));
+    }
+    let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
+    let root = format!("{}\\", pair.shadow.volume_path()?);
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut ids = BTreeSet::new();
+    for (index, item) in input.iter().enumerate() {
+        if item
+            .components
+            .first()
+            .is_some_and(|s| s == "System Volume Information")
+        {
+            continue;
+        }
+        let path = format!("{root}{}", item.components.join("\\"));
+        let file = open(&path, item.directory, false)?;
+        if item.directory {
+            let entries = enumerate(&file)?;
+            let actual: BTreeSet<_> = entries
+                .iter()
+                .filter(|e| e.name_utf16 != [46] && e.name_utf16 != [46, 46])
+                .map(|e| e.name_utf16.clone())
+                .collect();
+            let expected: BTreeSet<_> = input
+                .iter()
+                .filter(|i| {
+                    i.components.len() == item.components.len() + 1
+                        && i.components[..item.components.len()] == *item.components
+                })
+                .map(|i| {
+                    i.components
+                        .last()
+                        .unwrap()
+                        .encode_utf16()
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            if actual != expected {
+                return Err(invalid("private user namespace differs from supplied tree"));
+            }
+            directories.push(serde_json::json!({"object_index":index,"components":item.components,"snapshot":snapshot(&file)}));
+        } else {
+            let row = file_observation(index, &path, &file)?;
+            if row["logical_length"] != item.logical_length() {
+                return Err(invalid("private file length differs"));
+            }
+            let id = info(&file, 18, 24)?;
+            if !ids.insert(id) {
+                return Err(invalid("private file identity repeats"));
+            }
+            files.push(row);
+        }
+    }
+    if native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)? != before
+        || native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
+            != target_before
+    {
+        return Err(invalid("private observation route changed"));
+    }
+    privileges.restore()?;
+    Ok(
+        serde_json::json!({"schema_version":1,"kind":"native-private-tree-existing-observation",
+        "pair":pair,"source_before":before,"files":files,"directories":directories,"events":events,
+        "user_payload_bytes_read":0,"user_payload_bytes_written":0,"source_payload_writes":0,
+        "security_timestamps_attributes_pending":true,"system_objects_pending":true,
+        "physical_payload_io_measured":false,"conversion_qualified":false}),
+    )
 }
 
 /// Create the canonical user paths without initializing duplicate payload.

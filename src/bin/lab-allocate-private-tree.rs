@@ -24,6 +24,8 @@ fn main() -> anyhow::Result<()> {
         tree_sha256: String,
         #[arg(long)]
         output: PathBuf,
+        #[arg(long)]
+        observe_existing: bool,
     }
     fn evidence(path: &Path) -> Result<Vec<u8>> {
         let file = File::open(path)?;
@@ -70,12 +72,22 @@ fn main() -> anyhow::Result<()> {
     save(
         &args.output.with_extension("intent.json"),
         &serde_json::json!({
-        "kind":"private-tree-allocation-intent","request_sha256":args.request_sha256,
+        "kind":if args.observe_existing {"private-tree-observation-intent"}else{"private-tree-allocation-intent"},
+        "observe_existing":args.observe_existing,"allocation_writes_authorized":!args.observe_existing,
+        "request_sha256":args.request_sha256,
         "tree_sha256":args.tree_sha256,"source_writes_authorized":false,
         "source_image_hash_reverified":false,"source_admitted":false,"conversion_qualified":false}),
     )?;
-    let attempt = general_shadow::allocate_private_tree(&request.pair, &tree)
-        .and_then(|template| Ok(template.report()?));
+    let attempt = if args.observe_existing {
+        n2r_win32::shadow_native::private_tree::observe_existing(
+            &request.pair,
+            &general_shadow::native_inputs(&tree),
+        )
+        .map_err(anyhow::Error::from)
+    } else {
+        general_shadow::allocate_private_tree(&request.pair, &tree)
+            .and_then(|template| Ok(template.report()?))
+    };
     let failure = attempt.as_ref().err().map(ToString::to_string);
     let native = match attempt {
         Ok(value) => value,
@@ -86,7 +98,8 @@ fn main() -> anyhow::Result<()> {
     save(
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"private-tree-allocation",
-        "success":failure.is_none(),"request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,
+        "success":failure.is_none(),"observe_existing":args.observe_existing,
+        "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,
         "request":request,"native":native,"source_image_hash_reverified":false,
         "source_admitted":false,"conversion_qualified":false}),
     )?;
@@ -94,7 +107,7 @@ fn main() -> anyhow::Result<()> {
         anyhow::bail!("private allocation failed: {error}");
     }
     println!(
-        "Private namespace allocated; payload supply and metadata restoration remain pending."
+        "Private tree staging/observation complete; payload supply and metadata restoration remain pending."
     );
     Ok(())
 }

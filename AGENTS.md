@@ -1,5 +1,19 @@
 # ntfs2refs project guidance
 
+User-requested drive CLI now implemented, commit5caa632: ntfs2refs --list,
+--drive d [partition N] /--partition N and numeric disk+partition selection.
+Native read-only inventory includes all partitions/query errors; confirmation
+defaultsNo and rechecks actual identity. Releasebuild passed. BinarySHA
+252aad52664fd8177e149b5cbc18753dc67757cdcd20275f0179764a6ef9024f.
+Host --list worked; D/E are alreadyReFS, C is protected runningWindows.
+VM read-only UI taskN2R-DriveUiDecline-20261028 TERMINAL0 on OLDdisk1/F/part2:
+actual selection/NTFS/52GiB/label prompt displayed; stdin n cancelled, no staging
+or conversion. Reports under drive-cli-ui-check-20261028. Auto scratch native
+managed_shadow provisioning BUILT but has NOT been executed/qualified yet.
+User explicitly requested main.rs CLI edits; those are committed while original
+one-line capabilities change remains unstaged (gitdiff1+/1-), not overwritten.
+No unit tests. Runningselected4d3... still uses sealedf41/f1f1, no replacement.
+
 Later source_backed.rs capture read batching(1MiB heap/64KiB logical NTFS) built
 successfully but is NOT deployed to the live guest. Running4d3... stays sealed
 f1f1f47/f41b47...; target/release now differs. Never replace/restart the live run.

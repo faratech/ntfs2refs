@@ -1,5 +1,41 @@
 # Allocation-only canonical tree staging
 
+## Native partial-tail staging result
+
+Sourcec079e47 adds explicit `--prepare-large-tails` staging. Before a selected
+partial-tail write, the constructor can advance an **unplaced private scratch
+prefix** without copying its bytes. It refuses this option if placed-prefix
+coverage would be bypassed. The result explicitly marks original positions and
+source prefix contents unverified. Files remain protected SYSTEM-only; this
+option cannot be treated as retained-data proof or source write authority.
+Real retained placement must precede validity advancement/materialization.
+
+Native run`cc4109eec29a4643ae5a7e4d1021f8e6` passed with producer
+`98868f9f27d863e6b98af39305292a91e233bf05b08ac2aaf543255b64a2388c`.
+The command read the actual source byte at logical offset8,589,934,592 in the
+8,589,934,593-byte file, wrote only that byte and verified readback after flush.
+That zero byte's SHA-256 is
+`6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d`.
+The source range proof correctly says `whole_stream_hash_matched: false`;
+neither the source-range read nor target readback scans/validates its prefix.
+The empty file and17-byte café file also passed, giving18 target payload
+bytes written/read back,36 source logical-byte charges including preflight,
+and8,589,934,592 private prefix bytes made storage-valid without a payload copy.
+
+Full result SHA-256:
+`1629301c5b19af272f5436258c1a072f8771fc758a71ffd9b8f1a74b65562694`.
+Request:`5303d42d780c119b381d51992fe5d92f63ba3922ba92e9ba82f1ffed26ed8dfd`.
+Inspection/tree pins remain the matching candidate11 inputs documented below.
+Evidence:`.lab/hyperv/streaming-v2-20261027/private-tree-tail-materialization-20261028`.
+After clean shutdown the non-sparse new shadow child measured157,286,400 bytes
+(150 MiB), excluding shared parents/OS/journal/evidence; physical-device IO and
+whole-workflow scratch remain unmeasured. OFF checkpoint
+`1da04080-dceb-4127-9540-c6826e45c543`, parent
+`6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3`, preserves the result. All25 snapshots
+remain and VM RAM is released. No unit tests added/run. Native large-prefix
+placement/content supply, source metadata restoration and compact recoverable
+cutover still need integration. The working converter path is unchanged.
+
 ## Native small-stream materialization result
 
 The staging command now explicitly selects `--materialize-small` with pinned

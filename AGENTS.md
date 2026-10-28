@@ -1,5 +1,19 @@
 # ntfs2refs project guidance
 
+Native partial-tail staging PASSED (c079e47), runcc4109eec29a4643ae5a7e4d1021f8e6.
+Actual source one-byte tail at8 GiB was copied/flushed/read back, plus17-byte
+café/empty stream. Target payload writes/readback18, source logical charges36.
+Eight-GiB unplaced scratch prefix was made storage-valid WITHOUT payload copy;
+it remains explicitly PRIVATE and CONTENT/POSITION UNVERIFIED, not retained
+source proof. Real placement must happen before VDL/materialization. Producer
+98868f9f27d863e6b98af39305292a91e233bf05b08ac2aaf543255b64a2388c,
+result1629301c5b19af272f5436258c1a072f8771fc758a71ffd9b8f1a74b65562694.
+Evidence private-tree-tail-materialization-20261028. New shadow child150 MiB,
+excluding parents/OS/journal/evidence. Current VM OFF at1da04080-dceb-4127-9540-c6826e45c543,
+parent6ffb6bdc, all25 snapshots preserved/RAM released. No unit tests added/run.
+See docs/private-tree-allocation.md; do not rerun its constructor/task. Large
+mapping/content, source metadata and low-scratch cutover remain incomplete.
+
 Small source materialization is now wired into lab-allocate-private-tree via
 --materialize-small plus pinned inspection input (ee6cdca). Native run
 7221c22bb02641cebf1b4db6ac4d4aad PASSED: empty and17-byte café source streams

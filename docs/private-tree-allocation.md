@@ -21,7 +21,29 @@ checkpoints. Its new shadow child used155,189,248 backing bytes (148 MiB),
 excluding parents, OS, journal and evidence; physical device I/O was not measured.
 The direct-placement controller uses a fresh branch/root, a LOWER9-GiB move
 budget and11-GiB capacity allowance; it does not retry the partial namespace.
-Native direct-placement results remain pending. No unit tests added/run.
+The direct-placement native run40733b161431410192f7dcaafbb99f61 PASSED with
+producer41fe513fdc32ff709289ddcc6e48ccf5a91edade4c1e436e5f54d08e81a45f51
+(source614c158 plus the separately recorded pre-existing main.rs patch).
+Result SHA-256:
+916d453e2daddb107d7160489684ce0ce17e0f0ee7a14c38f4b01db2e1a38531.
+
+Twenty-four verified placement submissions charged8,590,196,736 bytes:
+six direct deferred allocations2,721,181,696 bytes, fifteen scratch allocations
+5,868,765,184 bytes, and three blocker evacuations249,856 bytes. No subsequent
+original-coordinate reposition was needed. Final live maps identify
+2,721,181,696 original-coordinate bytes; their contents remain unverified.
+The17-byte small source stream was written/flushed/read back; source logical
+range charges34 bytes include its preflight and transfer. Large user payload
+was not initialized/copied. Source remained offline/read-only. This is NOT
+completed source admission, logical hybrid verification or conversion.
+
+Evidence root:
+`.lab/hyperv/streaming-v2-20261027/private-tree-direct-placement-20261028`.
+The new shadow child used153,092,096 backing bytes (146 MiB), excluding parent
+chains, OS/journal/evidence and physical device I/O. After clean shutdown the
+result was saved at9385a471-acc4-42e6-aec4-969bdde40148, parent6ffb6bdc;
+all28 checkpoints were retained and4-GiB assigned RAM released. The lab cap
+remained256 GiB and host reserve64 GiB. No unit tests added/run.
 
 ## Selective unwritten evacuation
 

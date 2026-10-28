@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+Direct deferred allocation NATIVE PASSED, run40733b161431410192f7dcaafbb99f61,
+producer41fe513fdc32ff709289ddcc6e48ccf5a91edade4c1e436e5f54d08e81a45f51
+(614c158+pre-existing main.rs patch). Result916d453e2daddb107d7160489684ce0ce17e0f0ee7a14c38f4b01db2e1a38531.
+24 moves charged8,590,196,736 bytes: direct2,721,181,696; scratch5,868,765,184;
+blocker249,856. Final original-coordinate refs2,721,181,696; no content proof.
+Only17 payload bytes copied/readback, logical source charges34. Source stayed
+offline/read-only, large payload unwritten; NOT conversion/admission or full
+hybrid qualification. New shadow child146 MiB excludes parents/OS/J/evidence,
+physical device I/O unmeasured. Preserved OFF at9385a471-acc4-42e6-aec4-969bdde40148,
+parent6ffb6bdc, ALL28 snapshots retained/4-GiB RAM released. No cap/reserve
+increase (256/64 GiB). DO NOT rerun constructor/task; native evidence under
+private-tree-direct-placement-20261028. Next integrate source-backed relocated
+supply, frozen required-byte graph/metadata restoration and compact recoverable
+cutover. Avoid another full payload staging copy. No unit tests added/run.
+
 Deferred zero-VDL allocation now tries desired original coordinates directly
 where BOTH live ReFS bitmap views are free, retaining bootstrap margins and
 per-move native checks. Only remaining holes use <=512-MiB scratch chunks.

@@ -2,7 +2,7 @@
 //! input, not admission; this command cannot write or convert the source.
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    use anyhow::{ensure, Result};
+    use anyhow::{Context, Result, ensure};
     use clap::Parser;
     use ntfs2refs::{general_shadow, ntfs_admission::ResourceProfile, shadow_tree};
     use sha2::{Digest, Sha256};
@@ -44,6 +44,10 @@ fn main() -> anyhow::Result<()> {
             conflicts_with = "materialize_relocations"
         )]
         source_backed_payloads: bool,
+        #[arg(long, requires = "source_backed_payloads")]
+        compact_output: Option<PathBuf>,
+        #[arg(long, default_value_t = 805306368)]
+        max_changed_bytes: u64,
         #[arg(long, requires = "materialize_relocations")]
         verify_logical_hybrid: bool,
         #[arg(long, default_value_t = 268435456)]
@@ -64,7 +68,7 @@ fn main() -> anyhow::Result<()> {
         ensure!(bytes.len() <= 16 * 1024 * 1024, "evidence budget exceeded");
         Ok(bytes)
     }
-    fn save(path: &Path, value: &serde_json::Value) -> Result<()> {
+    fn save(path: &Path, value: &impl serde::Serialize) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(value)?;
         ensure!(
             bytes.len() <= 64 * 1024 * 1024,
@@ -116,6 +120,7 @@ fn main() -> anyhow::Result<()> {
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
         "source_backed_payloads":args.source_backed_payloads,
+        "compact_output":args.compact_output,"max_changed_bytes":args.max_changed_bytes,
         "max_placement_bytes":args.max_placement_bytes,"max_placement_moves":args.max_placement_moves,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "verify_logical_hybrid":args.verify_logical_hybrid,
@@ -281,11 +286,78 @@ fn main() -> anyhow::Result<()> {
                 serde_json::to_value(relocation_materialization)?;
             report["logical_hybrid_verification"] = serde_json::to_value(logical_hybrid)?;
             if args.source_backed_payloads {
-                report["source_backed_payload_routes"] = serde_json::to_value(
-                    template.source_backed_routes(&general_shadow::native_inputs(&tree))?,
-                )?;
+                let routes =
+                    template.source_backed_routes(&general_shadow::native_inputs(&tree))?;
+                report["source_backed_payload_routes"] = serde_json::to_value(&routes)?;
                 report["relocated_payload_shadow_initialization_skipped"] = true.into();
                 report["frozen_required_byte_capture_pending"] = true.into();
+                if let Some(path) = &args.compact_output {
+                    // Preserve diagnostics before closing every native staging
+                    // handle. Only the disposable shadow is locked/frozen.
+                    save(&args.output.with_extension("pre-freeze.json"), &report)?;
+                    drop(template);
+                    let mut events = Vec::new();
+                    let (mut shadow,witness) = n2r_win32::GeneralFrozenPartition::isolate_with_allocation_with_resource_profile(
+                        routes.pair().shadow.clone(),resources.native_profile(),&mut events)?;
+                    shadow.validate_allocation_witness(&witness, &mut events)?;
+                    save(&args.output.with_extension("allocation-freeze.json"),&witness)?;
+                    let length = shadow.byte_len();
+                    let refs = ntfs2refs::refs_inspect::inspect_with_resource_profile(
+                        &mut shadow,
+                        length,
+                        resources,
+                    )?;
+                    save(&args.output.with_extension("frozen-refs.json"),&refs)?;
+                    let anchors = ntfs2refs::refs_write_set::observed_anchors(&refs)?;
+                    // Post-lock fallback remains explicitly non-authoritative:
+                    // neither observation proves the frozen required-byte graph.
+                    let allocation = witness
+                        .post_dismount()
+                        .unwrap_or_else(|| witness.post_lock());
+                    let plan = ntfs2refs::refs_write_set::plan(
+                        length,
+                        4096,
+                        allocation.metadata_inclusive(),
+                        &anchors,
+                    )?;
+                    save(
+                        &args.output.with_extension("freeze.json"),
+                        &serde_json::json!({
+                        "witness":witness,"inspection":refs,"plan":plan,
+                        "allocation_phase":allocation.phase(),"events":events,
+                        "frozen_required_byte_graph_verified":false,"conversion_qualified":false}),
+                    )?;
+                    let source = source.as_mut().context("frozen source reader absent")?;
+                    let raw = inspection.as_ref().context("NTFS inspection absent")?;
+                    let reader = general_shadow::source_backed::SourceBackedShadow::new(
+                        source,
+                        &mut shadow,
+                        raw,
+                        &tree,
+                        &routes,
+                        routes.payload_bytes().max(1),
+                    )?;
+                    let delta = reader.capture_differences_to_new_file(
+                        &plan,
+                        path,
+                        args.max_changed_bytes,
+                    )?;
+                    // Exercise the same seekable target view used by later
+                    // journal preparation, without source writes or mounting.
+                    let mut packed = std::fs::File::open(path)?;
+                    let mut image = ntfs2refs::refs_hybrid::delta::DifferenceImage::new(
+                        source,
+                        &mut packed,
+                        &delta.layout,
+                    )?;
+                    let view = ntfs2refs::refs_inspect::inspect_with_resource_profile(
+                        &mut image, length, resources,
+                    )?;
+                    report["compact_difference_capture"] = serde_json::to_value(delta)?;
+                    report["difference_image_inspection"] = serde_json::to_value(view)?;
+                    report["frozen_required_byte_capture_pending"] = true.into();
+                    report["shadow_left_offline_readonly"] = true.into();
+                }
             }
             report["source_logical_range_bytes_charged"] = budget.reserved_bytes().into();
             report["large_payload_initialization_selected"] = false.into();
@@ -308,6 +380,7 @@ fn main() -> anyhow::Result<()> {
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
         "source_backed_payloads":args.source_backed_payloads,
+        "compact_output":args.compact_output,"max_changed_bytes":args.max_changed_bytes,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,

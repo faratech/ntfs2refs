@@ -1,5 +1,38 @@
 # Allocation-only canonical tree staging
 
+## Frozen source-backed difference capture
+
+The staging helper can now preserve live typed routes across closing all
+private handles, freeze the shadow with native allocation observations, inspect
+its redundant bootstrap and construct the conservative metadata-inclusive
+candidate set. It saves pre-freeze, allocation-witness and frozen-header evidence
+before later steps can fail. Post-lock fallback is explicitly not a frozen
+required-byte graph certificate.
+
+With `--compact-output`, the source-backed reader compares every selected4-KiB
+candidate cluster against the actual frozen original. Only differing clusters
+are written to a new dense file, with a768-MiB default hard output limit checked
+before each changed-cluster write. Equal selected clusters use original bytes;
+no reservation is dropped by interpreting its purpose. Capture has fixed64-KiB
+comparison buffers, a65,536-range index bound, selected-source/candidate/packed
+digests, byte accounting, durable flush and final source/shadow state checks.
+`DifferenceImage` exposes the complete partition through Read+Seek using packed
+changes and original bytes, and the helper exercises its bootstrap inspector.
+
+A single cached plain-stream mapping session avoids re-reading NTFS metadata
+around every64-KiB chunk on an externally frozen source. Opening, file switches
+and final completion recheck actual canonical mappings, initialized length and
+identity; failed reads poison the session/candidate. No payload-sized cache is
+created. The existing one-shot range reader retains its original behavior.
+
+Controller `-CaptureSourceBackedDifferences` selects a fresh branch/root with
+all29 checkpoints retained. Its4-GiB forecast uses the measured same-profile
+156-MiB shadow child/about0.7-GiB OS growth,768-MiB output cap and margin, rather
+than treating virtual zero-VDL move bytes as physical backing growth. The8.25-GiB
+move cap/64 submissions and64-GiB host reserve remain. Native frozen capture is
+pending; no unit tests added/run. Source metadata restoration, full frozen graph
+proof and compact journal/cutover integration are still incomplete.
+
 ## Source-backed relocated payload and compact capture
 
 `PrivateTree::prepare_source_backed_prefixes` makes complete measured prefixes

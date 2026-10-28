@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+Frozen source-backed difference capture IMPLEMENTED, native result pending.
+CLI --compact-output retains typed routes while dropping private handles,
+freezes enrolled shadow with native witness, saves witness/header evidence,
+then compares conservative selected candidate clusters with frozen original.
+Only differing4-KiB clusters stored (hard768-MiB output cap); equal bytes use
+original, no reservation omitted by inference. Read+Seek DifferenceImage feeds
+bootstrap inspector/future journal;65,536-range limit/fixed64-KiB buffers/digests/
+flush/state brackets. One plain-stream metadata session caches ONLY mapping
+under frozen lease, revalidates on switch/finish; no payload-size cache.
+Controller -CaptureSourceBackedDifferences requires fresh root/restored6ff,
+all29 snapshots,4-GiB forecast based measured156-MiB shadow/~0.7-GiB OS plus
+768-MiB bounded output/margin. Virtual move cap8.25 GiB/64 submissions remains.
+No graph/cutover authority. Source metadata/complete graph/compact recovery
+still pending; preserve prior proofs and64-GiB reserve. No unit tests added/run.
+
 Source-backed private-prefix NATIVE STAGING PASSED, run85e2750d05764f849536d0391362471c,
 sourcec7e4ab9+pre-existing main.rs patch, producer1f49f3a3706e368e2881169b2b7368a80c4cca665843f921bf1a7904cf29c922.
 Resultb761140c424384b3638d5cee0d0ab80e8b1997bfe91697ace10548630d24d97c.

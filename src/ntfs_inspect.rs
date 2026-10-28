@@ -2582,6 +2582,83 @@ pub struct StreamRangeReadProof {
     pub whole_stream_hash_matched: bool,
 }
 
+/// One bounded mapping cache for reads under an externally held immutable
+/// source lease. Opening and finishing revalidate the actual NTFS metadata.
+/// It grants no source admission and never owns a payload-sized buffer.
+pub struct PlainStreamRangeSession {
+    record_number: u64,
+    attribute: Attribute,
+    expected: String,
+    poisoned: bool,
+}
+impl PlainStreamRangeSession {
+    pub fn open<R: Read + Seek>(
+        reader: &mut R,
+        raw: &NtfsInspection,
+        record_number: u64,
+        max_bytes: u64,
+    ) -> Result<Self> {
+        let (attribute, expected) =
+            checked_plain_attribute(reader, raw, record_number, &[], max_bytes, false)?;
+        Ok(Self {
+            record_number,
+            attribute,
+            expected,
+            poisoned: false,
+        })
+    }
+    pub fn record_number(&self) -> u64 {
+        self.record_number
+    }
+    pub fn stream_length(&self) -> u64 {
+        self.attribute.report.logical_size
+    }
+    pub fn expected_sha256(&self) -> &str {
+        &self.expected
+    }
+    pub fn read<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        raw: &NtfsInspection,
+        offset: u64,
+        output: &mut [u8],
+        budget: &mut StreamTransferBudget,
+    ) -> Result<()> {
+        ensure!(
+            !self.poisoned
+                && output.len() <= STREAM_HASH_BUFFER_BYTES
+                && offset
+                    .checked_add(output.len() as u64)
+                    .is_some_and(|v| v <= self.stream_length()),
+            "plain stream session failed or range exceeds bounds"
+        );
+        self.poisoned = true;
+        budget.reserve(output.len() as u64)?;
+        read_attribute_range(reader, &self.attribute, offset, output, &raw.geometry)?;
+        self.poisoned = false;
+        Ok(())
+    }
+    pub fn finish<R: Read + Seek>(self, reader: &mut R, raw: &NtfsInspection) -> Result<()> {
+        ensure!(!self.poisoned, "failed plain stream session cannot finish");
+        let (after, expected) = checked_plain_attribute(
+            reader,
+            raw,
+            self.record_number,
+            &[],
+            self.stream_length(),
+            false,
+        )?;
+        ensure!(
+            expected == self.expected
+                && serde_json::to_vec(&after.report)?
+                    == serde_json::to_vec(&self.attribute.report)?
+                && after.resident_value == self.attribute.resident_value,
+            "plain stream mapping changed around session"
+        );
+        Ok(())
+    }
+}
+
 /// Read a small resident/materialization range without scanning its large
 /// prefix or allocating a stream-sized buffer. Caller must discard output on
 /// error and hold source exclusion. Sparse/VDL zero semantics are unchanged;

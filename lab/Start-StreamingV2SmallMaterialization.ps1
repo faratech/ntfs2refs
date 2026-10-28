@@ -1,18 +1,19 @@
 # Materialize only bounded small user streams; large payload stays unwritten. Only
 # the disposable shadow is formatted; all saved branches/source stay intact.
-[CmdletBinding()]param([switch]$PrepareLargeTails,[switch]$PlaceSourcePrefixes,[switch]$DirectDeferredPlacement,[switch]$SourceBackedPayloads)
+[CmdletBinding()]param([switch]$PrepareLargeTails,[switch]$PlaceSourcePrefixes,[switch]$DirectDeferredPlacement,[switch]$SourceBackedPayloads,[switch]$CaptureSourceBackedDifferences)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
 $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'
 $parent=[guid]'6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3'
+if($CaptureSourceBackedDifferences){$SourceBackedPayloads=[switch]$true}
 if($SourceBackedPayloads){$DirectDeferredPlacement=[switch]$true}
 if($DirectDeferredPlacement){$PlaceSourcePrefixes=[switch]$true}
 if($PlaceSourcePrefixes-and$PrepareLargeTails){throw 'This bounded placement qualification does not select tail validity.'}
-$root=Join-Path $workspace $(if($SourceBackedPayloads){'.lab\hyperv\streaming-v2-20261027\private-tree-source-backed-20261028'}elseif($DirectDeferredPlacement){'.lab\hyperv\streaming-v2-20261027\private-tree-direct-placement-20261028'}elseif($PlaceSourcePrefixes){'.lab\hyperv\streaming-v2-20261027\private-tree-placement-20261028'}elseif($PrepareLargeTails){'.lab\hyperv\streaming-v2-20261027\private-tree-tail-materialization-20261028'}else{'.lab\hyperv\streaming-v2-20261027\private-tree-small-materialization-20261028'})
-$expectedCount=if($SourceBackedPayloads){28}elseif($DirectDeferredPlacement){27}elseif($PlaceSourcePrefixes){26}elseif($PrepareLargeTails){24}else{23}
+$root=Join-Path $workspace $(if($CaptureSourceBackedDifferences){'.lab\hyperv\streaming-v2-20261027\source-backed-difference-capture-20261028'}elseif($SourceBackedPayloads){'.lab\hyperv\streaming-v2-20261027\private-tree-source-backed-20261028'}elseif($DirectDeferredPlacement){'.lab\hyperv\streaming-v2-20261027\private-tree-direct-placement-20261028'}elseif($PlaceSourcePrefixes){'.lab\hyperv\streaming-v2-20261027\private-tree-placement-20261028'}elseif($PrepareLargeTails){'.lab\hyperv\streaming-v2-20261027\private-tree-tail-materialization-20261028'}else{'.lab\hyperv\streaming-v2-20261027\private-tree-small-materialization-20261028'})
+$expectedCount=if($CaptureSourceBackedDifferences){29}elseif($SourceBackedPayloads){28}elseif($DirectDeferredPlacement){27}elseif($PlaceSourcePrefixes){26}elseif($PrepareLargeTails){24}else{23}
 $placementBytes=if($SourceBackedPayloads){[long]8.25GB}elseif($DirectDeferredPlacement){9GB}else{10GB}
-$additionalBytes=if($SourceBackedPayloads){[long]10.25GB}elseif($DirectDeferredPlacement){11GB}else{12GB}
+$additionalBytes=if($CaptureSourceBackedDifferences){4GB}elseif($SourceBackedPayloads){[long]10.25GB}elseif($DirectDeferredPlacement){11GB}else{12GB}
 if(Test-Path -LiteralPath $root){throw 'Private-tree run has state; observe without redispatch.'}
 $vm=Get-VM -Id $id;$old=@(Get-VMSnapshot -VM $vm|ForEach-Object {$_.Id.ToString()})
 if($vm.State.ToString()-cne'Off'-or$vm.ParentSnapshotId-ne$parent-or$old.Count-ne$expectedCount-or
@@ -33,6 +34,8 @@ Save-New 'intent.json' @{vm_id=$id.ToString();parent_id=$parent.ToString();old_c
     shadow_format_authorized=$true;source_writes_authorized=$false;prepare_large_tails=[bool]$PrepareLargeTails;
     direct_deferred_placement=[bool]$DirectDeferredPlacement;
     source_backed_payloads=[bool]$SourceBackedPayloads;
+    capture_source_backed_differences=[bool]$CaptureSourceBackedDifferences;
+    forecast_basis=$(if($CaptureSourceBackedDifferences){'Prior same-profile prefix run:156 MiB shadow child, about0.7 GiB OS; output capped768 MiB;4 GiB allowance includes margin. Virtual move bytes are not predicted physical backing growth.'}else{$null});
     place_source_prefixes=[bool]$PlaceSourcePrefixes;max_placement_bytes=$(if($PlaceSourcePrefixes){$placementBytes}else{$null});
     max_placement_moves=$(if($PlaceSourcePrefixes){64}else{$null});additional_bytes=$additionalBytes;utc=[DateTime]::UtcNow.ToString('o')}
 Copy-Item -LiteralPath $binary -Destination (Join-Path $root 'producer.exe')
@@ -80,8 +83,8 @@ try{
     Copy-Item -LiteralPath $request -ToSession $s -Destination (Join-Path $stage 'request.json')
     Copy-Item -LiteralPath $tree -ToSession $s -Destination (Join-Path $stage 'expectation.json')
     Copy-Item -LiteralPath $inspection -ToSession $s -Destination (Join-Path $stage 'source-inspection.json')
-    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,$run,$pin,$requestPin,$treePin,$inspectionPin,([bool]$PrepareLargeTails),([bool]$PlaceSourcePrefixes),$placementBytes,([bool]$SourceBackedPayloads) -ScriptBlock {
-        param($Stage,$Run,$Pin,$RequestPin,$TreePin,$InspectionPin,$Tails,$Place,$PlacementBytes,$SourceBacked);$ErrorActionPreference='Stop'
+    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,$run,$pin,$requestPin,$treePin,$inspectionPin,([bool]$PrepareLargeTails),([bool]$PlaceSourcePrefixes),$placementBytes,([bool]$SourceBackedPayloads),([bool]$CaptureSourceBackedDifferences) -ScriptBlock {
+        param($Stage,$Run,$Pin,$RequestPin,$TreePin,$InspectionPin,$Tails,$Place,$PlacementBytes,$SourceBacked,$CaptureDifferences);$ErrorActionPreference='Stop'
         $binary=Join-Path $Stage 'lab-allocate-private-tree.exe';$request=Join-Path $Stage 'request.json';$tree=Join-Path $Stage 'expectation.json'
         $inspection=Join-Path $Stage 'source-inspection.json'
         if((Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant()-cne$Pin-or(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()-cne$RequestPin-or(Get-FileHash -LiteralPath $tree).Hash.ToLowerInvariant()-cne$TreePin-or(Get-FileHash -LiteralPath $inspection).Hash.ToLowerInvariant()-cne$InspectionPin){throw 'Staged pins differ.'}
@@ -91,6 +94,7 @@ try{
         if($Tails){$arguments+=' --prepare-large-tails'}
         if($Place){$arguments+=' --place-source-prefixes --max-placement-bytes '+$PlacementBytes+' --max-placement-moves 64'}
         if($SourceBacked){$arguments+=' --source-backed-payloads'}
+        if($CaptureDifferences){$arguments+=' --compact-output "'+(Join-Path $Stage 'changed-clusters.bin')+'" --max-changed-bytes 805306368'}
         Register-ScheduledTask -TaskName $task -Action (New-ScheduledTaskAction -Execute $binary -Argument $arguments) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null
         @{task_name=$task;run_id=$Run;guest_stage=$Stage;binary=$binary;binary_sha256=$Pin;arguments=$arguments;request_sha256=$RequestPin;tree_sha256=$TreePin;inspection_sha256=$InspectionPin}
     }

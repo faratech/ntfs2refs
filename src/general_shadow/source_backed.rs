@@ -2,8 +2,8 @@
 //! shadow, full-cluster payload comes from logical NTFS reads at measured ReFS
 //! destinations. No payload-sized image or raw source writer is constructed.
 //! Frozen metadata-graph reconciliation is still required before cutover.
-use anyhow::{ensure, Context, Result};
-use n2r_win32::{shadow_native::private_tree::SourceBackedRoutes, GeneralFrozenPartition};
+use anyhow::{Context, Result, ensure};
+use n2r_win32::{GeneralFrozenPartition, shadow_native::private_tree::SourceBackedRoutes};
 use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -11,6 +11,19 @@ use std::io::{self, Read, Seek, SeekFrom};
 pub struct ReadCounts {
     pub source_logical_bytes: u64,
     pub shadow_bytes: u64,
+}
+
+#[derive(Serialize)]
+pub struct DifferenceCapture {
+    pub layout: crate::refs_hybrid::delta::DeltaLayout,
+    pub selected_bytes_compared: u64,
+    pub equal_selected_bytes: u64,
+    pub read_counts: ReadCounts,
+    pub source_selected_sha256: String,
+    pub candidate_selected_sha256: String,
+    pub packed_sha256: String,
+    pub input_plan_sha256: String,
+    pub conversion_qualified: bool,
 }
 
 pub struct SourceBackedShadow<'a> {
@@ -26,6 +39,7 @@ pub struct SourceBackedShadow<'a> {
     position: u64,
     counts: ReadCounts,
     poisoned: bool,
+    session: Option<crate::ntfs_inspect::PlainStreamRangeSession>,
 }
 
 impl<'a> SourceBackedShadow<'a> {
@@ -95,11 +109,130 @@ impl<'a> SourceBackedShadow<'a> {
             position: 0,
             counts: ReadCounts::default(),
             poisoned: false,
+            session: None,
         })
     }
 
     pub fn read_counts(&self) -> ReadCounts {
         self.counts
+    }
+
+    /// Compare the complete conservative selected set, storing only differing
+    /// clusters. This avoids filling both a shadow and its unused reservations.
+    /// Equal bytes are proved by comparison, never by guessing their purpose.
+    pub fn capture_differences_to_new_file(
+        mut self,
+        plan: &crate::refs_write_set::WriteSetPlan,
+        output: &std::path::Path,
+        max_changed_bytes: u64,
+    ) -> Result<DifferenceCapture> {
+        use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        ensure!(
+            plan.partition_bytes == self.length,
+            "delta capture geometry differs"
+        );
+        let selected_bytes = crate::refs_hybrid::packed::required_bytes(plan, &[])?;
+        let payload: Vec<_> = self
+            .routes
+            .entries()
+            .iter()
+            .map(|r| crate::refs_write_set::ByteRange {
+                offset: r.target_physical_offset,
+                length: r.length,
+            })
+            .collect();
+        ensure!(
+            crate::refs_write_set::payload_coverage(plan, &payload)?.all_supplied_payloads_covered,
+            "delta set omits measured user payload"
+        );
+        let input_plan_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(plan)?));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)?;
+        ensure!(
+            file.metadata()?.is_file() && file.metadata()?.len() == 0,
+            "delta output must be a new ordinary file"
+        );
+        let mut original = [0u8; 65536];
+        let mut candidate = [0u8; 65536];
+        let mut source_digest = Sha256::new();
+        let mut candidate_digest = Sha256::new();
+        let mut packed_digest = Sha256::new();
+        let mut changed = 0u64;
+        let mut compared = 0u64;
+        let mut ranges: Vec<ChangedRange> = Vec::new();
+        for range in &plan.target_owned_ranges {
+            for digest in [&mut source_digest, &mut candidate_digest] {
+                digest.update(range.offset.to_le_bytes());
+                digest.update(range.length.to_le_bytes());
+            }
+            let mut done = 0;
+            while done < range.length {
+                let count = (range.length - done).min(original.len() as u64) as usize;
+                let at = range.offset + done;
+                self.seek(SeekFrom::Start(at))?;
+                self.read_exact(&mut candidate[..count])?;
+                self.source.seek(SeekFrom::Start(at))?;
+                self.source.read_exact(&mut original[..count])?;
+                source_digest.update(&original[..count]);
+                candidate_digest.update(&candidate[..count]);
+                for offset in (0..count).step_by(4096) {
+                    if original[offset..offset + 4096] == candidate[offset..offset + 4096] {
+                        continue;
+                    }
+                    let next = changed
+                        .checked_add(4096)
+                        .context("delta byte count overflow")?;
+                    ensure!(
+                        next <= max_changed_bytes,
+                        "delta capture budget exhausted before next output write; preserve partial artifact"
+                    );
+                    let address = at + offset as u64;
+                    if let Some(last) = ranges.last_mut().filter(|r| r.offset + r.length == address)
+                    {
+                        last.length += 4096;
+                    } else {
+                        ensure!(
+                            ranges.len() < 65536,
+                            "delta range budget exhausted before output write"
+                        );
+                        ranges.push(ChangedRange {
+                            offset: address,
+                            length: 4096,
+                            packed_offset: changed,
+                        });
+                    }
+                    file.write_all(&candidate[offset..offset + 4096])?;
+                    packed_digest.update(&candidate[offset..offset + 4096]);
+                    changed = next;
+                }
+                done += count as u64;
+                compared = compared
+                    .checked_add(count as u64)
+                    .context("delta comparison overflow")?;
+            }
+        }
+        file.sync_all()?;
+        ensure!(
+            compared == selected_bytes && file.metadata()?.len() == changed,
+            "delta comparison/output accounting differs"
+        );
+        let layout = DeltaLayout::new(self.length, changed, ranges)?;
+        let read_counts = self.finish()?;
+        Ok(DifferenceCapture {
+            layout,
+            selected_bytes_compared: compared,
+            equal_selected_bytes: compared - changed,
+            read_counts,
+            source_selected_sha256: hex::encode(source_digest.finalize()),
+            candidate_selected_sha256: hex::encode(candidate_digest.finalize()),
+            packed_sha256: hex::encode(packed_digest.finalize()),
+            input_plan_sha256,
+            conversion_qualified: false,
+        })
     }
 
     /// Capture selected bytes directly from this source-backed view. Retained
@@ -208,8 +341,11 @@ impl<'a> SourceBackedShadow<'a> {
 
     /// A consumer must require this bracket after capture. It does not prove
     /// required-byte graph completeness or authenticate a new filesystem.
-    pub fn finish(self) -> Result<ReadCounts> {
+    pub fn finish(mut self) -> Result<ReadCounts> {
         ensure!(!self.poisoned, "failed source-backed reader cannot finish");
+        if let Some(session) = self.session.take() {
+            session.finish(self.source, self.raw)?;
+        }
         let mut events = Vec::new();
         ensure!(
             self.source.state(&mut events)? == self.source_before
@@ -245,19 +381,34 @@ impl<'a> SourceBackedShadow<'a> {
             let route = route.unwrap();
             let object = &self.tree.objects[route.object_index];
             let logical = route.logical_offset + self.position - route.target_physical_offset;
-            let proof = crate::ntfs_inspect::read_plain_stream_range_into(
+            if self
+                .session
+                .as_ref()
+                .is_none_or(|s| s.record_number() != object.record_number)
+            {
+                if let Some(old) = self.session.take() {
+                    old.finish(self.source, self.raw)?;
+                }
+                self.session = Some(crate::ntfs_inspect::PlainStreamRangeSession::open(
+                    self.source,
+                    self.raw,
+                    object.record_number,
+                    object.length,
+                )?);
+            }
+            let session = self.session.as_mut().unwrap();
+            ensure!(
+                session.stream_length() == route.stream_length
+                    && session.expected_sha256() == route.expected_sha256,
+                "source-backed read differs from bound stream"
+            );
+            session.read(
                 self.source,
                 self.raw,
-                object.record_number,
                 logical,
                 &mut output[..count],
                 &mut self.budget,
             )?;
-            ensure!(
-                proof.stream_logical_bytes == route.stream_length
-                    && proof.expected_stream_sha256 == route.expected_sha256,
-                "source-backed read differs from bound stream"
-            );
             self.counts.source_logical_bytes = self
                 .counts
                 .source_logical_bytes

@@ -191,7 +191,8 @@ pub fn run(pair: &GeneralSourceShadowBinding, experiment: &str) -> io::Result<se
     }))
 }
 
-/// Reopen only the exact previously created file, on a read-only shadow.
+/// Read metadata at the recorded private path on a read-only shadow. File-ID
+/// equivalence is reported separately; mismatches never qualify adoption.
 /// No privilege change, payload read, flush, valid-data call or write occurs.
 pub fn observe_existing(
     pair: &GeneralSourceShadowBinding,
@@ -247,28 +248,24 @@ pub fn observe_existing(
         .custom_flags(0x00200000)
         .open(&path)?;
     let standard = info(&file, 1, 24)?;
-    if info(&file, 18, 24)?.as_slice() != expected_file_id_info
-        || u64::from_le_bytes(standard[..8].try_into().unwrap()) != FILE_BYTES
-        || u64::from_le_bytes(standard[8..16].try_into().unwrap()) != FILE_BYTES
-        || u32::from_le_bytes(standard[16..20].try_into().unwrap()) != 1
-        || standard[20] != 0
-        || standard[21] != 0
-    {
-        return Err(invalid(
-            "private file identity, allocation, EOF or type changed",
-        ));
-    }
+    let actual_id = info(&file, 18, 24)?;
+    let identity_matches = actual_id.as_slice() == expected_file_id_info;
+    // Deferred allocation can change when an unwritten tail is closed. Record
+    // that observation rather than discarding all diagnostic evidence. This
+    // does not relax any converter or extent-adoption gate.
+    let metadata_matches = u64::from_le_bytes(standard[8..16].try_into().unwrap()) == FILE_BYTES
+        && u32::from_le_bytes(standard[16..20].try_into().unwrap()) == 1
+        && standard[20] == 0
+        && standard[21] == 0;
     let before = observation(&file);
     let after = observation(&file);
     let source_after =
         native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
     let shadow_after =
         native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
-    if info(&file, 18, 24)?.as_slice() != expected_file_id_info
-        || info(&file, 1, 24)? != standard
-        || source_before != source_after
-        || shadow_before != shadow_after
-    {
+    let after_id = info(&file, 18, 24)?;
+    let after_standard = info(&file, 1, 24)?;
+    if source_before != source_after || shadow_before != shadow_after {
         return Err(invalid(
             "private file or protected disk changed during observation",
         ));
@@ -276,7 +273,11 @@ pub fn observe_existing(
     Ok(serde_json::json!({
         "schema_version":1,"kind":"native-private-valid-data-observation",
         "experiment_id":experiment,"path":path,"expected_file_id_info":hex::encode(expected_file_id_info),
-        "file_id_info_matches":true,"before":before,"after":after,
+        "file_id_info_matches":identity_matches && after_id==actual_id,
+        "observed_file_id_info":hex::encode(&actual_id),"after_file_id_info":hex::encode(&after_id),
+        "file_metadata_matches":metadata_matches,"standard_info_stable":after_standard==standard,
+        "before_standard_info":standard,"after_standard_info":after_standard,
+        "before":before,"after":after,
         "source_before":source_before,"source_after":source_after,
         "shadow_before":shadow_before,"shadow_after":shadow_after,"events":events,
         "payload_write_calls":0,"payload_reads":0,"valid_data_calls":0,"privilege_changes":0,

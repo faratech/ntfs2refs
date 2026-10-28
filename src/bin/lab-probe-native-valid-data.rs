@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     );
     let request: ntfs2refs::general_reconstruct::Request = serde_json::from_slice(&bytes)?;
     request.validate()?;
-    let result = if args.observe_existing {
+    let attempted = if args.observe_existing {
         let id = hex::decode(
             args.expected_file_id_info
                 .as_deref()
@@ -52,13 +52,21 @@ fn main() -> anyhow::Result<()> {
             &request.pair,
             &args.experiment_id,
             &id,
-        )?
+        )
     } else {
         ensure!(
             args.expected_file_id_info.is_none(),
             "file ID is only valid for observation"
         );
-        n2r_win32::shadow_native::valid_data_probe::run(&request.pair, &args.experiment_id)?
+        n2r_win32::shadow_native::valid_data_probe::run(&request.pair, &args.experiment_id)
+    };
+    let failure = attempted.as_ref().err().map(|error| error.to_string());
+    let result = match attempted {
+        Ok(value) => value,
+        Err(error) => serde_json::json!({"schema_version":1,
+            "kind":"native-private-valid-data-failure","experiment_id":args.experiment_id,
+            "observe_existing":args.observe_existing,"error":error.to_string(),
+            "native_error":error.raw_os_error(),"conversion_qualified":false}),
     };
     let mut file = OpenOptions::new()
         .write(true)
@@ -66,6 +74,9 @@ fn main() -> anyhow::Result<()> {
         .open(&args.output)?;
     file.write_all(&serde_json::to_vec_pretty(&result)?)?;
     file.sync_all()?;
+    if let Some(error) = failure {
+        anyhow::bail!("native private validity observation failed: {error}");
+    }
     println!("Private validity probe complete; original source was not opened for writes.");
     Ok(())
 }

@@ -974,3 +974,21 @@ mutator0c9fa6caaff35c2d56cc2e6f83db0d4a5ed0622fc2d98446e74f0c591e2485dd,
 sourcec6d496d1ac3a901d5b27807c3d8c7c5c0ac45b78. Release build passed; no guest
 execution or native post-cutover qualification of this new check yet. No unit
 tests were added/run. All existing semantic/mount-path checks remain required.
+
+Candidate12 crossed the previous profile failure: prepare.json and ticket.json
+are durable, and the same PID724 entered raw-apply. At03:10:45 UTC source was
+persistently OFFLINE but writable for the exact journal policy; shadow remained
+OFFLINE|READ_ONLY. Do not mount, stop, restore or run another writer while live.
+The copied observed-prepare.json is44,142 bytes, SHA-256
+77b7eec31852e35d245713afffd68fc63328140668501e1effd18ecbb9e5c5cd.
+It records470 patches,609,918,976 changed bytes, journal length1,219,922,842,
+immutable length1,219,914,650 and immutable SHA-256
+cbabc24ea08e5eb99c6b3262bf8fe74e1fdace83966c26a80a68c3cd6000b9fb.
+Preparation's source_admitted/execution_authorized flags remain false by design;
+actual activation comes only from the separate live admission certificate.
+ticket.json is held exclusively by the active converter; a read-only copy
+attempt was refused by the file lock. No alternate access was used; wait for
+termination before archiving it. At03:12:03 UTC same PID was live,633.90 GB read,
+1.223 GB process writes (includes journal), lab250,443,634,722 bytes and host
+free95,022,481,408 bytes. Raw-apply status is not proof of completed patching or
+native acceptance. Continue the same candidate12 task, reserve64 GiB/cap256 GiB.

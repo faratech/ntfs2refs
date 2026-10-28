@@ -760,3 +760,43 @@ Before invoking that helper, inspect the same live sizing task; never terminate
 or redispatch it to pick up a later binary. The public/recovery/sizing release
 builds also passed after be43a24's CNG v2 recheck change; that change has no
 native workflow result yet. No unit tests have been added or run.
+
+The sizing job completed at exit 0: 609,693,696 changed bytes, 479 ranges,
+1,236,164,608-byte conservative journal requirement. Its pinned result is
+candidate5/valid-data-probe/sizing-result.json. The private valid-data call then
+succeeded (experiment a060e73a480440a3af174f4c98af60c8), with no tool payload
+read/write. The leading negative retrieval marker became physical and the first
+1 MiB became storage-valid; the extra 4 KiB tail remained unwritten. Result
+d3ac78c0abb021dc57c5ccac5d09c7a1f69e004439078f1b52b9f27ee707651e.
+Read-only reopen attempts v1/v2 refused a mistakenly reused writable-only
+volume helper, not data validity. V2's durable failure is e774db52...ddee63.
+The corrected v3 observer passed after a clean reboot: same file ID, EOF,
+stable standard info and the same valid-prefix/unwritten-tail state. Result
+dbbe0e26a4be5ea2b676cca71d7c8975a6322d5650f0be4643076361d35dd3e3.
+No payload reads/writes, valid-data calls or privilege changes occurred in that
+observer. This is a one-MiB allocation/validity primitive, not adoption,
+physical-I/O measurement, zero-copy conversion or production qualification.
+
+The failed conversion is preserved OFF at b3aee3e3-a5e1-4cf2-b69d-c1903a885bff;
+the private allocation at d1fce698-7f44-46d3-bf5b-a121e5f43fd8; reboot observation
+at 24cfdd12-9b9c-4bd0-8322-a94da6d98708. All twelve checkpoints remain. Only this
+owned VM returned to b3aee3e3 for the corrected conversion. Its source is live
+NTFS; its existing shadow is mounted read-only for discovery and is excluded
+again before the new converter starts. No new shadow payload copy is planned.
+Frozen v2 reuse requires fresh source admission and protected native target,
+checksum and allocator proofs; it caps compared patch ranges at 1024. Legacy
+construction is unchanged. Candidates 6/7/8 refused discovery before any
+converter task was registered: single-string argument splatting, writable-only
+discovery attributes, then a second native filesystem read-only flag check.
+Their separate stages/logs remain; never redispatch them. The explicit
+ShadowReadOnly discovery role fixes the routing while other roles stay strict.
+
+Mike's as-needed storage permission for this same retention case was relayed
+through task 01a17583-cb33-74ae-912d-1b7e1c991016, quoting "AS MUCH STORAGE AS
+NEEDED IS AUTHORIZED" and "don't exceed all available storage". The cap is now
+256 GiB, reserve still 64 GiB, VM still fixed 4 GiB. Frozen retry admission
+requires 20 GiB conservative growth allowance, measured 2-MiB VHDX blocks and
+the bounded 1536-MiB journal. This covers source COW intervals, the full eight-
+GiB journal device, OS and metadata margin; monitor actual capacity as well.
+No deletion, additional competing run, CI or credential change is authorized
+by that relay. Continue as sole lab owner and preserve all evidence.

@@ -335,27 +335,48 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
         let same = |a: &[u8], b: &[u8]| {
             ntfs_attestation::same_security(a, b).map_err(|e| std::io::Error::other(e.to_string()))
         };
-        let native = if verify_existing {
-            shadow_native::verify_general_ordinary_with_resource_profile(
-                pair.clone(),
-                &input,
-                same,
-                resources.native_profile(),
-            )?
+        let reuse_frozen = verify_existing
+            && resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
+            && n2r_win32::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
+                .disk_attributes
+                == 3;
+        let native = if reuse_frozen {
+            save(
+                output,
+                "native-shadow-reuse.json",
+                &serde_json::json!({
+                    "kind":"frozen-native-shadow-reuse-intent","payload_bytes_written":0,
+                    "requires_fresh_protected_semantics":true,"execution_authorized":false
+                }),
+            )?;
+            None
+        } else if verify_existing {
+            Some(
+                shadow_native::verify_general_ordinary_with_resource_profile(
+                    pair.clone(),
+                    &input,
+                    same,
+                    resources.native_profile(),
+                )?,
+            )
         } else {
-            shadow_native::run_general_ordinary_streaming_with_resource_profile(
-                pair.clone(),
-                &input,
-                true,
-                &mut writer,
-                |a, b| {
-                    ntfs_attestation::same_security(a, b)
-                        .map_err(|e| std::io::Error::other(e.to_string()))
-                },
-                resources.native_profile(),
-            )?
+            Some(
+                shadow_native::run_general_ordinary_streaming_with_resource_profile(
+                    pair.clone(),
+                    &input,
+                    true,
+                    &mut writer,
+                    |a, b| {
+                        ntfs_attestation::same_security(a, b)
+                            .map_err(|e| std::io::Error::other(e.to_string()))
+                    },
+                    resources.native_profile(),
+                )?,
+            )
         };
-        save(output, "native-shadow.json", &native)?;
+        if let Some(native) = &native {
+            save(output, "native-shadow.json", native)?;
+        }
         phase = "target-preservation-freeze";
         let (target, proof) = general_target_preservation::verify_and_freeze(
             &mut source,
@@ -366,8 +387,14 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             max_change_bytes,
             profile,
             resources,
+            reuse_frozen,
             &mut events,
         )?;
+        if reuse_frozen {
+            // This is a new live read-only native report, never an imported
+            // construction report or a serialized admission capability.
+            save(output, "native-shadow.json", proof.native_report())?;
+        }
         save(output, "target-preservation.json", &proof)?;
         save(output, "target-events.json", &events)?;
         phase = "source-certificate";

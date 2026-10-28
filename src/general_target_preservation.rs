@@ -224,6 +224,9 @@ impl FrozenTargetPreservation {
     pub fn pair(&self) -> &GeneralSourceShadowBinding {
         &self.pair
     }
+    pub(crate) fn native_report(&self) -> &n2r_win32::shadow_native::GeneralReport {
+        self.native.native().report()
+    }
     pub(crate) fn source_views_sha256(&self) -> &str {
         &self.source_views_sha256
     }
@@ -243,6 +246,7 @@ pub fn verify_and_freeze(
     max_change_bytes: u64,
     profile: n2r_win32::journal_file::JournalProfile,
     resources: crate::ntfs_admission::ResourceProfile,
+    reuse_frozen: bool,
     events: &mut Vec<NativeEvent>,
 ) -> Result<(GeneralFrozenPartition, FrozenTargetPreservation)> {
     pair.validate_with_resource_profile(resources.native_profile())?;
@@ -282,7 +286,15 @@ pub fn verify_and_freeze(
     tree.bind_security_views(source_views)?;
     let expected = shadow_tree::ExpectedTree::from(&tree);
     expected.validate_with_resource_profile(resources)?;
-    let mut target = GeneralFrozenPartition::isolate(pair.shadow.clone(), events)?;
+    let mut target = if reuse_frozen {
+        ensure!(
+            resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
+            "frozen-shadow reuse requires the explicit streaming profile"
+        );
+        GeneralFrozenPartition::reopen(pair.shadow.clone(), events)?
+    } else {
+        GeneralFrozenPartition::isolate(pair.shadow.clone(), events)?
+    };
     let before = target.state(events)?;
     let length = target.byte_len();
     let native = verify_frozen_tree_with_resource_profile(
@@ -339,8 +351,13 @@ pub fn verify_and_freeze(
             && refs.backup_header_status == refs_inspect::BackupHeaderStatus::Matching,
         "frozen target ReFS format differs"
     );
-    let comparison =
+    let mut comparison =
         placement.comparison_request(length, source_sha256, &target_sha256, max_change_bytes)?;
+    if reuse_frozen {
+        // Bound the retry's patch metadata and sparse COW allocation exposure.
+        // The existing complete comparison refuses excess ranges before writes.
+        comparison.max_ranges = 1024;
+    }
     let retained_allocation = if comparison.retained_ranges.is_empty() {
         None
     } else {

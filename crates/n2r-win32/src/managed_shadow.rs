@@ -9,13 +9,13 @@ use crate::{
     native,
 };
 use std::{
-    fs::{self, File},
-    io, mem,
-    os::windows::{fs::MetadataExt, io::AsRawHandle},
+    fs::{self, File, OpenOptions},
+    io::{self, Write}, mem,
+    os::windows::{fs::{MetadataExt, OpenOptionsExt}, io::AsRawHandle},
     path::{Component, Path, PathBuf, Prefix},
     process::{Command, Stdio},
     ptr,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows_sys::{
     Win32::{
@@ -251,7 +251,7 @@ impl AttachedDisk {
         }
         Ok(())
     }
-    fn initialize(&self, partition_bytes: u64) -> io::Result<GeneralDiskBinding> {
+    fn initialize(&self, partition_bytes: u64, stage_path: &Path) -> io::Result<GeneralDiskBinding> {
         self.verify_provider()?;
         if native::current_windows_disk(&mut Vec::new())? == self.number {
             return Err(invalid("new staging provider routes to Windows disk"));
@@ -289,8 +289,9 @@ impl AttachedDisk {
             )
         };
         control(&disk, IOCTL_DISK_CREATE_DISK, input, 0)?;
-        // Windows requires GPT/MSR arrival before SET_DRIVE_LAYOUT_EX. Query
-        // the real layout, never synthesize usable bounds or replace its MSR.
+        // Wait for the real GPT usable bounds. Preserve an observed MSR;
+        // CREATE_DISK may leave an empty table, in which case ready_layout
+        // explicitly creates the MSR on this owned new disk only.
         let mut settled = None;
         for _ in 0..120 {
             control(&disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
@@ -304,7 +305,7 @@ impl AttachedDisk {
         let (mut header, msr) = settled.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::TimedOut,
-                "owned staging GPT/MSR did not settle; attachment retained",
+                "owned staging GPT did not settle; attachment retained",
             )
         })?;
         let number = layout::u32_at(&msr, 24)?
@@ -348,8 +349,46 @@ impl AttachedDisk {
         let actual = control(&disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], 65536)?;
         binding.validate_layout(&actual)?;
         drop(disk);
-        native::rediscover_general_volume_wait(binding, &mut Vec::new())
+        rediscover_stage(binding, stage_path, "partition-volume")
     }
+}
+
+fn sidecar(path: &Path, phase: &str) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).share_mode(1)
+        .custom_flags(0x0020_0000).open(path.with_extension(phase))
+}
+
+/// Each native attempt keeps its full per-call controls and identity checks.
+/// Diagnostic JSONL is bounded and never creates/replays an authority token.
+fn rediscover_stage(
+    binding: GeneralDiskBinding, path: &Path, phase: &str,
+) -> io::Result<GeneralDiskBinding> {
+    let mut report=sidecar(path,&format!("{phase}.jsonl"))?;
+    let started=Instant::now();let mut written=0usize;
+    for attempt in 0..60 {
+        let mut events=Vec::new();
+        let observed=native::rediscover_general_volume(binding.clone(),&mut events);
+        let record=serde_json::json!({"kind":"managed-shadow-volume-discovery-attempt",
+            "phase":phase,"attempt":attempt+1,"elapsed_milliseconds":started.elapsed().as_millis(),
+            "requested_binding":binding,"observed_binding":observed.as_ref().ok(),
+            "error":observed.as_ref().err().map(ToString::to_string),"events":events,
+            "diagnostic_only":true,"serialized_observation_is_not_authority":true});
+        let bytes=serde_json::to_vec(&record).map_err(io::Error::other)?;
+        written=written.checked_add(bytes.len()+1)
+            .filter(|count|*count<=16*1024*1024)
+            .ok_or_else(||invalid("staging discovery diagnostic exceeds 16 MiB"))?;
+        report.write_all(&bytes)?;report.write_all(b"\n")?;report.sync_all()?;
+        match observed {
+            Ok(actual)=>return Ok(actual),
+            Err(error) if error.kind()==io::ErrorKind::NotFound
+                && attempt<59 && started.elapsed()<Duration::from_secs(15)=>{
+                    let remaining=Duration::from_secs(15).saturating_sub(started.elapsed());
+                    std::thread::sleep(remaining.min(Duration::from_millis(250)));
+                },
+            Err(error)=>return Err(error),
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::TimedOut,"owned staging volume was not published; attachment retained"))
 }
 
 fn ready_layout(raw: &[u8], disk: &GUID, bytes: u64) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {
@@ -397,6 +436,22 @@ fn ready_layout(raw: &[u8], disk: &GUID, bytes: u64) -> io::Result<Option<(Vec<u
             ));
         }
         msr = Some(row.to_vec());
+    }
+    if msr.is_none() {
+        let offset = first.max(1 << 20).div_ceil(1 << 20) * (1 << 20);
+        let length = 16u64 << 20;
+        if offset.checked_add(length).is_none_or(|v| v > OFFSET || v > end) {
+            return Err(invalid("owned staging GPT has no room for an MSR"));
+        }
+        let mut entry = vec![0u8; 144];
+        entry[..4].copy_from_slice(&1u32.to_le_bytes());
+        entry[8..16].copy_from_slice(&offset.to_le_bytes());
+        entry[16..24].copy_from_slice(&length.to_le_bytes());
+        entry[24..28].copy_from_slice(&1u32.to_le_bytes());
+        entry[28] = 1;
+        entry[32..48].copy_from_slice(&msr_type);
+        entry[48..64].copy_from_slice(&guid_bytes(&random_guid()?));
+        msr = Some(entry);
     }
     Ok(msr.map(|entry| (raw[..48].to_vec(), entry)))
 }
@@ -475,6 +530,9 @@ pub fn create(
             ..Default::default()
         },
     };
+    // Refuse an unavailable management privilege before creating any backing.
+    // The lease restores its actual previous state on every error path.
+    let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
     let mut handle = ptr::null_mut();
     // SAFETY: version2 default-zero parameters have no parent/source path;
     // zero flags select dynamic allocation. Creation refuses an existing file.
@@ -501,9 +559,8 @@ pub fn create(
         logical: logical_sector,
         physical: physical_sector,
     };
-    let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
     let attached = created.attach()?;
-    let binding = attached.initialize(partition_bytes)?;
+    let binding = attached.initialize(partition_bytes, path)?;
     privileges.restore()?;
     let mut system = [0u16; 32768];
     // SAFETY: initialized buffer and explicit WCHAR capacity.
@@ -520,6 +577,8 @@ pub fn create(
     .join("format.com");
     // This volume route derives ONLY from the newly created provider handle.
     // No shell, caller-selected physical device, stdin answer, or source enters.
+    let stdout=sidecar(path,"format.stdout.log")?;
+    let stderr=sidecar(path,"format.stderr.log")?;
     let status = Command::new(formatter)
         .args([
             binding.volume_path()?,
@@ -531,9 +590,11 @@ pub fn create(
             "/Y".into(),
         ])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout.try_clone()?))
+        .stderr(Stdio::from(stderr.try_clone()?))
         .status()?;
+    stdout.sync_all()?;
+    stderr.sync_all()?;
     if !status.success() {
         return Err(io::Error::other(format!(
             "owned staging native format refused ({status}); backing retained at {}",
@@ -543,7 +604,7 @@ pub fn create(
     attached.verify_provider()?;
     // Formatting may replace the filesystem's mount-manager identity. Rebind
     // only by the unchanged actual GPT partition and physical volume extents.
-    let binding = native::rediscover_general_volume_wait(binding, &mut Vec::new())?;
+    let binding = rediscover_stage(binding, path, "formatted-volume")?;
     let observed = discovery::discover(&(binding.volume_path()? + "\\"), discovery::Role::Shadow)?;
     if observed.binding != binding
         || observed.filesystem != "ReFS"

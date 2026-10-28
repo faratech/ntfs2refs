@@ -1,5 +1,27 @@
 # ntfs2refs project guidance
 
+COMPACT IN-PLACE FIXTURE CONVERSION NATIVE PASSED c75ec9ec8a104f99b630c92343b44ca1.
+Raw138 patches/70,406,144 source bytes, full premount target2b2aa8c51a0ed3676a31255f6121152fedfb29b459c20246c1546135fe769391.
+Real driver mounted ORIGINAL disk1/GPT1b191872/partitionf06075a8 as ReFS4K,
+label n2r-stream-source/mount paths preserved. Native all14 metadata/namespace,
+all9 full file hashes/8,590,217,322 logical bytes passed, verifier payloadwrites0.
+HND recorded/rollback CLOSED. NEVER replay old journal on converted branch.
+Executionae9a061e03d818d3cf0b05cb1e38312629fe4d5c87aa474b577470483e06157e;
+final7c02dcf584fb170ff9abcbba81e9753bbe996340555b9fed31606e4d4a0cd196;
+result4ec0ae18b07a8a879ff21c2d802ddc365433f9f67e00881bcf6f762410f01e8d;
+postHNDjournalafcbe92a85f9ec409547ea7c04557676df1c62f5eaaff69c2f58cc3bb27bf6e4.
+Host archive compact-fixture-apply-20261028/canonical-identity, guest output
+C:\ntfs2refs\compact-apply-c75ec9ec8a104f99b630c92343b44ca1\result.
+OFF/f5adf4aa-ef43-4201-9ad1-8eec3b495405 parent5971d348, ALL37 snapshots, RAM
+released. New childOS732/source227/J17/shadow4 MiB=980 MiB excludes parents/base/
+deviceIO; source child includes post-mount ReFS COW, not raw write-byte count.
+No cap/reserve raise. PID3456/taskc75... TERMINAL0; monitor stopped, archive54154
+completed. DO NOT restart. Exact fixture/zero-large-file only, source_admitted/
+general qualification FALSE. General SourceCertificate unchanged.
+NEXT: reboot/mutation of saved converted branch, compact process interruption/
+resume/rollback from ONLY separate preapply5971 branch. Preserve all evidence;
+then genuine generic admission to replace fixed-corpus gate. No unit tests.
+
 COMPACT RAW APPLY SUCCEEDED; HND/NATIVE FINALIZATION STILL LIVE. Do NOT restart,
 restore/format/rollback or mount source manually. Canonical run
 c75ec9ec8a104f99b630c92343b44ca1, taskN2R-CompactApply-c75ec9ec8a104f99b630c92343b44ca1,

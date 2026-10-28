@@ -1,5 +1,52 @@
 # Candidate ReFS target write set
 
+## Native compact in-place fixture conversion passed
+
+Canonical runc75ec9ec8a104f99b630c92343b44ca1 completed raw apply, durable HND
+and native ReFS verification on the original NTFS source disk/partition. The
+source was not copied to another filesystem. The shadow supplied metadata and
+small materialized streams; large prefixes were supplied on demand from the
+frozen original. Only70,406,144 source bytes were journal-written in138 patches.
+Before native mount, the entire52-GiB result matched
+2b2aa8c51a0ed3676a31255f6121152fedfb29b459c20246c1546135fe769391.
+
+Microsoft's driver subsequently mounted disk1 as ReFS/4-KiB with original label
+`n2r-stream-source` and original mount paths. Native verification passed all14
+objects' metadata/namespace and9 complete file hashes totaling8,590,217,322
+logical bytes. Verifier payload writes were zero. The durable handoff recorded
+`rollback_closed=true`; the old journal must not replay over this operational
+ReFS branch. Ordinary writable mount/label restoration may change metadata
+after the exact pre-mount image hash; that is outside NTFS rollback.
+
+Producer78d881524aa5a3d9edfabc6b01d41e85389a1e13ac076866d53c0560f1357aa2
+was built from29f989e plus the pre-existing main.rs change. Execution report:
+ae9a061e03d818d3cf0b05cb1e38312629fe4d5c87aa474b577470483e06157e.
+Finalization7c02dcf584fb170ff9abcbba81e9753bbe996340555b9fed31606e4d4a0cd196;
+result4ec0ae18b07a8a879ff21c2d802ddc365433f9f67e00881bcf6f762410f01e8d;
+event0b80e152ed952fd8e922021089b10c98d67bf813ab0310615de785ce78fe90c4.
+Full post-HND journal:
+afcbe92a85f9ec409547ea7c04557676df1c62f5eaaff69c2f58cc3bb27bf6e4.
+Host evidence:
+`.lab/hyperv/streaming-v2-20261027/compact-fixture-apply-20261028/canonical-identity`.
+Guest output is
+`C:\ntfs2refs\compact-apply-c75ec9ec8a104f99b630c92343b44ca1\result`.
+
+Cleanly stopped and saved atf5adf4aa-ef43-4201-9ad1-8eec3b495405, parent5971d348,
+all37 checkpoints preserved and4-GiB RAM released. New child backing was
+OS732/source227/journal17/shadow4 MiB (980 MiB total), excluding all parents,
+base images, host reports and physical device I/O. The source child includes
+subsequent normal native ReFS metadata writes; it is not the raw writer count.
+No reserve/cap was raised. No unit tests added/run.
+
+This is an exact explicitly acknowledged disposable-fixture experiment with a
+large zero-filled file. Production source-admission/general-conversion flags
+remain false; this is not arbitrary-volume/large-nonzero/boot qualification.
+Next gates are native reboot/mutation and compact interrupted resume/rollback,
+then replacing the exact fixture gate with genuine general source/target
+admission. The existing SourceCertificate was not weakened or reconstructed
+from old success JSON. Preserve this converted branch before restoring only
+the separate preapply5971d348 branch for recovery tests.
+
 ## Exact-fixture cutover experiment
 
 The first native launch did not start its PowerShell wrapper under the guest's

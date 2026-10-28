@@ -630,7 +630,9 @@ fn allocate_checked(
         if let Some(mut owned) = enrollment {
             owned.revalidate()?;
             let observed = owned.observation();
-            events.append(&mut owned.events);
+            // Enrollment retains its complete audit in the observation. This
+            // constructor is a separate native-control phase with its own
+            // bound; do not charge the same earlier queries a second time.
             (
                 owned.privileges,
                 owned.root,

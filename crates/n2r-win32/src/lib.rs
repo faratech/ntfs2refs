@@ -10,6 +10,8 @@ mod bitmap_observation;
 pub mod bitmap_paging;
 pub mod bitmap_streaming;
 pub mod discovery;
+#[cfg(windows)]
+pub mod file_storage;
 pub mod general_layout;
 #[cfg(windows)]
 pub mod journal_file;

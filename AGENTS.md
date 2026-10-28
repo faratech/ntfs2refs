@@ -1,5 +1,17 @@
 # ntfs2refs project guidance
 
+INTERRUPT949... VERIFIED LIVE20:18:07Z:5364creation1793217057038/wrapper700;
+source3/shadow3, taskRunning, read436.628GBapprox/write72.685MB, peak68.7MiB.
+Packed capture completed70,729,728B; no certificate/journal/source apply yet.
+Do NOT infer controlled86/stop/restore/recover. Same pinned5e156f build.
+Rootcurrentlywaitingwithdelta_artifact_reader metadata monitor. Current
+Preserve-AdmittedInterruption and Start-AdmittedCompactRecovery scripts are
+committed, statically parsed/reviewed, NOT executed. Their gates require real
+terminal86 then marker/pin/exclusion proof, partial45/all44 before recovery.
+Keep normal43/44 untouched. One50GBmax329374052988/min17179869184 unchanged.
+No further cleanup, units or other disk experiment. main.rs remains original
+unstaged. Earlier notes are milestone history. Native recovery remains pending.
+
 INTERRUPT949... STILL LIVE20:17:05Z: same5364/creation1793217057038, wrapper700,
 taskRunning; reads424,355,359,261/write72,672,791B, source3/shadow3. Fresh placement,
 exceptions, owned metadata15 and target freeze completed. Complete-address-space

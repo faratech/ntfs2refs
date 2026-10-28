@@ -1,5 +1,57 @@
 # Allocation-only canonical tree staging
 
+## Native frozen difference capture passed
+
+Run98c2e2625f94488b8dfbb85eb3118184 PASSED end-to-end private staging,
+mounted allocation capture, native LOCK/dismount/offline/read-only freeze,
+source-backed comparison, durable changed-cluster capture and bootstrap
+inspection through `DifferenceImage`. Producer
+7249c42533a88a2f1262ca01a6101f960176b679f14a96852dc5f6e5a9967b53
+was built from0d2e0f6 plus the pre-existing main.rs change.
+
+| Observation | Bytes |
+|---|---:|
+| Conservative selected target set compared | 14,764,498,944 |
+| Equal selected bytes served by original | 14,694,330,368 |
+| Dense changed-cluster file,136 ranges | 70,168,576 |
+| Logical NTFS prefix reads | 8,590,196,736 |
+| Shadow metadata/tail reads | 6,174,302,208 |
+
+Result SHA-256:
+1f4cac974ccee3e36108c33ccf51d4d3a4a6cd416d6e0d8e168b795e9d595086.
+Packed SHA-256 (independently rehashed through the guest filesystem):
+25a68f1f4c425bb4e4efbc390a251debdbea5b49ea9d14e28ee23e2371d3a1c6.
+Input-plan SHA-256:
+a8560a407dc0a4ff53aa35f65a099de35d98c3c05ec0a9cc4c5616cac4a05397.
+Ordered selected candidate/source digests are retained in the result; they
+include range framing and are not whole-image hashes.
+
+The source stayed offline/read-only. The shadow was also offline/read-only
+during comparison. Only18 small/tail bytes were initialized through native
+private file writes; large prefixes were supplied from NTFS on demand.
+The final difference-backed inspector validated the VBR checksum; this is
+bootstrap inspection, NOT a complete filesystem graph or native-driver mount.
+
+Evidence root:
+`.lab/hyperv/streaming-v2-20261027/difference-capture-mounted-bitmap-20261028`.
+The packed file remains within the preserved guest at
+`C:\ntfs2refs\private-tree-98c2e2625f94488b8dfbb85eb3118184\changed-clusters.bin`;
+no redundant host copy was made. Metadata reports, pins and child-storage
+observations are archived on the host.
+
+New VHDX child filesystem backing: OS792 MiB (including the66.9-MiB changed
+file and normal guest boot activity), source4 MiB, journal13 MiB, shadow138 MiB;
+total947 MiB, excluding every parent/base, host reports and physical-device I/O.
+These are lab backing observations, not a universal conversion scratch bound.
+The worker's sampled working set was about4.3-7.4 MiB during capture, not its
+measured peak or total VM memory. After clean shutdown, checkpoint
+ee605f95-f281-4ad6-90f5-324ae50aaf25 preserved all32 snapshots, parent6ffb6bdc,
+and released the VM's4-GiB RAM. Cap256 GiB/reserve64 GiB unchanged.
+
+No source conversion was performed. Restoring source metadata/system objects,
+independent frozen required-byte reconciliation, candidate admission and
+journaled cutover/recovery remain. No unit tests added/run.
+
 ## Frozen source-backed difference capture
 
 The staging helper can now preserve live typed routes across closing all

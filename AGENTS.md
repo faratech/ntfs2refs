@@ -1,5 +1,27 @@
 # ntfs2refs project guidance
 
+FROZEN SOURCE-BACKED DIFFERENCE CAPTURE PASSED, run98c2e2625f94488b8dfbb85eb3118184,
+source0d2e0f6+pre-existing main.rs change, producer7249c42533a88a2f1262ca01a6101f960176b679f14a96852dc5f6e5a9967b53.
+Result1f4cac974ccee3e36108c33ccf51d4d3a4a6cd416d6e0d8e168b795e9d595086;
+packed25a68f1f4c425bb4e4efbc390a251debdbea5b49ea9d14e28ee23e2371d3a1c6
+independently rehashed. Compared14,764,498,944 selected bytes; equal14,694,330,368;
+changed70,168,576 (136 ranges). Source logical read8,590,196,736/shadow6,174,302,208.
+Private18-byte initialization only; source stayed3, shadow froze3, difference-
+image bootstrap inspection succeeded. NOT source conversion/native mount,
+complete graph, source metadata restoration or compact recovery qualification.
+Packed file kept INSIDE guest C:\ntfs2refs\private-tree-98c2e2625f94488b8dfbb85eb3118184\changed-clusters.bin
+at preserved checkpoint; no redundant host copy. Host reports under
+difference-capture-mounted-bitmap-20261028. OFF at
+ee605f95-f281-4ad6-90f5-324ae50aaf25, parent6ffb6bdc, ALL32 snapshots, RAM released.
+New child backingOS792/source4/J13/shadow138 MiB=947 MiB EXCLUDES PARENTS and
+device I/O; cap256/reserve64 GiB unchanged. Worker sampled4.3-7.4 MiB, not peak.
+PID1660/taskN2R-PrivateTree-98c2e2625f94488b8dfbb85eb3118184 TERMINAL0; controller
+23847 and preservation26679 completed. Do NOT restart. Next wire this candidate
+through canonical metadata restoration and exact admission into existing journal,
+then native same-partition read/mutation/recovery. Keep frozen-graph limitations
+explicit; no blind serialized-ticket promotion or writer research detour.
+No unit tests added/run. See docs/private-tree-allocation.md.
+
 Traced difference run5db90571a9c24aaaaccdaa7742df2468 TERMINAL1: filesystem
 root query/LOCK/explicit flush SUCCEEDED; BOTH post-lock bitmap queries returned
 21. Root-handle correction did NOT fix refusal. Resulte93d524fbac4a197f53d583a6012746bf61e5a21551ac77701fcdb7f3fcf3e64,

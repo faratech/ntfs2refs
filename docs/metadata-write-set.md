@@ -1,5 +1,26 @@
 # Candidate ReFS target write set
 
+## Source-backed difference representation
+
+The native low-scratch experiment now constructs private unwritten user
+prefixes, supplies their logical NTFS bytes through a read-only target view,
+freezes the shadow and compares the conservative selected set against the
+frozen original. It stores only differing4-KiB clusters. Equal candidate bytes
+are proved by comparison and stay in the original partition; reservations are
+not discarded by guessing their purpose.
+
+The native52-GiB/8-GiB-prefix case compared14,764,498,944 selected bytes and
+stored70,168,576 bytes in136 changed ranges. `DifferenceImage` reconstructed
+the seekable target view and its bootstrap inspection passed. It did not mount
+that view or apply it to the source. See [the full scope and pinned evidence](private-tree-allocation.md).
+
+Mounted bitmaps are explicitly tagged before-lock observations because the
+tested ReFS profile rejected bitmap queries after successful LOCK/flush.
+They do not become frozen graph certificates. Source metadata restoration,
+required-byte reconciliation and compact journal/cutover/recovery integration
+remain. The full-shadow workflow remains preserved; older descriptions below
+record the earlier implementation stages. No unit tests added/run.
+
 ## Compact candidate backing
 
 `refs_hybrid::packed` now streams selected shadow ranges into a dense scratch

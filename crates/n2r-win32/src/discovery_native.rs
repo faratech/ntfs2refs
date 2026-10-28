@@ -178,8 +178,8 @@ pub fn discover(root: &str, role: Role) -> io::Result<VolumeDiscovery> {
     require(
         bytes_per_sector == binding.identity.logical_sector_bytes
             && sectors_per_cluster > 0
-            && flags & 0x80000 == 0,
-        "native filesystem geometry differs or the volume is read-only",
+            && ((flags & 0x80000 != 0) == (role == Role::ShadowReadOnly)),
+        "native filesystem geometry or explicit read-only role differs",
     )?;
     let after = observe(&volume, &disk)?;
     require(

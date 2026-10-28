@@ -1,5 +1,30 @@
 # Allocation-only canonical tree staging
 
+## Selective unwritten evacuation
+
+The tree-wide placement implementation now supersedes blanket whole-prefix
+parking. It binds current allocated zero-VDL runs from the actual private file
+handles, refusing reused/initialized/poisoned states. Deferred holes are kept
+distinct from physical ownership and explicitly allocated to checked scratch
+locations. Tracking is bounded and must cover the complete full-cluster prefix.
+No bitmap bit alone supplies file ownership.
+
+After tracking all files, the existing interval evacuation planner receives
+both complete bitmap views, exact measured shadow ownership and desired source
+ranges. Only user allocations that block desired locations are relocated;
+already correct file/VCN positions remain. Every submission rechecks occupancy
+and tracked mappings through the poisoned-on-failure constructor. Destination
+bootstrap margins and global move/evidence limits remain enforced.
+
+Final original-coordinate ranges are derived anew from the live tracked maps,
+including already-correct positions; they are not inferred just from requested
+destinations. The live supply plan still distinguishes these references from
+temporary ranges requiring data supply. Logical content and frozen metadata
+qualification are separate. This reduces planned unnecessary movement but has
+release-build evidence only; no native whole-tree result or physical IO claim
+is added. Preserve all snapshots/reserve before native admission. No unit tests
+added/run. The older whole-prefix description below is implementation history.
+
 ## Source-backed logical hybrid verification
 
 `general_shadow::verify_private_hybrid_contents` now verifies each user

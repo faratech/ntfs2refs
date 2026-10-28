@@ -1,5 +1,16 @@
 # ntfs2refs project guidance
 
+Tree placement now uses SELECTIVE unwritten evacuation, superseding blanket
+whole-prefix parking. PrivatePlaceholder binds allocated runs from its actual
+zero-VDL handle; deferred holes are distinct/explicitly placed. Measured global
+shadow ownership plus both bitmap views feed the existing evacuation planner,
+moving only blockers of desired source positions. Every move retains strict
+checks/poisoning. Final original-coordinate refs are recomputed from live
+tracked maps and include already-correct positions. Release build passed;
+native whole-tree/storage qualification remains pending, no physical IO or
+content authority claim. All26 snapshots/VM OFF remain. No unit tests added/run.
+See docs/private-tree-allocation.md; plan backing growth before execution.
+
 Source-backed logical hybrid verification is now implemented/wired through
 explicit --verify-logical-hybrid after planned materialization. It hashes all
 user streams from live original-coordinate source reads plus initialized

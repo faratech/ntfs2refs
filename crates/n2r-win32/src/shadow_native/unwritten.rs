@@ -49,6 +49,7 @@ pub(super) struct PrivatePlaceholder {
     verification_read_bytes: u64,
     poisoned: bool,
     move_submissions: usize,
+    initial_mapping_tracked: bool,
 }
 
 impl PrivatePlaceholder {
@@ -166,6 +167,7 @@ impl PrivatePlaceholder {
             verification_read_bytes: 0,
             poisoned: false,
             move_submissions: 0,
+            initial_mapping_tracked: false,
         })
     }
 
@@ -522,5 +524,72 @@ impl PrivatePlaceholder {
             return Err(invalid("poisoned private placement cannot supply data"));
         }
         self.verify_placements()
+    }
+
+    /// Bind currently allocated unwritten runs from the live owning handle.
+    /// Deferred holes are returned for explicit allocation, never invented as
+    /// physical ownership or accepted as source references.
+    pub fn track_current_prefix(&mut self) -> io::Result<Vec<(u64, u32)>> {
+        if self.poisoned
+            || self.valid_prefix != 0
+            || self.valid_data_submitted
+            || self.initial_mapping_tracked
+            || self.move_submissions != 0
+            || !self.placed.is_empty()
+        {
+            return Err(invalid("fresh zero-VDL mapping required for tracking"));
+        }
+        let clusters = self.bytes / 4096;
+        self.initial_mapping_tracked = true;
+        if clusters == 0 {
+            return Ok(vec![]);
+        }
+        self.poisoned = true;
+        let capture = crate::stream_native::retrieval_capture(&self.file)?;
+        let mut tracked = Vec::new();
+        let mut holes = Vec::new();
+        let mut cursor = 0;
+        for run in capture.runs {
+            if run.vcn >= clusters {
+                break;
+            }
+            if run.vcn != cursor {
+                return Err(invalid("current private mapping has logical gap"));
+            }
+            let end = (run.vcn + run.clusters).min(clusters);
+            let mut start = run.vcn;
+            while start < end {
+                let count = (end - start).min(u64::from(u32::MAX)) as u32;
+                if let Some(lcn) = run.lcn {
+                    let physical = lcn
+                        .checked_add(start - run.vcn)
+                        .ok_or_else(|| invalid("tracked LCN overflow"))?;
+                    if physical
+                        .checked_add(u64::from(count))
+                        .is_none_or(|v| v > self.partition / 4096)
+                    {
+                        return Err(invalid("tracked private mapping escapes partition"));
+                    }
+                    tracked.push((start, physical, count));
+                } else {
+                    holes.push((start, count));
+                }
+                if tracked.len() + holes.len() > 1024 {
+                    return Err(invalid("current mapping tracking budget exceeded"));
+                }
+                start += u64::from(count);
+            }
+            cursor = end;
+        }
+        if cursor != clusters {
+            return Err(invalid("current private mapping prefix incomplete"));
+        }
+        self.placed = tracked;
+        self.poisoned = false;
+        Ok(holes)
+    }
+
+    pub fn tracked_mappings(&self) -> &[(u64, u64, u32)] {
+        &self.placed
     }
 }

@@ -131,7 +131,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
     let partition = tree.pair.shadow.identity.partition_bytes;
     let mut desired = BTreeMap::new();
     let mut avoid = Vec::new();
-    let mut parking_moves = 0usize;
+
     for (&index, file) in &tree.files {
         let item = input
             .get(index)
@@ -156,12 +156,6 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
             return Err(invalid("global source placement range budget exceeded"));
         }
         desired.insert(index, runs);
-        parking_moves = parking_moves
-            .checked_add((item.logical_length() / 4096 * 4096).div_ceil(MOVE_BYTES) as usize)
-            .ok_or_else(|| invalid("parking move budget overflow"))?;
-    }
-    if parking_moves >= MAX_MOVES {
-        return Err(invalid("parking leaves no final-placement move budget"));
     }
     avoid.sort_by_key(|r| r.0);
     if avoid.windows(2).any(|w| w[0].0 + w[0].1 > w[1].0) {
@@ -172,43 +166,132 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
     let mut evidence_bytes = 0usize;
     let mut parked = Vec::new();
     let indexes: Vec<_> = tree.files.keys().copied().collect();
-    // Park EVERY file first, so one file's automatic allocation cannot block
-    // another's final original-coordinate destination.
+    // Bind existing allocated ownership; explicitly place only deferred holes.
+    // No user bytes are initialized by tracking a native unwritten mapping.
     for index in &indexes {
-        let prefix = input[*index].logical_length() / 4096 * 4096;
-        if prefix == 0 {
-            continue;
+        let holes = tree.files.get_mut(index).unwrap().track_current_prefix()?;
+        for (vcn, clusters) in holes {
+            let bytes = u64::from(clusters) * 4096;
+            let destination = scratch(tree, bytes, &avoid)?;
+            let mut offset = 0;
+            while offset < bytes {
+                if moves.len() >= MAX_MOVES {
+                    return Err(invalid("deferred allocation move budget exhausted"));
+                }
+                let length = (bytes - offset).min(MOVE_BYTES);
+                let proof = tree.place(
+                    *index,
+                    vcn + offset / 4096,
+                    (destination + offset) / 4096,
+                    (length / 4096) as u32,
+                )?;
+                if proof["native_error"] != serde_json::Value::Null
+                    || proof["all_placements_match"] != true
+                {
+                    return Err(invalid(
+                        "deferred unwritten allocation refused; preserve without retry",
+                    ));
+                }
+                append_move(
+                    &mut moves,
+                    &mut evidence_bytes,
+                    serde_json::json!({"object_index":index,"phase":"allocate-deferred","proof":proof}),
+                )?;
+                offset += length;
+            }
         }
-        let destination = scratch(tree, prefix, &avoid)?;
+    }
+    let mut owned = Vec::new();
+    let mut eligible = Vec::new();
+    for index in &indexes {
+        let file = &tree.files[index];
+        file.check_placements()?;
+        for &(v, l, n) in file.tracked_mappings() {
+            owned.push(crate::shadow_evacuation::Extent {
+                file_index: *index as u32,
+                logical_offset: v * 4096,
+                physical_offset: l * 4096,
+                length: u64::from(n) * 4096,
+            });
+        }
+        for run in &desired[index] {
+            eligible.push(crate::shadow_evacuation::Extent {
+                file_index: *index as u32,
+                logical_offset: run.logical_offset,
+                physical_offset: run.physical_offset.unwrap(),
+                length: run.length,
+            });
+        }
+    }
+    if owned.len() > 1024 {
+        return Err(invalid("global tracked ownership range budget exceeded"));
+    }
+    let (legacy, metadata) = views(tree)?;
+    let remaining = MAX_MOVES
+        .checked_sub(moves.len())
+        .filter(|v| *v > 0)
+        .ok_or_else(|| invalid("no evacuation move budget"))?;
+    let evacuation = crate::shadow_evacuation::plan_ranges(
+        &legacy.allocation_map(partition)?,
+        &metadata.allocation_map(partition)?,
+        &eligible,
+        &owned,
+        partition,
+        remaining,
+    )?;
+    let required: usize = evacuation
+        .moves
+        .iter()
+        .map(|m| m.length.div_ceil(MOVE_BYTES) as usize)
+        .sum();
+    if required >= remaining {
+        return Err(invalid("evacuation leaves no final-placement budget"));
+    }
+    for movement in &evacuation.moves {
+        if movement.destination_offset < 1024 * 1024
+            || movement
+                .destination_offset
+                .checked_add(movement.length)
+                .is_none_or(|v| v > partition.saturating_sub(1024 * 1024))
+        {
+            return Err(invalid(
+                "evacuation destination enters bootstrap safety margin",
+            ));
+        }
+    }
+    for movement in &evacuation.moves {
         let mut offset = 0;
-        while offset < prefix {
-            let length = (prefix - offset).min(MOVE_BYTES);
-            let proof = tree.place(
-                *index,
-                offset / 4096,
-                (destination + offset) / 4096,
+        while offset < movement.length {
+            let length = (movement.length - offset).min(MOVE_BYTES);
+            let proof = tree.reposition(
+                movement.file_index as usize,
+                (movement.logical_offset + offset) / 4096,
+                (movement.destination_offset + offset) / 4096,
                 (length / 4096) as u32,
             )?;
             if proof["native_error"] != serde_json::Value::Null
                 || proof["all_placements_match"] != true
             {
                 return Err(invalid(
-                    "unwritten parking refused or incomplete; preserve without retry",
+                    "selective unwritten evacuation refused; preserve without retry",
                 ));
             }
             append_move(
                 &mut moves,
                 &mut evidence_bytes,
-                serde_json::json!({"object_index":index,"phase":"park","proof":proof}),
+                serde_json::json!({"object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof}),
             )?;
             offset += length;
         }
-        parked.push(serde_json::json!({"object_index":index,"prefix_bytes":prefix,"temporary_offset":destination}));
     }
+    parked.push(
+        serde_json::json!({"strategy":"selective-user-blockers","initial_owned_ranges":owned,
+        "evacuation_plan":evacuation}),
+    );
     let mut retained = Vec::new();
     let mut original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>> = BTreeMap::new();
     let mut retained_bytes = 0u64;
-    for index in indexes {
+    for &index in &indexes {
         for run in &desired[&index] {
             let remaining = MAX_MOVES
                 .checked_sub(moves.len())
@@ -269,6 +352,41 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
                         .ok_or_else(|| invalid("retained byte overflow"))?;
                     offset += length;
                 }
+            }
+        }
+    }
+    // Derive every final original-coordinate reference from live tracked
+    // mappings, including data already correctly placed before this operation.
+    // Planned destinations and bitmap bits alone never count as ownership.
+    retained.clear();
+    original_coordinates.clear();
+    retained_bytes = 0;
+    for &index in &indexes {
+        let file = &tree.files[&index];
+        file.check_placements()?;
+        for source in &desired[&index] {
+            let wanted_vcn = source.logical_offset / 4096;
+            let wanted_lcn = source.physical_offset.unwrap() / 4096;
+            let wanted_end = wanted_vcn + source.length / 4096;
+            for &(v, l, n) in file.tracked_mappings() {
+                let start = v.max(wanted_vcn);
+                let end = (v + u64::from(n)).min(wanted_end);
+                if start >= end || l + start - v != wanted_lcn + start - wanted_vcn {
+                    continue;
+                }
+                let logical = start * 4096;
+                let physical = (l + start - v) * 4096;
+                let length = (end - start) * 4096;
+                original_coordinates
+                    .entry(index)
+                    .or_default()
+                    .push((logical, physical, length));
+                retained.push(serde_json::json!({"object_index":index,"logical_offset":logical,
+                    "source_physical_offset":physical,"target_physical_offset":physical,"length":length,
+                    "source_contents_verified":false}));
+                retained_bytes = retained_bytes
+                    .checked_add(length)
+                    .ok_or_else(|| invalid("final original-coordinate byte overflow"))?;
             }
         }
     }

@@ -40,7 +40,8 @@ therefore does not prove small scratch for arbitrary nonzero data. This mapping
 report describes finalization's native observation before later label/activity,
 not current layout, write history or recovery authority. Report SHA
 `d6e2c2a2961df07d654c45719047483de9d69cbb55ac9c40be2672e45b80ed21`.
-Same-build interruption/recovery qualification remains separate and pending.
+The controlled interruption and separate resume/rollback branches also passed;
+their scope and pins are recorded below.
 
 The entry remains confined to the enrolled disposable Windows11 machine/disks.
 It is not arbitrary-drive or boot-volume support. Conversion and recovery run
@@ -61,6 +62,42 @@ The next run reuses the existing15-object/10-file source and its4,194,341-byte
 nonzero file without moving source extents. All qualification is freshly issued.
 
 ## Recovery
+
+### Recorded controlled interruption and recovery
+
+The same pinned converter stopped with exit86 after one flushed source patch
+in run `949dbc98138e4514a1098081eb0226ef`. Both source and shadow stayed offline.
+The saved partial checkpoint is `554482bb-f2a4-4185-8023-09d60465137f`.
+This was deliberate process interruption, not a storage power-loss experiment.
+
+Recovery executable
+`d48a46b13d9a0c4dfc4c241d038e290a2feb571b1a368fbf54c86f3806302028`
+resumed all160 patches/70,729,728 bytes to the complete expected ReFS image.
+Separate finalization recorded durable HND before native mounting and verified
+all15 objects/10 file hashes, the original label and mount paths. The saved
+resumed branch is `ddc9226c-f0fc-43ee-b123-3d35f91508b9`.
+
+A separate fork of the saved partial checkpoint rolled back to the exact
+original NTFS image
+`a90a9cd8f9fca6037b396127d161f56cc5698cae832c6bd3872d38378a367c6e`.
+It recorded durable ABT before mounting NTFS. Independent native NTFS readback
+then matched all10 complete file hashes/8,594,411,663 logical bytes using a1MiB
+buffer. That readback does not attest stored metadata or a post-mount raw image.
+The recovered branch is `c670839d-00d1-46cf-8544-6aad51bde364`; all47 checkpoints
+are retained and the VM is OFF with no assigned RAM.
+
+| Closed report | SHA-256 |
+|---|---|
+| resumed ReFS finalization | `4941b2d6e1b983e378f3352a901fb7c465d1587df96abfdddff27a78a1906c37` |
+| NTFS rollback execution | `9b8e20d476cfecd3363e110215c3a6037e70d5fb1c3c103f65eed410e7eaee3e` |
+| NTFS rollback completion | `5004ba099e422eacec5d248d2483dee1f838a1b6b59b338f63af7f0f95d067dd` |
+| NTFS native file readback | `c5ba2ddf367fe5412374416d98b1c9a88b766d4e1912e4f78dd55b875c13365f` |
+
+Converter and recovery are different executables recorded at `fe7b9bc` and
+`d953baa`. Their committed Rust/dependency trees match; historical clean working
+trees and reproducible builds are not established by that comparison. Neither
+successful recovery nor packaging recreates source admission or permits replay
+over either completed native branch.
 
 Preserve the complete output and independent journal, especially:
 
@@ -104,6 +141,10 @@ One authorized50,000,000,000-byte additional budget starts at279,374,052,988 lab
 bytes. Maximum329,374,052,988 and16-GiB host-free floor stay fixed across attempts;
 starting another run must not reset the baseline.
 
-Historical fixed-fixture results remain distinct. Fresh construction, ownership
-transfer and all release gates on one pinned current build remain unqualified
-until native runs pass. Startup refusals and compilation do not substitute.
+Historical fixed-fixture results remain distinct. Fresh admitted construction,
+native mutation/reboot and controlled process recovery now have the bounded
+evidence above. The broader unsafe-source matrix, storage power loss, arbitrary
+nonzero relocation costs and general-drive support remain unqualified.
+`Freeze-NativeCompositeAlpha.ps1` copies the exact pinned executables and selected
+evidence/instructions into a new small offline package; it neither runs the
+tools nor grants permission or runtime admission to any device.

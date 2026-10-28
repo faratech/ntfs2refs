@@ -34,8 +34,8 @@
   "mapping_scope": "finalization.native.native verification observation; label restoration or later native activity is not re-observed",
   "gates": {
     "fresh_conversion_mutation_reboot": "passed on exact pinned corpus",
-    "provenance_recovery_instructions": "pinned components and instructions exist; no general release claim",
-    "same_build_interruption_resume_rollback": "running; incomplete",
+    "provenance_recovery_instructions": "pinned converter/recovery provenance and operator instructions; offline frozen alpha package does not grant runtime admission or general release",
+    "same_build_interruption_resume_rollback": "passed: one flushed source write interrupted; separate pinned resume/native ReFS and exact-original rollback/native NTFS branches; storage power loss unqualified",
     "unsafe_case_admission": "three startup refusal checks only; broader matrix incomplete"
   },
   "artifacts": [
@@ -80,6 +80,60 @@
       "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/payload-placement.json",
       "sha256": "d6e2c2a2961df07d654c45719047483de9d69cbb55ac9c40be2672e45b80ed21",
       "bytes": 12540
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/resume/terminal-facts-20261028T204739745Z.json",
+      "role": "resume-terminal-observation",
+      "sha256": "3a66d992e03e7b7853858375ee0633a48ee4ab620d86c27df8b7940223103401",
+      "bytes": 2220
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/finalize/closed-metadata/completion.json",
+      "role": "resumed-native-finalization",
+      "sha256": "4941b2d6e1b983e378f3352a901fb7c465d1587df96abfdddff27a78a1906c37",
+      "bytes": 586414
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/finalize/closed-metadata/result.json",
+      "role": "resumed-native-result",
+      "sha256": "4dd871616f52825542912693cf6d020478ce4dfdf25a33aace8da07d09517df9",
+      "bytes": 414
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/finalize/preserved-checkpoint.json",
+      "role": "resumed-preserved-checkpoint",
+      "sha256": "c6be153683660ac5d1bb584fcd44fe24dba7d6432c031cd80658810823842d12",
+      "bytes": 668
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/closed-metadata/execution.json",
+      "role": "rollback-execution",
+      "sha256": "9b8e20d476cfecd3363e110215c3a6037e70d5fb1c3c103f65eed410e7eaee3e",
+      "bytes": 15938
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/closed-metadata/completion.json",
+      "role": "rollback-completion",
+      "sha256": "5004ba099e422eacec5d248d2483dee1f838a1b6b59b338f63af7f0f95d067dd",
+      "bytes": 112539
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/closed-metadata/result.json",
+      "role": "rollback-result",
+      "sha256": "5c0d96d22cf1dfe39a1a01c5608328a68e53c7d3e90914973e71fc411fb6b05c",
+      "bytes": 414
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/native-readback/native-payload-readback.json",
+      "role": "rollback-native-file-readback",
+      "sha256": "c5ba2ddf367fe5412374416d98b1c9a88b766d4e1912e4f78dd55b875c13365f",
+      "bytes": 9272
+    },
+    {
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-recovery-20261028/rollback/preserved-checkpoint.json",
+      "role": "rollback-preserved-checkpoint",
+      "sha256": "d8d719a9a8ac287e963102f7457dbd55dabeda0fec2312824c458b24936af985",
+      "bytes": 703
     }
   ],
   "limitations": [
@@ -92,5 +146,30 @@
   "source_documents": [
     "docs/native-composite-experimental.md"
   ],
-  "updated_utc": "2026-10-28T20:20:42.8318915Z"
+  "updated_utc": "2026-10-28T21:13:58.9190722Z",
+  "recovery": {
+    "post_mount_raw_image_equality_claimed": false,
+    "changed_bytes": 70729728,
+    "controlled_native_and_wrapper_exit": 86,
+    "finalization_run": "9554575ef3be4e78994369f79e485f33",
+    "interrupted_after_source_writes": 1,
+    "resumed_checkpoint": "ddc9226c-f0fc-43ee-b123-3d35f91508b9",
+    "vm_state": "Off",
+    "patches": 160,
+    "candidate_sha256": "419515e9efd3bb265738b32e351624637a4da91553eccb2acce1cfbec642be72",
+    "journal_bytes": 141494333,
+    "power_loss_qualified": false,
+    "rollback_native_logical_bytes": 8594411663,
+    "resume_run": "9e8d88a9964b406bb3673324f10e6960",
+    "original_source_sha256": "a90a9cd8f9fca6037b396127d161f56cc5698cae832c6bd3872d38378a367c6e",
+    "rollback_native_files": 10,
+    "partial_checkpoint": "554482bb-f2a4-4185-8023-09d60465137f",
+    "rollback_checkpoint": "c670839d-00d1-46cf-8544-6aad51bde364",
+    "recorded_source_commit": "d953baa810fb5e92fbc50bf6864cfd204e0f7f7f",
+    "all_47_checkpoints_preserved": true,
+    "rollback_run": "c5852b0ca8ef4927bd3d9e15c45132f9",
+    "interrupted_run": "949dbc98138e4514a1098081eb0226ef",
+    "memory_assigned_bytes": 0,
+    "producer_sha256": "d48a46b13d9a0c4dfc4c241d038e290a2feb571b1a368fbf54c86f3806302028"
+  }
 }

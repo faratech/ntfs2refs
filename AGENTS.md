@@ -1,5 +1,46 @@
 # ntfs2refs project guidance
 
+CURRENT AUTHORITY — NATIVE RESUME AND NTFS ROLLBACK PASSED; VM OFF:
+Normal admitted composite conversion5e156f... passed native ReFS readback,
+mutation and post-mutation reboot. Controlled interrupt949dbc... exited86 after
+one flushed source patch. Resume9e8d... reached exact candidate419515e9...;
+Finalize9554575... recorded HND and passed native15 objects/10 full hashes.
+Saved resumed46=ddc9226c-f0fc-43ee-b123-3d35f91508b9. Never replay old rawJ there.
+
+Separate partial45 fork Rollbackc5852... TERMINAL0 restored exact original
+a90a9cd8f9fca6037b396127d161f56cc5698cae832c6bd3872d38378a367c6e,
+160patches/70,729,728B. Durable ABT closes replay; nativeNTFS mounted.
+Independent native10-file/8,594,411,663-byte readback also TERMINAL0, SHA
+c5ba2ddf367fe5412374416d98b1c9a88b766d4e1912e4f78dd55b875c13365f.
+ExecutionSHA9b8e20d476cfecd3363e110215c3a6037e70d5fb1c3c103f65eed410e7eaee3e;
+completion5004ba099e422eacec5d248d2483dee1f838a1b6b59b338f63af7f0f95d067dd.
+Preserved47=c670839d-00d1-46cf-8544-6aad51bde364, parentpartial45;
+ALL47 snapshots retained, VM OFF/RAM0, no live project worker. All closed
+metadata/readback is under compact-admitted-recovery-20261028/rollback.
+No post-mount whole-image equality or stored-metadata attestation is claimed.
+No restore, replay, VM restart or checkpoint deletion is currently needed.
+
+One50,000,000,000-byte additional allowance remains tied to original baseline
+279,374,052,988 lab-file bytes /66,133,905,408 D-free bytes. Maximum329,374,052,988,
+minimum hostfree17,179,869,184 remain fixed across attempts; NEVER reset them.
+Latest pre-package lab284,790,612,333 /D-free60,756,467,712 (~5.42GB additional).
+No files were deleted; prior automatic-review deletion blocks still apply.
+User's src/main.rs diff remains UNSTAGED/unchanged SHA
+63e156167d56f49c380a25560221ccb258623603b76c77af59467a3103204c3b.
+No unit tests added/run. Conversion/recovery stay inside owning machine.
+
+This is a bounded experimental alpha, NOT completion of the broad project.
+Unsafe-source matrix, arbitrary disk enrollment/geometry/features, nonzero
+relocation scratch scaling and storage power loss remain open. Unicode streaming
+V2 has native evidence; its names are NOT ASCII-only. Preserve successful
+branches/evidence. Independent writer research remains off the critical path.
+Freeze-NativeCompositeAlpha.ps1 only copies exact pinned existing binaries,
+provenance and selected docs into a fresh <64MiB offline package; no build or VM
+invocation. evidence/native-composite-alpha-20261028.json is observational only.
+
+The notes below are historical milestones, superseded by the actual current
+state above; their former LIVE instructions must not redispatch completed work.
+
 RESUME+NATIVE FINALIZE PASSED / SEPARATE ROLLBACK LIVE:
 Resume9e8d... TERMINAL0 exactcandidate419515e9...642be72/160patches70,729,728B,
 executionSHA1041314347ab731b9902be0c2179c66114837dd8a043685b5061cb02ccbca906,

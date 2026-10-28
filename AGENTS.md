@@ -1,5 +1,14 @@
 # ntfs2refs project guidance
 
+Later a5bfc6a mainCLI progress display built successfully, NOTdeployed tolive866.
+Scopedworker owns actual full conversion/certificate pipeline; mainholdsManagedShadow
+throughjoin. Best-effort Cfilenames only, noSource/J/packed reads or successauthority.
+Interactivephase/elapsed2s; redirectedlogsphasechangesonly. No tests/sourcepolicychanges.
+UI d33... sourcecollection+metadata/placement/freeze passed23:14:06Z; actual
+source1 andmanagedshadow6 nowboth3. Same3660/1793228776720 live23:19:53Z
+read193.898GB/write2.126MB; all48 retained, G4/shadow5 preserved. Candidate verification
+continues. DoNOT restart/replace/replay/mount/reformat/openSource/J/packed.
+
 LATEST — SELECTED60GiB SOURCE CONVERSION PRESERVED48 / AFFIRMATIVE MAIN CLI LIVE:
 Selected4d3 native reports PASS exacttarget13184ed404e1ce882bd5248a90d0a8450317f034544edb87a8981be7befcac4b,
 106patches205,512,704B/J411,051,645B;12objects/7fullhashes/all5users matched,

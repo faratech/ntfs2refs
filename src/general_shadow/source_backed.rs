@@ -7,6 +7,11 @@ use n2r_win32::{GeneralFrozenPartition, shadow_native::private_tree::SourceBacke
 use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
 
+// Match the native partition reader's bounded aligned batch. Logical NTFS
+// sessions retain their separate 64 KiB range-read contract below.
+const NATIVE_CAPTURE_BYTES: usize = 1024 * 1024;
+const LOGICAL_SOURCE_READ_BYTES: usize = 65536;
+
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct ReadCounts {
     pub source_logical_bytes: u64,
@@ -190,8 +195,11 @@ impl<'a> SourceBackedShadow<'a> {
             file.metadata()?.is_file() && file.metadata()?.len() == 0,
             "delta output must be a new ordinary file"
         );
-        let mut original = [0u8; 65536];
-        let mut candidate = [0u8; 65536];
+        // One native read can satisfy each full image chunk instead of sixteen
+        // 64 KiB requests. Keep these fixed-size buffers off the thread stack;
+        // the exact 4 KiB comparison, budget and output loop is unchanged.
+        let mut original = vec![0u8; NATIVE_CAPTURE_BYTES];
+        let mut candidate = vec![0u8; NATIVE_CAPTURE_BYTES];
         let mut source_digest = Sha256::new();
         let mut candidate_digest = Sha256::new();
         let mut packed_digest = Sha256::new();
@@ -408,9 +416,17 @@ impl<'a> SourceBackedShadow<'a> {
             Some(r) => r.target_physical_offset,
             None => self.length,
         };
+        // A logical source read must stay inside the NTFS session's 64 KiB
+        // contract. Native shadow bytes can use the larger aligned adapter
+        // batch, stopping at the same next payload boundary and logical EOF.
+        let limit = if in_payload {
+            LOGICAL_SOURCE_READ_BYTES
+        } else {
+            NATIVE_CAPTURE_BYTES
+        };
         let count = (boundary - self.position)
             .min(output.len() as u64)
-            .min(65536) as usize;
+            .min(limit as u64) as usize;
         if in_payload {
             let route = route.unwrap();
             let object = &self.tree.objects[route.object_index];

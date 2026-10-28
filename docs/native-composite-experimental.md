@@ -126,6 +126,14 @@ making NTFS writable. A reopened report is not a conversion certificate.
 
 ## Resources and qualification
 
+The later capture read-batching change uses two fixed1MiB heap buffers and
+allows metadata/free shadow reads to fill them. NTFS logical range reads remain
+64KiB; exact4KiB comparison, hash order, ranges, budgets and writes are unchanged.
+This reduces requested native calls across contiguous capture regions by up to
+16× at a fixed~1.875MiB memory increase; elapsed speedup is not measured. It has
+release-build evidence and is separate from the sealed `f1f1f47` executable used
+by the selected-device native run.
+
 Failed-run OS child4,139,778,048 bytes versus shadow136,314,880 locates most growth
 in the test OS; it is not evidence of an8-GiB shadow copy. Exact OS file cause
 remains unknown; pagefile statistics alone do not prove it. Read-only7-Zip

@@ -1,5 +1,9 @@
 # ntfs2refs project guidance
 
+Later source_backed.rs capture read batching(1MiB heap/64KiB logical NTFS) built
+successfully but is NOT deployed to the live guest. Running4d3... stays sealed
+f1f1f47/f41b47...; target/release now differs. Never replace/restart the live run.
+
 LATEST SELECTED-DEVICE RUN LIVE; supersedes old OFF/state instructions below:
 Codef1f1f47491e0c64255b6e75eac77cd7873c5fe47 release build passed(cargo/rustc1.98.1).
 New public ntfs2refs-compact uses actual original-freeze/held-shadow enrollment;

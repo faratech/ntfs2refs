@@ -10,6 +10,9 @@ fn main() -> anyhow::Result<()> {
         directory: PathBuf,
         #[arg(long)]
         acknowledge_new_disposable_staging: bool,
+        /// Size of the new staging partition; checked by the managed provider.
+        #[arg(long, default_value_t = 60 * 1024 * 1024 * 1024u64)]
+        partition_bytes: u64,
     }
     let args = Args::parse();
     ensure!(
@@ -31,16 +34,16 @@ fn main() -> anyhow::Result<()> {
     );
     let result = n2r_win32::managed_shadow::create(
         &args.directory.join("shadow.vhdx"),
-        60 * 1024 * 1024 * 1024,
+        args.partition_bytes,
         512,
         4096,
     );
     let report = match &result {
         Ok(s) => {
-            serde_json::json!({"success":true,"kind":"new-owned-native-managed-shadow-smoke","binding":s.binding,"path":s.path,"virtual_disk_id":s.virtual_disk_id,"source_opened":false,"source_writes":0,"conversion_authorized":false})
+            serde_json::json!({"success":true,"kind":"new-owned-native-managed-shadow-smoke","binding":s.binding,"path":s.path,"virtual_disk_id":s.virtual_disk_id,"source_binding_supplied":false,"source_writes":0,"conversion_authorized":false})
         }
         Err(e) => {
-            serde_json::json!({"success":false,"kind":"new-owned-native-managed-shadow-smoke","error":e.to_string(),"os_error":e.raw_os_error(),"source_opened":false,"source_writes":0,"automatic_retry":false})
+            serde_json::json!({"success":false,"kind":"new-owned-native-managed-shadow-smoke","error":e.to_string(),"os_error":e.raw_os_error(),"source_binding_supplied":false,"source_writes":0,"automatic_retry":false})
         }
     };
     let bytes = serde_json::to_vec_pretty(&report)?;

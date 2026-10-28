@@ -4,6 +4,17 @@ Rust tooling and a Hyper-V laboratory for researching offline, extent-preserving
 NTFS-to-ReFS conversion. The current focus is data volumes; Windows OS-volume
 conversion and build-specific boot qualification are deferred.
 
+**The experimental source-backed native-shadow path converted a fresh15-object/
+10-file tree on its original partition, then passed native mutation and reboot
+checks.** It used genuine live source/target admission,157 patches/67.3MiB and a
+134.6MiB recovery journal. Shadow user payload initialization was55 exception
+bytes; normalized system streams added20,568 bytes. Peak converter working set
+was68.8MiB in a4GiB VM. The nonzero4MiB file prefix retained its original physical
+mapping. Most of the large zero-filled file changed mappings, so the small write
+count does not establish payload-independent scratch for arbitrary nonzero data.
+Same-build interruption/resume/rollback qualification is still pending. The new
+entry remains enrolled-fixture-only. See the [pinned results and recovery scope](docs/native-composite-experimental.md).
+
 **The public Rust CLI converted a fourteen-object tree on its original 52 GiB
 partition while retaining a normally allocated 128 MiB payload extent.**
 The exact `f025c8b` binary passed integrated protected-target/source admission,

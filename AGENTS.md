@@ -1,5 +1,43 @@
 # ntfs2refs project guidance
 
+RAW FRESH CONVERSION APPLIED / NATIVE FINALIZATION LIVE, superseding earlier
+source3 notes: sameac098b7437e04d2d928bc2e18f3b5218/PID5108creation1793212966572,
+wrapper4892creation1793212768546. Source1 OFFLINE/writable is AUTHORIZED journal
+activation, shadow3. Apply157 patches/70,557,696 source bytes reached exact
+7c1486aec258e9d2d2075ec6e6cd7230f4ae011388b61a789aba1be4a00d67d1,
+applySHA1b6506d4148aac6cd3c60f5640f2020cfc811c325aafcd32c8007ed5b7fed945.
+Apply operation applied-before-handoff, handofffalse at its report. Current
+native finalization/HND state UNKNOWN until actual terminal files; DO NOT
+restore/restart/shutdown, replay/rollback or manually mount. Low-level execute
+reports source_admittedfalse/qualifiedfalse by design; REAL owning qualification
+issued certificate from ORIGINAL live context with all source+target gates.
+Qualification source_admittedtrue, objects15, source
+51bd1dd4f3e1d788481956874cbba6d4a5089bebb3c36d5aea0d93cfdd056d3a,
+tree7578dd55a48fc970f52fd3c2c59a7afb4977a61cb89215d8a12a36f350a4bda1,
+certificatef41e4acb5dc68fc7b34832452bb4c706ce6767c89730b26bcef74f2448ea1848,
+capture89a9314fcbbb1be60dac06ba5431927fe2b82b8e53f37876e608ec17b264131f,
+packed307af430ac48854f571a2bd4dbc06c34b548022fd339e8716739d24abf9fb6ba,
+artifactidentity5aafff55692acf40b2dbf1058317d9c0c41d2f70df8998f088ceba251fffae3a.
+Capture70,557,696B over COMPLETE native address space. Owning metadata restored
+and verified15 objects; only55 user-tail bytes+20568 system bytes copied to R,
+ZERO full-cluster user payload initialized there. Actual final-data placement
+retention is NOT proven by empty retained_ranges/vacuous retained flag alone.
+Observed converter peakWS70,428KiB (~68.8MiB), VM4GiB. All42 snapshots intact.
+
+Host admitted-postcheck harness built but ONLY metadata Collect executed while
+live (conversion_terminal_successfalse/vm_actionsfalse). Once exact task0 and
+wrapper/result/finalization success/HNDclosed, Collect completed pins, then
+BootVerify cleanly saves converted43 BEFORE boot/native readback; Mutate,
+AfterMutation,RebootVerify,Preserve then saves44. It checks actual refs.sys pin.
+Toolset postcheck-tools/manifest.json SHA4ea054fba859d2dd9f2544e539f0083b3594ae6d3349462ab3a4d5510b28af27;
+verifier2cb316bdc1bb8606c38f862b55b73d62c194e45d1694c52d5bc9dcbee3ff9d4d,
+mutatorf6b3563cd1521b16a9c3b2f4f5f4b2d329cd5d9478840b03c76d737922e244bd.
+Future Start-AdmittedCompactRetry -Mode Interrupt supports SAME5e156f build,
+fresh paths/--interrupt-after-writes1/native+wrapperexit86; NOrestoreinside.
+RootmayrestoreONLYcfe0preconvert AFTER normal converted/mutated branches saved.
+Do NOT launch it now. Native complete/mutation/reboot/recovery qualification on
+this build remains pending. No units; main.rs remains originalunstaged.
+
 LIVE RETRY SUPERSEDES STOPPED NOTES BELOW: ac098b7437e04d2d928bc2e18f3b5218,
 SYSTEMtaskN2R-AdmittedCompact-Retry-ac098b7437e04d2d928bc2e18f3b5218, wrapper4892
 creation1793212768546. Parentcfe0b326/all42, VM2401593c RUNNING4GiB/noNIC.

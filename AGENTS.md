@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+COMPACT ROLLBACK LIVE, restored ONLY saved partialb6b2 after resumed9e25 was
+preserved; all40 snapshots remain. TaskN2R-CompactRecovery-Rollback-386c482e1fd348a4bf0e95f27d8a1ce4,
+PID4612 creation1793207109465, producer1d03af19b89350e432e67e65ff5b8545ed59ee213650067fbe61597fb04c332a
+(ac46521+pre-existing main.rs). Host compact-recovery-20261028/rollback dispatch;
+guest C:\ntfs2refs\compact-recovery-386c482e1fd348a4bf0e95f27d8a1ce4\result.
+At17:08:01Z source1 OFFLINE/shadow3, read76,090,978,636/write201, only intent,
+no completion/failure. Do NOT restart/restore/mount manually. Controller11100
+completed once; normalized-source/candidate checks precede rollback writes,
+then exact EC5 full image/ABT/native NTFS completion. Preserve after terminal.
+Approved actual cap258 GiB verified;64-GiB reserve retained. No cleanup/deletion
+performed. Read-only inventory found rebuildable target debug284318683B,
+release/build191668123B, release/deps1058416676B OUTSIDE lab cap; these do not
+admit a run under lab cap and must not be cleaned during Cargo/link activity.
+No lab VHD/checkpoint/corpus deletion is proven safe. No units.
+
 COMPACT RESUME NATIVE PASSED after interrupted partial +reboot. Run5c9045e3a4c44e46a7d25751939d1b15,
 execution90c77b31ecf154f531c975930057abe6c789f2260f0f5c5adca298db83dc7763,
 finalafd2f8ba8f3ae8595507fe9c537d93dea83e6dbc3f3ad988c5ceed1c473bc761,

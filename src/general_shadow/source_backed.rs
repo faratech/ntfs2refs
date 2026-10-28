@@ -121,14 +121,12 @@ impl<'a> SourceBackedShadow<'a> {
     /// clusters. This avoids filling both a shadow and its unused reservations.
     /// Equal bytes are proved by comparison, never by guessing their purpose.
     pub fn capture_differences_to_new_file(
-        mut self,
+        self,
         plan: &crate::refs_write_set::WriteSetPlan,
         output: &std::path::Path,
         max_changed_bytes: u64,
     ) -> Result<DifferenceCapture> {
-        use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
         use sha2::{Digest, Sha256};
-        use std::io::Write;
         ensure!(
             plan.partition_bytes == self.length,
             "delta capture geometry differs"
@@ -148,6 +146,42 @@ impl<'a> SourceBackedShadow<'a> {
             "delta set omits measured user payload"
         );
         let input_plan_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(plan)?));
+        self.capture_difference_ranges(
+            &plan.target_owned_ranges,
+            selected_bytes,
+            input_plan_sha256,
+            output,
+            max_changed_bytes,
+        )
+    }
+
+    /// Complete native address-space comparison avoids relying on a metadata
+    /// bitmap to prove required-byte completeness. Dirty free space can enlarge
+    /// the delta; every output byte still faces the caller's hard budget.
+    pub fn capture_complete_differences_to_new_file(
+        self,
+        output: &std::path::Path,
+        max_changed_bytes: u64,
+    ) -> Result<DifferenceCapture> {
+        use sha2::{Digest, Sha256};
+        let length = self.length;
+        let selection = [crate::refs_write_set::ByteRange { offset: 0, length }];
+        let identity = hex::encode(Sha256::digest(serde_json::to_vec(&serde_json::json!({
+            "profile":"complete-native-address-space-source-backed-v1","partition_bytes":length,"granule_bytes":4096}))?));
+        self.capture_difference_ranges(&selection, length, identity, output, max_changed_bytes)
+    }
+
+    fn capture_difference_ranges(
+        mut self,
+        selection: &[crate::refs_write_set::ByteRange],
+        selected_bytes: u64,
+        input_plan_sha256: String,
+        output: &std::path::Path,
+        max_changed_bytes: u64,
+    ) -> Result<DifferenceCapture> {
+        use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -164,7 +198,7 @@ impl<'a> SourceBackedShadow<'a> {
         let mut changed = 0u64;
         let mut compared = 0u64;
         let mut ranges: Vec<ChangedRange> = Vec::new();
-        for range in &plan.target_owned_ranges {
+        for range in selection {
             for digest in [&mut source_digest, &mut candidate_digest] {
                 digest.update(range.offset.to_le_bytes());
                 digest.update(range.length.to_le_bytes());

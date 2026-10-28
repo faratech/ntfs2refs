@@ -1,5 +1,40 @@
 # Candidate ReFS target write set
 
+## Post-freeze layout and complete-address-space path
+
+An opaque native protected layout observation now checks namespace, metadata,
+file IDs, sizes, complete mappings, storage validity and disabled integrity
+under the existing read-only lease without reading placeholder contents.
+`SourceBackedRoutes::from_protected_layout` derives post-freeze routes from that
+live witness. The ordinary full semantic verifier remains strict and hashes
+contents. Callers still must bracket raw-image equality, bind source/tree/data
+proofs and supply genuine live source admission; the observation alone grants
+none of those properties.
+
+The new `--compare-complete-native-image` difference-capture option compares the
+entire native address space with its proved payload substitutions. It stores
+only differing4-KiB clusters, eliminating reliance on a before-lock allocation
+bitmap to omit bytes. This provides a sound comparison scope for later general
+qualification, at the cost that dirty free space can increase output. Hard
+changed-byte admission remains. The earlier selective67.1-MiB fixture evidence
+is preserved, not reclassified as a general frozen graph proof. Build passed;
+native protected-layout/whole-address-space integration pending. No unit tests.
+
+## Compact native reboot and mutation passed
+
+The saved compact conversion passed strict native readback after a clean boot,
+the existing50→80→10-MiB create/grow/truncate/rename/delete and128-entry directory
+workload, strict readback after mutation, and another clean boot/readback.
+Pins: BootVerify86586f40728f9d8e48dde5768aeb314960e4c0cc073cdba0b79c4f5edc698f76;
+mutationef37293d35a3afa0f0d6596e26d5be15da90a14a42038b5ecbf982cffd498218;
+after-mutationd1f19b44bf7130e0010086b18e2ec7bd4d5d4d1249c73cfdc59ea6481f3fb6d7;
+after-reboot4f4177a394d2bc8d5a90b9fc428f29a9a5aebc75da5a55e2acf3ff1819dc928e.
+Evidence: `.lab/hyperv/streaming-v2-20261027/compact-postcheck-20261028`.
+Saved OFF at34c29917-13b9-4719-bd7b-e39a2602dab6, parentf5adf4aa, all38
+checkpoints preserved/RAM released. No journal replay occurred. The source
+comparison has no explicit retained-range list, so this postcheck does not
+claim an additional original-position proof. No unit tests added/run.
+
 ## Native compact in-place fixture conversion passed
 
 Canonical runc75ec9ec8a104f99b630c92343b44ca1 completed raw apply, durable HND

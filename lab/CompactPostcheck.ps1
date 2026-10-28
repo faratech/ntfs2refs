@@ -77,7 +77,7 @@ try{
         @{success=$true;phase=$Phase;run_id=$Run;guest_report=$report;report_sha256=(Get-FileHash $report).Hash.ToLowerInvariant();guest_boot_utc=$boot;request_sha256=$RequestPin;expectation_sha256=$TreePin;retained_position_proof_included=$false;native_report=$value;utc=[DateTime]::UtcNow.ToString('o')}
     }
     Save-New ($Phase+'.json') $result
-    foreach($name in @($Phase+'.json',$Phase+'.log')){Copy-Item -FromSession $s -LiteralPath ([IO.Path]::Combine($stage,$name)) -Destination (Join-Path $root ('guest-'+$name))}
+    foreach($name in @(($Phase+'.json'),($Phase+'.log'))){Copy-Item -FromSession $s -LiteralPath ([IO.Path]::Combine($stage,$name)) -Destination (Join-Path $root ('guest-'+$name))}
     if((Get-FileHash (Join-Path $root ('guest-'+$Phase+'.json'))).Hash.ToLowerInvariant()-cne$result.report_sha256){throw 'Archived native report differs.'}
     [pscustomobject]@{phase=$Phase;success=$true;report_sha256=$result.report_sha256;guest_boot_utc=$result.guest_boot_utc}|ConvertTo-Json -Compress
 }finally{Remove-PSSession $s}

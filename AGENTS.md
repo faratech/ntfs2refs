@@ -1,5 +1,27 @@
 # ntfs2refs project guidance
 
+COMPACT REBOOT/MUTATION POSTCHECK PASSED: BootVerify86586f40728f9d8e48dde5768aeb314960e4c0cc073cdba0b79c4f5edc698f76;
+Mutateef37293d35a3afa0f0d6596e26d5be15da90a14a42038b5ecbf982cffd498218;
+AfterMutationd1f19b44bf7130e0010086b18e2ec7bd4d5d4d1249c73cfdc59ea6481f3fb6d7;
+RebootVerify4f4177a394d2bc8d5a90b9fc428f29a9a5aebc75da5a55e2acf3ff1819dc928e.
+Whole strict native tree passed before/after create50MiB/grow80/truncate10,
+rename/delete and128-entry directory workload, then fresh reboot. Saved OFF
+34c29917-13b9-4719-bd7b-e39a2602dab6 parentf5ad, ALL38 snapshots/RAM released.
+Original convertedf5ad remains. BootVerify native succeeded once; host archiver
+array-concatenation bug fixed and existing reports copied, NOT repeated.
+Only saved preapply5971d348 was then restored once (intent compact-recovery-
+restore-preapply-intent.json), currently OFF/parent5971/all38 for interrupt trial.
+
+Protected post-freeze layout API now builds: opaque GeneralLiveRefsLayoutObservation,
+metadata/namespace/IDs/complete maps/storage validity/integrity checks under
+actual READ_ONLY lease, ZERO placeholder payload reads. SourceBackedRoutes derives
+from that live witness. Existing full verifier still hashes contents; raw-image
+bracketing/logical-content/general admission remain false until caller proves.
+Whole native address-space difference option --compare-complete-native-image
+also builds: no before-lock bitmap omission assumption; only differing clusters
+stored under hard budget, dirty free bytes can enlarge delta. Current minimal
+selective67MiB evidence is unchanged. No unit tests added/run.
+
 Native compact postcheck controller ready: lab/CompactPostcheck.ps1 phases
 BootVerify/Mutate/AfterMutation/RebootVerify/Preserve, exact f5ad/all37 branch,
 pinned toolset2, strict semantic/native hashes, fresh boot proof, no journal

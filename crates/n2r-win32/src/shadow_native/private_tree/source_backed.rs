@@ -22,6 +22,100 @@ pub struct SourceBackedRoutes {
 }
 
 impl SourceBackedRoutes {
+    /// Re-derive every full-cluster source-backed prefix from the post-freeze
+    /// native READ_ONLY witness. This consumes no saved success JSON and reads
+    /// no placeholder payload. Expected hashes remain expectations: callers
+    /// must bind them to the admitted source and prove the composite contents.
+    pub fn from_protected_layout(
+        observation: &native::GeneralLiveRefsLayoutObservation,
+    ) -> io::Result<Self> {
+        let observed = observation.report();
+        let report = observed.native();
+        if observation.before() != observation.after()
+            || observation.before().disk_attributes != 3
+            || observation.observed_readonly().disk_attributes != 2
+            || report.payload_bytes_written != 0
+            || report.conversion_qualified
+            || report.objects.len() != observed.expected_stream_sha256.len()
+        {
+            return Err(invalid("protected source-backed layout context differs"));
+        }
+        let mut entries = Vec::new();
+        let mut payload_bytes = 0u64;
+        for (index, object) in report.objects.iter().enumerate() {
+            let standard = query_bytes(&object.before, 1, 24)?;
+            if standard[21] != 0 {
+                continue;
+            }
+            let length = layout::u64_at(standard, 8)?;
+            let prefix = length / 4096 * 4096;
+            if prefix == 0 {
+                continue;
+            }
+            let expected = observed.expected_stream_sha256[index]
+                .as_ref()
+                .ok_or_else(|| invalid("protected stream digest expectation absent"))?;
+            if object.resident_data || object.retrieval_page_proof.is_none() {
+                return Err(invalid("protected payload prefix has no complete native map"));
+            }
+            let id = query_bytes(&object.before, 18, 24)?[8..24].to_vec();
+            let mut covered = 0u64;
+            for run in stream_layout::parse_complete_retrieval(&object.retrieval)? {
+                let at = run.vcn.checked_mul(4096)
+                    .ok_or_else(|| invalid("protected payload VCN overflow"))?;
+                if at >= prefix {
+                    break;
+                }
+                let bytes = run.clusters.checked_mul(4096)
+                    .ok_or_else(|| invalid("protected payload length overflow"))?
+                    .min(prefix - at);
+                let offset = run.lcn
+                    .ok_or_else(|| invalid("protected payload prefix contains a hole"))?
+                    .checked_mul(4096)
+                    .ok_or_else(|| invalid("protected payload LCN overflow"))?;
+                if at != covered || bytes == 0 {
+                    return Err(invalid("protected payload prefix coverage differs"));
+                }
+                entries.push(PayloadRoute {
+                    object_index: index,
+                    logical_offset: at,
+                    target_physical_offset: offset,
+                    length: bytes,
+                    stream_length: length,
+                    components: object.components.clone(),
+                    expected_sha256: expected.clone(),
+                    native_file_id: id.clone(),
+                });
+                if entries.len() > 4096 {
+                    return Err(invalid("protected source-backed route budget exceeded"));
+                }
+                covered = covered.checked_add(bytes)
+                    .ok_or_else(|| invalid("protected prefix total overflow"))?;
+            }
+            if covered != prefix {
+                return Err(invalid("protected full-cluster prefix incomplete"));
+            }
+            payload_bytes = payload_bytes.checked_add(prefix)
+                .ok_or_else(|| invalid("protected payload total overflow"))?;
+        }
+        entries.sort_unstable_by_key(|route| route.target_physical_offset);
+        let mut end = 0;
+        for route in &entries {
+            let next = route.target_physical_offset.checked_add(route.length)
+                .filter(|next| *next <= observed.pair().shadow.identity.partition_bytes)
+                .ok_or_else(|| invalid("protected payload escapes the partition"))?;
+            if route.target_physical_offset < end {
+                return Err(invalid("protected payload destinations overlap"));
+            }
+            end = next;
+        }
+        Ok(Self {
+            pair: observed.pair().clone(),
+            entries,
+            payload_bytes,
+        })
+    }
+
     /// Recheck the same owning files after native metadata restoration and
     /// capture the resulting mounted allocation, before final lock/dismount.
     pub fn revalidate_mounted_and_capture(&self) -> io::Result<MountedAllocation> {

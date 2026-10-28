@@ -49,6 +49,8 @@ fn main() -> anyhow::Result<()> {
         #[arg(long, default_value_t = 805306368)]
         max_changed_bytes: u64,
         #[arg(long, requires = "compact_output")]
+        compare_complete_native_image: bool,
+        #[arg(long, requires = "compact_output")]
         restore_source_metadata: bool,
         #[arg(long, requires = "materialize_relocations")]
         verify_logical_hybrid: bool,
@@ -124,6 +126,7 @@ fn main() -> anyhow::Result<()> {
         "source_backed_payloads":args.source_backed_payloads,
         "compact_output":args.compact_output,"max_changed_bytes":args.max_changed_bytes,
         "restore_source_metadata":args.restore_source_metadata,
+        "compare_complete_native_image":args.compare_complete_native_image,
         "max_placement_bytes":args.max_placement_bytes,"max_placement_moves":args.max_placement_moves,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "verify_logical_hybrid":args.verify_logical_hybrid,
@@ -380,11 +383,20 @@ fn main() -> anyhow::Result<()> {
                         &routes,
                         routes.payload_bytes().max(1),
                     )?;
-                    let delta = reader.capture_differences_to_new_file(
-                        &plan,
-                        path,
-                        args.max_changed_bytes,
-                    )?;
+                    let delta = if args.compare_complete_native_image {
+                        reader.capture_complete_differences_to_new_file(
+                            path,
+                            args.max_changed_bytes,
+                        )?
+                    } else {
+                        reader.capture_differences_to_new_file(
+                            &plan,
+                            path,
+                            args.max_changed_bytes,
+                        )?
+                    };
+                    report["comparison_covers_complete_address_space"] =
+                        args.compare_complete_native_image.into();
                     // Exercise the same seekable target view used by later
                     // journal preparation, without source writes or mounting.
                     let mut packed = std::fs::File::open(path)?;
@@ -425,6 +437,7 @@ fn main() -> anyhow::Result<()> {
         "source_backed_payloads":args.source_backed_payloads,
         "compact_output":args.compact_output,"max_changed_bytes":args.max_changed_bytes,
         "restore_source_metadata":args.restore_source_metadata,
+        "compare_complete_native_image":args.compare_complete_native_image,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,

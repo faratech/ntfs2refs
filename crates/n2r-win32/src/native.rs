@@ -137,6 +137,31 @@ impl GeneralLiveRefsObservation {
     }
 }
 
+/// Post-freeze native metadata/layout witness issued only by the physical
+/// READ_ONLY lease. Logical payload, raw before/after equality and allocation
+/// graph completeness require separate proofs; this grants no write authority.
+#[derive(Debug, Serialize)]
+pub struct GeneralLiveRefsLayoutObservation {
+    report: crate::shadow_native::GeneralLayoutReport,
+    before: GeneralDiskState,
+    observed_readonly: GeneralDiskState,
+    after: GeneralDiskState,
+}
+impl GeneralLiveRefsLayoutObservation {
+    pub fn report(&self) -> &crate::shadow_native::GeneralLayoutReport {
+        &self.report
+    }
+    pub fn before(&self) -> &GeneralDiskState {
+        &self.before
+    }
+    pub fn observed_readonly(&self) -> &GeneralDiskState {
+        &self.observed_readonly
+    }
+    pub fn after(&self) -> &GeneralDiskState {
+        &self.after
+    }
+}
+
 /// A borrowed actual volume handle created only inside the exclusion lease.
 /// Neither a caller-provided flag nor a serialized report can create this
 /// route. No constructor or disk-state setters are exposed outside native.rs.
@@ -2051,6 +2076,69 @@ impl GeneralFrozenPartition {
         resource_profile: Option<crate::attestation::ResourceProfile>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveRefsObservation> {
+        let (report, before, observed_readonly, after) = self.with_readonly_refs_observation(
+            &pair,
+            resource_profile,
+            events,
+            |protected| {
+                crate::shadow_native::verify_general_ordinary_readonly_with_resource_profile(
+                    pair.clone(),
+                    input,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            },
+        )?;
+        Ok(GeneralLiveRefsObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    /// Observe metadata, exact namespace, file IDs, complete retrieval maps,
+    /// storage-validity and disabled integrity under the same native protection
+    /// as the complete verifier. Placeholder file contents are never read.
+    /// Caller must bracket this observation with independent raw-image hashes.
+    pub fn observe_refs_layout_with_resource_profile(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &[crate::shadow_native::Input<'_>],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        let (report, before, observed_readonly, after) = self.with_readonly_refs_observation(
+            &pair,
+            resource_profile,
+            events,
+            |protected| {
+                crate::shadow_native::observe_general_layout_readonly_with_resource_profile(
+                    pair.clone(),
+                    input,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            },
+        )?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    fn with_readonly_refs_observation<T>(
+        &mut self,
+        pair: &crate::general_layout::GeneralSourceShadowBinding,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+        observe: impl FnOnce(&GeneralReadonlyRefsVolume<'_>) -> io::Result<T>,
+    ) -> io::Result<(T, GeneralDiskState, GeneralDiskState, GeneralDiskState)> {
         pair.validate_with_resource_profile(resource_profile)?;
         if pair.shadow != self.binding {
             return Err(invalid(
@@ -2116,14 +2204,7 @@ impl GeneralFrozenPartition {
                 volume: &volume,
                 expected_state: &expected_readonly,
             };
-            let observed =
-                crate::shadow_native::verify_general_ordinary_readonly_with_resource_profile(
-                    pair,
-                    input,
-                    &same_security,
-                    &protected,
-                    resource_profile,
-                );
+            let observed = observe(&protected);
             // All native file handles close before the persistent offline
             // transition; the retained read-only volume route closes once.
             close_file(
@@ -2142,12 +2223,7 @@ impl GeneralFrozenPartition {
                 "protected ReFS exclusion changed during observation",
             ));
         }
-        Ok(GeneralLiveRefsObservation {
-            report: collected?,
-            before,
-            observed_readonly: expected_readonly,
-            after,
-        })
+        Ok((collected?, before, expected_readonly, after))
     }
 
     /// Transition only an unchanged OFFLINE|READ_ONLY source to OFFLINE. The

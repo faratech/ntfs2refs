@@ -126,6 +126,9 @@ pub enum Mode {
     Construct,
     ConstructRetaining,
     Verify,
+    /// Metadata-only observation; accepted only through a protected native
+    /// read-only lease. It never reads or verifies placeholder payload bytes.
+    ObserveLayout,
 }
 #[derive(Debug, Serialize)]
 pub struct CandidateReport {
@@ -199,6 +202,34 @@ pub struct GeneralReport {
     pub pair: GeneralSourceShadowBinding,
     pub native: Report,
     pub conversion_qualified: bool,
+}
+
+/// A strict native metadata and stream-layout observation. This deliberately
+/// cannot stand in for GeneralReport's complete logical-content verification.
+/// Only the protected native lease can construct it; persisted JSON cannot.
+#[derive(Debug, Serialize)]
+pub struct GeneralLayoutReport {
+    pair: GeneralSourceShadowBinding,
+    native: Report,
+    expected_stream_sha256: Vec<Option<String>>,
+    metadata_and_namespace_verified: bool,
+    complete_stream_mappings_verified: bool,
+    storage_validity_verified: bool,
+    data_integrity_disabled: bool,
+    payload_bytes_read: u64,
+    logical_contents_verified: bool,
+    raw_image_equality_verified: bool,
+    complete_allocation_graph_verified: bool,
+    conversion_qualified: bool,
+}
+
+impl GeneralLayoutReport {
+    pub fn pair(&self) -> &GeneralSourceShadowBinding {
+        &self.pair
+    }
+    pub fn native(&self) -> &Report {
+        &self.native
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -947,6 +978,24 @@ fn validate_existing(
     before_restore: bool,
     root_basic_after_mutation: Option<&[u8; 40]>,
 ) -> io::Result<()> {
+    validate_existing_profile(
+        report,
+        input,
+        same,
+        before_restore,
+        root_basic_after_mutation,
+        true,
+    )
+}
+
+fn validate_existing_profile(
+    report: &Report,
+    input: &[Input<'_>],
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    before_restore: bool,
+    root_basic_after_mutation: Option<&[u8; 40]>,
+    verify_contents: bool,
+) -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     if report.objects.len() != input.len() {
         return Err(invalid("existing shadow object coverage differs"));
@@ -1014,7 +1063,9 @@ fn validate_existing(
             || standard[20] != 0
             || (standard[21] != 0) != i.directory
             || (!i.directory && layout::u64_at(standard, 8)? != i.logical_length())
-            || o.logical_sha256 != (!i.directory).then(|| i.logical_sha256())
+            || (verify_contents
+                && o.logical_sha256 != (!i.directory).then(|| i.logical_sha256()))
+            || (!verify_contents && o.logical_sha256.is_some())
         {
             return Err(invalid(
                 "existing shadow links, type, EOF or contents differ",
@@ -1100,6 +1151,7 @@ fn validate_existing(
                 continue;
             }
             if i.components.is_empty()
+                && verify_contents
                 && !expected.contains_key(&entry.name_utf16)
                 && entry.name_utf16
                     == "System Volume Information"
@@ -1969,6 +2021,63 @@ pub(crate) fn verify_general_ordinary_readonly_with_resource_profile(
     })
 }
 
+/// Observe exactly the expected namespace and all native stream metadata,
+/// without reading a single byte of file contents. Allocation-only shadow
+/// prefixes may contain unrelated scratch bytes until the composite reader
+/// supplies the admitted NTFS payload. This report is not that payload proof.
+pub(crate) fn observe_general_layout_readonly_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralLayoutReport> {
+    pair.validate_with_resource_profile(resource_profile)?;
+    if protected.binding() != &pair.shadow {
+        return Err(invalid("protected ReFS layout lease binding differs"));
+    }
+    let binding = DiskBinding {
+        disk_number: pair.shadow.disk_number,
+        volume_guid: pair.shadow.volume_guid.clone(),
+        identity: pair.shadow.identity.clone(),
+    };
+    let native = run_role_profile(
+        binding,
+        pair.source.disk_number,
+        input,
+        Mode::ObserveLayout,
+        &same_security,
+        false,
+        true,
+        None,
+        Some(&pair.shadow),
+        None,
+        Some(protected),
+        resource_profile,
+    )?;
+    validate_existing_profile(&native, input, &same_security, false, None, false)?;
+    if native.payload_bytes_written != 0 || native.conversion_qualified {
+        return Err(invalid("protected layout observer granted mutation authority"));
+    }
+    Ok(GeneralLayoutReport {
+        pair,
+        native,
+        expected_stream_sha256: input
+            .iter()
+            .map(|item| (!item.directory).then(|| item.logical_sha256()))
+            .collect(),
+        metadata_and_namespace_verified: true,
+        complete_stream_mappings_verified: true,
+        storage_validity_verified: true,
+        data_integrity_disabled: true,
+        payload_bytes_read: 0,
+        logical_contents_verified: false,
+        raw_image_equality_verified: false,
+        complete_allocation_graph_verified: false,
+        conversion_qualified: false,
+    })
+}
+
 /// Inspect the original data disk after the journal handoff has been made
 /// durable and it has mounted as ReFS. The caller supplies the pre-cutover
 /// source tree from separately pinned recovery artifacts.
@@ -2339,7 +2448,7 @@ fn validate_protected_profile(
     general_shadow: bool,
     expected_label: bool,
 ) -> io::Result<()> {
-    if mode != Mode::Verify
+    if !matches!(mode, Mode::Verify | Mode::ObserveLayout)
         || converted
         || !ordinary
         || payload_writer
@@ -2378,6 +2487,9 @@ fn run_role_profile(
     protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<Report> {
+    if mode == Mode::ObserveLayout && protected.is_none() {
+        return Err(invalid("ReFS layout observation requires a protected native lease"));
+    }
     let (maximum_objects, maximum_logical_bytes) = match resource_profile {
         None => (160usize, 256u64 * 1024 * 1024),
         Some(
@@ -2423,7 +2535,11 @@ fn run_role_profile(
             source_disk != binding.disk_number
                 && matches!(
                     mode,
-                    Mode::ProbeRoot | Mode::Construct | Mode::ConstructRetaining | Mode::Verify
+                    Mode::ProbeRoot
+                        | Mode::Construct
+                        | Mode::ConstructRetaining
+                        | Mode::Verify
+                        | Mode::ObserveLayout
                 )
         };
         if !route_mode_ok
@@ -2506,7 +2622,8 @@ fn run_role_profile(
         let digest_only = i.expected_length.is_some() || i.expected_sha256.is_some();
         let digest_allowed = ordinary
             && !i.directory
-            && ((matches!(mode, Mode::Verify | Mode::ProbeRoot) && payload_writer.is_none())
+            && ((matches!(mode, Mode::Verify | Mode::ProbeRoot | Mode::ObserveLayout)
+                && payload_writer.is_none())
                 || (!converted
                     && matches!(mode, Mode::Construct | Mode::ConstructRetaining)
                     && payload_writer.is_some()));
@@ -2597,7 +2714,7 @@ fn run_role_profile(
     } else {
         opened_volume = File::options()
             .read(true)
-            .write(mode != Mode::Verify)
+            .write(!matches!(mode, Mode::Verify | Mode::ObserveLayout))
             .share_mode(3)
             .open(root.trim_end_matches('\\'))?;
         &opened_volume
@@ -2719,7 +2836,7 @@ fn run_role_profile(
     let mut retention_attempts = vec![];
     let mut shadow_user_evacuation = Vec::new();
     let constructing = matches!(mode, Mode::Construct | Mode::ConstructRetaining);
-    if mode == Mode::Verify && !matched_before {
+    if matches!(mode, Mode::Verify | Mode::ObserveLayout) && !matched_before {
         return Err(invalid("root security changed before verification"));
     }
     if mode == Mode::ProbeRoot {
@@ -2982,26 +3099,37 @@ fn run_role_profile(
         }
         volume.sync_all()?;
     }
-    // No fallback from metadata-inclusive evidence to the legacy view.
-    let legacy_bitmap = crate::bitmap_observation::Observation::capture(
-        volume,
-        &[0; 8],
-        binding.identity.partition_bytes,
-        resource_profile.is_some(),
-    )?;
-    let mut ex_input = [0; 16];
-    ex_input[8] = 1;
-    let metadata_bitmap = crate::bitmap_observation::Observation::capture(
-        volume,
-        &ex_input,
-        binding.identity.partition_bytes,
-        resource_profile.is_some(),
-    )?;
-    let metadata_allocation = metadata_bitmap.allocation_map(binding.identity.partition_bytes)?;
+    // Full semantic verification retains both bitmap observations. Layout-only
+    // observation makes no complete-allocation claim and does not turn a
+    // mounted bitmap into a frozen graph proof.
+    let bitmaps = if mode == Mode::ObserveLayout {
+        None
+    } else {
+        let legacy = crate::bitmap_observation::Observation::capture(
+            volume,
+            &[0; 8],
+            binding.identity.partition_bytes,
+            resource_profile.is_some(),
+        )?;
+        let mut ex_input = [0; 16];
+        ex_input[8] = 1;
+        let metadata = crate::bitmap_observation::Observation::capture(
+            volume,
+            &ex_input,
+            binding.identity.partition_bytes,
+            resource_profile.is_some(),
+        )?;
+        Some((legacy, metadata))
+    };
+    let metadata_allocation = bitmaps.as_ref()
+        .map(|(_, metadata)| metadata.allocation_map(binding.identity.partition_bytes))
+        .transpose()?;
     // These maps are immutable for the complete verification pass. Hash each
     // only once even if many files report a source-placement candidate. Move
     // attempts above still collect and recheck fresh native bitmaps separately.
-    let candidate_views = if input.iter().any(|i| i.source_offset.is_some()) {
+    let candidate_views = if let Some((legacy_bitmap, metadata_bitmap)) = bitmaps.as_ref()
+        .filter(|_| input.iter().any(|i| i.source_offset.is_some()))
+    {
         Some((
             legacy_bitmap.view(binding.identity.partition_bytes)?,
             metadata_bitmap.view(binding.identity.partition_bytes)?,
@@ -3108,12 +3236,14 @@ fn run_role_profile(
                 {
                     return Err(invalid("shadow data integrity profile differs"));
                 }
-                let logical_hash = if let Some(expected) = i.expected_sha256 {
+                let logical_hash = if mode == Mode::ObserveLayout {
+                    None
+                } else if let Some(expected) = i.expected_sha256 {
                     let actual = hash_exact_stream(&mut h, i.logical_length())?;
                     if actual != expected {
                         return Err(invalid("converted logical stream hash differs"));
                     }
-                    actual
+                    Some(actual)
                 } else {
                     let mut bytes = vec![];
                     (&mut h)
@@ -3122,10 +3252,10 @@ fn run_role_profile(
                     if bytes != i.payload {
                         return Err(invalid("shadow logical bytes or EOF differ"));
                     }
-                    hex::encode(Sha256::digest(&bytes))
+                    Some(hex::encode(Sha256::digest(&bytes)))
                 };
                 (
-                    Some(logical_hash),
+                    logical_hash,
                     retrieval,
                     regions.remove(0),
                     regions.remove(0),
@@ -3171,7 +3301,7 @@ fn run_role_profile(
             namespace,
             streams,
             source_candidate: i
-                .source_offset
+                .source_offset.filter(|_| mode != Mode::ObserveLayout)
                 .map(|offset| -> io::Result<_> {
                     let (legacy_view, metadata_view) = candidate_views
                         .as_ref()
@@ -3181,8 +3311,10 @@ fn run_role_profile(
                             .candidate(offset, i.logical_length().next_multiple_of(4096))?,
                         metadata_inclusive: metadata_view
                             .candidate(offset, i.logical_length().next_multiple_of(4096))?,
-                        legacy_page_proof: legacy_bitmap.proof(),
-                        metadata_page_proof: metadata_bitmap.proof(),
+                        legacy_page_proof: bitmaps.as_ref()
+                            .ok_or_else(|| invalid("candidate legacy bitmap missing"))?.0.proof(),
+                        metadata_page_proof: bitmaps.as_ref()
+                            .ok_or_else(|| invalid("candidate metadata bitmap missing"))?.1.proof(),
                     })
                 })
                 .transpose()?,
@@ -3205,8 +3337,8 @@ fn run_role_profile(
         before,
         after,
         objects,
-        metadata_allocation: Some(metadata_allocation),
-        metadata_allocation_page_proof: Some(metadata_bitmap.proof()),
+        metadata_allocation,
+        metadata_allocation_page_proof: bitmaps.as_ref().map(|(_, metadata)| metadata.proof()),
         base_sectors: 0,
         privilege_states: privileges.audit().to_vec(),
         events,

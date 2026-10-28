@@ -1,5 +1,26 @@
 # ntfs2refs project guidance
 
+COMPACT RAW APPLY SUCCEEDED; HND/NATIVE FINALIZATION STILL LIVE. Do NOT restart,
+restore/format/rollback or mount source manually. Canonical run
+c75ec9ec8a104f99b630c92343b44ca1, taskN2R-CompactApply-c75ec9ec8a104f99b630c92343b44ca1,
+PID3456 creation1793202810738, producer78d881524aa5a3d9edfabc6b01d41e85389a1e13ac076866d53c0560f1357aa2
+(29f989e+pre-existing main.rs). Host intent/dispatch
+compact-fixture-apply-20261028/canonical-identity; guest
+C:\ntfs2refs\compact-apply-c75ec9ec8a104f99b630c92343b44ca1\result.
+Full source EC5 fixture hash and compact binding passed, source activated attrs1
+OFFLINE, shadow stays3. execution.json now proves138 patches/70,406,144 actual
+source bytes written, exact complete target SHA
+2b2aa8c51a0ed3676a31255f6121152fedfb29b459c20246c1546135fe769391;
+operation applied-before-handoff/retained_bytes_unchanged=true/handoff=false.
+Source_admitted/general qualification remain false (exact dummy fixture only).
+At16:03:30Z SAME process was finalizing, reads248,165,016,290/writes70,430,312;
+NO finalization/result/failed file yet. Keep source offline until protocol ends.
+All36 checkpoints incl preapply5971d348 preserved; VM RUNNING4GiB. Host free
+~74GB, lab actual~271.5GB/cap274.9GB,64-GiB reserve maintained. Readonly agent
+delta_artifact_reader monitors; root must archive/preserve after terminal.
+Old66d5 wrapper/direct failures did not write source; never redispatch them.
+No units. This is NOT native-driver acceptance until finalization succeeds.
+
 First exact compact apply experiment66d5aa40fec6464ba6bef76d6daad96f did NOT
 write source: wrapper PowerShell file never ran (default policy unchanged),
 then direct native task safely refused before activation with compact ticket

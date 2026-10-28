@@ -430,6 +430,9 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
         }
         save(output, "target-preservation.json", &proof)?;
         save(output, "target-events.json", &events)?;
+        // The complete target phase is durable above. Keep the native audit
+        // bound per phase rather than exhausting it on final state queries.
+        events.clear();
         phase = "source-certificate";
         let certificate = assessment.qualify_target(&raw, &proof)?;
         let certificate_sha256 = save(output, "certificate.json", &certificate)?;

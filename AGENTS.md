@@ -1,5 +1,21 @@
 # ntfs2refs project guidance
 
+Compact native finalization/after-marker plumbing implemented; preserves full
+image/HND proofs, composite binding and exact delta coverage, drops attrs1 read
+view BEFORE native mount, reuses existing native all-tree/label/mount helpers.
+Frozen-source diagnostic assessment added separately; SourceCertificate still
+requires original live transaction-freeze/target witness and is NOT recreated
+from persisted success JSON. New lab-apply-compact-fixture is explicit TEST ONLY:
+requires acknowledgment + N2R-WIN11 + exact GPT IDs + compiled full EC5 source/
+2b2a target/tree160/artifact/ticket/driver pins. Fresh full-source hash before
+activation. It issues NO SourceCertificate/general qualification, and cannot
+select arbitrary or valuable real-data volumes. Old production gates unchanged.
+Build/controller syntax passed; no units. Start-CompactFixtureApply.ps1 boots
+current5971/all36 once,2-GiB allowance, applies exact prepared journal then HND/
+native finalization. No format/restore/source prearrangement; preserve original
+checkpoint and all evidence. General offline admission and compact rollback
+native completion remain unfinished. Native experiment result pending.
+
 COMPACT JOURNAL NATIVE PREPARATION PASSED a1aa7a957b094f7bbe9af154ee7270eb.
 Producer7fa4bb96c86edfaca675c8b5458b1be291ac2a397430de59f5fbbb0a0d31a5f6
 (658a09a+pre-existing main.rs; later b358b54 execution plumbing NOT exercised).

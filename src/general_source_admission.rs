@@ -1,5 +1,6 @@
 //! Live source admission for a dedicated NTFS data disk. Inspection alone
 //! cannot issue a certificate; a bound frozen native target is also required.
+pub mod frozen;
 use crate::{
     lab_reconstruct, ntfs_admission, ntfs_attestation, ntfs_backup, ntfs_inspect, ntfs_log,
     ntfs_source_view,

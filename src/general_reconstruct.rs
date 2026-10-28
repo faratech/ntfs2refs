@@ -29,6 +29,7 @@ use std::{
 };
 
 pub(crate) mod compact;
+pub(crate) mod compact_finalize;
 
 fn observe_journal(file: &File, request: &Request) -> Result<JournalFileSnapshot> {
     Ok(observe_general_journal_file_with_profile(

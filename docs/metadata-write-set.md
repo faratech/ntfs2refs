@@ -1,5 +1,27 @@
 # Candidate ReFS target write set
 
+## Exact-fixture cutover experiment
+
+Compact native finalization now uses the same durable HND/full-image checks
+and native verification helpers as the original path, with the composite backing
+binding and exact delta policy. The attrs1 read view closes before mounting.
+
+The existing SourceCertificate cannot be recreated by reopening a frozen disk:
+its original live transaction-freeze/target witnesses remain required. A new
+frozen-source diagnostic gathers current facts but grants no certificate. Those
+rules were not weakened. The immediate native cutover command is explicitly an
+enrolled disposable-fixture experiment, requiring an acknowledgment plus exact
+machine/GPT identities, full source/target/tree/artifact/ticket/driver pins. It
+hashes the entire source before clearing read-only protection. It cannot select
+an arbitrary existing volume or claim production source admission. Successful
+results must still keep general-conversion flags false.
+
+The host controller preserves all36 saved checkpoints and boots the already
+prepared5971 branch, without formatting or reconstructing another shadow. Build
+and controller syntax passed; native apply/handoff outcome pending. No unit
+tests added/run. General admission and compact rollback completion still need
+work before a usable general-drive converter can be claimed.
+
 ## Native compact journal preparation passed
 
 Runa1aa7a957b094f7bbe9af154ee7270eb successfully reopened the metadata-complete

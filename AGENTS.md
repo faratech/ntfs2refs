@@ -1,5 +1,22 @@
 # ntfs2refs project guidance
 
+Candidate13's interruption is now CONFIRMED: terminal exit86 after one flushed
+write, no handoff, no producer process. Monitor42487 completed successfully,
+archived/rehashed terminal evidence (manifest
+da207bc560c0636509f09079ba77c1774f8b3d4172ab89924cf5ef9ba59ae1c3), and
+saved OFF partial checkpoint4d73dd8d-d105-4f90-a277-3cab79df9e55, parent6ffb6bdc.
+All21 checkpoints remain. Do not restart that monitor or producer.
+After one clean boot at2026-10-28T06:08:44.6593020Z, persistent source OFFLINE/
+writable and shadow OFFLINE/READ_ONLY exclusion passed, with zero mount attempts.
+Resume is now LIVE: taskN2R-StreamingV2Recover-Resume-2fa6edb2e7ac464ca863a5db6dbd6f5c,
+PID1620 created2026-10-28T06:09:25.342949Z, helper5bd69d5bcda7015e37cca39dc3fad2df3c417458b4dc62a17d58fff01c6981b5.
+Observe Collect-StreamingV2Recovery.ps1 -Candidate candidate13 -Operation Resume;
+never dispatch it twice. Recovery reconstruct-request pin97cbe83234d7d36b5689fea9afee74963dd21bf9462f43f8ce034cbb02a558cd
+differs from the original conversion-request pin. Ticket
+44d005bb561a5fef20285fc20081f655c3208be21307d3d98ff57f1d7f2bdb2e.
+No resume/finalization/rollback success is claimed yet. Latest resume had
+24,585,844,673 read bytes and no source availability change; reserve64 GiB intact.
+
 Candidate13's fresh protected target report is archived as
 candidate13/observed-target-preservation.json, SHA-256
 3a2c267298391230d52d3bef68727c8edec8aa5ef12c5864f531c8a574a53bf4.

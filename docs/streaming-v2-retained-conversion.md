@@ -104,3 +104,21 @@ observation timeout. All20 snapshots remain, cap256 GiB and reserve64 GiB.
 The one-write run reserves16 GiB (full8-GiB journal device,6-GiB OS and2-GiB
 source/metadata margin). Full resume/rollback separately admits12 GiB for the
 existing journal and bounded source COW; ordinary conversion keeps20 GiB.
+
+The controlled producer subsequently exited86 after one flushed write. No
+handoff occurred. Terminal archive manifest SHA-256 is
+`da207bc560c0636509f09079ba77c1774f8b3d4172ab89924cf5ef9ba59ae1c3`.
+OFF partial checkpoint`4d73dd8d-d105-4f90-a277-3cab79df9e55` preserves that
+state, parent`6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3`, with all21 snapshots.
+One clean boot at2026-10-28T06:08:44.6593020Z proved persistent source/shadow
+exclusion without attempting to mount the partial source. This is process
+interruption evidence, not physical-power-loss qualification.
+
+Resume task`N2R-StreamingV2Recover-Resume-2fa6edb2e7ac464ca863a5db6dbd6f5c`
+is now live underPID1620, using the original pinned helper and ticket
+`44d005bb561a5fef20285fc20081f655c3208be21307d3d98ff57f1d7f2bdb2e`.
+The reconstruction request is
+`97cbe83234d7d36b5689fea9afee74963dd21bf9462f43f8ce034cbb02a558cd`;
+it is distinct from the earlier conversion/discovery request. No resume,
+native post-recovery or rollback outcome is established yet. Do not redispatch
+this task; observe its actual process and durable results.

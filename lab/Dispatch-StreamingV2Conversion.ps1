@@ -79,9 +79,12 @@ try{
         foreach($row in $rows){if((Get-FileHash -LiteralPath (Join-Path $Stage $row.name)).Hash.ToLowerInvariant()-cne$row.sha256){throw 'Staged binary differs.'}}
         $request=Join-Path $Stage 'request.json';$discovery=Join-Path $Stage 'discovery.json';$output='C:\ntfs2refs\streaming-v2-runs\'+$Run
         $ErrorActionPreference='Continue'
-        $reuseArguments=if($Reuse){@('--verify-existing-shadow')}else{@()}
-        $log=@(& (Join-Path $Stage 'ntfs2refs-bind.exe') --source 'F:\' --shadow 'R:\' --journal 'J:\' --experiment-id $Run `
-            --experimental-streaming-payload --experimental-large-tree --experimental-large-journal --max-journal-bytes $JournalBudgetBytes @reuseArguments --output $request --evidence $discovery 2>&1)
+        [string[]]$bindArguments=@('--source','F:\','--shadow','R:\','--journal','J:\','--experiment-id',$Run,
+            '--experimental-streaming-payload','--experimental-large-tree','--experimental-large-journal',
+            '--max-journal-bytes',[string]$JournalBudgetBytes,'--output',$request,'--evidence',$discovery)
+        if($Reuse){$bindArguments+='--verify-existing-shadow'}
+        $bindArguments|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $Stage 'bind-arguments.json') -Encoding utf8
+        $log=@(& (Join-Path $Stage 'ntfs2refs-bind.exe') @bindArguments 2>&1)
         $exit=$LASTEXITCODE;$ErrorActionPreference='Stop'
         $log|Out-String|Set-Content -LiteralPath (Join-Path $Stage 'discovery.log') -Encoding utf8
         if($exit-ne0){throw 'Discovery refused; preserve current files.'}

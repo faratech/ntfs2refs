@@ -14,15 +14,21 @@ pub struct PackReceipt {
     pub sha256: String,
     pub buffer_bytes: usize,
     pub executable: bool,
+    pub retained_source_bytes: u64,
 }
+
+pub trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
 
 /// A partition-sized address space backed by a densely packed sequence of
 /// selected ranges. Use behind CandidateHybrid, which supplies original bytes
 /// for the complement. No allocation proportional to partition size occurs.
 pub struct PackedShadow<'a, R> {
     backing: &'a mut R,
-    ranges: &'a [ByteRange],
+    ranges: Vec<ByteRange>,
     starts: Vec<u64>,
+    original: Option<&'a mut dyn ReadSeek>,
+    retained: Vec<ByteRange>,
     length: u64,
     position: u64,
 }
@@ -78,6 +84,59 @@ fn layout(plan: &WriteSetPlan) -> Result<Vec<u64>> {
     Ok(starts)
 }
 
+/// Derive storage selection without changing the filesystem allocation plan.
+/// Supplied retained ranges are only a diagnostic claim until independently
+/// bound to file identity, source bytes and target metadata ownership.
+fn storage_ranges(plan: &WriteSetPlan, retained: &[ByteRange]) -> Result<Vec<ByteRange>> {
+    layout(plan)?;
+    let coverage = crate::refs_write_set::payload_coverage(plan, retained)?;
+    ensure!(
+        coverage.all_supplied_payloads_covered,
+        "retained range leaves target allocation"
+    );
+    let mut retained = retained.to_vec();
+    retained.sort_by_key(|r| r.offset);
+    let mut result = Vec::new();
+    let mut index = 0;
+    for owned in &plan.target_owned_ranges {
+        let end = owned.offset + owned.length;
+        let mut cursor = owned.offset;
+        while index < retained.len() && retained[index].offset + retained[index].length <= cursor {
+            index += 1;
+        }
+        for r in &retained[index..] {
+            if r.offset >= end {
+                break;
+            }
+            if r.offset > cursor {
+                result.push(ByteRange {
+                    offset: cursor,
+                    length: r.offset - cursor,
+                });
+            }
+            cursor = end.min(r.offset + r.length);
+        }
+        if cursor < end {
+            result.push(ByteRange {
+                offset: cursor,
+                length: end - cursor,
+            });
+        }
+    }
+    ensure!(
+        result.len() <= 131072,
+        "compact storage range budget exceeded"
+    );
+    Ok(result)
+}
+
+pub fn required_bytes(plan: &WriteSetPlan, retained: &[ByteRange]) -> Result<u64> {
+    Ok(storage_ranges(plan, retained)?
+        .iter()
+        .map(|r| r.length)
+        .sum())
+}
+
 /// Stream selected shadow bytes into a fresh, caller-owned scratch sink. The
 /// caller must flush it durably and bind this receipt to the exact plan before
 /// reuse. Failure leaves an incomplete artifact, never a completion receipt.
@@ -86,14 +145,24 @@ pub fn pack<R: Read + Seek, W: Write>(
     output: &mut W,
     plan: &WriteSetPlan,
 ) -> Result<PackReceipt> {
-    layout(plan)?;
+    pack_with_retained(shadow, output, plan, &[])
+}
+
+pub fn pack_with_retained<R: Read + Seek, W: Write>(
+    shadow: &mut R,
+    output: &mut W,
+    plan: &WriteSetPlan,
+    retained: &[ByteRange],
+) -> Result<PackReceipt> {
+    let selected = storage_ranges(plan, retained)?;
+    let packed_bytes: u64 = selected.iter().map(|r| r.length).sum();
     ensure!(
         shadow.seek(SeekFrom::End(0))? == plan.partition_bytes,
         "shadow length differs from candidate"
     );
     let mut buffer = [0u8; 65536];
     let mut digest = Sha256::new();
-    for range in &plan.target_owned_ranges {
+    for range in &selected {
         shadow.seek(SeekFrom::Start(range.offset))?;
         let mut left = range.length;
         while left > 0 {
@@ -106,11 +175,12 @@ pub fn pack<R: Read + Seek, W: Write>(
     }
     Ok(PackReceipt {
         partition_bytes: plan.partition_bytes,
-        packed_bytes: plan.target_owned_bytes,
-        ranges: plan.target_owned_ranges.len(),
+        packed_bytes,
+        ranges: selected.len(),
         sha256: hex::encode(digest.finalize()),
         buffer_bytes: buffer.len(),
         executable: false,
+        retained_source_bytes: plan.target_owned_bytes - packed_bytes,
     })
 }
 
@@ -118,15 +188,49 @@ impl<'a, R: Read + Seek> PackedShadow<'a, R> {
     /// Length/geometry validation only. Authenticating bytes and the plan is
     /// the caller's responsibility; neither JSON nor this view grants writes.
     pub fn new(backing: &'a mut R, plan: &'a WriteSetPlan) -> Result<Self> {
-        let starts = layout(plan)?;
+        Self::open(backing, None, plan, &[])
+    }
+
+    pub fn with_retained<S: Read + Seek + 'a>(
+        backing: &'a mut R,
+        original: &'a mut S,
+        plan: &WriteSetPlan,
+        retained: &[ByteRange],
+    ) -> Result<Self> {
         ensure!(
-            backing.seek(SeekFrom::End(0))? == plan.target_owned_bytes,
+            original.seek(SeekFrom::End(0))? == plan.partition_bytes,
+            "retained source length differs from candidate"
+        );
+        Self::open(backing, Some(original), plan, retained)
+    }
+
+    fn open(
+        backing: &'a mut R,
+        original: Option<&'a mut dyn ReadSeek>,
+        plan: &WriteSetPlan,
+        retained: &[ByteRange],
+    ) -> Result<Self> {
+        let ranges = storage_ranges(plan, retained)?;
+        let mut starts = Vec::with_capacity(ranges.len());
+        let mut bytes = 0;
+        for range in &ranges {
+            starts.push(bytes);
+            bytes += range.length;
+        }
+        ensure!(
+            backing.seek(SeekFrom::End(0))? == bytes,
             "compact backing length differs from candidate"
         );
         Ok(Self {
             backing,
-            ranges: &plan.target_owned_ranges,
+            ranges,
             starts,
+            original,
+            retained: {
+                let mut r = retained.to_vec();
+                r.sort_by_key(|r| r.offset);
+                r
+            },
             length: plan.partition_bytes,
             position: 0,
         })
@@ -137,6 +241,30 @@ impl<R: Read + Seek> Read for PackedShadow<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         if buffer.is_empty() || self.position == self.length {
             return Ok(0);
+        }
+        let index = self
+            .retained
+            .partition_point(|r| r.offset + r.length <= self.position);
+        if let Some(range) = self
+            .retained
+            .get(index)
+            .filter(|r| self.position >= r.offset)
+        {
+            let count =
+                (range.offset + range.length - self.position).min(buffer.len() as u64) as usize;
+            let original = self.original.as_mut().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "retained source absent")
+            })?;
+            original.seek(SeekFrom::Start(self.position))?;
+            let read = original.read(&mut buffer[..count])?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "retained source ended",
+                ));
+            }
+            self.position += read as u64;
+            return Ok(read);
         }
         let index = self
             .ranges

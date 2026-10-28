@@ -26,6 +26,27 @@ retained-payload subtraction. The existing full-shadow conversion/recovery
 path is unchanged. Initial evidence is a release build, not native compact
 conversion qualification. No unit tests were added or run.
 
+The subsequent retained-range path also omits supplied retained payload from
+the compact artifact. `--retained-request` accepts the existing comparison
+request (or the `comparison` member of its owning request) and requires both
+ordinary original/shadow images. It validates range coverage/alignment,
+non-overlap, the 1,024-range budget, equal pinned source/shadow range hashes,
+actual hashes from both input images, and no overlap with observed metadata
+anchors. Evidence reads are bounded at16 MiB before JSON decoding. Scratch
+admission uses selected bytes **after** retention subtraction.
+
+`PackedShadow::with_retained` routes retained reads to the original image;
+packed offsets cover only the remaining selected ranges. The original
+filesystem allocation plan is unchanged: retained clusters remain allocated
+to their ReFS streams. `retained_source_bytes` reports omitted payload
+separately from packed bytes. Hash agreement and known-anchor exclusion do
+not prove the complete metadata graph or preservation of file identity;
+these remain diagnostic candidates with `executable: false`.
+
+This path has release-build/CLI evidence only. It has not yet been used for a
+native compact conversion. Initial native shadow construction still allocates
+the placeholder payload and remains the next independent storage problem.
+
 The current journal compares every sector of a frozen NTFS partition with a
 native ReFS shadow. On a previously used volume, stale bytes in free sectors
 can make the journal much larger than the ReFS metadata and live payloads.

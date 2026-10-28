@@ -16,6 +16,24 @@ is a non-executable candidate representation; it neither eliminates initial
 shadow payload allocation nor authorizes selective drive writes. Keep the
 full-shadow path and all native evidence intact. No unit tests added/run.
 
+The compact candidate now also accepts the existing retained comparison request,
+hashes supplied original/shadow ranges, excludes observed metadata anchors and
+stores only the remaining selected bytes. PackedShadow::with_retained reads
+the omitted payload from the original image without changing allocation
+ownership. Evidence inputs are bounded before allocation/JSON decoding. This
+is build/CLI evidence only, not a native compact conversion or elimination of
+initial placeholder allocation. No source mutation path or execution authority
+was added; no unit tests were added/run.
+
+Candidate12's successful converted branch is now preserved OFF at checkpoint
+ae80bfd5-7b8d-4e60-80b4-6e236c841390, parent6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3.
+All15 prior checkpoints remain (16 total), clean shutdown was checked through
+Hyper-V and Msvm_ComputerSystem, and assigned memory is0 (4 GiB released).
+Intent/receipt are candidate12/converted-checkpoint-intent.json and
+converted-checkpoint.json. No mutation/reboot qualification is implied. A next
+native mutation attempt must boot a child of this preserved converted branch
+and pass AfterPreservationBoot with pinned Rust toolset2 before mutation.
+
 ## Objective and working approach
 
 Build an offline NTFS-to-ReFS converter that runs on the machine owning the

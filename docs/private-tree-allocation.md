@@ -29,7 +29,27 @@ and recovery integration before conversion; no new write authority is granted.
 Lab `--source-backed-payloads` opts into full private-prefix preparation and
 small/tail-only copies, preserving large relocated data as source-backed routes.
 It conflicts with full relocation materialization. Native qualification of this
-mode and compact capture is pending; release build passed. No unit tests added/run.
+mode initially had release-build evidence only. Native prefix staging now
+PASSED in run85e2750d05764f849536d0391362471c, sourcec7e4ab9 plus the pre-existing
+main.rs patch, producer
+1f49f3a3706e368e2881169b2b7368a80c4cca665843f921bf1a7904cf29c922.
+Result SHA-256:
+b761140c424384b3638d5cee0d0ab80e8b1997bfe91697ace10548630d24d97c.
+
+All24 measured routes cover8,590,196,736 user-prefix bytes after valid-data
+advancement, without copying those prefixes (including relocated data).
+Only18 small/tail payload bytes were written/flushed/read back; source logical
+charges36 bytes include preflight and transfer. Source stayed offline/read-only.
+The new shadow child used163,577,856 backing bytes (156 MiB), excluding parent
+chains, OS/journal/evidence and physical device I/O. Evidence:
+`.lab/hyperv/streaming-v2-20261027/private-tree-source-backed-20261028`.
+Clean shutdown/checkpoint889c1ab0-dfdf-46fc-ae19-32d3d4586203 preserved all29
+snapshots, parent6ffb6bdc, and released4-GiB RAM. No cap/reserve increase.
+
+This proves native private-prefix staging/route capture, NOT the frozen
+source-backed reader, compact capture, restored security/system metadata,
+required-byte completeness or recoverable cutover. Those still need end-to-end
+integration/qualification. No unit tests added/run.
 
 ## Direct placement of deferred allocations
 

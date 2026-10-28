@@ -1,5 +1,19 @@
 # ntfs2refs project guidance
 
+Source-backed private-prefix NATIVE STAGING PASSED, run85e2750d05764f849536d0391362471c,
+sourcec7e4ab9+pre-existing main.rs patch, producer1f49f3a3706e368e2881169b2b7368a80c4cca665843f921bf1a7904cf29c922.
+Resultb761140c424384b3638d5cee0d0ab80e8b1997bfe91697ace10548630d24d97c.
+24 routes/8,590,196,736 full-cluster user bytes storage-valid, no prefix copies.
+Only18 small/tail bytes copied/flushed/readback, source charges36. Source stayed
+excluded. Shadow child156 MiB excludes parents/OS/J/evidence/physical IO.
+OFF at889c1ab0-dfdf-46fc-ae19-32d3d4586203, parent6ffb6bdc, ALL29 checkpoints,
+RAM released/cap256 GiB and64-GiB reserve unchanged. Do NOT rerun constructor.
+This is NOT frozen SourceBackedShadow reader or compact-capture qualification.
+Next connect live routes across shadow freeze to selected compact capture;
+still need complete frozen required-byte graph, source ACL/times/system
+metadata restoration and compact journal/recoverable cutover. Preserve working
+full-shadow conversion/recovery and all evidence. No unit tests added/run.
+
 Source-backed relocation path IMPLEMENTED/build passed: opaque native route
 snapshot covers full measured storage-valid user prefixes, canonical inputs,
 nonoverlapping target mappings. GeneralShadow source_backed reader binds both

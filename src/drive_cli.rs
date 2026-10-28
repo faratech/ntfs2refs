@@ -197,9 +197,8 @@ mod windows {
     fn conversion_phase(output: &std::path::Path) -> &'static str {
         use std::os::windows::fs::MetadataExt;
         let exists = |name| {
-            fs::symlink_metadata(output.join(name)).is_ok_and(|metadata| {
-                metadata.is_file() && metadata.file_attributes() & 0x400 == 0
-            })
+            fs::symlink_metadata(output.join(name))
+                .is_ok_and(|metadata| metadata.is_file() && metadata.file_attributes() & 0x400 == 0)
         };
         if exists("apply.json") {
             "Verifying files"
@@ -245,7 +244,11 @@ mod windows {
                 let mut console = io::stdout().lock();
                 if !interactive {
                     if phase != previous {
-                        let _ = writeln!(console, "{phase} ({}s elapsed)", started.elapsed().as_secs());
+                        let _ = writeln!(
+                            console,
+                            "{phase} ({}s elapsed)",
+                            started.elapsed().as_secs()
+                        );
                     }
                     previous = phase;
                     drop(console);
@@ -436,6 +439,20 @@ mod windows {
             before.binding.identity.partition_bytes,
             before.binding.identity.logical_sector_bytes,
             before.binding.identity.physical_sector_bytes,
+        )?;
+        // Record the provider identity as well as the disk identity: a guest
+        // reboot can remove the attachment while leaving the recovery backing
+        // intact. These facts locate the original shadow; they never grant
+        // source admission, formatting or journal replay authority.
+        save_new(
+            &run.join("managed-shadow.json"),
+            &serde_json::json!({
+                "schema_version": 1,
+                "kind": "managed-native-shadow-location",
+                "path": staged.path,
+                "virtual_disk_id": staged.virtual_disk_id,
+                "binding": staged.binding,
+            }),
         )?;
         let request = crate::general_conversion::Request {
             schema_version: 2,

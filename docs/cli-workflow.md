@@ -6,6 +6,7 @@
 ntfs2refs --list
 ntfs2refs --drive d
 ntfs2refs --drive d --partition 2
+ntfs2refs --drive d partition 2
 ntfs2refs --drive 3 partition 2
 ```
 
@@ -31,8 +32,12 @@ on failure for inspection. The isolated native staging smoke passed on the
 current Windows11 guest: owned VHDX creation, attachment, empty-GPT/MSR setup,
 native formatting and ReFS3.14/4KiB verification all succeeded for60GiB. Its
 backing file was100MiB. This proves staging on that profile, independently of
-the manually prepared shadow experiments; the complete interactive affirmative
-conversion workflow remains a separate end-to-end qualification.
+the manually prepared shadow experiments. A full affirmative `--drive F
+--partition 2` run is in progress inside the protected Windows guest. Its
+confirmation, automatic scratch creation and native source/tree construction
+have passed; completion is not yet claimed. The current executable also shows
+conversion phases and elapsed time. That display change is not installed over
+the running conversion.
 
 Run conversion from an elevated Windows terminal. `--scratch-directory` can
 choose another ordinary working folder on the Windows OS volume. The current
@@ -83,8 +88,11 @@ They use the existing compact recovery engine; none can activate a new Apply.
 HND/ABT replay boundaries still apply. See `ntfs2refs-compact <operation> --help`
 and [the recovery contract](native-composite-experimental.md#recovery).
 
-This selected-device implementation has release-build evidence; its native
-qualification is separate from the earlier pinned laboratory executables.
+The selected-device backend completed a separately prepared 60 GiB native
+conversion, with five ordinary user files and a successful cold-boot hash
+readback. The exact executable and scope are recorded in the selected native
+experiment reports. This result is separate from the automatic drive workflow
+and the earlier pinned laboratory executables.
 Boot volumes, arbitrary geometry and general low-scratch behavior are unfinished.
 
 ## Existing full-shadow backend

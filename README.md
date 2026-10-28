@@ -4,6 +4,22 @@ Rust tooling and a Hyper-V laboratory for researching offline, extent-preserving
 NTFS-to-ReFS conversion. The current focus is data volumes; Windows OS-volume
 conversion and build-specific boot qualification are deferred.
 
+The drive-oriented Windows entry point is now available:
+
+```powershell
+ntfs2refs --list
+ntfs2refs --drive d
+ntfs2refs --drive d --partition 2
+ntfs2refs --drive 3 partition 2
+```
+
+It lists disks and partition numbers, resolves the selected volume, and asks
+for confirmation before creating working storage or starting conversion.
+`--drive d partition 2` is also accepted. Conversion uses the existing native
+engine and automatically prepares independent recovery storage. Current scope
+is experimental data volumes; unsupported layouts and features are refused.
+See [the workflow and current native results](docs/cli-workflow.md).
+
 **The experimental source-backed native-shadow path converted a fresh15-object/
 10-file tree on its original partition, then passed native mutation and reboot
 checks.** It used genuine live source/target admission,157 patches/67.3MiB and a

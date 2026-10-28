@@ -1,5 +1,24 @@
 # ntfs2refs project guidance
 
+Releasebuild main/compact passed23:38Z after managed-shadow location receipt;
+mainSHAf5af3d437fe14825d653f7c0227c3cacba685b50c0a753b85bae7a027d452b20,
+compact571c7e1d1f0603c491e336301dde62172add4053991a35d51f1a9bb1932a6a21.
+Neither is deployed to current affirmative866 worker. Same3660/creation live
+23:38:27Z reading532.400GB/write72.786MB, taskRunning267009. No terminal result
+or source write admission claimed. Reattachment API was proposed but NOT written
+or compiled; managed-shadow.json alone is routing, not recovery authority.
+Original main.rs capabilities1line diff remains UNSTAGED. No unit tests.
+
+Drive CLI requested by Mike is implemented: `--list`, `--drive d`, and optional
+`--partition N` / `partition N`. The real affirmative run d33... still uses
+sealed866fc5...; do not replace it with newer progress/managed-location code.
+At23:34:54Z same3660/1793228776720 was LIVE,463.577GB read; source1/shadow6
+remain excluded. All48 checkpoints remain. New managed-shadow.json records
+provider ID/path/binding for later recovery; serialized routing facts confer no
+source certificate or replay authority. Native completion is still pending.
+One50GB epoch remains unchanged; latestlab287,844,513,435/D-free57,584,476,160.
+No unit tests. Root owns current VM mutations; delta monitors metadata only.
+
 Later a5bfc6a mainCLI progress display built successfully, NOTdeployed tolive866.
 Scopedworker owns actual full conversion/certificate pipeline; mainholdsManagedShadow
 throughjoin. Best-effort Cfilenames only, noSource/J/packed reads or successauthority.

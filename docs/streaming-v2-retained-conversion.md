@@ -1,5 +1,11 @@
 # Eight-GiB retained conversion: completed native acceptance
 
+The separately pinned candidate13 process-interruption/resume/rollback case
+has now completed; see [its exact evidence and scope](streaming-v2-retained-recovery.md).
+The pending/run-live notes below preserve the chronology and do not describe
+the current state. Candidate12 itself remains the distinct normal-conversion
+producer, rather than inheriting candidate13's fault qualification.
+
 Run`cb25d12237454c3999f319547f48b057` converted the existing52-GiB NTFS/64-KiB
 partition to native ReFS3.14/4-KiB on the same partition. The source tree was
 not prearranged by moving its extents. Fourteen admitted objects include six

@@ -3075,6 +3075,205 @@
         "objects_verified": 14,
         "actual_shadow_backing_bytes": null
       }
+    },
+    {
+      "id": "streaming-v2-retained-8g-first-write-resume-rollback",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "process_fault_qualified"
+      ],
+      "outcome": "passed",
+      "scope": "After exactly one flushed target write and process exit86, persistent exclusion survived clean reboot. Guest-local resume proved the complete fresh ReFS image, then real handoff and an independent native verifier passed all14 objects, logical hashes and2721431552 original physical bytes. A separate fork of the saved partial state restored the exact frozen NTFS image, closed replay and passed all six native user-file hashes. All23 checkpoints preserved; no physical-power-loss or low-scratch qualification.",
+      "repository_commit": "15f95f33f0039ac757a91499d20b973bc4f991cd",
+      "executable": {
+        "name": "lab-convert-admitted-tree.exe",
+        "sha256": "b83911c4e4d6c3e662e0f5907b928b8e6fc61335a3745db4d67a8891af1849e5",
+        "retained_path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence/stage/lab-convert-admitted-tree.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Same52-GiB NTFS/64-KiB source and ReFS/4-KiB target;14 admitted objects,8590217322 logical bytes, Unicode names and an8-GiB+1 zero file. No source extent prearrangement; full existing shadow reused with strict metadata/cache sync.",
+        "source_image_sha256": "d8fd89c7779af5304fc4e5d00fbc15ab61155830b6613842c962baae6d9661c1",
+        "expected_image_sha256": "1e938b2038047af353a01953569fbf62edd4d53015a3c7460b32cec5f2a69710",
+        "expected_semantic_manifest_sha256": "7ea83b428d71012870b58a14d02c25d4330f004618be68d990f3140b2ce74cf9"
+      },
+      "artifacts": [
+        {
+          "role": "controlled-producer-and-budgets",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/intent.json",
+          "location_unknown_reason": null,
+          "sha256": "c31fb1c09317f17e48668e8f075b35bde151803aba96a3eea7cec5334bcf26f2"
+        },
+        {
+          "role": "initial-terminal-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "da207bc560c0636509f09079ba77c1774f8b3d4172ab89924cf5ef9ba59ae1c3"
+        },
+        {
+          "role": "fresh-protected-target",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/observed-target-preservation.json",
+          "location_unknown_reason": null,
+          "sha256": "3a2c267298391230d52d3bef68727c8edec8aa5ef12c5864f531c8a574a53bf4"
+        },
+        {
+          "role": "reconstruction-request",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence/run/request.json",
+          "location_unknown_reason": null,
+          "sha256": "97cbe83234d7d36b5689fea9afee74963dd21bf9462f43f8ce034cbb02a558cd"
+        },
+        {
+          "role": "trusted-ticket",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence/run/ticket.json",
+          "location_unknown_reason": null,
+          "sha256": "44d005bb561a5fef20285fc20081f655c3208be21307d3d98ff57f1d7f2bdb2e"
+        },
+        {
+          "role": "journal-preparation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/terminal-evidence/run/prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "9218faa28fcd4a55e0d567ecb06e1b1319c0d72c1e7bd66b4d96704ece14f87a"
+        },
+        {
+          "role": "partial-checkpoint",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/interrupted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "eb515468a65502e832e2e6a2733326ebd402ffce1dc55d90189aa5583707b5bd"
+        },
+        {
+          "role": "resume-reboot-exclusion",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/exclusion-after-reboot.json",
+          "location_unknown_reason": null,
+          "sha256": "24815babb8188574fbf9d152df1444636295bb3048879b6a5ba7cf9f8c66a446"
+        },
+        {
+          "role": "resume-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-resume/Resume-result.json",
+          "location_unknown_reason": null,
+          "sha256": "e23659bff751ebef9685b045e735b0f7fc7e7ced00a849dda574f600e65a454a"
+        },
+        {
+          "role": "resume-execution",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-resume/Resume-execution.json",
+          "location_unknown_reason": null,
+          "sha256": "2b2fb05b47240c96a6529e0a67b2b2cebdac8094c16e39639af262fc02b3960a"
+        },
+        {
+          "role": "real-finalization-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovered-refs-terminal-evidence/Finalize/result.json",
+          "location_unknown_reason": null,
+          "sha256": "4251ad39812f8815274456e3d53609b93fff2c1add7c74281859741aea54c057"
+        },
+        {
+          "role": "real-finalization-completion",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovered-refs-terminal-evidence/Finalize/completion.json",
+          "location_unknown_reason": null,
+          "sha256": "58190b95b08d4d860fda3c020b57e32d7b9bf159a1473e35edd827ac45fb1f87"
+        },
+        {
+          "role": "independent-recovered-tree",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-resume/native-postcheck/guest-result.json",
+          "location_unknown_reason": null,
+          "sha256": "65b35722b3faaaa4fd8ff34e906489876eac542c9e6c6ea9dd5aae8db22c3929"
+        },
+        {
+          "role": "recovered-evidence-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovered-refs-terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "cc7804a893fab6f21863c053bc423efb4beb6dc0c03539cfcf2c31bed1f24221"
+        },
+        {
+          "role": "preserved-recovered-refs",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovered-refs-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "ea078dd5c2ddf4ef134e6693f285eb24fd93a35d13ca5215cf6010fc927d00dd"
+        },
+        {
+          "role": "rollback-fork-restore",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/rollback-partial-restore-intent.json",
+          "location_unknown_reason": null,
+          "sha256": "2801cbfe4423a840b4e57278cece2d96d1834d4796d801cea1e97d27fb9507fe"
+        },
+        {
+          "role": "rollback-reboot-exclusion",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/exclusion-after-reboot-rollback.json",
+          "location_unknown_reason": null,
+          "sha256": "9e33d68dde3d15779bd5602a2725dae2777dad997e6382ef7d3ee16a97bd5e42"
+        },
+        {
+          "role": "rollback-execution",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/rollback-terminal-evidence/execution.json",
+          "location_unknown_reason": null,
+          "sha256": "959f6cc9e014f0adb89768be9662da2e93ab31df0806683f4ea1c285ff3eea60"
+        },
+        {
+          "role": "rollback-completion",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/rollback-terminal-evidence/completion.json",
+          "location_unknown_reason": null,
+          "sha256": "925cec019060c071d939c5e60b66f972733a94011dbdc63ba765ac39839e6b3f"
+        },
+        {
+          "role": "rollback-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/rollback-terminal-evidence/result.json",
+          "location_unknown_reason": null,
+          "sha256": "61e3eeb4cec3376d084dc12041de2a01b8ef0e9cf0064debd5c61d49ae4102a4"
+        },
+        {
+          "role": "independent-native-ntfs-readback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-rollback/native-payload-readback.json",
+          "location_unknown_reason": null,
+          "sha256": "ed49b99015f846cb16fe448b1d4016d93dbcf19447a5213ac4333bcb49c3d59f"
+        },
+        {
+          "role": "rollback-evidence-archive",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-rollback/terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "8233de3e53684df501efa8a7c6278e7e83eae071dae0c9ff5554af62adb97695"
+        },
+        {
+          "role": "preserved-native-ntfs-rollback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate13/recovery-rollback/passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "5131bf7c0d08f2b57ca6d8c554e0cf00cb097dea1db1c2fb20e8a1ee014df3a6"
+        }
+      ],
+      "source_documents": [
+        "docs/streaming-v2-retained-recovery.md",
+        "docs/streaming-v2-retained-conversion.md"
+      ],
+      "unknown_fields": {
+        "dirty_source_state": "Unchanged capabilities-only main.rs patch d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9; exact executable pinned, no current-HEAD inheritance.",
+        "recovery_helper": "Original pinned ntfs2refs-recover.exe5bd69d5bcda7015e37cca39dc3fad2df3c417458b4dc62a17d58fff01c6981b5.",
+        "independent_native_verifier": "Separate8f3675076a34bd977245744af702c82d7bf2b6c662e757246b153fcaf6840f9a verified after recovery; it did not produce the source image.",
+        "journal_and_writes": "468 patches/609972224 changed bytes, journal1220029018. Resume and rollback each wrote609972224 target bytes; not a combined write-count metric.",
+        "reboot_scope": "Clean reboot of partial excluded branches, not a post-resumed-ReFS mutation/reboot or physical-power-loss case.",
+        "storage": "Existing full payload shadow retained; total physical workflow storage/IO unmeasured. No allocation-only conversion claim.",
+        "connection_failure": "First rollback connection failed before task registration; read-only probe proved no task/worker before one dispatch. No credential reset/security change.",
+        "unit_tests": "No unit tests added/run."
+      },
+      "fault_model": "process_exit_after_first_flushed_target_write",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 8590217322,
+        "retained_payload_bytes": 2721431552,
+        "relocated_payload_bytes": 5868785664,
+        "materialized_payload_bytes": 106,
+        "target_bytes_written": null,
+        "journal_bytes": 1220029018,
+        "source_bytes_hashed": null,
+        "metadata_write_count": null,
+        "objects_verified": 14,
+        "actual_shadow_backing_bytes": null
+      }
     }
   ],
   "claims": [
@@ -3423,10 +3622,30 @@
         "Zero-filled over-4-GiB data does not qualify arbitrary nonzero large streams"
       ],
       "remaining_gates": [
-        "Controlled retained-case process interruption/resume/NTFS rollback on a new disposable run",
+        "Additional retained-case interruption boundaries and storage-failure recovery",
         "Integrate private allocation-only staging with payload supply and metadata restoration",
         "Complete required-byte selection and recoverable compact conversion",
         "Broader geometry/build/feature coverage"
+      ]
+    },
+    {
+      "id": "streaming-v2-retained-8g-process-recovery",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "feature": "Retained8-GiB process interruption, ReFS resume and native NTFS rollback",
+      "statement": "The recorded one-flushed-write process interruption recovered guest-locally in both directions on separate forks. Resume matched the exact ReFS image and passed native tree/hash/original-position checks; rollback matched the exact original NTFS image and native user-file hashes. Both outcomes and all23 checkpoints are preserved.",
+      "evidence_ids": [
+        "streaming-v2-retained-8g-first-write-resume-rollback"
+      ],
+      "exclusions": [
+        "Exact one-write process-exit boundary only; no physical power loss",
+        "No low-scratch conversion or arbitrary build/geometry/feature certification",
+        "No nonzero over4-GiB corpus or exhaustive interruption sweep"
+      ],
+      "remaining_gates": [
+        "Integrate allocation-only staging with payload supply and source metadata restoration",
+        "Complete recoverable required-byte selection and compact conversion",
+        "Additional interruption boundaries, storage failures and power-loss qualification",
+        "Broader nonzero data, geometry, capacity and feature coverage"
       ]
     }
   ]

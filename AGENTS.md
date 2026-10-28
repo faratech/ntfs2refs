@@ -1,5 +1,21 @@
 # ntfs2refs project guidance
 
+Candidate13's retained8-GiB PROCESS RECOVERY CASE IS COMPLETE. Exit86/partial
+reboot exclusion, exact ReFS resume, real native handoff and independent
+14-object/hash/original-retained-position checks passed. A separate fork of
+the preserved partial checkpoint restored exact NTFS imageD8fd89...661c1,
+closed replay, mounted NTFS and passed all six native user-file hashes.
+Native NTFS readback SHAed49b99015f846cb16fe448b1d4016d93dbcf19447a5213ac4333bcb49c3d59f.
+Current VM is OFF at452c3211-cc0f-4c95-acc4-d9c4100627a7; resumed ReFS is OFF
+at4aa9e176-decf-4cb1-85fb-6b3fe0aed0c4; both parent partial4d73dd8d.
+All23 snapshots/evidence remain;4-GiB RAM released. Host chain94431 completed,
+as did monitor42487 and resume/finalize chain46262. NEVER restart these jobs.
+Full paths/pins/scope: docs/streaming-v2-retained-recovery.md. This is NOT
+physical-power-loss qualification or a low-scratch conversion. No unit tests
+added/run. Next implementation priority returns to integrating allocation-only
+tree staging, actual payload supply/metadata restoration and recoverable
+required-byte selection; preserve the working full-shadow path and all proofs.
+
 Rollback execution has proved exact original NTFS SHA-256
 d8fd89c7779af5304fc4e5d00fbc15ab61155830b6613842c962baae6d9661c1;
 archived recovery-rollback/Rollback-execution.json SHA

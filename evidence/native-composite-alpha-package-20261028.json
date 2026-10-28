@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "offline-frozen-native-composite-alpha-package-observation",
+  "path": "D:\\code\\ntfs2refs\\.lab\\releases\\native-composite-alpha-20261028",
+  "manifest_sha256": "a21fb3f55cafe9b51eb4ff7b18d59bacb03f0d127f4f7538ab71a7fd2c084baa",
+  "files": 13,
+  "bytes": 9359611,
+  "converter_sha256": "5e156f089b0fc6a67788154e841a74daad4a61028b16ea41391dc8f84e06f524",
+  "recovery_sha256": "d48a46b13d9a0c4dfc4c241d038e290a2feb571b1a368fbf54c86f3806302028",
+  "committed_rust_dependency_trees_equal": true,
+  "general_release_ready": false,
+  "arbitrary_drive_support": false,
+  "boot_conversion_qualified": false,
+  "runtime_admission_granted": false,
+  "package_creation_executed_tools": false,
+  "vm_state": "Off",
+  "vm_memory_assigned_bytes": 0,
+  "checkpoints_preserved": 47,
+  "budget": {
+    "baseline_lab_file_bytes": 279374052988,
+    "total_additional_bytes": 50000000000,
+    "minimum_host_free_bytes": 17179869184,
+    "current_lab_file_bytes": 284790612333,
+    "current_host_free_bytes": 60745654272,
+    "baseline_host_free_bytes": 66133905408,
+    "observation_not_hard_runtime_reservation": true,
+    "maximum_lab_file_bytes": 329374052988,
+    "additional_lab_file_bytes": 5416559345,
+    "additional_host_space_used_bytes": 5388251136
+  },
+  "utc": "2026-10-28T21:15:17.1215764Z"
+}

@@ -254,9 +254,10 @@ impl VerifiedDeltaArtifact {
             "capture report changed during reading"
         );
         let value: serde_json::Value = serde_json::from_slice(&report_bytes)?;
+        let complete_capture = value["kind"] == "frozen-composite-target-capture";
         ensure!(
             value["schema_version"] == 1
-                && value["kind"] == "private-tree-allocation"
+                && (value["kind"] == "private-tree-allocation" || complete_capture)
                 && value["success"] == true
                 && value["source_backed_payloads"] == true,
             "successful source-backed capture envelope required"
@@ -278,6 +279,8 @@ impl VerifiedDeltaArtifact {
                 && capture.layout.partition_bytes == expected_partition_bytes
                 && capture.layout.changed_bytes <= max_changed_bytes
                 && capture.selected_bytes_compared <= expected_partition_bytes
+                && (!complete_capture
+                    || capture.selected_bytes_compared == expected_partition_bytes)
                 && capture
                     .layout
                     .changed_bytes

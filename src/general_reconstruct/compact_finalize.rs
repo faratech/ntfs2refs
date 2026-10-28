@@ -269,8 +269,13 @@ fn rollback_report(events: Vec<NativeEvent>) -> RollbackFinalization {
 }
 
 fn verify_native_ntfs(request: &Request, report: &mut RollbackFinalization) {
-    let mounted = rediscover_general_volume_wait(request.pair.source.clone(), &mut report.events)
-        .and_then(|binding| mounted_filesystem_general(binding, &mut report.events));
+    // This is a distinct native-observation phase after the durable ABT gate.
+    // Keep earlier events in the report without charging them against the
+    // bounded native-control budget of this new observation.
+    let mut events = Vec::new();
+    let mounted = rediscover_general_volume_wait(request.pair.source.clone(), &mut events)
+        .and_then(|binding| mounted_filesystem_general(binding, &mut events));
+    report.events.extend(events);
     match mounted {
         Ok(name) if name == "NTFS" => {
             report.mounted_filesystem = Some(name);

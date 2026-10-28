@@ -181,6 +181,76 @@ impl FrozenCompositeTargetPreservation {
     pub fn revalidate_backing(&mut self) -> Result<()> {
         self.backing.revalidate()
     }
+
+    /// Persist recovery inputs while retaining the actual live proof. Reopening
+    /// this diagnostic artifact alone never recreates its source certificate.
+    /// Both objects keep read-only handles on the exact same packed file.
+    #[allow(
+        dead_code,
+        reason = "called by the intentionally unexposed composite orchestration"
+    )]
+    pub(crate) fn persist_delta_artifact(
+        &mut self,
+        report_path: &Path,
+        packed_path: &Path,
+    ) -> Result<crate::refs_hybrid::delta::VerifiedDeltaArtifact> {
+        ensure!(
+            self.data_ties_verified()
+                && self.capture.selected_bytes_compared == self.capture.layout.partition_bytes(),
+            "only a complete live composite proof can publish recovery inputs"
+        );
+        self.backing.revalidate()?;
+        fresh_ordinary_path(report_path)?;
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "kind": "frozen-composite-target-capture",
+            "success": true,
+            "source_backed_payloads": true,
+            "source_admitted": false,
+            "conversion_qualified": false,
+            "pair": self.pair,
+            "source_sha256": self.source_sha256,
+            "inspection_sha256": self.inspection_sha256,
+            "source_views_sha256": self.source_views_sha256,
+            "expected_tree_sha256": self.expected_tree_sha256,
+            "source_resource_profile": self.resources,
+            "composite_target_sha256": self.composite_target_sha256,
+            "native": {"compact_difference_capture": self.capture}
+        });
+        let bytes = serde_json::to_vec_pretty(&value)?;
+        ensure!(
+            bytes.len() <= 16 * 1024 * 1024,
+            "composite capture report exceeds bound"
+        );
+        let mut report = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .custom_flags(0x0020_0000)
+            .open(report_path)?;
+        std::io::Write::write_all(&mut report, &bytes)?;
+        report.sync_all()?;
+        drop(report);
+        let report_sha256 = hex::encode(Sha256::digest(&bytes));
+        let mut artifact = crate::refs_hybrid::delta::VerifiedDeltaArtifact::open(
+            report_path,
+            &report_sha256,
+            packed_path,
+            self.capture.layout.partition_bytes(),
+            self.capture.layout.changed_bytes(),
+        )?;
+        ensure!(
+            artifact.pins().packed_file_id_info.as_deref()
+                == Some(n2r_win32::file_storage::file_id_info(&self.backing.file)?.as_str())
+                && artifact.pins().packed_sha256 == self.backing.sha256
+                && serde_json::to_vec(artifact.layout())?
+                    == serde_json::to_vec(&self.capture.layout)?,
+            "published compact artifact differs from the held live composite backing"
+        );
+        self.backing.revalidate()?;
+        artifact.revalidate()?;
+        Ok(artifact)
+    }
 }
 
 /// Build a complete source-backed target proof without initializing duplicate

@@ -21,6 +21,17 @@ use std::{
     path::Path,
 };
 
+#[allow(
+    dead_code,
+    reason = "composite orchestration awaits native qualification before CLI exposure"
+)]
+mod composite;
+#[allow(
+    unused_imports,
+    reason = "experimental entry point retained for the next owning-guest integration"
+)]
+pub(crate) use composite::convert_composite_existing_experimental;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {

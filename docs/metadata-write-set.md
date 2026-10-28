@@ -1,5 +1,69 @@
 # Candidate ReFS target write set
 
+## Exact NTFS rollback and independent native readback
+
+Rollback run `386c482e1fd348a4bf0e95f27d8a1ce4` restored all138 patches,
+70,406,144 bytes, and verified the complete original source SHA-256
+`ec5b89de85e24bbb0cdc5f99e907450dc847228ca997465961ab22f89d983dac`.
+The durable `N2RABT01` barrier then closed replay before mounting NTFS.
+The original native observer subsequently failed with `native control budget
+exceeded` because it reused the earlier phase's accumulated128 events. Worker
+exit1 and original reports remain preserved; this is not an automatically
+successful finalization result.
+
+A separate read-only SYSTEM observer, without journal replay, exited0. Windows
+reported NTFS with original64-KiB clusters/label, all14 expected paths/types
+existed, and all9 complete logical stream hashes/8,590,217,322 bytes matched.
+Only contents/path types were checked by this extra observer; it is not another
+complete native security/timestamp attestation. Exact pre-mount raw-image
+identity supplies the independently recorded restoration evidence.
+
+Evidence under `.lab/hyperv/streaming-v2-20261027/compact-recovery-20261028/rollback`:
+
+| Artifact | SHA-256 |
+|---|---|
+| execution.json | `565a532f7a36a6288c20f11421144aa22b6d0edf8c9a2cad9be55738dbfed63c` |
+| original rollback-finalization.json | `04cb24a02b458ac5b9c4a908d1533d82af73ed65421961e6086ebe0faae00906` |
+| original failed.json | `44687bedfd3afe111133c68f613c0efed352d42d4c8ac6215526a066cafbd02a` |
+| independent native-readback.json | `ecf229c682f6a43799c5a9f73732c849ab45caf21ccc84e27ce2bec64b6e43df` |
+| complete post-ABT journal | `bc0c0091a60cbc8c197dd62fe768d2b70bccef740b859dfc253f2cd5d0adc015` |
+
+Clean shutdown and saved checkpoint `6348491e-473d-423f-9d27-e81d22c64504`,
+parent `b6b2a81a-23d9-48ec-aa1c-366b7486cbcf`, preserve this branch. All41
+checkpoints remain and assigned VM memory is0. Resumed ReFS branch `9e25f048`
+remains separately preserved. Neither completed branch permits old raw replay.
+The258-GiB cap and64-GiB host-free reserve remain unchanged; no deletion occurred.
+These results cover this exact fixture and controlled process interruption,
+not arbitrary volumes, physical power loss or every write boundary.
+
+The compact NTFS observer now uses a fresh bounded native-event vector for its
+mount observation, then appends that evidence to the original report. This
+fix preserves the128-event bound per phase and all old evidence. Its build
+result must not be substituted for the older producer's native result.
+
+## Owning composite qualification and conversion code
+
+The shared source prefix now retains the ORIGINAL live assessment/frozen-source
+handle for both the established full-shadow path and an experimental compact
+path. `prepare_composite_existing` derives the fresh source expectation, verifies
+the actual protected target and complete composite image, obtains the existing
+source certificate, and retains all actual capabilities in `QualifiedCompositeTree`.
+
+Its recovery artifact uses a distinct `frozen-composite-target-capture` envelope
+and must cover the complete address space. Publication verifies the reopened
+packed file is the SAME held native FileID, with identical hash/layout; serialized
+reports alone still grant no source authority. The older fixture capture kind
+and prepared journal identities remain compatible.
+
+The crate-private `convert_composite_existing_experimental` connects this live
+qualification to compact journal preparation, durable ticket readback, exact
+certificate/request/patch checks, activation, apply and native handoff. Its
+separate read-only complement closes before activation. There is no CLI or new
+general qualification claim. Generic fresh metadata construction, owning-guest
+qualification of this new caller, and its general restart entry remain pending.
+Full-address-space differences can still include dirty free bytes and remain
+subject to exact capacity admission. No unit tests were added or run by this task.
+
 ## Compact resumed conversion passed
 
 After controlled interruption and a clean reboot, run5c9045e3a4c44e46a7d25751939d1b15
@@ -17,7 +81,7 @@ This proves process recovery, not physical power-loss/general qualification.
 The user explicitly approved cap256→258 GiB when rollback1.5-GiB allowance
 exceeded667-MiB cap headroom. Configured cap is277,025,390,592;64-GiB host reserve
 retained. Only the separately saved partialb6b2 was restored for rollback.
-Native rollback outcome pending. No checkpoints/evidence were deleted.
+The rollback outcome is recorded above. No checkpoints/evidence were deleted.
 
 ## Opaque complete composite target proof
 

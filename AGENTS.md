@@ -1,5 +1,42 @@
 # ntfs2refs project guidance
 
+COMPACT ROLLBACK RESTORED EXACT EC5 + NATIVE READBACK PASSED. Run386c482e1fd348a4bf0e95f27d8a1ce4
+restored138 patches/70,406,144B, exact full source
+ec5b89de85e24bbb0cdc5f99e907450dc847228ca997465961ab22f89d983dac,
+then durable N2RABT01 closed replay. Original worker exited1 ONLY after its
+native observer exhausted the accumulated128-event budget; original failed
+report is preserved, NOT rewritten as success. Independent SYSTEM native-only
+observer exited0, confirmed original NTFS64K/label and ALL9 complete file
+hashes/8,590,217,322B. Readback SHA
+ecf229c682f6a43799c5a9f73732c849ab45caf21ccc84e27ce2bec64b6e43df.
+Execution565a532f7a36a6288c20f11421144aa22b6d0edf8c9a2cad9be55738dbfed63c;
+originalfinal04cb24a02b458ac5b9c4a908d1533d82af73ed65421961e6086ebe0faae00906;
+failed44687bedfd3afe111133c68f613c0efed352d42d4c8ac6215526a066cafbd02a;
+postABTjournalbc0c0091a60cbc8c197dd62fe768d2b70bccef740b859dfc253f2cd5d0adc015.
+Saved OFF/6348491e-473d-423f-9d27-e81d22c64504 parentb6b2, ALL41 checkpoints
+retained and4-GiB RAM released. Host compact-recovery-20261028/rollback has
+original reports, independent native readback, terminal/preservation/checkpoint
+records and observer scripts. NEVER replay its closed journal or restore any
+other saved branch over a live/unknown worker. Approved cap258GiB/reserve64GiB
+unchanged; no deletions. Compact raw conversion/resume/rollback and native tree
+checks are bounded fixture evidence, NOT general-drive qualification.
+
+New Rust composite orchestration builds separately: original online-to-frozen
+LiveAssessment now shared without reopening source authority; owning
+QualifiedCompositeTree retains real devices/certificate/proof/packed handles.
+persist_delta_artifact records a distinct complete-address-space capture kind,
+requires actual same held packed FileID/hash/layout. Experimental owning-process
+caller prepares compact journal, persists/readbacks ticket, requires exact
+certificate/request/range bindings, then compact activation/apply/handoff.
+It remains crate-private/no CLI; generic fresh metadata construction and native
+qualification/restart entry remain unfinished. Existing full-shadow behavior
+unchanged. Compact rollback native observer now starts a fresh bounded event
+phase while retaining earlier evidence, fixing the reproduced observation bug.
+That fix is build-checked; old run's failure remains accurately recorded. No
+unit tests added/run by this task. Pre-existing src/main.rs diff is UNSTAGED,
+SHA63e156167d56f49c380a25560221ccb258623603b76c77af59467a3103204c3b;
+do not stage/reset it. Earlier entries below are historical milestones.
+
 COMPACT ROLLBACK LIVE, restored ONLY saved partialb6b2 after resumed9e25 was
 preserved; all40 snapshots remain. TaskN2R-CompactRecovery-Rollback-386c482e1fd348a4bf0e95f27d8a1ce4,
 PID4612 creation1793207109465, producer1d03af19b89350e432e67e65ff5b8545ed59ee213650067fbe61597fb04c332a

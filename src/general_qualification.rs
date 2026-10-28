@@ -18,6 +18,13 @@ use std::{
     path::Path,
 };
 
+#[allow(
+    dead_code,
+    reason = "composite orchestration awaits native qualification before CLI exposure"
+)]
+mod composite;
+pub(crate) use composite::{QualifiedCompositeTree, prepare_composite_existing};
+
 const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Bound serialization before opening the destination. `to_vec_pretty` followed
@@ -162,6 +169,143 @@ pub(crate) fn prepare_with_budget(
     )
 }
 
+/// One original online-to-frozen source assessment, retained in memory. No
+/// reopening or deserialized report can manufacture its transaction context.
+struct PreparedSourceContext {
+    source: GeneralFrozenPartition,
+    raw: ntfs_inspect::NtfsInspection,
+    assessment: general_source_admission::LiveAssessment,
+    tree: shadow_tree::Tree,
+    expected: shadow_tree::ExpectedTree,
+    expected_sha256: String,
+    source_hash: String,
+    mount_paths: n2r_win32::MountPathObservation,
+    source_label: n2r_win32::volume_label::SourceLabel,
+}
+
+/// Shared unchanged source sequence for full-shadow and composite targets.
+/// The caller creates the fresh output and validates the pair/resource budget.
+fn prepare_source_context(
+    pair: &GeneralSourceShadowBinding,
+    output: &Path,
+    resources: crate::ntfs_admission::ResourceProfile,
+    events: &mut Vec<NativeEvent>,
+    phase: &mut &'static str,
+    after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
+) -> Result<PreparedSourceContext> {
+    let mut online = n2r_win32::GeneralPartitionReader::open(pair.source.clone(), events)?;
+    let mut boot = [0; 512];
+    online.read_exact(&mut boot)?;
+    let geometry = ntfs_inspect::inspect_boot_sector(&boot, online.byte_len())?;
+    ensure!(
+        resources.supports_source_geometry(&geometry),
+        "source geometry exceeds the supported qualification profile"
+    );
+    online.revalidate_route(events)?;
+    drop(online);
+    let mount_paths = n2r_win32::capture_mount_paths_general(pair.source.clone(), events)?;
+    save(output, "source-mount-paths.json", &mount_paths)?;
+    let source_label = n2r_win32::volume_label::capture_source_label(pair.source.clone())?;
+    save(output, "source-label.json", &source_label)?;
+    save(output, "preflight-events.json", &events)?;
+    events.clear();
+    let mut source = GeneralFrozenPartition::isolate_observed_ntfs(pair.source.clone(), events)?;
+    let length = source.byte_len();
+    let source_hash = hex::encode(lab_reconstruct::hash_range_with_resource_profile(
+        &mut source,
+        0,
+        length,
+        resources,
+    )?);
+    save_source_frozen_then(
+        output,
+        &serde_json::json!({"schema_version":1,
+        "kind":"observed-frozen-source-identity","binding":source.binding(),"source_sha256":source_hash,
+        "state":source.state(events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
+        |artifact_sha256| after_source_freeze(&source, &source_hash, artifact_sha256),
+    )?;
+    let raw = ntfs_inspect::inspect_with_limits(
+        &mut source,
+        length,
+        ntfs_inspect::limits_for_resource_profile(resources),
+    )?;
+    let source_label_frozen =
+        crate::source_volume_label::verify(&mut source, &raw, source_label.label())?;
+    save(output, "source-label-frozen.json", &source_label_frozen)?;
+    let pin = hex::encode(Sha256::digest(serde_json::to_vec(&raw)?));
+    let backups = ntfs_backup::verify(&mut source, length, &raw)?;
+    let log = ntfs_log::verify(&mut source, &raw)?;
+    save(
+        output,
+        "source-basis.json",
+        &serde_json::json!({"source_sha256":source_hash,
+        "canonical_inspection_sha256":pin,"ntfs":raw,"backups":backups,"log_restart":log,
+        "freeze_observation":source.freeze_observation(),"events":events}),
+    )?;
+    *phase = "source-observation";
+    let request = if let Some(native_profile) = resources.native_profile() {
+        ntfs_attestation::request_for_general_inspection_with_profile(
+            &raw,
+            &pin,
+            source.binding(),
+            native_profile,
+        )?
+    } else {
+        ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?
+    };
+    let observed = source.observe_ntfs_files(&request, events)?;
+    save(output, "native-source.json", observed.report())?;
+    let assessment = general_source_admission::assess(
+        &mut source,
+        &raw,
+        &pin,
+        &source_hash,
+        &backups,
+        Some(&log),
+        &observed,
+        events,
+    )?;
+    save(output, "source-assessment.json", &assessment)?;
+    save(output, "source-events.json", &events)?;
+    events.clear();
+    let refusals: Vec<_> = assessment
+        .assessment
+        .gates
+        .iter()
+        .filter(|g| {
+            g.code != "security_timestamp_preservation"
+                && g.code != "target_resource_profile_support"
+                && !g.satisfied
+        })
+        .map(|g| g.code.clone())
+        .collect();
+    ensure!(
+        refusals.is_empty(),
+        "source is not eligible for target qualification: {refusals:?}"
+    );
+    let views = assessment
+        .assessment
+        .source_view
+        .as_ref()
+        .context("live source views absent")?;
+    let mut tree = shadow_tree::derive_ordinary_with_resource_profile(&raw, resources)?;
+    tree.bind_security_views(views)?;
+    let expected = shadow_tree::ExpectedTree::from(&tree);
+    expected.validate_with_resource_profile(resources)?;
+    let expected_sha256 = save(output, "expectation.json", &expected)?;
+    Ok(PreparedSourceContext {
+        source,
+        raw,
+        assessment,
+        tree,
+        expected,
+        expected_sha256,
+        source_hash,
+        mount_paths,
+        source_label,
+    })
+}
+
 /// The laboratory may stop after the real durable source-freeze artifact.
 /// The callback borrows the actual frozen handle and receives only pins from
 /// the current native run; no deserialized completion flag enters this path.
@@ -194,107 +338,29 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
     let mut phase = "source-freeze";
     let attempted = (|| -> Result<QualifiedTree> {
         let mut events = Vec::<NativeEvent>::new();
-        let mut online = n2r_win32::GeneralPartitionReader::open(pair.source.clone(), &mut events)?;
-        let mut boot = [0; 512];
-        online.read_exact(&mut boot)?;
-        let geometry = ntfs_inspect::inspect_boot_sector(&boot, online.byte_len())?;
-        ensure!(
-            resources.supports_source_geometry(&geometry),
-            "source geometry exceeds the supported qualification profile"
-        );
-        online.revalidate_route(&mut events)?;
-        drop(online);
-        let mount_paths = n2r_win32::capture_mount_paths_general(pair.source.clone(), &mut events)?;
-        save(output, "source-mount-paths.json", &mount_paths)?;
-        let source_label = n2r_win32::volume_label::capture_source_label(pair.source.clone())?;
-        save(output, "source-label.json", &source_label)?;
-        save(output, "preflight-events.json", &events)?;
-        events.clear();
-        let mut source =
-            GeneralFrozenPartition::isolate_observed_ntfs(pair.source.clone(), &mut events)?;
-        let length = source.byte_len();
-        let source_hash = hex::encode(lab_reconstruct::hash_range_with_resource_profile(
-            &mut source,
-            0,
-            length,
+        let PreparedSourceContext {
+            mut source,
+            raw,
+            mut assessment,
+            tree,
+            expected,
+            expected_sha256,
+            source_hash,
+            mount_paths,
+            source_label,
+        } = prepare_source_context(
+            &pair,
+            output,
             resources,
-        )?);
-        save_source_frozen_then(
-            output,
-            &serde_json::json!({"schema_version":1,
-            "kind":"observed-frozen-source-identity","binding":source.binding(),"source_sha256":source_hash,
-            "state":source.state(&mut events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
-            |artifact_sha256| after_source_freeze(&source, &source_hash, artifact_sha256),
-        )?;
-        let raw = ntfs_inspect::inspect_with_limits(
-            &mut source,
-            length,
-            ntfs_inspect::limits_for_resource_profile(resources),
-        )?;
-        let source_label_frozen =
-            crate::source_volume_label::verify(&mut source, &raw, source_label.label())?;
-        save(output, "source-label-frozen.json", &source_label_frozen)?;
-        let pin = hex::encode(Sha256::digest(serde_json::to_vec(&raw)?));
-        let backups = ntfs_backup::verify(&mut source, length, &raw)?;
-        let log = ntfs_log::verify(&mut source, &raw)?;
-        save(
-            output,
-            "source-basis.json",
-            &serde_json::json!({"source_sha256":source_hash,
-            "canonical_inspection_sha256":pin,"ntfs":raw,"backups":backups,"log_restart":log,
-            "freeze_observation":source.freeze_observation(),"events":events}),
-        )?;
-        phase = "source-observation";
-        let request = if let Some(native_profile) = resources.native_profile() {
-            ntfs_attestation::request_for_general_inspection_with_profile(
-                &raw,
-                &pin,
-                source.binding(),
-                native_profile,
-            )?
-        } else {
-            ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?
-        };
-        let observed = source.observe_ntfs_files(&request, &mut events)?;
-        save(output, "native-source.json", observed.report())?;
-        let mut assessment = general_source_admission::assess(
-            &mut source,
-            &raw,
-            &pin,
-            &source_hash,
-            &backups,
-            Some(&log),
-            &observed,
             &mut events,
+            &mut phase,
+            after_source_freeze,
         )?;
-        save(output, "source-assessment.json", &assessment)?;
-        save(output, "source-events.json", &events)?;
-        events.clear();
-        let refusals: Vec<_> = assessment
-            .assessment
-            .gates
-            .iter()
-            .filter(|g| {
-                g.code != "security_timestamp_preservation"
-                    && g.code != "target_resource_profile_support"
-                    && !g.satisfied
-            })
-            .map(|g| g.code.clone())
-            .collect();
-        ensure!(
-            refusals.is_empty(),
-            "source is not eligible for target qualification: {refusals:?}"
-        );
         let views = assessment
             .assessment
             .source_view
             .as_ref()
             .context("live source views absent")?;
-        let mut tree = shadow_tree::derive_ordinary_with_resource_profile(&raw, resources)?;
-        tree.bind_security_views(views)?;
-        let expected = shadow_tree::ExpectedTree::from(&tree);
-        expected.validate_with_resource_profile(resources)?;
-        let expected_sha256 = save(output, "expectation.json", &expected)?;
         phase = "native-shadow-construction";
         let input = general_shadow::native_inputs(&tree);
         if cache_sync {

@@ -57,7 +57,7 @@ while($null-eq$s){
 try{
     $stage='C:\ntfs2refs\streaming-v2-20261027\'+$Candidate
     $fixture=Get-Content -LiteralPath (Join-Path $fixtureRoot 'fixture.json') -Raw
-    $prior=Invoke-Command -Session $s -ArgumentList $stage,$fixture,[bool]$FrozenShadowReuse -ScriptBlock {
+    $prior=Invoke-Command -Session $s -ArgumentList $stage,$fixture,([bool]$FrozenShadowReuse) -ScriptBlock {
         param($Stage,$Fixture,$Reuse);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         if(@(Get-CimInstance Win32_Process|Where-Object {$_.Name-like'ntfs2refs*'}).Count-or@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.State-in@('Running','Queued')}).Count){throw 'Another guest worker is active.'}
         $expected=ConvertFrom-Json -InputObject $Fixture
@@ -73,7 +73,7 @@ try{
     }
     Save-New 'prior-state.json' $prior
     foreach($pin in $pins){Copy-Item -LiteralPath $pin.path -ToSession $s -Destination (Join-Path $stage $pin.name)}
-    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,($pins|ConvertTo-Json -Compress),$run,$task,$binaryName,$InterruptAfterWrites,$journalBudgetBytes,[bool]$FrozenShadowReuse -ScriptBlock {
+    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,($pins|ConvertTo-Json -Compress),$run,$task,$binaryName,$InterruptAfterWrites,$journalBudgetBytes,([bool]$FrozenShadowReuse) -ScriptBlock {
         param($Stage,$Pins,$Run,$TaskName,$BinaryName,$InterruptWrites,$JournalBudgetBytes,$Reuse);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         $rows=ConvertFrom-Json -InputObject $Pins
         foreach($row in $rows){if((Get-FileHash -LiteralPath (Join-Path $Stage $row.name)).Hash.ToLowerInvariant()-cne$row.sha256){throw 'Staged binary differs.'}}

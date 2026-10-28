@@ -102,6 +102,15 @@ pub fn materialize_private_range(
         .get(object_index)
         .context("private object index outside canonical tree")?;
     ensure!(!object.directory, "directories do not receive payload");
+    let identities: Vec<_> = raw
+        .files
+        .iter()
+        .filter(|f| f.record_number == object.record_number)
+        .collect();
+    ensure!(
+        identities.len() == 1 && identities[0].sequence_number == object.sequence_number,
+        "canonical materialization source identity differs"
+    );
     let mut events = Vec::new();
     let before = source.state(&mut events)?;
     ensure!(

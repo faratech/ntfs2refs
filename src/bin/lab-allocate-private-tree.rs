@@ -26,6 +26,12 @@ fn main() -> anyhow::Result<()> {
         output: PathBuf,
         #[arg(long)]
         observe_existing: bool,
+        #[arg(long, requires_all=["inspection","inspection_sha256"], conflicts_with="observe_existing")]
+        materialize_small: bool,
+        #[arg(long, requires = "materialize_small")]
+        inspection: Option<PathBuf>,
+        #[arg(long, requires = "materialize_small")]
+        inspection_sha256: Option<String>,
     }
     fn evidence(path: &Path) -> Result<Vec<u8>> {
         let file = File::open(path)?;
@@ -69,11 +75,25 @@ fn main() -> anyhow::Result<()> {
         logical_bytes: expected.logical_bytes,
         internal_replacement_pending: expected.internal_replacement_pending,
     };
+    let inspection = if args.materialize_small {
+        let bytes = evidence(args.inspection.as_deref().unwrap())?;
+        ensure!(
+            Some(hex::encode(Sha256::digest(&bytes))) == args.inspection_sha256,
+            "inspection pin differs"
+        );
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        Some(serde_json::from_value::<
+            ntfs2refs::ntfs_inspect::NtfsInspection,
+        >(value.get("ntfs").unwrap_or(&value).clone())?)
+    } else {
+        None
+    };
     save(
         &args.output.with_extension("intent.json"),
         &serde_json::json!({
         "kind":if args.observe_existing {"private-tree-observation-intent"}else{"private-tree-allocation-intent"},
         "observe_existing":args.observe_existing,"allocation_writes_authorized":!args.observe_existing,
+        "materialize_small":args.materialize_small,"inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,
         "tree_sha256":args.tree_sha256,"source_writes_authorized":false,
         "source_image_hash_reverified":false,"source_admitted":false,"conversion_qualified":false}),
@@ -85,8 +105,86 @@ fn main() -> anyhow::Result<()> {
         )
         .map_err(anyhow::Error::from)
     } else {
-        general_shadow::allocate_private_tree(&request.pair, &tree)
-            .and_then(|template| Ok(template.report()?))
+        (|| -> Result<serde_json::Value> {
+            let selected: Vec<_> = tree
+                .objects
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| {
+                    !o.directory
+                        && o.length <= 4096
+                        && !o
+                            .path
+                            .first()
+                            .is_some_and(|s| s == "System Volume Information")
+                })
+                .map(|(i, _)| i)
+                .collect();
+            let mut events = Vec::new();
+            let mut source = if args.materialize_small {
+                Some(n2r_win32::GeneralFrozenPartition::reopen(
+                    request.pair.source.clone(),
+                    &mut events,
+                )?)
+            } else {
+                None
+            };
+            let mut budget = ntfs2refs::ntfs_inspect::StreamTransferBudget::new(
+                resources.limits().maximum_stream_bytes,
+                8 * 1024 * 1024,
+            )?;
+            // Check all source ranges before creating a namespace. A stale
+            // raw model must not cause needless partial shadow allocation.
+            if let (Some(source), Some(raw)) = (source.as_mut(), inspection.as_ref()) {
+                let mut buffer = [0u8; 4096];
+                for &index in &selected {
+                    let object = &tree.objects[index];
+                    let matches: Vec<_> = raw
+                        .files
+                        .iter()
+                        .filter(|f| f.record_number == object.record_number)
+                        .collect();
+                    ensure!(
+                        matches.len() == 1 && matches[0].sequence_number == object.sequence_number,
+                        "small source file identity differs from tree"
+                    );
+                    let proof = ntfs2refs::ntfs_inspect::read_plain_stream_range_into(
+                        source,
+                        raw,
+                        object.record_number,
+                        0,
+                        &mut buffer[..object.length as usize],
+                        &mut budget,
+                    )?;
+                    ensure!(
+                        Some(&proof.expected_stream_sha256) == object.sha256.as_ref()
+                            && proof.stream_logical_bytes == object.length,
+                        "small source object differs from tree"
+                    );
+                }
+            }
+            let mut template = general_shadow::allocate_private_tree(&request.pair, &tree)?;
+            let mut transfers = Vec::new();
+            if let (Some(source), Some(raw)) = (source.as_mut(), inspection.as_ref()) {
+                for &index in &selected {
+                    transfers.push(general_shadow::materialize_private_range(
+                        source,
+                        raw,
+                        &tree,
+                        &mut template,
+                        index,
+                        0,
+                        tree.objects[index].length as usize,
+                        &mut budget,
+                    )?);
+                }
+            }
+            let mut report = template.report()?;
+            report["source_materialization_ranges"] = serde_json::to_value(transfers)?;
+            report["source_logical_range_bytes_charged"] = budget.reserved_bytes().into();
+            report["large_payload_initialization_selected"] = false.into();
+            Ok(report)
+        })()
     };
     let failure = attempt.as_ref().err().map(ToString::to_string);
     let native = match attempt {
@@ -99,6 +197,7 @@ fn main() -> anyhow::Result<()> {
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"private-tree-allocation",
         "success":failure.is_none(),"observe_existing":args.observe_existing,
+        "materialize_small":args.materialize_small,"inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,
         "request":request,"native":native,"source_image_hash_reverified":false,
         "source_admitted":false,"conversion_qualified":false}),

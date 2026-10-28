@@ -2571,6 +2571,83 @@ pub fn read_plain_stream<R: Read + Seek>(
     Ok(payload)
 }
 
+#[derive(Debug, Serialize)]
+pub struct StreamRangeReadProof {
+    pub record_number: u64,
+    pub logical_offset: u64,
+    pub logical_bytes: u64,
+    pub stream_logical_bytes: u64,
+    pub expected_stream_sha256: String,
+    pub sha256: String,
+    pub whole_stream_hash_matched: bool,
+}
+
+/// Read a small resident/materialization range without scanning its large
+/// prefix or allocating a stream-sized buffer. Caller must discard output on
+/// error and hold source exclusion. Sparse/VDL zero semantics are unchanged;
+/// metadata/bootstrap IO is separate from the charged logical-byte budget.
+pub fn read_plain_stream_range_into<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    offset: u64,
+    output: &mut [u8],
+    budget: &mut StreamTransferBudget,
+) -> Result<StreamRangeReadProof> {
+    ensure!(
+        output.len() <= STREAM_HASH_BUFFER_BYTES,
+        "materialization range exceeds fixed buffer"
+    );
+    let (attribute, expected) = checked_plain_attribute(
+        reader,
+        raw,
+        record_number,
+        &[],
+        budget.max_stream_bytes,
+        false,
+    )?;
+    let length = output.len() as u64;
+    ensure!(
+        offset
+            .checked_add(length)
+            .is_some_and(|end| end <= attribute.report.logical_size),
+        "materialization range escapes stream EOF"
+    );
+    budget.reserve(length)?;
+    read_attribute_range(reader, &attribute, offset, output, &raw.geometry)?;
+    let actual = hex::encode(Sha256::digest(&*output));
+    let whole = offset == 0 && length == attribute.report.logical_size;
+    if whole {
+        ensure!(
+            actual == expected,
+            "materialized whole stream differs from inspection"
+        );
+    }
+    // Revalidate identity, geometry, mapping and initialized-length evidence
+    // after the read too. No serialized success flag supplies that evidence.
+    let (_, after) = checked_plain_attribute(
+        reader,
+        raw,
+        record_number,
+        &[],
+        budget.max_stream_bytes,
+        false,
+    )?;
+    ensure!(
+        after == expected,
+        "inspected source stream changed around range read"
+    );
+    Ok(StreamRangeReadProof {
+        record_number,
+        logical_offset: offset,
+        logical_bytes: length,
+        stream_logical_bytes: attribute.report.logical_size,
+        expected_stream_sha256: expected,
+        sha256: actual,
+        whole_stream_hash_matched: whole,
+    })
+}
+
 /// The report limit bounds retained inventory data, not the entire process's
 /// resident set. Volume bitmap scans use a fixed 64 KiB window; parser working
 /// storage is limited to one 64 KiB-or-smaller file record and its attributes.

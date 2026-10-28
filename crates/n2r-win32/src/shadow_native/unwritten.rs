@@ -6,7 +6,8 @@ use crate::{bitmap_layout::Candidate, bitmap_observation::Observation};
 use serde::Serialize;
 use std::{
     fs::File,
-    io, mem,
+    io::{self, Read, Seek, SeekFrom, Write},
+    mem,
     os::windows::io::{AsRawHandle, FromRawHandle},
     ptr,
 };
@@ -40,6 +41,9 @@ pub(super) struct PrivatePlaceholder {
     partition: u64,
     placed: Vec<(u64, u64, u32)>,
     valid_data_submitted: bool,
+    valid_prefix: u64,
+    materialized_bytes: u64,
+    readback_bytes: u64,
     poisoned: bool,
 }
 
@@ -152,6 +156,9 @@ impl PrivatePlaceholder {
             partition,
             placed: vec![],
             valid_data_submitted: false,
+            valid_prefix: 0,
+            materialized_bytes: 0,
+            readback_bytes: 0,
             poisoned: false,
         })
     }
@@ -160,6 +167,86 @@ impl PrivatePlaceholder {
     /// functions. The constructor exposes no payload interface to callers.
     pub fn metadata_handle(&self) -> &File {
         &self.file
+    }
+
+    pub fn logical_length(&self) -> u64 {
+        self.bytes
+    }
+    pub fn materialized_bytes(&self) -> u64 {
+        self.materialized_bytes
+    }
+    pub fn readback_bytes(&self) -> u64 {
+        self.readback_bytes
+    }
+    pub fn valid_prefix(&self) -> u64 {
+        self.valid_prefix
+    }
+
+    /// Write only an explicitly supplied exception range. Never bridge an
+    /// uninitialized gap: doing so could zero-fill a huge retained prefix.
+    /// Sharing remains disabled and the file remains SYSTEM-only on failure.
+    pub fn initialize_at(&mut self, offset: u64, data: &[u8]) -> io::Result<serde_json::Value> {
+        let end = offset
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| invalid("private write overflow"))?;
+        if self.poisoned || data.len() > 65536 || end > self.bytes || offset > self.valid_prefix {
+            return Err(invalid(
+                "private exception write state, bounds or initialization gap differs",
+            ));
+        }
+        self.materialized_bytes
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| invalid("private write accounting overflow"))?;
+        self.readback_bytes
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| invalid("private readback accounting overflow"))?;
+        self.poisoned = true;
+        self.file.seek(SeekFrom::Start(offset))?;
+        let mut written = 0;
+        while written < data.len() {
+            let n = self.file.write(&data[written..])?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "private exception made no progress",
+                ));
+            }
+            written += n;
+            self.materialized_bytes += n as u64;
+            self.valid_prefix = self.valid_prefix.max(offset + written as u64);
+        }
+        self.file.sync_all()?;
+        let mut check = [0u8; 65536];
+        self.file.seek(SeekFrom::Start(offset))?;
+        let mut read = 0;
+        while read < data.len() {
+            let n = self.file.read(&mut check[read..data.len()])?;
+            if n == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "private exception readback ended",
+                ));
+            }
+            read += n;
+            self.readback_bytes += n as u64;
+        }
+        if &check[..data.len()] != data {
+            return Err(invalid("private exception readback differs"));
+        }
+        let standard = super::info(&self.file, 1, 24)?;
+        if crate::layout::u64_at(&standard, 8)? != self.bytes
+            || crate::layout::u32_at(&standard, 16)? != 1
+            || standard[20] != 0
+            || standard[21] != 0
+        {
+            return Err(invalid("private exception changed file shape"));
+        }
+        self.verify_placements()?;
+        self.poisoned = false;
+        use sha2::Digest;
+        Ok(serde_json::json!({"offset":offset,"bytes":data.len(),
+            "sha256":hex::encode(sha2::Sha256::digest(data)),"readback_verified":true,
+            "valid_prefix_bytes":self.valid_prefix,"conversion_qualified":false}))
     }
 
     /// Place one unwritten logical range. A native refusal/partial completion
@@ -175,6 +262,7 @@ impl PrivatePlaceholder {
         let physical_end = destination_lcn.checked_add(u64::from(clusters));
         if self.poisoned
             || self.valid_data_submitted
+            || self.valid_prefix != 0
             || self.placed.len() >= 1024
             || clusters == 0
             || destination_lcn < 256
@@ -248,6 +336,7 @@ impl PrivatePlaceholder {
     pub fn advance_valid_data(&mut self, bytes: u64, require_placed: bool) -> io::Result<()> {
         if self.poisoned
             || self.valid_data_submitted
+            || self.valid_prefix != 0
             || bytes == 0
             || bytes > self.bytes
             || !bytes.is_multiple_of(4096)
@@ -279,6 +368,16 @@ impl PrivatePlaceholder {
             return Err(io::Error::last_os_error());
         }
         self.file.sync_all()?;
+        self.verify_placements()?;
+        self.valid_prefix = bytes;
+        self.poisoned = false;
+        Ok(())
+    }
+
+    fn verify_placements(&self) -> io::Result<()> {
+        if self.placed.is_empty() {
+            return Ok(());
+        }
         let capture = crate::stream_native::retrieval_capture(&self.file)?;
         let runs = crate::stream_layout::parse_complete_retrieval(&capture.canonical)?;
         for &(vcn, lcn, clusters) in &self.placed {
@@ -286,7 +385,6 @@ impl PrivatePlaceholder {
                 return Err(invalid("private mapping changed after valid-data flush"));
             }
         }
-        self.poisoned = false;
         Ok(())
     }
 }

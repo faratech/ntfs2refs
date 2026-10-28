@@ -47,6 +47,38 @@ impl PrivateTree {
         self.require_source_excluded()
     }
 
+    /// Materialize a small/resident stream or tail after its retained prefix
+    /// is valid. The caller supplies bytes from its checked source reader.
+    pub fn materialize_range(
+        &mut self,
+        object_index: usize,
+        components: &[String],
+        logical_length: u64,
+        offset: u64,
+        bytes: &[u8],
+    ) -> io::Result<serde_json::Value> {
+        self.require_source_excluded()?;
+        let expected_path = format!(
+            "{}\\{}",
+            self.pair.shadow.volume_path()?,
+            components.join("\\")
+        );
+        let file = self
+            .files
+            .get_mut(&object_index)
+            .ok_or_else(|| invalid("private materialization file absent"))?;
+        if file.path != expected_path || file.logical_length() != logical_length {
+            return Err(invalid("private materialization object binding differs"));
+        }
+        let proof = file.initialize_at(offset, bytes)?;
+        self.require_source_excluded()?;
+        Ok(proof)
+    }
+
+    pub fn source_binding(&self) -> &GeneralDiskBinding {
+        &self.pair.source
+    }
+
     fn require_source_excluded(&self) -> io::Result<()> {
         let mut events = Vec::new();
         if native::observe_general_disk_state_readonly(self.pair.source.clone(), &mut events)?
@@ -67,14 +99,27 @@ impl PrivateTree {
         self.require_source_excluded()?;
         let mut files = Vec::with_capacity(self.files.len());
         for (&index, file) in &self.files {
-            files.push(file_observation(index, &file.path, file.metadata_handle())?);
+            let mut row = file_observation(index, &file.path, file.metadata_handle())?;
+            row["materialized_bytes"] = file.materialized_bytes().into();
+            row["readback_bytes"] = file.readback_bytes().into();
+            row["valid_prefix_bytes"] = file.valid_prefix().into();
+            files.push(row);
         }
+        let readback_bytes = self.files.values().try_fold(0u64, |n, f| {
+            n.checked_add(f.readback_bytes())
+                .ok_or_else(|| invalid("private readback total overflow"))
+        })?;
+        let materialized_bytes = self.files.values().try_fold(0u64, |n, f| {
+            n.checked_add(f.materialized_bytes())
+                .ok_or_else(|| invalid("private materialization total overflow"))
+        })?;
         self.require_source_excluded()?;
         Ok(
             serde_json::json!({"schema_version":1,"kind":"native-private-tree-allocation-template",
             "pair":self.pair,"source_before":self.source_before,"objects":self.initial_objects,
             "files":files,"events":self.events,"privileges":self.privileges.audit(),
-            "user_payload_bytes_read":0,"user_payload_bytes_written":0,
+            "user_payload_bytes_read":readback_bytes,
+            "user_payload_bytes_written":materialized_bytes,
             "formatter_preflight_may_read_cache":true,"source_payload_writes":0,
             "security_timestamps_attributes_pending":true,"system_objects_pending":true,
             "physical_payload_io_measured":false,"conversion_qualified":false}),

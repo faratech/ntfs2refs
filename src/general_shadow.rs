@@ -1,5 +1,5 @@
 //! Immutable request shared by general native shadow construction and freeze.
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use n2r_win32::general_layout::GeneralSourceShadowBinding;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -77,6 +77,74 @@ pub fn allocate_private_tree(
         pair,
         &native_inputs(tree),
     )?)
+}
+
+/// Supply only a bounded exception range to its same named private file.
+/// Native staging refuses a gap beyond its initialized prefix, so a final
+/// byte of a huge stream cannot accidentally zero-fill the entire prefix.
+#[cfg(windows)]
+pub fn materialize_private_range(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    raw: &crate::ntfs_inspect::NtfsInspection,
+    tree: &crate::shadow_tree::Tree,
+    template: &mut n2r_win32::shadow_native::private_tree::PrivateTree,
+    object_index: usize,
+    offset: u64,
+    length: usize,
+    budget: &mut crate::ntfs_inspect::StreamTransferBudget,
+) -> Result<serde_json::Value> {
+    ensure!(
+        length <= 65536 && source.binding() == template.source_binding(),
+        "private materialization source binding or buffer bound differs"
+    );
+    let object = tree
+        .objects
+        .get(object_index)
+        .context("private object index outside canonical tree")?;
+    ensure!(!object.directory, "directories do not receive payload");
+    let mut events = Vec::new();
+    let before = source.state(&mut events)?;
+    ensure!(
+        before.disk_attributes == 3,
+        "materialization source must remain excluded"
+    );
+    let mut buffer = [0u8; 65536];
+    let read = crate::ntfs_inspect::read_plain_stream_range_into(
+        source,
+        raw,
+        object.record_number,
+        offset,
+        &mut buffer[..length],
+        budget,
+    )?;
+    ensure!(
+        read.stream_logical_bytes == object.length
+            && Some(&read.expected_stream_sha256) == object.sha256.as_ref(),
+        "materialization source differs from canonical object"
+    );
+    ensure!(
+        source.state(&mut events)? == before,
+        "source exclusion changed around range read"
+    );
+    let write = template.materialize_range(
+        object_index,
+        &object.path,
+        object.length,
+        offset,
+        &buffer[..length],
+    )?;
+    ensure!(
+        write["sha256"] == read.sha256 && write["readback_verified"] == true,
+        "private materialization destination proof differs"
+    );
+    ensure!(
+        source.state(&mut events)? == before,
+        "source exclusion changed during materialization"
+    );
+    Ok(
+        serde_json::json!({"kind":"private-exception-materialization","object_index":object_index,
+        "source":read,"destination":write,"source_payload_writes":0,"conversion_qualified":false}),
+    )
 }
 
 pub fn validate_mount_paths(paths: &Option<Vec<String>>) -> Result<()> {

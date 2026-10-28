@@ -1,5 +1,43 @@
 # Allocation-only canonical tree staging
 
+## Bounded exception materialization
+
+The subsequent implementation adds
+`ntfs_inspect::read_plain_stream_range_into` and
+`general_shadow::materialize_private_range`. A caller-owned64-KiB-or-smaller
+buffer receives only the selected logical range. Before and after the read,
+the existing checked-attribute path revalidates geometry, MFT bootstrap,
+file identity, run mapping, lengths and inspected stream digest. Holes and
+bytes beyond initialized length still return logical zeros. Selected bytes
+are charged to the existing cumulative transfer budget; metadata IO remains
+separate. A whole-stream small read must match its inspected digest. A partial
+range proof explicitly does not claim whole-stream content verification.
+
+The owning-source wrapper requires the actual excluded source binding to
+match the private template, binds canonical file length/hash/name/index, and
+checks source state around both reading and materialization. The native file
+can accept only a bounded write no later than its tracked valid prefix; a
+write beyond that prefix is rejected before IO. Thus a final byte at8 GiB
+cannot implicitly zero-fill an uninitialized8-GiB gap. Placement must happen
+before initialization; complete placed-prefix coverage is still required for
+the one-time VDL advancement.
+
+Each materialized range is explicitly sought, written, flushed, read back and
+compared. EOF/type/link-count and all previously placed mappings are rechecked.
+Failure poisons the private file and retains it for diagnosis. Permissions
+remain protected SYSTEM-only; no source metadata is restored early. Empty
+ranges do not authenticate a nonempty stream. Materialized and readback byte
+counters are reported separately with checked aggregation; ordinary template
+allocation still reports zero. No raw source writer or conversion authority
+is introduced.
+
+These APIs have release-build evidence, not native materialization/conversion
+qualification. They are not selected by the working full-shadow converter or
+the allocation-only CLI yet. Next connect them to the process-lifetime
+placement/materialization/freeze workflow and qualify actual resident/tail
+data. Full payload supply, root/system metadata, source metadata restoration
+and complete required-byte coverage remain pending. No unit tests added/run.
+
 Sourceb3c7d3f connects the canonical `shadow_tree` to the native private
 constructor through `general_shadow::allocate_private_tree`. The separate
 `lab-allocate-private-tree` command stages the original Unicode user paths and

@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+Low-scratch implementation resumed after the completed recovery case. New
+bounded range reader/private materializer APIs are connected across
+ntfs_inspect, general_shadow, PrivateTree and PrivatePlaceholder. They copy
+only <=64-KiB selected resident/tail ranges, revalidate source metadata around
+reads, enforce the actual excluded binding and canonical name/length/hash,
+reject initialization gaps, flush/read back, and recheck placed mappings.
+Per-file prefix/write/readback counters are explicit; failures poison the
+private file. No source writer, early ACL restoration or default conversion
+path change. Release build passed for lab-allocate-private-tree and
+lab-probe-native-valid-data; native new-path qualification still pending.
+See docs/private-tree-allocation.md. No unit tests added/run. VM remains OFF
+at rollback checkpoint452c3211 with all23 snapshots preserved.
+
 Candidate13's retained8-GiB PROCESS RECOVERY CASE IS COMPLETE. Exit86/partial
 reboot exclusion, exact ReFS resume, real native handoff and independent
 14-object/hash/original-retained-position checks passed. A separate fork of

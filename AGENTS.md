@@ -1,5 +1,13 @@
 # ntfs2refs project guidance
 
+LATEST22:49:23Z selected4d3... apply.json/apply-events.json nowpersisted;
+FINALIZATION stillLIVE same3332/1793224099967. Source4 remainsOFFLINE1/shadow5=3,
+read1,133.735GB/write828.566MB. No terminal/nativehandoff outcome yet. Do NOT
+stop/restart/restore/replay/mount/reformat/openSource/J/packed. Helper
+Preserve-SelectedCompactConversion.ps1 committed7b65b40, staticallyparsed and
+schema-reviewed againstf1f producer/preparedpin; NOT executed. Requires actual
+task0+no workers+complete native userhashes beforecleanstop/single48/all47.
+
 CURRENT SELECTED RUN ACTIVATED22:40:25Z: preparation COMPLETE257.698GB in465862ms;
 source4 nowOFFLINE attrs1 forauthorized journal apply, shadow5 stays3. SamePID
 3332/1793224099967, task4d3...Running, nativepeak69.4MiB. Do NOT restart/restore/

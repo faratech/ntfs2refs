@@ -239,5 +239,8 @@ pairs that Windows would distinguish; native CREATE_NEW remains the final
 compatibility check before any source reconstruction. Controls, separators,
 traversal/trailing-dot/space forms and reserved device names are refused.
 Unpaired UTF-16 surrogates remain refused by the existing strict path decoder.
-Alpha and larger-tree v1 keep their ASCII/100-byte naming policy. Unicode
-conversion has compilation evidence only; the passed beta used ASCII names.
+Alpha and larger-tree v1 keep their ASCII/100-byte naming policy. The pinned
+streaming-v2 native composite run converted names including `café`, `資料`,
+`Grüße` and an emoji, then passed native readback, mutation and reboot checks.
+Maximum-length and maximum-depth boundary cases remain unqualified; see
+[the recorded experiment](native-composite-experimental.md).

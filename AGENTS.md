@@ -955,3 +955,22 @@ shadow writable for later metadata sync. Lab249,565,790,317 bytes, host free
 95,900,852,224 bytes; cap256 GiB/reserve64 GiB/RAM4 GiB. Observe the same task
 with Collect-StreamingV2Conversion.ps1 -Candidate candidate12; do not redispatch.
 Native application/cutover results remain pending. Preserve every prior branch.
+
+At03:01:30 UTC candidate12/PID724 cleared complete source/target qualification
+and entered journal preparation. Source and shadow are both OFFLINE|READ_ONLY;
+no source writes. The running converter remains the original cc02ca40 producer;
+do not replace its binaries/request. Lab249,839,593,865 bytes, host free
+95,623,749,632 bytes, reserve64 GiB.
+
+Native post-cutover physical-range verification is now explicit and read-only:
+tree_placement/native_retention.rs recomputes dispositions from fresh native
+whole-stream hashes/retrieval maps and requires every admitted retained range
+to remain at the same file/VCN/physical offset. It does not rehash ranges or
+grant write authority. The postcheck helper requests --verify-retained-positions
+only for BeforeMutation when retained ranges exist. New verifier tools are
+staged separately as candidate12/rust-postcheck-tools-v2; use ToolsetVersion2,
+preserving v1. Verifier8f3675076a34bd977245744af702c82d7bf2b6c662e757246b153fcaf6840f9a,
+mutator0c9fa6caaff35c2d56cc2e6f83db0d4a5ed0622fc2d98446e74f0c591e2485dd,
+sourcec6d496d1ac3a901d5b27807c3d8c7c5c0ac45b78. Release build passed; no guest
+execution or native post-cutover qualification of this new check yet. No unit
+tests were added/run. All existing semantic/mount-path checks remain required.

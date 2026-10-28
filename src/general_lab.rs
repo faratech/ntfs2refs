@@ -32,6 +32,59 @@ pub fn require_disposable_guest(request: &Request) -> Result<()> {
     Ok(())
 }
 
+/// Fresh native construction and real source admission in one owning process.
+/// These checks enroll scratch devices, never replace the source certificate.
+pub fn convert_fresh_compact(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    request.validate()?;
+    ensure!(
+        std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11")
+            && request.source_resource_profile
+                == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+            && !request.verify_existing_shadow
+            && request.pair.source.disk_number == 1
+            && request.pair.shadow.disk_number == 3
+            && request.journal.disk.disk_number == 2
+            && request.pair.source.identity.disk_bytes == DISK_BYTES
+            && request.pair.shadow.identity.disk_bytes == DISK_BYTES
+            && request.pair.source.identity.partition_bytes == PARTITION_BYTES
+            && request.pair.shadow.identity.partition_bytes == PARTITION_BYTES
+            && request.journal.disk.identity.disk_bytes == JOURNAL_DISK_BYTES,
+        "fresh compact exercise requires enrolled disposable guest devices/profile"
+    );
+    for (actual, expected) in [
+        (
+            &request.pair.source.identity.disk_guid,
+            "1b191872-c372-41ee-a416-e18863996f54",
+        ),
+        (
+            &request.pair.shadow.identity.disk_guid,
+            "c0f2cd39-ad3d-484e-9990-0e6eba74485f",
+        ),
+        (
+            &request.journal.disk.identity.disk_guid,
+            "09fcc613-b8c2-4a1a-8833-226f9399be7f",
+        ),
+    ] {
+        ensure!(
+            actual
+                .trim_matches(['{', '}'])
+                .eq_ignore_ascii_case(expected),
+            "fresh compact exercise device identity differs"
+        );
+    }
+    crate::general_conversion::convert_composite_fresh_experimental(
+        request,
+        output,
+        budget,
+        interrupt_after_writes,
+    )
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApplyReport {
     pub kind: &'static str,

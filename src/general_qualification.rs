@@ -23,7 +23,11 @@ use std::{
     reason = "composite orchestration awaits native qualification before CLI exposure"
 )]
 mod composite;
-pub(crate) use composite::{QualifiedCompositeTree, prepare_composite_existing};
+pub(crate) use composite::{
+    QualifiedCompositeTree, prepare_composite_existing, prepare_composite_fresh,
+};
+mod compact_construction;
+pub use compact_construction::CompactConstructionBudget;
 
 const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 

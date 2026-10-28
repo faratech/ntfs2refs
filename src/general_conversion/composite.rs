@@ -12,10 +12,29 @@ pub(crate) fn convert_composite_existing_experimental(
     output: &Path,
     interrupt_after_writes: Option<u32>,
 ) -> Result<()> {
+    convert_composite(request, output, None, interrupt_after_writes)
+}
+
+pub(crate) fn convert_composite_fresh_experimental(
+    request: &Request,
+    output: &Path,
+    construction: qualification::CompactConstructionBudget,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    construction.validate(request.pair.source.identity.partition_bytes)?;
+    convert_composite(request, output, Some(construction), interrupt_after_writes)
+}
+
+fn convert_composite(
+    request: &Request,
+    output: &Path,
+    construction: Option<qualification::CompactConstructionBudget>,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
     request.validate()?;
     ensure!(
-        request.verify_existing_shadow,
-        "experimental composite conversion requires explicit existing-shadow selection"
+        request.verify_existing_shadow == construction.is_none(),
+        "experimental composite fresh/existing selection differs from its request"
     );
     ensure!(
         interrupt_after_writes.is_none_or(|writes| (1..=4096).contains(&writes)),
@@ -28,6 +47,7 @@ pub(crate) fn convert_composite_existing_experimental(
         &serde_json::json!({
             "schema_version":1,"kind":"experimental-live-composite-conversion-intent",
             "request":request,"interrupt_after_writes":interrupt_after_writes,
+            "construction_budget":construction,
             "requires_original_live_source_certificate":true,
             "source_admitted":false,"execution_authorized":false,
             "general_conversion_qualified":false,
@@ -54,15 +74,28 @@ pub(crate) fn convert_composite_existing_experimental(
             expected,
             mount_paths,
             source_label,
-        } = qualification::prepare_composite_existing(
-            request.pair.clone(),
-            &qualification_root,
-            &packed_path,
-            maximum,
-            profile,
-            request.source_resource_profile.unwrap_or_default(),
-            |_, _, _| Ok(()),
-        )?;
+        } = if let Some(budget) = construction {
+            qualification::prepare_composite_fresh(
+                request.pair.clone(),
+                &qualification_root,
+                &packed_path,
+                maximum,
+                profile,
+                request.source_resource_profile.unwrap_or_default(),
+                budget,
+                |_, _, _| Ok(()),
+            )?
+        } else {
+            qualification::prepare_composite_existing(
+                request.pair.clone(),
+                &qualification_root,
+                &packed_path,
+                maximum,
+                profile,
+                request.source_resource_profile.unwrap_or_default(),
+                |_, _, _| Ok(()),
+            )?
+        };
         let plan = reconstruct::Request {
             schema_version: request.schema_version,
             source_resource_profile: request.source_resource_profile,

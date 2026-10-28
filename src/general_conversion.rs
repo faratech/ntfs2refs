@@ -30,7 +30,9 @@ mod composite;
     unused_imports,
     reason = "experimental entry point retained for the next owning-guest integration"
 )]
-pub(crate) use composite::convert_composite_existing_experimental;
+pub(crate) use composite::{
+    convert_composite_existing_experimental, convert_composite_fresh_experimental,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

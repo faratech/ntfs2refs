@@ -32,6 +32,53 @@ pub(crate) fn prepare_composite_existing(
     resources: crate::ntfs_admission::ResourceProfile,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
 ) -> Result<QualifiedCompositeTree> {
+    prepare_composite(
+        pair,
+        output,
+        packed_path,
+        max_change_bytes,
+        profile,
+        resources,
+        None,
+        after_source_freeze,
+    )
+}
+
+/// Construct from this process's newly captured source tree. The private
+/// constructor retains its disposable-machine enrollment checks.
+pub(crate) fn prepare_composite_fresh(
+    pair: GeneralSourceShadowBinding,
+    output: &Path,
+    packed_path: &Path,
+    max_change_bytes: u64,
+    profile: JournalProfile,
+    resources: crate::ntfs_admission::ResourceProfile,
+    budget: CompactConstructionBudget,
+    after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
+) -> Result<QualifiedCompositeTree> {
+    budget.validate(pair.source.identity.partition_bytes)?;
+    prepare_composite(
+        pair,
+        output,
+        packed_path,
+        max_change_bytes,
+        profile,
+        resources,
+        Some(budget),
+        after_source_freeze,
+    )
+}
+
+fn prepare_composite(
+    pair: GeneralSourceShadowBinding,
+    output: &Path,
+    packed_path: &Path,
+    max_change_bytes: u64,
+    profile: JournalProfile,
+    resources: crate::ntfs_admission::ResourceProfile,
+    construction: Option<CompactConstructionBudget>,
+    after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
+) -> Result<QualifiedCompositeTree> {
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
         (1..=profile.max_changed_bytes()).contains(&max_change_bytes)
@@ -46,7 +93,8 @@ pub(crate) fn prepare_composite_existing(
             "schema_version":1,"kind":"live-composite-qualification-intent",
             "pair":pair,"source_resource_profile":resources,
             "packed_path":packed_path,"max_change_bytes":max_change_bytes,
-            "existing_native_shadow":true,"source_payload_writes_authorized":false,
+            "existing_native_shadow":construction.is_none(),"construction_budget":construction,
+            "source_payload_writes_authorized":false,
             "source_admitted":false,"execution_authorized":false,
         }),
     )?;
@@ -71,13 +119,25 @@ pub(crate) fn prepare_composite_existing(
             &mut phase,
             after_source_freeze,
         )?;
-        phase = "existing-native-shadow-freeze";
-        let state =
-            n2r_win32::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
-        let mut native_target = match state.disk_attributes {
-            0 => GeneralFrozenPartition::isolate(pair.shadow.clone(), &mut events)?,
-            3 => GeneralFrozenPartition::reopen(pair.shadow.clone(), &mut events)?,
-            _ => anyhow::bail!("existing composite shadow must be mounted or frozen read-only"),
+        phase = "native-shadow-construction-or-freeze";
+        let mut native_target = if let Some(budget) = construction {
+            super::compact_construction::construct(
+                &mut source,
+                &pair,
+                &raw,
+                &tree,
+                output,
+                budget,
+                resources,
+            )?
+        } else {
+            let state =
+                n2r_win32::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
+            match state.disk_attributes {
+                0 => GeneralFrozenPartition::isolate(pair.shadow.clone(), &mut events)?,
+                3 => GeneralFrozenPartition::reopen(pair.shadow.clone(), &mut events)?,
+                _ => anyhow::bail!("existing composite shadow must be mounted or frozen read-only"),
+            }
         };
         save(output, "target-freeze-events.json", &events)?;
         events.clear();

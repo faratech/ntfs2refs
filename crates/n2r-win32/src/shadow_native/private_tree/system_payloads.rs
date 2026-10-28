@@ -73,6 +73,12 @@ pub(super) fn run(
             components,
             query_bytes(&snapshot(&file), 18, 24)?[8..24].to_vec(),
         );
+        let index = input
+            .iter()
+            .position(|i| i.directory && i.components == [system])
+            .ok_or_else(|| invalid("system directory input absent"))?;
+        tree.metadata_targets
+            .insert(index, open(&format!("{root}{system}"), true, true)?);
     }
     for (index, item) in input
         .iter()
@@ -126,6 +132,15 @@ pub(super) fn run(
         if actual != item.logical_sha256() {
             return Err(invalid("system payload readback differs"));
         }
+        let handle = open(&path, false, true)?;
+        if query_bytes(&snapshot(&handle), 18, 24)? != query_bytes(&state, 18, 24)? {
+            return Err(invalid("system metadata identity changed after supply"));
+        }
+        tree.system_identities.insert(
+            item.components.to_vec(),
+            query_bytes(&state, 18, 24)?[8..24].to_vec(),
+        );
+        tree.metadata_targets.insert(index, handle);
         receipts.push(
             serde_json::json!({"object_index":index,"components":item.components,
             "bytes":item.logical_length(),"sha256":actual,"readback_verified":true}),

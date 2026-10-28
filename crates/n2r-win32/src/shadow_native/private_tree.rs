@@ -3,6 +3,7 @@
 //! exposes placement operations, never source writes or conversion authority.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod metadata;
 mod placement;
 mod source_backed;
 mod supply;
@@ -27,15 +28,32 @@ pub struct PrivateTree {
     system_identities: BTreeMap<Vec<String>, Vec<u8>>,
     system_payloads_started: bool,
     system_payloads_complete: bool,
+    // Constructor-owned identity anchors, never reconstructed from a report.
+    // Directories/root stay open without DELETE sharing for the whole session.
+    metadata_targets: BTreeMap<usize, File>,
+    metadata_input_sha256: [u8; 32],
 }
 
 impl PrivateTree {
+    /// Complete metadata only on this owning disposable maintenance session.
+    /// Consumes the owner even on partial failure: no retry/placement authority
+    /// is returned. Source-backed prefixes are not logical-content verified by
+    /// this operation, and the returned diagnostic grants no write authority.
+    pub fn complete_source_metadata(
+        self,
+        input: &[Input<'_>],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    ) -> io::Result<serde_json::Value> {
+        metadata::complete(self, input, same_security)
+    }
+
     /// Only bounded recognized SVI files, not user payload or raw source writes.
     pub fn materialize_system_payloads(
         &mut self,
         input: &[Input<'_>],
         writer: &mut dyn FnMut(usize, &mut File) -> io::Result<()>,
     ) -> io::Result<serde_json::Value> {
+        self.require_bound_input(input)?;
         system_payloads::run(self, input, writer)
     }
     pub fn mounted_allocation_snapshot(&self) -> io::Result<MountedAllocation> {
@@ -275,6 +293,13 @@ impl PrivateTree {
             return Err(invalid(
                 "private tree source exclusion or shadow state changed",
             ));
+        }
+        Ok(())
+    }
+
+    fn require_bound_input(&self, input: &[Input<'_>]) -> io::Result<()> {
+        if metadata::input_digest(input) != self.metadata_input_sha256 {
+            return Err(invalid("private constructor source input changed"));
         }
         Ok(())
     }
@@ -613,6 +638,25 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
     pair.shadow
         .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
     let mut files = BTreeMap::new();
+    let mut metadata_targets = BTreeMap::new();
+    metadata_targets.insert(0, root_handle);
+    // Pin every formatter object the constructor admitted. Subsequent system
+    // supply must update these same objects, not a caller-selected path.
+    for (index, item) in input.iter().enumerate() {
+        if let Some(id) = system_identities.get(item.components) {
+            let handle = open(
+                &format!("{root}{}", item.components.join("\\")),
+                item.directory,
+                true,
+            )?;
+            if query_bytes(&snapshot(&handle), 18, 24)?[8..24] != *id {
+                return Err(invalid(
+                    "system identity changed during constructor pinning",
+                ));
+            }
+            metadata_targets.insert(index, handle);
+        }
+    }
     let mut objects = Vec::with_capacity(input.len());
     // Reuse a private file's atomic descriptor to create private directories.
     // Its descriptor is constant rather than derived from source ACLs.
@@ -649,6 +693,10 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
                 index,
                 None,
             )?;
+            metadata_targets.insert(
+                index,
+                open(&format!("{root}{}", item.components.join("\\")), true, true)?,
+            );
         } else {
             let file = unwritten::PrivatePlaceholder::allocate_named(
                 &root,
@@ -682,6 +730,8 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
         system_identities,
         system_payloads_started: false,
         system_payloads_complete: false,
+        metadata_targets,
+        metadata_input_sha256: metadata::input_digest(input),
     };
     tree.require_source_excluded()?;
     Ok(tree)

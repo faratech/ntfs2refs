@@ -65,6 +65,229 @@ fn guid_payload(bytes: &[u8]) -> bool {
     })
 }
 
+/// Internal implementation for a consuming PrivateTree owner. Unlike `run`,
+/// this accepts no pathname-created targets: every object is an actual handle
+/// retained by that constructor or transferred from its exclusive placeholder.
+/// Only the parent module can call this; report/input JSON cannot create it.
+pub(super) fn complete_owned_metadata(
+    pair: &GeneralSourceShadowBinding,
+    source_before: &native::GeneralDiskState,
+    volume: &File,
+    input: &[Input<'_>],
+    handles: &BTreeMap<usize, File>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<serde_json::Value> {
+    if input.is_empty()
+        || input.len() > 1280
+        || handles.len() != input.len()
+        || !input[0].directory
+        || !input[0].components.is_empty()
+        || source_before.disk_attributes != 3
+    {
+        return Err(invalid("complete owning metadata capability required"));
+    }
+    pair.shadow
+        .validate_volume_extent(&ctl(volume, 0x00560000, &[], 1024)?)?;
+    let mut events = Vec::new();
+    let target = native::GeneralPartitionReader::open(pair.shadow.clone(), &mut events)?;
+    if native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?
+        != *source_before
+        || native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
+            .disk_attributes
+            != 0
+        || native::mounted_filesystem_general(pair.shadow.clone(), &mut events)? != "ReFS"
+    {
+        return Err(invalid(
+            "owning metadata source exclusion or target route differs",
+        ));
+    }
+    let mut identities: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
+    let mut unique = BTreeSet::new();
+    let mut mappings = BTreeMap::new();
+    let mut paths = BTreeSet::new();
+    for (index, item) in input.iter().enumerate() {
+        if item.components.len() > 16
+            || item
+                .components
+                .iter()
+                .any(|part| !crate::shadow_names::valid_unicode_component(part))
+            || !paths.insert(crate::shadow_names::conservative_path_key(item.components))
+            || item.times.iter().any(|v| *v == 0 || *v >= i64::MAX as u64)
+            || item.attributes & !0x2037 != 0
+            || (item.attributes & 16 != 0) != item.directory
+        {
+            return Err(invalid(
+                "owning metadata input outside bounded source profile",
+            ));
+        }
+        descriptor(item.security)?;
+        if let Some(api) = item.expected_api_security {
+            descriptor(api)?;
+        }
+        let handle = handles
+            .get(&index)
+            .ok_or_else(|| invalid("owned metadata handle absent"))?;
+        validate_open_type(handle, item.directory)?;
+        let id = info(handle, 18, 24)?;
+        if !unique.insert(id.clone()) {
+            return Err(invalid("owned metadata identities alias"));
+        }
+        if let Some(root) = identities.get(&0usize) {
+            if id[..8] != root[..8] {
+                return Err(invalid("owned metadata objects escape bound volume"));
+            }
+        }
+        identities.insert(index, id);
+        if !item.directory {
+            let standard = info(handle, 1, 24)?;
+            let streams = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let (streams, _) = stream_layout::parse_streams(&streams)?;
+            if layout::u64_at(&standard, 8)? != item.logical_length()
+                || layout::u32_at(&standard, 16)? != 1
+                || standard[20] != 0
+                || standard[21] != 0
+                || streams.len() != 1
+                || !streams[0].name.is_empty()
+                || streams[0].logical_size != item.logical_length()
+            {
+                return Err(invalid("owned metadata stream shape differs"));
+            }
+            if item.logical_length() != 0 && layout::u64_at(&standard, 0)? >= 4096 {
+                mappings.insert(
+                    index,
+                    crate::stream_native::retrieval_capture(handle)?.canonical,
+                );
+            }
+        }
+    }
+    let namespace = || -> io::Result<()> {
+        for (index, directory) in input.iter().enumerate().filter(|(_, i)| i.directory) {
+            let handle = &handles[&index];
+            let mut seen = BTreeSet::new();
+            for entry in enumerate(handle)? {
+                if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
+                    continue;
+                }
+                let name = String::from_utf16(&entry.name_utf16)
+                    .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
+                let mut path = directory.components.to_vec();
+                path.push(name);
+                let (child_index, child) = input
+                    .iter()
+                    .enumerate()
+                    .find(|(_, i)| i.components == path)
+                    .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
+                if !seen.insert(child_index)
+                    || (entry.attributes & 16 != 0) != child.directory
+                    || entry.attributes & 0x400 != 0
+                    || entry.file_id.as_slice() != &identities[&child_index][8..24]
+                {
+                    return Err(invalid("owned metadata namespace identity or type differs"));
+                }
+            }
+            if input
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| {
+                    i.components.len() == directory.components.len() + 1
+                        && i.components.starts_with(directory.components)
+                })
+                .any(|(child, _)| !seen.contains(&child))
+            {
+                return Err(invalid("missing owned metadata namespace entry"));
+            }
+        }
+        Ok(())
+    };
+    namespace()?;
+    let mut ordered: Vec<_> = input.iter().enumerate().collect();
+    ordered.sort_by_key(|(_, i)| i.components.len());
+    let mut protection_updates = 0;
+    for &(index, item) in &ordered {
+        let handle = &handles[&index];
+        if info(handle, 18, 24)? != identities[&index] {
+            return Err(invalid(
+                "owned identity changed before security restoration",
+            ));
+        }
+        if !security_matches(item, &snapshot(handle), &same_security)? {
+            protection_updates += usize::from(restore_dacl_protection(handle, item)?);
+            backup_security(handle, item.security)?;
+            if !security_matches(item, &snapshot(handle), &same_security)? {
+                return Err(invalid(
+                    "owned source security views differ after restoration",
+                ));
+            }
+        }
+    }
+    // Security propagation and all children finish before basic metadata.
+    // Reverse depth order finalizes root last, using the same held handles.
+    for &(index, item) in ordered.iter().rev() {
+        let handle = &handles[&index];
+        if info(handle, 18, 24)? != identities[&index] {
+            return Err(invalid("owned identity changed before basic restoration"));
+        }
+        basic(handle, item)?;
+        if !item.directory {
+            handle.sync_all()?;
+        }
+    }
+    volume.sync_all()?;
+    namespace()?;
+    for (index, item) in input.iter().enumerate() {
+        let handle = &handles[&index];
+        let actual = snapshot(handle);
+        if query_bytes(&actual, 18, 24)? != identities[&index]
+            || query_bytes(&actual, 0, 40)? != basic_bytes(item)
+            || !security_matches(item, &actual, &same_security)?
+        {
+            return Err(invalid("final owned source metadata readback differs"));
+        }
+        if let Some(mapping) = mappings.get(&index) {
+            if crate::stream_native::retrieval_capture(handle)?.canonical != *mapping {
+                return Err(invalid(
+                    "payload mapping changed during owned metadata completion",
+                ));
+            }
+        }
+        if !item.directory {
+            let standard = info(handle, 1, 24)?;
+            let streams = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
+            let (streams, _) = stream_layout::parse_streams(&streams)?;
+            if layout::u64_at(&standard, 8)? != item.logical_length()
+                || layout::u32_at(&standard, 16)? != 1
+                || standard[20] != 0
+                || standard[21] != 0
+                || streams.len() != 1
+                || !streams[0].name.is_empty()
+                || streams[0].logical_size != item.logical_length()
+            {
+                return Err(invalid("final owned metadata stream shape differs"));
+            }
+        }
+    }
+    target.revalidate_route(&mut events)?;
+    pair.shadow
+        .validate_volume_extent(&ctl(volume, 0x00560000, &[], 1024)?)?;
+    if native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?
+        != *source_before
+        || native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
+            .disk_attributes
+            != 0
+    {
+        return Err(invalid("owning metadata storage state changed"));
+    }
+    Ok(
+        serde_json::json!({"schema_version":1,"kind":"owning-private-tree-metadata-completion",
+        "metadata_objects_updated":input.len(),"metadata_objects_verified":input.len(),
+        "metadata_readback_verified":true,"dacl_protection_states_restored":protection_updates,
+        "source_payload_writes":0,"user_payload_bytes_read":0,"user_payload_bytes_written":0,
+        "source_before":source_before,"events":events,"owner_consumed":true,
+        "disposable_maintenance_scope":true,"source_prefix_contents_verified":false,
+        "requires_fresh_conversion_admission":true,"conversion_qualified":false}),
+    )
+}
+
 pub fn run(
     pair: &GeneralSourceShadowBinding,
     input: &[Input<'_>],

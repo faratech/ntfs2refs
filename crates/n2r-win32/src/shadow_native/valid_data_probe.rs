@@ -1,25 +1,14 @@
 //! Bounded owning-guest experiment, outside the converter construction path.
 //! Creates one SYSTEM-only file on the enrolled shadow; never reads its data.
-use super::{GetVolumeInformationByHandleW, ctl, info, invalid, native, snapshot, wide};
+use super::{GetVolumeInformationByHandleW, ctl, info, invalid, native, snapshot};
 use crate::{attestation_native::Privileges, general_layout::GeneralSourceShadowBinding};
 use serde::Serialize;
 use std::{
     fs::{File, OpenOptions},
-    io, mem,
-    os::windows::{
-        fs::OpenOptionsExt,
-        io::{AsRawHandle, FromRawHandle},
-    },
+    io,
+    os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
     ptr,
 };
-use windows_sys::Win32::{
-    Foundation::{INVALID_HANDLE_VALUE, LocalFree},
-    Security::{
-        Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW, SECURITY_ATTRIBUTES,
-    },
-    Storage::FileSystem::{CreateFileW, SetFileInformationByHandle, SetFileValidData},
-};
-
 const VALID_BYTES: u64 = 1024 * 1024;
 const FILE_BYTES: u64 = VALID_BYTES + 4096;
 
@@ -64,7 +53,7 @@ fn observation(file: &File) -> serde_json::Value {
 /// on error/reboot, because successful valid-data advancement can expose old
 /// contents. A returned success is not an extent-adoption or I/O-cost proof.
 pub fn run(pair: &GeneralSourceShadowBinding, experiment: &str) -> io::Result<serde_json::Value> {
-    run_inner(pair, experiment, None)
+    run_inner(pair, experiment, &[])
 }
 
 /// Try placement while VDL is zero, then advance VDL only after native mapping
@@ -80,13 +69,34 @@ pub fn run_placed(
     if destination_lcn < 256 || end.is_none_or(|v| v > pair.shadow.identity.partition_bytes) {
         return Err(invalid("private placement outside enrolled partition"));
     }
-    run_inner(pair, experiment, Some(destination_lcn))
+    run_inner(
+        pair,
+        experiment,
+        &[(0, destination_lcn, (VALID_BYTES / 4096) as u32)],
+    )
+}
+
+pub fn run_split(
+    pair: &GeneralSourceShadowBinding,
+    experiment: &str,
+    first_lcn: u64,
+    second_lcn: u64,
+) -> io::Result<serde_json::Value> {
+    let clusters = (VALID_BYTES / 4096 / 2) as u32;
+    run_inner(
+        pair,
+        experiment,
+        &[
+            (0, first_lcn, clusters),
+            (u64::from(clusters), second_lcn, clusters),
+        ],
+    )
 }
 
 fn run_inner(
     pair: &GeneralSourceShadowBinding,
     experiment: &str,
-    destination_lcn: Option<u64>,
+    requested: &[(u64, u64, u32)],
 ) -> io::Result<serde_json::Value> {
     pair.validate_with_resource_profile(Some(
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
@@ -125,71 +135,16 @@ fn run_inner(
         return Err(invalid("excluded source and writable ReFS shadow required"));
     }
     let mut privilege = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
-    let sddl = wide("O:SYG:SYD:P(A;;FA;;;SY)");
-    let mut descriptor = ptr::null_mut();
-    // SAFETY: NUL-terminated constant SDDL; the allocated descriptor is freed
-    // immediately after the synchronous atomic create, including failure.
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            1,
-            &mut descriptor,
-            ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let sa = SECURITY_ATTRIBUTES {
-        nLength: mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: descriptor,
-        bInheritHandle: 0,
-    };
-    let path = format!(
-        "{}\\n2r-valid-data-{experiment}.bin",
-        pair.shadow.volume_path()?
-    );
-    let name = wide(&path);
-    // SAFETY: measured volume-GUID root, CREATE_NEW, sharing disabled and
-    // protected security descriptor. No caller-selected path is accepted.
-    let handle = unsafe {
-        CreateFileW(
-            name.as_ptr(),
-            0xc0020000,
-            0,
-            &sa,
-            1,
-            0x80200080,
-            ptr::null_mut(),
-        )
-    };
-    let create_error = io::Error::last_os_error();
-    unsafe {
-        LocalFree(descriptor);
-    }
-    if handle.is_null() || handle == INVALID_HANDLE_VALUE {
-        return Err(create_error);
-    }
-    // SAFETY: transfer unique ownership of the successfully created handle.
-    let file = unsafe { File::from_raw_handle(handle) };
-    // Only this new private file: ordinary target data must not inherit an
-    // integrity-stream checksum policy that requires initialized payload.
-    ctl(&file, 0x9c280, &[0; 8], 0)?;
-    let allocation = FILE_BYTES;
-    if unsafe {
-        SetFileInformationByHandle(
-            file.as_raw_handle(),
-            5,
-            (&allocation as *const u64).cast(),
-            8,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    file.set_len(FILE_BYTES)?;
-    let before = observation(&file);
-    let placement = if let Some(lcn) = destination_lcn {
+    let mut placeholder = super::unwritten::PrivatePlaceholder::allocate(
+        &pair.shadow.volume_path()?,
+        experiment,
+        FILE_BYTES,
+        pair.shadow.identity.partition_bytes,
+    )?;
+    let path = placeholder.path.clone();
+    let before = observation(placeholder.metadata_handle());
+    let mut placements = Vec::new();
+    if !requested.is_empty() {
         let volume = OpenOptions::new()
             .read(true)
             .write(true)
@@ -197,64 +152,31 @@ fn run_inner(
             .open(pair.shadow.volume_path()?)?;
         pair.shadow
             .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
-        let partition = pair.shadow.identity.partition_bytes;
-        let legacy =
-            crate::bitmap_observation::Observation::capture(&volume, &[0; 8], partition, true)?;
-        let mut extended = [0u8; 16];
-        extended[8] = 1;
-        let metadata =
-            crate::bitmap_observation::Observation::capture(&volume, &extended, partition, true)?;
-        let old = legacy.view(partition)?.candidate(lcn * 4096, VALID_BYTES)?;
-        let all = metadata
-            .view(partition)?
-            .candidate(lcn * 4096, VALID_BYTES)?;
-        if old.declared_clusters != partition / 4096
-            || all.declared_clusters != partition / 4096
-            || old.allocated_clusters != 0
-            || all.allocated_clusters != 0
-        {
-            return Err(invalid(
-                "private placement requires both live bitmap views free",
-            ));
+        for &(vcn, lcn, clusters) in requested {
+            let attempt = placeholder.place(&volume, vcn, lcn, clusters)?;
+            let matched = attempt.mapping_matches && attempt.native_error.is_none();
+            let mut value = serde_json::to_value(attempt).map_err(io::Error::other)?;
+            value["after_move"] = observation(placeholder.metadata_handle());
+            placements.push(value);
+            if !matched {
+                break;
+            }
         }
-        let mut input = [0u8; 32];
-        input[..8].copy_from_slice(&(file.as_raw_handle() as usize as u64).to_le_bytes());
-        input[16..24].copy_from_slice(&lcn.to_le_bytes());
-        input[24..28].copy_from_slice(&((VALID_BYTES / 4096) as u32).to_le_bytes());
-        let moved = ctl(&volume, 0x90074, &input, 0);
-        let capture = crate::stream_native::retrieval_capture(&file)?;
-        let mapped = super::mapping_matches_run(
-            &crate::stream_layout::parse_complete_retrieval(&capture.canonical)?,
-            0,
-            lcn,
-            (VALID_BYTES / 4096) as u32,
-        )?;
-        Some(
-            serde_json::json!({"destination_lcn":lcn,"clusters":VALID_BYTES/4096,
-            "starting_vcn":0,"submitted_once":true,"before_valid_data_advance":true,
-            "native_error":moved.err().map(|e| e.raw_os_error().unwrap_or(31)),
-            "mapping_matches":mapped,"mapping_after":capture.canonical,
-            "mapping_page_proof":capture.proof,"legacy_candidate":old,
-            "metadata_candidate":all,"after_move":observation(&file)}),
-        )
-    } else {
-        None
-    };
-    let may_advance = placement
-        .as_ref()
-        .is_none_or(|p| p["mapping_matches"] == true && p["native_error"].is_null());
-    // SAFETY: live new private file; manage-volume privilege was enabled when
-    // opened. The positive VDL is strictly below EOF. Contents are never read.
-    let ok = if may_advance {
-        unsafe { SetFileValidData(file.as_raw_handle(), VALID_BYTES as i64) }
-    } else {
-        0
-    };
-    let valid_data_error =
-        (may_advance && ok == 0).then(|| io::Error::last_os_error().raw_os_error().unwrap_or(31));
-    let immediate = observation(&file);
+    }
+    let may_advance = placements.len() == requested.len()
+        && placements
+            .iter()
+            .all(|p| p["mapping_matches"] == true && p["native_error"].is_null());
+    let advancement =
+        may_advance.then(|| placeholder.advance_valid_data(VALID_BYTES, !requested.is_empty()));
+    let ok = advancement.as_ref().is_some_and(|result| result.is_ok());
+    let valid_data_error = advancement
+        .and_then(Result::err)
+        .map(|error| error.raw_os_error().unwrap_or(31));
+    let file = placeholder.metadata_handle();
+    let immediate = observation(file);
     file.sync_all()?;
-    let after_flush = observation(&file);
+    let after_flush = observation(file);
     let source_after =
         native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
     if source_after != source_before {
@@ -262,10 +184,11 @@ fn run_inner(
     }
     privilege.restore()?;
     Ok(serde_json::json!({
-        "schema_version":1,"kind":"native-private-valid-data-probe","experiment_id":experiment,
+        "schema_version":if requested.len()>1 {2}else{1},"kind":"native-private-valid-data-probe","experiment_id":experiment,
         "path":path,"file_bytes":FILE_BYTES,"requested_valid_bytes":VALID_BYTES,
-        "set_valid_data_succeeded":ok!=0,"set_valid_data_error":valid_data_error,
-        "valid_data_call_submitted":may_advance,"placement":placement,
+        "set_valid_data_succeeded":ok,"set_valid_data_error":valid_data_error,
+        "valid_data_call_submitted":may_advance,"placement":if placements.len()==1 {placements.first()}else{None},
+        "placements":placements,"advance_includes_flush_and_mapping_recheck":true,
         "before":before,"immediate":immediate,"after_flush":after_flush,
         "source_before":source_before,"source_after":source_after,"shadow_before":shadow_before,
         "privileges":privilege.audit(),"events":events,"payload_write_calls":0,"payload_reads":0,

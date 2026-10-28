@@ -26,6 +26,12 @@ fn main() -> anyhow::Result<()> {
         expected_file_id_info: Option<String>,
         #[arg(long, conflicts_with = "observe_existing")]
         destination_lcn: Option<u64>,
+        #[arg(
+            long,
+            requires = "destination_lcn",
+            conflicts_with = "observe_existing"
+        )]
+        second_destination_lcn: Option<u64>,
     }
     let args = Args::parse();
     ensure!(
@@ -61,11 +67,20 @@ fn main() -> anyhow::Result<()> {
             "file ID is only valid for observation"
         );
         if let Some(lcn) = args.destination_lcn {
-            n2r_win32::shadow_native::valid_data_probe::run_placed(
-                &request.pair,
-                &args.experiment_id,
-                lcn,
-            )
+            if let Some(second) = args.second_destination_lcn {
+                n2r_win32::shadow_native::valid_data_probe::run_split(
+                    &request.pair,
+                    &args.experiment_id,
+                    lcn,
+                    second,
+                )
+            } else {
+                n2r_win32::shadow_native::valid_data_probe::run_placed(
+                    &request.pair,
+                    &args.experiment_id,
+                    lcn,
+                )
+            }
         } else {
             n2r_win32::shadow_native::valid_data_probe::run(&request.pair, &args.experiment_id)
         }

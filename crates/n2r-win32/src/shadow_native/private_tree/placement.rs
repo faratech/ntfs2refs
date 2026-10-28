@@ -4,8 +4,15 @@ use super::*;
 use crate::{bitmap_observation::Observation, retention_layout};
 
 const MOVE_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_MOVES: usize = 1024;
+const MAX_MOVES: usize = super::MAX_PLACEMENT_SUBMISSIONS;
 const MAX_MOVE_EVIDENCE: usize = 16 * 1024 * 1024;
+
+pub(super) fn validate_limits(bytes: u64, submissions: usize) -> io::Result<()> {
+    if bytes == 0 || !(1..=MAX_MOVES).contains(&submissions) {
+        return Err(invalid("explicit placement limits differ"));
+    }
+    Ok(())
+}
 
 fn progress(
     tree: &mut PrivateTree,
@@ -160,9 +167,7 @@ pub(super) fn run(
     max_moves: usize,
 ) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
-    if max_move_bytes == 0 || !(1..=MAX_MOVES).contains(&max_moves) {
-        return Err(invalid("explicit placement limits differ"));
-    }
+    validate_limits(max_move_bytes, max_moves)?;
     if tree.placement_started {
         return Err(invalid(
             "tree placement already attempted; preserve without retry",

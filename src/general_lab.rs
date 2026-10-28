@@ -41,6 +41,7 @@ pub fn convert_fresh_compact(
     interrupt_after_writes: Option<u32>,
 ) -> Result<()> {
     request.validate()?;
+    budget.validate(request.pair.source.identity.partition_bytes)?;
     ensure!(
         std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11")
             && request.source_resource_profile

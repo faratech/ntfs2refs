@@ -1,5 +1,54 @@
 # ntfs2refs project guidance
 
+CURRENT STOPPED STATE / NEW STORAGE AUTHORIZATION (later than entries below):
+Run2ba889b74885441195fd5d075b4ab1d5 TERMINAL1, PID5568 absent, exact refusal
+"explicit placement limits differ" BEFORE source reconstruction/journal/apply.
+Source stays3; VM safely OFF/RAM0, failed current branch now saved once at
+cfe0b326-7308-4a58-810d-9730ff8152b4 parent6348491e, ALL42 checkpoints preserved.
+Immediate post-check was stale; separate fresh query proved42/all41 retained.
+Do NOT create that checkpoint again. Original reports/native source evidence
+archived under compact-admitted-20261028, including qualification directory.
+Source-only gates passed; ONLY target security/timestamp/profile gates remained.
+Full source40fe865f14cb64132dd0bc0231eaaa643bf22227aad7ff68b785e53eba608806;
+inspection92fe82859ebdca0faa1f6ab66bf0223e9f60a102fedaaa22338003c38e789883;
+expectation1529f201efc187829aed900a757a9345c4573790aa660697fd1df5adfeea5a05.
+Source was NOT admitted because target proof never completed. Do not relabel.
+
+Root cause proven: CLI/default/wrapper4096 + app accepted65536, native mover
+max1024. Fix uses shared native MAX_PLACEMENT_SUBMISSIONS/validate_limits and
+validates before output/source freeze/allocation; default/wrapper now1024.
+Release build+actual binary startup refusals (stale4096, zero budget, foreign
+machine with valid budget) passed, no outputs created/no disk experiment.
+New fresh converter5e156f089b0fc6a67788154e841a74daad4a61028b16ea41391dc8f84e06f524;
+native qualification pending; do not assign old producer evidence to it.
+
+Staging exceeded former258GiB/64GiB reserve: actual279374027089/free66137247744.
+OS child4,139,778,048B dominates, source22,020,096/J19,922,944/shadow136,314,880B.
+Guest pagefile allocation1408MiB/current0/peak1MiB DOES NOT prove cause. Exact
+OS file attribution remains unproven. Read-only7-Zip listing parsed11 diff
+levels but failed recorded base volume-GUID locator; actual base exists/readable
+viaC:, so this is reader resolution failure, not a missing/broken Hyper-V base.
+Listing/receipt pinned; no attachment/extraction/modification. All12 chain files
+unchanged. CompactCapacity.psm1 now separates OS highwater/margin, scratch,
+packed/journal, source/native and recovery headroom, rounds to7GiB. Forecast
+is explicitly NOT a hard reservation or continuous enforcement.
+
+USER NOW AUTHORIZED "Use up to a maximum of 50GB additional space" after asking
+cleanup. Recorded decimal50,000,000,000-byte budget from actual279374052988;
+maximumActualBytes329374052988, minimumHostFreeBytes17179869184 (16GiB floor,
+replacing old64GiB reserve as explained to user). BaselineFree66133905408.
+Epoch .lab/hyperv/streaming-v2-20261027/storage-budget-50gb-20261028.json.
+Do NOT repeatedly reset baseline/increase budget; this is one total allowance.
+Cache deletion was rejected again even with renewed authorization and exact
+literal paths; reasononly "blocked by policy", NOTHING deleted. No alternative
+deletion mechanism. All checkpoint/evidence preservation remains mandatory.
+Next fresh retry must use savedcfe0/all42, fresh paths, exact original-source
+abort fullhash before writable NTFS, reuse existing4MiB+37 source file unchanged,
+reformat ONLY independently bound R, fresh live source/certificate. Abort helper
+now accepts the actual observed-frozen-source-identity schema with binding/state
+checks and unchanged fullhash; builtSHAc4d2d2a9d4b1926c09dcc0ed94d9008f56b7e79692fe916130de40eeaa06d69b.
+No new VM has started since safe shutdown. main.rs remains unstaged/unchanged.
+
 FRESH ADMITTED COMPACT RUN LIVE: 2ba889b74885441195fd5d075b4ab1d5, task
 N2R-AdmittedCompact-2ba889b74885441195fd5d075b4ab1d5, PID5568 creation1793209871984,
 producer e2a4f0e7343fa5a2f9e609c2aabcdf4caa5773111219c7696a4be895ee1c5342

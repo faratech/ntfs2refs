@@ -10,8 +10,10 @@ if(Test-Path -LiteralPath $root){throw 'Run has state; inspect without redispatc
 $vm=Get-VM -Id $id;$old=@(Get-VMSnapshot -VM $vm|ForEach-Object {$_.Id.ToString()})
 if($vm.State.ToString() -cne 'Off' -or $vm.ParentSnapshotId -ne $parent -or $old.Count -ne 41 -or $vm.MemoryStartup -ne 4GB -or $vm.DynamicMemoryEnabled -or @(Get-VMNetworkAdapter -VM $vm).Count){throw 'Exact isolated OFF rollback branch and all41 checkpoints required.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'CompactCapacity.psm1') -Force
 $capacity=Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)
-Assert-LabCapacity -Capacity $capacity -AdditionalBytes ([long]1.5GB)
+$forecast=Get-CompactExperimentForecast -ObservedOsChildBytes 4139778048 -MaximumJournalBytes 268435456 -ObservationReference 'compact-admitted-20261028/os-child_58A1716C-74D7-4143-A9EB-D03895CE0CAE.avhdx'
+Assert-LabCapacity -Capacity $capacity -AdditionalBytes $forecast.additionalBytes
 $run=[guid]::NewGuid().ToString('N')
 $binary=Join-Path $workspace 'target\release\lab-convert-native-composite.exe'
 $binder=Join-Path $workspace 'target\release\ntfs2refs-bind.exe'
@@ -19,7 +21,7 @@ $binaryPin=(Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant()
 $binderPin=(Get-FileHash -LiteralPath $binder).Hash.ToLowerInvariant()
 New-Item -ItemType Directory -Path $root|Out-Null
 function Save-New([string]$Name,$Value){$file=[IO.File]::Open((Join-Path $root $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 24));$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
-Save-New 'intent.json' @{run_id=$run;vm_id=$id.ToString();parent_id=$parent.ToString();old_checkpoint_ids=$old;source_commit=(& git -C $workspace rev-parse HEAD).Trim();binary_sha256=$binaryPin;binder_sha256=$binderPin;capacity=$capacity;additional_bytes=[long]1.5GB;source_fixture_append_bytes=4194341;source_extent_moves_authorized=$false;shadow_reformat_authorized=$true;source_conversion_requires_live_admission=$true;utc=[DateTime]::UtcNow.ToString('o')}
+Save-New 'intent.json' @{run_id=$run;vm_id=$id.ToString();parent_id=$parent.ToString();old_checkpoint_ids=$old;source_commit=(& git -C $workspace rev-parse HEAD).Trim();binary_sha256=$binaryPin;binder_sha256=$binderPin;capacity=$capacity;additional_bytes=$forecast.additionalBytes;forecast=$forecast;source_fixture_append_bytes=4194341;source_extent_moves_authorized=$false;shadow_reformat_authorized=$true;source_conversion_requires_live_admission=$true;utc=[DateTime]::UtcNow.ToString('o')}
 Copy-Item -LiteralPath $binary -Destination (Join-Path $root 'producer.exe')
 Copy-Item -LiteralPath $binder -Destination (Join-Path $root 'binder.exe')
 Start-VM -VM $vm|Out-Null
@@ -69,14 +71,17 @@ try{
         $exit=$LASTEXITCODE;$ErrorActionPreference='Stop';$log|Out-String|Set-Content -LiteralPath (Join-Path $Stage 'binding.log') -Encoding UTF8
         if($exit -ne 0){throw 'Read-only actual binding refused; preserve log.'}
         $pin=(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant();$out=Join-Path $Stage 'result'
-        $cli=@('--request',$request,'--request-sha256',$pin,'--output',$out,'--acknowledge-enrolled-disposable-devices','--maximum-placement-bytes','12884901888','--maximum-placement-submissions','4096','--maximum-exception-bytes','16777216')
+        $cli=@('--request',$request,'--request-sha256',$pin,'--output',$out,'--acknowledge-enrolled-disposable-devices','--maximum-placement-bytes','12884901888','--maximum-placement-submissions','1024','--maximum-exception-bytes','16777216')
         $argumentText=($cli|ForEach-Object {'"'+$_.Replace('"','\"')+'"'}) -join ' '
         Register-ScheduledTask -TaskName $task -Action (New-ScheduledTaskAction -Execute $binary -Argument $argumentText) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null
         @{task_name=$task;guest_stage=$Stage;run_id=$Run;output_dir=$out;binary=$binary;binary_sha256=$BinaryPin;arguments=$cli;request=$request;request_sha256=$pin;max_journal_bytes=268435456;source_writes_require_live_certificate=$true}
     }
     Save-New 'dispatch.json' $dispatch
     foreach($name in @('conversion.json','binding.json','binding.log')){Copy-Item -FromSession $s -LiteralPath ([IO.Path]::Combine($stage,$name)) -Destination (Join-Path $root $name)}
-    Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 768MB
+    $currentCapacity=Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)
+    $measuredLabGrowth=[Math]::Max([long]0,[long]$currentCapacity.ActualBytes-[long]$capacity.ActualBytes)
+    $remainingForecast=[Math]::Max([long]1GB,[long]$forecast.additionalBytes-$measuredLabGrowth)
+    Assert-LabCapacity -Capacity $currentCapacity -AdditionalBytes $remainingForecast
     Invoke-Command -Session $s -ArgumentList $dispatch.task_name -ScriptBlock {param($Task);if((Get-ScheduledTaskInfo -TaskName $Task).LastRunTime.Year -ge 2000){throw 'Task already ran.'};Start-ScheduledTask -TaskName $Task}
     Save-New 'start.json' @{start_issued_once=$true;utc=[DateTime]::UtcNow.ToString('o')}
     $dispatch|ConvertTo-Json -Compress

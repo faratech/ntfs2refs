@@ -15,10 +15,13 @@ impl CompactConstructionBudget {
         ensure!(
             self.maximum_placement_bytes > 0
                 && self.maximum_placement_bytes <= partition_bytes.saturating_mul(4)
-                && (1..=65536).contains(&self.maximum_placement_submissions)
                 && (1..=64 * 1024 * 1024).contains(&self.maximum_exception_bytes),
             "compact construction resource budget differs"
         );
+        n2r_win32::shadow_native::private_tree::validate_placement_limits(
+            self.maximum_placement_bytes,
+            self.maximum_placement_submissions,
+        )?;
         Ok(())
     }
 }

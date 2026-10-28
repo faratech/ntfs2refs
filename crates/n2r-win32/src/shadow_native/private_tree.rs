@@ -11,6 +11,13 @@ mod system_payloads;
 pub use source_backed::{MountedAllocation, PayloadRoute, SourceBackedRoutes};
 pub use supply::{SupplyPlan, SupplyRange};
 
+pub const MAX_PLACEMENT_SUBMISSIONS: usize = 1024;
+
+/// Check the same limits used by the mover before allocating any placeholders.
+pub fn validate_placement_limits(bytes: u64, submissions: usize) -> io::Result<()> {
+    placement::validate_limits(bytes, submissions)
+}
+
 pub struct PrivateTree {
     // Files close before the volume and privilege lease on drop. No drop path
     // restores public permissions over uninitialized scratch contents.

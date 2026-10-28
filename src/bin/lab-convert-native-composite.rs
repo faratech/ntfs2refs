@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
         acknowledge_enrolled_disposable_devices: bool,
         #[arg(long)]
         maximum_placement_bytes: u64,
-        #[arg(long, default_value_t = 4096)]
+        #[arg(long, default_value_t = n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS)]
         maximum_placement_submissions: usize,
         #[arg(long, default_value_t = 16777216)]
         maximum_exception_bytes: u64,

@@ -31,6 +31,8 @@ fn main() -> anyhow::Result<()> {
         #[arg(long, requires = "materialize_small")]
         prepare_large_tails: bool,
         #[arg(long, requires = "materialize_small")]
+        place_source_prefixes: bool,
+        #[arg(long, requires = "materialize_small")]
         inspection: Option<PathBuf>,
         #[arg(long, requires = "materialize_small")]
         inspection_sha256: Option<String>,
@@ -96,6 +98,7 @@ fn main() -> anyhow::Result<()> {
         "kind":if args.observe_existing {"private-tree-observation-intent"}else{"private-tree-allocation-intent"},
         "observe_existing":args.observe_existing,"allocation_writes_authorized":!args.observe_existing,
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
+        "place_source_prefixes":args.place_source_prefixes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,
         "tree_sha256":args.tree_sha256,"source_writes_authorized":false,
@@ -173,12 +176,26 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             let mut template = general_shadow::allocate_private_tree(&request.pair, &tree)?;
+            let placement = if args.place_source_prefixes {
+                Some(template.place_source_prefixes(&general_shadow::native_inputs(&tree))?)
+            } else {
+                None
+            };
             let mut transfers = Vec::new();
             let mut unverified_prefixes = Vec::new();
             if let (Some(source), Some(raw)) = (source.as_mut(), inspection.as_ref()) {
                 for &(index, offset, length) in &selected {
                     if offset > 0 {
-                        unverified_prefixes.push(template.prepare_unplaced_prefix(index, offset)?);
+                        if args.place_source_prefixes {
+                            template.advance_placed_prefix(index, offset)?;
+                            unverified_prefixes.push(serde_json::json!({"object_index":index,
+                                "storage_valid_prefix_bytes":offset,"native_placements_complete":true,
+                                "source_prefix_contents_verified":false,"private_scratch_only":true,
+                                "conversion_qualified":false}));
+                        } else {
+                            unverified_prefixes
+                                .push(template.prepare_unplaced_prefix(index, offset)?);
+                        }
                     }
                     transfers.push(general_shadow::materialize_private_range(
                         source,
@@ -195,6 +212,7 @@ fn main() -> anyhow::Result<()> {
             let mut report = template.report()?;
             report["source_materialization_ranges"] = serde_json::to_value(transfers)?;
             report["private_unverified_prefixes"] = serde_json::to_value(unverified_prefixes)?;
+            report["source_prefix_placement"] = serde_json::to_value(placement)?;
             report["source_logical_range_bytes_charged"] = budget.reserved_bytes().into();
             report["large_payload_initialization_selected"] = false.into();
             Ok(report)
@@ -212,6 +230,7 @@ fn main() -> anyhow::Result<()> {
         &serde_json::json!({"schema_version":1,"kind":"private-tree-allocation",
         "success":failure.is_none(),"observe_existing":args.observe_existing,
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
+        "place_source_prefixes":args.place_source_prefixes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,
         "request":request,"native":native,"source_image_hash_reverified":false,

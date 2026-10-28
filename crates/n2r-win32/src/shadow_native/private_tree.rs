@@ -3,6 +3,7 @@
 //! exposes placement operations, never source writes or conversion authority.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod placement;
 
 pub struct PrivateTree {
     // Files close before the volume and privilege lease on drop. No drop path
@@ -17,6 +18,9 @@ pub struct PrivateTree {
 }
 
 impl PrivateTree {
+    pub fn place_source_prefixes(&mut self, input: &[Input<'_>]) -> io::Result<serde_json::Value> {
+        placement::run(self, input)
+    }
     /// Apply one placement through the private constructor's state machine.
     pub fn place(
         &mut self,

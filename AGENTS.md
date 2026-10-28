@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+Tree-wide unwritten parking/original-coordinate placement is implemented in
+private_tree/placement.rs and wired to explicit --place-source-prefixes.
+All prefixes park before final moves; scratch excludes desired source ranges
+and first/last MiB, both bitmap views are complete/rechecked, chunks<=512 MiB,
+global submissions/source ranges<=1,024 and retained move evidence<=16 MiB.
+Exact live file name/length/zero-prefix checks and source physical ownership
+non-overlap precede IO. After placement, tail staging uses complete placed-
+prefix coverage. Original-coordinate bytes are NOT verified contents; no
+source write authority or default converter change. Release build passed,
+but no native whole-tree execution yet. Forecast physical movement/scratch
+before running it; existing1-MiB proof cannot qualify this path. All26 snapshots
+remain/VM OFF at4de54cba. No unit tests added/run. Details in
+docs/private-tree-allocation.md. Temporary payload supply, source-backed hybrid,
+source metadata restoration and compact cutover/recovery remain unfinished.
+
 Unwritten planned second-stage repositioning is implemented/native observed
 (e778f7c). PrivateTree can move a fully tracked still-zero-VDL range again,
 preserving left/right offset-adjusted fragments. This is NOT retrying failed

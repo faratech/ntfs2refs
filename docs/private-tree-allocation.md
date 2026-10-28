@@ -1,5 +1,36 @@
 # Allocation-only canonical tree staging
 
+## Tree-wide unwritten placement implementation
+
+`PrivateTree::place_source_prefixes` now parks every user-file full-cluster
+prefix before submitting any final original-coordinate move. Scratch selection
+uses both complete native bitmap views, excludes all desired source ranges and
+the first/last MiB, and requires a sufficiently large free span. No source
+disk is moved. Before IO it checks exact file names/lengths/zero-prefix state,
+source-run alignment/coverage, non-overlapping desired physical ownership and
+global range/move budgets. Partial tails are handled by the separate range
+materializer rather than reinterpreted as complete clusters.
+
+Parking and final moves use512-MiB-or-smaller chunks, at most1,024 submissions
+globally, with16-MiB retained move evidence. Final candidates come from the
+fresh two-view free-subrun planner. Each actual move again checks live occupancy
+and all expected file mappings through the tested unwritten constructor.
+Refusal or incomplete evidence stops the operation; no force/retry path or
+original NTFS mutation exists. The output distinguishes original-coordinate
+byte ranges from payload-content verification, which remains false.
+
+The staging CLI exposes this only with explicit `--place-source-prefixes`.
+It runs placement before small data writes; when combined with tail staging,
+it requires complete placed-prefix coverage instead of the unplaced-scratch
+preparation path. Temporary ranges still require actual data supply and the
+original-coordinate ranges need source-backed hybrid handling. Source metadata
+restoration and required-byte/cutover/recovery qualification remain pending.
+
+Release build passed. This tree-wide path has not yet been run natively; the
+prior1-MiB reposition result does not qualify whole-tree parking. Whole-workflow
+physical movement/scratch forecasting must be admitted before a new native
+run, retaining the host reserve and all evidence. No unit tests added/run.
+
 ## Native partial-tail staging result
 
 Sourcec079e47 adds explicit `--prepare-large-tails` staging. Before a selected

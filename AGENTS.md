@@ -1,5 +1,25 @@
 # ntfs2refs project guidance
 
+INTERRUPT949... STILL LIVE20:17:05Z: same5364/creation1793217057038, wrapper700,
+taskRunning; reads424,355,359,261/write72,672,791B, source3/shadow3. Fresh placement,
+exceptions, owned metadata15 and target freeze completed. Complete-address-space
+delta capture ongoing; no journal/source apply/interruption yet. PeakWS70,320KiB
+(~68.7MiB). Do NOT infer terminal86 or perform preservation/recovery yet.
+Preserve-AdmittedInterruption.ps1 now committedbf27f6c; static parse/review only,
+requires actualterminal86/workerabsence/closedreceipt before Jread, then verifies
+ZERO HND/exactINT01 and full+immutablehashes beforecleanstop/partial45/all44.
+Start-AdmittedCompactRecovery.ps1 committedd30a14f, NOexecution; explicit
+Operation/ExpectedParent/ExpectedCheckpointCount>=45/toolmanifestpin. No Apply,
+activation/restore/repair; derives real prepared pins after originalterminal86.
+Recovery toolset manifest interruptroot/recovery-tools/manifest.json SHA
+59b41fbee5450991b0a5d8d3e4948153d262af010fc1e168541ebfad693b7d9c;
+binaryd48a46b13d9a0c4dfc4c241d038e290a2feb571b1a368fbf54c86f3806302028,
+2,444,288B. Current-source releasebuild succeeded unchanged (build-receipt.json).
+Root retains control; delta_artifact_reader monitors metadata. Native runtime
+outcome/recovery remain pending. Same one50GBcap/floor unchanged; no deletion,
+units or other experiments. main.rs is still originalunstaged. Earlier notes
+below are milestones, not current-state instructions.
+
 NORMAL FRESH NATIVE GATE1 PASSED / CONTROLLED INTERRUPT LIVE (supersedes below):
 Normalac098... converter5e156f... TERMINAL0. Native finalizationSHA
 815faadbf6ad44ef03cf2aa70bc8ee0e04f9e903fe3072fdfa2c30fb80be500a,

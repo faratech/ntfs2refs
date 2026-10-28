@@ -903,3 +903,22 @@ PID was live in source qualification, source frozen read-only, shadow writable
 for metadata. Lab248,120,269,720 bytes, host free97,349,869,568 bytes, cap256 GiB,
 reserve64 GiB, RAM4 GiB. Observe with Collect-StreamingV2Conversion.ps1
 -Candidate candidate11; no cutover/native result is established yet.
+
+Candidate11 cleared the prior audit boundary and entered journal preparation.
+Fresh target proof4304c90613aae5e5db1b76220f69ceb6d070e9f67286ea77361569cdd522a9a3
+confirms retained2,721,431,552 bytes, relocated5,868,785,664, materialized106,
+retained allocator coverage=true and1024-range bound. Source whole-image
+ec5b89de85e24bbb0cdc5f99e907450dc847228ca997465961ab22f89d983dac;
+target9a4e1329a24f86ee5fcc0e5d86eb0d9b76ff6c534657e71662372c3b2fecf760;
+expected tree1602601cde53a7aa78d95e34c3de2ea18f5c0b65ddd8287ece9c84d81cbce215.
+The complete copied target audit has119 events (98,568 bytes), SHA-256
+6ef45652730419a49340bac0cc8dd58aa104520b00854146af06e54f1b508133.
+Final qualification kept its own10 events and returned success/source_admitted.
+No audit information or native query was dropped. These files are under this
+candidate's ignored directory; none is serialized write authority.
+At02:29:33 UTC the same PID3784 was live in journal-preparation/comparing,
+51,967,426,560 of223,338,299,392 scan bytes; source/shadow both OFFLINE|READ_ONLY,
+no source writes yet. Lab248,358,640,428 bytes, host free97,110,806,528 bytes.
+Continue this same task; do not restart it. Stage1 Rust postcheck tools are
+separately pinned for candidate11 (fcd65fdd...c661b1, ffc00654...d5335), with
+no guest execution. Native cutover/application results remain pending.

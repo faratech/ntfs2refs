@@ -1,6 +1,6 @@
 # One clean boot of the saved partial branch, verifying exclusion without
 # mounting the source, changing flags, replaying a journal or retrying a start.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate,
     [ValidateSet('Resume','Rollback')][string]$Branch='Resume')
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'

@@ -1,6 +1,6 @@
 # Clean reboot and original-payload readback after the beta mutation workload.
 # Never force power off, replay recovery, or operate on preserved alpha VMs.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,[switch]$StreamingV2)
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate,[switch]$StreamingV2)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop

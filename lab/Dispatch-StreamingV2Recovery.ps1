@@ -2,7 +2,7 @@
 # This controller never stops workers, sets disk attributes, restores a VM,
 # detaches storage, retries an uncertain dispatch or replays after handoff.
 [CmdletBinding()]param(
-    [Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
+    [Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate,
     [Parameter(Mandatory)][ValidateSet('Resume','Finalize','Rollback')][string]$Operation
 )
 Set-StrictMode -Version Latest

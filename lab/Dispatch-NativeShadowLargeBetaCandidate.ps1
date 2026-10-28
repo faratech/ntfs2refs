@@ -1,6 +1,6 @@
 # A new candidate/run on the existing beta, only after prior workers terminate.
 # No boot, checkpoint restore, disk formatting or source extent rearrangement.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate)
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop

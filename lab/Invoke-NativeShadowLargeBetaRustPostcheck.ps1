@@ -1,7 +1,7 @@
 # Exact beta end-to-end checks using pinned Rust executables. Run phases once,
 # in order, only after terminal successful conversion. No recovery replay.
 [CmdletBinding()]param(
-    [Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
+    [Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate,
     [Parameter(Mandatory)][ValidateSet('BeforeMutation','AfterPreservationBoot','Mutate','AfterMutation','AfterReboot')][string]$Phase,
     [ValidateRange(1,9)][int]$Attempt=1,
     [switch]$StreamingV2,

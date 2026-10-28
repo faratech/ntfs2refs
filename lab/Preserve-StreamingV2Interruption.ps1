@@ -1,6 +1,6 @@
 # Preserve the terminal pre-handoff partial image. No recovery, force shutdown,
 # disk-state repair, checkpoint deletion, restore or second producer dispatch.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate)
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs';$root=Join-Path $workspace ('.lab\hyperv\streaming-v2-20261027\'+$Candidate)

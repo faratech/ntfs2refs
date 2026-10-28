@@ -1,5 +1,5 @@
 # Read-only observation of one recorded beta run; never starts or repairs work.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate)
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop

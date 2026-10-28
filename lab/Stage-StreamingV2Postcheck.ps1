@@ -1,5 +1,5 @@
 # Pin host-built Rust observers; this does not execute anything in the guest.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate,
     [ValidateRange(1,9)][int]$ToolsetVersion=1)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'

@@ -1,6 +1,6 @@
 # Measure the already frozen images after a terminal journal-budget refusal.
 # No disk-state changes, source writes, journal creation, boot or replay.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate)
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs';$root=Join-Path $workspace ('.lab\hyperv\streaming-v2-20261027\'+$Candidate)

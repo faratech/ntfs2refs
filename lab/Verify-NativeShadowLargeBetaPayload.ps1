@@ -1,6 +1,6 @@
 # Independent mounted-driver payload readback after a terminal successful run.
 # No raw writes, journal replay, task dispatch, reboot or availability changes.
-[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,[switch]$StreamingV2)
+[CmdletBinding()]param([Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate,[switch]$StreamingV2)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop

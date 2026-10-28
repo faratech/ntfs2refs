@@ -1,7 +1,7 @@
 # Read-only observation of one already recorded recovery task. Never dispatch,
 # alter availability, retry an operation or infer exit from an observation timeout.
 [CmdletBinding()]param(
-    [Parameter(Mandatory)][ValidatePattern('^candidate[2-9][0-9]*$')][string]$Candidate,
+    [Parameter(Mandatory)][ValidatePattern('^candidate(?:[2-9]|[1-9][0-9]+)$')][string]$Candidate,
     [Parameter(Mandatory)][ValidateSet('Resume','Finalize','Rollback')][string]$Operation
 )
 Set-StrictMode -Version Latest

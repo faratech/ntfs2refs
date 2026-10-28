@@ -35,6 +35,10 @@ fn main() -> anyhow::Result<()> {
         /// semantic verification. This never authorizes conversion writes.
         #[arg(long)]
         diagnose_only: bool,
+        /// Require admitted retained bytes to keep their original physical
+        /// addresses in fresh native same-file retrieval mappings.
+        #[arg(long, conflicts_with = "diagnose_only")]
+        verify_retained_positions: bool,
         /// Pinned report from the bounded ReFS mutation workload. Allows only
         /// its exact recorded root basic-info change after reboot.
         #[arg(
@@ -239,6 +243,31 @@ fn main() -> anyhow::Result<()> {
     };
     let observation_complete = attempted.is_ok();
     let ordinary_tree_verified = !args.diagnose_only && observation_complete;
+    let retained_positions = if args.verify_retained_positions {
+        attempted
+            .as_ref()
+            .map_err(|error| error.to_string())
+            .and_then(|native| {
+                let tree = shadow_tree::Tree {
+                    profile: resources.ordinary_shadow_profile(),
+                    objects: expected.objects.clone(),
+                    logical_bytes: expected.logical_bytes,
+                    internal_replacement_pending: expected.internal_replacement_pending.clone(),
+                };
+                ntfs2refs::tree_placement::mappings_from_native(&tree, &native.native)
+                    .and_then(|mappings| {
+                        ntfs2refs::tree_placement::verify_native_retained_positions(
+                            &tree,
+                            &mappings,
+                            &request.comparison,
+                        )
+                    })
+                    .map(Some)
+                    .map_err(|error| error.to_string())
+            })
+    } else {
+        Ok(None)
+    };
     let mount_paths_preserved = request.expected_mount_paths.as_ref().map(|expected| {
         let before: BTreeSet<_> = expected.iter().map(|path| path.to_lowercase()).collect();
         mount_paths.as_ref().is_some_and(|observation| {
@@ -250,18 +279,22 @@ fn main() -> anyhow::Result<()> {
             before == after
         })
     });
-    let success = ordinary_tree_verified && mount_paths_preserved != Some(false);
+    let success = ordinary_tree_verified
+        && mount_paths_preserved != Some(false)
+        && retained_positions.is_ok();
     let error = if args.diagnose_only && observation_complete {
         Some("diagnostic native observation only; preservation comparison not passed".into())
     } else {
-        attempted
-            .as_ref()
-            .err()
-            .map(ToString::to_string)
-            .or_else(|| {
-                (mount_paths_preserved == Some(false))
-                    .then(|| "converted ReFS mount paths differ from NTFS source".into())
-            })
+        retained_positions.as_ref().err().cloned().or_else(|| {
+            attempted
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .or_else(|| {
+                    (mount_paths_preserved == Some(false))
+                        .then(|| "converted ReFS mount paths differ from NTFS source".into())
+                })
+        })
     };
     save(
         &args.output,
@@ -272,6 +305,7 @@ fn main() -> anyhow::Result<()> {
             "native":attempted.ok(),"error":error,
             "events":events,"source_payload_writes":0,
             "ordinary_tree_verified":ordinary_tree_verified,
+            "retained_physical_positions":retained_positions.ok().flatten(),
             "diagnostic_only":args.diagnose_only,"observation_complete":observation_complete,
             "mutation_report_sha256":args.mutation_report_sha256,
             "post_mutation_root_policy":mutation.is_some(),

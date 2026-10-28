@@ -11,6 +11,8 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::{Read, Seek},
 };
+mod native_retention;
+pub use native_retention::{NativeRetentionProof, verify_native_retained_positions};
 pub struct Mapping {
     pub record_number: u64,
     pub sequence_number: u16,

@@ -110,6 +110,9 @@ try{
         }else{
             $binary=Join-Path $Tools 'lab-verify-general-converted.exe'
             $arguments+=@('--expectation',$expectation,'--expectation-sha256',$treePin)
+            if($PhaseName-ceq'BeforeMutation'-and@($requestValue.comparison.retained_ranges).Count-gt0){
+                $arguments+='--verify-retained-positions'
+            }
             if($PhaseName-in@('AfterMutation','AfterReboot')){
                 $proof=ConvertFrom-Json -InputObject $MutationJson
                 $arguments+=@('--mutation-report',$proof.guest_report,'--mutation-report-sha256',$proof.report_sha256)

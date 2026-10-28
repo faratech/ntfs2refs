@@ -65,6 +65,9 @@ fn main() -> anyhow::Result<()> {
         journal_enrollment_label: Option<String>,
         #[arg(long)]
         verify_existing_shadow: bool,
+        /// Bind an already prepared shadow through a read-only mount.
+        #[arg(long, requires = "verify_existing_shadow")]
+        read_only_shadow: bool,
         #[arg(long)]
         output: PathBuf,
         #[arg(long)]
@@ -158,7 +161,18 @@ fn main() -> anyhow::Result<()> {
         );
     }
     let source = discovery::discover(&args.source, Role::Source)?;
-    let shadow = discovery::discover(&args.shadow, Role::Shadow)?;
+    ensure!(
+        !args.read_only_shadow || args.experimental_streaming_payload,
+        "read-only shadow binding requires the explicit streaming profile"
+    );
+    let shadow = discovery::discover(
+        &args.shadow,
+        if args.read_only_shadow {
+            Role::ShadowReadOnly
+        } else {
+            Role::Shadow
+        },
+    )?;
     let journal = discovery::discover(
         &args.journal,
         Role::Journal {

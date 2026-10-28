@@ -12,6 +12,7 @@ use std::io;
 pub enum Role {
     Source,
     Shadow,
+    ShadowReadOnly,
     Journal { allow_additional_partitions: bool },
 }
 
@@ -258,11 +259,11 @@ pub fn binding_from_evidence(
     require(
         e.disk_attributes.len() == 16
             && u32_at(&e.disk_attributes, 0)? == 16
-            && u64_at(&e.disk_attributes, 8)? == 0,
-        "conversion-request discovery requires an online writable disk",
+            && u64_at(&e.disk_attributes, 8)? == if role == Role::ShadowReadOnly { 2 } else { 0 },
+        "conversion-request discovery disk attributes differ from the explicit role",
     )?;
     match role {
-        Role::Source | Role::Shadow => {
+        Role::Source | Role::Shadow | Role::ShadowReadOnly => {
             require(
                 number != windows_disk,
                 "Windows OS disk is excluded from source/shadow roles",

@@ -82,7 +82,7 @@ try{
         [string[]]$bindArguments=@('--source','F:\','--shadow','R:\','--journal','J:\','--experiment-id',$Run,
             '--experimental-streaming-payload','--experimental-large-tree','--experimental-large-journal',
             '--max-journal-bytes',[string]$JournalBudgetBytes,'--output',$request,'--evidence',$discovery)
-        if($Reuse){$bindArguments+='--verify-existing-shadow'}
+        if($Reuse){$bindArguments+=@('--verify-existing-shadow','--read-only-shadow')}
         $bindArguments|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $Stage 'bind-arguments.json') -Encoding utf8
         $log=@(& (Join-Path $Stage 'ntfs2refs-bind.exe') @bindArguments 2>&1)
         $exit=$LASTEXITCODE;$ErrorActionPreference='Stop'

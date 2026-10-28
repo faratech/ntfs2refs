@@ -3,11 +3,13 @@
 //! exposes placement operations, never source writes or conversion authority.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod enrollment;
 mod metadata;
 mod placement;
 mod source_backed;
 mod supply;
 mod system_payloads;
+pub use enrollment::{ConstructionEnrollment, enroll};
 pub use source_backed::{MountedAllocation, PayloadRoute, SourceBackedRoutes};
 pub use supply::{SupplyPlan, SupplyRange};
 
@@ -39,6 +41,7 @@ pub struct PrivateTree {
     // Directories/root stay open without DELETE sharing for the whole session.
     metadata_targets: BTreeMap<usize, File>,
     metadata_input_sha256: [u8; 32],
+    construction_enrollment: Option<serde_json::Value>,
 }
 
 impl PrivateTree {
@@ -339,6 +342,7 @@ impl PrivateTree {
         Ok(
             serde_json::json!({"schema_version":1,"kind":"native-private-tree-allocation-template",
             "pair":self.pair,"source_before":self.source_before,"objects":self.initial_objects,
+            "construction_enrollment":self.construction_enrollment,
             "files":files,"events":self.events,"privileges":self.privileges.audit(),
             "user_payload_bytes_read":readback_bytes,
             "user_payload_bytes_written":materialized_bytes,
@@ -523,12 +527,34 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
             .trim_matches(['{', '}'])
             .to_ascii_lowercase()
             != "c0f2cd39-ad3d-484e-9990-0e6eba74485f"
-        || input.is_empty()
+    {
+        return Err(invalid("enrolled private tree scope differs"));
+    }
+    allocate_checked(pair, input, None)
+}
+
+/// Consume actual selected-device enrollment into the same owned constructor.
+/// This does not issue source admission or authorize source raw writes.
+pub fn allocate_enrolled(
+    mut enrollment: ConstructionEnrollment<'_>,
+    input: &[Input<'_>],
+) -> io::Result<PrivateTree> {
+    enrollment.revalidate()?;
+    let pair = enrollment.pair.clone();
+    allocate_checked(&pair, input, Some(enrollment))
+}
+
+fn allocate_checked(
+    pair: &GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    enrollment: Option<ConstructionEnrollment<'_>>,
+) -> io::Result<PrivateTree> {
+    if input.is_empty()
         || input.len() > 1280
         || !input[0].directory
         || !input[0].components.is_empty()
     {
-        return Err(invalid("enrolled private tree scope differs"));
+        return Err(invalid("private tree root or object bound differs"));
     }
     let mut names = BTreeSet::new();
     let mut directories = BTreeSet::new();
@@ -579,12 +605,6 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
     {
         return Err(invalid("excluded source and writable ReFS shadow required"));
     }
-    let privileges = Privileges::enable_for(&[
-        "SeBackupPrivilege",
-        "SeRestorePrivilege",
-        "SeSecurityPrivilege",
-        "SeManageVolumePrivilege",
-    ])?;
     let root = format!("{}\\", pair.shadow.volume_path()?);
     let (mut sectors, mut sector_bytes, mut free, mut clusters) = (0, 0, 0, 0);
     let root_name = wide(&root);
@@ -606,7 +626,26 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
             "private tree requires a 4-KiB ReFS allocation unit",
         ));
     }
-    let root_handle = open(&root, true, true)?;
+    let (privileges, root_handle, enrolled_volume, construction_enrollment) =
+        if let Some(mut owned) = enrollment {
+            owned.revalidate()?;
+            let observed = owned.observation();
+            events.append(&mut owned.events);
+            (
+                owned.privileges,
+                owned.root,
+                Some(owned.volume),
+                Some(observed),
+            )
+        } else {
+            let privileges = Privileges::enable_for(&[
+                "SeBackupPrivilege",
+                "SeRestorePrivilege",
+                "SeSecurityPrivilege",
+                "SeManageVolumePrivilege",
+            ])?;
+            (privileges, open(&root, true, true)?, None, None)
+        };
     let initial = enumerate(&root_handle)?;
     if initial.iter().any(|entry| {
         entry.name_utf16 != [46]
@@ -637,11 +676,15 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
     // refuse. Target-only IndexerVolumeGuid normalization is already scoped to
     // these enrolled disks and never touches the excluded source.
     let system_identities = existing_system_entries(&root, &initial, input, true, &mut events)?;
-    let volume = File::options()
-        .read(true)
-        .write(true)
-        .share_mode(3)
-        .open(pair.shadow.volume_path()?)?;
+    let volume = if let Some(volume) = enrolled_volume {
+        volume
+    } else {
+        File::options()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .open(pair.shadow.volume_path()?)?
+    };
     pair.shadow
         .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
     let mut files = BTreeMap::new();
@@ -739,6 +782,7 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
         system_payloads_complete: false,
         metadata_targets,
         metadata_input_sha256: metadata::input_digest(input),
+        construction_enrollment,
     };
     tree.require_source_excluded()?;
     Ok(tree)

@@ -37,6 +37,23 @@ use windows_sys::Win32::{
     System::IO::DeviceIoControl,
 };
 
+// Shared native format check for expanded observations and live construction.
+fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) -> io::Result<u64> {
+    let data = ctl(volume, 0x000902d8, &[], 256)?;
+    if data.len() < 64
+        || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))
+        || layout::u32_at(&data, 4)? != 3
+        || layout::u32_at(&data, 8)? != 14
+        || layout::u64_at(&data, 24)? != partition_bytes / 512
+        || layout::u64_at(&data, 32)? != partition_bytes / 4096
+        || layout::u32_at(&data, 56)? != 512
+        || layout::u32_at(&data, 60)? != 4096
+    {
+        return Err(invalid("protected ReFS volume-data profile differs"));
+    }
+    Ok(layout::u64_at(&data, 32)?)
+}
+
 pub struct Input<'a> {
     pub components: &'a [String],
     pub directory: bool,
@@ -2867,23 +2884,10 @@ fn run_role_profile(
         }
     }
     let clusters = if use_volume_data {
-        let data = ctl(volume, 0x000902d8, &[], 256)?;
-        if data.len() < 64
-            || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))
-            || layout::u32_at(&data, 4)? != 3
-            || layout::u32_at(&data, 8)? != 14
-            || layout::u64_at(&data, 24)? != binding.identity.partition_bytes / 512
-            || layout::u64_at(&data, 32)? != binding.identity.partition_bytes / 4096
-        {
-            return Err(invalid("protected ReFS volume-data profile differs"));
-        }
-        bps = layout::u32_at(&data, 56)?;
-        let cluster_bytes = layout::u32_at(&data, 60)?;
-        if bps != 512 || cluster_bytes != 4096 {
-            return Err(invalid("protected ReFS allocation geometry differs"));
-        }
-        spc = cluster_bytes / bps;
-        layout::u64_at(&data, 32)?
+        let clusters = query_refs_314_volume_data(volume, binding.identity.partition_bytes)?;
+        bps = 512;
+        spc = 8;
+        clusters
     } else {
         u64::from(legacy_clusters)
     };

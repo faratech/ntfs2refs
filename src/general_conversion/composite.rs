@@ -12,7 +12,7 @@ pub(crate) fn convert_composite_existing_experimental(
     output: &Path,
     interrupt_after_writes: Option<u32>,
 ) -> Result<()> {
-    convert_composite(request, output, None, interrupt_after_writes)
+    convert_composite(request, output, None, interrupt_after_writes, false)
 }
 
 pub(crate) fn convert_composite_fresh_experimental(
@@ -22,7 +22,77 @@ pub(crate) fn convert_composite_fresh_experimental(
     interrupt_after_writes: Option<u32>,
 ) -> Result<()> {
     construction.validate(request.pair.source.identity.partition_bytes)?;
-    convert_composite(request, output, Some(construction), interrupt_after_writes)
+    convert_composite(
+        request,
+        output,
+        Some(construction),
+        interrupt_after_writes,
+        false,
+    )
+}
+
+pub(super) fn convert_compact_selected(
+    request: &Request,
+    construction: qualification::CompactConstructionBudget,
+    output: &Path,
+) -> Result<()> {
+    convert_composite(request, output, Some(construction), None, true)
+}
+
+fn selected_device_preflight(request: &Request) -> Result<serde_json::Value> {
+    use n2r_win32::discovery::{self, Role};
+    let source = discovery::discover(
+        &format!("{}\\", request.pair.source.volume_path()?),
+        Role::Source,
+    )?;
+    let shadow = discovery::discover(
+        &format!("{}\\", request.pair.shadow.volume_path()?),
+        Role::Shadow,
+    )?;
+    let journal = discovery::discover(
+        &format!("{}\\", request.journal.disk.volume_path()?),
+        Role::Journal {
+            allow_additional_partitions: request.journal.allow_additional_partitions,
+        },
+    )?;
+    ensure!(
+        source.binding == request.pair.source
+            && shadow.binding == request.pair.shadow
+            && journal.binding == request.journal.disk
+            && source.filesystem == "NTFS"
+            && shadow.filesystem == "ReFS"
+            && shadow.label == "n2r-retained-shadow"
+            && shadow.bytes_per_sector == 512
+            && shadow.sectors_per_cluster == 8
+            && matches!(journal.filesystem.as_str(), "NTFS" | "ReFS"),
+        "selected source/shadow/journal native identities or filesystems differ"
+    );
+    let mut events = Vec::new();
+    let mut reader = n2r_win32::GeneralPartitionReader::open(source.binding.clone(), &mut events)?;
+    let mut boot = [0u8; 512];
+    reader.read_exact(&mut boot)?;
+    let geometry = crate::ntfs_inspect::inspect_boot_sector(&boot, reader.byte_len())?;
+    ensure!(
+        request
+            .source_resource_profile
+            .unwrap_or_default()
+            .supports_source_geometry(&geometry),
+        "selected source geometry exceeds the compact profile"
+    );
+    reader.revalidate_route(&mut events)?;
+    let journal_space = discovery::observe_volume_space(&journal.volume_guid_path)?;
+    ensure!(
+        journal_space.available_bytes_to_caller
+            >= n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE + 8192,
+        "independent journal lacks minimum preparation space"
+    );
+    Ok(
+        serde_json::json!({"kind":"read-only-selected-compact-preflight",
+        "source":source,"shadow":shadow,"journal":journal,"source_geometry":geometry,
+        "source_geometry_events":events,"journal_space":journal_space,
+        "source_frozen":false,"source_admitted":false,"execution_authorized":false,
+        "space_reserved":false}),
+    )
 }
 
 fn convert_composite(
@@ -30,6 +100,7 @@ fn convert_composite(
     output: &Path,
     construction: Option<qualification::CompactConstructionBudget>,
     interrupt_after_writes: Option<u32>,
+    selected_devices: bool,
 ) -> Result<()> {
     request.validate()?;
     ensure!(
@@ -40,7 +111,15 @@ fn convert_composite(
         interrupt_after_writes.is_none_or(|writes| (1..=4096).contains(&writes)),
         "composite interruption count must be 1..=4096"
     );
+    let selected_preflight = if selected_devices {
+        Some(selected_device_preflight(request)?)
+    } else {
+        None
+    };
     qualification::create_output(output)?;
+    if let Some(observation) = selected_preflight {
+        qualification::save(output, "selected-device-preflight.json", &observation)?;
+    }
     qualification::save(
         output,
         "conversion-intent.json",
@@ -48,6 +127,7 @@ fn convert_composite(
             "schema_version":1,"kind":"experimental-live-composite-conversion-intent",
             "request":request,"interrupt_after_writes":interrupt_after_writes,
             "construction_budget":construction,
+            "selected_device_construction_enrollment":selected_devices,
             "requires_original_live_source_certificate":true,
             "source_admitted":false,"execution_authorized":false,
             "general_conversion_qualified":false,
@@ -75,16 +155,28 @@ fn convert_composite(
             mount_paths,
             source_label,
         } = if let Some(budget) = construction {
-            qualification::prepare_composite_fresh(
-                request.pair.clone(),
-                &qualification_root,
-                &packed_path,
-                maximum,
-                profile,
-                request.source_resource_profile.unwrap_or_default(),
-                budget,
-                |_, _, _| Ok(()),
-            )?
+            if selected_devices {
+                qualification::prepare_composite_fresh_selected(
+                    request.pair.clone(),
+                    &qualification_root,
+                    &packed_path,
+                    maximum,
+                    profile,
+                    request.source_resource_profile.unwrap_or_default(),
+                    budget,
+                )?
+            } else {
+                qualification::prepare_composite_fresh(
+                    request.pair.clone(),
+                    &qualification_root,
+                    &packed_path,
+                    maximum,
+                    profile,
+                    request.source_resource_profile.unwrap_or_default(),
+                    budget,
+                    |_, _, _| Ok(()),
+                )?
+            }
         } else {
             qualification::prepare_composite_existing(
                 request.pair.clone(),

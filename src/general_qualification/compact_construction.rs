@@ -34,6 +34,7 @@ pub(super) fn construct(
     output: &Path,
     limits: CompactConstructionBudget,
     resources: crate::ntfs_admission::ResourceProfile,
+    selected_devices: bool,
 ) -> Result<GeneralFrozenPartition> {
     use crate::ntfs_admission::ResourceProfile;
     ensure!(
@@ -54,7 +55,8 @@ pub(super) fn construct(
         &serde_json::json!({
             "kind":"fresh-private-native-composite-construction", "pair":pair,
             "budget":limits,"source_before":source_before,"source_payload_writes_authorized":false,
-            "full_cluster_payload_initialization":false,"enrolled_disposable_constructor_required":true,
+            "full_cluster_payload_initialization":false,
+            "construction_enrollment":if selected_devices {"original-freeze-and-selected-shadow"} else {"legacy-enrolled-laboratory"},
         }),
     )?;
     let selected: Vec<_> = tree
@@ -136,7 +138,11 @@ pub(super) fn construct(
         );
     }
     let input = general_shadow::native_inputs(tree);
-    let mut private = general_shadow::allocate_private_tree(pair, tree)?;
+    let mut private = if selected_devices {
+        general_shadow::allocate_private_tree_enrolled(source, pair, tree)?
+    } else {
+        general_shadow::allocate_private_tree(pair, tree)?
+    };
     let placement = private.place_source_prefixes_with_limits(
         &input,
         limits.maximum_placement_bytes,

@@ -82,6 +82,24 @@ pub fn allocate_private_tree(
     )?)
 }
 
+/// Construct on selected dedicated disks only after live enrollment from the
+/// original observed source freeze. Neither this capability nor its report is
+/// a substitute for the later full source certificate and target comparison.
+pub fn allocate_private_tree_enrolled(
+    source: &n2r_win32::GeneralFrozenPartition,
+    pair: &GeneralSourceShadowBinding,
+    tree: &crate::shadow_tree::Tree,
+) -> Result<n2r_win32::shadow_native::private_tree::PrivateTree> {
+    crate::shadow_tree::ExpectedTree::from(tree).validate_with_resource_profile(
+        crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
+    )?;
+    let enrollment = n2r_win32::shadow_native::private_tree::enroll(source, pair)?;
+    Ok(n2r_win32::shadow_native::private_tree::allocate_enrolled(
+        enrollment,
+        &native_inputs(tree),
+    )?)
+}
+
 /// Copy only bounded recognized system streams; large user streams remain
 /// source-backed. All source bytes are checked through the existing NTFS reader.
 #[cfg(windows)]

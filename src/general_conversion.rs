@@ -94,6 +94,25 @@ pub fn convert(request: &Request, output: &Path) -> Result<()> {
     convert_profile(request, output, Interruption::None, false)
 }
 
+/// Explicit experimental compact backend for selected dedicated data disks.
+/// Construction enrollment is observed from this process's original frozen
+/// source and fresh native ReFS shadow. Source raw writes still require the
+/// original live certificate, full candidate comparison and durable journal.
+pub fn convert_compact_experimental(
+    request: &Request,
+    budget: qualification::CompactConstructionBudget,
+    output: &Path,
+) -> Result<()> {
+    request.validate()?;
+    budget.validate(request.pair.source.identity.partition_bytes)?;
+    ensure!(
+        request.source_resource_profile == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+            && !request.verify_existing_shadow,
+        "selected compact conversion requires the explicit streaming profile and a fresh shadow"
+    );
+    composite::convert_compact_selected(request, budget, output)
+}
+
 /// Explicit owning-guest exercise: synchronize the known small source cache
 /// after fresh source freeze, then run the unchanged admission/journal gates.
 pub fn convert_with_existing_cache_sync(request: &Request, output: &Path) -> Result<()> {

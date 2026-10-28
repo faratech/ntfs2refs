@@ -25,6 +25,7 @@ use std::{
 mod composite;
 pub(crate) use composite::{
     QualifiedCompositeTree, prepare_composite_existing, prepare_composite_fresh,
+    prepare_composite_fresh_selected,
 };
 mod compact_construction;
 pub use compact_construction::CompactConstructionBudget;

@@ -40,6 +40,7 @@ pub(crate) fn prepare_composite_existing(
         profile,
         resources,
         None,
+        false,
         after_source_freeze,
     )
 }
@@ -65,7 +66,33 @@ pub(crate) fn prepare_composite_fresh(
         profile,
         resources,
         Some(budget),
+        false,
         after_source_freeze,
+    )
+}
+
+/// Fresh construction with actual selected-device enrollment. The original
+/// source assessment and observed freeze remain owned by this process.
+pub(crate) fn prepare_composite_fresh_selected(
+    pair: GeneralSourceShadowBinding,
+    output: &Path,
+    packed_path: &Path,
+    max_change_bytes: u64,
+    profile: JournalProfile,
+    resources: crate::ntfs_admission::ResourceProfile,
+    budget: CompactConstructionBudget,
+) -> Result<QualifiedCompositeTree> {
+    budget.validate(pair.source.identity.partition_bytes)?;
+    prepare_composite(
+        pair,
+        output,
+        packed_path,
+        max_change_bytes,
+        profile,
+        resources,
+        Some(budget),
+        true,
+        |_, _, _| Ok(()),
     )
 }
 
@@ -77,6 +104,7 @@ fn prepare_composite(
     profile: JournalProfile,
     resources: crate::ntfs_admission::ResourceProfile,
     construction: Option<CompactConstructionBudget>,
+    selected_devices: bool,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
 ) -> Result<QualifiedCompositeTree> {
     pair.validate_with_resource_profile(resources.native_profile())?;
@@ -129,6 +157,7 @@ fn prepare_composite(
                 output,
                 budget,
                 resources,
+                selected_devices,
             )?
         } else {
             let state =

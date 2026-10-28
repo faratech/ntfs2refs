@@ -78,7 +78,19 @@ impl Request {
 }
 
 pub fn convert(request: &Request, output: &Path) -> Result<()> {
-    convert_profile(request, output, Interruption::None)
+    convert_profile(request, output, Interruption::None, false)
+}
+
+/// Explicit owning-guest exercise: synchronize the known small source cache
+/// after fresh source freeze, then run the unchanged admission/journal gates.
+pub fn convert_with_existing_cache_sync(request: &Request, output: &Path) -> Result<()> {
+    ensure!(
+        request.verify_existing_shadow
+            && request.source_resource_profile
+                == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2),
+        "cache synchronization requires explicit streaming shadow reuse"
+    );
+    convert_profile(request, output, Interruption::None, true)
 }
 
 #[derive(Clone, Copy)]
@@ -96,14 +108,14 @@ pub fn convert_interrupted(request: &Request, output: &Path, writes: u32) -> Res
         (1..=4096).contains(&writes),
         "interruption count must be 1..=4096"
     );
-    convert_profile(request, output, Interruption::AfterWrites(writes))
+    convert_profile(request, output, Interruption::AfterWrites(writes), false)
 }
 
 /// Laboratory-only process death after the real source-frozen artifact is
 /// durable, with the native source handle still live and before target work.
 /// The production conversion CLI does not expose this interruption point.
 pub fn convert_interrupted_after_source_freeze(request: &Request, output: &Path) -> Result<()> {
-    convert_profile(request, output, Interruption::AfterSourceFreeze)
+    convert_profile(request, output, Interruption::AfterSourceFreeze, false)
 }
 
 fn interrupt_after_source_freeze(
@@ -150,7 +162,12 @@ fn interrupt_after_source_freeze(
     std::process::exit(87);
 }
 
-fn convert_profile(request: &Request, output: &Path, interruption: Interruption) -> Result<()> {
+fn convert_profile(
+    request: &Request,
+    output: &Path,
+    interruption: Interruption,
+    cache_sync: bool,
+) -> Result<()> {
     let interrupt_after_writes = match interruption {
         Interruption::AfterWrites(writes) => Some(writes),
         Interruption::None | Interruption::AfterSourceFreeze => None,
@@ -168,6 +185,16 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
     }
     qualification::create_output(output)?;
     qualification::save(output, "conversion-intent.json", request)?;
+    if cache_sync {
+        qualification::save(
+            output,
+            "existing-shadow-refresh-policy.json",
+            &serde_json::json!({
+                "known_source_cache_sync":true,"large_payload_rewrite":false,
+                "requires_fresh_source_and_target_admission":true,"execution_authorized":false
+            }),
+        )?;
+    }
     let mut phase = "qualification";
     let attempted = (|| -> Result<()> {
         let profile = JournalProfile::from_schema(request.schema_version)?;
@@ -183,6 +210,7 @@ fn convert_profile(request: &Request, output: &Path, interruption: Interruption)
             max_change_bytes,
             profile,
             request.source_resource_profile.unwrap_or_default(),
+            cache_sync,
             |source, source_sha256, artifact_sha256| {
                 if matches!(interruption, Interruption::AfterSourceFreeze) {
                     interrupt_after_source_freeze(

@@ -157,6 +157,7 @@ pub(crate) fn prepare_with_budget(
         max_change_bytes,
         JournalProfile::LegacyV1,
         crate::ntfs_admission::ResourceProfile::AlphaV1,
+        false,
         |_, _, _| Ok(()),
     )
 }
@@ -171,6 +172,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
     max_change_bytes: u64,
     profile: JournalProfile,
     resources: crate::ntfs_admission::ResourceProfile,
+    cache_sync: bool,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
 ) -> Result<QualifiedTree> {
     pair.validate_with_resource_profile(resources.native_profile())?;
@@ -295,6 +297,37 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
         let expected_sha256 = save(output, "expectation.json", &expected)?;
         phase = "native-shadow-construction";
         let input = general_shadow::native_inputs(&tree);
+        if cache_sync {
+            ensure!(
+                verify_existing
+                    && resources
+                        == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
+                "small-cache synchronization requires explicit v2 reuse"
+            );
+            phase = "existing-shadow-small-cache-refresh";
+            let cache = tree
+                .objects
+                .iter()
+                .find(|o| o.path == ["System Volume Information", "IndexerVolumeGuid"])
+                .context("fresh source has no indexer cache to synchronize")?;
+            let mut payload = Vec::new();
+            let copied = ntfs_inspect::copy_plain_stream(
+                &mut source,
+                &raw,
+                cache.record_number,
+                76,
+                &mut payload,
+            )?;
+            ensure!(
+                payload.len() == 76 && Some(&copied.sha256) == cache.sha256.as_ref(),
+                "fresh source cache bytes differ"
+            );
+            let refreshed = shadow_native::cache_refresh::run(&pair, &input, &payload, |a, b| {
+                ntfs_attestation::same_security(a, b)
+                    .map_err(|error| std::io::Error::other(error.to_string()))
+            })?;
+            save(output, "native-shadow-cache-refresh.json", &refreshed)?;
+        }
         let limits = resources.limits();
         let mut transfer_budget = ntfs_inspect::StreamTransferBudget::new(
             limits.maximum_stream_bytes,
@@ -387,7 +420,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             max_change_bytes,
             profile,
             resources,
-            reuse_frozen,
+            reuse_frozen || cache_sync,
             &mut events,
         )?;
         if reuse_frozen {

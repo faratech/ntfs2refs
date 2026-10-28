@@ -291,7 +291,13 @@ pub fn verify_and_freeze(
             resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
             "frozen-shadow reuse requires the explicit streaming profile"
         );
-        GeneralFrozenPartition::reopen(pair.shadow.clone(), events)?
+        match n2r_win32::observe_general_disk_state_readonly(pair.shadow.clone(), events)?
+            .disk_attributes
+        {
+            3 => GeneralFrozenPartition::reopen(pair.shadow.clone(), events)?,
+            0 => GeneralFrozenPartition::isolate(pair.shadow.clone(), events)?,
+            _ => anyhow::bail!("existing shadow must be writable or persistently excluded"),
+        }
     } else {
         GeneralFrozenPartition::isolate(pair.shadow.clone(), events)?
     };

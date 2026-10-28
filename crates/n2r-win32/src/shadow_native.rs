@@ -2,6 +2,7 @@
 //! source disk, manufactures ReFS bytes or grants conversion authority.
 mod evacuation;
 pub mod valid_data_probe;
+pub mod cache_refresh;
 use crate::{
     attestation::{PrivilegeState, Snapshot},
     attestation_native::{Privileges, snapshot},

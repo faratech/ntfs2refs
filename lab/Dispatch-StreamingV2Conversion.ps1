@@ -1,7 +1,8 @@
 # One public conversion on the separately enrolled streaming fixture.
 [CmdletBinding()]param([ValidatePattern('^candidate[1-9][0-9]*$')][string]$Candidate='candidate1',
     [ValidateRange(0,4096)][int]$InterruptAfterWrites=0,[switch]$Retention8G,
-    [ValidateRange(32,7168)][int]$JournalBudgetMiB=1024,[switch]$FrozenShadowReuse)
+    [ValidateRange(32,7168)][int]$JournalBudgetMiB=1024,[switch]$FrozenShadowReuse,
+    [switch]$RefreshExistingSystemCache)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop
@@ -13,6 +14,10 @@ $baseline=Get-Content -LiteralPath (Join-Path $fixtureRoot 'baseline.json') -Raw
 if($FrozenShadowReuse){
     if(-not$Retention8G-or$InterruptAfterWrites-ne0-or$JournalBudgetMiB-ne1536){throw 'Frozen reuse is enrolled only for the corrected 1536-MiB retention case.'}
     $baseline=Get-Content -LiteralPath (Join-Path $root 'candidate5\valid-data-probe\failed-checkpoint.json') -Raw|ConvertFrom-Json
+}
+if($RefreshExistingSystemCache){
+    if(-not$FrozenShadowReuse){throw 'Cache refresh requires the enrolled existing-shadow path.'}
+    $baseline=Get-Content -LiteralPath (Join-Path $root 'cache-sync-retry-preparation\refused-checkpoint.json') -Raw|ConvertFrom-Json
 }
 $vm=Get-VM -Id $m.vm_id
 if($vm.Id-ne[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'-or$vm.Name-cne$m.name-or[guid]$vm.ParentSnapshotId-ne[guid]$baseline.checkpoint_id-or
@@ -32,9 +37,9 @@ if($FrozenShadowReuse){
     foreach($drive in Get-VMHardDiskDrive -VM $vm){if((Get-VHD -Path $drive.Path).BlockSize-ne2MB){throw 'Enrolled two-MiB COW block size required.'}}
 }
 Assert-LabCapacity -Capacity $capacity -AdditionalBytes $growthBudgetBytes
-$binaryName=if($InterruptAfterWrites){'lab-convert-admitted-tree.exe'}else{'ntfs2refs.exe'}
+$binaryName=if($InterruptAfterWrites-or$RefreshExistingSystemCache){'lab-convert-admitted-tree.exe'}else{'ntfs2refs.exe'}
 $names=@('ntfs2refs.exe','ntfs2refs-bind.exe','ntfs2refs-recover.exe')
-if($InterruptAfterWrites){$names+='lab-convert-admitted-tree.exe'}
+if($InterruptAfterWrites-or$RefreshExistingSystemCache){$names+='lab-convert-admitted-tree.exe'}
 $pins=@(foreach($name in $names){
     $path=Join-Path $workspace ('target\release\'+$name)
     [pscustomobject]@{name=$name;path=$path;bytes=(Get-Item -LiteralPath $path).Length;sha256=(Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant()}
@@ -57,13 +62,13 @@ while($null-eq$s){
 try{
     $stage='C:\ntfs2refs\streaming-v2-20261027\'+$Candidate
     $fixture=Get-Content -LiteralPath (Join-Path $fixtureRoot 'fixture.json') -Raw
-    $prior=Invoke-Command -Session $s -ArgumentList $stage,$fixture,([bool]$FrozenShadowReuse) -ScriptBlock {
-        param($Stage,$Fixture,$Reuse);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+    $prior=Invoke-Command -Session $s -ArgumentList $stage,$fixture,([bool]$FrozenShadowReuse),([bool]$RefreshExistingSystemCache) -ScriptBlock {
+        param($Stage,$Fixture,$Reuse,$Refresh);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         if(@(Get-CimInstance Win32_Process|Where-Object {$_.Name-like'ntfs2refs*'}).Count-or@(Get-ScheduledTask -TaskName 'N2R-*' -ErrorAction SilentlyContinue|Where-Object {$_.State-in@('Running','Queued')}).Count){throw 'Another guest worker is active.'}
         $expected=ConvertFrom-Json -InputObject $Fixture
         foreach($part in $expected.partitions){
             $actual=Get-Partition -DriveLetter $part.letter;$disk=Get-Disk -Number $actual.DiskNumber;$volume=Get-Volume -DriveLetter $part.letter
-            $expectedReadOnly=$Reuse-and$part.disk-eq3
+            $expectedReadOnly=$Reuse-and-not$Refresh-and$part.disk-eq3
             if($disk.Number-ne$part.disk-or$disk.IsBoot-or$disk.IsSystem-or$disk.IsOffline-or$disk.IsReadOnly-ne$expectedReadOnly-or$actual.Offset-ne$part.offset-or$actual.Size-ne$part.bytes-or
                 [guid]$actual.Guid-ne[guid]$part.partition_guid-or$volume.FileSystem-cne$part.filesystem-or$volume.AllocationUnitSize-ne$part.cluster_bytes){throw 'Current fixture partition differs.'}
         }
@@ -73,8 +78,8 @@ try{
     }
     Save-New 'prior-state.json' $prior
     foreach($pin in $pins){Copy-Item -LiteralPath $pin.path -ToSession $s -Destination (Join-Path $stage $pin.name)}
-    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,($pins|ConvertTo-Json -Compress),$run,$task,$binaryName,$InterruptAfterWrites,$journalBudgetBytes,([bool]$FrozenShadowReuse) -ScriptBlock {
-        param($Stage,$Pins,$Run,$TaskName,$BinaryName,$InterruptWrites,$JournalBudgetBytes,$Reuse);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
+    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,($pins|ConvertTo-Json -Compress),$run,$task,$binaryName,$InterruptAfterWrites,$journalBudgetBytes,([bool]$FrozenShadowReuse),([bool]$RefreshExistingSystemCache) -ScriptBlock {
+        param($Stage,$Pins,$Run,$TaskName,$BinaryName,$InterruptWrites,$JournalBudgetBytes,$Reuse,$Refresh);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         $rows=ConvertFrom-Json -InputObject $Pins
         foreach($row in $rows){if((Get-FileHash -LiteralPath (Join-Path $Stage $row.name)).Hash.ToLowerInvariant()-cne$row.sha256){throw 'Staged binary differs.'}}
         $request=Join-Path $Stage 'request.json';$discovery=Join-Path $Stage 'discovery.json';$output='C:\ntfs2refs\streaming-v2-runs\'+$Run
@@ -82,7 +87,7 @@ try{
         [string[]]$bindArguments=@('--source','F:\','--shadow','R:\','--journal','J:\','--experiment-id',$Run,
             '--experimental-streaming-payload','--experimental-large-tree','--experimental-large-journal',
             '--max-journal-bytes',[string]$JournalBudgetBytes,'--output',$request,'--evidence',$discovery)
-        if($Reuse){$bindArguments+=@('--verify-existing-shadow','--read-only-shadow')}
+        if($Reuse){$bindArguments+='--verify-existing-shadow';if(-not$Refresh){$bindArguments+='--read-only-shadow'}}
         $bindArguments|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $Stage 'bind-arguments.json') -Encoding utf8
         $log=@(& (Join-Path $Stage 'ntfs2refs-bind.exe') @bindArguments 2>&1)
         $exit=$LASTEXITCODE;$ErrorActionPreference='Stop'
@@ -90,7 +95,7 @@ try{
         if($exit-ne0){throw 'Discovery refused; preserve current files.'}
         $value=Get-Content -LiteralPath $request -Raw|ConvertFrom-Json
         if($value.source_resource_profile-cne'experimental_streaming_tree_v2'-or$value.schema_version-ne2-or$value.max_journal_bytes-ne$JournalBudgetBytes){throw 'Explicit streaming/v2-journal budget binding missing.'}
-        if($Reuse){
+        if($Reuse-and-not$Refresh){
             if(-not$value.verify_existing_shadow){throw 'Existing-shadow request flag missing.'}
             $shadow=Get-Disk -Number 3
             if([guid]$shadow.Guid-ne[guid]'c0f2cd39-ad3d-484e-9990-0e6eba74485f'-or$shadow.IsOffline-or-not$shadow.IsReadOnly){throw 'Read-only bound shadow required.'}
@@ -99,8 +104,9 @@ try{
             if(-not$shadow.IsOffline-or-not$shadow.IsReadOnly){throw 'Frozen shadow exclusion failed.'}
         }
         $pin=(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant();$binary=Join-Path $Stage $BinaryName
-        $arguments=$(if($InterruptWrites){''}else{'convert '})+'--request "'+$request+'" --request-sha256 '+$pin+' --output "'+$output+'"'
+        $arguments=$(if($BinaryName-ceq'ntfs2refs.exe'){'convert '}else{''})+'--request "'+$request+'" --request-sha256 '+$pin+' --output "'+$output+'"'
         if($InterruptWrites){$arguments+=' --interrupt-after-writes '+$InterruptWrites}
+        if($Refresh){$arguments+=' --refresh-existing-system-cache'}
         $action=New-ScheduledTaskAction -Execute $binary -Argument $arguments
         $principal=New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest
         $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero)
@@ -108,7 +114,7 @@ try{
         [pscustomobject]@{run_id=$Run;task_name=$TaskName;guest_output=$output;guest_stage=$Stage;guest_request=$request;request_sha256=$pin;
             binary_name=$BinaryName;binary_sha256=(Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant();arguments=$arguments;
             expected_exit_code=$(if($InterruptWrites){86}else{0});interrupt_after_writes=$InterruptWrites;
-            source_resource_profile=$value.source_resource_profile;max_journal_bytes=$value.max_journal_bytes;frozen_shadow_reuse=$Reuse;source_partition_bytes=52GB;utc=[DateTime]::UtcNow.ToString('o')}
+            source_resource_profile=$value.source_resource_profile;max_journal_bytes=$value.max_journal_bytes;frozen_shadow_reuse=$Reuse;refresh_existing_system_cache=$Refresh;source_partition_bytes=52GB;utc=[DateTime]::UtcNow.ToString('o')}
     }
     $dispatch|Add-Member vm_id $m.vm_id
     $dispatch|Add-Member fixture_root $fixtureRoot

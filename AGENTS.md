@@ -800,3 +800,25 @@ the bounded 1536-MiB journal. This covers source COW intervals, the full eight-
 GiB journal device, OS and metadata margin; monitor actual capacity as well.
 No deletion, additional competing run, CI or credential change is authorized
 by that relay. Continue as sole lab owner and preserve all evidence.
+
+Corrected candidate9 is now LIVE, run 9cfeda0cdcd9449f8e3342d31c23eed7,
+task N2R-StreamingV2Convert-9cfeda0cdcd9449f8e3342d31c23eed7, PID 3676 created
+2026-10-28 01:00:45.671357 UTC. Observe the same task; never redispatch on timeout.
+It uses frozen-shadow reuse, a 1,610,612,736-byte journal and 20-GiB lab growth
+allowance. Source producer 521267b7468b16a0a55374b81b668f80c2d70b85 plus the
+unchanged d99591b5 capabilities-only dirty patch. Request pin
+17a8c5f5d085b0eb96ac20894ea33bf0eb8e99c1316fed1bb7322ce537b6b0a3.
+Converter f8b62ea2015ddf6e2139278d5d898dd4e6cd8191aca276000a827a831ceb95be;
+binder eb9d38ac901fd553a0fa5073f105be156b84ab6f51b8c31260f02dce40c0efa8;
+recovery 2fccee65237af1dbe122eda0006db91bed3753312d653c182211c36a25450b70.
+At 01:02:38 UTC it was active in source qualification, 23.16 GB read, both
+data disks offline/read-only. Lab counter 246,530,114,051 bytes; host free
+98,938,961,920 bytes. No cutover/native conversion outcome is established yet.
+The dispatch's diagnostic frozen_shadow_reuse field serialized as the string
+"[bool]True" due to PowerShell argument parsing. The actual pinned Rust request
+contains boolean verify_existing_shadow=true; its controls are unchanged.
+1eee63f fixes the diagnostic/caller boolean casting for future dispatches;
+never rewrite the recorded running request or stage to pick it up.
+Use Collect-StreamingV2Conversion.ps1 -Candidate candidate9 and preserve all
+twelve checkpoints, including the private probe observation branch. The source
+is the original ordinary-appended 8-GiB tree; no source extents were prearranged.

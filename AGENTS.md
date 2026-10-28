@@ -1,5 +1,21 @@
 # ntfs2refs project guidance
 
+Small source materialization is now wired into lab-allocate-private-tree via
+--materialize-small plus pinned inspection input (ee6cdca). Native run
+7221c22bb02641cebf1b4db6ac4d4aad PASSED: empty and17-byte café source streams
+matched inspected hashes, target write/flush/readback matched, all six user
+files allocated including8 GiB+1, no large payload initialization. Source
+logical charges34/preflight+transfer; target payload writes17/readback17.
+Producer34542fc824f0459703581d25bb3d2c6b2a8e1420eab836c428d86fb26b33e049;
+result3ebb5fab6db1f34d9f865a560fc01b43e3db9253f01caf05d5699662e4c9c799.
+Evidence private-tree-small-materialization-20261028. Source stayed excluded,
+no source payload writes/admission or early metadata restoration. New shadow
+child measured116 MiB, not full-chain/workflow scratch. Current VM OFF at
+a6fd7138-6e44-46cb-89a9-883e360bd00e, parent6ffb6bdc, all24 snapshots preserved
+and4-GiB RAM released. Do not rerun its constructor/task. Native tail/gap proof,
+large mapping/supply, metadata restoration and low-scratch conversion remain.
+See docs/private-tree-allocation.md. No unit tests added/run.
+
 Low-scratch implementation resumed after the completed recovery case. New
 bounded range reader/private materializer APIs are connected across
 ntfs_inspect, general_shadow, PrivateTree and PrivatePlaceholder. They copy

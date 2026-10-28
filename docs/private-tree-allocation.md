@@ -1,5 +1,45 @@
 # Allocation-only canonical tree staging
 
+## Native small-stream materialization result
+
+The staging command now explicitly selects `--materialize-small` with pinned
+`--inspection`/`--inspection-sha256`. It checks selected source records before
+creating a namespace, then copies only ordinary user streams of at most4 KiB
+through the checked range reader. Empty files are included; system streams
+remain pending. The8-MiB cumulative budget covers preflight plus transfer for
+at most1,024 such files. Large-stream initialization is not selected.
+
+Native run`7221c22bb02641cebf1b4db6ac4d4aad` passed with producer
+`34542fc824f0459703581d25bb3d2c6b2a8e1420eab836c428d86fb26b33e049`.
+The producer uses the ee6cdca implementation and separately recorded controller
+source. It used the matching candidate11 source/tree from its saved frozen
+NTFS branch. Inspection file SHA-256
+`307c396b8449831618f96d34a4bfcd60443c58197f3cb6221ea076df37d259d3`;
+tree`1602601cde53a7aa78d95e34c3de2ea18f5c0b65ddd8287ece9c84d81cbce215`;
+request`bacdf35c36c9ba477eefd33de9a3ae34709507ccfab3918716268c53a7b2c313`.
+
+The empty stream matched SHA-256e3b0...b855 without data transfer. The17-byte
+`notes/café.txt` source matched
+`f031f647ec5e176ec8131de1d6024e2447b5d75597bb320fd097fb4cc10783bf`,
+was written/flushed to its same named private target, and read back identically.
+Source logical-byte charges were34 (preflight plus transfer); destination
+payload writes were17 and readback17. All six user files were allocated,
+including8 GiB+1, while large payload initialization remained disabled.
+The source stayed offline/read-only and received no payload writes. Source
+image admission and metadata restoration are still not established by this run.
+
+Original result SHA-256:
+`3ebb5fab6db1f34d9f865a560fc01b43e3db9253f01caf05d5699662e4c9c799`.
+Evidence root:`.lab/hyperv/streaming-v2-20261027/private-tree-small-materialization-20261028`.
+After clean shutdown, the new non-sparse shadow child measured121,634,816 bytes
+(116 MiB), excluding shared parents, OS, journal and other evidence. This is
+not a full-workflow scratch bound or physical-write measurement. OFF checkpoint
+`a6fd7138-6e44-46cb-89a9-883e360bd00e`, parent
+`6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3`, preserves the outcome; all24 checkpoints
+remain and VM RAM is released. No unit tests added/run. Tail-gap behavior,
+large payload mapping/supply, source ACL/time restoration and recoverable
+low-scratch cutover still need integration/qualification.
+
 ## Bounded exception materialization
 
 The subsequent implementation adds

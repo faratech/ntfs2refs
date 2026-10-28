@@ -1,5 +1,34 @@
 # ntfs2refs project guidance
 
+RESUME+NATIVE FINALIZE PASSED / SEPARATE ROLLBACK LIVE:
+Resume9e8d... TERMINAL0 exactcandidate419515e9...642be72/160patches70,729,728B,
+executionSHA1041314347ab731b9902be0c2179c66114837dd8a043685b5061cb02ccbca906,
+resultdb21c4ec56aba7b22373cb423569025c4de94530faf65902b6d78a705cc255c3.
+Finalize9554575ef3be4e78994369f79e485f33 TERMINAL0, HNDclosed, native15objects/
+10fullhashes, source label/F:\ mounts passed. CompletionSHA
+4941b2d6e1b983e378f3352a901fb7c465d1587df96abfdddff27a78a1906c37,
+result4dd871616f52825542912693cf6d020478ce4dfdf25a33aace8da07d09517df9.
+PreservedOFF/RAM0 resumed46=ddc9226c-f0fc-43ee-b123-3d35f91508b9, parentpartial45,
+ALL46 snapshots retained, closed C metadata copied. No J/packed reopened there.
+Native original-source rollback is NOW CLOSED on resumed46; never replayit.
+
+Onlypartial45=554482bb-f2a4-4185-8023-09d60465137f restoredONCE AFTERsaved46;
+admitted-rollback-restore-intent-20261028.json recordsall46. Fresh query proved
+OFF/partial/all46; controller46665 TERMINAL0 dispatched SINGLE Rollbackc5852b0ca8ef4927bd3d9e15c45132f9.
+TaskN2R-AdmittedCompactRecovery-Rollback-c5852b0ca8ef4927bd3d9e15c45132f9,
+host compact-admitted-recovery-20261028/rollback; guest
+C:\ntfs2refs\admitted-compact-recovery-rollback-c5852b0ca8ef4927bd3d9e15c45132f9\result.
+ActualPID4816creation1793221021364 LIVE20:57:56Z reads28.272GB/write62297,
+WS12.85MB/private10.69MB/peak12860KiB, source1/shadow3. Samebinaryd48a46b...;
+actual generic request/ticket/artifact pins as earlier. Targetexpectedoriginal
+a90a9cd8f9fca6037b396127d161f56cc5698cae832c6bd3872d38378a367c6e.
+Do NOT stop/restore/mount/retry/openSource/J/packed whilelive. Rootcontrols,
+delta_artifact_reader monitors. Afterterminal0+exactoriginal/ABT/nativeNTFS,
+Preserve-AdmittedRecovery -OperationRollback -ExpectedParentGuidpartial45
+-ExpectedCheckpointCount46 saves47/all46. Helpernowcommittede67c9e2 and has
+already successfullypreservedFinalize46; no further runyet. Total50GBmax/floor
+unchanged, nounits/deletions. Existing main.rs stillunchangedunstaged.
+
 CONTROLLED INTERRUPT TERMINAL86 + PARTIAL45 SAVED / RESUME LIVE:
 949dbc... native5364/wrapper700 ended86 with no completion/handoff. Actual
 allzero4096HND +exactINT01code1 and full/immutableJhash verified AFTERterminal.

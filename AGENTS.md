@@ -1,5 +1,25 @@
 # ntfs2refs project guidance
 
+Candidate13 is LIVE on the saved pre-apply NTFS branch6ffb6bdc, while all20
+checkpoints including passed candidate12 remain preserved. Run
+2fa6edb2e7ac464ca863a5db6dbd6f5c, taskN2R-StreamingV2Convert-2fa6edb2e7ac464ca863a5db6dbd6f5c,
+PID1424 created2026-10-28T05:28:00.021290Z. Controlled producer
+b83911c4e4d6c3e662e0f5907b928b8e6fc61335a3745db4d67a8891af1849e5,
+source15f95f33f0039ac757a91499d20b973bc4f991cd plus unchanged d99591b5 patch.
+Requeste89a27690edf64632c5f280d687ac59dac336b19c719e56320822c12b00152df;
+binder a90c2faafdbded023ec0ff34cb566730303fb69ec4984ca174dc73ae7c49e4b9;
+recovery5bd69d5bcda7015e37cca39dc3fad2df3c417458b4dc62a17d58fff01c6981b5.
+This NEW operation combines the same strict tiny-cache sync/fresh admission
+with controlled exit86 after one flushed write. It does not replay candidate12
+or the unticketed candidate11 journal. Observe Collect-StreamingV2Conversion.ps1
+-Candidate candidate13; never redispatch. Latest live observation: source-
+observation,74,810,632,220 process read bytes, source OFFLINE|READ_ONLY,
+shadow writable for later metadata sync, no controlled interruption yet.
+Lab255,471,848,456 bytes/free89,997,787,136 bytes; cap256 GiB/reserve64 GiB.
+Initial allowance16 GiB is bounded to ONE patch/full8-GiB journal device/6-GiB
+OS/2-GiB source+metadata margin. Resume/rollback has its own12-GiB admission;
+ordinary full-apply forecast remains20 GiB. No unit tests added/run.
+
 Candidate12 acceptance is now COMPLETE for its bounded native scope. The pinned
 8f3675 verifier passed AfterPreservationBoot, mutation, AfterMutation and clean
 AfterReboot; both latter phases checked all admitted stream hashes and original

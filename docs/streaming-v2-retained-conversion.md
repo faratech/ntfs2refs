@@ -84,3 +84,23 @@ guest-local recovery. This plan is not permission to replay the completed run.
 6. Preserve both outcomes and link their exact producer/report hashes. A
    process exit followed by a clean reboot is **not physical power loss**.
    Host/storage power-loss and torn-sector qualification remain separate gates.
+
+### Fresh controlled run started
+
+Candidate13/run`2fa6edb2e7ac464ca863a5db6dbd6f5c` is a new operation from the
+saved pre-apply NTFS branch, not a replay of candidate12. Controlled producer
+`b83911c4e4d6c3e662e0f5907b928b8e6fc61335a3745db4d67a8891af1849e5`,
+source`15f95f33f0039ac757a91499d20b973bc4f991cd` plus the unchanged capabilities
+patch, combines strict tiny-cache synchronization with the existing one-write
+interruption. All admission, journal, ticket and target checks remain active.
+Recovery helper is
+`5bd69d5bcda7015e37cca39dc3fad2df3c417458b4dc62a17d58fff01c6981b5`;
+request`e89a27690edf64632c5f280d687ac59dac336b19c719e56320822c12b00152df`.
+
+PID1424 was confirmed live with increasing reads and the source persistently
+offline/read-only in source observation. No interruption/recovery outcome is
+established yet. Use the recorded collector; never infer termination from an
+observation timeout. All20 snapshots remain, cap256 GiB and reserve64 GiB.
+The one-write run reserves16 GiB (full8-GiB journal device,6-GiB OS and2-GiB
+source/metadata margin). Full resume/rollback separately admits12 GiB for the
+existing journal and bounded source COW; ordinary conversion keeps20 GiB.

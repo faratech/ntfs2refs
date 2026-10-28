@@ -1,5 +1,15 @@
 # ntfs2refs project guidance
 
+Resume/finalize chain is LIVE in host exec session46262. It observes only the
+already dispatched Resume task, requires terminal0/offline/unclosed result
+and execution.result.target_sha256==fresh1e938b20...69710 before archiving
+Resume-result/execution and dispatching Finalize ONCE. It then observes that
+exact Finalize and invokes the gated independent native verifier. Durable
+intent: candidate13/recovery-resume/resume-finalize-chain-intent.json. Do NOT
+start another chain, Resume or Finalize. At06:17:55 UTC, resumePID1620 was
+still active,148,528,723,905 read bytes/610,006,840 process write bytes, source
+excluded; completion/finalization remains unproven. No unit tests added/run.
+
 Candidate13's interruption is now CONFIRMED: terminal exit86 after one flushed
 write, no handoff, no producer process. Monitor42487 completed successfully,
 archived/rehashed terminal evidence (manifest

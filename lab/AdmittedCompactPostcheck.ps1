@@ -1,6 +1,7 @@
 # Completed admitted conversion only. No raw replay, VM restore, or forced shutdown.
 [CmdletBinding()]param(
     [Parameter(Mandatory)][ValidateSet('Collect','BootVerify','Mutate','AfterMutation','RebootVerify','Preserve')][string]$Phase,
+    [switch]$ObserveExistingReboot,
     [string]$ToolsetManifest='D:\code\ntfs2refs\.lab\hyperv\streaming-v2-20261027\compact-admitted-retry-20261028\postcheck-tools\manifest.json',
     [ValidatePattern('^[a-f0-9]{64}$')][string]$ToolsetManifestSha256='4ea054fba859d2dd9f2544e539f0083b3594ae6d3349462ab3a4d5510b28af27'
 )
@@ -13,6 +14,7 @@ $conversionStage='C:\ntfs2refs\compact-admitted-retry-'+$run;$converted=Join-Pat
 $runRoot=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027\compact-admitted-retry-20261028'
 $root=Join-Path $runRoot 'admitted-postcheck';$guestStage='C:\ntfs2refs\admitted-compact-postcheck-'+$run
 $forecast=[long]7GB;$maximum=[long]329374052988;$minimum=[long]17179869184
+if($ObserveExistingReboot -and $Phase -cne 'RebootVerify'){throw 'Existing-boot continuation is only a reboot observer.'}
 function Save-New([string]$Name,$Value){$f=[IO.File]::Open((Join-Path $root $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 32));$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}}
 function Read-Receipt([string]$Name){$v=Get-Content -LiteralPath (Join-Path $root $Name) -Raw -Encoding UTF8|ConvertFrom-Json;if(-not $v.success -or $v.run_id -cne $run){throw ('Matching successful receipt required: '+$Name)};return $v}
 function Boot-UTC($Value){if($Value -is [DateTime]){if($Value.Kind -eq [DateTimeKind]::Unspecified){throw 'Boot timezone missing.'};return $Value.ToUniversalTime().ToString('o')};if($Value -is [DateTimeOffset]){return $Value.UtcDateTime.ToString('o')};if([string]$Value -cnotmatch '(Z|[+-][0-9]{2}:[0-9]{2})$'){throw 'Explicit boot timezone required.'};return [DateTimeOffset]::Parse([string]$Value,[Globalization.CultureInfo]::InvariantCulture).UtcDateTime.ToString('o')}
@@ -30,7 +32,7 @@ $inspectGuest={
     if((Get-FileHash -LiteralPath 'C:\Windows\System32\drivers\refs.sys').Hash.ToLowerInvariant() -cne '3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4'){throw 'Pinned ReFS driver changed; preserve the branch without postcheck.'}
     function Doc([string]$Path,[long]$Limit){$m=Get-Item -LiteralPath $Path;if($m.PSIsContainer -or ($m.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $m.Length -gt $Limit){throw 'Completed report is not bounded and ordinary.'};$f=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);try{if($f.Length -gt $Limit){throw 'Completed report grew.'};$b=[byte[]]::new([int]$f.Length);$at=0;while($at -lt $b.Length){$n=$f.Read($b,$at,$b.Length-$at);if($n -eq 0){throw 'Completed report ended early.'};$at+=$n};$sha=[Security.Cryptography.SHA256]::Create();try{$pin=[BitConverter]::ToString($sha.ComputeHash($b)).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()};$text=[Text.UTF8Encoding]::new($false,$true).GetString($b);@{path=$Path;sha256=$pin;bytes=$b.Length;data=[Convert]::ToBase64String($b);value=($text|ConvertFrom-Json)}}finally{$f.Dispose()}}
     $t=Get-ScheduledTask -TaskName $Task;$ti=Get-ScheduledTaskInfo -TaskName $Task
-    $workers=@(Get-CimInstance Win32_Process|Where-Object {$_.ProcessId -in @(5108,4892) -or $_.Name -in @('lab-convert-native-composite.exe','lab-abort-general-source.exe','ntfs2refs-bind.exe','lab-recover-native-composite.exe','lab-verify-general-converted.exe','lab-general-refs-mutation.exe','lab-apply-compact-fixture.exe')}|Select-Object ProcessId,Name,CreationDate,WorkingSetSize,PageFileUsage)
+    $workers=@(Get-CimInstance Win32_Process|Where-Object {($_.ProcessId -eq 4892 -and ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() -eq 1793212768546) -or $_.Name -in @('lab-convert-native-composite.exe','lab-abort-general-source.exe','ntfs2refs-bind.exe','lab-recover-native-composite.exe','lab-verify-general-converted.exe','lab-general-refs-mutation.exe','lab-apply-compact-fixture.exe')}|Select-Object ProcessId,Name,CreationDate,WorkingSetSize,PageFileUsage)
     $boot=(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')
     $status=@{run_id=$Run;task_name=$Task;task_state=$t.State.ToString();last_task_result=[long]$ti.LastTaskResult;last_run_time=$ti.LastRunTime;workers=$workers;guest_boot_utc=$boot;completed=$false;documents=@();utc=[DateTime]::UtcNow.ToString('o')}
     if($workers.Count -or $t.State.ToString() -ceq 'Running' -or $ti.LastTaskResult -ne 0 -or $ti.LastRunTime.Year -lt 2000){return $status}
@@ -67,7 +69,10 @@ if($Phase -ceq 'Collect'){
 }
 
 $complete=Read-Receipt 'completed-conversion.json'
-if(Test-Path -LiteralPath (Join-Path $root ($Phase+'-intent.json'))){throw 'Phase has state; inspect without redispatch.'}
+if($ObserveExistingReboot){
+    $failed=Get-Content -LiteralPath (Join-Path $root 'RebootVerify-failed.json') -Raw -Encoding UTF8|ConvertFrom-Json
+    if($failed.error -cne 'Worker active; no postcheck.' -or $failed.run_id -cne $run -or (Test-Path -LiteralPath (Join-Path $root 'RebootVerify.json')) -or -not(Test-Path -LiteralPath (Join-Path $root 'RebootVerify-intent.json'))){throw 'Only the preserved pre-observer worker-guard refusal may continue.'}
+}elseif(Test-Path -LiteralPath (Join-Path $root ($Phase+'-intent.json'))){throw 'Phase has state; inspect without redispatch.'}
 if((Get-FileHash -LiteralPath $ToolsetManifest).Hash.ToLowerInvariant() -cne $ToolsetManifestSha256){throw 'Toolset manifest pin differs.'}
 $manifest=Get-Content -LiteralPath $ToolsetManifest -Raw -Encoding UTF8|ConvertFrom-Json
 if($manifest.schema_version -ne 1 -or $manifest.kind -cne 'admitted-compact-postcheck-toolset' -or @($manifest.tools).Count -ne 2){throw 'Pinned admitted toolset required.'}
@@ -81,17 +86,18 @@ $s=New-PSSession -VMId $id -Credential $credential
 try{
     $terminal=Invoke-Command -Session $s -ScriptBlock $inspectGuest -ArgumentList $run,$task,$conversionStage,$converted
     if(-not $terminal.completed -or $terminal.request_sha256 -cne $complete.request_sha256 -or $terminal.expectation_sha256 -cne $complete.expectation_sha256){throw 'Exact conversion is not terminal and closed; no stateful postcheck.'}
-    Save-New ($Phase+'-intent.json') @{run_id=$run;phase=$Phase;capacity=$capacity;additional_forecast_bytes=$forecast;forecast_is_not_reservation=$true;toolset_manifest_sha256=$ToolsetManifestSha256;prior_checkpoint_ids=$ids;utc=[DateTime]::UtcNow.ToString('o')}
-    if($Phase -in @('BootVerify','RebootVerify','Preserve')){
+    Save-New $(if($ObserveExistingReboot){'RebootVerify-existing-boot-observer-intent.json'}else{$Phase+'-intent.json'}) @{run_id=$run;phase=$Phase;existing_boot_observer_only=[bool]$ObserveExistingReboot;capacity=$capacity;additional_forecast_bytes=$forecast;forecast_is_not_reservation=$true;toolset_manifest_sha256=$ToolsetManifestSha256;prior_checkpoint_ids=$ids;utc=[DateTime]::UtcNow.ToString('o')}
+    if($Phase -in @('BootVerify','RebootVerify','Preserve') -and -not $ObserveExistingReboot){
         $vm=Clean-Off $vm $s;Remove-PSSession $s;$s=$null
         if($Phase -in @('BootVerify','Preserve')){
             $label=if($Phase -ceq 'BootVerify'){'admitted-compact-converted-'}else{'admitted-compact-reboot-mutation-passed-'}
+            $parentBeforeCheckpoint=$vm.ParentSnapshotId.ToString()
             $cp=Checkpoint-VM -VM $vm -SnapshotName ($label+$run) -Passthru
             $deadline=[DateTime]::UtcNow.AddSeconds(30)
             do{$new=Snapshot-Ids (Get-VM -Id $id);if($new.Count -eq ($ids.Count+1) -and $cp.Id.ToString() -in $new){break};if([DateTime]::UtcNow -ge $deadline){throw 'New checkpoint is not visible; inspect without creating another.'};Start-Sleep -Milliseconds 250}while($true)
             Assert-Preserved $new $ids
             if($new.Count -ne ($ids.Count+1) -or $cp.Id.ToString() -in $ids){throw 'New checkpoint receipt/count differs; inspect without another checkpoint.'}
-            $saved=@{success=$true;run_id=$run;checkpoint_id=$cp.Id.ToString();parent_id=$vm.ParentSnapshotId.ToString();old_checkpoint_ids=$ids;checkpoint_count=$new.Count;all_prior_preserved=$true;state='Off';memory_assigned=0;utc=[DateTime]::UtcNow.ToString('o')}
+            $saved=@{success=$true;run_id=$run;checkpoint_id=$cp.Id.ToString();parent_id=$parentBeforeCheckpoint;old_checkpoint_ids=$ids;checkpoint_count=$new.Count;all_prior_preserved=$true;state='Off';memory_assigned=0;utc=[DateTime]::UtcNow.ToString('o')}
             Save-New $(if($Phase -ceq 'BootVerify'){'converted-preservation.json'}else{'Preserve.json'}) $saved
             if($Phase -ceq 'Preserve'){Write-Output 'Postcheck preserved OFF; all44 checkpoints retained.';return}
         }
@@ -106,7 +112,8 @@ try{
     $result=Invoke-Command -Session $s -ArgumentList $Phase,$guestStage,$run,$converted,$complete.request_sha256,$complete.expectation_sha256,($manifest.tools|ConvertTo-Json -Compress),$priorBoot,($mutation|ConvertTo-Json -Depth 8 -Compress) -ScriptBlock {
         param($Phase,$Stage,$Run,$Converted,$RequestPin,$TreePin,$ToolsJson,$PriorBoot,$MutationJson);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
         foreach($tool in ($ToolsJson|ConvertFrom-Json)){$p=Join-Path $Stage $tool.name;if((Get-Item -LiteralPath $p).Length -ne $tool.bytes -or (Get-FileHash -LiteralPath $p).Hash.ToLowerInvariant() -cne $tool.sha256){throw 'Guest observer pin differs.'}}
-        if(@(Get-CimInstance Win32_Process|Where-Object {$_.ProcessId -in @(5108,4892) -or $_.Name -in @('lab-convert-native-composite.exe','lab-recover-native-composite.exe','lab-verify-general-converted.exe','lab-general-refs-mutation.exe','lab-apply-compact-fixture.exe')}).Count){throw 'Worker active; no postcheck.'}
+        $active=@(Get-CimInstance Win32_Process|Where-Object {($_.ProcessId -eq 4892 -and ([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds() -eq 1793212768546) -or $_.Name -in @('lab-convert-native-composite.exe','lab-abort-general-source.exe','ntfs2refs-bind.exe','lab-recover-native-composite.exe','lab-verify-general-converted.exe','lab-general-refs-mutation.exe','lab-apply-compact-fixture.exe')})
+        if($active.Count){throw ('Worker active; no postcheck. '+(($active|Select-Object ProcessId,Name,CreationDate|ConvertTo-Json -Compress)-join ' '))}
         $request=Join-Path $Converted 'request.json';$expected=Join-Path $Converted 'expectation.json';if((Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant() -cne $RequestPin -or (Get-FileHash -LiteralPath $expected).Hash.ToLowerInvariant() -cne $TreePin){throw 'Completed request/tree pins differ.'}
         $value=Get-Content -LiteralPath $request -Raw -Encoding UTF8|ConvertFrom-Json;$source=Get-Disk -Number $value.pair.source.disk_number;$shadow=Get-Disk -Number $value.pair.shadow.disk_number;$part=@(Get-Partition -DiskNumber $source.Number|Where-Object Offset -eq $value.pair.source.identity.partition_offset);$volume=$part|Get-Volume
         $label=-join @($value.expected_source_label.utf16|ForEach-Object {[char]$_})
@@ -125,4 +132,4 @@ try{
     foreach($name in @(($Phase+'.json'),($Phase+'.log'))){Copy-Item -FromSession $s -LiteralPath (Join-Path $guestStage $name) -Destination (Join-Path $root ('guest-'+$name))}
     if((Get-FileHash -LiteralPath (Join-Path $root ('guest-'+$Phase+'.json'))).Hash.ToLowerInvariant() -cne $result.report_sha256){throw 'Archived native report differs.'}
     Save-New ($Phase+'.json') $result;$result|ConvertTo-Json -Compress
-}catch{Save-New ($Phase+'-failed.json') @{run_id=$run;phase=$Phase;error=$_.Exception.Message;automatic_retry=$false;automatic_rollback=$false;utc=[DateTime]::UtcNow.ToString('o')};throw}finally{if($null -ne $s){Remove-PSSession $s}}
+}catch{Save-New $(if($ObserveExistingReboot){'RebootVerify-existing-boot-observer-failed.json'}else{$Phase+'-failed.json'}) @{run_id=$run;phase=$Phase;error=$_.Exception.Message;automatic_retry=$false;automatic_rollback=$false;utc=[DateTime]::UtcNow.ToString('o')};throw}finally{if($null -ne $s){Remove-PSSession $s}}

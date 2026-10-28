@@ -612,8 +612,16 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
     ensure!(&bytes[..4] == b"FILE", "invalid FILE record signature");
     let usa = usize::from(u16le(&bytes, 4)?);
     let usa_count = usize::from(u16le(&bytes, 6)?);
+    // The common FILE fixed header ends after next-attribute-instance at
+    // 0x2a. Preserve the older 42-byte form as well as the 48-byte extended
+    // form: this parser does not interpret the optional record-number field.
+    // The USA may never alias the fixed fields that we decode below.
     ensure!(
-        usa >= 8 && usa_count == bytes.len() / 512 + 1,
+        usa >= 0x2a && usa.is_multiple_of(2),
+        "update sequence array overlaps the fixed FILE header or is unaligned"
+    );
+    ensure!(
+        usa_count == bytes.len() / 512 + 1,
         "invalid update sequence array count"
     );
     let usa_end = usa

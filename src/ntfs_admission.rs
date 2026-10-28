@@ -950,7 +950,7 @@ fn assess_source_view_profile(
         raw.dirty == Some(false)
             && raw.volume_flags.is_some_and(|flags| flags & 1 == 0)
             && raw.volume_version.as_deref() == Some("3.1"),
-        "require NTFS 3.1, clear native dirty state and clear on-disk dirty bit",
+        "require NTFS 3.1 and a clear on-disk $Volume dirty bit; independent native dirty-state observations are bound by the separate live transaction_freeze gate",
     );
     gate(
         "volume_policy_flags",

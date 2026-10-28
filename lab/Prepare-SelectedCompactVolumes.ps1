@@ -54,7 +54,8 @@ try{
                 $acl=[Security.AccessControl.FileSecurity]::new();$acl.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)',$sections);[IO.File]::SetAccessControl($path,$acl)
                 @{path=$path;bytes=[long]$entry[1];sha256=(Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant();full_contents_written_by_normal_file_api=$true}
             })
-            $result=@{success=$true;kind='selected-compact-independently-populated-source';stage=$stage;partitions=$parts;files=$files;logical_user_bytes=($files|Measure-Object bytes -Sum).Sum;payload_pattern='deterministic pseudorandom; not a zero-filled large file';source_extent_moves=0;source_allocation_aging_bytes=0;old_disks_modified=$false;utc=[DateTime]::UtcNow.ToString('o')}
+            $logicalBytes=[long]0;foreach($createdFile in $files){$logicalBytes += [long]$createdFile.bytes}
+            $result=@{success=$true;kind='selected-compact-independently-populated-source';stage=$stage;partitions=$parts;files=$files;logical_user_bytes=$logicalBytes;payload_pattern='deterministic pseudorandom; not a zero-filled large file';source_extent_moves=0;source_allocation_aging_bytes=0;old_disks_modified=$false;utc=[DateTime]::UtcNow.ToString('o')}
             $result|ConvertTo-Json -Depth 12|Set-Content -LiteralPath (Join-Path $stage 'prepared.json') -Encoding UTF8
             $result
         }catch{@{phase=$phase;error=$_.Exception.ToString();automatic_retry=$false;utc=[DateTime]::UtcNow.ToString('o')}|ConvertTo-Json|Set-Content -LiteralPath (Join-Path $stage 'preparation-failed.json') -Encoding UTF8;throw}

@@ -1,5 +1,28 @@
 # ntfs2refs project guidance
 
+Private tree staging is now connected to the canonical tree (b3c7d3f), with
+metadata-only recovery observation (3535d78). Run29abdc44bbcf42e69783c3736c1fb349
+allocated all six user files/three directories, including8 GiB+1, with zero
+user-payload read/write calls, then refused only in empty-file reporting.
+Do NOT recreate its files or reformat its branch. Observerf0f7140b4eb8419ea3dd910de69770ad
+passed exact namespace/length/mapping checks after the empty/subcluster fix;
+result21d2253c40e0be83c8ab431e4351130e3963183be7dcad78e4a4531cf9d3ec2c.
+All nine user descriptors were checked protected SYSTEM-only. Contents,
+source metadata restoration, root/system data and conversion remain pending.
+See docs/private-tree-allocation.md. New shadow-child storage measured134 MiB,
+excluding shared parents/OS/journal/evidence; no total-scratch claim follows.
+OFF checkpointebb2feb4-dc0f-4551-93ee-9a031f96b7ca preserves it, all19 prior/current
+checkpoints retained. No unit tests added/run.
+
+At the next safe checkpoint the priority returned to completing candidate12's
+already-authorized native acceptance before more compact-shadow experiments.
+Only its preserved converted checkpointae80bfd5-7b8d-4e60-80b4-6e236c841390
+was restored, with all19 snapshots preserved. The host's initial restore-status
+deadline expired before boot; actual OFF/parent/CIM/inventory were separately
+reconciled, then exactly one boot issued. Observe acceptance-20261028 and the
+existing pinned toolset2 AfterPreservationBoot operation before any mutation;
+never duplicate a live operation or replay a closed journal. Reserve64 GiB.
+
 The private allocation primitive is now reusable in shadow_native/unwritten.rs
 (source4a58ed2), with multi-run placement, complete placed-prefix gating,
 poison-on-partial/missing native result, and flush/mapping recheck. It stays

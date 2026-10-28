@@ -860,3 +860,17 @@ Lab counter 247,227,132,011 bytes; host free 98,240,077,824 bytes; cap256 GiB,
 reserve64 GiB, VM fixed4 GiB. Journal1536 MiB; conservative growth20 GiB.
 Use Collect-StreamingV2Conversion.ps1 -Candidate candidate10. Preserve every
 earlier branch and read-only probe. Native conversion result remains pending.
+
+Candidate10 subsequently passed fresh source admission and completed its native
+cache/metadata synchronization. Copied immutable report
+candidate10/cache-refresh-observed.json, 67,353 bytes, SHA-256
+295ad27cff548849a021664d40ebf66b34dffc4b1ebf1478e9f8855500840643.
+Exactly 76 cache payload bytes were written, zero unchanged user payload bytes,
+fourteen metadata objects updated, zero source payload writes. The cache already
+existed on the writable shadow and its identity/shape were checked before the
+bounded replacement. This report grants no conversion qualification.
+At 01:55:32 UTC the same PID 872 was live in existing-shadow verification,
+143.13 GB read, peak69.25 MiB. Source remained OFFLINE|READ_ONLY; shadow was
+writable for the pre-freeze verification. Lab counter247,361,356,901 bytes,
+host free98,105,909,248 bytes. Continue the same task; full target verification,
+journal/application, cutover and native postchecks are still pending.

@@ -2927,6 +2927,154 @@
         "objects_verified": 13,
         "actual_shadow_backing_bytes": null
       }
+    },
+    {
+      "id": "streaming-v2-retained-8g-native-mutation-reboot",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "stages": [
+        "implemented",
+        "native_observed",
+        "reboot_verified"
+      ],
+      "outcome": "passed",
+      "scope": "Existing 52 GiB NTFS/64 KiB partition converted in place to ReFS/4 KiB with an 8 GiB+1 zero file, Unicode names and no source extent prearrangement. Fourteen admitted objects passed native semantics, the 50/80/10 MiB and 128-entry mutation workload, preserved boot and post-mutation clean reboot. Native same-file/VCN maps and full stream hashes confirm 2721431552 original physical bytes before mutation, afterward and after reboot. This producer still initialized a full payload shadow; no retained-case fault or low-scratch qualification follows.",
+      "repository_commit": "3d4fb8217f88bc4001ebcc71436d8ff0bd24aed6",
+      "executable": {
+        "name": "lab-convert-admitted-tree.exe",
+        "sha256": "cc02ca4075e0d5bb5d95da964a8033d648d299704a80d77aceeccd3eebf7476b",
+        "retained_path": ".lab/hyperv/streaming-v2-20261027/candidate12/terminal-evidence/stage/lab-convert-admitted-tree.exe"
+      },
+      "environment": {
+        "windows_build_revision": "26300.9457",
+        "refs_driver": {
+          "name": "refs.sys",
+          "file_version": "10.0.26100.8875 (WinBuild.160101.0800)",
+          "sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4"
+        }
+      },
+      "corpus": {
+        "description": "Six user files and three Windows ancillary files, five directories including root; 8590217322 admitted logical bytes. Largest zero file 8589934593 bytes. No source extent moves or aging; exact source-present indexer-cache synchronization occurred on the shadow.",
+        "source_image_sha256": "a228acd3cc509e21dc3261b1a76306c226bbf002d9cc9f6e84808fba9b82e170",
+        "expected_image_sha256": "0fdc49384616a9ef20dd7d1742eec3d17769effb5bb1dccc71a2c5e7366897fb",
+        "expected_semantic_manifest_sha256": "36e1f5d1c34f15884d12a1919616fd5d7bfde45a7319f301527e9b00d56548cf"
+      },
+      "artifacts": [
+        {
+          "role": "terminal-result",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/terminal-evidence/run/result.json",
+          "location_unknown_reason": null,
+          "sha256": "9ff5a71859d098e72e8e4e865fefc9f86fec5563866422bd260194b0b205a732"
+        },
+        {
+          "role": "apply-receipt",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/observed-apply.json",
+          "location_unknown_reason": null,
+          "sha256": "2256634a1844e737527811c2b13462556db1eff247380a53458a8807e4f093b9"
+        },
+        {
+          "role": "journal-preparation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/observed-prepare.json",
+          "location_unknown_reason": null,
+          "sha256": "77b7eec31852e35d245713afffd68fc63328140668501e1effd18ecbb9e5c5cd"
+        },
+        {
+          "role": "protected-target-preservation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/terminal-evidence/run/qualification/target-preservation.json",
+          "location_unknown_reason": null,
+          "sha256": "3b8e48f6422a41a503c44df75d281d212a97960ee52b7841b8d39a547038bfc9"
+        },
+        {
+          "role": "canonical-source-tree",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/terminal-evidence/run/expectation.json",
+          "location_unknown_reason": null,
+          "sha256": "36e1f5d1c34f15884d12a1919616fd5d7bfde45a7319f301527e9b00d56548cf"
+        },
+        {
+          "role": "native-before-mutation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/BeforeMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "c8d84642a6a5f2e798d536cd51df35650f6edd9e2045fa4faa167a9a08617ddb"
+        },
+        {
+          "role": "preserved-converted-boot",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/AfterPreservationBoot.json",
+          "location_unknown_reason": null,
+          "sha256": "6673ebd10be4c19a9763f609c39d56d3332547d77a5ebfc95bc8222038781c4b"
+        },
+        {
+          "role": "native-mutation",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/Mutate.json",
+          "location_unknown_reason": null,
+          "sha256": "03b1356db6e9065ae12d6ffc4113822a76cca7175af73029cfda38b446e8d90c"
+        },
+        {
+          "role": "native-after-mutation-and-physical-retention",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/AfterMutation.json",
+          "location_unknown_reason": null,
+          "sha256": "9b6dd98db96092dbdfa159678be0611db8e6f2c285e569735e0c84a15ead6356"
+        },
+        {
+          "role": "native-after-reboot-and-physical-retention",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck/AfterReboot.json",
+          "location_unknown_reason": null,
+          "sha256": "0c0170875744e2338dab6791df6b26d2d94d2e808d66694340ac0c2c83ed7fff"
+        },
+        {
+          "role": "independent-reboot-payload-readback",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/reboot-result.json",
+          "location_unknown_reason": null,
+          "sha256": "89f101e66d485bc8287b81b45853af6dec2929f1b4ff131f3fb24c4b30768cbc"
+        },
+        {
+          "role": "postcheck-archive-and-driver-identity",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/postcheck-terminal-manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "28b5628a0da13222621cf5d4c13bb6dd8cb6bd74f8a872c309c233ed9bb92d72"
+        },
+        {
+          "role": "pinned-postcheck-tools",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/rust-postcheck-tools-v2/manifest.json",
+          "location_unknown_reason": null,
+          "sha256": "20cd5dceb270428c6e215899dbce6beb0a45184b7d136b8ef570ba21c9779782"
+        },
+        {
+          "role": "preserved-converted-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/converted-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "bb3ad9f12b0e0dcddc5b9472ccee997b50737548b13abfb01a35d60fcf531d20"
+        },
+        {
+          "role": "preserved-passed-state",
+          "path": ".lab/hyperv/streaming-v2-20261027/candidate12/passed-checkpoint.json",
+          "location_unknown_reason": null,
+          "sha256": "572b7c13dfc9875a2f7671eb46c1ee4acbe29633bdadb94b2d622d237a4b8740"
+        }
+      ],
+      "source_documents": [
+        "docs/streaming-v2-retained-conversion.md",
+        "docs/streaming-v2-native.md"
+      ],
+      "unknown_fields": {
+        "dirty_source_state": "Producer included the unchanged capabilities-only src/main.rs patch d99591b5f26b887b513260cf01b8e89d114cb173fa86d40869a1053518d313e9. Binary is pinned; no current-HEAD inheritance.",
+        "postcheck_lineage": "Separate verifier 8f3675076a34bd977245744af702c82d7bf2b6c662e757246b153fcaf6840f9a and mutator 0c9fa6caaff35c2d56cc2e6f83db0d4a5ed0622fc2d98446e74f0c591e2485dd. Optional physical flag reuses native logical hashes and maps, not a new range hash.",
+        "actual_shadow_backing_bytes": "Full-workflow scratch remains unmeasured; initial shadow payload was initialized. Separate allocation-only 134 MiB child evidence does not qualify this converter.",
+        "fault_recovery": "No retained 8 GiB interruption/resume/rollback or physical-power-loss result. Existing smaller recovery evidence is separate.",
+        "unit_tests": "No unit tests were added or run."
+      },
+      "fault_model": "none",
+      "clean_reboot_observed": true,
+      "metrics": {
+        "logical_bytes": 8590217322,
+        "retained_payload_bytes": 2721431552,
+        "relocated_payload_bytes": 5868785664,
+        "materialized_payload_bytes": 106,
+        "target_bytes_written": 609918976,
+        "journal_bytes": 1219922842,
+        "source_bytes_hashed": null,
+        "metadata_write_count": 470,
+        "objects_verified": 14,
+        "actual_shadow_backing_bytes": null
+      }
     }
   ],
   "claims": [
@@ -3259,6 +3407,26 @@
         "Efficient payload-independent scratch and extent retention on naturally populated sources",
         "Nonzero large payloads and broader supported features/geometries/capacities",
         "Additional interruption points and storage power-loss qualification"
+      ]
+    },
+    {
+      "id": "streaming-v2-existing-tree-retained-8g",
+      "profile_id": "ordinary-ntfs31-64k-refs314-4k-streaming-v2",
+      "feature": "Eight-GiB ordinary-tree conversion with native retained-position checks",
+      "statement": "The recorded producer converted the same partition, retained 2721431552 original physical bytes, and passed native mutation/reboot semantics and original-position checks. All twenty checkpoints remain preserved and the passed branch is OFF.",
+      "evidence_ids": [
+        "streaming-v2-retained-8g-native-mutation-reboot"
+      ],
+      "exclusions": [
+        "Producer/build/geometry and ordinary-file scope only",
+        "No payload-independent scratch or physical-power-loss qualification",
+        "Zero-filled over-4-GiB data does not qualify arbitrary nonzero large streams"
+      ],
+      "remaining_gates": [
+        "Controlled retained-case process interruption/resume/NTFS rollback on a new disposable run",
+        "Integrate private allocation-only staging with payload supply and metadata restoration",
+        "Complete required-byte selection and recoverable compact conversion",
+        "Broader geometry/build/feature coverage"
       ]
     }
   ]

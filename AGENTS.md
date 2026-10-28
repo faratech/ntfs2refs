@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+Candidate12 acceptance is now COMPLETE for its bounded native scope. The pinned
+8f3675 verifier passed AfterPreservationBoot, mutation, AfterMutation and clean
+AfterReboot; both latter phases checked all admitted stream hashes and original
+retained physical positions for2,721,431,552 bytes. Final guest report
+4dd857a0f50b5a0fef42782680cfdcdd9cf5bf0fd504091932236abfb7292a7b.
+All13 guest postcheck files/binaries archived and rehashed; manifest
+28b5628a0da13222621cf5d4c13bb6dd8cb6bd74f8a872c309c233ed9bb92d72.
+Current VM is OFF at49094105-ed4b-4447-9f23-86a3a22b394f, parentae80bfd5-7b8d-4e60-80b4-6e236c841390,
+all20 checkpoints preserved/RAM released. See docs/streaming-v2-retained-conversion.md
+for full pins, scope and next recovery plan. Do not repeat mutation or replay
+its closed journal. Highest remaining acceptance gate is guest-local process
+interruption/resume/rollback for this retained8-GiB profile, using a NEW run on
+the saved pre-apply NTFS branch6ffb6bdc, not the operational converted volume.
+Physical power loss and low-scratch conversion are separate unqualified gates.
+
 Private tree staging is now connected to the canonical tree (b3c7d3f), with
 metadata-only recovery observation (3535d78). Run29abdc44bbcf42e69783c3736c1fb349
 allocated all six user files/three directories, including8 GiB+1, with zero

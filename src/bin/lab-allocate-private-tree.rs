@@ -50,6 +50,8 @@ fn main() -> anyhow::Result<()> {
         max_changed_bytes: u64,
         #[arg(long, requires = "compact_output")]
         compare_complete_native_image: bool,
+        #[arg(long, requires_all = ["compact_output","restore_source_metadata"])]
+        protected_postfreeze_layout: bool,
         #[arg(long, requires = "compact_output")]
         restore_source_metadata: bool,
         #[arg(long, requires = "materialize_relocations")]
@@ -127,6 +129,7 @@ fn main() -> anyhow::Result<()> {
         "compact_output":args.compact_output,"max_changed_bytes":args.max_changed_bytes,
         "restore_source_metadata":args.restore_source_metadata,
         "compare_complete_native_image":args.compare_complete_native_image,
+        "protected_postfreeze_layout":args.protected_postfreeze_layout,
         "max_placement_bytes":args.max_placement_bytes,"max_placement_moves":args.max_placement_moves,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "verify_logical_hybrid":args.verify_logical_hybrid,
@@ -307,7 +310,7 @@ fn main() -> anyhow::Result<()> {
                 serde_json::to_value(relocation_materialization)?;
             report["logical_hybrid_verification"] = serde_json::to_value(logical_hybrid)?;
             if args.source_backed_payloads {
-                let routes =
+                let mut routes =
                     template.source_backed_routes(&general_shadow::native_inputs(&tree))?;
                 report["source_backed_payload_routes"] = serde_json::to_value(&routes)?;
                 report["relocated_payload_shadow_initialization_skipped"] = true.into();
@@ -351,6 +354,18 @@ fn main() -> anyhow::Result<()> {
                     let mut shadow =
                         frozen.map_err(|e| anyhow::anyhow!("shadow allocation freeze: {e}"))?;
                     let length = shadow.byte_len();
+                    if args.protected_postfreeze_layout {
+                        let expected = ntfs2refs::shadow_tree::ExpectedTree::from(&tree);
+                        let protected=ntfs2refs::general_target_preservation::verify_frozen_layout_with_resource_profile(
+                            &mut shadow,routes.pair().clone(),&expected,resources,&mut events)?;
+                        routes=n2r_win32::shadow_native::private_tree::SourceBackedRoutes::from_protected_layout(protected.native())?;
+                        save(
+                            &args.output.with_extension("protected-layout.json"),
+                            &protected,
+                        )?;
+                        report["source_backed_payload_routes"] = serde_json::to_value(&routes)?;
+                        report["source_backed_routes_rederived_after_freeze"] = true.into();
+                    }
                     let refs = ntfs2refs::refs_inspect::inspect_with_resource_profile(
                         &mut shadow,
                         length,
@@ -438,6 +453,7 @@ fn main() -> anyhow::Result<()> {
         "compact_output":args.compact_output,"max_changed_bytes":args.max_changed_bytes,
         "restore_source_metadata":args.restore_source_metadata,
         "compare_complete_native_image":args.compare_complete_native_image,
+        "protected_postfreeze_layout":args.protected_postfreeze_layout,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,

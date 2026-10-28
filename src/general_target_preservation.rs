@@ -7,8 +7,8 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use n2r_win32::{
-    GeneralDiskState, GeneralFrozenPartition, GeneralLiveRefsObservation, NativeEvent,
-    general_layout::GeneralSourceShadowBinding,
+    GeneralDiskState, GeneralFrozenPartition, GeneralLiveRefsLayoutObservation,
+    GeneralLiveRefsObservation, NativeEvent, general_layout::GeneralSourceShadowBinding,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -62,6 +62,114 @@ impl ProtectedTargetSemantics {
     pub fn target_sha256(&self) -> &str {
         &self.target_sha256
     }
+}
+
+/// Protected native metadata/layout of one byte-identical frozen shadow.
+/// Placeholder contents remain unverified. Neither this opaque witness nor
+/// its serialized diagnostic report constitutes source or write admission.
+#[derive(Debug, Serialize)]
+pub struct ProtectedTargetLayout {
+    native: GeneralLiveRefsLayoutObservation,
+    raw_sha256: String,
+    expected_tree_sha256: String,
+    frozen_state: GeneralDiskState,
+    resources: crate::ntfs_admission::ResourceProfile,
+    routes: n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
+    raw_image_unchanged: bool,
+    logical_payload_verified: bool,
+    complete_allocation_graph_verified: bool,
+    source_admitted: bool,
+    conversion_qualified: bool,
+}
+
+impl ProtectedTargetLayout {
+    pub fn native(&self) -> &GeneralLiveRefsLayoutObservation {
+        &self.native
+    }
+    pub fn raw_sha256(&self) -> &str {
+        &self.raw_sha256
+    }
+    pub fn expected_tree_sha256(&self) -> &str {
+        &self.expected_tree_sha256
+    }
+    pub fn routes(&self) -> &n2r_win32::shadow_native::private_tree::SourceBackedRoutes {
+        &self.routes
+    }
+    pub fn frozen_state(&self) -> &GeneralDiskState {
+        &self.frozen_state
+    }
+    pub fn resource_profile(&self) -> crate::ntfs_admission::ResourceProfile {
+        self.resources
+    }
+}
+
+/// Verify native metadata and stream layout after final freeze, with complete
+/// raw-image equality around the physically read-only native observation.
+/// File contents are deliberately not read from allocation-only placeholders;
+/// the caller must separately prove the complete source-backed target image.
+pub fn verify_frozen_layout_with_resource_profile(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    resources: crate::ntfs_admission::ResourceProfile,
+    events: &mut Vec<NativeEvent>,
+) -> Result<ProtectedTargetLayout> {
+    pair.validate_with_resource_profile(resources.native_profile())?;
+    expected.validate_with_resource_profile(resources)?;
+    ensure!(
+        target.binding() == &pair.shadow,
+        "protected layout target binding differs"
+    );
+    let before = target.state(events)?;
+    ensure!(
+        before.disk_attributes == 3,
+        "layout observation requires a frozen target"
+    );
+    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?));
+    let tree = shadow_tree::Tree {
+        profile: resources.ordinary_shadow_profile(),
+        objects: expected.objects.clone(),
+        logical_bytes: expected.logical_bytes,
+        internal_replacement_pending: expected.internal_replacement_pending.clone(),
+    };
+    let input = general_shadow::native_inputs(&tree);
+    let length = target.byte_len();
+    let (native, raw_sha256) =
+        bracket_image_with_resource_profile(target, length, resources, |target| {
+            Ok(target.observe_refs_layout_with_resource_profile(
+                pair.clone(),
+                &input,
+                |a, b| {
+                    ntfs_attestation::same_security(a, b)
+                        .map_err(|error| std::io::Error::other(error.to_string()))
+                },
+                resources.native_profile(),
+                events,
+            )?)
+        })?;
+    ensure!(
+        native.before() == &before
+            && native.after() == &before
+            && native.observed_readonly().disk_attributes == 2
+            && native.report().pair() == &pair
+            && target.state(events)? == before,
+        "protected layout observation changed its identity or persistent exclusion"
+    );
+    let routes =
+        n2r_win32::shadow_native::private_tree::SourceBackedRoutes::from_protected_layout(&native)?;
+    Ok(ProtectedTargetLayout {
+        native,
+        raw_sha256,
+        expected_tree_sha256,
+        frozen_state: before,
+        resources,
+        routes,
+        raw_image_unchanged: true,
+        logical_payload_verified: false,
+        complete_allocation_graph_verified: false,
+        source_admitted: false,
+        conversion_qualified: false,
+    })
 }
 
 pub fn verify_frozen_tree(

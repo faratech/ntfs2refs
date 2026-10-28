@@ -1,5 +1,15 @@
 # ntfs2refs project guidance
 
+Root protected-layout verifier now build-passed: ProtectedTargetLayout brackets
+the actual opaque READ_ONLY native layout observation with unchanged FULL raw
+shadow hashes and frozen state3, binds exact tree/resource profile, derives
+post-freeze routes only from live witness. CLI --protected-postfreeze-layout
+opts in after metadata restoration/freeze; --compare-complete-native-image
+can compare all native bytes rather than rely on a before-lock bitmap. Caller
+still must provide logical source data proof/live source admission; no target/
+source certificate or write authority is issued. Existing full semantics stay
+strict. Native new generic-layout integration remains unqualified. No units.
+
 COMPACT INTERRUPT TRIAL LIVE: do NOT restart/restore/mount source. Only preapply
 5971d348 was restored; convertedf5ad and postcheck34c299 remain with ALL38 saved
 checkpoints. TaskN2R-CompactRecovery-Interrupt-4539fe2de48e4c33a8db4d733fe859a7,

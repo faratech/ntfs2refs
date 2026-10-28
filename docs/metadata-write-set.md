@@ -2,6 +2,14 @@
 
 ## Post-freeze layout and complete-address-space path
 
+The root `ProtectedTargetLayout` verifier now brackets that actual native
+observation with unchanged complete raw-shadow hashes and exact frozen state,
+tree hash and resource profile. CLI `--protected-postfreeze-layout` opts into
+this after source metadata restoration and freeze, replacing pre-lock routes
+with witness-derived routes before capture. It remains a layout witness: no
+logical payload, source certificate or general conversion authority is invented.
+Build passed; native generic-path integration remains to be qualified.
+
 An opaque native protected layout observation now checks namespace, metadata,
 file IDs, sizes, complete mappings, storage validity and disabled integrity
 under the existing read-only lease without reading placeholder contents.

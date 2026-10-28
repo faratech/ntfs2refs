@@ -2,6 +2,15 @@
 
 ## Compact journal preparation
 
+Internal compact activation/execution plumbing now repeats exact journal/delta
+coverage and composite backing binding checks before arming any source range.
+Apply/resume/rollback share the existing engine, using the separately derived
+offline read-only source view for invariant complement bytes. Its full target
+hash and normalized-source checks remain intact; current bytes are never
+assumed to equal the original after a partial apply. This compiles but has no
+public source-write entry point yet. Source admission and compact native
+handoff/finalization remain to be integrated and exercised.
+
 `lab-prepare-compact-journal` now reopens the pinned persisted difference report
 and backing under read-only handles, validates actual backing hashes/lengths
 and held-file identities, generates the complete candidate target hash, and

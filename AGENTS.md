@@ -1,5 +1,14 @@
 # ntfs2refs project guidance
 
+Internal compact execution plumbing now builds: general_reconstruct/compact.rs
+derives the compact binding from held artifact pins, validates immutable ticket/
+journal and exact delta coverage AGAIN at activation and every execute/recovery
+entry, arms only those ranges, and gives the unchanged journal engine a separate
+attrs1 GeneralJournalReadView-backed DifferenceImage. Full candidate hash and
+normalized-source preflight remain mandatory. Read view drops before handoff;
+no public activation/apply CLI or qualification bypass added. Source admission/
+compact native finalization still pending. No unit tests added/run.
+
 Compact journal preparation implemented/build passed. VerifiedDeltaArtifact
 reopens bounded pinned report/backing under held read-only/no-writer-delete
 handles, exact hashes/layout/accounting, actual held-file IDs in pins. New

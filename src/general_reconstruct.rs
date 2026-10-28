@@ -28,6 +28,8 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
 };
 
+pub(crate) mod compact;
+
 fn observe_journal(file: &File, request: &Request) -> Result<JournalFileSnapshot> {
     Ok(observe_general_journal_file_with_profile(
         file,

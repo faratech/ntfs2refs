@@ -32,6 +32,10 @@ fn main() -> anyhow::Result<()> {
         prepare_large_tails: bool,
         #[arg(long, requires = "materialize_small")]
         place_source_prefixes: bool,
+        #[arg(long, default_value_t = 8589934592)]
+        max_placement_bytes: u64,
+        #[arg(long, default_value_t = 1024)]
+        max_placement_moves: usize,
         #[arg(long, requires = "place_source_prefixes")]
         materialize_relocations: bool,
         #[arg(long, requires = "materialize_relocations")]
@@ -105,6 +109,7 @@ fn main() -> anyhow::Result<()> {
         "observe_existing":args.observe_existing,"allocation_writes_authorized":!args.observe_existing,
         "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
         "place_source_prefixes":args.place_source_prefixes,
+        "max_placement_bytes":args.max_placement_bytes,"max_placement_moves":args.max_placement_moves,
         "materialize_relocations":args.materialize_relocations,"max_materialize_bytes":args.max_materialize_bytes,
         "verify_logical_hybrid":args.verify_logical_hybrid,
         "inspection_sha256":args.inspection_sha256,
@@ -191,7 +196,11 @@ fn main() -> anyhow::Result<()> {
             }
             let mut template = general_shadow::allocate_private_tree(&request.pair, &tree)?;
             let placement = if args.place_source_prefixes {
-                Some(template.place_source_prefixes(&general_shadow::native_inputs(&tree))?)
+                Some(template.place_source_prefixes_with_limits(
+                    &general_shadow::native_inputs(&tree),
+                    args.max_placement_bytes,
+                    args.max_placement_moves,
+                )?)
             } else {
                 None
             };

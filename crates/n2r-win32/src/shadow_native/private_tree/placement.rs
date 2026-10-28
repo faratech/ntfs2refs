@@ -7,6 +7,19 @@ const MOVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MOVES: usize = 1024;
 const MAX_MOVE_EVIDENCE: usize = 16 * 1024 * 1024;
 
+fn charge_move(used: &mut u64, length: u64, limit: u64) -> io::Result<()> {
+    let next = used
+        .checked_add(length)
+        .ok_or_else(|| invalid("placement byte budget overflow"))?;
+    if next > limit {
+        return Err(invalid(
+            "placement byte budget exhausted before native IO; preserve without retry",
+        ));
+    }
+    *used = next;
+    Ok(())
+}
+
 fn append_move(
     moves: &mut Vec<serde_json::Value>,
     bytes: &mut usize,
@@ -118,8 +131,16 @@ fn source_runs(item: &Input<'_>, partition: u64) -> io::Result<Vec<SourceRun>> {
     Ok(result)
 }
 
-pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<serde_json::Value> {
+pub(super) fn run(
+    tree: &mut PrivateTree,
+    input: &[Input<'_>],
+    max_move_bytes: u64,
+    max_moves: usize,
+) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
+    if max_move_bytes == 0 || !(1..=MAX_MOVES).contains(&max_moves) {
+        return Err(invalid("explicit placement limits differ"));
+    }
     if tree.placement_started {
         return Err(invalid(
             "tree placement already attempted; preserve without retry",
@@ -162,6 +183,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
         return Err(invalid("source desired physical ownership overlaps"));
     }
     let mut moves = Vec::new();
+    let mut move_bytes = 0u64;
     tree.placement_started = true;
     let mut evidence_bytes = 0usize;
     let mut parked = Vec::new();
@@ -175,10 +197,11 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
             let destination = scratch(tree, bytes, &avoid)?;
             let mut offset = 0;
             while offset < bytes {
-                if moves.len() >= MAX_MOVES {
+                if moves.len() >= max_moves {
                     return Err(invalid("deferred allocation move budget exhausted"));
                 }
                 let length = (bytes - offset).min(MOVE_BYTES);
+                charge_move(&mut move_bytes, length, max_move_bytes)?;
                 let proof = tree.place(
                     *index,
                     vcn + offset / 4096,
@@ -227,7 +250,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
         return Err(invalid("global tracked ownership range budget exceeded"));
     }
     let (legacy, metadata) = views(tree)?;
-    let remaining = MAX_MOVES
+    let remaining = max_moves
         .checked_sub(moves.len())
         .filter(|v| *v > 0)
         .ok_or_else(|| invalid("no evacuation move budget"))?;
@@ -263,6 +286,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
         let mut offset = 0;
         while offset < movement.length {
             let length = (movement.length - offset).min(MOVE_BYTES);
+            charge_move(&mut move_bytes, length, max_move_bytes)?;
             let proof = tree.reposition(
                 movement.file_index as usize,
                 (movement.logical_offset + offset) / 4096,
@@ -293,7 +317,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
     let mut retained_bytes = 0u64;
     for &index in &indexes {
         for run in &desired[&index] {
-            let remaining = MAX_MOVES
+            let remaining = max_moves
                 .checked_sub(moves.len())
                 .filter(|v| *v > 0)
                 .ok_or_else(|| invalid("tree placement move budget exhausted"))?;
@@ -320,6 +344,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
                 let mut offset = 0;
                 while offset < subrun.length {
                     let length = (subrun.length - offset).min(MOVE_BYTES);
+                    charge_move(&mut move_bytes, length, max_move_bytes)?;
                     let logical = subrun.logical_offset + offset;
                     let physical = subrun.physical_offset + offset;
                     let proof = tree.reposition(
@@ -397,6 +422,7 @@ pub(super) fn run(tree: &mut PrivateTree, input: &[Input<'_>]) -> io::Result<ser
         serde_json::json!({"kind":"private-unwritten-tree-placement","parked":parked,"moves":moves,
         "original_coordinate_ranges":retained,"original_coordinate_bytes":retained_bytes,
         "move_evidence_bytes":evidence_bytes,
+        "move_bytes_submitted":move_bytes,"max_move_bytes":max_move_bytes,"max_move_submissions":max_moves,
         "payload_contents_verified":false,"source_payload_writes":0,"conversion_qualified":false}),
     )
 }

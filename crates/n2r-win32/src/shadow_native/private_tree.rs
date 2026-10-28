@@ -86,7 +86,15 @@ impl PrivateTree {
         supply::plan(self)
     }
     pub fn place_source_prefixes(&mut self, input: &[Input<'_>]) -> io::Result<serde_json::Value> {
-        placement::run(self, input)
+        placement::run(self, input, self.pair.shadow.identity.partition_bytes, 1024)
+    }
+    pub fn place_source_prefixes_with_limits(
+        &mut self,
+        input: &[Input<'_>],
+        bytes: u64,
+        moves: usize,
+    ) -> io::Result<serde_json::Value> {
+        placement::run(self, input, bytes, moves)
     }
     /// Apply one placement through the private constructor's state machine.
     pub fn place(

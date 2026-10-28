@@ -1,5 +1,24 @@
 # Candidate ReFS target write set
 
+## Compact interruption reached recovery boundary
+
+Run4539fe2de48e4c33a8db4d733fe859a7 exited86 after the first complete flushed
+source write. The worker ended; source remained offline/writable and shadow
+offline/read-only. A real post-terminal read found all4,096 handoff bytes zero
+and a durable N2RINT01 operation intent. No native handoff, completed execution
+or final result existed. An earlier attempt to open the exclusively held live
+journal failed and its unfilled buffer is not evidence; only terminal reads
+were used for this disposition.
+
+Partial journal SHA-256:
+424f0434e236b1644f62b527393f951848511f33d399e490daa4f2f0f4f5cc92.
+Saved OFF atb6b2a81a-23d9-48ec-aa1c-366b7486cbcf, parent5971d348, all39 snapshots
+retained/RAM released. Host archive:
+`.lab/hyperv/streaming-v2-20261027/compact-recovery-20261028/interrupt`.
+Resume/rollback native qualification remains pending. This is a process-exit
+boundary, not physical power-loss or exhaustive write-boundary qualification.
+No unit tests added/run.
+
 ## Post-freeze layout and complete-address-space path
 
 The root `ProtectedTargetLayout` verifier now brackets that actual native

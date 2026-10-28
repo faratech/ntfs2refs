@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+COMPACT INTERRUPT REACHED TERMINAL86 after controlled one flushed write; no
+worker. Actual post-terminal journal marker4096 bytes ZERO (not dummy earlier
+failed-open buffer), operation intent N2RINT01. Source remains OFFLINE attrs1,
+shadow3; no execution/result/finalization files. Partial journal SHA
+424f0434e236b1644f62b527393f951848511f33d399e490daa4f2f0f4f5cc92.
+Preserved OFF atb6b2a81a-23d9-48ec-aa1c-366b7486cbcf parent5971d348, ALL39
+snapshots/RAM released; host interrupt archive has original intent/source hash
+proof +terminal state. NEVER rerun interrupt. Source fixture proof EC5 passed.
+Next boot THIS partial branch for Resume, controller must prove persistent
+exclusion/zero handoff before dispatch. Later rollback MUST restore only saved
+b6b2 partial branch, preserve resumed ReFS independently. Source restore/prepared
+gate unchanged; exact fixture not generic admission. No units. Current lab
+actual273,203,694,559/cap274,877,906,944; hostfree72,314,888,192/reserve68,719,476,736.
+Resume1.5-GiB allowance currently fits narrowly; measure before later branches.
+
 Root protected-layout verifier now build-passed: ProtectedTargetLayout brackets
 the actual opaque READ_ONLY native layout observation with unchanged FULL raw
 shadow hashes and frozen state3, binds exact tree/resource profile, derives

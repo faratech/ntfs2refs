@@ -1,5 +1,20 @@
 # ntfs2refs project guidance
 
+Latest low-scratch native primitive: experimentfb2e6b960b224a58a7a588b591f57e52
+successfully moved a private1-MiB zero-VDL shadow extent toLCN8388608, then
+advanced VDL and flushed. Both pre-move bitmap views were free; post-flush
+mapping and storage-valid prefix agree. Producerf505043f24455c0c13c7c50975a92d3631b72fc7f491a90f178b2d56281af598,
+result4a8198cee059e28aeead8313b7cf36208ec9c17f5b21ba395bd2a81545c4691f.
+Zero tool payload reads/writes; physical payload I/O/scratch were unmeasured.
+See docs/native-unwritten-placement.md. This does NOT qualify allocation-only
+conversion or replace the full-shadow path. Native initial placement logic
+remains hard-bound to the exact disposable guest/disks and SYSTEM-only file.
+No unit tests added/run. The experiment is OFF at80907930-4a43-4cbc-b26b-dafd14dea4e8,
+parent24cfdd12-9b9c-4bd0-8322-a94da6d98708, with17 checkpoints/all prior branches
+preserved. VM RAM released. Before another mutation, inspect exact task/branch;
+never redispatch the existing placement task. Read-only reboot observation is
+the next primitive gate; a private allocation-only constructor remains to build.
+
 Latest candidate12 state supersedes its historical LIVE entries below: task
 cb25d12237454c3999f319547f48b057 exited0, conversion success and rollback closed.
 The terminal archive exists; never replay its journal after handoff. Separately

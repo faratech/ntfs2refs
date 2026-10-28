@@ -1,6 +1,6 @@
 # One private 1 MiB placement before valid-data advancement. Restores only an
 # owned saved research branch; all successful conversion checkpoints remain.
-[CmdletBinding()]param()
+[CmdletBinding()]param([switch]$ContinueRestored)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
@@ -8,10 +8,11 @@ $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'
 $converted=[guid]'ae80bfd5-7b8d-4e60-80b4-6e236c841390'
 $baseline=[guid]'24cfdd12-9b9c-4bd0-8322-a94da6d98708'
 $root=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027\unwritten-placement-20261028'
-if(Test-Path -LiteralPath $root){throw 'Existing placement experiment; observe it without redispatch.'}
+if((Test-Path -LiteralPath $root)-and-not$ContinueRestored){throw 'Existing placement experiment; observe it without redispatch.'}
 $vm=Get-VM -Id $id
 $old=@(Get-VMSnapshot -VM $vm)
-if($vm.State.ToString()-cne'Off'-or$vm.ParentSnapshotId-ne$converted-or$old.Count-ne16-or
+$expectedParent=if($ContinueRestored){$baseline}else{$converted}
+if($vm.State.ToString()-cne'Off'-or$vm.ParentSnapshotId-ne$expectedParent-or$old.Count-ne16-or
     $old.Id-notcontains$baseline-or$old.Id-notcontains$converted-or$vm.MemoryStartup-ne4GB-or
     $vm.DynamicMemoryEnabled-or@(Get-VMNetworkAdapter -VM $vm).Count){throw 'Exact preserved isolated branch required.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
@@ -21,22 +22,37 @@ $request=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027\candidate5\term
 $pin=(Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant()
 $requestPin=(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()
 if($requestPin-cne'6b2b769ec8a0d0cec0ddfc6fc1dfc736d867d43c1a5a059cd8e029b8e1b6a8df'){throw 'Research request changed.'}
-New-Item -ItemType Directory -Path $root|Out-Null
+if(-not$ContinueRestored){New-Item -ItemType Directory -Path $root|Out-Null}
 function Save-New([string]$Name,$Value){
     $f=[IO.File]::Open((Join-Path $root $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
     try{$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 12));$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}
 }
-$experiment=[guid]::NewGuid().ToString('N')
-Save-New 'intent.json' @{vm_id=$id.ToString();baseline_id=$baseline.ToString();converted_checkpoint=$converted.ToString();
+if($ContinueRestored){
+    $intent=Get-Content -LiteralPath (Join-Path $root 'intent.json') -Raw|ConvertFrom-Json
+    $ids=@($old|ForEach-Object {$_.Id.ToString()})
+    if($intent.vm_id-cne$id.ToString()-or$intent.baseline_id-cne$baseline.ToString()-or
+        $intent.converted_checkpoint-cne$converted.ToString()-or$intent.binary_sha256-cne$pin-or
+        $intent.request_sha256-cne$requestPin-or@($intent.old_checkpoint_ids).Count-ne16-or
+        @($intent.old_checkpoint_ids|Where-Object {$_-notin$ids}).Count-or
+        @(Get-ChildItem -LiteralPath $root|Where-Object Name -notin @('intent.json','producer.exe')).Count-or
+        (Get-FileHash -LiteralPath (Join-Path $root 'producer.exe')).Hash.ToLowerInvariant()-cne$pin){throw 'Only an unstarted, preserved restored intent can continue.'}
+    $experiment=$intent.experiment_id
+    Save-New 'restore-guard-reconciled.json' @{state='Off';parent_id=$baseline.ToString();all_old_checkpoint_ids=$ids;
+        prior_dispatch_exists=$false;utc=[DateTime]::UtcNow.ToString('o');controller_sha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant()}
+}else{
+    $experiment=[guid]::NewGuid().ToString('N')
+    Save-New 'intent.json' @{vm_id=$id.ToString();baseline_id=$baseline.ToString();converted_checkpoint=$converted.ToString();
     old_checkpoint_ids=@($old.Id|ForEach-Object {$_.ToString()});experiment_id=$experiment;binary_sha256=$pin;
     request_sha256=$requestPin;source_commit=(& git -C $workspace rev-parse HEAD).Trim();destination_lcn=8388608;
-    source_payload_writes_authorized=$false;payload_reads_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
-Copy-Item -LiteralPath $binary -Destination (Join-Path $root 'producer.exe')
-if((Get-FileHash -LiteralPath (Join-Path $root 'producer.exe')).Hash.ToLowerInvariant()-cne$pin){throw 'Producer archive differs.'}
-Restore-VMSnapshot -VMSnapshot ($old|Where-Object Id -eq $baseline) -Confirm:$false
+        source_payload_writes_authorized=$false;payload_reads_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
+    Copy-Item -LiteralPath $binary -Destination (Join-Path $root 'producer.exe')
+    if((Get-FileHash -LiteralPath (Join-Path $root 'producer.exe')).Hash.ToLowerInvariant()-cne$pin){throw 'Producer archive differs.'}
+    Restore-VMSnapshot -VMSnapshot ($old|Where-Object Id -eq $baseline) -Confirm:$false
+}
 $vm=Get-VM -Id $id
+$currentIds=@(Get-VMSnapshot -VM $vm|ForEach-Object {$_.Id.ToString()})
 if($vm.State.ToString()-cne'Off'-or$vm.ParentSnapshotId-ne$baseline-or
-    @($old|Where-Object {$_.Id-notin@(Get-VMSnapshot -VM $vm).Id}).Count){throw 'Research restore/preservation differs.'}
+    @($old|Where-Object {$_.Id.ToString()-notin$currentIds}).Count){throw 'Research restore/preservation differs.'}
 Start-VM -VM $vm | Out-Null
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $s=$null;$deadline=[DateTime]::UtcNow.AddMinutes(5)

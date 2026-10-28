@@ -1,5 +1,14 @@
 # ntfs2refs project guidance
 
+Candidate13 advanced to journal-preparation/comparing under the samePID1424;
+monitor session42487 remains live. Latest complete observation scanned
+16,255,025,152 of223,338,299,392 planned scan bytes, with no controlled
+interruption yet. Do not start another conversion or monitor. The collector
+for the later independent recovered-tree task is now prepared as
+Collect-StreamingV2RecoveredTree.ps1 (9605797/ac29cef); it is not invoked before
+real recovery Finalize plus Verify-StreamingV2RecoveredTree dispatch. It
+preserves failure reports without mistaking absent physical proof for success.
+
 Post-recovery native semantics/retained-position verification is prepared in
 Verify-StreamingV2RecoveredTree.ps1 (9bbadaa). It is NOT dispatched yet: it
 requires actual successful closed Finalize result/completion and pins the old

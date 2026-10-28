@@ -48,6 +48,13 @@ fn information<const N: usize>(
 }
 
 fn file_observation(file: &File) -> io::Result<(String, JournalFileEvidence)> {
+    file_observation_with_profile(file, JournalProfile::LegacyV1)
+}
+
+fn file_observation_with_profile(
+    file: &File,
+    profile: JournalProfile,
+) -> io::Result<(String, JournalFileEvidence)> {
     // SAFETY: file owns the handle for the complete synchronous call.
     require(
         unsafe { GetFileType(file.as_raw_handle()) } == FILE_TYPE_DISK,
@@ -83,7 +90,7 @@ fn file_observation(file: &File) -> io::Result<(String, JournalFileEvidence)> {
         disk_alignment: vec![],
         disk_layout: vec![],
     };
-    validate_file_fields(&e)?;
+    validate_file_fields_for_profile(&e, profile)?;
     Ok((path, e))
 }
 
@@ -194,7 +201,7 @@ pub fn observe_general_journal_file_with_profile(
     profile: JournalProfile,
 ) -> io::Result<JournalFileSnapshot> {
     expected.validate()?;
-    let (before_path, mut before) = file_observation(file)?;
+    let (before_path, mut before) = file_observation_with_profile(file, profile)?;
     let volume_path = final_volume_path(&before_path, &guid_bytes(&expected.disk.volume_guid)?)?;
     let volume = OpenOptions::new()
         .read(true)
@@ -206,7 +213,7 @@ pub fn observe_general_journal_file_with_profile(
         .open(format!("\\\\.\\PhysicalDrive{}", expected.disk.disk_number))?;
     storage_observation(&volume, &disk, &mut before)?;
     let snapshot = validate_general_evidence_for_profile(expected, &before_path, before, profile)?;
-    let (after_path, mut after) = file_observation(file)?;
+    let (after_path, mut after) = file_observation_with_profile(file, profile)?;
     storage_observation(&volume, &disk, &mut after)?;
     finish_observation(snapshot, &after_path, &after)
 }

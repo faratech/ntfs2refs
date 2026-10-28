@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "kind": "observational-native-composite-alpha",
+  "scope": "Exact disposable profile only; no runtime admission authority or arbitrary-drive support.",
+  "source_commit": "fe7b9bc754f87319f8bc6d1c51bda6007fca5cb5",
+  "producer_sha256": "5e156f089b0fc6a67788154e841a74daad4a61028b16ea41391dc8f84e06f524",
+  "windows_build": "26300.9457",
+  "refs_sys_sha256": "3aa5d90958fc582c5f6567d2b970a3a37b3d4d80a4b58b5a8676943b7860d3c4",
+  "geometry": {
+    "target_cluster_bytes": 4096,
+    "partition_bytes": 55834574848,
+    "source_cluster_bytes": 65536,
+    "logical_sector_bytes": 512
+  },
+  "objects": 15,
+  "files": 10,
+  "logical_bytes": 8594411663,
+  "changed_source_bytes": 70557696,
+  "patches": 157,
+  "journal_bytes": 141149789,
+  "shadow_user_exception_bytes": 55,
+  "shadow_system_bytes": 20568,
+  "observed_peak_working_set_bytes": 72118272,
+  "user_mapping_totals": {
+    "user_files": 7,
+    "logical_bytes": 8594391095,
+    "aligned_initialized_nonresident_bytes": 8594391040,
+    "retained_aligned_bytes": 2721181696,
+    "relocated_aligned_bytes": 5873209344,
+    "resident_logical_bytes": 17,
+    "partial_initialized_tail_bytes": 38,
+    "uninitialized_logical_bytes": 0
+  },
+  "mapping_scope": "finalization.native.native verification observation; label restoration or later native activity is not re-observed",
+  "gates": {
+    "fresh_conversion_mutation_reboot": "passed on exact pinned corpus",
+    "provenance_recovery_instructions": "pinned components and instructions exist; no general release claim",
+    "same_build_interruption_resume_rollback": "running; incomplete",
+    "unsafe_case_admission": "three startup refusal checks only; broader matrix incomplete"
+  },
+  "artifacts": [
+    {
+      "role": "finalization",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/conversion-finalization.json",
+      "sha256": "815faadbf6ad44ef03cf2aa70bc8ee0e04f9e903fe3072fdfa2c30fb80be500a",
+      "bytes": 586464
+    },
+    {
+      "role": "converted-result",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/conversion-result.json",
+      "sha256": "9918bc1d9efece53c63f05fcc77cc6605a2115ea840888736a0a5f28478d1d75",
+      "bytes": 1085
+    },
+    {
+      "role": "cold-boot",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/guest-BootVerify.json",
+      "sha256": "e1f6982e0aa2cfc5d85e6b44c875ca1837820772cc12a856f691c32bbfdb3d34",
+      "bytes": 435701
+    },
+    {
+      "role": "mutation",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/guest-Mutate.json",
+      "sha256": "f58faf21bf001490b8bb3e33a47639ada5ace1c6b18113bd397ba3a9ff026419",
+      "bytes": 35161
+    },
+    {
+      "role": "after-mutation",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/guest-AfterMutation.json",
+      "sha256": "ba4bdf795571aa84afb4a8907b4dfe1dc25e0246256b8443c057c4b94cad649f",
+      "bytes": 435520
+    },
+    {
+      "role": "reboot-after-mutation",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/admitted-postcheck/guest-RebootVerify.json",
+      "sha256": "6a92fd659966fa9f4b3ff3196fed334843e5d900ed08a397b7396381597c6686",
+      "bytes": 435786
+    },
+    {
+      "role": "payload-placement",
+      "path": ".lab/hyperv/streaming-v2-20261027/compact-admitted-retry-20261028/payload-placement.json",
+      "sha256": "d6e2c2a2961df07d654c45719047483de9d69cbb55ac9c40be2672e45b80ed21",
+      "bytes": 12540
+    }
+  ],
+  "limitations": [
+    "Enrolled computer/device identities and 52-GiB fixture remain enforced.",
+    "Large payload is predominantly zero-filled; low scratch for arbitrary nonzero relocation is unproven.",
+    "Small source write count is not identical to retained physical-byte count.",
+    "Storage power loss, broad geometry/build compatibility and boot conversion are unqualified.",
+    "No unit tests added/run for this milestone."
+  ],
+  "source_documents": [
+    "docs/native-composite-experimental.md"
+  ],
+  "updated_utc": "2026-10-28T20:20:42.8318915Z"
+}

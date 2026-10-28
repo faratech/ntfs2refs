@@ -1,5 +1,16 @@
 # ntfs2refs project guidance
 
+Candidate13's fresh protected target report is archived as
+candidate13/observed-target-preservation.json, SHA-256
+3a2c267298391230d52d3bef68727c8edec8aa5ef12c5864f531c8a574a53bf4.
+New source d8fd89c7779af5304fc4e5d00fbc15ab61155830b6613842c962baae6d9661c1;
+new expected target1e938b2038047af353a01953569fbf62edd4d53015a3c7460b32cec5f2a69710;
+new tree7ea83b428d71012870b58a14d02c25d4330f004618be68d990f3140b2ce74cf9.
+Retained2,721,431,552/relocated5,868,785,664/materialized106 bytes. These are
+this NEW run's inputs; NEVER substitute candidate12's old image hashes.
+SamePID1424 is still rechecking-source during journal preparation, no exit86
+yet. Monitor42487 remains responsible for exact terminal archive/preservation.
+
 Candidate13 advanced to journal-preparation/comparing under the samePID1424;
 monitor session42487 remains live. Latest complete observation scanned
 16,255,025,152 of223,338,299,392 planned scan bytes, with no controlled

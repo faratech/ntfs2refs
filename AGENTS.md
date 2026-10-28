@@ -1,5 +1,50 @@
 # ntfs2refs project guidance
 
+NORMAL FRESH NATIVE GATE1 PASSED / CONTROLLED INTERRUPT LIVE (supersedes below):
+Normalac098... converter5e156f... TERMINAL0. Native finalizationSHA
+815faadbf6ad44ef03cf2aa70bc8ee0e04f9e903fe3072fdfa2c30fb80be500a,
+result9918bc1d9efece53c63f05fcc77cc6605a2115ea840888736a0a5f28478d1d75.
+All15 objects/10 full hashes, label/mount paths, HNDclosed passed. Coldboot,
+50→80→10MiB/128-entry mutation, after-mutation readback and fresh post-mutation
+reboot passed. Saved converted43=66a34221-06d3-4042-8739-8e48a9977171 and
+final44=2720f72d-5565-4b7a-aff8-378d24b65a4d, ALL44 preserved/RAMreleased.
+Original RebootVerify guard falsely matched bare old PIDs; no observer had
+started. Fixed creation-identity+name guard, observed EXISTING completed boot
+once without extra reboot; original refusal retained. Snapshot receipts also
+have separate lineage-correction.json (actual43parentcfe,44parent43), originals
+retained; capture parent BEFORE creating future checkpoints.
+
+Byte-mapping reportd6e2c2a2961df07d654c45719047483de9d69cbb55ac9c40be2672e45b80ed21:
+7userfiles/8,594,391,095 logicalB(excludes3SVI), samephysical2,721,181,696,
+differentphysical5,873,209,344, resident17/tails38. Nonzero4MiB prefix retained
+fully,37Btailmaterialized. LargeZERO file shifted most mappings WITHOUT those
+zero bytes needing rewrites. Do NOT claim67.3MiB write footprint demonstrates
+arbitrary-nonzero low scratch or that all payload stayed physically fixed.
+Measurement is pinned native finalization BEFORE later label/activity, not
+present layout/write history. inventory_completefalse is parser diagnostic,
+so adapter instead requires actual completed conversion receipt+raw coverage/
+reconciliation and source/tree/postimage hashes; never flips that raw flag.
+
+Rootrestored ONLYcfe0b326 preconvert once AFTER saved44, intent
+admitted-interrupt-restore-intent-20261028.json. ALL44 retained. Controller25165
+TERMINAL0 dispatched SINGLE INTERRUPT949dbc98138e4514a1098081eb0226ef;
+host compact-admitted-interrupt-20261028, guest
+C:\ntfs2refs\compact-admitted-interrupt-949dbc98138e4514a1098081eb0226ef.
+TaskN2R-AdmittedCompact-Interrupt-949dbc98138e4514a1098081eb0226ef;
+wrapper700creation1793216860509, SHA
+eeded76ca38eed02870fbb942cc1b375f0bb01a9ef7313d4767add3109aefc39.
+Abort684creation1793216861088 completed, fresh binder done; actual converter
+PID5364creation1793217057038 LIVE with SAME5e156f.../limit1024 +interrupt-after-writes1.
+At19:51:28Z read14,648,612,633/write77,434, WS7.34MB/private3.21MB, source3/shadow0.
+Expected controlled native ANDwrapperexit86 AFTER one flushed source write;
+NOT success/handoff. Do NOT stop/restore/reformat/retry/open Source/J/packed
+while live. delta_artifact_reader monitors+records metadata/RAM. First taskname
+snapshot serializer collision affected task_name only; subsequent logs fixed.
+After terminal86 inspect actual persistent exclusion/marker, preservepartial45
+BEFORE separate resume/rollback forks. Normal43/44 must never receive raw replay.
+One50GB allowance remains max329374052988/min17179869184, baseline279374052988,
+doNOTreset. No units. Existing main.rs remains unchanged/unstaged.
+
 RAW FRESH CONVERSION APPLIED / NATIVE FINALIZATION LIVE, superseding earlier
 source3 notes: sameac098b7437e04d2d928bc2e18f3b5218/PID5108creation1793212966572,
 wrapper4892creation1793212768546. Source1 OFFLINE/writable is AUTHORIZED journal

@@ -1,5 +1,14 @@
 # ntfs2refs project guidance
 
+Selected4d3... ORIGINAL LIVE SOURCE CERTIFICATE PASSED22:32:35Z; admitted-
+assessment/target-preservation/composite-capture now persisted. Journal preparation
+LIVE22:37:49Z rechecking-shadow200.816/257.698GB scanned, same3332/1793224099967,
+source4/shadow5 both3. No source activation/handoff outcome yet. Do not restart,
+restore, reformat, replay or openSource/J/packed. delta_artifact_reader monitors.
+Managed scratch6 remains a separately retained100MiB C-backed ReFS smoke;
+it does not change the current source4/shadow5/J2 bindings. Code cfc48ff and
+native smoke evidence are committed; whole --drive affirmative run stillpending.
+
 Managed scratch native smoke PASSED: taskN2R-ManagedShadow-Smoke-20261028 Ready0,
 helper09355163db2dd8ab47250bcf68d51cdde4e41596bed83e5677ca6caf2d081ebc.
 Owned new guest virtual disk6, GPTd524dca6-5eb5-4d68-8b35-1b4c86685ba8,

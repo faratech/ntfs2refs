@@ -29,6 +29,8 @@ fn main() -> anyhow::Result<()> {
         #[arg(long, requires_all=["inspection","inspection_sha256"], conflicts_with="observe_existing")]
         materialize_small: bool,
         #[arg(long, requires = "materialize_small")]
+        prepare_large_tails: bool,
+        #[arg(long, requires = "materialize_small")]
         inspection: Option<PathBuf>,
         #[arg(long, requires = "materialize_small")]
         inspection_sha256: Option<String>,
@@ -93,7 +95,8 @@ fn main() -> anyhow::Result<()> {
         &serde_json::json!({
         "kind":if args.observe_existing {"private-tree-observation-intent"}else{"private-tree-allocation-intent"},
         "observe_existing":args.observe_existing,"allocation_writes_authorized":!args.observe_existing,
-        "materialize_small":args.materialize_small,"inspection_sha256":args.inspection_sha256,
+        "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
+        "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,
         "tree_sha256":args.tree_sha256,"source_writes_authorized":false,
         "source_image_hash_reverified":false,"source_admitted":false,"conversion_qualified":false}),
@@ -112,13 +115,19 @@ fn main() -> anyhow::Result<()> {
                 .enumerate()
                 .filter(|(_, o)| {
                     !o.directory
-                        && o.length <= 4096
+                        && (o.length <= 4096 || (args.prepare_large_tails && o.length % 4096 != 0))
                         && !o
                             .path
                             .first()
                             .is_some_and(|s| s == "System Volume Information")
                 })
-                .map(|(i, _)| i)
+                .map(|(i, o)| {
+                    if o.length <= 4096 {
+                        (i, 0, o.length as usize)
+                    } else {
+                        (i, o.length / 4096 * 4096, (o.length % 4096) as usize)
+                    }
+                })
                 .collect();
             let mut events = Vec::new();
             let mut source = if args.materialize_small {
@@ -137,7 +146,7 @@ fn main() -> anyhow::Result<()> {
             // raw model must not cause needless partial shadow allocation.
             if let (Some(source), Some(raw)) = (source.as_mut(), inspection.as_ref()) {
                 let mut buffer = [0u8; 4096];
-                for &index in &selected {
+                for &(index, offset, length) in &selected {
                     let object = &tree.objects[index];
                     let matches: Vec<_> = raw
                         .files
@@ -152,8 +161,8 @@ fn main() -> anyhow::Result<()> {
                         source,
                         raw,
                         object.record_number,
-                        0,
-                        &mut buffer[..object.length as usize],
+                        offset,
+                        &mut buffer[..length],
                         &mut budget,
                     )?;
                     ensure!(
@@ -165,22 +174,27 @@ fn main() -> anyhow::Result<()> {
             }
             let mut template = general_shadow::allocate_private_tree(&request.pair, &tree)?;
             let mut transfers = Vec::new();
+            let mut unverified_prefixes = Vec::new();
             if let (Some(source), Some(raw)) = (source.as_mut(), inspection.as_ref()) {
-                for &index in &selected {
+                for &(index, offset, length) in &selected {
+                    if offset > 0 {
+                        unverified_prefixes.push(template.prepare_unplaced_prefix(index, offset)?);
+                    }
                     transfers.push(general_shadow::materialize_private_range(
                         source,
                         raw,
                         &tree,
                         &mut template,
                         index,
-                        0,
-                        tree.objects[index].length as usize,
+                        offset,
+                        length,
                         &mut budget,
                     )?);
                 }
             }
             let mut report = template.report()?;
             report["source_materialization_ranges"] = serde_json::to_value(transfers)?;
+            report["private_unverified_prefixes"] = serde_json::to_value(unverified_prefixes)?;
             report["source_logical_range_bytes_charged"] = budget.reserved_bytes().into();
             report["large_payload_initialization_selected"] = false.into();
             Ok(report)
@@ -197,7 +211,8 @@ fn main() -> anyhow::Result<()> {
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":"private-tree-allocation",
         "success":failure.is_none(),"observe_existing":args.observe_existing,
-        "materialize_small":args.materialize_small,"inspection_sha256":args.inspection_sha256,
+        "materialize_small":args.materialize_small,"prepare_large_tails":args.prepare_large_tails,
+        "inspection_sha256":args.inspection_sha256,
         "request_sha256":args.request_sha256,"tree_sha256":args.tree_sha256,
         "request":request,"native":native,"source_image_hash_reverified":false,
         "source_admitted":false,"conversion_qualified":false}),

@@ -374,6 +374,17 @@ impl PrivatePlaceholder {
         Ok(())
     }
 
+    /// Private scratch preparation only. No original physical ownership or
+    /// source contents are authenticated by making this prefix storage-valid.
+    pub fn prepare_unplaced_prefix(&mut self, bytes: u64) -> io::Result<()> {
+        if !self.placed.is_empty() {
+            return Err(invalid(
+                "unplaced preparation cannot bypass placed-prefix coverage",
+            ));
+        }
+        self.advance_valid_data(bytes, false)
+    }
+
     fn verify_placements(&self) -> io::Result<()> {
         if self.placed.is_empty() {
             return Ok(());

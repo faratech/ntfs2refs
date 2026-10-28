@@ -47,6 +47,26 @@ impl PrivateTree {
         self.require_source_excluded()
     }
 
+    /// Prepare private scratch for a tail write without copying its prefix.
+    /// This is explicitly NOT a retained-source or logical-content proof.
+    pub fn prepare_unplaced_prefix(
+        &mut self,
+        object_index: usize,
+        bytes: u64,
+    ) -> io::Result<serde_json::Value> {
+        self.require_source_excluded()?;
+        self.files
+            .get_mut(&object_index)
+            .ok_or_else(|| invalid("private tail file absent"))?
+            .prepare_unplaced_prefix(bytes)?;
+        self.require_source_excluded()?;
+        Ok(
+            serde_json::json!({"object_index":object_index,"storage_valid_prefix_bytes":bytes,
+            "source_prefix_contents_verified":false,"original_physical_positions_verified":false,
+            "private_scratch_only":true,"conversion_qualified":false}),
+        )
+    }
+
     /// Materialize a small/resident stream or tail after its retained prefix
     /// is valid. The caller supplies bytes from its checked source reader.
     pub fn materialize_range(

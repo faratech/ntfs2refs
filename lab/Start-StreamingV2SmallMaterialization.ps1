@@ -1,15 +1,16 @@
 # Materialize only bounded small user streams; large payload stays unwritten. Only
 # the disposable shadow is formatted; all saved branches/source stay intact.
-[CmdletBinding()]param()
+[CmdletBinding()]param([switch]$PrepareLargeTails)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 $workspace='D:\code\ntfs2refs'
 $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'
 $parent=[guid]'6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3'
-$root=Join-Path $workspace '.lab\hyperv\streaming-v2-20261027\private-tree-small-materialization-20261028'
+$root=Join-Path $workspace $(if($PrepareLargeTails){'.lab\hyperv\streaming-v2-20261027\private-tree-tail-materialization-20261028'}else{'.lab\hyperv\streaming-v2-20261027\private-tree-small-materialization-20261028'})
+$expectedCount=if($PrepareLargeTails){24}else{23}
 if(Test-Path -LiteralPath $root){throw 'Private-tree run has state; observe without redispatch.'}
 $vm=Get-VM -Id $id;$old=@(Get-VMSnapshot -VM $vm|ForEach-Object {$_.Id.ToString()})
-if($vm.State.ToString()-cne'Off'-or$vm.ParentSnapshotId-ne$parent-or$old.Count-ne23-or
+if($vm.State.ToString()-cne'Off'-or$vm.ParentSnapshotId-ne$parent-or$old.Count-ne$expectedCount-or
     $vm.MemoryStartup-ne4GB-or$vm.DynamicMemoryEnabled-or@(Get-VMNetworkAdapter -VM $vm).Count){throw 'Exact isolated saved branch required.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
 Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 12GB
@@ -24,7 +25,7 @@ function Save-New([string]$name,$value){$f=[IO.File]::Open((Join-Path $root $nam
 $run=[guid]::NewGuid().ToString('N')
 Save-New 'intent.json' @{vm_id=$id.ToString();parent_id=$parent.ToString();old_checkpoint_ids=$old;run_id=$run;
     binary_sha256=$pin;tree_sha256=$treePin;inspection_sha256=$inspectionPin;source_commit=(& git -C $workspace rev-parse HEAD).Trim();
-    shadow_format_authorized=$true;source_writes_authorized=$false;additional_bytes=12GB;utc=[DateTime]::UtcNow.ToString('o')}
+    shadow_format_authorized=$true;source_writes_authorized=$false;prepare_large_tails=[bool]$PrepareLargeTails;additional_bytes=12GB;utc=[DateTime]::UtcNow.ToString('o')}
 Copy-Item -LiteralPath $binary -Destination (Join-Path $root 'producer.exe')
 Copy-Item -LiteralPath $tree -Destination (Join-Path $root 'expectation.json')
 Copy-Item -LiteralPath $inspection -Destination (Join-Path $root 'source-inspection.json')
@@ -70,14 +71,15 @@ try{
     Copy-Item -LiteralPath $request -ToSession $s -Destination (Join-Path $stage 'request.json')
     Copy-Item -LiteralPath $tree -ToSession $s -Destination (Join-Path $stage 'expectation.json')
     Copy-Item -LiteralPath $inspection -ToSession $s -Destination (Join-Path $stage 'source-inspection.json')
-    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,$run,$pin,$requestPin,$treePin,$inspectionPin -ScriptBlock {
-        param($Stage,$Run,$Pin,$RequestPin,$TreePin,$InspectionPin);$ErrorActionPreference='Stop'
+    $dispatch=Invoke-Command -Session $s -ArgumentList $stage,$run,$pin,$requestPin,$treePin,$inspectionPin,([bool]$PrepareLargeTails) -ScriptBlock {
+        param($Stage,$Run,$Pin,$RequestPin,$TreePin,$InspectionPin,$Tails);$ErrorActionPreference='Stop'
         $binary=Join-Path $Stage 'lab-allocate-private-tree.exe';$request=Join-Path $Stage 'request.json';$tree=Join-Path $Stage 'expectation.json'
         $inspection=Join-Path $Stage 'source-inspection.json'
         if((Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant()-cne$Pin-or(Get-FileHash -LiteralPath $request).Hash.ToLowerInvariant()-cne$RequestPin-or(Get-FileHash -LiteralPath $tree).Hash.ToLowerInvariant()-cne$TreePin-or(Get-FileHash -LiteralPath $inspection).Hash.ToLowerInvariant()-cne$InspectionPin){throw 'Staged pins differ.'}
         $task='N2R-PrivateTree-'+$Run
         if(Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue){throw 'Fresh task required.'}
         $arguments='--request "'+$request+'" --request-sha256 '+$RequestPin+' --tree "'+$tree+'" --tree-sha256 '+$TreePin+' --materialize-small --inspection "'+$inspection+'" --inspection-sha256 '+$InspectionPin+' --output "'+(Join-Path $Stage 'result.json')+'"'
+        if($Tails){$arguments+=' --prepare-large-tails'}
         Register-ScheduledTask -TaskName $task -Action (New-ScheduledTaskAction -Execute $binary -Argument $arguments) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero))|Out-Null
         @{task_name=$task;run_id=$Run;guest_stage=$Stage;binary=$binary;binary_sha256=$Pin;arguments=$arguments;request_sha256=$RequestPin;tree_sha256=$TreePin;inspection_sha256=$InspectionPin}
     }

@@ -1,5 +1,47 @@
 # Experimental native composite workflow
 
+## Recorded fresh conversion and native checks
+
+Run `ac098b7437e04d2d928bc2e18f3b5218`, converter
+`5e156f089b0fc6a67788154e841a74daad4a61028b16ea41391dc8f84e06f524`,
+passed genuine live admission,157 source patches/70,557,696 bytes, and exact
+pre-mount ReFS image
+`7c1486aec258e9d2d2075ec6e6cd7230f4ae011388b61a789aba1be4a00d67d1`.
+Native ReFS verified15 objects/10 full file hashes, label and mount paths.
+Journal141,149,789 bytes; peak converter working set68.8MiB, VM fixed4GiB.
+Shadow supplied55 user exception bytes and20,568 system bytes; full-cluster
+user payload came from the source-backed image.
+
+Cold-boot readback,50→80→10MiB create/grow/truncate/rename/delete workload with
+128 entries, after-mutation readback and post-mutation reboot readback passed.
+Converted43=`66a34221-06d3-4042-8739-8e48a9977171`; final44=
+`2720f72d-5565-4b7a-aff8-378d24b65a4d`. Both/all prior snapshots are preserved.
+An initial reboot guard matched bare old PIDs and refused before observation;
+the fix uses original-wrapper creation identity/worker names. The completed
+existing boot was observed once; no extra reboot and no erased refusal.
+Original checkpoint parent receipts have an authoritative lineage correction.
+
+Pins under `compact-admitted-retry-20261028/admitted-postcheck`:
+
+| Report | SHA-256 |
+|---|---|
+| finalization | `815faadbf6ad44ef03cf2aa70bc8ee0e04f9e903fe3072fdfa2c30fb80be500a` |
+| cold boot | `e1f6982e0aa2cfc5d85e6b44c875ca1837820772cc12a856f691c32bbfdb3d34` |
+| mutation | `f58faf21bf001490b8bb3e33a47639ada5ace1c6b18113bd397ba3a9ff026419` |
+| after mutation | `ba4bdf795571aa84afb4a8907b4dfe1dc25e0246256b8443c057c4b94cad649f` |
+| reboot after mutation | `6a92fd659966fa9f4b3ff3196fed334843e5d900ed08a397b7396381597c6686` |
+
+Pinned-report byte accounting observed2,721,181,696 aligned user bytes at the
+same physical locations and5,873,209,344 at different locations, plus17 resident/
+38 tail bytes. The nonzero file retained all4,194,304 aligned bytes;37-byte tail
+was materialized. SVI is excluded. Zero-filled content can change mappings
+without payload rewriting when destination bytes match. The67.3MiB write count
+therefore does not prove small scratch for arbitrary nonzero data. This mapping
+report describes finalization's native observation before later label/activity,
+not current layout, write history or recovery authority. Report SHA
+`d6e2c2a2961df07d654c45719047483de9d69cbb55ac9c40be2672e45b80ed21`.
+Same-build interruption/recovery qualification remains separate and pending.
+
 The entry remains confined to the enrolled disposable Windows11 machine/disks.
 It is not arbitrary-drive or boot-volume support. Conversion and recovery run
 inside the machine owning the volumes; Hyper-V is laboratory infrastructure.

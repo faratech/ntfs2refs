@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+COMPACT INTERRUPT TRIAL LIVE: do NOT restart/restore/mount source. Only preapply
+5971d348 was restored; convertedf5ad and postcheck34c299 remain with ALL38 saved
+checkpoints. TaskN2R-CompactRecovery-Interrupt-4539fe2de48e4c33a8db4d733fe859a7,
+PID4764 creation1793205034827, producer704cc2850bfe90e3fd38a662355f75b6bf15e6b9c3dc4f9e198b3df03341ccc0
+(3f4fb97+pre-existing main.rs). Host compact-recovery-20261028/interrupt dispatch;
+guest C:\ntfs2refs\compact-recovery-4539fe2de48e4c33a8db4d733fe859a7\result.
+Expected controlled exit86 AFTER1 complete flushed target write, before HND.
+At16:31:39Z source hash phase still live, read30,864,775,670/write196 bytes,
+source3/shadow3, only intent.json. Source will legitimately become attrs1 but
+must remain OFFLINE. Preserve partial state/checkpoint after terminal86, then
+clean reboot proves persistent exclusion BEFORE resume/rollback. Never infer
+termination from timeout. Controller7813 completed dispatch once. No units.
+
 COMPACT REBOOT/MUTATION POSTCHECK PASSED: BootVerify86586f40728f9d8e48dde5768aeb314960e4c0cc073cdba0b79c4f5edc698f76;
 Mutateef37293d35a3afa0f0d6596e26d5be15da90a14a42038b5ecbf982cffd498218;
 AfterMutationd1f19b44bf7130e0010086b18e2ec7bd4d5d4d1249c73cfdc59ea6481f3fb6d7;

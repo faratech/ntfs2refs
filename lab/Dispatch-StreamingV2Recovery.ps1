@@ -28,7 +28,14 @@ foreach($name in @('request.json','ticket.json','expectation.json','interruption
 $helper=@($intent.binaries|Where-Object {$_.name-ceq'ntfs2refs-recover.exe'})
 if($helper.Count-ne1){throw 'Original recovery helper pin missing.'}
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
-Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 2GB
+$growth=2GB
+if($d.PSObject.Properties.Name-contains'controlled_retained_recovery'-and$d.controlled_retained_recovery){
+    if($Candidate-cne'candidate13'-or$d.max_journal_bytes-ne1536MB-or-not$d.frozen_shadow_reuse){throw 'Retained recovery profile differs.'}
+    # Existing fixed journal, <=1024 target intervals and796,917,760 changed
+    # bytes: allow6 GiB OS, <5 GiB source COW and1 GiB metadata margin.
+    $growth=if($Operation-ceq'Finalize'){4GB}else{12GB}
+}
+Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes $growth
 $credential=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $session=New-PSSession -VMId $d.vm_id -Credential $credential
 try{

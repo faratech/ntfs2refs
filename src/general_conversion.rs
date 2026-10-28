@@ -111,6 +111,27 @@ pub fn convert_interrupted(request: &Request, output: &Path, writes: u32) -> Res
     convert_profile(request, output, Interruption::AfterWrites(writes), false)
 }
 
+/// Same fresh cache synchronization and admission as the normal reuse path,
+/// followed by the existing controlled flushed-write interruption. No recovery
+/// authority or source/target qualification gate is skipped.
+pub fn convert_interrupted_with_existing_cache_sync(
+    request: &Request,
+    output: &Path,
+    writes: u32,
+) -> Result<()> {
+    ensure!(
+        (1..=4096).contains(&writes),
+        "interruption count must be 1..=4096"
+    );
+    ensure!(
+        request.verify_existing_shadow
+            && request.source_resource_profile
+                == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2),
+        "cache synchronization requires explicit streaming shadow reuse"
+    );
+    convert_profile(request, output, Interruption::AfterWrites(writes), true)
+}
+
 /// Laboratory-only process death after the real source-frozen artifact is
 /// durable, with the native source handle still live and before target work.
 /// The production conversion CLI does not expose this interruption point.

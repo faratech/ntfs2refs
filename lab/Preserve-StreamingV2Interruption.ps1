@@ -12,8 +12,13 @@ if(Test-Path -LiteralPath (Join-Path $root 'preserve-interruption-intent.json'))
 Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
 Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration (Get-LabConfiguration -WorkspaceRoot $workspace)) -AdditionalBytes 32MB
 $vm=Get-VM -Id $d.vm_id
+$retained=$d.PSObject.Properties.Name-contains'controlled_retained_recovery'-and$d.controlled_retained_recovery
+$expectedParent=if($retained){[guid]'6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3'}else{[guid]'775f4db8-8635-486c-b6eb-7098426b51a6'}
+if($retained-and($Candidate-cne'candidate13'-or$d.max_journal_bytes-ne1536MB-or-not$d.refresh_existing_system_cache-or-not$d.frozen_shadow_reuse)){
+    throw 'Controlled retained interruption binding differs.'
+}
 if($vm.Name-cne'ntfs2refs-streaming-v2-20261027'-or$vm.State.ToString()-cne'Running'-or
-    $vm.ParentSnapshotId-ne[guid]'775f4db8-8635-486c-b6eb-7098426b51a6'){throw 'Running interrupted baseline child required.'}
+    $vm.ParentSnapshotId-ne$expectedParent){throw 'Running interrupted baseline child required.'}
 $cred=Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')
 $state=Invoke-Command -VMId $d.vm_id -Credential $cred -ArgumentList $d.task_name,$d.guest_output -ScriptBlock {
     param($Task,$Output);Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'

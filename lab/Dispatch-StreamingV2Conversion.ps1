@@ -2,7 +2,8 @@
 [CmdletBinding()]param([ValidatePattern('^candidate[1-9][0-9]*$')][string]$Candidate='candidate1',
     [ValidateRange(0,4096)][int]$InterruptAfterWrites=0,[switch]$Retention8G,
     [ValidateRange(32,7168)][int]$JournalBudgetMiB=1024,[switch]$FrozenShadowReuse,
-    [switch]$RefreshExistingSystemCache,[ValidateSet(1,2,3)][int]$CacheSyncPreparationVersion=1)
+    [switch]$RefreshExistingSystemCache,[ValidateSet(1,2,3)][int]$CacheSyncPreparationVersion=1,
+    [switch]$ControlledRetainedRecovery)
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
 Import-Module Hyper-V -ErrorAction Stop
@@ -11,14 +12,21 @@ $workspace='D:\code\ntfs2refs';$root=Join-Path $workspace '.lab\hyperv\streaming
 $m=Get-Content -LiteralPath (Join-Path $root 'manifest.json') -Raw|ConvertFrom-Json
 $fixtureRoot=if($Retention8G){Join-Path $root 'retention8g'}else{$root}
 $baseline=Get-Content -LiteralPath (Join-Path $fixtureRoot 'baseline.json') -Raw|ConvertFrom-Json
+if($ControlledRetainedRecovery-and($Candidate-cne'candidate13'-or$InterruptAfterWrites-ne1-or-not$Retention8G-or
+    -not$FrozenShadowReuse-or-not$RefreshExistingSystemCache-or$CacheSyncPreparationVersion-ne3-or$JournalBudgetMiB-ne1536)){
+    throw 'Controlled retained recovery is enrolled only for the fresh candidate13 one-write reuse case.'
+}
 if($FrozenShadowReuse){
-    if(-not$Retention8G-or$InterruptAfterWrites-ne0-or$JournalBudgetMiB-ne1536){throw 'Frozen reuse is enrolled only for the corrected 1536-MiB retention case.'}
+    if(-not$Retention8G-or($InterruptAfterWrites-ne0-and-not$ControlledRetainedRecovery)-or$JournalBudgetMiB-ne1536){throw 'Frozen reuse is enrolled only for the corrected 1536-MiB retention case.'}
     $baseline=Get-Content -LiteralPath (Join-Path $root 'candidate5\valid-data-probe\failed-checkpoint.json') -Raw|ConvertFrom-Json
 }
 if($RefreshExistingSystemCache){
     if(-not$FrozenShadowReuse){throw 'Cache refresh requires the enrolled existing-shadow path.'}
     $cachePreparation=if($CacheSyncPreparationVersion-eq1){'cache-sync-retry-preparation'}else{'cache-sync-retry-preparation-v'+$CacheSyncPreparationVersion}
     $baseline=Get-Content -LiteralPath (Join-Path $root ($cachePreparation+'\refused-checkpoint.json')) -Raw|ConvertFrom-Json
+}
+if($ControlledRetainedRecovery-and[guid]$baseline.checkpoint_id-ne[guid]'6ffb6bdc-4da6-4060-8b4e-0c07a83d11b3'){
+    throw 'Controlled retained recovery requires the preserved pre-apply NTFS checkpoint.'
 }
 $vm=Get-VM -Id $m.vm_id
 if($vm.Id-ne[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599'-or$vm.Name-cne$m.name-or[guid]$vm.ParentSnapshotId-ne[guid]$baseline.checkpoint_id-or
@@ -35,6 +43,12 @@ if($FrozenShadowReuse){
     # 796,917,760-byte change budget bound 2-MiB source COW allocation below
     # 5.1 GB. Reserve the full 8-GiB journal disk, 6 GiB OS and metadata margin.
     $growthBudgetBytes=20GB
+    if($ControlledRetainedRecovery){
+        # Only ONE bounded patch can reach source writes before exit86. Reserve
+        # the full8-GiB journal device,6 GiB OS and2 GiB source/metadata margin.
+        # Resume has separate admission; this is not the full-apply allowance.
+        $growthBudgetBytes=16GB
+    }
     foreach($drive in Get-VMHardDiskDrive -VM $vm){if((Get-VHD -Path $drive.Path).BlockSize-ne2MB){throw 'Enrolled two-MiB COW block size required.'}}
 }
 Assert-LabCapacity -Capacity $capacity -AdditionalBytes $growthBudgetBytes
@@ -119,6 +133,7 @@ try{
     }
     $dispatch|Add-Member vm_id $m.vm_id
     $dispatch|Add-Member fixture_root $fixtureRoot
+    $dispatch|Add-Member controlled_retained_recovery ([bool]$ControlledRetainedRecovery)
     Save-New 'dispatch.json' $dispatch
     Copy-Item -LiteralPath $dispatch.guest_request -FromSession $s -Destination (Join-Path $candidateRoot 'request.json')
     if((Get-FileHash -LiteralPath (Join-Path $candidateRoot 'request.json')).Hash.ToLowerInvariant()-cne$dispatch.request_sha256){throw 'Exported discovery request differs; registered task remains unstarted.'}

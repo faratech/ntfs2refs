@@ -33,6 +33,22 @@ move cap/64 submissions and64-GiB host reserve remain. Native frozen capture is
 pending; no unit tests added/run. Source metadata restoration, full frozen graph
 proof and compact journal/cutover integration are still incomplete.
 
+The first native difference attempt7ce7e8282ef04fab865a950020d88ea5 stopped
+with device-not-ready21 during allocation freeze, before creating a difference
+file or allocation witness. Source stayed offline/read-only, shadow online;
+no worker remained. Resultd2640c816afc55e86ee200b6bee1bd09da18c84f21141c7ec7f822dfdc082120
+was preserved OFF at423b20f5-e254-4d52-bdf7-f990a5f5866c, all30 snapshots.
+
+The freeze implementation now queries the filesystem through an opened root
+directory handle, closing it before LOCK; raw volume handles remain responsible
+for route/lock/bitmap controls. Microsoft's
+[GetVolumeInformationByHandleW contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew)
+describes a file handle. This correction has release-build evidence; the earlier
+untraced21 does not establish which call failed. Freeze events are now durably
+saved even when freeze returns an error, with explicit filesystem-query evidence.
+`-RootHandleFreeze` uses a separate fresh branch/root and all30 saved snapshots;
+it does not retry the previous constructor. Native corrected capture pending.
+
 ## Source-backed relocated payload and compact capture
 
 `PrivateTree::prepare_source_backed_prefixes` makes complete measured prefixes

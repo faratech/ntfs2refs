@@ -1282,13 +1282,24 @@ fn capture_allocation_queries(
     Ok(snapshot)
 }
 
-fn allocation_refs_handle(volume: &File) -> io::Result<()> {
+fn allocation_refs_filesystem(
+    binding: &GeneralDiskBinding,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<()> {
+    // Query a filesystem file handle rather than the raw DASD handle used for
+    // LOCK and bitmap controls. Close it before requesting exclusive access.
+    // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew
+    let root = OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .custom_flags(0x0200_0000)
+        .open(format!("{}\\", binding.volume_path()?))?;
     let mut filesystem = [0u16; 32];
     // SAFETY: the handle is retained throughout this synchronous query and
     // filesystem is an initialized output buffer with the stated capacity.
     let success = unsafe {
         GetVolumeInformationByHandleW(
-            volume.as_raw_handle(),
+            root.as_raw_handle(),
             ptr::null_mut(),
             0,
             ptr::null_mut(),
@@ -1298,8 +1309,18 @@ fn allocation_refs_handle(volume: &File) -> io::Result<()> {
             filesystem.len() as u32,
         )
     } != 0;
-    if !success {
-        return Err(io::Error::last_os_error());
+    let error = (!success).then(io::Error::last_os_error);
+    events.push(NativeEvent {
+        operation: "allocation-mounted-root-filesystem".into(),
+        control_code: 0,
+        input: vec![],
+        succeeded: success,
+        native_error: error.as_ref().and_then(io::Error::raw_os_error),
+        output: filesystem.iter().flat_map(|v| v.to_le_bytes()).collect(),
+    });
+    close_file(root, "close-allocation-root-before-lock", events)?;
+    if let Some(error) = error {
+        return Err(error);
     }
     if filesystem[..5] != [b'R' as u16, b'e' as u16, b'F' as u16, b'S' as u16, 0] {
         return Err(invalid("allocation freeze requires a mounted ReFS handle"));
@@ -1419,7 +1440,7 @@ impl GeneralFrozenPartition {
             events,
         )?;
         binding.validate_volume_extent(&volume_extents)?;
-        allocation_refs_handle(&volume)?;
+        allocation_refs_filesystem(&binding, events)?;
         let buffer = AlignedBuffer::new()?;
         control(&volume, "allocation-lock-volume", LOCK, &[], 0, events)?;
         // LOCK flushes cached filesystem data; require an additional explicit

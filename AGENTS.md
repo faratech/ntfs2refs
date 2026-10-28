@@ -1,5 +1,18 @@
 # ntfs2refs project guidance
 
+First native difference capture7ce7e8282ef04fab865a950020d88ea5 TERMINAL1:
+device-not-ready21 before allocation witness/output. Source stayed3, shadow0,
+no worker; preserved OFF at423b20f5-e254-4d52-bdf7-f990a5f5866c, ALL30 snapshots.
+Resultd2640c816afc55e86ee200b6bee1bd09da18c84f21141c7ec7f822dfdc082120.
+No detailed old freeze trace, so precise failing call unproven. Corrected
+filesystem-name query now uses a root DIRECTORY handle per Microsoft file-
+handle API contract, closes it before LOCK; native raw volume route/lock checks
+remain. Events saved on freeze error too; no retries/remount bypass. Build/
+controller syntax passed, native corrected result pending. -RootHandleFreeze
+requires fresh difference-capture-root-handle-20261028 root/restored6ff/all30,
+same4-GiB forecast/768-MiB output cap/8.25-GiB virtual move bound. Do not rerun
+old constructor; preserve all evidence/reserve. No unit tests added/run.
+
 Frozen source-backed difference capture IMPLEMENTED, native result pending.
 CLI --compact-output retains typed routes while dropping private handles,
 freezes enrolled shadow with native witness, saves witness/header evidence,

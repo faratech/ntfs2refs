@@ -297,17 +297,23 @@ fn main() -> anyhow::Result<()> {
                     save(&args.output.with_extension("pre-freeze.json"), &report)?;
                     drop(template);
                     let mut events = Vec::new();
-                    let (mut shadow,witness) = n2r_win32::GeneralFrozenPartition::isolate_with_allocation_with_resource_profile(
-                        routes.pair().shadow.clone(),resources.native_profile(),&mut events)?;
+                    let frozen = n2r_win32::GeneralFrozenPartition::isolate_with_allocation_with_resource_profile(
+                        routes.pair().shadow.clone(),resources.native_profile(),&mut events);
+                    save(&args.output.with_extension("freeze-events.json"), &events)?;
+                    let (mut shadow, witness) =
+                        frozen.map_err(|e| anyhow::anyhow!("shadow allocation freeze: {e}"))?;
                     shadow.validate_allocation_witness(&witness, &mut events)?;
-                    save(&args.output.with_extension("allocation-freeze.json"),&witness)?;
+                    save(
+                        &args.output.with_extension("allocation-freeze.json"),
+                        &witness,
+                    )?;
                     let length = shadow.byte_len();
                     let refs = ntfs2refs::refs_inspect::inspect_with_resource_profile(
                         &mut shadow,
                         length,
                         resources,
                     )?;
-                    save(&args.output.with_extension("frozen-refs.json"),&refs)?;
+                    save(&args.output.with_extension("frozen-refs.json"), &refs)?;
                     let anchors = ntfs2refs::refs_write_set::observed_anchors(&refs)?;
                     // Post-lock fallback remains explicitly non-authoritative:
                     // neither observation proves the frozen required-byte graph.

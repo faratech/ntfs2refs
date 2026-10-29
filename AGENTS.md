@@ -95,6 +95,11 @@ At cleanup the VM was OFF/RAM0, D free118,738,907,136B and lab224,349,834,679B.
 Keep the exact sealed2ff artifacts; do not substitute a later build into these results.
 The later frozen-allocation-map diagnostic codea8da755 passed cargo check--lib,
 has no native qualification and does not enable selective capture.
+Later commits 7e318ce, 541f76f and 46e0dcc reduce repeated source, candidate,
+recovery and journal reads while keeping complete integrity checks. Their
+focused release builds passed, but they have not passed the native workflow.
+The paired-digest host memory measurement is recorded in
+evidence/paired-hash-host-benchmark-20261029.json; it is not a disk benchmark.
 Same-binary interruption/recovery on fb5548 remains unqualified; sealed2cac's
 separate controlled Resume/Rollback evidence must remain distinct.
 
@@ -107,6 +112,9 @@ Actual controlled core PID4856/creation1793257320594, wrapper1472/creation
 with public recovery main fb5548...; old daed9.../4bd15... binaries are used
 only to provision the fresh shadow and read-only bind devices. Dispatch SHA
 348f605d91bca90a2451136e5cea6ae745737fa677236d2d9089710d67d58fbb.
+The same task and PID/creation identity were still live at 07:36:01Z, with
+507,860,498,976 bytes read and source/shadow protected offline/read-only.
+The task must be observed to genuine terminal completion; do not restart it.
 Expected native and wrapper exit86 follows one flushed source write; it is not
 conversion success. Delta monitors metadata only. Do not interrupt or open live
 source/J/packed/capture/bundle/images/locked artifacts. Check actual task and

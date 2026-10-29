@@ -1,8 +1,13 @@
 # ntfs2refs
 
-Rust tooling and a Hyper-V laboratory for researching offline, extent-preserving
-NTFS-to-ReFS conversion. The current focus is data volumes; Windows OS-volume
-conversion and build-specific boot qualification are deferred.
+An experimental Rust NTFS-to-ReFS converter for data volumes, with a Hyper-V
+laboratory. Conversion runs on the Windows machine owning the disk; the program
+does not require a hypervisor. Windows OS-volume and boot conversion remain deferred.
+
+The [frozen 2026-10-29 drive alpha](docs/frozen-drive-alpha-20261029.md) passed
+normal conversion, ordinary file mutation and reboot readback on its 52 GiB
+fixture: 15 objects and all 10 file hashes matched. Its exact executable and
+qualification limits are pinned separately from later development builds.
 
 The drive-oriented Windows entry point is now available:
 

@@ -24,12 +24,12 @@ when unchanged evidence already answers the question.
 ## Current handoff snapshot — 2026-10-29
 
 The coordinating agent reports VM
-2401593c-4b30-472e-9b6d-c9534cbaa599 running with parent checkpoint
-5125d335-09b4-4838-bc64-28b079e3f2b9 (the new public NTFS rollback branch).
+2401593c-4b30-472e-9b6d-c9534cbaa599 OFF with parent checkpoint
+632b630a-c77b-43b2-9b9a-eafbbd87106d (optimized conversion/mutation/reboot passed).
 The VM has fixed 4 GiB RAM, 4 CPUs and no network adapter.
 Only two checkpoints remain after user-authorized cleanup:
 - Public bundle NTFS rollback: 5125d335-09b4-4838-bc64-28b079e3f2b9.
-- Public bundle ReFS recovery: 25a829b6-bea2-40cb-9114-e8d28e775d81.
+- Optimized ReFS after mutation/reboot: 632b630a-c77b-43b2-9b9a-eafbbd87106d.
 
 A bundle-enabled controlled conversion has completed with actual native and
 wrapper exit 86 after one flushed source write. Its run ID is
@@ -66,29 +66,38 @@ After saving actual5125, root deleted obsolete0872/693/d121 through Hyper-V.
 The cleanup receipt is checkpoint-cleanup-bundle-20261029/receipt.json; old IDs
 in historical reports must not be recreated or restored.
 
-NORMAL optimized public --drive F --partition2 is NOW RUNNING:
+NORMAL optimized public --drive F --partition2 PASSED native/wrapper0:
 2c0a76e195f540218d60e98266f4e14d, task
 N2R-OptimizedDriveAlpha-2c0a76e195f540218d60e98266f4e14d, guest
 C:\ntfs2refs\optimized-drive-alpha-2c0a76e195f540218d60e98266f4e14d.
-Actual main892/creation1793251802144, wrapper1260/creation1793251797752
-was live05:30:23Z. Candidate mainfb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c
+Actual main892/creation1793251802144 closed06:25:53Z; wrapper1260 also exited0.
+Frozen mainfb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c
 uses the two read optimizations, lifecycle routing and CNG image hashes.
 Source commit2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7; sealed manifest
 optimized-drive-alpha-tools-20261029/manifest.json SHA230c08850b41bcab1defa0b81aa35406ea0760e25a4042657602d191e0065d6b.
 Host case optimized-drive-alpha-20261029-2c0a76e195f540218d60e98266f4e14d;
 dispatch SHA628f14f6755e1263fade86c49fd5c70696593260ce1d7d7b6246a3305ef0794f.
 No fault was requested; main provisions its own managed shadow/journal.
-Delta monitors metadata only. Do not interrupt or open live source/J/packed/
-images/locked artifacts. Check actual liveness; recorded observations grant no
-power/replay authority. After genuine terminal0/workers absent, collect the
-actual closed wrapper/core results, preserve the normal converted branch,
-then qualify mutation/reboot on this exact candidate as needed for the freeze.
-The prepared collection command is lab/Collect-OptimizedDriveAlpha.ps1 with
-the actual dispatch path/SHA above. It creates closed-conversion/receipt.json.
-Use that actual receipt pin with lab/Invoke-OptimizedDriveMutation.ps1 and the
-same current parent/checkpoint IDs. It uses unchanged independently pinned
-c71d2a... mutator and571e07... verifier from managed-recovered-mutation-tools-20261029.
-Do not rebuild the frozen converter while this qualification is in progress.
+Closed normal receipt SHA8287357c7cbe3567951be974df4d870a048db00243391a545e3ad23d3c682335.
+It proves152 patches/70,631,424B, exact target2b63f03280fa7ce9b817334f81ef97cf6f11c3e445c8ee012886b4ad9ca89c26,
+fresh source admission, HND, native15/10, original label and F mount.
+Independent mutation875faa1d295849ae8e4fb11a65761b9d passed all3 native processes,
+strict15/10 before/after and the50→80→10MiB/128-entry new-path workload.
+Mutation closed receipt SHA3c196cfccb8f4fc5c25518d94f6fd97587866646cc01dc68ac3cbfc6f80243d1;
+report SHA45c968b90da79cb386e45b998e3b1d5d47425a1b32290493de1d198983de4fb0.
+The SAME working branch clean-stopped/started WITHOUT restore; fresh boot was
+06:35:29Z after mutation ended06:31:24Z. Postbootbef2125926714a76a7f10c0cba2049ce
+passed native/task0 and strict15/10. Its closed receipt SHA is
+c55f61175a92f10aef6f24e36f5d68fcf98c2981c85219f4f726b16c1ff15356.
+Actual preserved checkpoint632 receipt SHA004d70b74d7af8a8dfbbbca3e33cd97386965c0137c93c8f5758b5f084fc41f2.
+Old25a was then retired via Hyper-V; cleanup receipt SHAd44305eea44e44d9b4693f388c23d654fa1043331414a3728d782d15b4633275.
+VM is clean OFF/RAM0, D free118,738,907,136B and lab224,349,834,679B at cleanup.
+There are NO active native workers or monitors. Keep the exact sealed2ff
+artifacts; do not substitute a later build into these results.
+The later frozen-allocation-map diagnostic codea8da755 passed cargo check--lib,
+has no native qualification and does not enable selective capture.
+Same-binary interruption/recovery on fb5548 remains unqualified; sealed2cac's
+separate controlled Resume/Rollback evidence must remain distinct.
 The coordinating agent owns VM mutations. Delegated agents work on source only
 unless explicitly assigned a native action.
 
@@ -126,8 +135,9 @@ Decline/default-No and wrong-checksum smoke checks passed without device actions
 Do not inherit older builds' results. Later code286d914/5ac7a36 adds stderr
 phases and shared-read hash optimizations in handoff/preparation; code7da08e0
 routes offline public recovery by actual verified journal lifecycle. These
-changes plus code2ff5f01 CNG whole-image hashing are release-built and now running
-as candidatefb5548. They do not inherit sealed2cac's native results. See the
+changes plus code2ff5f01 CNG whole-image hashing passed normal conversion,
+mutation and reboot as frozen candidatefb5548. They do not inherit sealed2cac's
+interruption/recovery results. See the
 separate build records and actual new dispatch above.
 
 ## Source and recovery invariants

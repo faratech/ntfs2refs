@@ -62,3 +62,22 @@ forms are accepted. Cross-container data runs currently refuse rather than
 assuming how they cross the virtual-address gap. Split own-record forms,
 system log storage, complete stream inventory and all allocation/refcount
 relationships remain unresolved. The converter still uses complete capture.
+
+The generation-aware reader now walks each checksum-accepted checkpoint with
+its own container mappings and Small Allocator tree. Shared physical addresses
+between generations are unioned, while overlap inside one generation still
+refuses. One page budget covers the bootstrap physical reads and all subsequent
+container, Small, virtual and log-control reads. The detailed container profile
+currently permits 32 pages and 4,096 map rows per tree; larger maps refuse.
+
+Logfile Information OIDs 9/A must agree on the complete location-record value.
+Their two 4 KiB MLog controls must pass the supported header, integrity,
+instance and area-bound checks. The circular data region is included in the
+required metadata ranges without scanning it. Transactions are not replayed
+or certified, and the location record's trailing eight bytes remain unparsed.
+
+On the existing image, both generations completed with 2,372,624 total reader
+bytes and 145 charged page operations. The observed metadata union covered
+538,177,536 bytes, including the 512 MiB circular log. Six declared own-record
+attribute nodes were also parsed. The [receipt](../evidence/refs-generation-log-footprint-20261029.json)
+does not establish complete ownership or authorize selective conversion.

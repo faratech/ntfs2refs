@@ -28,6 +28,21 @@ pub struct DataExtentNode {
     pub raw_write_authority: bool,
 }
 
+/// Physical log locations from one supported Logfile Information row.
+/// Their control-page contents and the complete log are not verified here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogfileStorageReference {
+    pub object_id: u64,
+    pub data_offset: u64,
+    pub data_length: u64,
+    pub control_offsets: [u64; 2],
+    pub unparsed_value_bytes: usize,
+    pub value_sha256: String,
+    pub control_pages_verified: bool,
+    pub log_ownership_complete: bool,
+    pub raw_write_authority: bool,
+}
+
 fn u32le(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("bounded field"))
 }
@@ -155,6 +170,65 @@ pub fn inspect_data_extent_node(row: &NodeRowObservation) -> Result<Option<DataE
         valid_data_length,
         disk_allocated_bytes,
         stream_complete: false,
+        raw_write_authority: false,
+    }))
+}
+
+/// Decode the key-1 physical log locations from a caller-authenticated 3.14
+/// Logfile Information table leaf. Primary and duplicate records must be
+/// reconciled by the caller; no checkpoint or control page is authenticated.
+pub fn inspect_logfile_information_row(
+    object_id: u64,
+    row: &NodeRowObservation,
+    partition_bytes: u64,
+) -> Result<Option<LogfileStorageReference>> {
+    if !matches!(object_id, 0x09 | 0x0a) {
+        return Ok(None);
+    }
+    ensure!(
+        partition_bytes != 0 && partition_bytes.is_multiple_of(4096),
+        "unsupported Logfile Information geometry"
+    );
+    let (key, value) = parts(row)?;
+    ensure!(key.len() >= 4, "truncated Logfile Information key");
+    if u32le(&key, 0) != 1 {
+        return Ok(None);
+    }
+    ensure!(
+        key.len() == 4 && value.len() >= 40,
+        "unsupported log location record"
+    );
+    let start = u64le(&value, 0);
+    let end = u64le(&value, 8);
+    let count = u64le(&value, 16);
+    let controls = [u64le(&value, 24), u64le(&value, 32)];
+    let partition_clusters = partition_bytes / 4096;
+    ensure!(
+        start != 0
+            && count != 0
+            && start.checked_add(count) == Some(end)
+            && end <= partition_clusters
+            && controls[0] != 0
+            && controls[1] != 0
+            && controls[0] != controls[1]
+            && controls
+                .iter()
+                .all(|&lcn| lcn < partition_clusters && !(start..end).contains(&lcn)),
+        "log data or control cluster ranges are invalid"
+    );
+    Ok(Some(LogfileStorageReference {
+        object_id,
+        data_offset: start
+            .checked_mul(4096)
+            .context("log data offset overflow")?,
+        data_length: count
+            .checked_mul(4096)
+            .context("log data length overflow")?,
+        control_offsets: [controls[0] * 4096, controls[1] * 4096],
+        unparsed_value_bytes: value.len() - 40,
+        value_sha256: hex::encode(Sha256::digest(&value)),
+        control_pages_verified: false,
+        log_ownership_complete: false,
         raw_write_authority: false,
     }))
 }

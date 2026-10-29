@@ -82,11 +82,30 @@ metadata and physical-data footprints. On the existing research image it reads
 1,025distinct data clusters, without external payload reads. No spilled
 attribute/extent page path was exercised in that image. Cross-container data
 runs currently refuse. See docs/refs-metadata-footprint.md and its evidence.
-It remains read-only: split own-record forms, system log storage, fallback
-checkpoint generations, complete stream inventory and allocator/refcount
-reconciliation are unresolved. Complete graph/selective conversion flags stay
-false. Next work must cover those references and bind a required footprint to
-live frozen inputs before any production skip/read/write authorization.
+Current reader work also traverses both checkpoint generations with independent
+maps and physical container/Small trees; it supports declared own-record nodes
+and Logfile Information OIDs9/A plus matching checked MLog controls. The existing
+research-image run reads2,372,624B,145charged page operations, and records
+538,177,536B of metadata ranges including the512MiB circular log without reading
+that log data. See evidence/refs-generation-log-footprint-20261029.json. This is
+still not a complete graph: opaque leaf fields, stream inventory, transaction
+state and allocator/refcount reconciliation remain unproved. Detailed container
+walks currently refuse beyond4096map rows/32pages per tree; larger sizes need
+the compact reader's full physical footprint rather than raising one limit.
+
+New selected_journal core and lab-selected-journal use a distinctN2RSEL01 format.
+They read only caller-selected aligned ranges, carry old/new payloads and framed
+selected hashes, enforce intent/HND/ABT barriers and never claim whole-image
+verification or source admission. The direct ordinary-file integration passed:
+each of two8MiB inputs read32KiB across two preparations, all core complement
+access prohibited; persisted-short-write resume/HND and separate rollback/ABT
+passed, with closed replay refused. No native-volume result is assigned to it.
+The drive CLI remains on the existing full-image journal. A native adapter still
+needs an authenticated complete footprint, actual device/exclusion/write-policy
+binding, source admission, and versioned recovery-bundle handling. Do not turn a
+JSON footprint or selected ticket into those permissions. The journal currently
+stores every selected byte (including equal bytes), so exact selection/budget
+planning remains necessary. See docs/selected-range-journal.md and its evidence.
 
 Do not add or run unit tests. Focused builds and necessary native integration
 only. Keep ignored images, journals, binaries and secrets out of Git. The

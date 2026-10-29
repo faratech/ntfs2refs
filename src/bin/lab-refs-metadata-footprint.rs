@@ -1,13 +1,14 @@
 //! Read-only ordinary raw-volume metadata traversal, never conversion authority.
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use ntfs2refs::{ntfs_admission::ResourceProfile, refs_inspect, refs_virtual_roots::walk};
+use ntfs2refs::refs_inspect;
 use std::{
-    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
 };
+#[path = "lab-refs-metadata-footprint/generations.rs"]
+mod generations;
 #[derive(Parser)]
 struct Args {
     /// Ordinary raw ReFS volume image starting at byte zero, not VHD/VHDX.
@@ -147,11 +148,10 @@ fn main() -> Result<()> {
     input.seek(SeekFrom::End(-512))?;
     input.read_exact(&mut magic)?;
     ensure!(&magic != b"conectix", "VHD footer is not a raw volume");
-    let observation = refs_inspect::inspect_with_resource_profile(
-        &mut input,
-        before.0,
-        ResourceProfile::ExperimentalStreamingTreeV2,
-    )?;
+    // Build container maps independently per checkpoint below. The general
+    // bootstrap inspector protects roots from both generations at once, which
+    // is unsuitable for deciding whether COW reuse is a within-tree overlap.
+    let observation = refs_inspect::inspect_physical_bootstrap(&mut input, before.0)?;
     let bootstrap = observation
         .bootstrap
         .as_ref()
@@ -160,19 +160,7 @@ fn main() -> Result<()> {
     let valid: Vec<_> = bootstrap
         .checkpoints
         .iter()
-        .filter(|p| {
-            p.rejection.is_none()
-                && p.header.is_some()
-                && p.self_checksum.as_ref().is_some_and(|c| c.matches)
-                && !p.referenced_by_superblock_lcns.is_empty()
-                && p.checkpoint.as_ref().is_some_and(|c| {
-                    c.header_clock_matches
-                        && c.major_version == 3
-                        && c.minor_version == 14
-                        && c.reference_size == 48
-                        && c.roots.len() == 13
-                })
-        })
+        .filter(|p| generations::valid_checkpoint(p))
         .collect();
     let highest = valid
         .iter()
@@ -186,40 +174,17 @@ fn main() -> Result<()> {
     ensure!(selected.len() == 1, "highest valid checkpoint is ambiguous");
     let checkpoint = selected[0];
     let geometry = &observation.geometry;
-    let containers = bootstrap
-        .container_tables
-        .as_ref()
-        .context("same-observation container maps absent")?;
     ensure!(
         geometry.bytes_per_cluster == 4096,
         "4KiB cluster profile required"
     );
-    let mut protected = BTreeSet::from([0, observation.backup_probe_offset / 4096]);
-    for p in bootstrap.superblocks.iter().chain(&bootstrap.checkpoints) {
-        let end = p
-            .byte_offset
-            .checked_add(p.bytes_read as u64)
-            .context("anchor range overflow")?;
-        ensure!(
-            end <= geometry.volume_bytes && p.byte_offset.is_multiple_of(4096),
-            "anchor outside volume"
-        );
-        protected.extend(p.byte_offset / 4096..end.div_ceil(4096));
-    }
-    for p in &bootstrap.physical_root_pages {
-        protected.extend(p.lcn_slots);
-    }
-    let footprint = walk::inspect(
-        &mut input,
-        geometry,
-        checkpoint,
-        containers,
-        &protected,
-        walk::WalkLimits {
-            max_pages: args.max_pages,
-            ..Default::default()
-        },
-    )?;
+    let generation_union = generations::inspect(&mut input, &observation, args.max_pages)?;
+    let footprint = &generation_union
+        .generations
+        .iter()
+        .find(|generation| generation.checkpoint_lcn == checkpoint.lcn)
+        .context("selected checkpoint generation absent from completed union")?
+        .virtual_trees;
     let after = stamp(&input.file)?;
     ordinary(&args.input, true)?;
     ensure!(
@@ -227,13 +192,14 @@ fn main() -> Result<()> {
         "held image metadata changed during traversal"
     );
     let bytes = serde_json::to_vec_pretty(&serde_json::json!({
-        "schema_version":1,"kind":"raw-refs-metadata-footprint","input":args.input,
+        "schema_version":2,"kind":"raw-refs-metadata-footprint","input":args.input,
         "input_bytes":before.0,"input_modified":before.1,"input_metadata_unchanged":true,
         "input_sha256_computed":false,"windows_write_delete_sharing_denied":cfg!(windows),
         "logical_read_bytes":input.bytes_read,"read_calls":input.read_calls,"seek_calls":input.seek_calls,
         "accounting_scope":"Bytes returned by the ordinary file reader, including bootstrap and container inspection; not physical storage I/O.",
         "geometry":geometry,"selected_checkpoint_lcn":checkpoint.lcn,"selected_checkpoint_clock":highest,
-        "valid_checkpoint_candidates":valid.len(),"bootstrap_protected_lcns":protected,"footprint":footprint,
+        "valid_checkpoint_candidates":valid.len(),"bootstrap_protected_lcns":generation_union.bootstrap_protected_lcns,"footprint":footprint,
+        "generation_union":generation_union,
         "conversion_authorized":false,"selective_capture_authorized":false,
         "scope":"Metadata-only page transcript, not a full-image content pin or complete allocation ownership proof. No conversion authority."
     }))?;

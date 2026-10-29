@@ -30,6 +30,7 @@ pub struct TreeFootprint {
     pub leaf_rows: u64,
     pub expected_leaf_rows: u64,
     pub embedded_attribute_tables: usize,
+    pub own_record_attribute_tables: usize,
     pub external_attribute_pages: u32,
     pub external_extent_pages: u32,
     pub index_descendants_complete: bool,
@@ -44,13 +45,26 @@ pub struct MetadataFootprint {
     pub mapping_sha256: String,
     pub limits: WalkLimits,
     pub pages_read: u32,
+    pub budget_pages_charged: u32,
     pub bytes_read: u64,
     pub physical_ranges: Vec<crate::refs_write_set::ByteRange>,
     pub page_transcript_sha256: String,
     pub trees: Vec<TreeFootprint>,
     pub data_storage: DataStorageFootprint,
+    pub log_storage: LogStorageFootprint,
     pub complete_allocation_graph_verified: bool,
     pub selective_capture_executable: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogStorageFootprint {
+    pub information_copies_agree: bool,
+    pub data_range: crate::refs_write_set::ByteRange,
+    pub control_ranges: Vec<crate::refs_write_set::ByteRange>,
+    pub controls: Vec<crate::refs_mlog_refs::ControlObservation>,
+    pub unparsed_information_value_bytes: usize,
+    pub log_data_bytes_read: u64,
+    pub log_transactions_verified: bool,
 }
 
 struct Pending {
@@ -320,6 +334,7 @@ pub fn inspect<R: Read + Seek>(
     }
     let mut primary_objects = BTreeMap::new();
     let mut duplicate_objects = BTreeMap::new();
+    let mut log_references = BTreeMap::new();
     while let Some(request) = requests.pop_front() {
         let TreeRequest {
             root_index,
@@ -348,6 +363,8 @@ pub fn inspect<R: Read + Seek>(
         let mut attribute_observed = Vec::new();
         let mut attribute_pages = 0u32;
         let mut extent_pages = 0u32;
+        let mut embedded_tables = 0usize;
+        let mut own_tables = 0usize;
         while let Some(item) = pending.pop() {
             ensure!(
                 total_pages < limits.max_pages,
@@ -466,6 +483,26 @@ pub fn inspect<R: Read + Seek>(
                     requests.len(),
                 )?;
             } else {
+                if let Some(oid @ (9 | 10)) = object_id {
+                    ensure!(
+                        item.attribute_tree.is_none(),
+                        "log table unexpectedly contains attribute pages"
+                    );
+                    for row in &rows {
+                        if let Some(reference) =
+                            crate::refs_record_refs::inspect_logfile_information_row(
+                                oid,
+                                row,
+                                geometry.volume_bytes,
+                            )?
+                        {
+                            ensure!(
+                                log_references.insert(oid, reference).is_none(),
+                                "duplicate log location row"
+                            );
+                        }
+                    }
+                }
                 if matches!(root_index, Some(0 | 5)) {
                     let objects = if root_index == Some(0) {
                         &mut primary_objects
@@ -505,9 +542,23 @@ pub fn inspect<R: Read + Seek>(
                         .context("metadata leaf row count overflow")?;
                     if object_id.is_some() && schema_id == Some(0x130) {
                         for row in &rows {
-                            if let Some(record) =
+                            let file_record = if let Some(record) =
                                 crate::refs_record_refs::inspect_embedded_file(row)?
                             {
+                                embedded_tables += 1;
+                                Some(record)
+                            } else if let Some(record) =
+                                crate::refs_split_refs::inspect_own_record(row)?
+                            {
+                                own_tables += 1;
+                                Some(crate::refs_record_refs::EmbeddedFileRecord {
+                                    expected_attribute_rows: record.expected_attribute_rows,
+                                    node: record.node,
+                                })
+                            } else {
+                                None
+                            };
+                            if let Some(record) = file_record {
                                 ensure!(
                                     attribute_expected.len() < 65_536,
                                     "embedded attribute table budget exceeded"
@@ -577,7 +628,8 @@ pub fn inspect<R: Read + Seek>(
             pages_read: total_pages - start_pages,
             leaf_rows: leaves,
             expected_leaf_rows: expected,
-            embedded_attribute_tables: attribute_expected.len(),
+            embedded_attribute_tables: embedded_tables,
+            own_record_attribute_tables: own_tables,
             external_attribute_pages: attribute_pages,
             external_extent_pages: extent_pages,
             index_descendants_complete: true,
@@ -605,11 +657,86 @@ pub fn inspect<R: Read + Seek>(
         }
     }
     let mut ranges: Vec<crate::refs_write_set::ByteRange> = Vec::new();
+    let log = log_references
+        .get(&9)
+        .context("primary Logfile Information reference absent")?;
+    let duplicate = log_references
+        .get(&10)
+        .context("duplicate Logfile Information reference absent")?;
+    ensure!(
+        log.data_offset == duplicate.data_offset
+            && log.data_length == duplicate.data_length
+            && log.control_offsets == duplicate.control_offsets
+            && log.unparsed_value_bytes == duplicate.unparsed_value_bytes
+            && log.value_sha256 == duplicate.value_sha256,
+        "Logfile Information copies disagree"
+    );
+    let mut control_ranges = Vec::new();
+    let log_data_range = log.data_offset / CLUSTER..(log.data_offset + log.data_length) / CLUSTER;
+    ensure!(
+        visited.range(log_data_range.clone()).next().is_none()
+            && protected.range(log_data_range).next().is_none(),
+        "log data overlaps metadata or protected bootstrap/container pages"
+    );
+    ensure!(
+        total_pages
+            .checked_add(2)
+            .is_some_and(|count| count <= limits.max_pages),
+        "log control page budget exhausted"
+    );
+    let mut controls = Vec::new();
+    for offset in log.control_offsets {
+        ensure!(
+            !visited.contains(&(offset / CLUSTER)) && !protected.contains(&(offset / CLUSTER)),
+            "log control overlaps another required metadata page"
+        );
+        let mut bytes = [0u8; 4096];
+        reader.seek(SeekFrom::Start(offset))?;
+        reader.read_exact(&mut bytes)?;
+        let control = crate::refs_mlog_refs::inspect_control(&bytes, offset, log)?;
+        transcript.update(b"MLog-control");
+        transcript.update(offset.to_le_bytes());
+        transcript.update(bytes);
+        controls.push(control);
+        control_ranges.push(crate::refs_write_set::ByteRange {
+            offset,
+            length: CLUSTER,
+        });
+    }
+    ensure!(
+        controls[0].format_magic == controls[1].format_magic
+            && controls[0].log_uuid == controls[1].log_uuid,
+        "log controls belong to different log instances"
+    );
+    let log_storage = LogStorageFootprint {
+        information_copies_agree: true,
+        data_range: crate::refs_write_set::ByteRange {
+            offset: log.data_offset,
+            length: log.data_length,
+        },
+        control_ranges,
+        controls,
+        unparsed_information_value_bytes: log.unparsed_value_bytes,
+        log_data_bytes_read: 0,
+        log_transactions_verified: false,
+    };
     for range in &data_storage.physical_ranges {
         let span = range.offset / CLUSTER..(range.offset + range.length) / CLUSTER;
         ensure!(
             visited.range(span.clone()).next().is_none() && protected.range(span).next().is_none(),
             "observed data extent overlaps metadata or protected bootstrap/container storage"
+        );
+        ensure!(
+            range.offset + range.length <= log.data_offset
+                || range.offset >= log.data_offset + log.data_length,
+            "observed data extent overlaps log storage"
+        );
+        ensure!(
+            log.control_offsets
+                .iter()
+                .all(|offset| *offset + CLUSTER <= range.offset
+                    || *offset >= range.offset + range.length),
+            "observed data extent overlaps log controls"
         );
     }
     data_storage
@@ -656,7 +783,7 @@ pub fn inspect<R: Read + Seek>(
         }
     }
     Ok(MetadataFootprint {
-        profile: "refs-3.14-4k-crc64-index-attribute-and-extent-footprint-v4",
+        profile: "refs-3.14-4k-crc64-index-attribute-extent-and-log-footprint-v5",
         checkpoint_lcn: checkpoint.lcn,
         checkpoint_sha256: checkpoint.sha256.clone(),
         mapping_sha256: binding
@@ -664,11 +791,13 @@ pub fn inspect<R: Read + Seek>(
             .context("mapping pin absent")?,
         limits,
         pages_read: total_pages,
-        bytes_read: u64::from(total_pages) * PAGE as u64,
+        budget_pages_charged: total_pages + 2,
+        bytes_read: u64::from(total_pages) * PAGE as u64 + 8192,
         physical_ranges: ranges,
         page_transcript_sha256: hex::encode(transcript.finalize()),
         trees,
         data_storage,
+        log_storage,
         complete_allocation_graph_verified: false,
         selective_capture_executable: false,
     })

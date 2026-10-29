@@ -79,8 +79,10 @@ pub mod refs_cow_overlay;
 pub mod refs_hybrid;
 pub mod refs_inspect;
 pub mod refs_node;
+pub mod refs_mlog_refs;
 pub mod refs_object_refs;
 pub mod refs_record_refs;
+pub mod refs_split_refs;
 #[cfg(windows)]
 pub mod refs_reference_import;
 pub mod refs_reference_transport;
@@ -88,6 +90,7 @@ pub mod refs_retained_allocation;
 pub mod refs_virtual_roots;
 pub mod refs_write_set;
 pub mod retained_compare;
+pub mod selected_journal;
 #[cfg(windows)]
 pub mod shadow_freeze;
 pub mod shadow_tree;

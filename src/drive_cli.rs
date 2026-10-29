@@ -26,6 +26,10 @@ pub struct DriveArgs {
     /// Restore NTFS instead of completing ReFS recovery, before handoff only.
     #[arg(long, requires = "recover")]
     pub rollback: bool,
+    /// Experimental: compare, journal and write only the ranges the new ReFS
+    /// allocates (ntfs2btrfs-style). --recover does not support these runs yet.
+    #[arg(long, requires = "drive", hide = true)]
+    pub experimental_allocation_bounded: bool,
 }
 impl DriveArgs {
     pub fn requested(&self) -> bool {
@@ -233,17 +237,26 @@ mod windows {
         request: crate::general_conversion::Request,
         budget: crate::general_qualification::CompactConstructionBudget,
         output: PathBuf,
+        allocation_bounded: bool,
     ) -> Result<()> {
         let worker_output = output.clone();
         std::thread::scope(|scope| {
             // All source handles, assessment and SourceCertificate are created
             // and retained in this same worker. Only routing data crosses in.
             let worker = scope.spawn(move || {
-                crate::general_conversion::convert_compact_experimental(
-                    &request,
-                    budget,
-                    &worker_output,
-                )
+                if allocation_bounded {
+                    crate::general_conversion::convert_allocation_experimental(
+                        &request,
+                        budget,
+                        &worker_output,
+                    )
+                } else {
+                    crate::general_conversion::convert_compact_experimental(
+                        &request,
+                        budget,
+                        &worker_output,
+                    )
+                }
             });
             let started = Instant::now();
             let mut previous = "";
@@ -383,13 +396,20 @@ mod windows {
             current.binding == before.binding && current.filesystem == "NTFS",
             "selected drive identity changed while awaiting confirmation"
         );
-        convert_selected(args.scratch_directory, before, selected, resources)
+        convert_selected(
+            args.scratch_directory,
+            before,
+            selected,
+            resources,
+            args.experimental_allocation_bounded,
+        )
     }
     fn convert_selected(
         scratch: Option<PathBuf>,
         before: discovery::VolumeDiscovery,
         selected: drive_inventory::PartitionSelection,
         resources: crate::ntfs_admission::ResourceProfile,
+        allocation_bounded: bool,
     ) -> Result<u8> {
         let system = std::env::var("SystemRoot").context("Windows system path unavailable")?;
         let os_root = format!(
@@ -507,7 +527,7 @@ mod windows {
         };
         // Keep the native attachment owner on this thread until the conversion
         // worker has returned, including error/panic handling.
-        let result = convert_with_progress(request, budget, output.clone());
+        let result = convert_with_progress(request, budget, output.clone(), allocation_bounded);
         drop(staged);
         match result {
             Ok(()) => {

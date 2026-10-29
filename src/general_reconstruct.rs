@@ -975,14 +975,63 @@ pub struct Finalization {
     pub general_conversion_qualified: bool,
 }
 
+/// The request facts that post-handoff native verification reads. A selected
+/// range conversion supplies them without a whole-image comparison request.
+pub(crate) struct NativeVerificationScope<'a> {
+    pub pair: &'a GeneralSourceShadowBinding,
+    pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
+    pub expected_mount_paths: Option<&'a [String]>,
+    pub expected_source_label: Option<&'a n2r_win32::volume_label::VolumeLabel>,
+}
+
+impl Request {
+    pub(crate) fn verification_scope(&self) -> NativeVerificationScope<'_> {
+        NativeVerificationScope {
+            pair: &self.pair,
+            source_resource_profile: self.source_resource_profile,
+            expected_mount_paths: self.expected_mount_paths.as_deref(),
+            expected_source_label: self.expected_source_label.as_ref(),
+        }
+    }
+}
+
+/// Verify the mounted tree, then mount paths and the restored label, exactly as
+/// the compact handoff does after its target is brought online.
+pub(crate) fn verify_native_scoped(
+    scope: &NativeVerificationScope<'_>,
+    expected: &shadow_tree::ExpectedTree,
+    report: &mut Finalization,
+    restored_label: bool,
+) {
+    match verify_converted_tree_scoped(scope, expected, &mut report.events, restored_label) {
+        Ok(native) => {
+            record_mount_paths_scoped(scope, &native, report);
+            report.native = Some(native);
+            if report.error.is_none() {
+                restore_source_label_scoped(scope, report);
+            }
+            report.success = report.error.is_none();
+        }
+        Err(error) => report.error = Some(error.to_string()),
+    }
+}
+
 fn record_mount_paths(
     request: &Request,
     native: &shadow_native::GeneralConvertedReport,
     report: &mut Finalization,
 ) {
+    record_mount_paths_scoped(&request.verification_scope(), native, report)
+}
+
+fn record_mount_paths_scoped(
+    scope: &NativeVerificationScope<'_>,
+    native: &shadow_native::GeneralConvertedReport,
+    report: &mut Finalization,
+) {
     match capture_mount_paths_general(native.pair.source.clone(), &mut report.events) {
         Ok(observed) => {
-            report.mount_paths_preserved = request.expected_mount_paths.as_ref().map(|expected| {
+            report.mount_paths_preserved = scope.expected_mount_paths.map(|expected| {
                 let before: BTreeSet<_> = expected.iter().map(|path| path.to_lowercase()).collect();
                 let after: BTreeSet<_> = observed
                     .paths
@@ -999,7 +1048,7 @@ fn record_mount_paths(
         }
         Err(error) => {
             report.mount_paths_error = Some(error.to_string());
-            if request.expected_mount_paths.is_some() {
+            if scope.expected_mount_paths.is_some() {
                 report.error = Some("converted ReFS mount paths could not be verified".into());
             }
         }
@@ -1349,7 +1398,21 @@ fn verify_converted_tree(
     events: &mut Vec<NativeEvent>,
     restored_label: bool,
 ) -> std::io::Result<shadow_native::GeneralConvertedReport> {
-    let mut pair = request.pair.clone();
+    verify_converted_tree_scoped(
+        &request.verification_scope(),
+        expectation,
+        events,
+        restored_label,
+    )
+}
+
+fn verify_converted_tree_scoped(
+    scope: &NativeVerificationScope<'_>,
+    expectation: &shadow_tree::ExpectedTree,
+    events: &mut Vec<NativeEvent>,
+    restored_label: bool,
+) -> std::io::Result<shadow_native::GeneralConvertedReport> {
+    let mut pair = scope.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, events)?;
     let input: Vec<_> = expectation
         .objects
@@ -1388,13 +1451,13 @@ fn verify_converted_tree(
         ntfs_attestation::same_security(a, b)
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
-    if restored_label && let Some(label) = &request.expected_source_label {
+    if restored_label && let Some(label) = scope.expected_source_label {
         shadow_native::verify_general_converted_ordinary_with_label_and_resource_profile(
             pair,
             &input,
             label,
             same_security,
-            request
+            scope
                 .source_resource_profile
                 .unwrap_or_default()
                 .native_profile(),
@@ -1404,7 +1467,7 @@ fn verify_converted_tree(
             pair,
             &input,
             same_security,
-            request
+            scope
                 .source_resource_profile
                 .unwrap_or_default()
                 .native_profile(),
@@ -1413,7 +1476,11 @@ fn verify_converted_tree(
 }
 
 fn restore_source_label(request: &Request, report: &mut Finalization) {
-    let Some(desired) = &request.expected_source_label else {
+    restore_source_label_scoped(&request.verification_scope(), report)
+}
+
+fn restore_source_label_scoped(scope: &NativeVerificationScope<'_>, report: &mut Finalization) {
+    let Some(desired) = scope.expected_source_label else {
         return;
     };
     let Some(native) = &report.native else {
@@ -1429,7 +1496,7 @@ fn restore_source_label(request: &Request, report: &mut Finalization) {
         }
     };
     match n2r_win32::volume_label::restore_verified_label(
-        &request.pair.source,
+        &scope.pair.source,
         desired,
         native.pair.source.clone(),
         &enrollment,

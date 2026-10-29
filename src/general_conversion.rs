@@ -21,6 +21,7 @@ use std::{
     path::Path,
 };
 
+mod allocation;
 #[allow(
     dead_code,
     reason = "composite orchestration awaits native qualification before CLI exposure"
@@ -113,6 +114,26 @@ pub fn convert_compact_experimental(
         "selected compact conversion requires the explicit streaming profile and a fresh shadow"
     );
     composite::convert_compact_selected(request, budget, output)
+}
+
+/// Experimental allocation-bounded backend for the same selected data disks,
+/// under the ntfs2btrfs-style guarantee: only the protected native allocation of
+/// the frozen shadow is compared, journaled and written. Public `--recover` does
+/// not yet read its selected-range journal.
+pub fn convert_allocation_experimental(
+    request: &Request,
+    budget: qualification::CompactConstructionBudget,
+    output: &Path,
+) -> Result<()> {
+    request.validate()?;
+    budget.validate(request.pair.source.identity.partition_bytes)?;
+    ensure!(
+        request.source_resource_profile
+            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+            && !request.verify_existing_shadow,
+        "allocation-bounded conversion requires the explicit streaming profile and a fresh shadow"
+    );
+    allocation::convert_allocation_selected(request, budget, output)
 }
 
 /// Explicit owning-guest exercise: synchronize the known small source cache

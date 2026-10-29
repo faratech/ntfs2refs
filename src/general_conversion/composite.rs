@@ -62,7 +62,7 @@ pub(crate) fn convert_compact_selected_for_lab(
     )
 }
 
-fn selected_device_preflight(request: &Request) -> Result<serde_json::Value> {
+pub(super) fn selected_device_preflight(request: &Request) -> Result<serde_json::Value> {
     use n2r_win32::discovery::{self, Role};
     let source = discovery::discover(
         &format!("{}\\", request.pair.source.volume_path()?),

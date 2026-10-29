@@ -67,7 +67,118 @@ impl SourceCertificate {
                 (Ok(a),Ok(b)) if a == b)
     }
 }
+/// Issued only by the live assessor for an allocation-bounded target proof.
+/// It binds the protected selection and its old/new selected digests rather
+/// than whole-image hashes, and grants nothing to the complete-image journal.
+#[derive(Debug, Serialize)]
+pub struct AllocationCertificate {
+    source_sha256: String,
+    inspection_sha256: String,
+    pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+    expected_tree_sha256: String,
+    selection_sha256: String,
+    source_selected_sha256: String,
+    candidate_selected_sha256: String,
+    changed_bytes: u64,
+    assessment_sha256: String,
+    free_space_contents_proven_equal: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_resource_profile: Option<ntfs_admission::ResourceProfile>,
+}
+impl AllocationCertificate {
+    pub fn binds(
+        &self,
+        target: &crate::general_composite_target::FrozenAllocationTargetPreservation,
+    ) -> bool {
+        self.pair == *target.pair()
+            && self.expected_tree_sha256 == target.expected_tree_sha256()
+            && self.source_sha256 == target.source_sha256()
+            && self.selection_sha256 == target.selection_sha256()
+            && self.source_selected_sha256 == target.capture().source_selected_sha256
+            && self.candidate_selected_sha256 == target.capture().candidate_selected_sha256
+            && self.changed_bytes == target.capture().layout.changed_bytes()
+    }
+    pub fn expected_tree_sha256(&self) -> &str {
+        &self.expected_tree_sha256
+    }
+}
+
 impl LiveAssessment {
+    /// Allocation-bounded counterpart of `qualify_composite_target`: the same
+    /// original live context and source gates, with a proof that compared only
+    /// the protected native allocation. Persisted JSON cannot issue this.
+    pub fn qualify_allocation_target(
+        &mut self,
+        raw: &ntfs_inspect::NtfsInspection,
+        target: &crate::general_composite_target::FrozenAllocationTargetPreservation,
+    ) -> Result<AllocationCertificate> {
+        ensure!(
+            self.context.source_gates_satisfied
+                && target.pair().source == self.context.source_binding
+                && target.resource_profile() == self.context.resources
+                && target.native_resource_profile() == self.context.resources.native_profile()
+                && target.data_ties_verified()
+                && target.source_sha256() == self.context.source_sha256
+                && target.inspection_sha256() == self.context.inspection_sha256
+                && target.source_views_sha256() == self.context.source_views_sha256
+                && target.binds(raw, &self.source_sha256)
+                && self.source_sha256 == self.context.source_sha256
+                && self.canonical_inspection_sha256 == self.context.inspection_sha256
+                && self.canonical_inspection_sha256 == self.assessment.source_inspection_sha256
+                && self.assessment.source_view.as_ref().is_some_and(|view| view
+                    .binds_live_source(&self.canonical_inspection_sha256, &self.source_sha256)
+                    && serde_json::to_vec(view).is_ok_and(|bytes| hex::encode(Sha256::digest(
+                        bytes
+                    )) == self
+                        .context
+                        .source_views_sha256)),
+            "allocation-bounded target differs from the admitted original live source context"
+        );
+        for gate in &mut self.assessment.gates {
+            if gate.code == "security_timestamp_preservation" {
+                gate.satisfied = true;
+                gate.detail="protected native metadata/namespace/security/maps plus actual initialized residual reads and a source-backed comparison of the protected native allocation bind all logical payload to the same frozen source; free-space contents are not compared".into();
+            } else if gate.code == "target_resource_profile_support" {
+                ensure!(
+                    self.context.resources.native_profile().is_some(),
+                    "unexpected expanded allocation-bounded target gate"
+                );
+                gate.satisfied = true;
+                gate.detail="opaque post-freeze native layout and allocation-bounded target use the same explicit resource profile".into();
+            }
+        }
+        let refused: Vec<_> = self
+            .assessment
+            .gates
+            .iter()
+            .filter(|g| !g.satisfied)
+            .map(|g| g.code.as_str())
+            .collect();
+        ensure!(
+            refused.is_empty(),
+            "allocation-bounded source admission remains refused: {refused:?}"
+        );
+        self.source_admitted = true;
+        self.assessment.source_admitted = true;
+        self.assessment.certificate_issued = true;
+        Ok(AllocationCertificate {
+            source_sha256: self.source_sha256.clone(),
+            inspection_sha256: self.canonical_inspection_sha256.clone(),
+            pair: target.pair().clone(),
+            expected_tree_sha256: target.expected_tree_sha256().into(),
+            selection_sha256: target.selection_sha256().into(),
+            source_selected_sha256: target.capture().source_selected_sha256.clone(),
+            candidate_selected_sha256: target.capture().candidate_selected_sha256.clone(),
+            changed_bytes: target.capture().layout.changed_bytes(),
+            assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
+            free_space_contents_proven_equal: false,
+            source_resource_profile: match self.context.resources {
+                ntfs_admission::ResourceProfile::AlphaV1 => None,
+                resource => Some(resource),
+            },
+        })
+    }
+
     /// Qualify the complete native metadata image with verified source-backed
     /// payload substitution. The ORIGINAL live source context is still needed;
     /// persisted JSON and reopened frozen-source diagnostics cannot issue this.

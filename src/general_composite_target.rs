@@ -270,99 +270,28 @@ pub fn verify_and_capture(
     max_changed_bytes: u64,
     events: &mut Vec<NativeEvent>,
 ) -> Result<FrozenCompositeTargetPreservation> {
-    pair.validate_with_resource_profile(resources.native_profile())?;
-    ensure!(
-        source.binding() == &pair.source
-            && target.binding() == &pair.shadow
-            && source.byte_len() == target.byte_len(),
-        "composite device bindings differ"
-    );
-    let length = source.byte_len();
-    ensure!(
-        max_changed_bytes <= length
-            && max_changed_bytes <= reference_file::MAX_REFERENCE_FILE_BYTES,
-        "composite backing exceeds explicit byte or held-file profile bound"
-    );
-    fresh_ordinary_path(packed_path)?;
-    let source_before = source.state(events)?;
-    let target_before = target.state(events)?;
-    ensure!(
-        source_before.disk_attributes == 3 && target_before.disk_attributes == 3,
-        "composite preparation requires both devices persistently frozen"
-    );
-    let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
-    let actual = ntfs_inspect::inspect_with_limits(
-        source,
+    let ProtectedPrefix {
         length,
-        ntfs_inspect::limits_for_resource_profile(resources),
+        source_before,
+        target_before,
+        inspection_sha256,
+        source_views_sha256,
+        tree,
+        expected_tree_sha256,
+        residuals,
+        protected,
+    } = protected_prefix(
+        source,
+        target,
+        &pair,
+        raw,
+        source_views,
+        source_sha256,
+        resources,
+        packed_path,
+        max_changed_bytes,
+        events,
     )?;
-    ensure!(
-        hex::encode(Sha256::digest(serde_json::to_vec(&actual)?)) == inspection_sha256,
-        "composite frozen source inventory changed"
-    );
-    ensure!(
-        source_views.binds_live_source(&inspection_sha256, source_sha256),
-        "composite requires the same bound live source views"
-    );
-    let source_views_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(source_views)?));
-    let mut tree = shadow_tree::derive_ordinary_with_resource_profile(raw, resources)?;
-    tree.bind_security_views(source_views)?;
-    let expected = shadow_tree::ExpectedTree::from(&tree);
-    expected.validate_with_resource_profile(resources)?;
-    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(&expected)?));
-    let limits = resources.limits();
-    let mut residual_budget = ntfs_inspect::StreamTransferBudget::new(
-        limits.maximum_stream_bytes,
-        limits.maximum_logical_bytes,
-    )?;
-    let mut residuals = Vec::new();
-    let mut buffer = [0u8; 4096];
-    for (index, object) in tree
-        .objects
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| !item.directory)
-    {
-        let count = (object.length % 4096) as usize;
-        if count == 0 {
-            continue;
-        }
-        let offset = object.length / 4096 * 4096;
-        let proof = ntfs_inspect::read_plain_stream_range_into(
-            source,
-            raw,
-            object.record_number,
-            offset,
-            &mut buffer[..count],
-            &mut residual_budget,
-        )?;
-        ensure!(
-            proof.stream_logical_bytes == object.length
-                && object.sha256.as_deref() == Some(proof.expected_stream_sha256.as_str()),
-            "composite residual source stream identity or digest differs"
-        );
-        residuals.push(LayoutResidualExpectation {
-            object_index: index,
-            logical_offset: offset,
-            length: count as u64,
-            sha256: proof.sha256,
-        });
-    }
-    let protected =
-        general_target_preservation::verify_frozen_layout_residuals_with_resource_profile(
-            target,
-            pair.clone(),
-            &expected,
-            resources,
-            &residuals,
-            events,
-        )?;
-    ensure!(
-        protected.expected_tree_sha256() == expected_tree_sha256
-            && protected.native().report().residual_contents_verified()
-            && protected.native().report().residuals() == residuals,
-        "protected composite target does not bind exact source residuals"
-    );
     let capture = SourceBackedShadow::new(
         source,
         target,
@@ -503,6 +432,360 @@ pub fn verify_and_capture(
         complete_allocation_graph_verified: false,
         source_admitted: false,
         conversion_qualified: false,
+    })
+}
+
+/// Allocation-bounded counterpart of [`FrozenCompositeTargetPreservation`]
+/// under the ntfs2btrfs-style guarantee: only ranges the protected frozen
+/// shadow's native allocator reports allocated, plus known anchors and streams,
+/// are compared and may be written. Free-space contents are not proven equal,
+/// and the source is not rehashed here: its frozen state must stay unchanged
+/// from the live assessment. Deserialization is deliberately unavailable.
+#[derive(Serialize)]
+pub struct FrozenAllocationTargetPreservation {
+    pair: GeneralSourceShadowBinding,
+    inspection_sha256: String,
+    source_sha256: String,
+    source_views_sha256: String,
+    expected_tree_sha256: String,
+    resources: ResourceProfile,
+    protected: ProtectedTargetLayout,
+    residuals: Vec<LayoutResidualExpectation>,
+    selection: Vec<crate::refs_write_set::ByteRange>,
+    selection_sha256: String,
+    capture: DifferenceCapture,
+    backing: PinnedBacking,
+    source_before: GeneralDiskState,
+    source_after: GeneralDiskState,
+    target_before: GeneralDiskState,
+    target_after: GeneralDiskState,
+    frozen_source_inventory_verified: bool,
+    source_views_bound: bool,
+    logical_payload_tied_to_frozen_source: bool,
+    allocation_bounded_selection_compared: bool,
+    free_space_contents_proven_equal: bool,
+    source_admitted: bool,
+    conversion_qualified: bool,
+}
+
+impl FrozenAllocationTargetPreservation {
+    pub fn pair(&self) -> &GeneralSourceShadowBinding {
+        &self.pair
+    }
+    pub fn source_sha256(&self) -> &str {
+        &self.source_sha256
+    }
+    pub fn inspection_sha256(&self) -> &str {
+        &self.inspection_sha256
+    }
+    pub fn source_views_sha256(&self) -> &str {
+        &self.source_views_sha256
+    }
+    pub fn expected_tree_sha256(&self) -> &str {
+        &self.expected_tree_sha256
+    }
+    pub fn resource_profile(&self) -> ResourceProfile {
+        self.resources
+    }
+    pub fn native_resource_profile(&self) -> Option<n2r_win32::attestation::ResourceProfile> {
+        self.resources.native_profile()
+    }
+    pub fn selection_sha256(&self) -> &str {
+        &self.selection_sha256
+    }
+    pub fn capture(&self) -> &DifferenceCapture {
+        &self.capture
+    }
+    pub fn binds(&self, raw: &ntfs_inspect::NtfsInspection, source: &str) -> bool {
+        self.source_sha256 == source
+            && serde_json::to_vec(raw)
+                .is_ok_and(|bytes| hex::encode(Sha256::digest(bytes)) == self.inspection_sha256)
+    }
+    pub fn data_ties_verified(&self) -> bool {
+        self.frozen_source_inventory_verified
+            && self.source_views_bound
+            && self.logical_payload_tied_to_frozen_source
+            && self.allocation_bounded_selection_compared
+    }
+    /// The differing ranges as a selected-range journal plan.
+    pub fn plan(&self, max_journal_bytes: u64) -> Result<crate::selected_journal::SelectedPlan> {
+        let plan = crate::selected_journal::SelectedPlan {
+            image_length: self.capture.layout.partition_bytes(),
+            ranges: self
+                .capture
+                .layout
+                .intervals()
+                .iter()
+                .map(|range| crate::selected_journal::SelectedRange {
+                    offset: range.offset,
+                    length: range.length,
+                })
+                .collect(),
+            max_selected_bytes: self.capture.layout.changed_bytes(),
+            max_journal_bytes,
+        };
+        plan.validate()?;
+        Ok(plan)
+    }
+    /// Read-only candidate over the held backing and a frozen source handle.
+    pub fn image<'a>(
+        &'a mut self,
+        source: &'a mut GeneralFrozenPartition,
+    ) -> Result<DifferenceImage<'a, GeneralFrozenPartition, File>> {
+        ensure!(
+            source.binding() == &self.pair.source
+                && source.state(&mut Vec::new())? == self.source_after,
+            "allocation-bounded view source binding or exclusion differs"
+        );
+        self.backing.revalidate()?;
+        DifferenceImage::new(source, &mut self.backing.file, &self.capture.layout)
+    }
+    pub fn revalidate_backing(&mut self) -> Result<()> {
+        self.backing.revalidate()
+    }
+}
+
+/// Allocation-bounded target proof: the shared protected prefix, then a
+/// source-backed capture over only the protected native allocation.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_and_select(
+    source: &mut GeneralFrozenPartition,
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    raw: &ntfs_inspect::NtfsInspection,
+    source_views: &ntfs_source_view::Analysis,
+    source_sha256: &str,
+    resources: ResourceProfile,
+    packed_path: &Path,
+    max_changed_bytes: u64,
+    events: &mut Vec<NativeEvent>,
+) -> Result<FrozenAllocationTargetPreservation> {
+    let ProtectedPrefix {
+        length: _,
+        source_before,
+        target_before,
+        inspection_sha256,
+        source_views_sha256,
+        tree,
+        expected_tree_sha256,
+        residuals,
+        protected,
+    } = protected_prefix(
+        source,
+        target,
+        &pair,
+        raw,
+        source_views,
+        source_sha256,
+        resources,
+        packed_path,
+        max_changed_bytes,
+        events,
+    )?;
+    let selection = protected
+        .allocation_coverage()
+        .observed_ranges(protected.native())?;
+    let selection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&selection)?));
+    let selected_bytes: u64 = selection.iter().map(|range| range.length).sum();
+    let capture = SourceBackedShadow::new(
+        source,
+        target,
+        raw,
+        &tree,
+        protected.routes(),
+        protected.routes().payload_bytes().max(1),
+    )?
+    .capture_listed_differences_to_new_file(&selection, packed_path, max_changed_bytes)?;
+    ensure!(
+        capture.selected_bytes_compared == selected_bytes
+            && capture
+                .equal_selected_bytes
+                .checked_add(capture.layout.changed_bytes())
+                == Some(selected_bytes)
+            && capture.layout.changed_bytes() > 0
+            && !capture.conversion_qualified,
+        "allocation-bounded capture does not cover exactly the protected selection"
+    );
+    let mut backing = PinnedBacking::open(
+        packed_path,
+        capture.layout.changed_bytes(),
+        &capture.packed_sha256,
+    )?;
+    for binding in [&pair.source, &pair.shadow] {
+        ensure!(
+            !backing
+                .snapshot
+                .final_path
+                .to_ascii_lowercase()
+                .starts_with(&(binding.volume_path()?.to_ascii_lowercase() + "\\")),
+            "allocation-bounded backing must be outside both frozen volumes"
+        );
+    }
+    backing.revalidate()?;
+    let source_after = source.state(events)?;
+    let target_after = target.state(events)?;
+    ensure!(
+        source_after == source_before && target_after == target_before,
+        "allocation-bounded preparation changed persistent device identity or exclusion"
+    );
+    Ok(FrozenAllocationTargetPreservation {
+        pair,
+        inspection_sha256,
+        source_sha256: source_sha256.into(),
+        source_views_sha256,
+        expected_tree_sha256,
+        resources,
+        protected,
+        residuals,
+        selection,
+        selection_sha256,
+        capture,
+        backing,
+        source_before,
+        source_after,
+        target_before,
+        target_after,
+        frozen_source_inventory_verified: true,
+        source_views_bound: true,
+        logical_payload_tied_to_frozen_source: true,
+        allocation_bounded_selection_compared: true,
+        free_space_contents_proven_equal: false,
+        source_admitted: false,
+        conversion_qualified: false,
+    })
+}
+
+struct ProtectedPrefix {
+    length: u64,
+    source_before: GeneralDiskState,
+    target_before: GeneralDiskState,
+    inspection_sha256: String,
+    source_views_sha256: String,
+    tree: shadow_tree::Tree,
+    expected_tree_sha256: String,
+    residuals: Vec<LayoutResidualExpectation>,
+    protected: ProtectedTargetLayout,
+}
+
+/// Shared by complete and allocation-bounded preparation: frozen bindings, the
+/// unchanged source inventory, bound views, actual residual reads and the
+/// protected native shadow observation. No difference capture happens here.
+#[allow(clippy::too_many_arguments)]
+fn protected_prefix(
+    source: &mut GeneralFrozenPartition,
+    target: &mut GeneralFrozenPartition,
+    pair: &GeneralSourceShadowBinding,
+    raw: &ntfs_inspect::NtfsInspection,
+    source_views: &ntfs_source_view::Analysis,
+    source_sha256: &str,
+    resources: ResourceProfile,
+    packed_path: &Path,
+    max_changed_bytes: u64,
+    events: &mut Vec<NativeEvent>,
+) -> Result<ProtectedPrefix> {
+    pair.validate_with_resource_profile(resources.native_profile())?;
+    ensure!(
+        source.binding() == &pair.source
+            && target.binding() == &pair.shadow
+            && source.byte_len() == target.byte_len(),
+        "composite device bindings differ"
+    );
+    let length = source.byte_len();
+    ensure!(
+        max_changed_bytes <= length
+            && max_changed_bytes <= reference_file::MAX_REFERENCE_FILE_BYTES,
+        "composite backing exceeds explicit byte or held-file profile bound"
+    );
+    fresh_ordinary_path(packed_path)?;
+    let source_before = source.state(events)?;
+    let target_before = target.state(events)?;
+    ensure!(
+        source_before.disk_attributes == 3 && target_before.disk_attributes == 3,
+        "composite preparation requires both devices persistently frozen"
+    );
+    let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
+    let actual = ntfs_inspect::inspect_with_limits(
+        source,
+        length,
+        ntfs_inspect::limits_for_resource_profile(resources),
+    )?;
+    ensure!(
+        hex::encode(Sha256::digest(serde_json::to_vec(&actual)?)) == inspection_sha256,
+        "composite frozen source inventory changed"
+    );
+    ensure!(
+        source_views.binds_live_source(&inspection_sha256, source_sha256),
+        "composite requires the same bound live source views"
+    );
+    let source_views_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(source_views)?));
+    let mut tree = shadow_tree::derive_ordinary_with_resource_profile(raw, resources)?;
+    tree.bind_security_views(source_views)?;
+    let expected = shadow_tree::ExpectedTree::from(&tree);
+    expected.validate_with_resource_profile(resources)?;
+    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(&expected)?));
+    let limits = resources.limits();
+    let mut residual_budget = ntfs_inspect::StreamTransferBudget::new(
+        limits.maximum_stream_bytes,
+        limits.maximum_logical_bytes,
+    )?;
+    let mut residuals = Vec::new();
+    let mut buffer = [0u8; 4096];
+    for (index, object) in tree
+        .objects
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| !item.directory)
+    {
+        let count = (object.length % 4096) as usize;
+        if count == 0 {
+            continue;
+        }
+        let offset = object.length / 4096 * 4096;
+        let proof = ntfs_inspect::read_plain_stream_range_into(
+            source,
+            raw,
+            object.record_number,
+            offset,
+            &mut buffer[..count],
+            &mut residual_budget,
+        )?;
+        ensure!(
+            proof.stream_logical_bytes == object.length
+                && object.sha256.as_deref() == Some(proof.expected_stream_sha256.as_str()),
+            "composite residual source stream identity or digest differs"
+        );
+        residuals.push(LayoutResidualExpectation {
+            object_index: index,
+            logical_offset: offset,
+            length: count as u64,
+            sha256: proof.sha256,
+        });
+    }
+    let protected =
+        general_target_preservation::verify_frozen_layout_residuals_with_resource_profile(
+            target,
+            pair.clone(),
+            &expected,
+            resources,
+            &residuals,
+            events,
+        )?;
+    ensure!(
+        protected.expected_tree_sha256() == expected_tree_sha256
+            && protected.native().report().residual_contents_verified()
+            && protected.native().report().residuals() == residuals,
+        "protected composite target does not bind exact source residuals"
+    );
+    Ok(ProtectedPrefix {
+        length,
+        source_before,
+        target_before,
+        inspection_sha256,
+        source_views_sha256,
+        tree,
+        expected_tree_sha256,
+        residuals,
+        protected,
     })
 }
 

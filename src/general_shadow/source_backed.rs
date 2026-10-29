@@ -224,6 +224,34 @@ impl<'a> SourceBackedShadow<'a> {
         self.capture_difference_ranges(&selection, length, identity, output, max_changed_bytes)
     }
 
+    /// Compare only the listed sorted, disjoint ranges and store their differing
+    /// clusters. The caller owns the claim that unlisted bytes need not match;
+    /// this capture records nothing about them.
+    pub fn capture_listed_differences_to_new_file(
+        self,
+        selection: &[crate::refs_write_set::ByteRange],
+        output: &std::path::Path,
+        max_changed_bytes: u64,
+    ) -> Result<DifferenceCapture> {
+        use sha2::{Digest, Sha256};
+        let mut selected_bytes = 0u64;
+        for range in selection {
+            selected_bytes = selected_bytes
+                .checked_add(range.length)
+                .context("listed selection overflow")?;
+        }
+        let identity = hex::encode(Sha256::digest(serde_json::to_vec(&serde_json::json!({
+            "profile":"listed-ranges-source-backed-v1","partition_bytes":self.length,
+            "granule_bytes":4096,"ranges":selection}))?));
+        self.capture_difference_ranges(
+            selection,
+            selected_bytes,
+            identity,
+            output,
+            max_changed_bytes,
+        )
+    }
+
     /// Retrospective planning over a coarse selection: compare the original
     /// bytes with this candidate view only inside `coarse` and return the
     /// differing granules as a selected plan, with the view's read counts and

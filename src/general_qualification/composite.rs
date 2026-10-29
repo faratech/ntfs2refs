@@ -247,3 +247,152 @@ fn prepare_composite(
         }
     }
 }
+
+/// Live owning capabilities for an allocation-bounded target. Keeping the proof
+/// keeps its packed backing open read-only with write/delete sharing excluded.
+pub(crate) struct QualifiedAllocationTree {
+    pub source: GeneralFrozenPartition,
+    pub native_target: GeneralFrozenPartition,
+    pub proof: general_composite_target::FrozenAllocationTargetPreservation,
+    pub certificate: general_source_admission::AllocationCertificate,
+    pub expected: Vec<u8>,
+    pub mount_paths: n2r_win32::MountPathObservation,
+    pub source_label: n2r_win32::volume_label::SourceLabel,
+}
+
+/// Fresh selected-device construction followed by an allocation-bounded target
+/// proof, under the ntfs2btrfs-style guarantee. Source isolation, assessment and
+/// shadow construction are those of the composite path.
+pub(crate) fn prepare_allocation_fresh_selected(
+    pair: GeneralSourceShadowBinding,
+    output: &Path,
+    packed_path: &Path,
+    max_change_bytes: u64,
+    profile: JournalProfile,
+    resources: crate::ntfs_admission::ResourceProfile,
+    budget: CompactConstructionBudget,
+) -> Result<QualifiedAllocationTree> {
+    budget.validate(pair.source.identity.partition_bytes)?;
+    pair.validate_with_resource_profile(resources.native_profile())?;
+    ensure!(
+        (1..=profile.max_changed_bytes()).contains(&max_change_bytes)
+            && max_change_bytes <= pair.source.identity.partition_bytes,
+        "allocation-bounded qualification changed-byte budget differs"
+    );
+    create_output(output)?;
+    save(
+        output,
+        "intent.json",
+        &serde_json::json!({
+            "schema_version":1,"kind":"live-allocation-bounded-qualification-intent",
+            "pair":pair,"source_resource_profile":resources,
+            "packed_path":packed_path,"max_change_bytes":max_change_bytes,
+            "construction_budget":budget,"free_space_contents_compared":false,
+            "source_payload_writes_authorized":false,
+            "source_admitted":false,"execution_authorized":false,
+        }),
+    )?;
+    let mut phase = "source-freeze";
+    let attempted = (|| -> Result<QualifiedAllocationTree> {
+        let mut events = Vec::<NativeEvent>::new();
+        let PreparedSourceContext {
+            mut source,
+            raw,
+            mut assessment,
+            tree,
+            expected,
+            expected_sha256,
+            source_hash,
+            mount_paths,
+            source_label,
+        } = prepare_source_context(
+            &pair,
+            output,
+            resources,
+            &mut events,
+            &mut phase,
+            |_, _, _| Ok(()),
+        )?;
+        phase = "native-shadow-construction";
+        let mut native_target = super::compact_construction::construct(
+            &mut source,
+            &pair,
+            &raw,
+            &tree,
+            output,
+            budget,
+            resources,
+            true,
+        )?;
+        save(output, "target-freeze-events.json", &events)?;
+        events.clear();
+        phase = "allocation-bounded-target-preservation";
+        let views = assessment
+            .assessment
+            .source_view
+            .as_ref()
+            .context("live allocation-bounded source views absent")?;
+        let proof = general_composite_target::verify_and_select(
+            &mut source,
+            &mut native_target,
+            pair.clone(),
+            &raw,
+            views,
+            &source_hash,
+            resources,
+            packed_path,
+            max_change_bytes,
+            &mut events,
+        )?;
+        ensure!(
+            proof.expected_tree_sha256() == expected_sha256,
+            "allocation-bounded proof differs from the fresh saved source expectation"
+        );
+        save(output, "target-preservation.json", &proof)?;
+        save(output, "target-events.json", &events)?;
+        events.clear();
+        phase = "allocation-bounded-source-certificate";
+        let certificate = assessment.qualify_allocation_target(&raw, &proof)?;
+        let certificate_sha256 = save(output, "certificate.json", &certificate)?;
+        save(output, "admitted-assessment.json", &assessment)?;
+        save(
+            output,
+            "result.json",
+            &serde_json::json!({
+                "schema_version":1,"kind":"live-allocation-bounded-tree-qualification",
+                "success":true,"source_admitted":true,"execution_authorized":false,
+                "source_payload_writes":0,"source_sha256":source_hash,
+                "expected_tree_sha256":expected_sha256,"certificate_sha256":certificate_sha256,
+                "objects":tree.objects.len(),"selection_sha256":proof.selection_sha256(),
+                "packed_changed_bytes":proof.capture().layout.changed_bytes(),
+                "free_space_contents_compared":false,
+                "source_after":source.state(&mut events)?,
+                "target_after":native_target.state(&mut events)?,"events":events,
+            }),
+        )?;
+        Ok(QualifiedAllocationTree {
+            source,
+            native_target,
+            proof,
+            certificate,
+            expected: serde_json::to_vec_pretty(&expected)?,
+            mount_paths,
+            source_label,
+        })
+    })();
+    match attempted {
+        Ok(qualified) => Ok(qualified),
+        Err(error) => {
+            save(
+                output,
+                "failed.json",
+                &serde_json::json!({
+                    "schema_version":1,"kind":"live-allocation-bounded-qualification-failure",
+                    "phase":phase,"error":format!("{error:#}"),
+                    "source_payload_writes":0,"execution_authorized":false,
+                }),
+            )?;
+            Err(error)
+        }
+    }
+}

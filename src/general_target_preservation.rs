@@ -240,26 +240,64 @@ pub struct AllocationBracketClosure {
 const BRACKET_CHUNK: u64 = 1024 * 1024;
 
 /// Opening pass over the complete frozen image: its SHA-256 plus a digest of
-/// every 1 MiB chunk, so the closing pass can recheck only part of it.
+/// every 1 MiB chunk, so the closing pass can recheck only part of it. The image
+/// is read once on this thread; two workers hash the same buffers in parallel.
 fn open_chunked_bracket<R: Read + Seek>(
     image: &mut R,
     length: u64,
 ) -> Result<(String, Vec<[u8; 32]>)> {
+    use std::sync::{Arc, mpsc};
+    let expected_chunks = usize::try_from(length.div_ceil(BRACKET_CHUNK))?;
     image.seek(SeekFrom::Start(0))?;
-    let mut whole = n2r_win32::sha256_native::Sha256::new()?;
-    let mut chunks = Vec::with_capacity(usize::try_from(length.div_ceil(BRACKET_CHUNK))?);
-    let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
-    let mut done = 0u64;
-    while done < length {
-        let count = usize::try_from((length - done).min(BRACKET_CHUNK))?;
-        image.read_exact(&mut buffer[..count])?;
-        whole.update(&buffer[..count])?;
-        let mut chunk = n2r_win32::sha256_native::Sha256::new()?;
-        chunk.update(&buffer[..count])?;
-        chunks.push(chunk.finish()?);
-        done += count as u64;
-    }
-    Ok((hex::encode(whole.finish()?), chunks))
+    std::thread::scope(|scope| -> Result<(String, Vec<[u8; 32]>)> {
+        let (whole_tx, whole_rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(4);
+        let (chunk_tx, chunk_rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(4);
+        // Each worker creates its CNG objects on its own thread.
+        let whole = scope.spawn(move || -> std::io::Result<[u8; 32]> {
+            let mut hash = n2r_win32::sha256_native::Sha256::new()?;
+            for buffer in whole_rx {
+                hash.update(&buffer)?;
+            }
+            hash.finish()
+        });
+        let chunked = scope.spawn(move || -> std::io::Result<Vec<[u8; 32]>> {
+            let mut hash = n2r_win32::sha256_native::Sha256Reusable::new()?;
+            let mut digests = Vec::with_capacity(expected_chunks);
+            for buffer in chunk_rx {
+                digests.push(hash.digest(&buffer)?);
+            }
+            Ok(digests)
+        });
+        let mut done = 0u64;
+        let mut read = Ok(());
+        while done < length {
+            let count = usize::try_from((length - done).min(BRACKET_CHUNK))?;
+            let mut buffer = vec![0u8; count];
+            if let Err(error) = image.read_exact(&mut buffer) {
+                read = Err(error);
+                break;
+            }
+            let shared = Arc::new(buffer);
+            if whole_tx.send(Arc::clone(&shared)).is_err() || chunk_tx.send(shared).is_err() {
+                break; // A worker failed; its error is reported below.
+            }
+            done += count as u64;
+        }
+        drop(whole_tx);
+        drop(chunk_tx);
+        let whole = whole
+            .join()
+            .map_err(|_| anyhow::anyhow!("whole-image bracket hash worker panicked"))??;
+        let chunks = chunked
+            .join()
+            .map_err(|_| anyhow::anyhow!("chunk bracket hash worker panicked"))??;
+        read?;
+        ensure!(
+            done == length && chunks.len() == expected_chunks,
+            "opening bracket pass did not cover the complete image"
+        );
+        Ok((hex::encode(whole), chunks))
+    })
 }
 
 /// Recheck every opening chunk that overlaps the sorted `ranges`. Chunks
@@ -289,16 +327,15 @@ fn close_chunked_bracket<R: Read + Seek>(
     indices.sort_unstable();
     indices.dedup();
     let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
+    let mut hash = n2r_win32::sha256_native::Sha256Reusable::new()?;
     let mut reread = 0u64;
     for &index in &indices {
         let at = index * BRACKET_CHUNK;
         let count = usize::try_from((length - at).min(BRACKET_CHUNK))?;
         image.seek(SeekFrom::Start(at))?;
         image.read_exact(&mut buffer[..count])?;
-        let mut hash = n2r_win32::sha256_native::Sha256::new()?;
-        hash.update(&buffer[..count])?;
         ensure!(
-            Some(&hash.finish()?) == chunks.get(usize::try_from(index)?),
+            Some(&hash.digest(&buffer[..count])?) == chunks.get(usize::try_from(index)?),
             "protected observation changed allocated frozen image bytes"
         );
         reread += count as u64;

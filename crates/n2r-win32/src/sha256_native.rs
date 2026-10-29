@@ -6,9 +6,9 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::Security::Cryptography::{
-    BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE, BCRYPT_SHA256_ALGORITHM, BCryptCloseAlgorithmProvider,
-    BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash, BCryptHashData,
-    BCryptOpenAlgorithmProvider, MS_PRIMITIVE_PROVIDER,
+    BCRYPT_ALG_HANDLE, BCRYPT_HASH_HANDLE, BCRYPT_HASH_REUSABLE_FLAG, BCRYPT_SHA256_ALGORITHM,
+    BCryptCloseAlgorithmProvider, BCryptCreateHash, BCryptDestroyHash, BCryptFinishHash,
+    BCryptHashData, BCryptOpenAlgorithmProvider, MS_PRIMITIVE_PROVIDER,
 };
 
 fn check(status: i32, operation: &str) -> io::Result<()> {
@@ -93,6 +93,86 @@ impl Drop for Sha256 {
     fn drop(&mut self) {
         // SAFETY: each non-null handle is uniquely owned here. Destroy the hash
         // (including its CNG-owned buffer) before closing its provider.
+        unsafe {
+            if !self.hash.is_null() {
+                BCryptDestroyHash(self.hash);
+            }
+            if !self.algorithm.is_null() {
+                BCryptCloseAlgorithmProvider(self.algorithm, 0);
+            }
+        }
+    }
+}
+
+/// Many independent short digests on one thread: one provider and one reusable
+/// hash object (`BCRYPT_HASH_REUSABLE_FLAG`), finished once per digest. Construct
+/// on its consuming thread; handles are never shared with another thread.
+pub struct Sha256Reusable {
+    algorithm: BCRYPT_ALG_HANDLE,
+    hash: BCRYPT_HASH_HANDLE,
+}
+
+impl Sha256Reusable {
+    pub fn new() -> io::Result<Self> {
+        let mut value = Self {
+            algorithm: ptr::null_mut(),
+            hash: ptr::null_mut(),
+        };
+        // SAFETY: live output handle storage and static, NUL-terminated strings.
+        check(
+            unsafe {
+                BCryptOpenAlgorithmProvider(
+                    &mut value.algorithm,
+                    BCRYPT_SHA256_ALGORITHM,
+                    MS_PRIMITIVE_PROVIDER,
+                    0,
+                )
+            },
+            "open SHA-256 provider",
+        )?;
+        // SAFETY: live provider/output handle; Windows allocates the object, and
+        // the reusable flag (Windows 8+) resets the state after each finish.
+        check(
+            unsafe {
+                BCryptCreateHash(
+                    value.algorithm,
+                    &mut value.hash,
+                    ptr::null_mut(),
+                    0,
+                    ptr::null(),
+                    0,
+                    BCRYPT_HASH_REUSABLE_FLAG,
+                )
+            },
+            "create reusable SHA-256 hash",
+        )?;
+        Ok(value)
+    }
+
+    /// The SHA-256 of exactly `bytes`; the object is ready for the next digest.
+    pub fn digest(&mut self, bytes: &[u8]) -> io::Result<[u8; 32]> {
+        for chunk in bytes.chunks(u32::MAX as usize) {
+            // SAFETY: the owned live hash and immutable slice remain valid
+            // throughout the synchronous call; BCryptHashData never edits input.
+            check(
+                unsafe { BCryptHashData(self.hash, chunk.as_ptr(), chunk.len() as u32, 0) },
+                "update reusable SHA-256 hash",
+            )?;
+        }
+        let mut digest = [0; 32];
+        // SAFETY: owned live reusable hash and exactly the SHA-256 output size.
+        check(
+            unsafe { BCryptFinishHash(self.hash, digest.as_mut_ptr(), 32, 0) },
+            "finish reusable SHA-256 hash",
+        )?;
+        Ok(digest)
+    }
+}
+
+impl Drop for Sha256Reusable {
+    fn drop(&mut self) {
+        // SAFETY: each non-null handle is uniquely owned here. Destroy the hash
+        // before closing its provider.
         unsafe {
             if !self.hash.is_null() {
                 BCryptDestroyHash(self.hash);

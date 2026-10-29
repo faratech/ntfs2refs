@@ -87,5 +87,28 @@
     "interruption_resume_rollback_tested_on_this_build": true,
     "hard_poweroff_recovery_open": true,
     "release_qualified": false
+  },
+  "stream_request_followup": {
+    "source_commit": "730efe1e8ea835861cc4fa26bf902770f0672cb6",
+    "change": "4 MiB logical file-stream requests (logical_hash::CHUNK, hash_exact_stream)",
+    "run_id": "eaa9df592d1f4f6cacc347a4606a05f8",
+    "engine_run_id": "48bf9a766b9f61249c0db594f6cc0e0c",
+    "seconds": 36.6,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "result_sha256": "524e0b628b07eebc8def142eb9c25f04981ae916575f6f390dfcf9ae1ca678cb",
+    "finalization_sha256": "e8bc2463db3c083c2815bd796206ac26e03cac92529d2bf5f5b08cb210d45555",
+    "artifact_write_timeline_seconds": {
+      "source_frozen": 3.8,
+      "native_source": 7.8,
+      "source_assessment": 9.2,
+      "construction_freeze": 15.2,
+      "changed_clusters": 26.1,
+      "handoff": 32.5,
+      "finalization": 36.3
+    },
+    "recovery_rerun_on_this_commit": false,
+    "recovery_note": "only request size changed; the f15e060 matrix covers the write and recovery paths"
   }
 }

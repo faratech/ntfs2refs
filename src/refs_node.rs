@@ -200,6 +200,21 @@ fn decode_root_node(bytes: &[u8], expected_schema: Option<u32>) -> Result<RootNo
     })
 }
 
+/// Structural root referenced by an authenticated Object Table row. Object
+/// identity and schema semantics still need independent higher-level checks.
+pub fn inspect_object_root_node(bytes: &[u8], object_id: u64) -> Result<RootNodeObservation> {
+    ensure!(
+        bytes.len() == PAGE_BYTES
+            && object_id >= 7
+            && &bytes[..4] == b"MSB+"
+            && u32le(bytes, 4) == 2
+            && u64le(bytes, 0x40) == 0
+            && u64le(bytes, 0x48) == object_id,
+        "object root header or identity differs"
+    );
+    decode_root_node(bytes, None)
+}
+
 /// Initial native container-child profile: an eight-byte prefix at 0x50, then
 /// the node header at 0x58. The caller must independently validate CRC, page
 /// self-locations, volume signature and the expected table ID before traversal.
@@ -239,6 +254,19 @@ fn decode_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {
         "unsupported non-root node prefix"
     );
     inspect_node_body(bytes, ROOT_OFFSET + 8)
+}
+
+pub fn inspect_object_child_node(bytes: &[u8], object_id: u64) -> Result<NodeBodyObservation> {
+    ensure!(
+        bytes.len() == PAGE_BYTES
+            && object_id >= 7
+            && &bytes[..4] == b"MSB+"
+            && u32le(bytes, 4) == 2
+            && u64le(bytes, 0x40) == 0
+            && u64le(bytes, 0x48) == object_id,
+        "object child header or identity differs"
+    );
+    decode_child_node(bytes)
 }
 
 pub fn inspect_container_child_node(bytes: &[u8]) -> Result<NodeBodyObservation> {

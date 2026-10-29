@@ -78,6 +78,7 @@ pub mod refs_cow_overlay;
 pub mod refs_hybrid;
 pub mod refs_inspect;
 pub mod refs_node;
+pub mod refs_object_refs;
 #[cfg(windows)]
 pub mod refs_reference_import;
 pub mod refs_reference_transport;

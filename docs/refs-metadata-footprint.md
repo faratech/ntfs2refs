@@ -2,7 +2,9 @@
 
 `lab-refs-metadata-footprint` reads an ordinary raw ReFS 3.14 / 4 KiB / CRC64
 volume image. It selects the unique highest valid checkpoint, requires matching
-container copies, and follows the ten virtual system-root index trees. Every
+container copies, and follows the ten virtual system-root index trees. Compact
+CRC64 Object Table rows must agree between both copies before their referenced
+directory/system-object roots and index descendants are followed. Every
 page must match its parent checksum, table, volume signature, self-address and
 expected level. Physical cycles, shared page clusters, unknown reference forms
 and exhausted budgets refuse. The original allocator/container node decoders
@@ -30,7 +32,14 @@ The Medium and Small allocator readers also retain physical-page footprints
 from their already checked addresses without additional reads. Those separate
 receipts cover only their respective walks.
 
-Selective conversion remains unavailable. Object-table leaf references,
-directory/file embedded trees, log storage, failover generations and complete
+Selective conversion remains unavailable. Directory/file embedded trees,
+log storage, failover generations and complete
 allocator/refcount ownership still need reconciliation. These footprint
 observations cannot authorize skipped reads or raw writes.
+
+The Object Table extension completed on the same research image: 14 object
+trees, 46 total pages, 12 physical ranges, and 1,897,488 total reader bytes.
+Only compact 80/88-byte CRC64 Object Table values are decoded; legacy/upgraded
+forms still refuse. Directory/file embedded leaf references, log storage and
+the other omissions above are not yet resolved. See the
+[expanded receipt](../evidence/refs-object-footprint-20261029.json).

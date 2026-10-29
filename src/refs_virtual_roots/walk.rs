@@ -3,6 +3,7 @@
 //! traversal deliberately does not claim that those have been accounted for.
 use super::*;
 use crate::refs_node;
+use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct WalkLimits {
@@ -21,7 +22,8 @@ impl Default for WalkLimits {
 
 #[derive(Debug, Serialize)]
 pub struct TreeFootprint {
-    pub root_index: usize,
+    pub root_index: Option<usize>,
+    pub object_id: Option<u64>,
     pub table_id: u64,
     pub observed_schema_id: u32,
     pub pages_read: u32,
@@ -52,6 +54,14 @@ struct Pending {
     checksum: u64,
     level: Option<u8>,
     depth: u8,
+}
+
+struct TreeRequest {
+    root_index: Option<usize>,
+    object_id: Option<u64>,
+    table_id: u64,
+    slots: [u64; 4],
+    checksum: u64,
 }
 
 fn enqueue(
@@ -149,14 +159,37 @@ pub fn inspect<R: Read + Seek>(
     }
     let mut visited = BTreeSet::new();
     let mut transcript = Sha256::new();
-    transcript.update(b"n2r-refs-virtual-index-footprint-v1\0");
+    transcript.update(b"n2r-refs-virtual-and-object-index-footprint-v2\0");
     let mut total_pages = 0u32;
     let mut trees = Vec::new();
+    let mut requests = VecDeque::new();
     for (root_index, table_id) in ROOTS {
         let reference = &fields.roots[root_index];
-        let mut pending = vec![Pending {
+        requests.push_back(TreeRequest {
+            root_index: Some(root_index),
+            object_id: None,
+            table_id,
             slots: reference.lcn_slots,
             checksum: reference_crc(reference)?,
+        });
+    }
+    let mut primary_objects = BTreeMap::new();
+    let mut duplicate_objects = BTreeMap::new();
+    while let Some(request) = requests.pop_front() {
+        let TreeRequest {
+            root_index,
+            object_id,
+            table_id,
+            slots,
+            checksum,
+        } = request;
+        ensure!(
+            trees.len() < 65_546,
+            "metadata tree count exceeds bounded profile"
+        );
+        let mut pending = vec![Pending {
+            slots,
+            checksum,
             level: None,
             depth: 0,
         }];
@@ -204,22 +237,35 @@ pub fn inspect<R: Read + Seek>(
                 "metadata page checksum, header, table or self-address differs"
             );
             total_pages += 1;
-            transcript.update((root_index as u64).to_le_bytes());
+            transcript.update(
+                root_index
+                    .map_or(u64::MAX, |index| index as u64)
+                    .to_le_bytes(),
+            );
+            transcript.update(table_id.to_le_bytes());
             for lcn in physical {
                 transcript.update(lcn.to_le_bytes());
             }
             transcript.update(&bytes);
             let (level, index_node, rows) = if item.depth == 0 {
-                let root = refs_node::inspect_system_root_node(&bytes, table_id)
-                    .with_context(|| format!("system root {root_index} table {table_id}"))?;
+                let root = if object_id.is_some() {
+                    refs_node::inspect_object_root_node(&bytes, table_id)
+                } else {
+                    refs_node::inspect_system_root_node(&bytes, table_id)
+                }
+                .with_context(|| format!("metadata root {root_index:?} table {table_id}"))?;
                 expected_rows = Some(root.whole_table_row_count);
                 schema_id = Some(root.schema_id);
                 (root.node_level, root.index_node, root.rows)
             } else {
-                let node =
-                    refs_node::inspect_system_child_node(&bytes, table_id).with_context(|| {
-                        format!("system child of root {root_index} table {table_id}")
-                    })?;
+                let node = if object_id.is_some() {
+                    refs_node::inspect_object_child_node(&bytes, table_id)
+                } else {
+                    refs_node::inspect_system_child_node(&bytes, table_id)
+                }
+                .with_context(|| {
+                    format!("metadata child of root {root_index:?} table {table_id}")
+                })?;
                 (node.node_level, node.index_node, node.rows)
             };
             ensure!(
@@ -231,6 +277,21 @@ pub fn inspect<R: Read + Seek>(
             if index_node {
                 enqueue(&rows, level, item.depth, &mut pending, total_pages, limits)?;
             } else {
+                if matches!(root_index, Some(0 | 5)) {
+                    let objects = if root_index == Some(0) {
+                        &mut primary_objects
+                    } else {
+                        &mut duplicate_objects
+                    };
+                    for row in &rows {
+                        let reference = crate::refs_object_refs::decode_object_leaf_row(row)?;
+                        ensure!(
+                            objects.len() < 65_536
+                                && objects.insert(reference.object_id, reference).is_none(),
+                            "Object Table contains duplicate OIDs or exceeds budget"
+                        );
+                    }
+                }
                 leaves = leaves
                     .checked_add(rows.len() as u64)
                     .context("metadata leaf row count overflow")?;
@@ -243,6 +304,7 @@ pub fn inspect<R: Read + Seek>(
         );
         trees.push(TreeFootprint {
             root_index,
+            object_id,
             table_id,
             observed_schema_id: schema_id.context("root schema was not observed")?,
             pages_read: total_pages - start_pages,
@@ -251,6 +313,26 @@ pub fn inspect<R: Read + Seek>(
             index_descendants_complete: true,
             leaf_external_references_followed: false,
         });
+        if root_index == Some(5) {
+            ensure!(
+                primary_objects == duplicate_objects && primary_objects.contains_key(&0x600),
+                "Object Table copies disagree or root directory is absent"
+            );
+            ensure!(
+                u64::from(total_pages) + requests.len() as u64 + primary_objects.len() as u64
+                    <= u64::from(limits.max_pages),
+                "metadata page budget cannot cover Object Table roots"
+            );
+            for reference in primary_objects.values() {
+                requests.push_back(TreeRequest {
+                    root_index: None,
+                    object_id: Some(reference.object_id),
+                    table_id: reference.object_id,
+                    slots: reference.virtual_lcn_slots,
+                    checksum: reference.root_crc64_nvme,
+                });
+            }
+        }
     }
     let mut ranges: Vec<crate::refs_write_set::ByteRange> = Vec::new();
     for lcn in visited {
@@ -272,7 +354,7 @@ pub fn inspect<R: Read + Seek>(
         }
     }
     Ok(MetadataFootprint {
-        profile: "refs-3.14-4k-crc64-virtual-index-footprint-v1",
+        profile: "refs-3.14-4k-crc64-virtual-and-object-index-footprint-v2",
         checkpoint_lcn: checkpoint.lcn,
         checkpoint_sha256: checkpoint.sha256.clone(),
         mapping_sha256: binding

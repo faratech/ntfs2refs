@@ -53,14 +53,16 @@ The observed conversion took about 55m52s with a monitored peak working set near
 were in a zero-filled file; these results do not establish payload-independent
 scratch for arbitrary nonzero data.
 
-Recovery on this exact candidate remains separately unqualified. The earlier
-`2cac76...` executable passed public resume and rollback after a controlled
-one-write interruption and reboot; those results are included as separate
-evidence and do not transfer automatically to this executable.
+Public resume/finalize on this exact candidate passed after its controlled
+one-write interruption and reboot: native/task0, exact target hash, HND, native
+15 objects/10 complete hashes, and preserved label/mount. Its recovered branch
+was saved separately. See the [resume receipt](../evidence/optimized-drive-alpha-resume-20261029.json).
+Rollback on this candidate remains unqualified. The earlier `2cac76...`
+executable's separate resume/rollback evidence does not transfer automatically.
 The same-source controlled converter subsequently reached its intended exit86
 after one flushed write, published its original native recovery bundle, and
 preserved the interrupted branch. That branch booted with its source still
-offline; public resume has started but is not yet qualified. See the
+offline; public resume then passed as recorded above. See the
 [interruption receipt](../evidence/optimized-drive-alpha-interruption-20261029.json).
 
 Other sizes, Windows builds and features need their own qualification.

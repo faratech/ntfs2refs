@@ -36,8 +36,8 @@ substitute another bundle or force storage attributes to bypass a refusal.
 - Executable SHA-256: `fb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c`.
 - Source checkpoint: `2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7`.
 - The build included the existing uncommitted capabilities edit in `src/main.rs`.
-  Its exact file snapshot is included under `provenance/tested-main.rs`.
-  This is recorded provenance, not a reproducible-build claim.
+  A packaging-time snapshot is included under `provenance/packaging-main.rs`.
+  This does not attest a clean historical tree or a reproducible build.
 - Actual `--drive F --partition 2`, affirmative stdin and automatic staging:
   native and wrapper exit 0; 152 patches / 70,631,424 bytes; HND; native
   15 objects / 10 complete hashes; source label and F: preserved.

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "frozen-drive-alpha-package-observation",
+  "path": ".lab/releases/ntfs2refs-alpha-20261029-fb5548",
+  "zip": ".lab/releases/ntfs2refs-alpha-20261029-fb5548.zip",
+  "zip_bytes": 2556184,
+  "zip_sha256": "f826606342c9b2a06ef18a35996915d60c0c54fd840fbc71c21ddb26f854577b",
+  "manifest_sha256": "ae022a9e9300b077c7bea13a7764dfb70dc35b0d7fed29faccc737649f446482",
+  "executable_sha256": "fb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c",
+  "source_checkpoint": "2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7",
+  "source_main_had_existing_uncommitted_capabilities_edit": true,
+  "main_snapshot_is_packaging_time_only": true,
+  "files": 9,
+  "zip_executable_bytes_independently_rehashed": true,
+  "packaging_executed_converter": false,
+  "normal_conversion_qualified": true,
+  "ordinary_mutation_qualified": true,
+  "same_branch_reboot_qualified": true,
+  "same_candidate_interruption_recovery_qualified": false,
+  "older_2cac_recovery_evidence_is_separate": true,
+  "arbitrary_size_qualified": false,
+  "boot_conversion_qualified": false,
+  "production_qualified": false,
+  "runtime_admission_granted_by_package": false,
+  "virtual_machine_state_at_packaging": "Off",
+  "virtual_machine_assigned_memory": 0,
+  "retained_checkpoints": [
+    "5125d335-09b4-4838-bc64-28b079e3f2b9",
+    "632b630a-c77b-43b2-9b9a-eafbbd87106d"
+  ],
+  "scope": "Local byte-pinned experimental Windows x64 alpha, including instructions and separately scoped evidence. No journals, images, secrets or Microsoft driver binaries are packaged. Later allocation-coverage code is outside this executable."
+}

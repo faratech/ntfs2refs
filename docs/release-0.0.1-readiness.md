@@ -80,9 +80,13 @@ Under the user-chosen ntfs2btrfs-style guarantee, the hidden
 (15m53s) with at least 295.0 GB read, against 2,813.3 s and at least 816.6 GB for
 the whole-image HEAD build: same 15 objects / 10 hashes, label and mount
 verified. See [the receipt](../evidence/allocation-bounded-conversion-20261029.json)
-and [the plan](selective-conversion-plan.md). It is not release-ready: it has no
-interruption, recovery, mutation or reboot results, and `--recover` cannot read
-its journal yet.
+and [the plan](selective-conversion-plan.md). Since then, one controlled
+interruption, a restart, and both public `--recover` directions from the same
+interrupted state passed: resume to ReFS (15 objects / 10 hashes) and rollback to
+NTFS (7/7 user file hashes). See
+[the recovery receipt](../evidence/allocation-bounded-recovery-matrix-20261029.json).
+It is still not release-ready: other interruption points, physical power loss,
+and mutation/reboot of the converted volume are untested, and it is one fixture.
 
 ## Where the performance work stands
 

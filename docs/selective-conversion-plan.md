@@ -99,8 +99,13 @@ allocation comparison), file verification about 11 GB. Next savings, in order:
 bracket the protected shadow observation over its allocation only (about 80 GB),
 then replace the whole-source certificate hash (step 4).
 
-Recovery for this mode is implemented in `b49eae6` but not yet exercised
-natively. The conversion publishes `allocation-recovery-bundle.json` (pins only)
+Recovery for this mode is implemented in `b49eae6` and was exercised natively
+from one controlled interruption (exit 86 after the first flushed write), a guest
+restart, then both public directions from the identical interrupted state:
+`--recover` resumed to ReFS with 15 objects / 10 hashes, and `--recover
+--rollback` restored NTFS with all 7 user files matching their original SHA-256.
+See [the receipt](../evidence/allocation-bounded-recovery-matrix-20261029.json).
+Other interruption points and physical power loss remain untested. The conversion publishes `allocation-recovery-bundle.json` (pins only)
 before activation and prints its checksum; `--recover` routes to
 `general_recovery::recover_allocation` when only that bundle exists. The
 selected journal's own lifecycle chooses the action:

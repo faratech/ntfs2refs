@@ -28,9 +28,9 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
-NTFS checkpoint5f30f4a1, but its disks now hold the result of the allocation-
-bounded run3869576ae5a0480488061ebc95de8666 (F: converted to ReFS, not
-checkpointed; records archived on the host). Any new native run needs a fresh restore of the intended
+NTFS checkpoint5f30f4a1, but its disks now hold the NTFS restored by the
+allocation-bounded rollback run fbf85b2de52b4747a8fa02bc88a66841 (not
+checkpointed; records archived on the host). Only 52d37819 and 5f30f4a1 remain. Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
 least 816.6GB; see evidence/head-drive-measurement-20261029.json and
@@ -166,11 +166,16 @@ before activation; --recover routes to general_recovery::recover_allocation when
 only that bundle exists; the journal lifecycle selects resume/verify-handoff or
 rollback/abandon/verify-abort, never a fresh apply. Lab fault entry:
 lab-convert-native-composite --selected-devices --allocation-bounded
---interrupt-after-writes N (exit 86). NOT yet exercised natively. Next: adapt
-Start-OptimizedCompactInterruption.ps1 / Save-OptimizedPartial.ps1 /
-Start-OptimizedRecovery.ps1 (pinned to old runs; do not reuse blindly) for this
-mode, checkpoint the interrupted state once, then run --recover resume and
---rollback from it. Then bracket the shadow observation over its allocation.
+--interrupt-after-writes N (exit 86). Exercised natively (launchers
+lab/Start-AllocationInterruption.ps1, lab/Start-AllocationRecovery.ps1): one
+interruption after the first flushed write, guest restart, then from the same
+temporary checkpoint (since removed) --recover resumed to ReFS 15/10 and
+--recover --rollback restored NTFS with 7/7 user file hashes; see
+evidence/allocation-bounded-recovery-matrix-20261029.json. Untested: other
+interruption points, physical power loss, mutation/reboot on this build. Next:
+bracket the shadow observation over its allocation, then mutation/reboot.
+The VM's CheckpointType was set to Standard for that temporary checkpoint; its
+earlier value was not recorded.
 
 ## Source and recovery invariants
 

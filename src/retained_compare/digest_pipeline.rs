@@ -17,6 +17,20 @@ pub(crate) struct Pipeline {
 
 impl Pipeline {
     pub(crate) fn with_native_backend(chunk_bytes: usize, native: bool) -> Result<Self> {
+        Self::with_native_backend_and_prefix(chunk_bytes, native, None)
+    }
+
+    /// The fixed optional prefix is hashed once before submitted data chunks.
+    /// It is copied into the worker; native hash handles stay on that worker.
+    pub(crate) fn with_native_backend_and_prefix(
+        chunk_bytes: usize,
+        native: bool,
+        prefix: Option<[u8; 16]>,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            (1..=1024 * 1024).contains(&chunk_bytes),
+            "digest buffer must be between one byte and 1MiB"
+        );
         let (input, chunks) = sync_channel::<Vec<u8>>(1);
         let (buffers, recycled) = sync_channel(1);
         let worker = thread::Builder::new()
@@ -24,6 +38,9 @@ impl Pipeline {
             .spawn(move || {
                 // Construct CNG handles on this worker; none crosses threads.
                 let mut hash = StreamDigest::new(native)?;
+                if let Some(prefix) = prefix {
+                    hash.update(&prefix)?;
+                }
                 while let Ok(buffer) = chunks.recv() {
                     hash.update(&buffer)?;
                     if buffers.send(buffer).is_err() {
@@ -49,20 +66,41 @@ impl Pipeline {
         );
         let mut buffer = match self.spare.take() {
             Some(buffer) => buffer,
-            None => self
+            None => match self
                 .recycled
                 .as_ref()
                 .context("closed digest buffer channel")?
                 .recv()
-                .map_err(|_| anyhow!("shadow digest worker stopped before recycling"))?,
+            {
+                Ok(buffer) => buffer,
+                Err(_) => {
+                    return Err(self.worker_stopped("digest worker stopped before recycling"));
+                }
+            },
         };
         buffer.clear();
         buffer.extend_from_slice(bytes);
-        self.input
+        if self
+            .input
             .as_ref()
             .context("closed digest input channel")?
             .send(buffer)
-            .map_err(|_| anyhow!("shadow digest worker stopped before accepting input"))
+            .is_err()
+        {
+            return Err(self.worker_stopped("digest worker stopped before accepting input"));
+        }
+        Ok(())
+    }
+
+    fn worker_stopped(&mut self, operation: &'static str) -> anyhow::Error {
+        self.input.take();
+        self.recycled.take();
+        match self.worker.take().map(JoinHandle::join) {
+            Some(Ok(Err(error))) => error.context(operation),
+            Some(Err(_)) => anyhow!("{operation}: digest worker panicked"),
+            Some(Ok(Ok(_))) => anyhow!("{operation}: digest worker ended before all input"),
+            None => anyhow!("{operation}: digest worker is unavailable"),
+        }
     }
 
     pub(crate) fn finish(mut self) -> Result<[u8; 32]> {

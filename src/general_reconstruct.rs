@@ -346,6 +346,7 @@ pub fn prepare_with_progress(
         &journal_before,
         None,
         progress,
+        lab_reconstruct::prepare_journal_with_profile_and_progress,
     )?;
     let source_after = source.state(&mut events)?;
     let shadow_after = shadow.state(&mut events)?;
@@ -401,6 +402,63 @@ pub fn prepare_compact_with_progress<S: lab_reconstruct::ReadSeek>(
     artifact_identity_sha256: &str,
     progress: &mut dyn FnMut(crate::preparation_progress::Progress),
 ) -> Result<Preparation> {
+    prepare_compact_using(
+        request,
+        source,
+        native_shadow,
+        image,
+        journal,
+        artifact_identity_sha256,
+        progress,
+        lab_reconstruct::prepare_journal_with_profile_and_progress,
+    )
+}
+
+/// Typed source-backed preparation only; generic/lab callers retain the
+/// existing two-reader comparison and its original serialization.
+pub(crate) fn prepare_compact_paired_with_progress(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    native_shadow: &GeneralFrozenPartition,
+    image: &mut crate::refs_hybrid::delta::DifferenceImage<'_, GeneralFrozenPartition, File>,
+    journal: &mut File,
+    artifact_identity_sha256: &str,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<Preparation> {
+    prepare_compact_using(
+        request,
+        source,
+        native_shadow,
+        image,
+        journal,
+        artifact_identity_sha256,
+        progress,
+        lab_reconstruct::prepare_compact_journal_with_progress,
+    )
+}
+
+type PrepareJournal<S> = fn(
+    &mut GeneralFrozenPartition,
+    &mut S,
+    &mut File,
+    &RetainedCompareRequest,
+    &JournalBinding,
+    u64,
+    JournalProfile,
+    &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<JournalSummary>;
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_compact_using<S: lab_reconstruct::ReadSeek>(
+    request: &Request,
+    source: &mut GeneralFrozenPartition,
+    native_shadow: &GeneralFrozenPartition,
+    image: &mut S,
+    journal: &mut File,
+    artifact_identity_sha256: &str,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+    prepare_journal: PrepareJournal<S>,
+) -> Result<Preparation> {
     request.validate()?;
     ensure!(
         source.binding() == &request.pair.source
@@ -430,6 +488,7 @@ pub fn prepare_compact_with_progress<S: lab_reconstruct::ReadSeek>(
         &journal_before,
         Some(&compact_bound),
         progress,
+        prepare_journal,
     )?;
     let source_after = source.state(&mut events)?;
     let shadow_after = native_shadow.state(&mut events)?;
@@ -475,6 +534,7 @@ fn prepare_image_content<S: lab_reconstruct::ReadSeek>(
     journal_before: &JournalFileSnapshot,
     explicit_binding: Option<&JournalBinding>,
     progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+    prepare_journal: PrepareJournal<S>,
 ) -> Result<PreparedImageContent> {
     let shadow_length = shadow.byte_len()?;
     let ntfs = ntfs_inspect::inspect_with_limits(
@@ -520,7 +580,7 @@ fn prepare_image_content<S: lab_reconstruct::ReadSeek>(
         Some(bound) => bound.clone(),
         None => binding(request, &journal_before.identity)?,
     };
-    let summary = lab_reconstruct::prepare_journal_with_profile_and_progress(
+    let summary = prepare_journal(
         source,
         shadow,
         journal,

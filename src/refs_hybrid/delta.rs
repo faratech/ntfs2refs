@@ -171,6 +171,67 @@ pub(crate) struct FrozenPairDigests {
 
 #[cfg(windows)]
 impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
+    pub(crate) fn paired_source_state(
+        &mut self,
+        source: &n2r_win32::GeneralFrozenPartition,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<n2r_win32::GeneralDiskState> {
+        ensure!(
+            source.binding() == self.original.binding()
+                && source.byte_len() == self.layout.partition_bytes
+                && self.original.byte_len() == self.layout.partition_bytes
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+            "paired preparation does not share the exact frozen source"
+        );
+        let state = source.state(events)?;
+        ensure!(
+            state.disk_attributes == 3 && self.original.state(events)? == state,
+            "paired preparation source/complement exclusion differs"
+        );
+        Ok(state)
+    }
+
+    pub(crate) fn read_pair_from_frozen_source(
+        &mut self,
+        source: &mut n2r_win32::GeneralFrozenPartition,
+        offset: u64,
+        original: &mut [u8],
+        candidate: &mut [u8],
+    ) -> Result<u64> {
+        ensure!(
+            source.binding() == self.original.binding()
+                && offset == self.position
+                && !original.is_empty()
+                && original.len() <= 1024 * 1024
+                && original.len() == candidate.len(),
+            "invalid typed paired preparation chunk"
+        );
+        let end = offset
+            .checked_add(original.len() as u64)
+            .context("paired preparation overflow")?;
+        ensure!(
+            end <= self.layout.partition_bytes,
+            "paired preparation escapes source"
+        );
+        source.seek(SeekFrom::Start(offset))?;
+        source.read_exact(original)?;
+        candidate.copy_from_slice(original);
+        self.overlay_packed_chunk(offset, candidate)?;
+        self.position = end;
+        let first = self
+            .layout
+            .ranges
+            .partition_point(|r| r.offset + r.length <= offset);
+        let changed = self.layout.ranges[first..]
+            .iter()
+            .take_while(|r| r.offset < end)
+            .map(|r| (r.offset + r.length).min(end) - r.offset.max(offset))
+            .sum::<u64>();
+        (original.len() as u64)
+            .checked_sub(changed)
+            .context("paired preparation read accounting overflow")
+    }
+
     /// Fresh final source/candidate scan. Both raw and complete-range-framed
     /// digests consume identical logical bytes to independent hash_image scans.
     pub(crate) fn hash_pair_for_frozen_source(
@@ -194,24 +255,14 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
         self.original.seek(SeekFrom::Start(0))?;
         let mut source = vec![0u8; 1024 * 1024];
         let mut candidate = vec![0u8; 1024 * 1024];
-        let mut source_raw = n2r_win32::sha256_native::Sha256::new()?;
-        let mut source_framed = n2r_win32::sha256_native::Sha256::new()?;
-        let mut candidate_raw = n2r_win32::sha256_native::Sha256::new()?;
-        let mut candidate_framed = n2r_win32::sha256_native::Sha256::new()?;
-        for framed in [&mut source_framed, &mut candidate_framed] {
-            framed.update(&0u64.to_le_bytes())?;
-            framed.update(&expected_length.to_le_bytes())?;
-        }
+        let mut hashes = crate::retained_compare::paired_digest::PairHasher::new(expected_length)?;
         let mut offset = 0u64;
         while offset < expected_length {
             let count = (expected_length - offset).min(source.len() as u64) as usize;
             self.original.read_exact(&mut source[..count])?;
-            source_raw.update(&source[..count])?;
-            source_framed.update(&source[..count])?;
             candidate[..count].copy_from_slice(&source[..count]);
             self.overlay_packed_chunk(offset, &mut candidate[..count])?;
-            candidate_raw.update(&candidate[..count])?;
-            candidate_framed.update(&candidate[..count])?;
+            hashes.update_pair(&source[..count], &candidate[..count])?;
             offset += count as u64;
         }
         ensure!(
@@ -220,11 +271,12 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
             "paired frozen inputs changed around the complete scan"
         );
         self.position = expected_length;
+        let hashes = hashes.finish()?;
         Ok(FrozenPairDigests {
-            source_raw: hex::encode(source_raw.finish()?),
-            source_framed: hex::encode(source_framed.finish()?),
-            candidate_raw: hex::encode(candidate_raw.finish()?),
-            candidate_framed: hex::encode(candidate_framed.finish()?),
+            source_raw: hex::encode(hashes.source_raw),
+            source_framed: hex::encode(hashes.source_framed),
+            candidate_raw: hex::encode(hashes.candidate_raw),
+            candidate_framed: hex::encode(hashes.candidate_framed),
         })
     }
 }

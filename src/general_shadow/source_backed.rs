@@ -29,6 +29,15 @@ pub struct DifferenceCapture {
     pub packed_sha256: String,
     pub input_plan_sha256: String,
     pub conversion_qualified: bool,
+    // Only a fresh, complete source scan can issue this digest. Keep the
+    // sidecar out of strict historical capture reports and recovery inputs.
+    #[serde(skip)]
+    source_raw_sha256: Option<String>,
+}
+impl DifferenceCapture {
+    pub(crate) fn source_raw_sha256(&self) -> Option<&str> {
+        self.source_raw_sha256.as_deref()
+    }
 }
 
 pub struct SourceBackedShadow<'a> {
@@ -201,6 +210,15 @@ impl<'a> SourceBackedShadow<'a> {
         let mut original = vec![0u8; NATIVE_CAPTURE_BYTES];
         let mut candidate = vec![0u8; NATIVE_CAPTURE_BYTES];
         let mut source_digest = Sha256::new();
+        let mut source_raw = if selection.len() == 1
+            && selection[0].offset == 0
+            && selection[0].length == self.length
+            && selected_bytes == self.length
+        {
+            Some(n2r_win32::sha256_native::Sha256::new()?)
+        } else {
+            None
+        };
         let mut candidate_digest = Sha256::new();
         let mut packed_digest = Sha256::new();
         let mut changed = 0u64;
@@ -220,6 +238,9 @@ impl<'a> SourceBackedShadow<'a> {
                 self.source.seek(SeekFrom::Start(at))?;
                 self.source.read_exact(&mut original[..count])?;
                 source_digest.update(&original[..count]);
+                if let Some(digest) = &mut source_raw {
+                    digest.update(&original[..count])?;
+                }
                 candidate_digest.update(&candidate[..count]);
                 for offset in (0..count).step_by(4096) {
                     if original[offset..offset + 4096] == candidate[offset..offset + 4096] {
@@ -264,6 +285,10 @@ impl<'a> SourceBackedShadow<'a> {
         );
         let layout = DeltaLayout::new(self.length, changed, ranges)?;
         let read_counts = self.finish()?;
+        let source_raw_sha256 = match source_raw {
+            Some(digest) => Some(hex::encode(digest.finish()?)),
+            None => None,
+        };
         Ok(DifferenceCapture {
             layout,
             selected_bytes_compared: compared,
@@ -274,6 +299,7 @@ impl<'a> SourceBackedShadow<'a> {
             packed_sha256: hex::encode(packed_digest.finalize()),
             input_plan_sha256,
             conversion_qualified: false,
+            source_raw_sha256,
         })
     }
 

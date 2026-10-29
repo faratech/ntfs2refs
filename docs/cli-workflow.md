@@ -62,15 +62,21 @@ full-volume passes remain. Target preparation also combines its final frozen
 source and candidate scans, retaining raw and framed hashes for both. The native
 shadow is rechecked before that final source scan and the packed backing is
 rechecked afterward. This removes another partition length minus changed bytes
-of source reads. These optimizations pass the release build and have not yet
-been qualified in a native run.
+of source reads. These optimizations ran in the frozen `fb5548...` candidate,
+which passed normal conversion, mutation and reboot on the recorded fixture.
+
+Later development folds another source hash into the complete capture and
+shares the first journal-comparison source read with the candidate overlay.
+The two subsequent full-image rechecks remain. The final frozen-source and
+candidate digests can also use two bounded workers. These later changes pass
+the release build but have not yet been measured or qualified natively.
 
 For the Windows streaming-v2 profile, whole-image reconstruction and recovery
 hashes now use the existing fallible CNG SHA-256 backend, including normalized
 source checks and paired digest workers. Patch, record, metadata and immutable
 journal hashes retain their separate paths. Legacy and non-Windows hashing
-retain the Rust backend. No scans or integrity checks are skipped, and no speedup
-is claimed until the new binary is measured in the native laboratory.
+retain the Rust backend. The frozen candidate passed its scoped native run;
+the result does not by itself establish a speedup over other builds.
 
 ## Recovering a drive run
 

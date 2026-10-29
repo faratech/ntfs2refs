@@ -319,7 +319,7 @@ fn convert_composite(
             "compact preparation complement differs from the admitted source"
         );
         let mut image = artifact.image(&mut complement)?;
-        let prepared = reconstruct::prepare_compact_with_progress(
+        let prepared = reconstruct::prepare_compact_paired_with_progress(
             &plan,
             &mut source,
             &native_target,

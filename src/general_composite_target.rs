@@ -22,7 +22,6 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom},
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, Prefix},
     time::SystemTime,
@@ -287,11 +286,6 @@ pub fn verify_and_capture(
         source_before.disk_attributes == 3 && target_before.disk_attributes == 3,
         "composite preparation requires both devices persistently frozen"
     );
-    let (observed_source_sha256, source_framed_sha256) = hash_image(source, length)?;
-    ensure!(
-        observed_source_sha256 == source_sha256,
-        "composite frozen source SHA-256 differs"
-    );
     let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
     let actual = ntfs_inspect::inspect_with_limits(
         source,
@@ -374,9 +368,14 @@ pub fn verify_and_capture(
         protected.routes().payload_bytes().max(1),
     )?
     .capture_complete_differences_to_new_file(packed_path, max_changed_bytes)?;
+    // The complete capture hashes the exact original chunks it already read.
+    // This fresh in-memory sidecar cannot be imported from a capture report.
+    ensure!(
+        capture.source_raw_sha256() == Some(source_sha256),
+        "composite capture frozen source SHA-256 differs"
+    );
     ensure!(
         capture.selected_bytes_compared == length
-            && capture.source_selected_sha256 == source_framed_sha256
             && capture
                 .equal_selected_bytes
                 .checked_add(capture.layout.changed_bytes())
@@ -417,9 +416,8 @@ pub fn verify_and_capture(
         "source changed around composite preparation"
     );
     ensure!(
-        final_digests.source_framed == source_framed_sha256
-            && final_digests.source_framed == capture.source_selected_sha256,
-        "final source framing differs from the initial source or capture"
+        final_digests.source_framed == capture.source_selected_sha256,
+        "final source framing differs from the complete capture"
     );
     ensure!(
         final_digests.candidate_framed == capture.candidate_selected_sha256,
@@ -474,31 +472,6 @@ pub fn verify_and_capture(
         source_admitted: false,
         conversion_qualified: false,
     })
-}
-
-fn hash_image(reader: &mut (impl Read + Seek), length: u64) -> Result<(String, String)> {
-    ensure!(
-        reader.seek(SeekFrom::End(0))? == length,
-        "composite hash reader length differs"
-    );
-    reader.seek(SeekFrom::Start(0))?;
-    let mut raw = n2r_win32::sha256_native::Sha256::new()?;
-    let mut framed = n2r_win32::sha256_native::Sha256::new()?;
-    framed.update(&0u64.to_le_bytes())?;
-    framed.update(&length.to_le_bytes())?;
-    // This is a complete native/difference-image hash, not a logical NTFS
-    // parser read. Match the native reader's 1 MiB batch while keeping the
-    // same exact byte sequence and both raw/framed digest contracts.
-    let mut buffer = vec![0u8; 1024 * 1024];
-    let mut remaining = length;
-    while remaining > 0 {
-        let count = remaining.min(buffer.len() as u64) as usize;
-        reader.read_exact(&mut buffer[..count])?;
-        raw.update(&buffer[..count])?;
-        framed.update(&buffer[..count])?;
-        remaining -= count as u64;
-    }
-    Ok((hex::encode(raw.finish()?), hex::encode(framed.finish()?)))
 }
 
 fn fresh_ordinary_path(path: &Path) -> Result<()> {

@@ -485,6 +485,66 @@ pub(crate) fn prepare_journal_with_profile_and_progress<R: ReadSeek, S: ReadSeek
     profile: JournalProfile,
     progress: &mut dyn FnMut(crate::preparation_progress::Progress),
 ) -> Result<JournalSummary> {
+    prepare_journal_using_comparison(
+        source,
+        shadow,
+        journal,
+        request,
+        binding,
+        max_journal_bytes,
+        profile,
+        progress,
+        retained_compare::compare_streams_observed_with_resource_profile,
+    )
+}
+
+#[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_compact_journal_with_progress(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    shadow: &mut crate::refs_hybrid::delta::DifferenceImage<
+        '_,
+        n2r_win32::GeneralFrozenPartition,
+        File,
+    >,
+    journal: &mut File,
+    request: &RetainedCompareRequest,
+    binding: &JournalBinding,
+    max_journal_bytes: u64,
+    profile: JournalProfile,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+) -> Result<JournalSummary> {
+    prepare_journal_using_comparison(
+        source,
+        shadow,
+        journal,
+        request,
+        binding,
+        max_journal_bytes,
+        profile,
+        progress,
+        retained_compare::compare_compact_streams_observed,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_journal_using_comparison<R: ReadSeek, S: ReadSeek, J: DurableIo>(
+    source: &mut R,
+    shadow: &mut S,
+    journal: &mut J,
+    request: &RetainedCompareRequest,
+    binding: &JournalBinding,
+    max_journal_bytes: u64,
+    profile: JournalProfile,
+    progress: &mut dyn FnMut(crate::preparation_progress::Progress),
+    compare: fn(
+        &mut R,
+        &mut S,
+        &RetainedCompareRequest,
+        &mut crate::preparation_progress::Reporter<'_>,
+        crate::ntfs_admission::ResourceProfile,
+    ) -> Result<retained_compare::RetainedComparison>,
+) -> Result<JournalSummary> {
     use crate::preparation_progress::{Reporter, Subphase};
     let mut progress = Reporter::new(request.expected_length, progress);
     validate_profile(request, profile)?;
@@ -503,7 +563,7 @@ pub(crate) fn prepare_journal_with_profile_and_progress<R: ReadSeek, S: ReadSeek
         journal.byte_len()? == 0,
         "journal must be a newly created empty external file"
     );
-    let comparison = retained_compare::compare_streams_observed_with_resource_profile(
+    let comparison = compare(
         source,
         shadow,
         request,

@@ -12,6 +12,8 @@ use std::{
 };
 
 pub(crate) mod digest_pipeline;
+#[cfg(windows)]
+pub(crate) mod paired_digest;
 pub(crate) mod stream_digest;
 
 // Four full passes are included in the u64 I/O report, followed by 32 bytes of
@@ -66,6 +68,14 @@ pub struct RetainedRangeObservation {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PairedInputAccounting {
+    logical_image_bytes_compared_and_rechecked: u64,
+    actual_input_stream_bytes_read: u64,
+    candidate_complement_bytes_reused: u64,
+    native_device_io_claimed: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RetainedComparison {
     pub schema_version: u32,
     pub kind: String,
@@ -85,8 +95,10 @@ pub struct RetainedComparison {
     pub retained_ranges: Vec<RetainedRangeObservation>,
     pub expected_postimage_sha256: String,
     pub source_shadow_unchanged_after_comparison: bool,
-    /// Two complete passes over both files; excludes the container probes.
+    /// Input stream bytes actually read; same-chunk reuse and probes excluded.
     pub full_scan_input_bytes_read: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paired_input_accounting: Option<PairedInputAccounting>,
     pub container_probe_bytes_read: u64,
     pub total_input_bytes_read: u64,
     pub executable: bool,
@@ -484,6 +496,59 @@ pub(crate) fn compare_streams_observed_with_resource_profile<R: Read + Seek, S: 
     progress: &mut Reporter<'_>,
     resources: crate::ntfs_admission::ResourceProfile,
 ) -> Result<RetainedComparison> {
+    compare_streams_with_pair_reader(
+        source,
+        shadow,
+        request,
+        progress,
+        resources,
+        |source, shadow, _, left, right| {
+            source.read_exact(left)?;
+            shadow.read_exact(right)?;
+            Ok(0)
+        },
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn compare_compact_streams_observed(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    shadow: &mut crate::refs_hybrid::delta::DifferenceImage<
+        '_,
+        n2r_win32::GeneralFrozenPartition,
+        File,
+    >,
+    request: &RetainedCompareRequest,
+    progress: &mut Reporter<'_>,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<RetainedComparison> {
+    let mut events = Vec::new();
+    let before = shadow.paired_source_state(source, &mut events)?;
+    let comparison = compare_streams_with_pair_reader(
+        source,
+        shadow,
+        request,
+        progress,
+        resources,
+        |source, shadow, offset, left, right| {
+            shadow.read_pair_from_frozen_source(source, offset, left, right)
+        },
+    )?;
+    ensure!(
+        shadow.paired_source_state(source, &mut events)? == before,
+        "paired preparation source/complement state changed"
+    );
+    Ok(comparison)
+}
+
+fn compare_streams_with_pair_reader<R: Read + Seek, S: Read + Seek>(
+    source: &mut R,
+    shadow: &mut S,
+    request: &RetainedCompareRequest,
+    progress: &mut Reporter<'_>,
+    resources: crate::ntfs_admission::ResourceProfile,
+    mut read_pair: impl FnMut(&mut R, &mut S, u64, &mut [u8], &mut [u8]) -> Result<u64>,
+) -> Result<RetainedComparison> {
     validate_request(request)?;
     progress.update(Subphase::Comparing, 0);
     source.seek(SeekFrom::Start(0))?;
@@ -521,11 +586,24 @@ pub(crate) fn compare_streams_observed_with_resource_profile<R: Read + Seek, S: 
     let mut differing_bytes = 0;
     let mut differing_sectors = 0;
     let mut patch_bytes = 0_u64;
+    let mut reused_input_bytes = 0u64;
     let sector = request.sector_size as usize;
     while offset < request.expected_length {
         let count = usize::try_from((request.expected_length - offset).min(BUFFER_BYTES as u64))?;
-        source.read_exact(&mut left[..count])?;
-        shadow.read_exact(&mut right[..count])?;
+        let reused = read_pair(
+            source,
+            shadow,
+            offset,
+            &mut left[..count],
+            &mut right[..count],
+        )?;
+        ensure!(
+            reused <= count as u64,
+            "paired comparison reuse exceeds chunk"
+        );
+        reused_input_bytes = reused_input_bytes
+            .checked_add(reused)
+            .context("comparison reuse overflow")?;
         if let Some(pipeline) = shadow_pipeline.as_mut() {
             pipeline.update(&right[..count])?;
         } else {
@@ -723,6 +801,7 @@ pub(crate) fn compare_streams_observed_with_resource_profile<R: Read + Seek, S: 
     let full_scan_input_bytes_read = request
         .expected_length
         .checked_mul(4)
+        .and_then(|bytes| bytes.checked_sub(reused_input_bytes))
         .context("read accounting overflow")?;
     Ok(RetainedComparison {
         schema_version: 1,
@@ -751,6 +830,12 @@ pub(crate) fn compare_streams_observed_with_resource_profile<R: Read + Seek, S: 
         expected_postimage_sha256,
         source_shadow_unchanged_after_comparison: true,
         full_scan_input_bytes_read,
+        paired_input_accounting: (reused_input_bytes != 0).then_some(PairedInputAccounting {
+            logical_image_bytes_compared_and_rechecked: request.expected_length * 4,
+            actual_input_stream_bytes_read: full_scan_input_bytes_read,
+            candidate_complement_bytes_reused: reused_input_bytes,
+            native_device_io_claimed: false,
+        }),
         container_probe_bytes_read: 0,
         total_input_bytes_read: full_scan_input_bytes_read,
         executable: false,

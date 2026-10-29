@@ -2,7 +2,9 @@
 # Wrapper opens C metadata only. J/packed/VHDX/raw access belongs to the native engine.
 [CmdletBinding()]param(
  [Parameter(Mandatory)][ValidateSet('Resume','Rollback')][string]$Operation,
- [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$PartialReceiptSha256
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$PartialReceiptSha256,
+ [string]$AdditionalPreservationReceipt,
+ [ValidatePattern('\A[0-9a-f]{64}\z')][string]$AdditionalPreservationReceiptSha256
 )
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $Operation=if($Operation-ieq'Resume'){'Resume'}else{'Rollback'}
@@ -25,12 +27,26 @@ function Json([string]$Path,[string]$Pin=''){
 }
 function Save([string]$Name,$Value){$b=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 24));Need ($b.Length-le4MB) 'Host receipt exceeds4MiB.';$f=[IO.File]::Open((Join-Path $root $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$f.Write($b,0,$b.Length);$f.Flush($true)}finally{$f.Dispose()}}
 try{
+ Need ($PSBoundParameters.ContainsKey('AdditionalPreservationReceipt')-eq$PSBoundParameters.ContainsKey('AdditionalPreservationReceiptSha256')) 'Additional preservation path and SHA must be supplied together.'
+ if($PSBoundParameters.ContainsKey('AdditionalPreservationReceipt')){Need (-not[string]::IsNullOrWhiteSpace($AdditionalPreservationReceipt)-and-not[string]::IsNullOrWhiteSpace($AdditionalPreservationReceiptSha256)) 'Additional preservation path and SHA must be nonempty.'}
  Need (-not(Test-Path -LiteralPath $root)) 'This role has state; inspect without redispatch.'
  $saved=(Json (Join-Path $case 'partial-checkpoint.json') $PartialReceiptSha256).value
  Need ($saved.success-eq$true-and$saved.run_id-ceq$original-and[guid]$saved.vm_id-eq$id-and$saved.checkpoint_count-eq51-and$saved.all_prior50_preserved-eq$true-and$saved.state-ceq'Off'-and$saved.memory_assigned-eq0-and$saved.controlled_interruption_observed-eq$true-and$saved.conversion_success-eq$false-and$saved.native_exit_observed-eq$true-and$saved.native_exit-eq86-and$saved.interrupt_after_writes-eq1-and$saved.raw_recovery_authorized-eq$false) 'Actual successful partial51/observed86 required.'
  $parent=[guid]$saved.checkpoint_id;Need ($parent-ne[guid]::Empty-and[guid]$saved.parent_id-eq[guid]'9e63e9d2-a0e4-408f-87b5-26d31fbdcc24') 'Partial51 lineage differs.'
  $enrollment=(Json (Join-Path $case 'intent.json')).value;$d=(Json (Join-Path $case 'dispatch.json')).value
  $old=@($enrollment.checkpoint_ids|ForEach-Object {([guid]$_).ToString('D')});Need ($old.Count-eq50-and@($old|Sort-Object -Unique).Count-eq50-and$parent.ToString('D')-notin$old) 'Distinct complete prior50 required.';$all51=@($old)+@($parent.ToString('D'))
+ $expectedCheckpointIds=@($all51);$additionalProof=$null
+ if($PSBoundParameters.ContainsKey('AdditionalPreservationReceipt')){
+  $opposite=if($Operation-ceq'Rollback'){'Resume'}else{'Rollback'};$receiptPath=Join-Path (Join-Path $case ('recovery-'+$opposite.ToLowerInvariant())) 'preserved-checkpoint.json'
+  Need ([IO.Path]::GetFullPath($AdditionalPreservationReceipt)-ceq$receiptPath) 'Only the opposite recovered role preservation receipt is allowed.'
+  $additional=(Json $receiptPath $AdditionalPreservationReceiptSha256).value;$barrier=if($opposite-ceq'Resume'){'HND'}else{'ABT'}
+  Need ($additional.success-eq$true-and$additional.original_run_id-ceq$original-and[guid]$additional.vm_id-eq$id-and$additional.operation-ceq$opposite-and[guid]$additional.parent_id-eq$parent-and$additional.prior_checkpoint_count-eq51-and$additional.checkpoint_count-eq52-and$additional.all_prior_preserved-eq$true-and$additional.native_process_exit0_observed-eq$true-and$additional.barrier-ceq$barrier-and$additional.state-ceq'Off'-and$additional.memory_assigned-eq0-and$additional.partial_receipt_sha256-ceq$PartialReceiptSha256-and$additional.raw_recovery_authorized-eq$false-and$additional.source_data_journal_packed_vhdx_raw_opened-eq$false) 'Pinned opposite recovery preservation must prove its terminal0/barrier and exact partial51 lineage.'
+  $prior=@($additional.prior_checkpoint_ids|ForEach-Object {([guid]$_).ToString('D')})
+  Need ($prior.Count-eq51-and@($prior|Sort-Object -Unique).Count-eq51-and@($all51|Where-Object {$_-notin$prior}).Count-eq0-and@($prior|Where-Object {$_-notin$all51}).Count-eq0) 'Opposite preservation must retain exactly the original51 checkpoint IDs.'
+  $added=[guid]$additional.checkpoint_id;Need ($added-ne[guid]::Empty-and$added.ToString('D')-notin$all51) 'Opposite preservation must identify one distinct actual recovered checkpoint.'
+  $expectedCheckpointIds=@($prior)+@($added.ToString('D'));$additionalProof=@{path=$receiptPath;sha256=$AdditionalPreservationReceiptSha256;operation=$opposite;checkpoint_id=$added.ToString('D')}
+ }
+ $expectedCheckpointCount=$expectedCheckpointIds.Count
  Need ($d.run_id-ceq$original-and[guid]$d.vm_id-eq$id-and$d.task_name-ceq('N2R-ManagedCompact-Interrupt-'+$original)-and$d.guest_stage-ceq$originalStage-and$d.output_dir-ceq$originalOutput-and$d.expected_exit-eq86-and$d.interrupt_after_writes-eq1-and$d.wrapper_sha256-ceq'91c45dc9fd96b2ad08dfa3f36ac31b8cf817b17a018233cf9e531cb9900cd5e4'-and$d.toolset_manifest_sha256-ceq$manifestPin) 'Original94e dispatch differs.'
  $partial=(Json (Join-Path $case 'partial-metadata-pins.json') $saved.metadata_pins_sha256).value
  Need ($partial.kind-ceq'closed-managed-partial-metadata-observation'-and$partial.run_id-ceq$original-and$partial.controlled_interruption_observed-eq$true-and$partial.native_exit_observed-eq$true-and$partial.native_exit-eq86-and$partial.interrupt_after_writes-eq1) 'Closed partial metadata differs.'
@@ -50,10 +66,10 @@ try{
  Need ($tool.path-ceq(Join-Path ([IO.Path]::GetDirectoryName($manifestPath)) 'ntfs2refs-compact.exe')-and$tool.sha256-ceq$binaryPin-and$tool.bytes-eq$binaryBytes-and(Ordinary $tool.path $false).Length-eq$binaryBytes-and(Get-FileHash -LiteralPath $tool.path).Hash.ToLowerInvariant()-ceq$binaryPin) 'Actual sealed b1f3 compact executable differs.'
  Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force;$config=Get-LabConfiguration -WorkspaceRoot $workspace;$capacity=Get-LabCapacity -Configuration $config
  Need ($capacity.MaximumActualBytes-eq329374052988-and$capacity.MinimumFreeBytes-eq17179869184) 'Fixed50GB epoch differs.';Assert-LabCapacity -Capacity $capacity -AdditionalBytes 7GB
- function Host-Guard{$v=Get-VM -Id $id;$s=@(Get-VMSnapshot -VM $v);$ids=@($s.Id|ForEach-Object {$_.ToString('D')});Need ($v.Name-ceq'ntfs2refs-streaming-v2-20261027'-and$v.State.ToString()-ceq'Running'-and$v.ParentSnapshotId-eq$parent-and$v.MemoryStartup-eq4GB-and-not$v.DynamicMemoryEnabled-and@(Get-VMNetworkAdapter -VM $v).Count-eq0-and$s.Count-eq51-and@($all51|Where-Object {$_-notin$ids}).Count-eq0) 'Already-running partial51/all51 required; no boot/restore is available.'}
+ function Host-Guard{$v=Get-VM -Id $id;$s=@(Get-VMSnapshot -VM $v);$ids=@($s.Id|ForEach-Object {$_.ToString('D')});Need ($v.Name-ceq'ntfs2refs-streaming-v2-20261027'-and$v.State.ToString()-ceq'Running'-and$v.ParentSnapshotId-eq$parent-and$v.MemoryStartup-eq4GB-and-not$v.DynamicMemoryEnabled-and@(Get-VMNetworkAdapter -VM $v).Count-eq0-and$s.Count-eq$expectedCheckpointCount-and@($expectedCheckpointIds|Where-Object {$_-notin$ids}).Count-eq0) 'Already-running partial51 with the complete pinned checkpoint set required; no boot/restore is available.'}
  Host-Guard;$null=New-Item -ItemType Directory -Path $root -ErrorAction Stop;$created=$true
  $c=@{operation=$Operation;run_id=$run;original_run_id=$original;stage=$stage;task=$task;original_stage=$originalStage;original_task=$d.task_name;original_wrapper_sha256=$d.wrapper_sha256;tool_pin=$binaryPin;tool_bytes=$binaryBytes;inputs=$inputs;metadata_inputs=$metadataInputs;request_value=$request;expectation_value=$expected;managed_path=$managedPath;managed_id=$provider;original_native=$values['converter-process.json'];original_wrapper=$values['wrapper-worker.json']}
- Save 'intent.json' @{run_id=$run;original_run_id=$original;operation=$Operation;vm_id=$id.ToString('D');parent_id=$parent.ToString('D');checkpoint_ids=$all51;partial_receipt_sha256=$PartialReceiptSha256;metadata_pins_sha256=$saved.metadata_pins_sha256;manifest_sha256=$manifestPin;tool=$tool;inputs=$inputs;managed_shadow_path=$managedPath;managed_shadow_id=$provider;capacity=$capacity;forecast_bytes=[long]7GB;forecast_is_not_reservation=$true;fresh_apply_authorized=$false;source_certificate_recreated=$false;restore_boot_rebind_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
+ Save 'intent.json' @{run_id=$run;original_run_id=$original;operation=$Operation;vm_id=$id.ToString('D');parent_id=$parent.ToString('D');checkpoint_ids=$expectedCheckpointIds;expected_checkpoint_count=$expectedCheckpointCount;additional_preservation_receipt=$additionalProof;partial_receipt_sha256=$PartialReceiptSha256;metadata_pins_sha256=$saved.metadata_pins_sha256;manifest_sha256=$manifestPin;tool=$tool;inputs=$inputs;managed_shadow_path=$managedPath;managed_shadow_id=$provider;capacity=$capacity;forecast_bytes=[long]7GB;forecast_is_not_reservation=$true;fresh_apply_authorized=$false;source_certificate_recreated=$false;restore_boot_rebind_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
  $body=@'
 Set-StrictMode -Version Latest;$ErrorActionPreference='Stop'
 $c=[Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__CONFIG__'))|ConvertFrom-Json;$phase='preflight';$script:lastExit=$null

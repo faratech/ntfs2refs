@@ -30,6 +30,18 @@ pub struct AllocatedRange {
     pub length: u64,
 }
 
+/// Physical clusters reached by one successfully checked allocator walk.
+/// This is not a complete ReFS metadata graph or write authorization.
+#[derive(Debug, Serialize)]
+pub struct AllocatorPageFootprint {
+    pub page_count: u64,
+    pub distinct_clusters: u64,
+    pub ranges: Vec<AllocatedRange>,
+    pub complete_for_this_walk: bool,
+    pub whole_volume_graph_verified: bool,
+    pub raw_write_authority: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct MediumAllocatorObservation {
     pub profile: &'static str,
@@ -37,6 +49,7 @@ pub struct MediumAllocatorObservation {
     pub checkpoint_clock: u64,
     pub root_physical_lcns: [u64; 4],
     pub child_pages: Vec<[u64; 4]>,
+    pub page_footprint: AllocatorPageFootprint,
     pub rows: Vec<AllocatorRow>,
     pub free_clusters: u64,
     pub allocated_clusters: u64,
@@ -66,6 +79,7 @@ pub struct SmallAllocatorObservation {
     pub root_physical_lcns: [u64; 4],
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub child_pages: Vec<[u64; 4]>,
+    pub page_footprint: AllocatorPageFootprint,
     pub rows: Vec<AllocatorRow>,
     pub managed_clusters: u64,
     pub free_clusters: u64,
@@ -179,6 +193,34 @@ fn append_allocated(ranges: &mut Vec<AllocatedRange>, lcn: u64, clusters: u64) -
         ranges.push(AllocatedRange { offset, length });
     }
     Ok(())
+}
+
+/// Reuse the walk's already checked physical addresses; do not retain a
+/// partial footprint if overlap or the bounded range budget prevents a full
+/// receipt. An absent receipt never makes the allocator walk authoritative.
+fn page_footprint(seen: &BTreeSet<u64>, page_count: usize) -> AllocatorPageFootprint {
+    let distinct_clusters = seen.len() as u64;
+    let mut ranges = Vec::new();
+    let mut complete = page_count
+        .checked_mul(4)
+        .is_some_and(|expected| expected == seen.len());
+    if complete {
+        for &lcn in seen {
+            if append_allocated(&mut ranges, lcn, 1).is_err() {
+                complete = false;
+                ranges.clear();
+                break;
+            }
+        }
+    }
+    AllocatorPageFootprint {
+        page_count: page_count as u64,
+        distinct_clusters,
+        ranges,
+        complete_for_this_walk: complete,
+        whole_volume_graph_verified: false,
+        raw_write_authority: false,
+    }
 }
 
 fn decode_leaf(
@@ -437,12 +479,18 @@ pub fn inspect_medium_with_resource_profile(
         covered == image_bytes / CLUSTER,
         "Medium allocator does not cover volume"
     );
+    let seen: BTreeSet<_> = root_slots
+        .into_iter()
+        .chain(child_pages.iter().flatten().copied())
+        .collect();
+    let page_footprint = page_footprint(&seen, 1 + child_pages.len());
     Ok(MediumAllocatorObservation {
         profile: "candidate ReFS 3.14 Medium allocator one-level walk",
         checkpoint_lcn: checkpoint.0,
         checkpoint_clock: checkpoint.1,
         root_physical_lcns: root_slots,
         child_pages,
+        page_footprint,
         rows,
         free_clusters: free,
         allocated_clusters: covered - free,
@@ -625,12 +673,14 @@ fn inspect_medium_multilevel(
         row_count == root.whole_table_row_count && covered == domain,
         "Medium allocator row count or full-volume coverage differs"
     );
+    let page_footprint = page_footprint(&seen, pages_read);
     Ok(MediumAllocatorObservation {
         profile: "candidate ReFS 3.14 Medium allocator streamed multilevel walk",
         checkpoint_lcn: checkpoint.0,
         checkpoint_clock: checkpoint.1,
         root_physical_lcns: root_slots,
         child_pages,
+        page_footprint,
         rows: Vec::new(),
         free_clusters: free,
         allocated_clusters: covered - free,
@@ -767,12 +817,15 @@ pub fn inspect_small_with_resource_profile(
         free += decoded.free_clusters;
         rows.push(decoded);
     }
+    let seen = reference.lcn_slots.into_iter().collect();
+    let page_footprint = page_footprint(&seen, 1);
     Ok(SmallAllocatorObservation {
         profile: "candidate ReFS 3.14 Small allocator root walk",
         checkpoint_lcn: checkpoint.0,
         checkpoint_clock: checkpoint.1,
         root_physical_lcns: reference.lcn_slots,
         child_pages: Vec::new(),
+        page_footprint,
         rows,
         managed_clusters: managed,
         free_clusters: free,
@@ -884,12 +937,14 @@ fn inspect_small_multilevel(
         rows.len() as u64 == root.whole_table_row_count,
         "Small allocator leaf count differs from root descriptor"
     );
+    let page_footprint = page_footprint(&seen, 1 + child_pages.len());
     Ok(SmallAllocatorObservation {
         profile: "candidate ReFS 3.14 Small allocator bounded physical multilevel walk",
         checkpoint_lcn: checkpoint.0,
         checkpoint_clock: checkpoint.1,
         root_physical_lcns: root_slots,
         child_pages,
+        page_footprint,
         rows,
         managed_clusters: managed,
         free_clusters: free,

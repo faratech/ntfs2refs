@@ -19,6 +19,7 @@ use std::{
 const PAGE: usize = 16384;
 const CLUSTER: u64 = 4096;
 const CPC: u64 = 16384;
+pub mod walk;
 const ROOTS: [(usize, u64); 10] = [
     (0, 2),
     (1, 0x21),

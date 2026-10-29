@@ -1,5 +1,24 @@
 # ntfs2refs project guidance
 
+NEW USER RECOVERY CLI CODE bb7677e BUILT, NO NEW DISK RUN:
+Main2cac76e012b4cf9b9d9ea5a90a3a77933856061afb4395a2c7e4b9ab4dc33ef0,
+compactb41ef940c3c534c3a41115d2f9c7d900f2554d61259407bc7b5e3723e2ed4eb2.
+--recover <absoluteConversionDir> --recovery-sha256 <ORIGINALprintedPin>
+[--rollback] nowloadsheld128KiB routingbundle+originalrequest+managedreceipt,
+defaultNo BEFOREdevice/discovery/output/reattach; yesusesexistingtypedResume→
+Finalize orRollback, holdsbundle/request/managedowner.No newApply/SourceCert.
+Compositewriter savescompact-recovery-bundle.json+sync/readback AFTERactual
+preparedticketreadbackbutBEFOREactivation, printsRecovery directory/checksum.
+DoesNOTreopenexclusivelyheldticket/J/packed/capture whenpublishinglocator.
+No unit tests. Actualbinarysmoke: validmanifestNoResume exits0, emptyRollback
+exits0; wrongChecksum exits1 beforeprompt. Missingpackedfile remainedabsent;
+no yes/native/source operation wasrequested. Hostsmoke .lab/drive-recovery-ui-
+20261029 uses genuineoriginal94request withrebasedmetadata paths, notSourceauth.
+Newwrapper affirmativeandnewpreactivationBundleSave stillneednativequalification;
+doNOTinherit older565/866 results. VMremainsOFF/twoCP693aReFS+0872NTFS/RAM0.
+Originalmain.rs usercapabilities1line remainsUNSTAGED.Mostrecentfullnativeproof
+is documentedbelow; broadvolume/features/boot objective remainsunfinished.
+
 CURRENT FINAL LAB STATE03:10Z — MANAGED RECOVERY, MUTATION AND REBOOT PASSED:
 VM2401593c... OFF/RAM0, ONLY TWO checkpoints now: ReFS693a364c-b86a-4e14-a3cc-
 a910645f4ce3 (mutation+reboot+native15/10 passed) and NTFS0872b74c-5b3d-43cf-

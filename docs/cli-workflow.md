@@ -38,8 +38,10 @@ partition: actual native exit 0, automatic shadow/journal selection, 157 patches
 writing 70,660,096 bytes, and a 141,354,590-byte recovery journal. Native ReFS
 matched 15 objects and 10 stream hashes. All seven earlier user files
 (8,594,391,095 logical bytes) matched again after cold boot, with the original
-label and F: mount preserved. Both successful branches are saved and all 50
-checkpoints remain. The [automatic CLI observation](../evidence/drive-cli-native-20261028.json)
+label and F: mount preserved. The original run recorded its checkpoints before
+the user-authorized cleanup; obsolete checkpoints have since been removed. The
+current retained branches are listed in [AGENTS.md](../AGENTS.md), and the
+[automatic CLI observation](../evidence/drive-cli-native-20261028.json)
 pins the reports and exact executable. Most logical bytes are in a zero-filled
 fixture file; this does not prove payload-independent scratch or arbitrary-volume
 support. The current executable also shows phases and elapsed time; that later

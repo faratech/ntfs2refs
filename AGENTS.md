@@ -83,6 +83,12 @@ images/locked artifacts. Check actual liveness; recorded observations grant no
 power/replay authority. After genuine terminal0/workers absent, collect the
 actual closed wrapper/core results, preserve the normal converted branch,
 then qualify mutation/reboot on this exact candidate as needed for the freeze.
+The prepared collection command is lab/Collect-OptimizedDriveAlpha.ps1 with
+the actual dispatch path/SHA above. It creates closed-conversion/receipt.json.
+Use that actual receipt pin with lab/Invoke-OptimizedDriveMutation.ps1 and the
+same current parent/checkpoint IDs. It uses unchanged independently pinned
+c71d2a... mutator and571e07... verifier from managed-recovered-mutation-tools-20261029.
+Do not rebuild the frozen converter while this qualification is in progress.
 The coordinating agent owns VM mutations. Delegated agents work on source only
 unless explicitly assigned a native action.
 

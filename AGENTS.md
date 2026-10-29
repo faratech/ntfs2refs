@@ -1,5 +1,19 @@
 # ntfs2refs project guidance
 
+00:37:20Z latest run94... same5004/1793232787293 LIVE read432.962GB/write72.676MB,
+source1+correctf65managedshadow6 BOTHattrs3; packedcapture directorylength
+committed70,578,176B. Still noSourceactivation/terminal86 assumed.
+Root metadata-only00:28 observation: managedshadow.vhdx backingLength205,520,896B
+(notuniquephysicalhostallocation), nativepeak68,684KiB. Lab290,403,821,021 /
+Dfree55,036,538,880, roughly11.1GB decrease fromfixedoriginalbaseline, under50GB.
+Preserve-ManagedCompactPartial.ps1 committed8d1897c: parsed and25documentproducer
+schema checked, NEVERexecuted. Requires exactterminal86, archivespartial-metadata
+andpartial-metadata-pins.json, savespartial-checkpoint.json withactual51/all50/OFF0.
+Start-ManagedCompactRecovery.ps1 committed8523576: parsed, NEVERexecuted. Requires
+actualpinnedpartial51 andalreadyRunning51/all51/source1attrs1/managed6ABSENT;
+typedresume/rollback withoriginalpins+read-onlyreattach; resume thenexplicittyped
+finalizewithoutreattachflags. No fallback/rebind/format/sourcecertificate recreation.
+
 CURRENT LIVE — MANAGED REBOOT-RECOVERY INTERRUPTION RUN94e...:
 AutomaticCLI positive+7-usercoldboot are SAFE in49/50 below. Root restored48
 ONCE only after50/OFF/all50 preservation; immediateHyperVview mismatch settled

@@ -19,12 +19,66 @@ pub struct ReadCounts {
     pub shadow_bytes: u64,
 }
 
+const SELECTED_CHUNK_DIGEST: &str = "sha256-over-frames-and-xxh3-128-per-compared-chunk";
+
+/// Framed digest of the bytes one side of a capture compared. `Stream` and
+/// `Overlapped` are a SHA-256 of the framed byte stream (recomputed by the
+/// complete path). `Chunks` is a SHA-256 over the same frames and the
+/// XXH3-128 of each compared chunk (at most 4 MiB, range-relative), for the
+/// allocation-bounded capture whose digests bind evidence only.
+enum SelectedDigest {
+    Stream(crate::retained_compare::stream_digest::StreamDigest),
+    Overlapped(crate::retained_compare::digest_pipeline::Overlapped),
+    Chunks(sha2::Sha256),
+}
+
+impl SelectedDigest {
+    fn chunks() -> Self {
+        use sha2::Digest;
+        Self::Chunks(sha2::Sha256::new())
+    }
+
+    fn frame(&mut self, bytes: &[u8]) -> Result<()> {
+        use sha2::Digest;
+        match self {
+            Self::Stream(hash) => hash.update(bytes),
+            Self::Overlapped(hash) => hash.update(bytes),
+            Self::Chunks(hash) => {
+                hash.update(bytes);
+                Ok(())
+            }
+        }
+    }
+
+    fn chunk(&mut self, bytes: &[u8]) -> Result<()> {
+        use sha2::Digest;
+        match self {
+            Self::Chunks(hash) => {
+                hash.update(crate::parallel_digest::xxh3_128(bytes));
+                Ok(())
+            }
+            other => other.frame(bytes),
+        }
+    }
+
+    fn finish(self) -> Result<[u8; 32]> {
+        use sha2::Digest;
+        match self {
+            Self::Stream(hash) => hash.finish(),
+            Self::Overlapped(hash) => hash.finish(),
+            Self::Chunks(hash) => Ok(hash.finalize().into()),
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct DifferenceCapture {
     pub layout: crate::refs_hybrid::delta::DeltaLayout,
     pub selected_bytes_compared: u64,
     pub equal_selected_bytes: u64,
     pub read_counts: ReadCounts,
+    /// How `source_selected_sha256` and `candidate_selected_sha256` are formed.
+    pub selected_digest: &'static str,
     pub source_selected_sha256: String,
     pub candidate_selected_sha256: String,
     pub packed_sha256: String,
@@ -205,12 +259,13 @@ impl<'a> SourceBackedShadow<'a> {
         let identity = hex::encode(Sha256::digest(serde_json::to_vec(&serde_json::json!({
             "profile":"listed-ranges-source-backed-v1","partition_bytes":self.length,
             "granule_bytes":4096,"ranges":selection}))?));
-        self.capture_difference_ranges(
+        self.capture_difference_ranges_with(
             selection,
             selected_bytes,
             identity,
             output,
             max_changed_bytes,
+            true,
         )
     }
 
@@ -257,12 +312,34 @@ impl<'a> SourceBackedShadow<'a> {
     }
 
     fn capture_difference_ranges(
+        self,
+        selection: &[crate::refs_write_set::ByteRange],
+        selected_bytes: u64,
+        input_plan_sha256: String,
+        output: &std::path::Path,
+        max_changed_bytes: u64,
+    ) -> Result<DifferenceCapture> {
+        self.capture_difference_ranges_with(
+            selection,
+            selected_bytes,
+            input_plan_sha256,
+            output,
+            max_changed_bytes,
+            false,
+        )
+    }
+
+    /// `chunk_digests` selects the cheap selected-digest construction (see
+    /// [`SelectedDigest`]); captures whose digests are recomputed later keep
+    /// the framed SHA-256 stream.
+    fn capture_difference_ranges_with(
         mut self,
         selection: &[crate::refs_write_set::ByteRange],
         selected_bytes: u64,
         input_plan_sha256: String,
         output: &std::path::Path,
         max_changed_bytes: u64,
+        chunk_digests: bool,
     ) -> Result<DifferenceCapture> {
         use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
         use sha2::{Digest, Sha256};
@@ -280,7 +357,13 @@ impl<'a> SourceBackedShadow<'a> {
         // the exact 4 KiB comparison, budget and output loop is unchanged.
         let mut original = vec![0u8; NATIVE_CAPTURE_BYTES];
         let mut candidate = vec![0u8; NATIVE_CAPTURE_BYTES];
-        let mut source_digest = crate::retained_compare::stream_digest::StreamDigest::new(true)?;
+        let mut source_digest = if chunk_digests {
+            SelectedDigest::chunks()
+        } else {
+            SelectedDigest::Stream(crate::retained_compare::stream_digest::StreamDigest::new(
+                true,
+            )?)
+        };
         let mut source_raw = if selection.len() == 1
             && selection[0].offset == 0
             && selection[0].length == self.length
@@ -292,8 +375,13 @@ impl<'a> SourceBackedShadow<'a> {
         };
         // Hash the candidate in parallel with source comparison on machines
         // with spare CPUs; the worker receives precisely the same framed bytes.
-        let mut candidate_digest =
-            crate::retained_compare::digest_pipeline::Overlapped::new(NATIVE_CAPTURE_BYTES)?;
+        let mut candidate_digest = if chunk_digests {
+            SelectedDigest::chunks()
+        } else {
+            SelectedDigest::Overlapped(crate::retained_compare::digest_pipeline::Overlapped::new(
+                NATIVE_CAPTURE_BYTES,
+            )?)
+        };
         let mut packed_digest = Sha256::new();
         let mut changed = 0u64;
         let mut compared = 0u64;
@@ -301,10 +389,10 @@ impl<'a> SourceBackedShadow<'a> {
         for range in selection {
             let offset = range.offset.to_le_bytes();
             let length = range.length.to_le_bytes();
-            source_digest.update(&offset)?;
-            source_digest.update(&length)?;
-            candidate_digest.update(&offset)?;
-            candidate_digest.update(&length)?;
+            source_digest.frame(&offset)?;
+            source_digest.frame(&length)?;
+            candidate_digest.frame(&offset)?;
+            candidate_digest.frame(&length)?;
             let mut done = 0;
             while done < range.length {
                 let count = (range.length - done).min(original.len() as u64) as usize;
@@ -313,11 +401,11 @@ impl<'a> SourceBackedShadow<'a> {
                 self.read_exact(&mut candidate[..count])?;
                 self.source.seek(SeekFrom::Start(at))?;
                 self.source.read_exact(&mut original[..count])?;
-                source_digest.update(&original[..count])?;
+                source_digest.chunk(&original[..count])?;
                 if let Some(digest) = &mut source_raw {
                     digest.update(&original[..count])?;
                 }
-                candidate_digest.update(&candidate[..count])?;
+                candidate_digest.chunk(&candidate[..count])?;
                 let mut offset = 0;
                 while offset < count {
                     if original[offset..offset + 4096] == candidate[offset..offset + 4096] {
@@ -385,6 +473,11 @@ impl<'a> SourceBackedShadow<'a> {
             selected_bytes_compared: compared,
             equal_selected_bytes: compared - changed,
             read_counts,
+            selected_digest: if chunk_digests {
+                SELECTED_CHUNK_DIGEST
+            } else {
+                "sha256-framed-stream"
+            },
             source_selected_sha256: hex::encode(source_digest.finish()?),
             candidate_selected_sha256: hex::encode(candidate_digest.finish()?),
             packed_sha256: hex::encode(packed_digest.finalize()),

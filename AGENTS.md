@@ -211,8 +211,18 @@ whole-image hashes stay SHA-256. With it (e2ae8b5) the fixture converted in
 (run c2a08ec7: admission 9.2s, shadow 5.7s, target verification 13.6s, journal
 3.5s, apply 3.6s, handoff 2.4s, file verification 4.0s; evidence/
 allocation-bounded-chunk-compare-20261029.json). Run artifacts' LastWriteTimeUtc
-gives this phase timeline. Recovery, interruption and mutation have not been
-rerun on these builds; do that before any release.
+gives this phase timeline. Parallel read lanes (f8fa3c9: GeneralFrozenLane,
+IoProfile queue depth 2 when no seek penalty is reported) converted it in 40.7s
+(run bdd739b4). On that build: mutation plus cold restart passed (d4b82b90, 7/7
+originals by XXH3 via src/bin/lab-content-digest.rs, 0 ReFS events); one
+interruption after the first flushed write, clean restart, temporary checkpoint
+(since removed), then --recover resumed to ReFS 15/10 and --recover --rollback
+restored NTFS with 7/7 user files; see
+evidence/allocation-bounded-recovery-current-20261029.json.
+OPEN (power loss): after the same interruption followed by Stop-VM -TurnOff,
+disk 1 came back offline AND read-only (the activation's READ_ONLY clear did not
+survive), and the recovery launcher refused before running the engine. Recovery
+never clears protection, so that state needs explicit design work before release.
 
 ## Source and recovery invariants
 

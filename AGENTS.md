@@ -27,9 +27,14 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0 with current NTFS
-checkpoint5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec. It has fixed4GiB RAM,
-4CPU,no NIC. Only two checkpoints remain:
+VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
+ReFS checkpoint52d37819-2b9c-4041-9232-bd7eac3c21bb (restored once more on
+2026-10-29 for the protected read-only ownership run below), but the guest's
+disk1 is now frozen offline/read-only by that probe and no longer matches the
+checkpoint. Any new native run needs a fresh restore of 52d37819, verified
+from a new PowerShell process. It has fixed4GiB RAM, 4CPU, no NIC. Host
+hostname is SINGULARITY: the lab VMs and the WSL Ubuntu distro are local to it.
+Only two checkpoints remain:
 - NTFS after optimized public rollback: 5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec.
 - ReFS after optimized public resume: 52d37819-2b9c-4041-9232-bd7eac3c21bb.
 
@@ -106,6 +111,18 @@ binding, source admission, and versioned recovery-bundle handling. Do not turn a
 JSON footprint or selected ticket into those permissions. The journal currently
 stores every selected byte (including equal bytes), so exact selection/budget
 planning remains necessary. See docs/selected-range-journal.md and its evidence.
+
+Native allocation observation: commit f539345 reads the ReFS bitmap through a
+protected physically read-only mount after freeze (the earlier post-lock query
+was refused with native error 21). Run3135dde6ab724f4fb193c28a5ff638d0 passed on
+the converted 52GiB volume: all raw-reader required ranges are natively
+allocated (required_not_native 0), 3,808,256 logical raw bytes in917 reads, but
+5,166,432,256 natively allocated bytes in 15 ranges are unaccounted for by the
+raw reader, so complete_graph/complement-safe/source_admitted stay false. See
+evidence/native-required-ownership-protected-readonly-20261029.json and the end
+of docs/refs-metadata-footprint.md. Next: explain or conservatively bound that
+native-only allocation and authenticate the footprint inputs before wiring the
+selected journal to a device.
 
 Do not add or run unit tests. Focused builds and necessary native integration
 only. Keep ignored images, journals, binaries and secrets out of Git. The

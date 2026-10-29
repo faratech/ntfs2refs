@@ -81,3 +81,26 @@ bytes and 145 charged page operations. The observed metadata union covered
 538,177,536 bytes, including the 512 MiB circular log. Six declared own-record
 attribute nodes were also parsed. The [receipt](../evidence/refs-generation-log-footprint-20261029.json)
 does not establish complete ownership or authorize selective conversion.
+
+## Native allocation reconciliation on the converted volume
+
+`lab-freeze-refs-allocation --required-ownership` freezes the disposable
+converted ReFS volume (disk offline/read-only afterwards) and obtains the
+allocation bitmap through a protected, physically read-only mount. A first
+attempt that queried the bitmap after taking the volume lock was refused by the
+filesystem (native error 21, [receipt](../evidence/native-required-ownership-lock-refusal-20261029.json))
+and is not retried or substituted.
+
+The [protected read-only run](../evidence/native-required-ownership-protected-readonly-20261029.json)
+passed on the 52 GiB converted volume. The raw metadata reader's required ranges
+(9,132,548,096 bytes observed; 9,602,035,712 in the raw union) are all allocated
+in the native bitmap, which reports 14,768,467,968 allocated bytes. The reader
+issued 917 logical raw reads totaling 3,808,256 bytes in the collection phase;
+bootstrap reads and native control I/O are not in that figure.
+
+The native bitmap holds 5,166,432,256 allocated bytes in 15 ranges that the raw
+reader does not account for. Until they are explained or conservatively bound,
+the report keeps `complete_graph_verified`, `complement_safe_to_preserve`,
+`source_admitted` and `raw_write_authority` false. The footprint inputs are also
+not yet authenticated. This is an observation of an already converted volume,
+not a conversion, and it authorizes no selective write.

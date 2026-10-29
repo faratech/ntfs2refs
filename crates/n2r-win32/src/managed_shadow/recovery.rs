@@ -1,5 +1,6 @@
 //! Existing pinned shadow attachment only: no create, GPT, format or replay.
 use super::*;
+use windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_DISK_ATTRIBUTES;
 
 pub struct ReattachedShadow {
     pub binding: GeneralDiskBinding,
@@ -62,23 +63,7 @@ fn verify(handle: &RecoveryHandle, id: &[u8; 16], expected: &GeneralDiskBinding)
     Ok(())
 }
 impl RecoveryHandle {
-    fn attach(self) -> io::Result<RecoveryAttachment> {
-        let mut p = ATTACH_VIRTUAL_DISK_PARAMETERS::default();
-        p.Version = ATTACH_VIRTUAL_DISK_VERSION_1;
-        // SAFETY: actual opened-existing READ_ONLY handle and version1 input.
-        // No writable attachment or drive-letter publication is requested.
-        win(unsafe {
-            AttachVirtualDisk(
-                self.0.0,
-                ptr::null_mut(),
-                ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY
-                    | ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME
-                    | ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER,
-                0,
-                &p,
-                ptr::null(),
-            )
-        })?;
+    fn physical_number(&self) -> io::Result<u32> {
         let mut path = [0u16; 256];
         let mut size = 512;
         // SAFETY: live attached handle and initialized bounded UTF-16 output.
@@ -89,12 +74,43 @@ impl RecoveryHandle {
             .ok_or_else(|| invalid("recovery provider path unterminated"))?;
         let path = String::from_utf16(&path[..end])
             .map_err(|_| invalid("recovery provider path UTF-16"))?;
-        let number = path
-            .strip_prefix("\\\\.\\PhysicalDrive")
+        path.strip_prefix("\\\\.\\PhysicalDrive")
             .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|n| *n <= 4095)
-            .ok_or_else(|| invalid("recovery provider disk path differs"))?;
+            .ok_or_else(|| invalid("recovery provider disk path differs"))
+    }
+
+    fn attach(self) -> io::Result<RecoveryAttachment> {
+        let number = match self.physical_number() {
+            // A previous attempt can leave this same pinned VHDX attached.
+            // Reuse the provider-derived route rather than attaching it twice.
+            Ok(number) => number,
+            Err(error) if error.raw_os_error().is_some() => {
+                let mut p = ATTACH_VIRTUAL_DISK_PARAMETERS::default();
+                p.Version = ATTACH_VIRTUAL_DISK_VERSION_1;
+                // SAFETY: opened-existing READ_ONLY handle and version1 input.
+                // The only attachment requested is READ_ONLY, including arrival.
+                win(unsafe {
+                    AttachVirtualDisk(
+                        self.0.0,
+                        ptr::null_mut(),
+                        ATTACH_VIRTUAL_DISK_FLAG_READ_ONLY
+                            | ATTACH_VIRTUAL_DISK_FLAG_PERMANENT_LIFETIME
+                            | ATTACH_VIRTUAL_DISK_FLAG_NO_DRIVE_LETTER,
+                        0,
+                        &p,
+                        ptr::null(),
+                    )
+                })
+                .map_err(|e| operation_error("attach pinned recovery shadow READ_ONLY", e))?;
+                self.physical_number().map_err(|e| {
+                    operation_error("query attached recovery shadow physical path", e)
+                })?
+            }
+            // Successful provider output with malformed path is never retried.
+            Err(error) => return Err(error),
+        };
         Ok(RecoveryAttachment {
             handle: self,
             number,
@@ -102,11 +118,69 @@ impl RecoveryHandle {
     }
 }
 
+fn operation_error(operation: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{operation}: {error}"))
+}
+
+impl RecoveryAttachment {
+    fn require_offline_readonly(&self, expected: &GeneralDiskBinding) -> io::Result<()> {
+        let mut events = Vec::new();
+        // This checks actual device/GPT/geometry and excludes the Windows disk
+        // before any attribute control handle is opened.
+        let before = native::observe_general_disk_state_readonly(expected.clone(), &mut events)?;
+        match before.disk_attributes {
+            3 => return Ok(()),
+            2 => {}
+            _ => {
+                return Err(invalid(
+                    "recovery shadow must already be READ_ONLY; no attributes changed",
+                ));
+            }
+        }
+        // The device path comes only from this owned, verified virtual-disk
+        // handle, and its exact recorded number was checked by the caller.
+        // GENERIC_WRITE is for the attribute IOCTL; no data writes are issued.
+        let disk =
+            native::device_file(&format!("\\\\.\\PhysicalDrive{}", self.number), true, false)
+                .map_err(|e| {
+                    operation_error("open verified READ_ONLY shadow for OFFLINE control", e)
+                })?;
+        if native::current_windows_disk(&mut events)? == self.number
+            || native::general_disk_state(&disk, expected, &mut events)? != before
+        {
+            return Err(invalid(
+                "verified recovery shadow changed before OFFLINE control",
+            ));
+        }
+        let mut attributes = [0u8; 40];
+        attributes[..4].copy_from_slice(&40u32.to_le_bytes());
+        attributes[4] = 1; // Persist the restriction across restart.
+        attributes[8..16].copy_from_slice(&1u64.to_le_bytes());
+        attributes[16..24].copy_from_slice(&1u64.to_le_bytes());
+        // Only OFFLINE is in the mask. READ_ONLY is neither set nor cleared.
+        control(&disk, IOCTL_DISK_SET_DISK_ATTRIBUTES, &attributes, 0)
+            .map_err(|e| operation_error("persist OFFLINE on verified READ_ONLY shadow", e))?;
+        control(&disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)
+            .map_err(|e| operation_error("refresh verified OFFLINE recovery shadow", e))?;
+        let mut required = before;
+        required.disk_attributes = 3;
+        if native::general_disk_state(&disk, expected, &mut events)? != required
+            || native::observe_general_disk_state_readonly(expected.clone(), &mut events)?
+                != required
+        {
+            return Err(invalid(
+                "recovery shadow did not retain exact OFFLINE|READ_ONLY state",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Reattach a pinned existing VHDX read-only, then require the exact recorded
-/// disk route, GPT/geometry and persisted OFFLINE|READ_ONLY state. No source
-/// certificate or replay authority is issued. No attributes are repaired.
-/// Windows must honor its previously persisted OFFLINE state at device arrival;
-/// READ_ONLY/NO_DRIVE_LETTER flags cannot replace that persistence policy.
+/// disk route and GPT/geometry. Reuse an existing exact attachment. If Windows
+/// restored READ_ONLY without OFFLINE, persist only that additional restriction;
+/// any state without READ_ONLY is rejected. No source certificate, replay,
+/// writable attachment or transition to online is authorized.
 pub fn reattach_existing(
     path: &Path,
     pinned_virtual_disk_id: &str,
@@ -207,12 +281,7 @@ pub fn reattach_existing(
         ));
     }
     verify(&attachment.handle, &id, expected)?;
-    let actual = native::observe_general_disk_state_readonly(expected.clone(), &mut Vec::new())?;
-    if actual.disk_attributes != 3 {
-        return Err(invalid(
-            "recovery shadow lacks persistent OFFLINE|READ_ONLY state; no attributes changed",
-        ));
-    }
+    attachment.require_offline_readonly(expected)?;
     if crate::file_storage::file_id_info(&backing)? != file_id
         || backing.metadata()?.len() != metadata.len()
         || backing.metadata()?.modified()? != modified

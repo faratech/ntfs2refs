@@ -567,8 +567,12 @@ pub fn bind_files(files: &[FileInventory], records: &[DescriptorRecord]) -> Resu
                 "legacy descriptor/source attribute mismatch"
             );
             if a.resident {
+                // The resident attribute carries a content digest; the
+                // descriptor's own evidence hash stays SHA-256.
+                let bytes = hex::decode(&source.descriptor.relative_hex)?;
                 ensure!(
-                    a.resident_sha256.as_deref() == Some(source.descriptor.sha256.as_str()),
+                    a.resident_sha256.as_deref()
+                        == Some(n2r_win32::content_digest::of(&bytes).as_str()),
                     "legacy resident descriptor hash mismatch"
                 );
             }

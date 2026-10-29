@@ -118,11 +118,15 @@ was refused with native error 21). Run3135dde6ab724f4fb193c28a5ff638d0 passed on
 the converted 52GiB volume: all raw-reader required ranges are natively
 allocated (required_not_native 0), 3,808,256 logical raw bytes in917 reads, but
 5,166,432,256 natively allocated bytes in 15 ranges are unaccounted for by the
-raw reader, so complete_graph/complement-safe/source_admitted stay false. See
+raw reader, so complete_graph/complement-safe/source_admitted stay false. Host
+analysis: those bytes all lie in one prefix [0,6,174,015,488) (LCN<1,507,328,
+92x64MiB) that the native view marks fully allocated; beyond it native equals
+the Medium allocator exactly. The conservative required union (14.77GB, 26.5%
+of the partition) already includes the prefix. See
 evidence/native-required-ownership-protected-readonly-20261029.json and the end
-of docs/refs-metadata-footprint.md. Next: explain or conservatively bound that
-native-only allocation and authenticate the footprint inputs before wiring the
-selected journal to a device.
+of docs/refs-metadata-footprint.md. Next: establish what the prefix zone is (or
+keep it as required), authenticate the footprint inputs, then wire the selected
+journal to a device. Expect the journal to hold old+new for the whole union.
 
 Do not add or run unit tests. Focused builds and necessary native integration
 only. Keep ignored images, journals, binaries and secrets out of Git. The

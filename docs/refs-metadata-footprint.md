@@ -99,8 +99,15 @@ issued 917 logical raw reads totaling 3,808,256 bytes in the collection phase;
 bootstrap reads and native control I/O are not in that figure.
 
 The native bitmap holds 5,166,432,256 allocated bytes in 15 ranges that the raw
-reader does not account for. Until they are explained or conservatively bound,
-the report keeps `complete_graph_verified`, `complement_safe_to_preserve`,
+reader does not account for. Host analysis of the archived report shows the
+native allocation is one contiguous prefix `[0, 6,174,015,488)` (LCN 0..1,507,327,
+92 × 64 MiB) plus four ranges beyond it. Beyond the prefix the native view and
+the Medium allocator agree exactly. Inside it the allocator accounts for
+1,007,583,232 bytes and the native view marks the other 5,166,432,256 bytes
+allocated, so the prefix is exactly the allocator's ranges plus the native-only
+ranges. Why the metadata-inclusive view marks the whole zone is not established;
+including it is conservative (the required union is 26.5% of the partition).
+Until the zone is explained or authenticated, the report keeps `complete_graph_verified`, `complement_safe_to_preserve`,
 `source_admitted` and `raw_write_authority` false. The footprint inputs are also
 not yet authenticated. This is an observation of an already converted volume,
 not a conversion, and it authorizes no selective write.

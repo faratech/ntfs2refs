@@ -30,6 +30,8 @@ pub mod region_layout;
 pub mod retention_layout;
 pub mod retrieval_paging;
 #[cfg(windows)]
+pub mod io_profile;
+#[cfg(windows)]
 pub mod sha256_native;
 #[cfg(windows)]
 pub(crate) mod shadow_evacuation;

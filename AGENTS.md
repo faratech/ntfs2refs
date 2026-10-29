@@ -24,8 +24,8 @@ when unchanged evidence already answers the question.
 ## Current handoff snapshot — 2026-10-29
 
 The coordinating agent reports VM
-2401593c-4b30-472e-9b6d-c9534cbaa599 OFF with parent checkpoint
-632b630a-c77b-43b2-9b9a-eafbbd87106d (optimized conversion/mutation/reboot passed).
+2401593c-4b30-472e-9b6d-c9534cbaa599 RUNNING with parent checkpoint
+5125d335-09b4-4838-bc64-28b079e3f2b9 (the saved NTFS rollback branch).
 The VM has fixed 4 GiB RAM, 4 CPUs and no network adapter.
 Only two checkpoints remain after user-authorized cleanup:
 - Public bundle NTFS rollback: 5125d335-09b4-4838-bc64-28b079e3f2b9.
@@ -91,13 +91,29 @@ passed native/task0 and strict15/10. Its closed receipt SHA is
 c55f61175a92f10aef6f24e36f5d68fcf98c2981c85219f4f726b16c1ff15356.
 Actual preserved checkpoint632 receipt SHA004d70b74d7af8a8dfbbbca3e33cd97386965c0137c93c8f5758b5f084fc41f2.
 Old25a was then retired via Hyper-V; cleanup receipt SHAd44305eea44e44d9b4693f388c23d654fa1043331414a3728d782d15b4633275.
-VM is clean OFF/RAM0, D free118,738,907,136B and lab224,349,834,679B at cleanup.
-There are NO active native workers or monitors. Keep the exact sealed2ff
-artifacts; do not substitute a later build into these results.
+At cleanup the VM was OFF/RAM0, D free118,738,907,136B and lab224,349,834,679B.
+Keep the exact sealed2ff artifacts; do not substitute a later build into these results.
 The later frozen-allocation-map diagnostic codea8da755 passed cargo check--lib,
 has no native qualification and does not enable selective capture.
 Same-binary interruption/recovery on fb5548 remains unqualified; sealed2cac's
 separate controlled Resume/Rollback evidence must remain distinct.
+
+The same-candidate controlled interruption is NOW RUNNING:
+c0218eb07cc742d8b8cb2b2738e31de3, task
+N2R-OptimizedCompactInterrupt-c0218eb07cc742d8b8cb2b2738e31de3, guest
+C:\ntfs2refs\optimized-compact-interrupt-c0218eb07cc742d8b8cb2b2738e31de3.
+Actual controlled core PID4856/creation1793257320594, wrapper1472/creation
+1793257311441 was live at07:02:06Z. It is sealed e2a832... from source2ff,
+with public recovery main fb5548...; old daed9.../4bd15... binaries are used
+only to provision the fresh shadow and read-only bind devices. Dispatch SHA
+348f605d91bca90a2451136e5cea6ae745737fa677236d2d9089710d67d58fbb.
+Expected native and wrapper exit86 follows one flushed source write; it is not
+conversion success. Delta monitors metadata only. Do not interrupt or open live
+source/J/packed/capture/bundle/images/locked artifacts. Check actual task and
+PID creation identity; a timeout is not termination. After genuine terminal86
+and workers absent, preserve the original native-generated bundle and partial
+state, then reboot that actual partial and use the same candidate's public
+recovery CLI. Root owns all VM mutations. Two retained checkpoints are5125/632.
 Local frozen package: .lab/releases/ntfs2refs-alpha-20261029-fb5548.zip,
 SHAf826606342c9b2a06ef18a35996915d60c0c54fd840fbc71c21ddb26f854577b.
 It contains the exact tested mainfb5548 and the scope/instructions in

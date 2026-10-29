@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-parallel-lanes-and-mutation",
+  "conversion": {
+    "run_id": "bdd739b4c3184d8f9b9c2d76524f0f63",
+    "engine_run_id": "30c7e4467d864d35b9e8ddb577ba7a8f",
+    "source_commit": "f8fa3c9102cd841e567faebeaf808a58e88f7078",
+    "change": "parallel read lanes on frozen partitions (queue depth 2 on the lab disk) for the shadow bracket, source digest and capture originals",
+    "public_cli_sha256": "d0c19d360ed5c60bbb79b5e9e2611b38db4027624d6847cc2d8316043cab9588",
+    "actual_native_exit": 0,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "selected_ranges": 155,
+    "selected_bytes": 70615040,
+    "journal_bytes": 141250832,
+    "result_sha256": "d134773643fdbae16b0c6b6ae94be7c122067414f1e57da4474ee65e6cf0da02",
+    "finalization_sha256": "bdcc3c25bf7da54a33a31c1d102cd327a57b46c09e0925e596d9b063f313c66c",
+    "seconds": 40.7,
+    "previous_seconds": {
+      "chunk_compare_1443042": 42.6
+    },
+    "artifact_write_timeline_seconds": {
+      "source_frozen": 3.7,
+      "native_source": 7.7,
+      "source_assessment": 9.0,
+      "construction_freeze": 14.8,
+      "changed_clusters": 25.0,
+      "target_preservation": 25.4,
+      "activation": 28.9,
+      "apply": 32.6,
+      "handoff": 35.0,
+      "finalization": 39.1
+    }
+  },
+  "mutation_restart": {
+    "run_id": "d4b82b90e8d54a8ba8a38e83aad697ae",
+    "launcher": "lab/Invoke-AllocationMutationReboot.ps1",
+    "success": true,
+    "original_user_files_verified": 7,
+    "original_user_file_digest": "xxh3-128 via src/bin/lab-content-digest.rs",
+    "content_digest_tool_sha256": "ebf4ea06251e8bd49930ba32c65cc29b704f40405a7a7bcf3b3ab86541dc0b24",
+    "new_files_verified": 2,
+    "entries_verified": 128,
+    "refs_warning_or_error_events": 0,
+    "raw_device_access": false,
+    "restart_issued_utc": "2026-10-29T21:11:23.6487436Z",
+    "archive": ".lab/hyperv/streaming-v2-20261027/alloc-mutation-20261029-d4b82b90e8d54a8ba8a38e83aad697ae",
+    "refused_attempts": [
+      "4e914831: baseline check compared Get-FileHash SHA-256 with XXH3-128 records (no mutation done)",
+      "one attempt: PowerShell 5.1 did not unroll the digest array (no mutation done)"
+    ]
+  },
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "mutation_restart_tested_on_this_build": true,
+    "interruption_resume_rollback_tested_on_this_build": false,
+    "release_qualified": false
+  }
+}

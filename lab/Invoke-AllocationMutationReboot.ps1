@@ -22,10 +22,16 @@ $verify={param($Records,$Manifest)
  $ErrorActionPreference='Stop';$vol=Get-Volume -DriveLetter F;$disk=Get-Disk -Number 1
  $e=Get-Content -LiteralPath (Join-Path $Records 'expectation.json') -Raw -Encoding UTF8|ConvertFrom-Json
  $files=@($e.objects|Where-Object {-not $_.directory -and $_.path[0] -cne 'System Volume Information'})
- $ok=0;$bad=@();foreach($o in $files){$p='F:\'+($o.path -join '\');if(-not(Test-Path -LiteralPath $p)){$bad+="missing $p";continue};if((Get-FileHash -LiteralPath $p).Hash.ToLowerInvariant()-ceq$o.sha256-and(Get-Item -LiteralPath $p).Length-eq$o.length){$ok++}else{$bad+="differs $p"}}
+ # Records carry the XXH3-128 content digest; lab-content-digest computes it in argument order.
+ $paths=@($files|ForEach-Object {'F:\'+($_.path -join '\')});$digests=@(((& 'C:\ntfs2refs\tools\lab-content-digest.exe' @paths) -join '')|ConvertFrom-Json|ForEach-Object {$_})
+ $ok=0;$bad=@();for($i=0;$i-lt$files.Count;$i++){$o=$files[$i];$p=$paths[$i];if(-not(Test-Path -LiteralPath $p)){$bad+="missing $p";continue};if($digests.Count-eq$files.Count-and$digests[$i]-ceq$o.sha256-and(Get-Item -LiteralPath $p).Length-eq$o.length){$ok++}else{$bad+="differs $p"}}
  $mut=$null;if($Manifest){$m=$Manifest|ConvertFrom-Json;$mok=0;foreach($f in $m.files){$p=$f.path;if((Test-Path -LiteralPath $p)-and(Get-FileHash -LiteralPath $p).Hash.ToLowerInvariant()-ceq$f.sha256){$mok++}else{$bad+="mutation differs $p"}};$deletedAbsent=-not(Test-Path -LiteralPath $m.deleted);$entries=@(Get-ChildItem -LiteralPath $m.entries_dir -File).Count;$mut=@{files_expected=@($m.files).Count;files_matching=$mok;deleted_absent=$deletedAbsent;entries_expected=$m.entries;entries_present=$entries}}
  @{filesystem=$vol.FileSystem;cluster=$vol.AllocationUnitSize;label=$vol.FileSystemLabel;disk1_online=(-not $disk.IsOffline);original_user_files=$files.Count;original_user_files_matching=$ok;mutation=$mut;problems=$bad;utc=[DateTime]::UtcNow.ToString('o')}}
 try{
+ # Stage the read-only content-digest tool; its pin is saved with the results.
+ $digestTool=Join-Path $workspace 'target\release\lab-content-digest.exe';$session=New-PSSession -VMId $id -Credential $cred
+ try{Invoke-Command -Session $session {New-Item -ItemType Directory -Path 'C:\ntfs2refs\tools' -Force|Out-Null};Copy-Item -LiteralPath $digestTool -ToSession $session -Destination 'C:\ntfs2refs\tools\lab-content-digest.exe' -Force}finally{Remove-PSSession $session}
+ Save 'content-digest-tool.json' @{path=$digestTool;sha256=(Get-FileHash -LiteralPath $digestTool).Hash.ToLowerInvariant();algorithm='xxh3-128'}
  $before=Guest $verify @($ConversionRecords,$null);Save 'verify-before.json' $before
  Need ($before.filesystem-ceq'ReFS'-and$before.cluster-eq4096-and$before.label-ceq'n2r-stream-source'-and$before.disk1_online-and$before.original_user_files_matching-eq$before.original_user_files-and$before.original_user_files-gt0) 'Converted ReFS baseline differs before mutation.'
  $mutation=Guest {param($Run)

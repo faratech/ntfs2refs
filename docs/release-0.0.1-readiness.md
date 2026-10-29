@@ -58,21 +58,20 @@ apart (approximate):
 | Apply | 294 | 111 GB | 2.0 |
 | Verify files | 401 | ≥ 47 GB | ≥ 0.8 |
 
-The verify-target phase (`general_composite_target::verify_and_capture`) makes six
-full-volume reads: the protected native observation is bracketed by two complete
-shadow hashes (`general_target_preservation::bracket_image_with_resource_profile`),
-the complete difference capture reads source and shadow, the shadow is hashed
-again, and the final pair hash reads the source. The shadow stays persistently
-frozen throughout, yet is read four times in this phase.
+The verify-target phase (`general_composite_target::verify_and_capture`) makes
+about six volume-sized reads: the protected native observation is bracketed by two
+complete shadow hashes (`general_target_preservation::bracket_image_with_resource_profile`),
+the complete difference capture reads the source plus a source-backed candidate,
+the shadow is hashed again, and the final pair hash reads the source. The
+candidate serves payload ranges from the NTFS source streams and only the
+remaining ranges from the shadow (`general_shadow::source_backed`), so the
+capture does not read the shadow's payload placeholders.
 
-A candidate saving that keeps every check: compute the shadow's raw SHA-256
-inside the capture's existing shadow read and use it as the bracket's closing
-hash. The capture runs after the observation, so a match proves the same thing
-over a longer window, and the separate fresh rehash after capture remains. That
-saves one volume read (about 160 s at the measured rate, roughly 6%). It changes
-when an integrity check happens, so it needs review and a native run before use.
-The dominant cost, about 15 volume reads in total, only goes away with the
-selective path.
+That rules out folding a shadow integrity hash into the capture read: the capture
+never sees every shadow byte. No consolidation in this phase was found that keeps
+every check; the remaining shadow hashes are deliberate freshness checks on a
+persistently frozen device and are not removed. The dominant cost, about 15
+volume reads in total, only goes away with the selective path.
 
 ## Where the performance work stands
 

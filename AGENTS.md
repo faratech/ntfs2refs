@@ -1,5 +1,29 @@
 # ntfs2refs project guidance
 
+USER OVERRIDE / CURRENT CHECKPOINT CLEANUP COMPLETED:
+User explicitly ordered: "Delete most of the checkpoints its junk. Don't
+preserve them." This supersedes older preserve-all instructions for this testVM.
+Root removed48/50 via Hyper-V Remove-VMSnapshot, NO raw AVHDX deletion.
+VM2401593c... NOW OFF/RAM0, currentpartial94workingstate,parent9e63..., ONLY2
+checkpoints remain: baseline9e63e9d2-a0e4-408f-87b5-26d31fbdcc24 and verified
+coldboot219e3abf-4289-4e16-b27f-2b4d32ac619c. Native86 partial working disks
+were retained logically through Hyper-V merge; all6 Test-VHD passed.
+Cleanup .lab/hyperv/streaming-v2-20261027/checkpoint-cleanup-20261029/result.json
+SHA cc9cefc473c048d9a6547913b3d5917453e2983218da4e8b69c1f186a4fa93cf.
+Freed35,042,988,032B physicalfree; Dfree89,984,540,672. Lab227,802,950,914.
+Fixed50GB budget epoch unchanged. Do NOT recreate/preserve obsolete snapshots.
+Partial51 NEVER existed: originalpreserver archived25closedCdocs and cleanstopped
+butCheckpoint-VMfailed at50limit. Failure receipt remains unchanged.
+All fork/configexport/newVM/NewVHD work was STOPPED, never executed; two unused
+fork source drafts removed. No native recovery has run. SourceFile5004 exited86,
+allremoting stopped. Save-ManagedPartialAfterCleanup.ps1 is source-only pending
+rootreview: creates genuinelynewpartial checkpoint3 using pinnedcleanup/old86
+evidence, NOT fake51. Alpha migrating recovery/preservation harness to typednew
+receipt andactualsmall checkpointset; oldall50/51guards must not be bypassed.
+Native request/ticket/capture/packed pins/GPT routes remain unchanged by cleanup.
+No Source/J/packed/raw/image contents opened for cleanup. No guestboot since
+original cleanstop. Original main.rs1line usercapabilitiesdiff remainsunstaged.
+
 00:37:20Z latest run94... same5004/1793232787293 LIVE read432.962GB/write72.676MB,
 source1+correctf65managedshadow6 BOTHattrs3; packedcapture directorylength
 committed70,578,176B. Still noSourceactivation/terminal86 assumed.

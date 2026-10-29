@@ -22,6 +22,26 @@ an affirmative response, the source identity is checked again. Eligible NTFS
 data volumes use the same live source admission and compact conversion engine;
 running Windows volumes and unsupported layouts/features still refuse.
 
+### Conversion mode
+
+The default is **allocation-bounded** conversion (the ntfs2btrfs model). The
+source is bound by a digest of its NTFS-allocated ranges, and only the ranges
+the new ReFS allocates are compared, journaled and written. Bytes that neither
+filesystem allocates are not compared and not proven unchanged. Writes stay
+restricted to the planned ranges, the journal keeps the old and new bytes of each,
+and the mounted ReFS tree is verified afterwards, including every file's content
+hash. The prompt shows `Mode: allocation-bounded …` before you confirm.
+
+```powershell
+ntfs2refs --drive d --partition 2                             # allocation-bounded (default)
+ntfs2refs --drive d --partition 2 --whole-image-verification  # compare every byte; much slower
+```
+
+`--whole-image-verification` runs the earlier whole-image comparison and journal.
+On the 52 GiB lab fixture it took about 47 minutes, against about 10 minutes for
+the default; see [the selective plan](selective-conversion-plan.md).
+`--recover` handles interrupted runs of either mode from their published bundle.
+
 Working storage is prepared automatically on the Windows OS volume under
 `ProgramData\ntfs2refs\runs`: a new dynamic VHDX holds the native ReFS shadow,
 and the journal/recovery artifacts stay independent of the selected source.

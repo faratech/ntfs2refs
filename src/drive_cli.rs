@@ -26,10 +26,18 @@ pub struct DriveArgs {
     /// Restore NTFS instead of completing ReFS recovery, before handoff only.
     #[arg(long, requires = "recover")]
     pub rollback: bool,
-    /// Experimental: compare, journal and write only the ranges the new ReFS
-    /// allocates (ntfs2btrfs-style). --recover does not support these runs yet.
+    /// Accepted for compatibility: allocation-bounded conversion is the default.
     #[arg(long, requires = "drive", hide = true)]
     pub experimental_allocation_bounded: bool,
+    /// Compare and journal the complete source and ReFS images instead of only
+    /// the ranges the new ReFS allocates. Much slower; also proves that free
+    /// space is unchanged.
+    #[arg(
+        long,
+        requires = "drive",
+        conflicts_with = "experimental_allocation_bounded"
+    )]
+    pub whole_image_verification: bool,
 }
 impl DriveArgs {
     pub fn requested(&self) -> bool {
@@ -382,6 +390,15 @@ mod windows {
             size(Some(before.binding.identity.partition_bytes)),
             clean(&before.label)
         );
+        let allocation_bounded = !args.whole_image_verification;
+        println!(
+            "Mode: {}",
+            if allocation_bounded {
+                "allocation-bounded (compares and writes only the ranges the new ReFS allocates; free space is not verified)"
+            } else {
+                "whole-image verification (compares and journals every byte; much slower)"
+            }
+        );
         println!("Convert this partition to ReFS in place, preserving supported files? [y/N]");
         print!("> ");
         io::stdout().flush()?;
@@ -401,7 +418,7 @@ mod windows {
             before,
             selected,
             resources,
-            args.experimental_allocation_bounded,
+            allocation_bounded,
         )
     }
     fn convert_selected(

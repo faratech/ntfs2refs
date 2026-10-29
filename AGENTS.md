@@ -160,7 +160,14 @@ relocated file data inside routes, so routes cannot simply be skipped. Commit
 real devices (run 9ac7538c83b24d5aa6ffbd0bb0d8b686): identical write set to the
 complete capture (159 ranges, 70,615,040B), 14.77GB compared per side instead of
 52GiB; see evidence/selective-plan-native-20261029.json.
-Allocation-bounded backend (45f263a, hidden --experimental-allocation-bounded;
+DEFAULT MODE (user, 2026-10-29): the public drive command now runs the
+allocation-bounded backend by default and prints "Mode: allocation-bounded" before
+confirmation; --whole-image-verification selects the earlier compact path. The
+old --experimental-allocation-bounded flag is a hidden no-op alias.
+lab/Start-AllocationBoundedConversion.ps1 passes no mode flag (needs a build at
+or after the default change); lab/Start-HeadDriveMeasurement.ps1 passes
+--whole-image-verification.
+Allocation-bounded backend (45f263a, then hidden --experimental-allocation-bounded;
 launcher lab/Start-AllocationBoundedConversion.ps1, 1ac5682) converted the
 fixture natively in 952.9s (vs 2,813.3s whole-image HEAD), reading >=295.0GB,
 15 objects/10 hashes, label/mount verified; see

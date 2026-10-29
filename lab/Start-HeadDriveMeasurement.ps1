@@ -1,5 +1,6 @@
 # Measurement launcher for a sealed HEAD build; sibling of Start-OptimizedDriveAlpha.ps1 with only the build pins parameterized.
 # Grants no admission, qualification or recovery authority. The frozen launcher is unchanged.
+# Passes --whole-image-verification: builds after the default change otherwise run the allocation-bounded mode.
 # Future normal public drive conversion. Root restores/boots the selected NTFS
 # checkpoint separately. The main executable owns all admission and storage work.
 [CmdletBinding()]param(
@@ -78,7 +79,7 @@ try{
     Host-Guard; Need (-not (Test-Path -LiteralPath $root)) 'Fresh host case required.'
     New-Item -ItemType Directory -Path $root -ErrorAction Stop|Out-Null; $created=$true
     $c=@{run_id=$run;stage=$stage;task=$task;main_sha256=$mainPin;main_bytes=$tool.bytes}
-    Save 'intent.json' @{schema_version=1;kind='optimized-drive-alpha-intent';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;tool=$tool;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;ntfs_receipt_grants_source_admission=$false;capacity=$capacity;forecast_bytes=7GB;forecast_is_not_reservation=$true;public_argv=@('--drive','F','--partition','2');stdin='yes CRLF';manual_shadow_journal_binding=$false;source_admission_recreated=$false;power_checkpoint_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
+    Save 'intent.json' @{schema_version=1;kind='optimized-drive-alpha-intent';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;tool=$tool;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;ntfs_receipt_grants_source_admission=$false;capacity=$capacity;forecast_bytes=7GB;forecast_is_not_reservation=$true;public_argv=@('--drive','F','--partition','2','--whole-image-verification');stdin='yes CRLF';manual_shadow_journal_binding=$false;source_admission_recreated=$false;power_checkpoint_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
     $body=@'
 Set-StrictMode -Version Latest; $ErrorActionPreference='Stop'
 $c=[Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__CONFIG__'))|ConvertFrom-Json
@@ -95,10 +96,10 @@ try{
     $disks=@(Get-Disk -ErrorAction Stop); Need ($env:COMPUTERNAME -ceq 'N2R-WIN11' -and $disks.Count -eq 6 -and @($disks|Where-Object Number -ge 6).Count -eq 0) 'Owning guest with old managed6 absent required.'
     $binary=Join-Path $c.stage 'ntfs2refs.exe';Need ((Get-Item -LiteralPath $binary).Length -eq $c.main_bytes -and (Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant() -ceq $c.main_sha256) 'Frozen public main differs.'
     Save 'wrapper-worker.json' @{run_id=$c.run_id;pid=$PID;creation_ms=([DateTimeOffset](Get-Process -Id $PID).StartTime).ToUnixTimeMilliseconds();utc=[DateTime]::UtcNow.ToString('o')}
-    $cli=@('--drive','F','--partition','2');$stdin=Join-Path $c.stage 'stdin-yes.txt';$f=[IO.File]::Open($stdin,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$bytes=[Text.Encoding]::ASCII.GetBytes("yes`r`n");$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}
+    $cli=@('--drive','F','--partition','2','--whole-image-verification');$stdin=Join-Path $c.stage 'stdin-yes.txt';$f=[IO.File]::Open($stdin,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$bytes=[Text.Encoding]::ASCII.GetBytes("yes`r`n");$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}
     $stdout=Join-Path $c.stage 'stdout.log';$stderr=Join-Path $c.stage 'stderr.log';$phase='public-drive-conversion'
     Save 'native-dispatch-intent.json' @{binary=$binary;binary_sha256=$c.main_sha256;argv=$cli;stdin_file=$stdin;expected_exit=0;utc=[DateTime]::UtcNow.ToString('o')}
-    $process=Start-Process -FilePath $binary -ArgumentList '--drive F --partition 2' -WorkingDirectory $c.stage -RedirectStandardInput $stdin -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
+    $process=Start-Process -FilePath $binary -ArgumentList '--drive F --partition 2 --whole-image-verification' -WorkingDirectory $c.stage -RedirectStandardInput $stdin -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
     $null=$process.Handle
     Save 'native-process.json' @{pid=$process.Id;creation_ms=([DateTimeOffset]$process.StartTime).ToUnixTimeMilliseconds();parent_pid=$PID;binary=$binary;binary_sha256=$c.main_sha256;argv=$cli;stdin_file=$stdin;expected_exit=0;process_handle_retained_before_wait=$true;utc=[DateTime]::UtcNow.ToString('o')}
     $process.WaitForExit();$process.Refresh();$nativeExit=$process.ExitCode;$out=Log $stdout;$err=Log $stderr
@@ -138,7 +139,7 @@ finally{if($null -ne $process){$process.Dispose()}}
     Copy-Item -LiteralPath $tool.path -ToSession $session -Destination (Join-Path $stage 'ntfs2refs.exe')
     Copy-Item -LiteralPath $wrapperPath -ToSession $session -Destination (Join-Path $stage 'wrapper.ps1')
     Host-Guard
-    Save 'dispatch.json' @{schema_version=1;kind='head-public-drive-measurement-dispatch';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;task_name=$task;guest_stage=$stage;binary_sha256=$mainPin;binary_bytes=$tool.bytes;wrapper_sha256=$wrapperPin;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;argv=@('--drive','F','--partition','2');stdin='yes CRLF';expected_exit=0;manual_shadow_journal_binding=$false;source_admission_recreated=$false;utc=[DateTime]::UtcNow.ToString('o')}
+    Save 'dispatch.json' @{schema_version=1;kind='head-public-drive-measurement-dispatch';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;task_name=$task;guest_stage=$stage;binary_sha256=$mainPin;binary_bytes=$tool.bytes;wrapper_sha256=$wrapperPin;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;argv=@('--drive','F','--partition','2','--whole-image-verification');stdin='yes CRLF';expected_exit=0;manual_shadow_journal_binding=$false;source_admission_recreated=$false;utc=[DateTime]::UtcNow.ToString('o')}
     Invoke-Command -Session $session -ArgumentList $stage,$task,$wrapperPin,$mainPin,$MainBytes -ScriptBlock {param($Stage,$Task,$WrapperPin,$MainPin,$Bytes)
         Set-StrictMode -Version Latest;$ErrorActionPreference='Stop';$path=Join-Path $Stage 'wrapper.ps1';$binary=Join-Path $Stage 'ntfs2refs.exe'
         if((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $WrapperPin -or (Get-Item -LiteralPath $binary).Length -ne $Bytes -or (Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant() -cne $MainPin -or @(Get-ScheduledTask -ErrorAction Stop|Where-Object TaskName -CEQ $Task).Count){throw 'Fresh pinned public main/wrapper/task required.'}

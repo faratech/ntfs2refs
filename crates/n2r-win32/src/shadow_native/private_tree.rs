@@ -13,7 +13,13 @@ pub use enrollment::{ConstructionEnrollment, enroll};
 pub use source_backed::{MountedAllocation, PayloadRoute, SourceBackedRoutes};
 pub use supply::{SupplyPlan, SupplyRange};
 
-pub const MAX_PLACEMENT_SUBMISSIONS: usize = 1024;
+/// Tree-wide FSCTL_MOVE_FILE ceiling shared by deferred allocation, evacuation
+/// and final placement: about two submissions per retained NTFS run for a
+/// fragmented 1024-file tree of up to 16,384 runs. It is a ceiling, not a
+/// guarantee: placement admits at most 4096 desired runs (the downstream
+/// route bound) and reserves each move proof's bound against
+/// MAX_PLACEMENT_ARTIFACT_BYTES before that move's native IO, refusing first.
+pub const MAX_PLACEMENT_SUBMISSIONS: usize = 32_768;
 
 /// Check the same limits used by the mover before allocating any placeholders.
 pub fn validate_placement_limits(bytes: u64, submissions: usize) -> io::Result<()> {
@@ -158,7 +164,12 @@ impl PrivateTree {
         supply::plan(self)
     }
     pub fn place_source_prefixes(&mut self, input: &[Input<'_>]) -> io::Result<serde_json::Value> {
-        placement::run(self, input, self.pair.shadow.identity.partition_bytes, 1024)
+        placement::run(
+            self,
+            input,
+            self.pair.shadow.identity.partition_bytes,
+            MAX_PLACEMENT_SUBMISSIONS,
+        )
     }
     pub fn place_source_prefixes_with_limits(
         &mut self,

@@ -5,8 +5,33 @@ use serde::Serialize;
 use std::{collections::BTreeMap, io};
 
 const CLUSTER: u64 = 4096;
-pub const MAX_EXTENTS: usize = 1024;
-pub const MAX_MOVES: usize = 1024;
+/// Ceiling for any one validated extent list. The intersection is a sorted
+/// sweep, so this bounds memory (32 B per extent), not a nested product.
+pub const MAX_EXTENTS: usize = 65_536;
+/// Ceiling for a caller's move budget: the private-tree submission ceiling.
+pub const MAX_MOVES: usize = 32_768;
+/// The older ConstructRetaining evacuation loop keeps its original budgets.
+pub const LEGACY_MAX_EXTENTS: usize = 1024;
+pub const LEGACY_MAX_MOVES: usize = 1024;
+
+/// Caller-selected bounds, each checked against the ceilings above.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RangeLimits {
+    pub max_source_extents: usize,
+    pub max_shadow_extents: usize,
+    pub max_blocked: usize,
+    pub max_moves: usize,
+    /// Bytes at each partition end that are never chosen as a destination.
+    pub margin: u64,
+}
+
+pub(crate) const LEGACY_LIMITS: RangeLimits = RangeLimits {
+    max_source_extents: LEGACY_MAX_EXTENTS,
+    max_shadow_extents: LEGACY_MAX_EXTENTS,
+    max_blocked: LEGACY_MAX_MOVES,
+    max_moves: LEGACY_MAX_MOVES,
+    margin: 0,
+};
 #[cfg(test)]
 pub const MAX_SCAN_CLUSTERS: u64 = 16 * 1024 * 1024;
 #[cfg(test)]
@@ -34,7 +59,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_moves: MAX_MOVES,
+            max_moves: LEGACY_MAX_MOVES,
             max_scan_clusters: MAX_SCAN_CLUSTERS,
             max_evacuation_bytes: MAX_EVACUATION_BYTES,
         }
@@ -74,13 +99,20 @@ pub(crate) fn plan_ranges(
     shadow: &[Extent],
     partition: u64,
     move_budget: usize,
+    limits: RangeLimits,
 ) -> io::Result<Plan> {
     const MAX_MAP_RANGES: usize = 262_144;
     const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024 * 1024;
     if partition == 0
         || partition > MAX_BYTES
         || !partition.is_multiple_of(CLUSTER)
-        || !(1..=MAX_MOVES).contains(&move_budget)
+        || limits.max_source_extents > MAX_EXTENTS
+        || limits.max_shadow_extents > MAX_EXTENTS
+        || limits.max_blocked > 2 * MAX_EXTENTS
+        || limits.max_moves > MAX_MOVES
+        || !(1..=limits.max_moves).contains(&move_budget)
+        || !limits.margin.is_multiple_of(CLUSTER)
+        || limits.margin.checked_mul(2).is_none_or(|m| m >= partition)
     {
         return Err(invalid("streaming evacuation geometry differs"));
     }
@@ -125,10 +157,15 @@ pub(crate) fn plan_ranges(
             return Err(invalid("evacuation allocation count differs"));
         }
     }
-    let source = validated_extents_streamed(eligible_source, partition)?;
-    let owned = validated_extents_streamed(shadow, partition)?;
+    let source = validated_extents_streamed(eligible_source, partition, limits.max_source_extents)?;
+    let owned = validated_extents_streamed(shadow, partition, limits.max_shadow_extents)?;
     let mut blocked = Vec::new();
     let mut already = 0u64;
+    // Both lists are physically sorted and internally disjoint, so their ends
+    // are sorted too. A source range ending at or before this extent's start
+    // cannot meet this or any later extent; the rest are visited in the same
+    // order as the former nested loop, so the blocked list is unchanged.
+    let mut next_source = 0;
     for extent in &owned {
         for map in [legacy, metadata] {
             let end = extent.physical_offset + extent.length;
@@ -146,10 +183,18 @@ pub(crate) fn plan_ranges(
                 ));
             }
         }
-        for candidate in &source {
+        let extent_end = extent.physical_offset + extent.length;
+        while source.get(next_source).is_some_and(|candidate| {
+            candidate.physical_offset + candidate.length <= extent.physical_offset
+        }) {
+            next_source += 1;
+        }
+        for candidate in source[next_source..]
+            .iter()
+            .take_while(|candidate| candidate.physical_offset < extent_end)
+        {
             let start = extent.physical_offset.max(candidate.physical_offset);
-            let end = (extent.physical_offset + extent.length)
-                .min(candidate.physical_offset + candidate.length);
+            let end = extent_end.min(candidate.physical_offset + candidate.length);
             if start >= end {
                 continue;
             }
@@ -158,10 +203,13 @@ pub(crate) fn plan_ranges(
             if extent.file_index == candidate.file_index && logical == desired {
                 already += end - start;
             } else {
-                if blocked.len() == MAX_MOVES {
+                if blocked.len() == limits.max_blocked {
                     return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
-                        "evacuation intersection budget exceeded",
+                        format!(
+                            "evacuation intersection budget exceeded: more than {} blocked intersections",
+                            limits.max_blocked
+                        ),
                     ));
                 }
                 blocked.push(Extent {
@@ -184,6 +232,12 @@ pub(crate) fn plan_ranges(
                 .map(|r| (r.physical_offset, r.physical_offset + r.length)),
         )
         .collect();
+    // Bootstrap margins are excluded here so the first-fit sweep never
+    // chooses a destination the native mover's caller would refuse.
+    if limits.margin > 0 {
+        excluded.push((0, limits.margin));
+        excluded.push((partition - limits.margin, partition));
+    }
     excluded.sort_unstable();
     let mut occupied: Vec<(u64, u64)> = Vec::new();
     for (start, end) in excluded {
@@ -258,12 +312,19 @@ fn validated_extents(extents: &[Extent], partition: u64) -> io::Result<Vec<Exten
     {
         return Err(invalid("legacy evacuation extent exceeds native move size"));
     }
-    validated_extents_streamed(extents, partition)
+    validated_extents_streamed(extents, partition, LEGACY_MAX_EXTENTS)
 }
 
-fn validated_extents_streamed(extents: &[Extent], partition: u64) -> io::Result<Vec<Extent>> {
-    if extents.len() > MAX_EXTENTS {
-        return Err(invalid("evacuation extent budget exceeded"));
+fn validated_extents_streamed(
+    extents: &[Extent],
+    partition: u64,
+    max_extents: usize,
+) -> io::Result<Vec<Extent>> {
+    if extents.len() > max_extents {
+        return Err(invalid(&format!(
+            "evacuation extent budget exceeded: {} extents > {max_extents}",
+            extents.len()
+        )));
     }
     let mut physical = extents.to_vec();
     let mut logical = BTreeMap::<u32, Vec<(u64, u64)>>::new();
@@ -379,7 +440,7 @@ pub fn plan(
 ) -> io::Result<Plan> {
     if partition == 0
         || !partition.is_multiple_of(CLUSTER)
-        || !(1..=MAX_MOVES).contains(&limits.max_moves)
+        || !(1..=LEGACY_MAX_MOVES).contains(&limits.max_moves)
         || !(1..=MAX_SCAN_CLUSTERS).contains(&limits.max_scan_clusters)
         || !(1..=MAX_EVACUATION_BYTES).contains(&limits.max_evacuation_bytes)
     {

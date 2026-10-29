@@ -155,6 +155,7 @@ mod app {
                 "source_cluster_bytes":source_clusters,"target_profile":"native ReFS3.14 with4KiB allocation units",
                 "path_policy":"streaming Unicode components: at most255 UTF-16 units and16 components; names remain unchanged; conservative duplicate checks and native creation remain required",
                 "maximum_placement_submissions":n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS,
+                "placement_submission_scope":"ceiling, not a guarantee: at most 4096 desired NTFS runs are admitted, and each move proof's bound is reserved against the 64 MiB-64 KiB placement artifact before that move's native IO",
                 "placement_bytes":"explicit caller budget; validated by the existing constructor before output/source freeze/allocation",
                 "exception_bytes":"existing CompactConstructionBudget bound; system streams and residual bytes only",
                 "maximum_journal_bytes":journal.max_journal_bytes(),"maximum_changed_bytes_for_journal_profile":journal.max_changed_bytes(),

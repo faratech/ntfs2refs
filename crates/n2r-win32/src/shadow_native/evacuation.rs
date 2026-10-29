@@ -74,7 +74,7 @@ fn push_extent(
     if length == 0 {
         return Ok(());
     }
-    if out.len() == shadow_evacuation::MAX_EXTENTS {
+    if out.len() == shadow_evacuation::LEGACY_MAX_EXTENTS {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "shadow evacuation extent budget exceeded",
@@ -189,6 +189,7 @@ fn prepare(
         &owned,
         partition,
         move_budget,
+        shadow_evacuation::LEGACY_LIMITS,
     )?;
     Ok(Prepared {
         eligible,

@@ -19,6 +19,35 @@ use windows_sys::Win32::{
     Storage::FileSystem::{CreateFileW, SetFileInformationByHandle, SetFileValidData},
 };
 
+/// Per-placeholder native submissions. One large or fragmented file may use
+/// most of the tree-wide budget, which remains the binding ceiling.
+const MAX_FILE_SUBMISSIONS: usize = super::private_tree::MAX_PLACEMENT_SUBMISSIONS;
+/// Per-placeholder tracked entries (and tracked entries plus deferred holes).
+/// A retained stream has at most 1024 NTFS runs; each may end as up to four
+/// coalesced pieces (placed, split by metadata, and remainders on each side).
+/// Every move still matches all entries against the complete retrieval map,
+/// at most 4096 x runs comparisons per check.
+const MAX_FILE_PLACEMENTS: usize = 4096;
+
+/// Merge VCN- and LCN-contiguous neighbours of a VCN-sorted list. The covered
+/// clusters and their linear VCN-to-LCN relation are unchanged, and a merged
+/// entry matches the retrieval map only if both former entries would.
+fn coalesce(entries: &mut Vec<(u64, u64, u32)>) {
+    let mut merged: Vec<(u64, u64, u32)> = Vec::with_capacity(entries.len());
+    for &(vcn, lcn, clusters) in entries.iter() {
+        if let Some(last) = merged.last_mut()
+            && last.0 + u64::from(last.2) == vcn
+            && last.1 + u64::from(last.2) == lcn
+            && let Some(total) = last.2.checked_add(clusters)
+        {
+            last.2 = total;
+        } else {
+            merged.push((vcn, lcn, clusters));
+        }
+    }
+    *entries = merged;
+}
+
 #[derive(Serialize)]
 pub(super) struct Placement {
     pub destination_lcn: u64,
@@ -50,6 +79,7 @@ pub(super) struct PrivatePlaceholder {
     poisoned: bool,
     move_submissions: usize,
     initial_mapping_tracked: bool,
+    retrieval_extents: usize,
 }
 
 impl PrivatePlaceholder {
@@ -168,6 +198,7 @@ impl PrivatePlaceholder {
             poisoned: false,
             move_submissions: 0,
             initial_mapping_tracked: false,
+            retrieval_extents: 0,
         })
     }
 
@@ -327,7 +358,7 @@ impl PrivatePlaceholder {
         if self.poisoned
             || self.valid_data_submitted
             || self.valid_prefix != 0
-            || self.move_submissions >= 1024
+            || self.move_submissions >= MAX_FILE_SUBMISSIONS
             || clusters == 0
             || destination_lcn < 256
             || logical_end.is_none_or(|v| v > self.bytes / 4096)
@@ -386,8 +417,12 @@ impl PrivatePlaceholder {
         }
         next.push((starting_vcn, destination_lcn, clusters));
         next.sort_by_key(|r| r.0);
-        if next.len() > 1024 {
-            return Err(invalid("private reposition split budget exceeded"));
+        coalesce(&mut next);
+        if next.len() > MAX_FILE_PLACEMENTS {
+            return Err(invalid(&format!(
+                "private reposition split budget exceeded: {} tracked entries > {MAX_FILE_PLACEMENTS}",
+                next.len()
+            )));
         }
         let legacy = Observation::capture(volume, &[0; 8], self.partition, true)?;
         let mut ex = [0u8; 16];
@@ -405,7 +440,10 @@ impl PrivatePlaceholder {
             || old.allocated_clusters != 0
             || all.allocated_clusters != 0
         {
-            return Err(invalid(
+            // Distinct kind: nothing was submitted or poisoned, so the tree
+            // planner may re-plan this step from a fresh snapshot.
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
                 "private placement requires both current bitmap views free",
             ));
         }
@@ -418,6 +456,7 @@ impl PrivatePlaceholder {
         self.move_submissions += 1;
         let moved = ctl(volume, 0x90074, &input, 0);
         let capture = crate::stream_native::retrieval_capture(&self.file)?;
+        self.retrieval_extents = capture.runs.len();
         let mapped = mapping_matches_run(
             &crate::stream_layout::parse_complete_retrieval(&capture.canonical)?,
             starting_vcn,
@@ -546,7 +585,8 @@ impl PrivatePlaceholder {
         }
         self.poisoned = true;
         let capture = crate::stream_native::retrieval_capture(&self.file)?;
-        let mut tracked = Vec::new();
+        self.retrieval_extents = capture.runs.len();
+        let mut tracked: Vec<(u64, u64, u32)> = Vec::new();
         let mut holes = Vec::new();
         let mut cursor = 0;
         for run in capture.runs {
@@ -570,12 +610,24 @@ impl PrivatePlaceholder {
                     {
                         return Err(invalid("tracked private mapping escapes partition"));
                     }
-                    tracked.push((start, physical, count));
+                    // Record contiguous native runs as one tracked entry.
+                    if let Some(last) = tracked.last_mut()
+                        && last.0 + u64::from(last.2) == start
+                        && last.1 + u64::from(last.2) == physical
+                        && let Some(total) = last.2.checked_add(count)
+                    {
+                        last.2 = total;
+                    } else {
+                        tracked.push((start, physical, count));
+                    }
                 } else {
                     holes.push((start, count));
                 }
-                if tracked.len() + holes.len() > 1024 {
-                    return Err(invalid("current mapping tracking budget exceeded"));
+                if tracked.len() + holes.len() > MAX_FILE_PLACEMENTS {
+                    return Err(invalid(&format!(
+                        "current mapping tracking budget exceeded: {} tracked entries and holes > {MAX_FILE_PLACEMENTS}",
+                        tracked.len() + holes.len()
+                    )));
                 }
                 start += u64::from(count);
             }
@@ -591,5 +643,11 @@ impl PrivatePlaceholder {
 
     pub fn tracked_mappings(&self) -> &[(u64, u64, u32)] {
         &self.placed
+    }
+
+    /// Canonical extents in this file's latest complete retrieval capture
+    /// (tracking or the last move), for bounding the next move's proof.
+    pub(super) fn retrieval_extents(&self) -> usize {
+        self.retrieval_extents
     }
 }

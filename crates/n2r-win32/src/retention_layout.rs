@@ -6,7 +6,10 @@ use serde::Serialize;
 use std::io;
 
 const CLUSTER: u64 = 4096;
-pub const MAX_SUBRUNS: usize = 1024;
+/// Output-vector ceiling (48 B per subrun). Private-tree placement passes its
+/// remaining native submissions as the budget, so this matches
+/// private_tree::MAX_PLACEMENT_SUBMISSIONS; older callers pass their own.
+pub const MAX_SUBRUNS: usize = 32_768;
 // FSCTL_MOVE_FILE counts clusters in a DWORD. This bounds each submitted move,
 // not the length of the original file or of a streamed bitmap interval.
 pub(crate) const MAX_MOVE_BYTES: u64 = u32::MAX as u64 * CLUSTER;

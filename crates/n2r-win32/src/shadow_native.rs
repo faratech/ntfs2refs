@@ -515,6 +515,9 @@ pub struct RetentionAttempt {
     pub all_clusters_at_source: bool,
 }
 const MAX_RETENTION_EVIDENCE_BYTES: usize = 8 * 1024 * 1024;
+// The older tree retention path keeps its original attempt budget; the
+// shared free-subrun ceiling was raised for private-tree placement only.
+const MAX_RETENTION_ATTEMPTS: usize = 1024;
 fn bitmap_proof_heap(proof: &crate::bitmap_paging::Proof) -> usize {
     proof.pages.iter().fold(
         proof
@@ -582,7 +585,7 @@ fn retention_attempt_heap(attempt: &RetentionAttempt) -> usize {
         .saturating_add(retrieval_proof_heap(&attempt.mapping_after_page_proof))
 }
 fn remaining_retention_evidence(attempts: &mut Vec<RetentionAttempt>) -> io::Result<usize> {
-    if attempts.len() >= crate::retention_layout::MAX_SUBRUNS {
+    if attempts.len() >= MAX_RETENTION_ATTEMPTS {
         return Err(invalid("tree retention-attempt budget exceeded"));
     }
     // Reserve the actual next slot before accounting; include spare capacity,
@@ -794,7 +797,7 @@ fn retain_source_run_on_shadow(
         if !reuse_no_submit_snapshot
             || !cascade
             || !progress
-            || attempts.len() == crate::retention_layout::MAX_SUBRUNS
+            || attempts.len() == MAX_RETENTION_ATTEMPTS
         {
             return Ok(());
         }
@@ -820,7 +823,7 @@ fn retain_source_run_once(
     remaining_retention_evidence(attempts)?;
     let first_attempt = attempts.len();
     // Bound the complete tree, including non-submitted collision diagnostics.
-    let remaining = crate::retention_layout::MAX_SUBRUNS
+    let remaining = MAX_RETENTION_ATTEMPTS
         .checked_sub(attempts.len())
         .filter(|remaining| *remaining > 0)
         .ok_or_else(|| invalid("tree retention-attempt budget exceeded"))?;
@@ -3134,7 +3137,7 @@ fn run_role_profile(
             }
         }
         if mode == Mode::ConstructRetaining {
-            let mut evacuation_budget = crate::shadow_evacuation::MAX_MOVES;
+            let mut evacuation_budget = crate::shadow_evacuation::LEGACY_MAX_MOVES;
             const EVACUATION_EVIDENCE_LIMIT: usize = 4 * 1024 * 1024;
             loop {
                 let first_retention_attempt = retention_attempts.len();
@@ -3236,7 +3239,7 @@ fn run_role_profile(
                     || evacuated_bytes == 0
                     || !retained_progress
                     || evacuation_budget == 0
-                    || retention_attempts.len() == crate::retention_layout::MAX_SUBRUNS
+                    || retention_attempts.len() == MAX_RETENTION_ATTEMPTS
                 {
                     break;
                 }

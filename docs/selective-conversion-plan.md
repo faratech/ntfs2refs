@@ -103,5 +103,28 @@ therefore validated on one native run; it still authorizes nothing.
    46m53s HEAD baseline.
 
 Steps 1–2 are read-only. Steps 3–5 write to the disposable lab source only, behind
-the checkpoint. Projected end-to-end reads are tens of GB rather than ~816 GB;
+the checkpoint.
+
+## Integration map: what each whole-image identity becomes
+
+The current pipeline (`general_conversion::composite`) binds every stage to a
+whole-image SHA-256, so the selective path is a parallel pipeline rather than a
+journal swap. Per stage, with the measured HEAD reads in 52 GiB volumes:
+
+| Stage (current code) | Whole-image dependency | Selective replacement |
+|---|---|---|
+| Source admission, `prepare_source_context` (part of 2.4) | Live certificate binds a complete source SHA-256 | Certificate binds the NTFS inventory hash, the retained-route mapping and the selected old-bytes hash, still issued only by the live core. |
+| Protected shadow bracket, `bracket_image_with_resource_profile` (2 of 6.2) | Two complete shadow hashes | Bracket over the shadow's allocated ranges only; the scratch shadow's free space never reaches the target. |
+| Complete capture plus rehashes (4 of 6.2) | Full address-space comparison and pair hashes | `plan_changed_granules` over the protected allocation, validated above. |
+| Journal preparation, `prepare_compact_paired_with_progress` (3.2) | Complete source/candidate scans, postimage equals `comparison.shadow_sha256` | `selected_journal::prepare` over the plan (about 141 MB journal on this fixture). |
+| Apply, `compact::execute` (2.0) | Verifies the complete result | `selected_journal::apply`, which reads back every written range. |
+| Handoff, `compact_finalize` (≥ 0.8) | HND on the compact journal, then native mount verification | `selected_journal::handoff`, then the same native mount verification (15 objects, 10 complete hashes), which stays as the end-to-end check. |
+| Recovery bundle and typed Resume/Rollback | Pins whole-image hashes and the compact journal format | Versioned bundle that recognizes `N2RSEL01`; the full-image API keeps refusing it. |
+
+Reads that would remain on this fixture: NTFS metadata inspection, native shadow
+construction, about 29.5 GB of allocation-bounded comparison, the 141 MB journal,
+write readback, and about 8.6 GB of mounted file hashing. That projects to tens of
+GB instead of about 850 GB; it is a projection until a selective run measures it.
+Admission is the stage that needs the most care: it is where "never recreate the
+certificate from JSON" and "no whole-image hash" must both hold. Projected end-to-end reads are tens of GB rather than ~816 GB;
 that remains a projection until step 5 measures it.

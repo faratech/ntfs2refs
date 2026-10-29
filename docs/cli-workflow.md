@@ -90,11 +90,23 @@ with its exact original provider and GPT identity. Default recovery resumes the
 exact image, then finalizes ReFS only if resume succeeds; `--rollback` restores
 NTFS instead. Failures do not trigger an alternate action.
 
+For an excluded offline source, the current CLI also classifies both actual
+journal lifecycle sectors while holding that journal exclusively. An exact ReFS
+handoff selects only the existing ReFS completion path; `--rollback` refuses.
+An exact NTFS rollback selects only NTFS completion with `--rollback`; default
+ReFS recovery refuses. Partial, foreign or contradictory sectors refuse. These
+paths still verify the complete immutable journal, compact binding and images;
+the classifier grants no replay or mount authority. Already online completed
+volumes are not automatically offlined. This routing change is release-built
+and still needs native qualification.
+
 HND/ABT close replay: a completed writable filesystem must not be recovered with
 an old journal. Older runs without a bundle still require the explicit pinned
-`ntfs2refs-compact` recovery inputs below. The new wrapper has release-build,
-wrong-checksum and cancellation evidence; its affirmative native path is not yet
-qualified. Those checks do not inherit the exact older CLI binary's results.
+`ntfs2refs-compact` recovery inputs below. Sealed main `2cac76...` passed actual
+public Resume/Finalize after the controlled one-write interruption and reboot:
+15 native objects, 10 complete stream hashes, label/mount preservation and HND.
+Later read optimizations and lifecycle routing do not inherit that binary's
+native qualification. Those builds have separate release-build evidence.
 
 ## Experimental compact backend
 

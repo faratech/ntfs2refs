@@ -41,6 +41,27 @@ pub struct ExperimentalCompactInputs {
     pub expectation_sha256: String,
 }
 impl ExperimentalCompactInputs {
+    /// Public CLI routing from an actual journal, while the engine retains its
+    /// exclusive handle. A committed marker can select completion only.
+    pub(crate) fn recover_offline_by_lifecycle(
+        &self,
+        rollback: bool,
+        output: &Path,
+    ) -> Result<ExperimentalCompactOperation> {
+        let requested = if rollback {
+            ExperimentalCompactOperation::Rollback
+        } else {
+            ExperimentalCompactOperation::Resume
+        };
+        recover_compact_impl(requested, self, output, true)
+    }
+
+    /// A successful Resume left an unmarked offline image. Recheck lifecycle
+    /// under the next exclusive journal lease before writing its first HND.
+    pub(crate) fn finalize_offline_after_resume(&self, output: &Path) -> Result<()> {
+        recover_compact_impl(ExperimentalCompactOperation::Finalize, self, output, true).map(|_| ())
+    }
+
     fn validate(&self) -> Result<()> {
         for pin in [
             &self.request_sha256,
@@ -149,6 +170,15 @@ pub fn recover_compact_experimental(
     inputs: &ExperimentalCompactInputs,
     output: &Path,
 ) -> Result<()> {
+    recover_compact_impl(operation, inputs, output, false).map(|_| ())
+}
+
+fn recover_compact_impl(
+    operation: ExperimentalCompactOperation,
+    inputs: &ExperimentalCompactInputs,
+    output: &Path,
+    select_lifecycle: bool,
+) -> Result<ExperimentalCompactOperation> {
     inputs.validate()?;
     announce_recovery_phase(operation, "checking original input and backing hashes");
     let mut request_input = HeldInput::open(&inputs.request, &inputs.request_sha256, 131072)?;
@@ -240,6 +270,7 @@ pub fn recover_compact_experimental(
         }),
     )?;
     let mut phase = "compact-journal-preflight";
+    let mut effective_operation = operation;
     let attempted = (|| -> Result<()> {
         announce_recovery_phase(
             operation,
@@ -269,6 +300,56 @@ pub fn recover_compact_experimental(
             "opened compact journal length differs from pinned ticket"
         );
         artifacts::save(output, "journal-identity.json", &observed)?;
+        // Public automatic routing observes the same journal held exclusively
+        // below. Explicit experimental operations keep their existing path.
+        let operation = if select_lifecycle {
+            use crate::lab_reconstruct::{JournalLifecycle, inspect_journal_lifecycle};
+            phase = "compact-journal-lifecycle";
+            // Use the same binding implementation as preparation/execution:
+            // native shadow AND held compact artifact identity are mandatory.
+            let bound =
+                protocol::compact_binding(&request, &observed.identity, &artifact_identity)?;
+            let (lifecycle, descriptor) =
+                inspect_journal_lifecycle(&mut journal, &ticket, &bound, &request.comparison)?;
+            let ranges: Vec<_> = descriptor
+                .patches
+                .iter()
+                .map(|p| (p.offset, p.length))
+                .collect();
+            artifact.layout().require_exact_write_ranges(&ranges)?;
+            let selected = match lifecycle {
+                JournalLifecycle::PreparedClear
+                | JournalLifecycle::ApplyIntent
+                | JournalLifecycle::RollbackIntent => operation,
+                JournalLifecycle::RefsHandoff => {
+                    ensure!(
+                        operation == ExperimentalCompactOperation::Resume,
+                        "ReFS handoff is committed; raw replay, rollback and a new handoff are closed"
+                    );
+                    ExperimentalCompactOperation::FinalizeAfterMarker
+                }
+                JournalLifecycle::NtfsRollback => {
+                    ensure!(
+                        operation == ExperimentalCompactOperation::Rollback,
+                        "NTFS rollback is committed; ReFS resume is closed; use --rollback to finalize NTFS"
+                    );
+                    ExperimentalCompactOperation::FinalizeRollback
+                }
+            };
+            artifacts::save(
+                output,
+                "lifecycle-selection.json",
+                &serde_json::json!({
+                    "requested_operation":operation,"observed_lifecycle":lifecycle,
+                    "selected_operation":selected,"journal_handle_held_exclusively":true,
+                    "serialized_selection_grants_authority":false,
+                }),
+            )?;
+            selected
+        } else {
+            operation
+        };
+        effective_operation = operation;
         phase = "reopen-activated-compact-disks";
         let mut events = Vec::<NativeEvent>::new();
         let mut target =
@@ -435,5 +516,5 @@ pub fn recover_compact_experimental(
         )?;
         return Err(error);
     }
-    Ok(())
+    Ok(effective_operation)
 }

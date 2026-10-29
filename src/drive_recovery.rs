@@ -20,9 +20,8 @@ pub fn run(directory: &Path, recovery_sha256: &str, rollback: bool) -> Result<u8
 mod windows {
     use super::*;
     use crate::{
-        compact_recovery_bundle::HeldBundle,
-        general_qualification,
-        general_recovery::{ExperimentalCompactOperation, recover_compact_experimental},
+        compact_recovery_bundle::HeldBundle, general_qualification,
+        general_recovery::ExperimentalCompactOperation,
     };
     use anyhow::{Context, ensure};
     use n2r_win32::{
@@ -197,27 +196,22 @@ mod windows {
             None => None,
         };
         held.revalidate()?;
-        if rollback {
-            recover_compact_experimental(
-                ExperimentalCompactOperation::Rollback,
-                &inputs,
-                &output.join("rollback"),
+        // Select from the actual, fully checked journal while the typed engine
+        // holds it exclusively. HND/ABT can only finalize their committed side;
+        // failures never cause a second operation or an opposite-direction try.
+        let selected = inputs
+            .recover_offline_by_lifecycle(
+                rollback,
+                &output.join(if rollback { "rollback" } else { "resume" }),
             )
-            .context("typed NTFS rollback refused or stopped; no alternate action was attempted")?;
-        } else {
-            recover_compact_experimental(
-                ExperimentalCompactOperation::Resume,
-                &inputs,
-                &output.join("resume"),
-            )
-            .context("typed resume refused or stopped; no finalize or rollback was attempted")?;
+            .context(
+                "typed offline recovery refused or stopped; no alternate action was attempted",
+            )?;
+        if selected == ExperimentalCompactOperation::Resume {
             held.revalidate()?;
-            recover_compact_experimental(
-                ExperimentalCompactOperation::Finalize,
-                &inputs,
-                &output.join("finalize"),
-            )
-            .context("typed ReFS finalization refused or stopped; no rollback was attempted")?;
+            inputs
+                .finalize_offline_after_resume(&output.join("finalize"))
+                .context("typed ReFS finalization refused or stopped; no rollback was attempted")?;
         }
         held.revalidate()?;
         drop(managed_owner);

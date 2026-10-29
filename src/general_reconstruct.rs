@@ -52,7 +52,7 @@ fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBi
     })
 }
 
-fn compact_binding(
+pub(crate) fn compact_binding(
     request: &Request,
     journal: &JournalFileIdentity,
     artifact_identity: &str,

@@ -856,6 +856,64 @@ pub fn inspect_completed_journal<J: ReadSeek>(
     })
 }
 
+/// Runtime observation only, never deserialized into replay or mount authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum JournalLifecycle {
+    PreparedClear,
+    ApplyIntent,
+    RollbackIntent,
+    RefsHandoff,
+    NtfsRollback,
+}
+
+/// Check the entire immutable journal, exact plan and both lifecycle sectors.
+/// The caller keeps this same exclusive handle through typed execution.
+pub(crate) fn inspect_journal_lifecycle<J: ReadSeek>(
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+    expected_request: &RetainedCompareRequest,
+) -> Result<(JournalLifecycle, JournalDescriptor)> {
+    let descriptor = inspect_completed_journal(journal, ticket, observed_binding)?;
+    ensure!(
+        serde_json::to_vec(&descriptor.request)? == serde_json::to_vec(expected_request)?,
+        "journal lifecycle immutable request differs from the pinned plan"
+    );
+    let mut prefix = [0u8; BODY_START as usize];
+    read_at(journal, 0, &mut prefix)?;
+    let (handoff, intent) = prefix.split_at(GRANULE as usize);
+    let zero = [0u8; GRANULE as usize];
+    let refs = marker(
+        b"N2RHND01",
+        3,
+        ticket,
+        &descriptor.expected_postimage_sha256,
+    )?;
+    let rollback = marker(b"N2RABT01", 4, ticket, &descriptor.request.source_sha256)?;
+    let apply = marker(
+        b"N2RINT01",
+        1,
+        ticket,
+        &descriptor.expected_postimage_sha256,
+    )?;
+    let undo = marker(b"N2RINT01", 2, ticket, &descriptor.request.source_sha256)?;
+    let state = if handoff == zero && intent == zero {
+        JournalLifecycle::PreparedClear
+    } else if handoff == zero && intent == apply {
+        JournalLifecycle::ApplyIntent
+    } else if handoff == zero && intent == undo {
+        JournalLifecycle::RollbackIntent
+    } else if handoff == refs && (intent == zero || intent == apply) {
+        JournalLifecycle::RefsHandoff
+    } else if handoff == rollback && (intent == zero || intent == undo) {
+        JournalLifecycle::NtfsRollback
+    } else {
+        anyhow::bail!("partial, foreign or contradictory journal lifecycle sectors")
+    };
+    Ok((state, descriptor))
+}
+
 fn normalized_target<T: ReadSeek, J: Read + Seek>(
     target: &mut T,
     journal: &mut J,

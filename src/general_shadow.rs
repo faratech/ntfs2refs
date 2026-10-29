@@ -202,8 +202,10 @@ pub fn materialize_private_system_payloads(
         &mut payload,
         budget,
     )?;
+    // The range proof is SHA-256; the cached object carries a content digest.
     ensure!(
-        Some(&proof.sha256) == cache.sha256.as_ref(),
+        proof.whole_stream_hash_matched
+            && Some(&n2r_win32::content_digest::of(&payload)) == cache.sha256.as_ref(),
         "source indexer cache digest differs"
     );
     ensure!(

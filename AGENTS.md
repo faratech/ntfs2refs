@@ -206,8 +206,13 @@ CONTENT DIGEST (user, 2026-10-29): file-content hashes (NTFS inspection stream
 and resident digests, native logical reads, converted-file verification) are
 XXH3-128 via n2r_win32::content_digest, in fields that keep their *sha256 names;
 they no longer match Get-FileHash. Artifact pins, residual tails, metadata and
-whole-image hashes stay SHA-256. Recovery, interruption and mutation have not
-been rerun on these builds.
+whole-image hashes stay SHA-256. With it (e2ae8b5) the fixture converted in
+66.7s; with XXH3-chunk selected digests in the listed capture (1443042) in 42.6s
+(run c2a08ec7: admission 9.2s, shadow 5.7s, target verification 13.6s, journal
+3.5s, apply 3.6s, handoff 2.4s, file verification 4.0s; evidence/
+allocation-bounded-chunk-compare-20261029.json). Run artifacts' LastWriteTimeUtc
+gives this phase timeline. Recovery, interruption and mutation have not been
+rerun on these builds; do that before any release.
 
 ## Source and recovery invariants
 

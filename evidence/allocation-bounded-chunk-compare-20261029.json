@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-chunk-compare-digest",
+  "run_id": "c2a08ec79cad4126a1d7f0652ab1e658",
+  "engine_run_id": "4083173cceaacede6a6e8c33456ab977",
+  "source_commit": "14430423691ecaf094df94123bc64d504db21720",
+  "change": "allocation-bounded (listed) capture records selected digests as SHA-256 over frames and the XXH3-128 of each compared chunk instead of two framed SHA-256 streams over all compared bytes",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "29ffda615d1f64a58304c63a400b302f59483c19f263de0877ff7dc444ccfec8",
+  "public_cli": {"sha256": "f4a81099cc8dd6441af1fe5950a57f9e7bd8a942e27f5a000c41438b462a09de", "argv": ["--drive", "F", "--partition", "2"], "actual_native_exit": 0},
+  "outcome": {
+    "wrapper_success": true, "native_objects": 15, "complete_logical_hashes": 10, "label_and_mount_verified": true,
+    "selected_digest": "sha256-over-frames-and-xxh3-128-per-compared-chunk",
+    "selected_ranges": 156, "selected_bytes": 70623232, "journal_bytes": 141267296,
+    "result_sha256": "1685f2cc39972472dfcd46dd323705d85657adbde9f95bd3ce563e054b3b468a",
+    "finalization_sha256": "fb308c1b5998de2c1f756b30298943a5d7155c809bb0d66df9b25e04b58c24b2"
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 42.6,
+    "previous_seconds": {"xxh3_content_e2ae8b5": 66.7, "parallel_observation_e91ead3": 112.6, "speedups_1_5_bd9ef21": 356.7, "head_whole_image": 2813.3, "frozen_alpha": 3351.7},
+    "artifact_write_timeline_seconds": {"source_frozen": 3.8, "native_source": 7.9, "source_assessment": 9.2, "construction_freeze": 14.9, "changed_clusters": 28.5, "target_preservation": 29.0, "activation": 32.5, "apply": 36.1, "handoff": 38.5, "finalization": 42.5},
+    "phase_seconds": {"admission": 9.2, "shadow_construction": 5.7, "target_verification": 13.6, "journal_and_activation": 3.5, "apply": 3.6, "handoff": 2.4, "converted_file_verification": 4.0}
+  },
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-c2a08ec79cad4126a1d7f0652ab1e658/closed-conversion",
+  "qualification": {"normal_public_conversion_passed": true, "interruption_resume_rollback_tested_on_this_build": false, "mutation_restart_tested_on_this_build": false, "release_qualified": false},
+  "scope": "One default-mode conversion of the 52 GiB fixture. Correct result in 42.6 s (was 55m52s for the frozen alpha)."
+}

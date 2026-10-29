@@ -31,13 +31,27 @@ Only two checkpoints remain:
 - NTFS: 0872b74c-5b3d-43cf-9ccf-fc64fda0cd93.
 - ReFS after mutation/reboot: 693a364c-b86a-4e14-a3cc-a910645f4ce3.
 
-No native worker had started at this handoff. A fresh bundle-enabled conversion
-case is pending its reviewed harness. Recheck actual state before any action;
-this paragraph is not a liveness check or permission to restore/start a VM.
+A bundle-enabled controlled conversion is now running. Its run ID is
+`9340223f9d124a9f88e563ba669f0787`, task
+`N2R-BundleCli-Interrupt-9340223f9d124a9f88e563ba669f0787`, and guest directory
+`C:\ntfs2refs\bundle-cli-20261029-9340223f9d124a9f88e563ba669f0787`.
+The actual converter PID was 5828, creation time 1793245511151, parent PID 5736,
+at 03:45:32 UTC. It had read 7.516 GB and written 125,632 bytes at that observation.
+Source disk 1 was offline/read-only; new shadow disk 6 was writable during
+source collection. Its GPT GUID is c8ac8d6e-5a5e-4818-bba1-d399f5a8b38b.
+The converter hash is 56b92ac2ccc67692b16bfffebff5401c58979946ca8f0414abcee1c6725a9ee7;
+the sealed tool manifest is in bundle-recovery-cli-tools-20261029 with hash
+f83b31828fb37f0e4a8d30238dabd76452a60134969db1d733b9bfb4493fb31c.
+Expected exit is 86 after one flushed write, not conversion success. The
+wrapper additionally checks the native-created bundle against its printed pin.
+Delta monitors metadata only. Do not interrupt this worker or open its source,
+journal, packed backing, images or locked metadata. Recheck actual state before
+any action; these observations are not current liveness or permission to restore.
 The coordinating agent owns VM mutations. Delegated agents work on source only
 unless explicitly assigned a native action.
 
-HEAD at handoff is d43dba28819f20da6eb2ea9f7e6b093ae5c2d36b.
+The bundle case uses the release built from the bb7677e recovery implementation;
+later harness and handoff-only commits do not replace the running binaries.
 src/main.rs has an existing one-line user capabilities change. Do not edit,
 format, stage or overwrite that hunk without an explicit instruction.
 

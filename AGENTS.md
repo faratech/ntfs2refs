@@ -28,9 +28,9 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
-NTFS checkpoint5f30f4a1, but its disks now hold the NTFS restored by the
-allocation-bounded rollback run fbf85b2de52b4747a8fa02bc88a66841 (not
-checkpointed; records archived on the host). Only 52d37819 and 5f30f4a1 remain. Any new native run needs a fresh restore of the intended
+NTFS checkpoint5f30f4a1, but its disks now hold the mutated, restarted ReFS from
+the allocation-bounded run f8faadd6993541afa328798f2fe28e9f (not checkpointed;
+records archived on the host). Only 52d37819 and 5f30f4a1 remain. Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
 least 816.6GB; see evidence/head-drive-measurement-20261029.json and
@@ -171,9 +171,12 @@ lab/Start-AllocationInterruption.ps1, lab/Start-AllocationRecovery.ps1): one
 interruption after the first flushed write, guest restart, then from the same
 temporary checkpoint (since removed) --recover resumed to ReFS 15/10 and
 --recover --rollback restored NTFS with 7/7 user file hashes; see
-evidence/allocation-bounded-recovery-matrix-20261029.json. Untested: other
-interruption points, physical power loss, mutation/reboot on this build. Next:
-bracket the shadow observation over its allocation, then mutation/reboot.
+evidence/allocation-bounded-recovery-matrix-20261029.json. A second conversion
+(772.8s) passed mutation plus clean restart via lab/Invoke-AllocationMutationReboot.ps1
+(7/7 originals, new files, 128 entries, 0 ReFS events); see
+evidence/allocation-bounded-mutation-restart-20261029.json. Untested: other
+interruption points, physical power loss, other fixtures/builds. Next: bracket
+the shadow observation over its allocation; more interruption points.
 The VM's CheckpointType was set to Standard for that temporary checkpoint; its
 earlier value was not recorded.
 

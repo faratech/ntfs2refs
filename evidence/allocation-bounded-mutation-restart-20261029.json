@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-mutation-restart",
+  "source_commit": "7ef0ee23aaf00b53582893da19472ccbef1b09a4",
+  "public_cli_sha256": "dee81dcd0474369000bb6509903adb17233b8adf1b37363968eb8eb833c9f9b7",
+  "toolset_manifest_sha256": "97711f2d2b31ba3013e8f12bd6c99cd15938b211f06625756b78e38538d56446",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "conversion": {
+    "run_id": "f8faadd6993541afa328798f2fe28e9f",
+    "engine_run_id": "2834728ef5ffd4adcec7392233a340ad",
+    "launcher": "lab/Start-AllocationBoundedConversion.ps1",
+    "vm_parent_checkpoint": "5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec",
+    "actual_native_exit": 0,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "selected_ranges": 151,
+    "selected_bytes": 70623232,
+    "journal_bytes": 141266896,
+    "seconds": 772.8,
+    "seconds_note": "Process creation to native-terminal record. The first allocation-bounded run took 952.9 s on the same build profile; the spread is host variance.",
+    "result_sha256": "f2b04f9b37b93775608340d97e63f1c5ff602c7361f19dd1e5fb87083c0b940a",
+    "finalization_sha256": "78c9b12cbf6fd4293826469d836987fb7bdeff965df71d1a42d71373e231e04c",
+    "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-f8faadd6993541afa328798f2fe28e9f/closed-conversion"
+  },
+  "mutation_and_restart": {
+    "run_id": "8e7ae83489c948eb885a7bfccc3a0976",
+    "script": "lab/Invoke-AllocationMutationReboot.ps1",
+    "operations": "ordinary file I/O on the converted ReFS F: as the lab administrator: write seeded random 50, 80 and 10 MiB files, rename the 80 MiB file, delete the 10 MiB file, create 128 x 4 KiB entries, Write-VolumeCache, then a clean guest shutdown and cold start",
+    "original_user_files_matching": "7 of 7 before mutation, after mutation and after restart (System Volume Information excluded)",
+    "new_files_matching_after_restart": "2 of 2",
+    "deleted_file_absent_after_restart": true,
+    "entries_present_after_restart": 128,
+    "refs_warning_or_error_system_events_since_baseline": 0,
+    "volume_after_restart": "ReFS 4096-byte clusters, label n2r-stream-source, online",
+    "raw_device_access": false,
+    "archive": ".lab/hyperv/streaming-v2-20261027/alloc-mutation-20261029-8e7ae83489c948eb885a7bfccc3a0976"
+  },
+  "not_covered": [
+    "Native ReFS integrity scrub or repair tooling",
+    "Physical power loss",
+    "Volumes, Windows builds and features other than the 52 GiB fixture"
+  ],
+  "scope": "Second normal allocation-bounded conversion of the 52 GiB fixture, then an ordinary mutation workload and a clean restart. All original and new data verified, no ReFS warnings or errors logged."
+}

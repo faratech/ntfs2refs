@@ -85,8 +85,13 @@ interruption, a restart, and both public `--recover` directions from the same
 interrupted state passed: resume to ReFS (15 objects / 10 hashes) and rollback to
 NTFS (7/7 user file hashes). See
 [the recovery receipt](../evidence/allocation-bounded-recovery-matrix-20261029.json).
-It is still not release-ready: other interruption points, physical power loss,
-and mutation/reboot of the converted volume are untested, and it is one fixture.
+A second conversion (772.8 s) then passed an ordinary mutation workload and a
+clean restart: 7/7 original user files, both new files and 128 entries verified
+after the restart, no ReFS warnings or errors logged. See
+[the mutation receipt](../evidence/allocation-bounded-mutation-restart-20261029.json).
+It is still not release-ready: other interruption points and physical power loss
+are untested, it is one fixture on one Windows build, and the mode sits behind a
+hidden experimental flag.
 
 ## Where the performance work stands
 

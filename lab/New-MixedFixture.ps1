@@ -40,8 +40,11 @@ $result=Invoke-Command -VMId $id -Credential $cred -ArgumentList $Seed -ScriptBl
  $interleaved=@(0..3|ForEach-Object {[IO.File]::Open((Join-Path $dirs[$rng.Next($dirs.Count)] ('interleaved-{0}.bin'-f $_)),'CreateNew','Write','None')})
  try{$buf=[byte[]]::new(1MB);for($round=0;$round-lt96;$round++){foreach($fs in $interleaved){$rng.NextBytes($buf);$fs.Write($buf,0,$buf.Length);$fs.Flush($true)}}}finally{$interleaved|ForEach-Object {$_.Dispose()}}
  Write-VolumeCache -DriveLetter F
- $files=@(Get-ChildItem -LiteralPath 'F:\' -Recurse -File -Force|Where-Object {$_.FullName -notlike 'F:\System Volume Information*'})
- $dirCount=@(Get-ChildItem -LiteralPath 'F:\' -Recurse -Directory -Force|Where-Object {$_.FullName -notlike 'F:\System Volume Information*'}).Count
+ # Skip System Volume Information before recursing: enumerating it is denied.
+ $top=@(Get-ChildItem -LiteralPath 'F:\' -Force|Where-Object {$_.Name -cne 'System Volume Information'})
+ $topDirs=@($top|Where-Object {$_.PSIsContainer})
+ $files=@($top|Where-Object {-not $_.PSIsContainer})+@($topDirs|ForEach-Object {Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force})
+ $dirCount=$topDirs.Count+@($topDirs|ForEach-Object {Get-ChildItem -LiteralPath $_.FullName -Recurse -Directory -Force}).Count
  $manifest=foreach($f in $files){[pscustomobject]@{path=$f.FullName;length=$f.Length;sha256=(Get-FileHash -LiteralPath $f.FullName).Hash.ToLowerInvariant()}}
  $frag=0;foreach($f in $files|Where-Object Length -gt 1MB|Select-Object -First 200){$ext=@(fsutil.exe file queryextents $f.FullName 2>$null).Count;if($ext-gt1){$frag++}}
  $vol=Get-Volume -DriveLetter F

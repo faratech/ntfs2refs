@@ -223,10 +223,18 @@ Then one target flush per apply phase and CNG journal pins (f15e060): 40.7s and
 40.6s; on that build the interruption/resume/rollback matrix (7/7 user files
 each, native 15/10 on resume) and mutation plus restart passed again; see
 evidence/allocation-bounded-final-build-20261029.json.
-OPEN (power loss): after the same interruption followed by Stop-VM -TurnOff,
-disk 1 came back offline AND read-only (the activation's READ_ONLY clear did not
-survive), and the recovery launcher refused before running the engine. Recovery
-never clears protection, so that state needs explicit design work before release.
+Hard power-off (f467cbe): persisted disk attributes live in the SYSTEM hive
+(the disk's Partmgr "Attributes" REG_DWORD equals the DISK_ATTRIBUTE bits) and
+Windows writes hives lazily, so a TurnOff about 3s after activation reverted
+the source to the last durable value: on 730efe1 it came back ONLINE read-only
+(2), losing both the activation and the lease restore. set_attributes now
+RegFlushKey's HKLM\SYSTEM after every Persist=1 change. On f467cbe three TurnOff
+runs at the same timing kept OFFLINE (1), and from that state --recover resumed
+(ReFS 15/10, 7/7) and rolled back (NTFS 7/7); see
+evidence/hard-poweroff-attribute-durability-20261029.json. Recovery still never
+clears protection. Physical power loss is untested (TurnOff keeps host-cached
+VHDX writes); the reference-import and managed-shadow attribute setters do not
+flush yet.
 
 ## Source and recovery invariants
 

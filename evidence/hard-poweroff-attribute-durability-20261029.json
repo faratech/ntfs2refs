@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "native-hard-poweroff-attribute-durability",
+  "fix": {
+    "commit": "f467cbef48f7a5fe6e8773b13e12ac67b9507f76",
+    "change": "native::set_attributes flushes HKLM\\SYSTEM (RegFlushKey) after every Persist=1 disk attribute change"
+  },
+  "persisted_store_observation": "HKLM\\SYSTEM\\CurrentControlSet\\Enum\\<disk PNPDeviceID>\\Device Parameters\\Partmgr Attributes REG_DWORD equals the DISK_ATTRIBUTE bits (frozen 3, online 0, activated 1)",
+  "procedure": "restore 5f30f4a1; lab/Start-AllocationInterruption.ps1 (exit 86 after the first flushed write); Stop-VM -TurnOff about 0.7 s after the wrapper records the interruption (3.0-3.5 s after activation-events.json); boot; read disk 1 and Partmgr Attributes (scratchpad poweroff-cycle.ps1)",
+  "negative_control": {
+    "commit": "730efe1e8ea835861cc4fa26bf902770f0672cb6",
+    "interrupt_run": "44c1ffb4711f452c9fd8f86fb0d7da7e",
+    "partmgr_after_exit86": 1,
+    "seconds_activation_to_turnoff": 3.0,
+    "after_reboot": {
+      "offline": false,
+      "readonly": true,
+      "partmgr_attributes": 2
+    },
+    "meaning": "both the activation (1) and the earlier lease restore (3) were lost; the last durable value was the lease READ_ONLY (2), so the partially written disk came back ONLINE read-only"
+  },
+  "positive_runs": [
+    {
+      "interrupt_run": "a5950d23c3d040a8ad6e1375198420c3",
+      "flush_events_in_activation": 1,
+      "partmgr_after_exit86": 1,
+      "seconds_activation_to_turnoff": 3.4,
+      "after_reboot": {
+        "offline": true,
+        "readonly": false,
+        "partmgr_attributes": 1
+      }
+    },
+    {
+      "interrupt_run": "ad3fbd229b7c427aa6bec2dd9af87b6f",
+      "flush_events_in_activation": 1,
+      "partmgr_after_exit86": 1,
+      "seconds_activation_to_turnoff": 3.5,
+      "after_reboot": {
+        "offline": true,
+        "readonly": false,
+        "partmgr_attributes": 1
+      }
+    },
+    {
+      "interrupt_run": "b0f061876a5e47c0bb695074f7f6bf91",
+      "flush_events_in_activation": 1,
+      "partmgr_after_exit86": 1,
+      "seconds_activation_to_turnoff": 3.0,
+      "after_reboot": {
+        "offline": true,
+        "readonly": false,
+        "partmgr_attributes": 1
+      }
+    }
+  ],
+  "recovery_from_poweroff_state": {
+    "interrupt_run": "b0f061876a5e47c0bb695074f7f6bf91",
+    "temporary_checkpoint": "c32fd7f1-1641-43fd-8d6a-76145574d409 (removed)",
+    "resume": {
+      "recover_run": "d38f99b3ed3d42e7b5a51735e0e64cfc",
+      "lifecycle": "apply_intent",
+      "outcome": "refs_completed",
+      "native_objects": 15,
+      "native_hashes": 10,
+      "user_files_matching_xxh3": "7/7"
+    },
+    "rollback": {
+      "recover_run": "9a53a486827b4042bee2171a441795ef",
+      "lifecycle": "apply_intent",
+      "outcome": "ntfs_restored",
+      "user_files_matching_xxh3": "7/7"
+    }
+  },
+  "scope": "Hyper-V Stop-VM -TurnOff of the guest; host-cached VHDX writes survive it, so physical power loss remains untested"
+}

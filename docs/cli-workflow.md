@@ -69,7 +69,16 @@ Later development folds another source hash into the complete capture and
 shares the first journal-comparison source read with the candidate overlay.
 The two subsequent full-image rechecks remain. The final frozen-source and
 candidate digests can also use two bounded workers. These later changes pass
-the release build but have not yet been measured or qualified natively.
+the release build but have not yet been qualified natively. A host-only
+[memory benchmark](../evidence/paired-hash-host-benchmark-20261029.json)
+measured the four digest streams over 512 MiB each at 4.63 seconds serially
+and 2.74 seconds with the pipeline; it does not measure disk throughput or
+establish a conversion speedup.
+Compact apply and recovery also reuse the fresh target scan for the complete
+candidate digest, avoiding another partition length minus changed bytes of
+logical reads. The source normalization, foreign-byte checks, complete image
+hashes, and post-write verification remain in place. This recovery change has
+not yet been qualified in a native conversion or recovery run.
 
 For the Windows streaming-v2 profile, whole-image reconstruction and recovery
 hashes now use the existing fallible CNG SHA-256 backend, including normalized

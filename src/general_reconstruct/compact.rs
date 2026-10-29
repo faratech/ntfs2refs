@@ -154,15 +154,14 @@ pub(crate) fn execute(
                 result.patches_written
             )
         }
-        (RecoveryOperation::Apply, None) => {
-            lab_reconstruct::apply(target, &mut image, journal, ticket, &binding)?
+        (RecoveryOperation::Apply | RecoveryOperation::Resume, None) => {
+            lab_reconstruct::execute_compact(
+                target, &mut image, journal, ticket, &binding, events, true,
+            )?
         }
-        (RecoveryOperation::Resume, None) => {
-            lab_reconstruct::resume(target, &mut image, journal, ticket, &binding)?
-        }
-        (RecoveryOperation::Rollback, None) => {
-            lab_reconstruct::rollback(target, &mut image, journal, ticket, &binding)?
-        }
+        (RecoveryOperation::Rollback, None) => lab_reconstruct::execute_compact(
+            target, &mut image, journal, ticket, &binding, events, false,
+        )?,
         _ => unreachable!(),
     };
     drop(image);

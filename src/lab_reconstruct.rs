@@ -997,14 +997,14 @@ fn normalized_target<T: ReadSeek, J: Read + Seek>(
     journal: &mut J,
     loaded: &Loaded,
 ) -> Result<()> {
-    normalized_target_observed(target, journal, loaded, &mut |_| Ok(()))
+    normalized_target_observed(target, journal, loaded, &mut |_, _| Ok(()))
 }
 
 fn normalized_target_observed<T: ReadSeek, J: Read + Seek>(
     target: &mut T,
     journal: &mut J,
     loaded: &Loaded,
-    on_chunk: &mut dyn FnMut(usize) -> Result<()>,
+    on_chunk: &mut dyn FnMut(u64, &[u8]) -> Result<()>,
 ) -> Result<()> {
     let request = &loaded.manifest.request;
     ensure!(
@@ -1021,7 +1021,7 @@ fn normalized_target_observed<T: ReadSeek, J: Read + Seek>(
     while offset < request.expected_length {
         let count = usize::try_from((request.expected_length - offset).min(BUFFER as u64))?;
         read_at(target, offset, &mut current[..count])?;
-        on_chunk(count)?;
+        on_chunk(offset, &current[..count])?;
         while first_record < loaded.records.len()
             && loaded.records[first_record].offset + loaded.records[first_record].length <= offset
         {
@@ -1088,9 +1088,9 @@ fn validate_recovery<T: ReadSeek, S: ReadSeek, J: DurableIo>(
             BUFFER,
             native_full_image_digest(&loaded.manifest.binding),
         )?;
-        normalized_target_observed(target, journal, &loaded, &mut |count| {
-            shadow.read_exact(&mut buffer[..count])?;
-            digest.update(&buffer[..count])
+        normalized_target_observed(target, journal, &loaded, &mut |_, current| {
+            shadow.read_exact(&mut buffer[..current.len()])?;
+            digest.update(&buffer[..current.len()])
         })?;
         ensure!(
             hex::encode(digest.finish()?) == loaded.manifest.request.shadow_sha256,
@@ -1949,6 +1949,76 @@ fn execute<T: DurableIo, S: ReadSeek, J: DurableIo>(
     forward: bool,
 ) -> Result<ExecutionReport> {
     let loaded = validate_recovery(target, shadow, journal, ticket, observed_binding)?;
+    execute_loaded(target, journal, ticket, loaded, forward)
+}
+
+/// Native compact recovery computes both complete image proofs from one fresh
+/// target scan. The candidate overlays the held packed ranges on the actual
+/// target bytes before the source proof normalizes journaled ranges. No
+/// stored digest or serialized state substitutes for either full scan.
+#[cfg(windows)]
+pub(crate) fn execute_compact<S: Read + Seek, J: DurableIo>(
+    target: &mut n2r_win32::GeneralJournaledPartition,
+    shadow: &mut crate::refs_hybrid::delta::DifferenceImage<
+        '_,
+        n2r_win32::GeneralJournalReadView,
+        S,
+    >,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    forward: bool,
+) -> Result<ExecutionReport> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        *observed_binding == ticket.binding,
+        "observed storage binding differs from trusted ticket"
+    );
+    let loaded = load_journal(journal, ticket)?;
+    let request = &loaded.manifest.request;
+    let ranges: Vec<_> = loaded
+        .records
+        .iter()
+        .map(|record| (record.offset, record.length))
+        .collect();
+    let before = shadow.paired_target_state(target, request.expected_length, &ranges, events)?;
+    let mut candidate = vec![0; BUFFER];
+    let native = native_full_image_digest(&loaded.manifest.binding);
+    let mut pipeline = if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2)
+    {
+        Some(retained_compare::digest_pipeline::Pipeline::with_native_backend(BUFFER, native)?)
+    } else {
+        None
+    };
+    let mut serial = if pipeline.is_none() {
+        Some(retained_compare::stream_digest::StreamDigest::new(native)?)
+    } else {
+        None
+    };
+    normalized_target_observed(target, journal, &loaded, &mut |offset, current| {
+        let output = &mut candidate[..current.len()];
+        output.copy_from_slice(current);
+        shadow.overlay_target_chunk(offset, output)?;
+        if let Some(digest) = pipeline.as_mut() {
+            digest.update(output)
+        } else {
+            serial.as_mut().expect("serial digest is present").update(output)
+        }
+    })?;
+    let candidate_hash = if let Some(digest) = pipeline {
+        digest.finish()?
+    } else {
+        serial.expect("serial digest is present").finish()?
+    };
+    ensure!(
+        hex::encode(candidate_hash) == request.shadow_sha256,
+        "shadow image changed"
+    );
+    ensure!(
+        shadow.paired_target_state(target, request.expected_length, &ranges, events)? == before,
+        "paired compact inputs changed around the complete recovery scan"
+    );
     execute_loaded(target, journal, ticket, loaded, forward)
 }
 

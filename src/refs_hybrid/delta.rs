@@ -283,6 +283,37 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
 
 #[cfg(windows)]
 impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
+    /// Bind a shared target read to this exact protected complement and packed
+    /// layout. The caller must verify the returned state again after the scan.
+    pub(crate) fn paired_target_state(
+        &mut self,
+        target: &n2r_win32::GeneralJournaledPartition,
+        expected_length: u64,
+        journal_ranges: &[(u64, u64)],
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<n2r_win32::GeneralDiskState> {
+        ensure!(
+            self.original.binding() == target.binding()
+                && self.original.byte_len() == expected_length
+                && target.byte_len() == expected_length
+                && self.layout.partition_bytes == expected_length
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+            "paired compact hash is not the exact target read view and backing"
+        );
+        self.layout.require_exact_write_ranges(journal_ranges)?;
+        let target_state = target.state(events)?;
+        ensure!(
+            self.original.state(events)? == target_state && target_state.disk_attributes == 1,
+            "paired compact hash requires the same excluded activated target"
+        );
+        Ok(target_state)
+    }
+
+    /// Overlay the packed candidate on bytes just read from the paired target.
+    pub(crate) fn overlay_target_chunk(&mut self, offset: u64, candidate: &mut [u8]) -> Result<()> {
+        self.overlay_packed_chunk(offset, candidate)
+    }
+
     /// Hash a fresh target read view and its complete candidate in one physical
     /// scan. The native view must be the exact target; callers cannot supply
     /// cached bytes or precomputed hashes. Packed overlays are still read in full.

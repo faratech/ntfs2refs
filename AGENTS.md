@@ -1,5 +1,35 @@
 # ntfs2refs project guidance
 
+CURRENT LIVE — MANAGED REBOOT-RECOVERY INTERRUPTION RUN94e...:
+AutomaticCLI positive+7-usercoldboot are SAFE in49/50 below. Root restored48
+ONCE only after50/OFF/all50 preservation; immediateHyperVview mismatch settled
+toactualOFF48/all50 withoutrestore retry. Branch receipts managed-recovery-
+branch-20261029. Rootstarted48once; NOW VM2401593c...Running/all50/4GiB/noNIC.
+Run94eebb1101354d2ca42c2f8f0608f6a0, taskN2R-ManagedCompact-Interrupt-<run>,
+hostcase managed-compact-interrupt-20261028-<run>, guestC:\ntfs2refs\managed-
+compact-interrupt-<run>, output\conversion. ACTUALnative5004 creation
+1793232787293,parent5100/1793232780219. EXE48094c2b2f3fce10a5b64c5154c1a93837f1415709d611df105bb1a7b3b6735e,
+wrapper91c45dc9fd96b2ad08dfa3f36ac31b8cf817b17a018233cf9e531cb9900cd5e4.
+Fresh owned managedR created/binder passed. SOURCE1 oldF/GPT1b191...,partf060...
+NTFS64K52GiB; NEWshadow6 GUIDf65b9b29-c38c-49c9-9ef0-ae8869c2df5d,part/volume
+57aa3a34-1910-4adc-ad5c-3a32a7017c03,52GiB@32MiB;providerID
+c87de389-e6ac-457a-bcbd-ad0cc0b15164,stage\managed-shadow\shadow.vhdx. JOS0/C.
+Do NOT confuse this with automaticUI shadow96c... (saved49/50), or originalsmoke
+d524... . Native EXPECTS86 afterONEflushedsourcewrite, notReFSsuccess/HND.
+00:18:29Z native-source.json persisted; original5004LIVE read85.312GB/write1.471MB,
+source1attrs3/shadow6attrs0; source assessment/construction stillpending.
+DoNOT stop/reboot/restore/replay/remount/reformat/openSource/J/packed/image.
+Delta_artifact_reader metadata-only monitor; root owns allnative transitions.
+Future Preserve-ManagedCompactPartial.ps1 and Start-ManagedCompactRecovery.ps1
+are being prepared by agents ONLY; NOT executed. Need actual terminal86+worker
+absence before cleanOFF/partial51, then separateboot/typedread-onlyreattach and
+resume/finalize orrollback. Never promote a serialized report tosourceauthority.
+Currenttools cf19108 releasebuild PASSED: sealed managed-recovery-tools-20261028-b
+manifestc60df8172afa853f7be612851057c6bc2920f4fb6ec690f25906a8f00d28c411.
+Includes new1MiB completeimagehashbatches (samebytes/digests/passes), labselected
+faultentry, pairedmanagedreattachrecovery. Originald73toolsetretained, notused.
+No unit tests. Fixed50GBepoch unchanged; originalmain.rs1line remainsunstaged.
+
 CURRENT — AUTOMATIC DRIVE CLI AND COLD BOOT PASSED / VM OFF50:
 Actual `ntfs2refs --drive F --partition2`, stdinyes, originalmain866fc5... /
 wrapperd33... exited0 OBSERVED. Native source certificate/apply/HND/ReFS verifier

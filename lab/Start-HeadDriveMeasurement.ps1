@@ -65,7 +65,8 @@ try{
     Need ($done.success -eq $true -and $null -eq $done.error -and $done.replay_closed -eq $true -and $done.mounted_filesystem -ceq 'NTFS' -and $done.marker.operation -ceq 'ntfs-rollback-complete' -and $done.marker.target_sha256 -ceq $request.comparison.source_sha256 -and $execution.expected_target_sha256 -ceq $request.comparison.source_sha256 -and $execution.result.target_sha256 -ceq $request.comparison.source_sha256 -and $request.pair.source.disk_number -eq 1 -and [guid]$request.pair.source.identity.disk_guid -eq [guid]'1b191872-c372-41ee-a416-e18863996f54' -and [guid]$request.pair.source.identity.partition_guid -eq [guid]'f06075a8-67a2-46b9-8fac-4af4da809617' -and $request.pair.source.identity.partition_offset -eq 16MB -and $request.pair.source.identity.partition_bytes -eq 52GB) 'Closed exact-original ABT/native NTFS source identity differs.'
 
     $manifestPath=[IO.Path]::GetFullPath($ToolsetManifest)
-    Need ($manifestPath -ceq (Join-Path $base 'head-drive-tools-20261029\manifest.json')) 'Exact HEAD measurement toolset path required.'
+    $toolsetDir=[IO.Path]::GetDirectoryName($manifestPath)
+    Need ([IO.Path]::GetFileName($manifestPath) -ceq 'manifest.json' -and [IO.Path]::GetDirectoryName($toolsetDir) -ceq $base -and [IO.Path]::GetFileName($toolsetDir) -cmatch '\Ahead-drive-tools-[0-9a-z]+(?:-[0-9a-z]+)*\z') 'HEAD measurement toolset directly under the lab base required.'
     $manifest=Json $manifestPath $ToolsetManifestSha256
     Need ($manifest.schema_version -eq 1 -and $manifest.kind -ceq 'head-drive-toolset' -and $manifest.source_commit -ceq $SourceCommit -and @($manifest.tools).Count -eq 3) 'Head toolset provenance required; no inherited native qualification.'
     $rows=@($manifest.tools|Where-Object name -CEQ 'ntfs2refs.exe'); Need ($rows.Count -eq 1) 'One sealed public executable required.'; $tool=$rows[0]

@@ -4,7 +4,7 @@ use crate::{
     refs_required_ranges, refs_write_set::ByteRange,
 };
 use anyhow::{Context, Result, ensure};
-use n2r_win32::{GeneralAllocationFreezeWitness, GeneralFrozenPartition, NativeEvent};
+use n2r_win32::{GeneralFrozenPartition, GeneralReadonlyAllocationWitness, NativeEvent};
 use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -44,8 +44,7 @@ pub(super) struct BoundObservation {
     binding: n2r_win32::general_layout::GeneralDiskBinding,
     frozen_state: n2r_win32::GeneralDiskState,
     selected_native_phase: n2r_win32::GeneralAllocationPhase,
-    native_post_dismount_query_succeeded: bool,
-    post_lock_metadata_bitmap_sha256: String,
+    native_query_physically_readonly: bool,
     selected_metadata_bitmap_sha256: String,
     raw_required: refs_required_ranges::GenerationUnion,
     raw_medium: refs_allocator::MediumAllocatorObservation,
@@ -62,7 +61,7 @@ pub(super) struct BoundObservation {
 
 pub(super) fn collect(
     target: &mut GeneralFrozenPartition,
-    witness: &GeneralAllocationFreezeWitness,
+    witness: &GeneralReadonlyAllocationWitness,
     resources: ResourceProfile,
     events: &mut Vec<NativeEvent>,
 ) -> Result<BoundObservation> {
@@ -70,14 +69,18 @@ pub(super) fn collect(
         resources == ResourceProfile::ExperimentalStreamingTreeV2,
         "required ownership observation needs the explicit streaming-v2 profile"
     );
-    target.validate_allocation_witness(witness, events)?;
+    target.validate_readonly_allocation_witness(witness, events)?;
     let before = target.state(events)?;
     let length = target.byte_len();
     ensure!(
         before.disk_attributes == 3 && target.binding() == witness.binding(),
         "required ownership needs the exact persistently excluded frozen handle"
     );
-    let snapshot = witness.post_dismount().unwrap_or(witness.post_lock());
+    let snapshot = witness.snapshot();
+    ensure!(
+        witness.observed_readonly().disk_attributes == 2,
+        "native allocation query was not physically read-only"
+    );
     let allocation = snapshot.metadata_inclusive();
     ensure!(
         allocation.cluster_count.checked_mul(4096) == Some(length),
@@ -153,7 +156,7 @@ pub(super) fn collect(
     let bytes = reader.bytes;
     let calls = reader.calls;
     drop(reader);
-    target.validate_allocation_witness(witness, events)?;
+    target.validate_readonly_allocation_witness(witness, events)?;
     ensure!(
         target.state(events)? == before,
         "native ownership exclusion or route changed"
@@ -162,12 +165,7 @@ pub(super) fn collect(
         binding: witness.binding().clone(),
         frozen_state: before,
         selected_native_phase: snapshot.phase(),
-        native_post_dismount_query_succeeded: witness.post_dismount().is_some(),
-        post_lock_metadata_bitmap_sha256: witness
-            .post_lock()
-            .metadata_inclusive()
-            .bitmap_sha256
-            .clone(),
+        native_query_physically_readonly: true,
         selected_metadata_bitmap_sha256: allocation.bitmap_sha256.clone(),
         raw_required: required,
         raw_medium: medium,

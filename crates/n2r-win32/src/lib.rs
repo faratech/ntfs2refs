@@ -54,7 +54,7 @@ pub use native::{
     GeneralAllocationSnapshot, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenPartition,
     GeneralJournalReadView, GeneralJournaledPartition, GeneralLiveNtfsObservation,
     GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation, GeneralLockedPartition,
-    GeneralPartitionReader, GeneralProbe,
+    GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness,
     LiveNtfsObservation, MountPathObservation, NativeEvent, OfflinePartition, PartitionSnapshot,
     WritePolicy, capture_mount_paths_general, mounted_filesystem_general,
     observe_general_disk_state_readonly, probe_general, rediscover_general_volume,

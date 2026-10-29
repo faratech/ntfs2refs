@@ -1148,12 +1148,13 @@ impl Seek for GeneralJournalReadView {
 }
 
 /// The point at which a complete pair of native allocation maps was queried.
-/// Neither point certifies the allocation graph of the final frozen image.
+/// None certifies the allocation graph of the final frozen image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GeneralAllocationPhase {
     PostLockFlush,
     PostDismount,
+    ProtectedReadOnlyMount,
 }
 
 /// Every declared cluster from complete native responses, represented as
@@ -1224,6 +1225,42 @@ impl GeneralAllocationFreezeWitness {
     }
     pub fn frozen_state(&self) -> &GeneralDiskState {
         &self.frozen_state
+    }
+}
+
+/// Bitmap observations through a physically read-only mounted ReFS volume,
+/// followed by restoration of the same frozen handle's exclusion. This does
+/// not prove equality to the raw on-disk graph or authorize writes. Issuing
+/// this witness invalidates any earlier allocation witness on this handle.
+#[derive(Debug, Serialize)]
+pub struct GeneralReadonlyAllocationWitness {
+    schema_version: u32,
+    binding: GeneralDiskBinding,
+    frozen_state: GeneralDiskState,
+    observed_readonly: GeneralDiskState,
+    volume_extents: Vec<u8>,
+    filesystem: &'static str,
+    snapshot: GeneralAllocationSnapshot,
+    raw_graph_verified: bool,
+    raw_write_authority: bool,
+    #[serde(skip)]
+    token: Arc<()>,
+}
+impl GeneralReadonlyAllocationWitness {
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+    pub fn binding(&self) -> &GeneralDiskBinding {
+        &self.binding
+    }
+    pub fn frozen_state(&self) -> &GeneralDiskState {
+        &self.frozen_state
+    }
+    pub fn observed_readonly(&self) -> &GeneralDiskState {
+        &self.observed_readonly
+    }
+    pub fn snapshot(&self) -> &GeneralAllocationSnapshot {
+        &self.snapshot
     }
 }
 
@@ -1334,6 +1371,7 @@ fn capture_allocation_with_resource_profile(
     let prefix = match phase {
         GeneralAllocationPhase::PostLockFlush => "general-post-lock",
         GeneralAllocationPhase::PostDismount => "general-post-dismount",
+        GeneralAllocationPhase::ProtectedReadOnlyMount => "general-protected-readonly",
     };
     let legacy = observe(&format!("{prefix}-legacy-bitmap"), &[0; 8]);
     let mut metadata_input = [0; 16];
@@ -1376,6 +1414,10 @@ fn capture_allocation_queries(
         GeneralAllocationPhase::PostDismount => (
             "general-post-dismount-legacy-bitmap",
             "general-post-dismount-metadata-inclusive-bitmap",
+        ),
+        GeneralAllocationPhase::ProtectedReadOnlyMount => (
+            "general-protected-readonly-legacy-bitmap",
+            "general-protected-readonly-metadata-inclusive-bitmap",
         ),
     };
     // Query the views independently. A legacy-view failure must not hide
@@ -2052,6 +2094,155 @@ impl GeneralFrozenPartition {
         })
     }
 
+    /// Query both complete allocation views through a physically READ_ONLY
+    /// mounted ReFS handle, then restore OFFLINE|READ_ONLY exclusion. This is
+    /// not a post-lock query and does not establish raw-graph equivalence.
+    pub fn observe_refs_allocation_readonly(
+        &mut self,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralReadonlyAllocationWitness> {
+        self.binding.validate()?;
+        let length = self.binding.identity.partition_bytes;
+        let maximum = resource_profile
+            .map_or(crate::general_layout::MAX_LIVE_PARTITION_BYTES, |profile| {
+                profile.maximum_partition_bytes()
+            });
+        if length > maximum {
+            return Err(invalid("protected allocation exceeds resource profile"));
+        }
+        if resource_profile.is_none()
+            && 16 + (length / 4096).div_ceil(8) > crate::bitmap_paging::MAX_COMPLETE_BYTES as u64
+        {
+            return Err(invalid(
+                "protected allocation exceeds complete bitmap budget",
+            ));
+        }
+        if resource_profile.is_some() {
+            let clusters = length / 4096;
+            crate::bitmap_streaming::Collector::new(
+                clusters,
+                crate::bitmap_streaming::source_limits(clusters)?,
+            )?;
+        }
+        // The lease owns `events` during the callback. Keep its bitmap and
+        // identity events separate and publish them even when capture fails.
+        let mut callback_events = Vec::new();
+        let captured = self.with_readonly_refs_binding_observation(events, |protected| {
+            let state = general_disk_state(
+                protected.management,
+                protected.binding,
+                &mut callback_events,
+            )?;
+            if state != *protected.expected_state || state.disk_attributes != READ_ONLY {
+                return Err(invalid(
+                    "protected allocation disk is not physically read-only",
+                ));
+            }
+            let extents = control(
+                protected.volume,
+                "protected-allocation-volume-extents-before",
+                VOLUME_EXTENTS,
+                &[],
+                1024,
+                &mut callback_events,
+            )?;
+            protected.binding.validate_volume_extent(&extents)?;
+            allocation_refs_filesystem(protected.binding, &mut callback_events)?;
+            let snapshot = capture_allocation_with_resource_profile(
+                protected.volume,
+                GeneralAllocationPhase::ProtectedReadOnlyMount,
+                length,
+                resource_profile,
+                &mut callback_events,
+            )?;
+            let after_extents = control(
+                protected.volume,
+                "protected-allocation-volume-extents-after",
+                VOLUME_EXTENTS,
+                &[],
+                1024,
+                &mut callback_events,
+            )?;
+            protected.binding.validate_volume_extent(&after_extents)?;
+            allocation_refs_filesystem(protected.binding, &mut callback_events)?;
+            let after = general_disk_state(
+                protected.management,
+                protected.binding,
+                &mut callback_events,
+            )?;
+            if after != state || after_extents != extents {
+                return Err(invalid(
+                    "protected allocation identity changed during capture",
+                ));
+            }
+            Ok((snapshot, extents))
+        });
+        events.extend(callback_events);
+        let ((snapshot, volume_extents), before, observed_readonly, after) = captured?;
+        if before != after || after != self.state(events)? {
+            return Err(invalid("protected allocation exclusion changed"));
+        }
+        let token = Arc::new(());
+        let witness = GeneralReadonlyAllocationWitness {
+            schema_version: if resource_profile.is_some() { 2 } else { 1 },
+            binding: self.binding.clone(),
+            frozen_state: after,
+            observed_readonly,
+            volume_extents,
+            filesystem: "ReFS",
+            snapshot,
+            raw_graph_verified: false,
+            raw_write_authority: false,
+            token: Arc::clone(&token),
+        };
+        let encoded = serde_json::to_vec_pretty(&witness).map_err(io::Error::other)?;
+        let witness_limit = if resource_profile.is_some() {
+            64 * 1024 * 1024
+        } else {
+            MAX_ALLOCATION_WITNESS_BYTES
+        };
+        if encoded.len() > witness_limit {
+            return Err(invalid(
+                "protected allocation witness exceeds output profile",
+            ));
+        }
+        // A new in-process capture replaces any earlier token for this handle.
+        self.allocation_capture = Some(token);
+        Ok(witness)
+    }
+
+    /// Revalidate only the originating live handle and exclusion, not the
+    /// equivalence of its mounted bitmap to the frozen raw allocation graph.
+    pub fn validate_readonly_allocation_witness(
+        &self,
+        witness: &GeneralReadonlyAllocationWitness,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        let mut expected_readonly = self.frozen_state.clone();
+        expected_readonly.disk_attributes = READ_ONLY;
+        if !self
+            .allocation_capture
+            .as_ref()
+            .is_some_and(|token| Arc::ptr_eq(token, &witness.token))
+            || self.binding != witness.binding
+            || self.frozen_state != witness.frozen_state
+            || self.frozen_state.disk_attributes != OFFLINE | READ_ONLY
+            || witness.observed_readonly != expected_readonly
+            || witness.snapshot.phase != GeneralAllocationPhase::ProtectedReadOnlyMount
+        {
+            return Err(invalid(
+                "protected allocation witness belongs to another frozen handle",
+            ));
+        }
+        if self.state(events)? != witness.frozen_state {
+            return Err(invalid(
+                "protected allocation witness frozen device state changed",
+            ));
+        }
+        Ok(())
+    }
+
     /// Verify all admitted ReFS semantics through an actual retained
     /// READ_ONLY volume handle, then restore OFFLINE|READ_ONLY before returning.
     /// The opaque return value is issued only after strict native verification
@@ -2175,6 +2366,16 @@ impl GeneralFrozenPartition {
                 "protected ReFS observation is not the frozen shadow",
             ));
         }
+        self.with_readonly_refs_binding_observation(events, observe)
+    }
+
+    /// Physical READ_ONLY lease shared by pair-bound observers and this
+    /// binding-only allocation probe. The caller validates its own profile.
+    fn with_readonly_refs_binding_observation<T>(
+        &mut self,
+        events: &mut Vec<NativeEvent>,
+        observe: impl FnOnce(&GeneralReadonlyRefsVolume<'_>) -> io::Result<T>,
+    ) -> io::Result<(T, GeneralDiskState, GeneralDiskState, GeneralDiskState)> {
         let before = self.state(events)?;
         if before.disk_attributes != OFFLINE | READ_ONLY {
             return Err(invalid(

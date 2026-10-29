@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "kind": "native-mixed-fixture-stage1-placement",
+  "source_commit": "4973f3151e76c1b0e9c102f33fde6bda21cff5b9",
+  "fixture": {
+    "files": 808,
+    "directories": 120,
+    "total_bytes": 9885781381,
+    "fragmented_files_among_first_200_over_1MiB": 52,
+    "generator": "lab/New-MixedFixture.ps1 seed 20261029"
+  },
+  "conversion": {
+    "run_id": "2bf2c8da7bc14801a6381fc5bac8dab6",
+    "engine_run_id": "fa45f896e62bcf79d8433f393124343d",
+    "outcome": "refused before any write in target verification",
+    "error": "delta capture budget exhausted before next output write; preserve partial artifact",
+    "changed_clusters_captured_bytes": 4951556096,
+    "source_payload_writes": 0
+  },
+  "placement": {
+    "passed": true,
+    "seconds": "about 225 (source-assessment 35.1s -> construction-placement 259.6s)",
+    "counters": {
+      "files": 808,
+      "desired_runs": 779,
+      "initial_tracked_extents": 620,
+      "owned_intersecting_desired": 711,
+      "deferred_submissions": 694,
+      "evacuation_submissions": 870,
+      "final_submissions": 568,
+      "phase_bitmap_snapshots": 3,
+      "drift_replans": 0
+    },
+    "original_coordinate_bytes": 3456536576,
+    "placement_artifact_bytes": 12332252
+  },
+  "timeline_seconds": {
+    "source_frozen": 14.7,
+    "native_source": 27.4,
+    "source_assessment": 35.1,
+    "construction_placement": 259.6,
+    "construction_freeze": 276.0,
+    "failed": 311.0
+  },
+  "regression_52gib": {
+    "run_id": "f0467c244e5644cc8e972ab3ade73c49",
+    "engine_run_id": "fcbd492bbffe5a912b64fda457d11543",
+    "success": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "seconds": 56.7,
+    "shadow_construction_seconds": 4.3,
+    "note": "all phases slower under concurrent host load from a running design workflow; to be retimed"
+  },
+  "findings": [
+    "stage 1 lifts the 1024 ownership refusal: placement completes for 808 fragmented files",
+    "only 3.46 GB of about 9.9 GB stayed at original coordinates; the rest must be copied and journaled (old+new)",
+    "the allocation-mode changed-byte budget is (max_journal_bytes - overhead)/2 from a fixed drive journal budget, so relocated data beyond it refuses",
+    "placement still costs about 0.1 s per move from two whole-volume bitmap captures per move (2,132 moves)"
+  ]
+}

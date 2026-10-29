@@ -16,11 +16,7 @@ pub(crate) struct Pipeline {
 }
 
 impl Pipeline {
-    pub(crate) fn new(chunk_bytes: usize) -> Result<Self> {
-        Self::with_native_backend(chunk_bytes, false)
-    }
-
-    pub(super) fn with_native_backend(chunk_bytes: usize, native: bool) -> Result<Self> {
+    pub(crate) fn with_native_backend(chunk_bytes: usize, native: bool) -> Result<Self> {
         let (input, chunks) = sync_channel::<Vec<u8>>(1);
         let (buffers, recycled) = sync_channel(1);
         let worker = thread::Builder::new()

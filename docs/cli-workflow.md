@@ -65,6 +65,13 @@ rechecked afterward. This removes another partition length minus changed bytes
 of source reads. These optimizations pass the release build and have not yet
 been qualified in a native run.
 
+For the Windows streaming-v2 profile, whole-image reconstruction and recovery
+hashes now use the existing fallible CNG SHA-256 backend, including normalized
+source checks and paired digest workers. Patch, record, metadata and immutable
+journal hashes retain their separate paths. Legacy and non-Windows hashing
+retain the Rust backend. No scans or integrity checks are skipped, and no speedup
+is claimed until the new binary is measured in the native laboratory.
+
 ## Recovering a drive run
 
 New compact conversions save `compact-recovery-bundle.json` before source

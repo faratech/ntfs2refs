@@ -351,6 +351,24 @@ fn validate_binding(binding: &JournalBinding) -> Result<()> {
     );
     Ok(())
 }
+
+fn native_full_image_digest(binding: &JournalBinding) -> bool {
+    cfg!(windows)
+        && binding.source_resource_profile
+            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+}
+
+/// Select only the complete-image digest backend after the caller's existing
+/// ticket/binding checks. Patch, record, metadata and journal hashes stay separate.
+fn hash_full_image<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    binding: &JournalBinding,
+) -> Result<String> {
+    validate_binding(binding)?;
+    retained_compare::hash_reader_with_backend(reader, length, native_full_image_digest(binding))
+}
+
 fn validate_profile(request: &RetainedCompareRequest, profile: JournalProfile) -> Result<()> {
     retained_compare::validate_request(request)?;
     ensure!(
@@ -936,7 +954,8 @@ fn normalized_target_observed<T: ReadSeek, J: Read + Seek>(
     let mut current = vec![0; BUFFER];
     let mut before = vec![0; BUFFER];
     let mut after = vec![0; BUFFER];
-    let mut normalized = Sha256::new();
+    let native = native_full_image_digest(&loaded.manifest.binding);
+    let mut normalized = retained_compare::stream_digest::StreamDigest::new(native)?;
     let mut offset = 0;
     let mut first_record = 0;
     while offset < request.expected_length {
@@ -969,11 +988,11 @@ fn normalized_target_observed<T: ReadSeek, J: Read + Seek>(
             );
             current[local..local + length].copy_from_slice(&before[..length]);
         }
-        normalized.update(&current[..count]);
+        normalized.update(&current[..count])?;
         offset += count as u64;
     }
     ensure!(
-        hex::encode(normalized.finalize()) == request.source_sha256,
+        hex::encode(normalized.finish()?) == request.source_sha256,
         "target retained or unmanaged bytes differ from source identity"
     );
     Ok(())
@@ -1005,7 +1024,10 @@ fn validate_recovery<T: ReadSeek, S: ReadSeek, J: DurableIo>(
         // result can authorize patches until the two full checks have passed.
         shadow.seek(SeekFrom::Start(0))?;
         let mut buffer = vec![0; BUFFER];
-        let mut digest = retained_compare::digest_pipeline::Pipeline::new(BUFFER)?;
+        let mut digest = retained_compare::digest_pipeline::Pipeline::with_native_backend(
+            BUFFER,
+            native_full_image_digest(&loaded.manifest.binding),
+        )?;
         normalized_target_observed(target, journal, &loaded, &mut |count| {
             shadow.read_exact(&mut buffer[..count])?;
             digest.update(&buffer[..count])
@@ -1017,8 +1039,11 @@ fn validate_recovery<T: ReadSeek, S: ReadSeek, J: DurableIo>(
         return Ok(loaded);
     }
     ensure!(
-        retained_compare::hash_reader(shadow, loaded.manifest.request.expected_length)?
-            == loaded.manifest.request.shadow_sha256,
+        hash_full_image(
+            shadow,
+            loaded.manifest.request.expected_length,
+            &loaded.manifest.binding,
+        )? == loaded.manifest.request.shadow_sha256,
         "shadow image changed"
     );
     normalized_target(target, journal, &loaded)?;
@@ -1604,8 +1629,8 @@ pub fn verify_completed_marker<T: ReadSeek, S: ReadSeek, J: ReadSeek>(
         observed == expected_marker,
         "completed handoff marker differs"
     );
-    let target_sha256 = retained_compare::hash_reader(target, expected_length)?;
-    let shadow_sha256 = retained_compare::hash_reader(shadow, expected_length)?;
+    let target_sha256 = hash_full_image(target, expected_length, &loaded.manifest.binding)?;
+    let shadow_sha256 = hash_full_image(shadow, expected_length, &loaded.manifest.binding)?;
     ensure!(
         target_sha256 == expected_target_sha256 && shadow_sha256 == expected_shadow_sha256,
         "completed-marker target or shadow bytes changed"
@@ -1692,7 +1717,7 @@ pub fn verify_completed_rollback_marker_without_shadow<T: ReadSeek, J: ReadSeek>
         observed == expected_marker,
         "completed NTFS rollback marker differs"
     );
-    let target_sha256 = retained_compare::hash_reader(target, expected_length)?;
+    let target_sha256 = hash_full_image(target, expected_length, &loaded.manifest.binding)?;
     ensure!(
         target_sha256 == expected_source_sha256,
         "completed NTFS rollback target differs"
@@ -1916,8 +1941,11 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         target.byte_len()? == loaded.manifest.request.expected_length,
         "target length changed during reconstruction"
     );
-    let target_sha256 =
-        retained_compare::hash_reader(target, loaded.manifest.request.expected_length)?;
+    let target_sha256 = hash_full_image(
+        target,
+        loaded.manifest.request.expected_length,
+        &loaded.manifest.binding,
+    )?;
     ensure!(
         target_sha256 == *expected,
         "complete target postimage differs"
@@ -2015,6 +2043,7 @@ pub fn mark_handoff<T: DurableIo, S: ReadSeek, J: DurableIo>(
             target,
             shadow,
             loaded.manifest.request.expected_length,
+            native_full_image_digest(&loaded.manifest.binding),
         )?;
         ensure!(
             shadow_hash == loaded.manifest.request.shadow_sha256,
@@ -2023,14 +2052,21 @@ pub fn mark_handoff<T: DurableIo, S: ReadSeek, J: DurableIo>(
         target_hash
     } else {
         ensure!(
-            retained_compare::hash_reader(shadow, loaded.manifest.request.expected_length)?
-                == loaded.manifest.request.shadow_sha256,
+            hash_full_image(
+                shadow,
+                loaded.manifest.request.expected_length,
+                &loaded.manifest.binding,
+            )? == loaded.manifest.request.shadow_sha256,
             "handoff shadow image changed"
         );
         // The full expected-postimage check is stronger than independently
         // normalizing its patches back to the source. Keep both full pins.
         target.sync_all()?;
-        retained_compare::hash_reader(target, loaded.manifest.request.expected_length)?
+        hash_full_image(
+            target,
+            loaded.manifest.request.expected_length,
+            &loaded.manifest.binding,
+        )?
     };
     ensure!(
         target_sha256 == loaded.manifest.expected_postimage_sha256,
@@ -2145,7 +2181,8 @@ pub fn mark_rollback_complete<T: DurableIo, S: ReadSeek, J: DurableIo>(
         "rollback completion data lengths changed"
     );
     ensure!(
-        retained_compare::hash_reader(shadow, length)? == loaded.manifest.request.shadow_sha256,
+        hash_full_image(shadow, length, &loaded.manifest.binding)?
+            == loaded.manifest.request.shadow_sha256,
         "rollback completion shadow image changed"
     );
     write_rollback_completion_marker(target, journal, ticket, loaded)
@@ -2181,7 +2218,7 @@ fn write_rollback_completion_marker<T: DurableIo, J: DurableIo>(
 ) -> Result<ExecutionReport> {
     let length = loaded.manifest.request.expected_length;
     target.sync_all()?;
-    let target_sha256 = retained_compare::hash_reader(target, length)?;
+    let target_sha256 = hash_full_image(target, length, &loaded.manifest.binding)?;
     ensure!(
         target_sha256 == loaded.manifest.request.source_sha256,
         "rollback completion requires the complete original NTFS image"

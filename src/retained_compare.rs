@@ -12,7 +12,7 @@ use std::{
 };
 
 pub(crate) mod digest_pipeline;
-mod stream_digest;
+pub(crate) mod stream_digest;
 
 // Four full passes are included in the u64 I/O report, followed by 32 bytes of
 // file-container probes. The actual converter retains its own narrower live
@@ -293,8 +293,17 @@ fn open_input(path: &Path, length: u64) -> Result<Input> {
     })
 }
 
+#[cfg(test)]
 pub(crate) fn hash_reader<R: Read + Seek>(reader: &mut R, length: u64) -> Result<String> {
-    hash_reader_observed(reader, length, &mut |_| {})
+    hash_reader_observed_backend(reader, length, &mut |_| {}, false)
+}
+
+pub(crate) fn hash_reader_with_backend<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    native: bool,
+) -> Result<String> {
+    hash_reader_observed_backend(reader, length, &mut |_| {}, native)
 }
 
 /// Hash two caller-bound, equally sized images while overlapping independent
@@ -304,6 +313,7 @@ pub(crate) fn hash_pair_pipelined<R: Read + Seek, S: Read + Seek>(
     source: &mut R,
     shadow: &mut S,
     length: u64,
+    native: bool,
 ) -> Result<(String, String)> {
     ensure!(
         length <= MAX_IMAGE_BYTES,
@@ -311,8 +321,8 @@ pub(crate) fn hash_pair_pipelined<R: Read + Seek, S: Read + Seek>(
     );
     source.seek(SeekFrom::Start(0))?;
     shadow.seek(SeekFrom::Start(0))?;
-    let mut source_hash = Sha256::new();
-    let mut shadow_hash = digest_pipeline::Pipeline::new(BUFFER_BYTES)?;
+    let mut source_hash = stream_digest::StreamDigest::new(native)?;
+    let mut shadow_hash = digest_pipeline::Pipeline::with_native_backend(BUFFER_BYTES, native)?;
     let mut left = vec![0; BUFFER_BYTES];
     let mut right = vec![0; BUFFER_BYTES];
     let mut remaining = length;
@@ -321,19 +331,11 @@ pub(crate) fn hash_pair_pipelined<R: Read + Seek, S: Read + Seek>(
         source.read_exact(&mut left[..count])?;
         shadow.read_exact(&mut right[..count])?;
         shadow_hash.update(&right[..count])?;
-        source_hash.update(&left[..count]);
+        source_hash.update(&left[..count])?;
         remaining -= count as u64;
     }
     let shadow_sha256 = hex::encode(shadow_hash.finish()?);
-    Ok((hex::encode(source_hash.finalize()), shadow_sha256))
-}
-
-fn hash_reader_observed<R: Read + Seek>(
-    reader: &mut R,
-    length: u64,
-    progress: &mut dyn FnMut(u64),
-) -> Result<String> {
-    hash_reader_observed_backend(reader, length, progress, false)
+    Ok((hex::encode(source_hash.finish()?), shadow_sha256))
 }
 
 fn hash_reader_observed_backend<R: Read + Seek>(

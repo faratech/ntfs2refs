@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "kind": "native-default-mode-public-drive-conversion",
+  "run_id": "814cdecccdba4334a218852eab59da73",
+  "engine_run_id": "1f6341fd8214f2817314d4f5247fe161",
+  "source_commit": "279b65a8adcbb1c98f92e6daace9d166d4b92b8f",
+  "default_change_commit": "169f78b",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "f861f26872539c01bfb6a1ed4f33868dfecb877188ffd8019e18e671b5b7b1d1",
+  "public_cli": {
+    "sha256": "057ea7f85ca76874f1339ab513b739a176343b6bbe56973835796e9184b48a34",
+    "argv": ["--drive", "F", "--partition", "2"],
+    "mode_flag_passed": false,
+    "printed_mode": "Mode: allocation-bounded (compares and writes only the ranges the new ReFS allocates; free space is not verified)",
+    "actual_native_exit": 0
+  },
+  "outcome": {
+    "wrapper_success": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "result_sha256": "b3ad82877ca1da4ee9cac966f34db914f5d127c88fe5d0a8e0e86f83efe70aab",
+    "finalization_sha256": "66fe6fdc35c3875c252fdf75adf5557762333d315db34b6de8b10f3ac9e4fc2a"
+  },
+  "timing": {
+    "seconds": 725.0,
+    "phase_markers_seconds": {"building_refs_metadata": 190, "verifying_target": 200, "preparing_recovery_journal": 670, "applying_conversion": 674, "verifying_files": 678},
+    "note": "Same conversion engine as the 492.8 s run of 311d3af (only the drive CLI changed). The verify-target phase took 470 s instead of 252 s, attributed to contention on the shared lab host; no speed claim is made from this run."
+  },
+  "scope": "Confirms that the public drive command without any mode flag selects the allocation-bounded backend, prints it before confirmation, and converts the 52 GiB fixture correctly."
+}

@@ -6,10 +6,10 @@ use std::path::PathBuf;
 #[derive(Args, Debug)]
 pub struct DriveArgs {
     /// Show available Windows disks, partition numbers and mounted volumes.
-    #[arg(long, conflicts_with_all = ["drive", "partition", "scratch_directory"])]
+    #[arg(long, conflicts_with_all = ["drive", "partition", "scratch_directory", "recover", "recovery_sha256", "rollback"])]
     pub list: bool,
     /// Drive letter or disk number; also accepts --drive D partition 2.
-    #[arg(long, num_args = 1..=3, value_name = "DRIVE", conflicts_with = "list")]
+    #[arg(long, num_args = 1..=3, value_name = "DRIVE", conflicts_with_all = ["list", "recover", "recovery_sha256", "rollback"])]
     pub drive: Option<Vec<String>>,
     /// Exact partition number. A letter must already identify that partition.
     #[arg(long, requires = "drive")]
@@ -17,10 +17,19 @@ pub struct DriveArgs {
     /// Optional working directory on the Windows OS volume.
     #[arg(long, requires = "drive")]
     pub scratch_directory: Option<PathBuf>,
+    /// Recover an interrupted run using its original saved conversion directory.
+    #[arg(long, requires = "recovery_sha256", conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
+    pub recover: Option<PathBuf>,
+    /// Original recovery-bundle SHA-256 printed before source writes began.
+    #[arg(long, requires = "recover")]
+    pub recovery_sha256: Option<String>,
+    /// Restore NTFS instead of completing ReFS recovery, before handoff only.
+    #[arg(long, requires = "recover")]
+    pub rollback: bool,
 }
 impl DriveArgs {
     pub fn requested(&self) -> bool {
-        self.list || self.drive.is_some()
+        self.list || self.drive.is_some() || self.recover.is_some()
     }
 }
 pub fn run(args: DriveArgs) -> Result<u8> {
@@ -286,6 +295,15 @@ mod windows {
         })
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
+        if let Some(directory) = args.recover {
+            return crate::drive_recovery::run(
+                &directory,
+                &args
+                    .recovery_sha256
+                    .context("original recovery checksum required")?,
+                args.rollback,
+            );
+        }
         let inventory = drive_inventory::inventory_drives_readonly()?;
         if args.list {
             list(&inventory);

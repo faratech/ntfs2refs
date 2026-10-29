@@ -232,7 +232,11 @@ fn convert_composite(
         );
         let request_pin = qualification::save(output, "request.json", &plan)?;
         let expectation: crate::shadow_tree::ExpectedTree = serde_json::from_slice(&expected)?;
-        qualification::save(output, "expectation.json", &expectation)?;
+        let expectation_pin = qualification::save(output, "expectation.json", &expectation)?;
+        ensure!(
+            expectation_pin == plan.expected_tree_sha256,
+            "saved recovery expectation differs from the admitted target"
+        );
         artifact.revalidate()?;
         let artifact_identity = artifact.identity_sha256()?;
         qualification::save(
@@ -360,6 +364,40 @@ fn convert_composite(
             serde_json::to_vec(&ticket)? == serde_json::to_vec(&prepared.journal.ticket)?,
             "persisted composite ticket differs from live preparation"
         );
+        // Publish one checksummed recovery locator while the original source
+        // certificate and prepared ticket are still held, BEFORE activation.
+        // It carries original pins, never a serialized admission capability.
+        let managed_receipt = output
+            .parent()
+            .map(|parent| parent.join("managed-shadow.json"));
+        let managed = match managed_receipt.filter(|path| path.exists()) {
+            Some(path) => Some(crate::compact_recovery_bundle::managed_shadow_from_receipt(
+                &path,
+                &plan.pair.shadow,
+            )?),
+            None => None,
+        };
+        let recovery_inputs = crate::general_recovery::ExperimentalCompactInputs {
+            request: output.join("request.json"),
+            request_sha256: request_pin.clone(),
+            ticket: output.join("ticket.json"),
+            ticket_sha256: ticket_pin.clone(),
+            journal: journal_path.clone(),
+            capture: qualification_root.join("composite-capture.json"),
+            capture_sha256: artifact.pins().report_sha256.clone(),
+            packed: packed_path.clone(),
+            packed_sha256: artifact.pins().packed_sha256.clone(),
+            expectation: output.join("expectation.json"),
+            expectation_sha256: expectation_pin,
+        };
+        let recovery_bundle =
+            crate::compact_recovery_bundle::Bundle::from_inputs(&recovery_inputs, &plan, managed)?;
+        let recovery_pin = crate::compact_recovery_bundle::save_new(
+            &output.join("compact-recovery-bundle.json"),
+            &recovery_bundle,
+        )?;
+        println!("Recovery directory: {}", output.display());
+        println!("Recovery checksum: {recovery_pin}");
         if let Some(writes) = interrupt_after_writes {
             qualification::save(
                 output,

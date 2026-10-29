@@ -20,6 +20,16 @@ engine and automatically prepares independent recovery storage. Current scope
 is experimental data volumes; unsupported layouts and features are refused.
 See [the workflow and current native results](docs/cli-workflow.md).
 
+New runs also save a checksummed recovery bundle before activation:
+
+```powershell
+ntfs2refs --recover C:\ProgramData\ntfs2refs\runs\RUN_ID\conversion --recovery-sha256 ORIGINAL_CHECKSUM
+```
+
+Add `--rollback` to restore NTFS before handoff. The new recovery wrapper defaults
+to No and keeps the existing native recovery gates; affirmative qualification
+for this wrapper remains separate from the proven backend.
+
 The affirmative drive command has completed on the existing 52 GiB test
 partition with automatic staging and an observed native exit 0. Native ReFS
 verification passed, and all seven user files matched after cold boot.

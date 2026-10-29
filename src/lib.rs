@@ -6,8 +6,11 @@ pub mod block_io;
 pub mod capability_evidence;
 #[cfg(windows)]
 pub mod compact_fixture;
+#[cfg(windows)]
+pub mod compact_recovery_bundle;
 pub mod corpus;
 pub mod drive_cli;
+pub mod drive_recovery;
 pub mod extent_adoption;
 pub mod fixed_vhd;
 #[cfg(windows)]

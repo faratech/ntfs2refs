@@ -50,6 +50,37 @@ choose another ordinary working folder on the Windows OS volume. The current
 experimental filesystem and resource limits remain visible through
 `ntfs2refs-compact profile`; drive selection does not bypass them.
 
+## Recovering a drive run
+
+New compact conversions save `compact-recovery-bundle.json` before source
+activation and print its **Recovery directory** and **Recovery checksum**.
+Keep that original checksum with the recovery files. It pins the original
+request, ticket, journal location, capture, packed backing, expectation and
+optional managed-shadow identity; it cannot replace the native recovery checks.
+
+```powershell
+ntfs2refs --recover C:\ProgramData\ntfs2refs\runs\RUN_ID\conversion `
+  --recovery-sha256 ORIGINAL_PRINTED_CHECKSUM
+
+ntfs2refs --recover C:\ProgramData\ntfs2refs\runs\RUN_ID\conversion `
+  --recovery-sha256 ORIGINAL_PRINTED_CHECKSUM --rollback
+```
+
+Recovery displays the pinned disk/partition identity and action, then defaults
+to No. Declining or giving empty input creates no recovery directory and opens
+no target or journal. A wrong checksum refuses before the prompt. After an
+affirmative answer, the existing engine checks actual device identity, exclusion,
+original input hashes, journal ownership and barriers. Managed staging is reopened
+with its exact original provider and GPT identity. Default recovery resumes the
+exact image, then finalizes ReFS only if resume succeeds; `--rollback` restores
+NTFS instead. Failures do not trigger an alternate action.
+
+HND/ABT close replay: a completed writable filesystem must not be recovered with
+an old journal. Older runs without a bundle still require the explicit pinned
+`ntfs2refs-compact` recovery inputs below. The new wrapper has release-build,
+wrong-checksum and cancellation evidence; its affirmative native path is not yet
+qualified. Those checks do not inherit the exact older CLI binary's results.
+
 ## Experimental compact backend
 
 `ntfs2refs-compact` exposes native-shadow compact construction and its typed

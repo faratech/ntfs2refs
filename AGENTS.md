@@ -235,6 +235,26 @@ evidence/hard-poweroff-attribute-durability-20261029.json. Recovery still never
 clears protection. Physical power loss is untested (TurnOff keeps host-cached
 VHDX writes); the reference-import and managed-shadow attribute setters do not
 flush yet.
+SCALE (2026-10-29): the seeded mixed fixture (lab/New-MixedFixture.ps1: 808
+files, 120 dirs, 9.9 GB, fragmented) refused before any write during shadow
+placement: "global tracked ownership range budget exceeded" (placement.rs:350,
+owned > 1024; evidence/allocation-bounded-mixed-fixture-refusal-20261029.json).
+Workflow analysis (wf_ac088a60-727, read-only) found coupled fixed caps:
+placement owned/avoid 1024, shadow_evacuation MAX_EXTENTS/MAX_MOVES 1024,
+retention_layout MAX_SUBRUNS 1024, unwritten.rs per-file 1024, drive
+MAX_PLACEMENT_SUBMISSIONS 1024 shared by all move phases (effective E ~350-500),
+bitmap views 65,536 ranges, supply/routes 4096, selected_journal MAX_RANGES
+65,536, ntfs_attribute_list MAX_RUNS 1024, and the streaming tree profile's
+1024 files / 256 directories (private_tree.rs:592-593, ntfs_admission). Each
+placement move also recaptures and hashes two whole-volume bitmaps, so cost is
+O((E+M) x clusters). Verified next step (stage 1, no evidence-scope change):
+track all files first and plan from one snapshot per phase boundary; filter
+owned to extents intersecting desired runs; sweep-line intersection in
+plan_ranges; first-fit scratch cursor without the subrun cap; coalesce placed
+entries; raise the coupled caps together to derived ceilings; add owned/move
+counters to the refusal artifact. Window-scoped bitmap probes, sparser source-
+exclusion checks or a narrower per-move retrieval proof change evidence scope
+and need a user decision. The 1024-file tree cap is a product-scope limit.
 
 ## Source and recovery invariants
 

@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-speedups-1-5",
+  "run_id": "9b4b62586c5f4767a7db1093cb6e7425",
+  "engine_run_id": "94fd6d5bc9c98405ef45e4b6c15471fb",
+  "source_commit": "bd9ef217ce5f792c5164f4496dbe90eb879c8c2b",
+  "code_commits": ["2d27fa6 speedups 1-5", "9aeaa1e single-pass audit fix", "bd9ef21 4 MiB digest pipeline bound"],
+  "refused_attempts_before_this_run": [
+    {"run_id": "67ff2be167314ba78d8fca4668375f87", "phase": "source admission", "error": "large native resource evidence does not completely reconcile with source objects", "cause": "logical-data audit counted the mirrored single pass twice", "writes": 0},
+    {"run_id": "9bfc55afdf9c4214b94ee5b8812ef488", "phase": "verify target", "error": "digest buffer must be between one byte and 1MiB", "cause": "capture digest worker bound not raised with 4 MiB requests", "writes": 0}
+  ],
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "6b793308e356143ba253c04b3e5b9488ec1bed04e1face909cfec79de549682b",
+  "public_cli": {
+    "sha256": "581d62a3daa11ad62e219010ebfb2bd861cb93b2a9ac945eae1a125d6bd4c3a6",
+    "argv": ["--drive", "F", "--partition", "2"],
+    "actual_native_exit": 0
+  },
+  "outcome": {
+    "wrapper_success": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "selected_ranges": 157,
+    "selected_bytes": 70758400,
+    "result_sha256": "445de77be19d0f61cf53c87fda70b9503d5e8f20b6fcc77b282d1df29b279b99",
+    "finalization_sha256": "c6678e076436ac7b65f7c961d75e1c26c716245d3548b7832533c965bc5db7f9",
+    "records_hashes_verified_on_host": true
+  },
+  "speedups_observed": {
+    "1_shadow_bracket": {"opening_chunks": 14087, "opening_bytes": 14771290112, "closing_bytes_reread": 14771290112, "whole_image_pass": false},
+    "2_in_place_payload_not_compared_bytes": 2721181696,
+    "compared_bytes": 12047286272,
+    "3_native_logical_requests": {"bytes_read": 8616497395, "read_calls": 8243},
+    "5_native_content_passes": 1
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 356.7,
+    "previous_seconds": {"parallel_hash_311d3af": 492.8, "allocation_brackets_f9d8694": 592.8, "allocation_bounded_1ac5682": 952.9, "head_whole_image": 2813.3, "frozen_alpha": 3351.7},
+    "phase_markers_seconds": {"building_refs_metadata": 130, "verifying_target": 136, "preparing_recovery_journal": 288, "applying_conversion": 290, "verifying_files": 294}
+  },
+  "io": {"last_sample_read_bytes": 103405773268, "last_sample_utc": "2026-10-29T19:14:02Z"},
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-9b4b62586c5f4767a7db1093cb6e7425/closed-conversion",
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "interruption_resume_rollback_tested_on_this_build": false,
+    "mutation_restart_tested_on_this_build": false,
+    "release_qualified": false
+  },
+  "scope": "One default-mode conversion of the 52 GiB fixture with speedups 1-5. Correct result in 356.7 s (5m57s), at least 103.4 GB read."
+}

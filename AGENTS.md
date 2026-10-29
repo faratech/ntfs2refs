@@ -27,10 +27,11 @@ The coordinating agent reports VM
 2401593c-4b30-472e-9b6d-c9534cbaa599 running with parent checkpoint
 d121235d-f9fb-4e0e-843e-1ea4c3883221 (the new bundle interruption branch).
 The VM has fixed 4 GiB RAM, 4 CPUs and no network adapter.
-Three checkpoints remain during recovery:
+Four checkpoints remain during the separate rollback run:
 - NTFS: 0872b74c-5b3d-43cf-9ccf-fc64fda0cd93.
 - ReFS after mutation/reboot: 693a364c-b86a-4e14-a3cc-a910645f4ce3.
 - Bundle partial: d121235d-f9fb-4e0e-843e-1ea4c3883221.
+- Public bundle ReFS recovery: 25a829b6-bea2-40cb-9114-e8d28e775d81.
 
 A bundle-enabled controlled conversion has completed with actual native and
 wrapper exit 86 after one flushed source write. Its run ID is
@@ -51,16 +52,25 @@ Closed metadata and the actual partial checkpoint are recorded under the case's
 The VM was cleanly stopped/checkpointed/started without restoring another branch;
 source 1 stayed offline/attrs1 and the managed shadow was absent after boot.
 
-Public CLI Resume is now running: c698a0cfd50d4199ba49bcca7dfd1614,
-task N2R-BundleCliRecovery-Resume-c698a0cfd50d4199ba49bcca7dfd1614,
-guest C:\ntfs2refs\bundle-recovery-cli-resume-c698a0cfd50d4199ba49bcca7dfd1614.
-Actual main PID4296/creation1793248538222, wrapper1068/creation1793248533040
-was live at04:35:56Z. It uses only --recover, original directory/checksum and yes,
-with the sealed2cac executable. Delta monitors metadata only. Do not interrupt
-or open live source/J/packed/images/locked artifacts. Check actual liveness;
-none of these recorded observations authorizes power or replay.
-After genuine terminal0/workers absent, use Save-BundleCliRecovery.ps1 with the
-actual recovery dispatch path/hash before root preserves its final branch.
+Public CLI Resume c698a0cfd50d4199ba49bcca7dfd1614 completed with actual native
+and wrapper exit0, exact target b920ced8c88c491405cc4c77ca309c7d272ef6f20582445295d94355d9c60115,
+HND, 15 native objects/10 complete hashes, original label and mount. Its closed
+archive and successful checkpoint25a are saved under recovery-cli-resume-c698...;
+see evidence/bundle-cli-resume-20261029.json. This used sealed2cac and only the
+original directory/checksum plus yes.
+
+Root restored original partiald121 after saving25a. Public CLI Rollback is
+NOW RUNNING: 0017552259514d9a883b398e97b40f82,
+task N2R-BundleCliRecovery-Rollback-0017552259514d9a883b398e97b40f82,
+guest C:\ntfs2refs\bundle-recovery-cli-rollback-0017552259514d9a883b398e97b40f82.
+Actual main PID1952/creation1793249891964, wrapper4232/creation1793249887221
+was live at04:58:34Z. Original bundle3f3636... and sealed2cac are unchanged.
+Rollback dispatch SHA: f5966361767b779ec229c18f735ab5e275171bc644e505214611b8b9c65b2eaa.
+Delta monitors metadata only. Do not interrupt or open live source/J/packed/
+images/locked artifacts. Check actual liveness; these observations grant no
+power/replay authority. After genuine terminal0/workers absent, use
+Save-BundleCliRecovery.ps1 with this actual rollback dispatch path/hash; root
+then preserves the NTFS result and prunes obsolete checkpoints to minimal use.
 The coordinating agent owns VM mutations. Delegated agents work on source only
 unless explicitly assigned a native action.
 
@@ -88,17 +98,18 @@ for full hashes, exact archived reports and limits.
   Do not transfer old 5e156f... mutation evidence to a different build.
 
 The new bundle producer from bb7677e passed the actual controlled native exit86
-and original checksum publication. Affirmative public recovery is still running.
+and original checksum publication. Affirmative public Resume/Finalize passed;
+the separate public Rollback is running.
 Its sealed main SHA-256 is
 2cac76e012b4cf9b9d9ea5a90a3a77933856061afb4395a2c7e4b9ab4dc33ef0;
 compact SHA-256 is
 b41ef940c3c534c3a41115d2f9c7d900f2554d61259407bc7b5e3723e2ed4eb2.
 Decline/default-No and wrong-checksum smoke checks passed without device actions.
-Affirmative bundle recovery still needs its actual terminal result. Do not
-inherit older builds' results. Later code286d914 adds stderr phases and a compact
-handoff shared-read hash optimization; its build record is
-evidence/compact-handoff-build-20261029.json. It is release-built but NOT the
-sealed binary running in the VM and has no inherited native qualification.
+Do not inherit older builds' results. Later code286d914/5ac7a36 adds stderr
+phases and shared-read hash optimizations in handoff/preparation; code7da08e0
+routes offline public recovery by actual verified journal lifecycle. These
+changes are release-built but NOT the sealed binary in the current VM run and
+have no inherited native qualification. See their separate build records.
 
 ## Source and recovery invariants
 

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "release-build-observation",
+  "source_commit": "7da08e0",
+  "working_tree_note": "The existing user-owned src/main.rs capabilities hunk was present and remains unstaged.",
+  "command": "cargo build --release --bin ntfs2refs --bin ntfs2refs-compact --bin lab-convert-native-composite",
+  "exit_code": 0,
+  "elapsed_seconds": 84,
+  "unit_tests_run": false,
+  "native_qualification": false,
+  "prior_native_results_inherited": false,
+  "changes": [
+    "Shared fresh read passes for compact handoff and final source/candidate preparation",
+    "Verified journal lifecycle selection under exclusive handle; HND/ABT completion only, no replay fallback"
+  ],
+  "artifacts": [
+    {
+      "name": "ntfs2refs.exe",
+      "sha256": "9aa7677c09022e732111bc90f9ce669b8af4032afe846cfd8cb97b11c3c7c583",
+      "bytes": 7045632
+    },
+    {
+      "name": "ntfs2refs-compact.exe",
+      "sha256": "f9d4efca09380185e94953574cca64847b1ddf76d539930eac76d6a281f23c77",
+      "bytes": 4751360
+    },
+    {
+      "name": "lab-convert-native-composite.exe",
+      "sha256": "7e2019a2e6a3304e66afe1b58fd355a142b188297cd0c61f601851ca926f7e17",
+      "bytes": 4404224
+    }
+  ],
+  "warning": "binrw 0.11.3 future Rust incompatibility warning",
+  "grants_source_or_recovery_authority": false
+}

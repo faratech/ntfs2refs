@@ -142,6 +142,13 @@ only. Keep ignored images, journals, binaries and secrets out of Git. The
 coordinating agent owns VM mutation; delegated agents work on source unless
 explicitly assigned metadata-only observation.
 
+Selective path direction (user chose it, 2026-10-29): docs/selective-conversion-plan.md.
+On the HEAD run, 100% of the 70,615,040 changed bytes lie inside the frozen
+shadow's native metadata-inclusive allocation (14.77GB); 286,720 of them are
+relocated file data inside routes, so routes cannot simply be skipped. Next code:
+coarse selection from the protected allocation, then changed_plan over the
+source-backed view, then the device-bound N2RSEL01 journal.
+
 ## Source and recovery invariants
 
 - A fresh Apply requires the original opaque live source certificate, preserved

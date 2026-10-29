@@ -1999,6 +1999,72 @@ pub fn mark_handoff<T: DurableIo, S: ReadSeek, J: DurableIo>(
     })
 }
 
+/// Native compact-only handoff. Both complete image pins are freshly computed;
+/// the candidate's unchanged bytes share the actual target read view rather
+/// than causing a second physical scan. No supplied digest can authorize HND.
+#[cfg(windows)]
+pub(crate) fn mark_compact_handoff<S: Read + Seek, J: DurableIo>(
+    target: &mut n2r_win32::GeneralJournaledPartition,
+    shadow: &mut crate::refs_hybrid::delta::DifferenceImage<
+        '_,
+        n2r_win32::GeneralJournalReadView,
+        S,
+    >,
+    journal: &mut J,
+    ticket: &JournalTicket,
+    observed_binding: &JournalBinding,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<ExecutionReport> {
+    validate_binding(observed_binding)?;
+    ensure!(
+        *observed_binding == ticket.binding,
+        "compact handoff storage binding differs"
+    );
+    let loaded = load_journal(journal, ticket)?;
+    let request = &loaded.manifest.request;
+    ensure!(
+        n2r_win32::GeneralJournaledPartition::byte_len(target) == request.expected_length,
+        "compact handoff target length changed"
+    );
+    let ranges: Vec<_> = loaded
+        .records
+        .iter()
+        .map(|record| (record.offset, record.length))
+        .collect();
+    target.sync_all()?;
+    let (target_sha256, shadow_sha256) =
+        shadow.hash_pair_for_target(target, request.expected_length, &ranges, events)?;
+    ensure!(
+        shadow_sha256 == request.shadow_sha256,
+        "compact handoff shadow image changed"
+    );
+    ensure!(
+        target_sha256 == loaded.manifest.expected_postimage_sha256,
+        "compact handoff requires the complete expected postimage"
+    );
+    // Keep the same final marker write, durable flush and exact readback as the
+    // generic handoff. Every nonzero/partial existing marker was refused above.
+    let handoff = marker(b"N2RHND01", 3, ticket, &target_sha256)?;
+    journal.seek(SeekFrom::Start(0))?;
+    journal.write_all(&handoff)?;
+    journal.sync_all()?;
+    let mut observed = [0; GRANULE as usize];
+    read_at(journal, 0, &mut observed)?;
+    ensure!(
+        observed == handoff,
+        "compact handoff marker readback differs; recovery remains closed"
+    );
+    Ok(ExecutionReport {
+        operation: "handoff-recorded".into(),
+        target_sha256,
+        target_bytes_written: 0,
+        patches_written: 0,
+        retained_bytes_unchanged: true,
+        handoff_recorded: true,
+        conversion_qualified: false,
+    })
+}
+
 /// Close the conversion journal before exposing a completely restored NTFS
 /// preimage for ordinary writable service. Any partial marker also prevents
 /// later replay; a separate completion path must inspect that state.

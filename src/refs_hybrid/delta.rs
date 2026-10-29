@@ -126,6 +126,89 @@ impl<'a, R: Read + Seek, S: Read + Seek> DifferenceImage<'a, R, S> {
         })
     }
 }
+
+#[cfg(windows)]
+impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
+    /// Hash a fresh target read view and its complete candidate in one physical
+    /// scan. The native view must be the exact target; callers cannot supply
+    /// cached bytes or precomputed hashes. Packed overlays are still read in full.
+    pub(crate) fn hash_pair_for_target(
+        &mut self,
+        target: &n2r_win32::GeneralJournaledPartition,
+        expected_length: u64,
+        journal_ranges: &[(u64, u64)],
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<(String, String)> {
+        ensure!(
+            self.original.binding() == target.binding()
+                && self.original.byte_len() == expected_length
+                && target.byte_len() == expected_length
+                && self.layout.partition_bytes == expected_length
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+            "paired compact hash is not the exact target read view and backing"
+        );
+        self.layout.require_exact_write_ranges(journal_ranges)?;
+        let target_before = target.state(events)?;
+        let view_before = self.original.state(events)?;
+        ensure!(
+            target_before == view_before && target_before.disk_attributes == 1,
+            "paired compact hash requires the same excluded activated target"
+        );
+        self.original.seek(SeekFrom::Start(0))?;
+        let mut actual = vec![0u8; 1024 * 1024];
+        let mut candidate = vec![0u8; 1024 * 1024];
+        let mut actual_hash = n2r_win32::sha256_native::Sha256::new()?;
+        let mut candidate_hash = n2r_win32::sha256_native::Sha256::new()?;
+        let mut offset = 0u64;
+        let mut first_range = 0usize;
+        while offset < expected_length {
+            let count = (expected_length - offset).min(actual.len() as u64) as usize;
+            let end = offset + count as u64;
+            // These are the only fresh native bytes for this chunk. The second
+            // digest uses the same complement that DifferenceImage::read would
+            // otherwise reread from this exact view.
+            self.original.read_exact(&mut actual[..count])?;
+            actual_hash.update(&actual[..count])?;
+            candidate[..count].copy_from_slice(&actual[..count]);
+            while first_range < self.layout.ranges.len()
+                && self.layout.ranges[first_range].offset + self.layout.ranges[first_range].length
+                    <= offset
+            {
+                first_range += 1;
+            }
+            for range in self.layout.ranges[first_range..]
+                .iter()
+                .take_while(|range| range.offset < end)
+            {
+                let start = offset.max(range.offset);
+                let stop = end.min(range.offset + range.length);
+                let local = usize::try_from(start - offset)?;
+                let length = usize::try_from(stop - start)?;
+                let packed_offset = range
+                    .packed_offset
+                    .checked_add(start - range.offset)
+                    .context("paired compact packed offset overflow")?;
+                self.packed.seek(SeekFrom::Start(packed_offset))?;
+                self.packed
+                    .read_exact(&mut candidate[local..local + length])?;
+            }
+            candidate_hash.update(&candidate[..count])?;
+            offset = end;
+        }
+        ensure!(
+            self.original.state(events)? == view_before
+                && target.state(events)? == target_before
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+            "paired compact inputs changed around the complete hash scan"
+        );
+        self.position = expected_length;
+        Ok((
+            hex::encode(actual_hash.finish()?),
+            hex::encode(candidate_hash.finish()?),
+        ))
+    }
+}
+
 impl<R: Read + Seek, S: Read + Seek> Read for DifferenceImage<'_, R, S> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if output.is_empty() || self.position == self.layout.partition_bytes {

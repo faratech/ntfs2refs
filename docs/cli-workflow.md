@@ -52,6 +52,15 @@ choose another ordinary working folder on the Windows OS volume. The current
 experimental filesystem and resource limits remain visible through
 `ntfs2refs-compact profile`; drive selection does not bypass them.
 
+Conversion and recovery report their current phase on stderr. Full image scans
+can take substantially longer than the patch writes. Compact handoff now hashes
+the fresh target and its packed-change overlay from one target scan, using two
+1 MiB buffers, instead of rereading unchanged target bytes. Both complete hashes
+and the existing journal, device and handoff checks remain required. This saves
+one partition length minus changed bytes of target reads at that phase; other
+full-volume passes remain. The optimization passes the release build and has
+not yet been qualified in a native run.
+
 ## Recovering a drive run
 
 New compact conversions save `compact-recovery-bundle.json` before source

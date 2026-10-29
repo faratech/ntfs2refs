@@ -119,7 +119,14 @@ pub(crate) fn finalize(
     let mut result = report(events, false);
     // A partial marker also closes rollback. Never repair/retry it here.
     result.rollback_closed = true;
-    let handoff = lab_reconstruct::mark_handoff(&mut target, &mut image, journal, ticket, &bound);
+    let handoff = lab_reconstruct::mark_compact_handoff(
+        &mut target,
+        &mut image,
+        journal,
+        ticket,
+        &bound,
+        &mut result.events,
+    );
     drop(image);
     let read_after = original.state(&mut result.events);
     drop(original);

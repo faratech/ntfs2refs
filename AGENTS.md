@@ -1,5 +1,37 @@
 # ntfs2refs project guidance
 
+CURRENT FINAL LAB STATE03:10Z — MANAGED RECOVERY, MUTATION AND REBOOT PASSED:
+VM2401593c... OFF/RAM0, ONLY TWO checkpoints now: ReFS693a364c-b86a-4e14-a3cc-
+a910645f4ce3 (mutation+reboot+native15/10 passed) and NTFS0872b74c-5b3d-43cf-
+9ccf-fc64fda0cd93 (typedABTrollback+7-userdata/metadata readbackpassed).
+User's checkpoint deletion override remains inforce; doNOTrecreatejunk.
+Original49/50/partial3/Resume4 IDs below are HISTORICAL, nowdeletedbyauthorized
+HyperVcleanup. Neverrestore removedIDs. CurrentVMparent isnewReFS693a... .
+Native565fb0a... @5a9bae2 successfully reattachedactualf65shadow6 afterreboot,
+provedhardwareERROR_WRITE_PROTECT thenpersistedmissingsoftwareflags3. Resume
+bc1...3032 exited0, Finalize2952 exited0/HND/15objects10hashes/label/Fpreserved.
+Separaterestoredpartial3 branch Rollback95...1240 exited0/ABT/nativeNTFS; exact
+premountoriginal1bf93b0a7ea784fa04e9910a8e19fc3a94b36ee693b8404499fe45381a49c40e.
+Native7-user8,594,391,095B readback4a804... passedallhashes+attrs/creation/write/
+OwnerGroupDACL SDDL; access7matched; MFTchange notqueried(SVI3excluded).
+Currentmutationtoolsc71d2a.../verifier571e07... @f32b563 builtreleasepassed;
+MUTe82ae80ec6fd418a82c59cc09b90ade5 actualnative0/0/0: strictbefore15/10,
+50→80→10MiB/128entries/rename/delete, stricafter15/10. MutationSHA
+5ce149f401c85389a97171bb10f5d764e97a9987e06bffe9b00d2e5668941b4a.
+SAMEworkingbranch cleanstop/start(NOrestore) thenpostboot4062... native0/task0,
+strict15/10+supportedmetadata; nativeSHA2aa41e372809057149a1c212dbd86cba4c1bb71cf4767bb029393fa526897037,
+result54232cd5a98179d200ca570ed975151a1fed2ae57b80dab2064cadfc7fb6dd12.
+SavednewReFS693a... thenremovedobsoletefe04; retainsonlynewReFS+NTFS.
+Postbootarchive inoriginal94case/recovered-mutation-e82.../after-boot-4062.../
+preservation (source-only firstpinmistake archived; no power occurredbeforefix).
+Docs/evidence experimental-build-provenance-20261029 tracksEXACTdifferentbuilds:
+publicaffirmative866@cfc48ff separatefromactualcontrolled48094@cf191083 /
+recovery565@5a9bae2. DoNOTclaim866/565cross-pair tested orlatestlocalmaininherits.
+LatestDfree119,654,117,376; Lab225,614,035,807; fixed50GBepochunchanged.
+No live workers/monitors or pending native actions. No J replay permitted on
+completedHND/ABT states. Futurebroadvolume/features/boot remainunfinished.
+No newunit tests. Originalmain.rs capabilities1line remainsUNSTAGED.
+
 CURRENT LIVE — NATIVE RESUME bc1... AFTER ACTUAL REBOOT, ONLY3 CHECKPOINTS:
 Newpartial checkpoint48cf6276-fa77-4f35-b56e-8bdd6017b192 saved via newtyped
 postcleanupreceipt (notfake51), parent9e63, currentVM240Running/4GiB/noNIC.

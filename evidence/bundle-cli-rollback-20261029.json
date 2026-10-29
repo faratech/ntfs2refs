@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "public-bundle-cli-rollback",
+  "original_run_id": "9340223f9d124a9f88e563ba669f0787",
+  "run_id": "0017552259514d9a883b398e97b40f82",
+  "host_case": ".lab/hyperv/streaming-v2-20261027/bundle-cli-20261029-9340223f9d124a9f88e563ba669f0787/recovery-cli-rollback-0017552259514d9a883b398e97b40f82",
+  "public_cli": {
+    "sha256": "2cac76e012b4cf9b9d9ea5a90a3a77933856061afb4395a2c7e4b9ab4dc33ef0",
+    "argv": [
+      "--recover",
+      "C:\\ntfs2refs\\bundle-cli-20261029-9340223f9d124a9f88e563ba669f0787\\conversion",
+      "--recovery-sha256",
+      "3f3636d1ad2d64ac28920f722462d6d94639bd7d26e0ba0cecd9be7c618ee204",
+      "--rollback"
+    ],
+    "stdin": "yes CRLF",
+    "pid": 1952,
+    "creation_ms": 1793249891964,
+    "retained_handle_observed": true,
+    "actual_native_exit": 0,
+    "actual_wrapper_task_exit": 0
+  },
+  "pins": {
+    "dispatch": "f5966361767b779ec229c18f735ab5e275171bc644e505214611b8b9c65b2eaa",
+    "closed_receipt": "5b591a021912285ee885efb1be28032da727202f08937a5f2ad3a7d0e2cbbfc1",
+    "preserved_receipt": "5857cacfc120cfacd9b6ffbbee7e055f0465aa74ce7c318ff8fc0ffbfd1ddb66",
+    "request": "67282b215ce139e3cd1469b18e7b72db6b5ab3f382cd1b0cb25bbf06e4f45335",
+    "ticket": "83cbcbed651cbcd5947fbf0e2a7a7e08222b3a05fe8dd871bc1868b0f8c2b622",
+    "execution": "44d26a6bfdf6da44e95aeceb460949584423cbea655a655377babc0c3ba47e93",
+    "completion": "d279af46ef0540e5e5c3efa38f2301005b617ee389b9575f22452260a712c2e1"
+  },
+  "completion": {
+    "premount_exact_original_sha256": "13c7808742ac3d7994ebfac438f9fc609e6d9f75f5017f1d19dd517b1999f480",
+    "barrier": "ABT",
+    "mounted_filesystem": "NTFS",
+    "cluster_bytes": 65536,
+    "mount": "F:\\",
+    "label": "n2r-stream-source",
+    "native_file_hash_count": null,
+    "source_certificate_recreated": false,
+    "post_mount_raw_image_equality_claimed": false
+  },
+  "preserved_checkpoint": {
+    "id": "5125d335-09b4-4838-bc64-28b079e3f2b9",
+    "parent_id": "d121235d-f9fb-4e0e-843e-1ea4c3883221",
+    "historical_count_at_save": 5,
+    "state": "Off",
+    "memory_assigned": 0,
+    "observed_utc": "2026-10-29T05:26:56.4392086+00:00"
+  },
+  "later_cleanup": {
+    "receipt": ".lab/hyperv/streaming-v2-20261027/checkpoint-cleanup-bundle-20261029/receipt.json",
+    "sha256": "b06ab19757000827abc615e00944dfe62d2f8b5985924b844fe4249a3b53364f",
+    "historical_count_after_cleanup": 2,
+    "retained": [
+      "25a829b6-bea2-40cb-9114-e8d28e775d81",
+      "5125d335-09b4-4838-bc64-28b079e3f2b9"
+    ],
+    "removed_count": 3,
+    "manual_avhdx_deletion": false,
+    "observed_utc": "2026-10-29T05:27:56.9218095+00:00"
+  },
+  "qualification": {
+    "original_controlled_flushed_write_interruption": 1,
+    "public_rollback_passed": true,
+    "native_per_file_rehash_claimed": false,
+    "power_loss_qualified": false,
+    "all_features_qualified": false,
+    "free_space_optimizer_qualified": false,
+    "production_qualified": false
+  },
+  "scope": "Exact complete original image was proved before NTFS mount; ABT and native filesystem/label/F mount checks passed. No15-object/10-file hash verification is claimed for rollback. Snapshot preservation and later authorized cleanup are separate observations."
+}

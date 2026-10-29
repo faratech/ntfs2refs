@@ -32,8 +32,11 @@ to No and keeps the existing native recovery gates. Sealed public build
 using only its generated bundle and original printed checksum. Native ReFS
 matched all 15 objects and 10 file hashes, with the original label and mount
 preserved. See [the exact recovery result](evidence/bundle-cli-resume-20261029.json).
-Separate rollback qualification is in progress. Later read optimizations and
-completion-marker routing are release-built and do not inherit that native result.
+The same public build also passed separate rollback from the saved interrupted
+state, restoring the exact original pre-mount NTFS image and closing replay.
+See [the rollback result](evidence/bundle-cli-rollback-20261029.json).
+Later read optimizations and completion-marker routing are release-built and
+undergoing their own normal conversion run; they do not inherit those results.
 
 The affirmative drive command has completed on the existing 52 GiB test
 partition with automatic staging and an observed native exit 0. Native ReFS

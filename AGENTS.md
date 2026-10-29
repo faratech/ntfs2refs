@@ -25,12 +25,10 @@ when unchanged evidence already answers the question.
 
 The coordinating agent reports VM
 2401593c-4b30-472e-9b6d-c9534cbaa599 running with parent checkpoint
-d121235d-f9fb-4e0e-843e-1ea4c3883221 (the new bundle interruption branch).
+5125d335-09b4-4838-bc64-28b079e3f2b9 (the new public NTFS rollback branch).
 The VM has fixed 4 GiB RAM, 4 CPUs and no network adapter.
-Four checkpoints remain during the separate rollback run:
-- NTFS: 0872b74c-5b3d-43cf-9ccf-fc64fda0cd93.
-- ReFS after mutation/reboot: 693a364c-b86a-4e14-a3cc-a910645f4ce3.
-- Bundle partial: d121235d-f9fb-4e0e-843e-1ea4c3883221.
+Only two checkpoints remain after user-authorized cleanup:
+- Public bundle NTFS rollback: 5125d335-09b4-4838-bc64-28b079e3f2b9.
 - Public bundle ReFS recovery: 25a829b6-bea2-40cb-9114-e8d28e775d81.
 
 A bundle-enabled controlled conversion has completed with actual native and
@@ -59,18 +57,32 @@ archive and successful checkpoint25a are saved under recovery-cli-resume-c698...
 see evidence/bundle-cli-resume-20261029.json. This used sealed2cac and only the
 original directory/checksum plus yes.
 
-Root restored original partiald121 after saving25a. Public CLI Rollback is
-NOW RUNNING: 0017552259514d9a883b398e97b40f82,
-task N2R-BundleCliRecovery-Rollback-0017552259514d9a883b398e97b40f82,
-guest C:\ntfs2refs\bundle-recovery-cli-rollback-0017552259514d9a883b398e97b40f82.
-Actual main PID1952/creation1793249891964, wrapper4232/creation1793249887221
-was live at04:58:34Z. Original bundle3f3636... and sealed2cac are unchanged.
-Rollback dispatch SHA: f5966361767b779ec229c18f735ab5e275171bc644e505214611b8b9c65b2eaa.
+Separate public Rollback0017552259514d9a883b398e97b40f82 passed native/wrapper0,
+exact original pre-mount SHA13c7808742ac3d7994ebfac438f9fc609e6d9f75f5017f1d19dd517b1999f480,
+ABT and native NTFS64K/label/F. No post-mount logical-file hashes are claimed.
+Closed receipt SHA5b591a021912285ee885efb1be28032da727202f08937a5f2ad3a7d0e2cbbfc1;
+preserved-checkpoint receipt SHA5857cacfc120cfacd9b6ffbbee7e055f0465aa74ce7c318ff8fc0ffbfd1ddb66.
+After saving actual5125, root deleted obsolete0872/693/d121 through Hyper-V.
+The cleanup receipt is checkpoint-cleanup-bundle-20261029/receipt.json; old IDs
+in historical reports must not be recreated or restored.
+
+NORMAL optimized public --drive F --partition2 is NOW RUNNING:
+2c0a76e195f540218d60e98266f4e14d, task
+N2R-OptimizedDriveAlpha-2c0a76e195f540218d60e98266f4e14d, guest
+C:\ntfs2refs\optimized-drive-alpha-2c0a76e195f540218d60e98266f4e14d.
+Actual main892/creation1793251802144, wrapper1260/creation1793251797752
+was live05:30:23Z. Candidate mainfb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c
+uses the two read optimizations, lifecycle routing and CNG image hashes.
+Source commit2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7; sealed manifest
+optimized-drive-alpha-tools-20261029/manifest.json SHA230c08850b41bcab1defa0b81aa35406ea0760e25a4042657602d191e0065d6b.
+Host case optimized-drive-alpha-20261029-2c0a76e195f540218d60e98266f4e14d;
+dispatch SHA628f14f6755e1263fade86c49fd5c70696593260ce1d7d7b6246a3305ef0794f.
+No fault was requested; main provisions its own managed shadow/journal.
 Delta monitors metadata only. Do not interrupt or open live source/J/packed/
-images/locked artifacts. Check actual liveness; these observations grant no
-power/replay authority. After genuine terminal0/workers absent, use
-Save-BundleCliRecovery.ps1 with this actual rollback dispatch path/hash; root
-then preserves the NTFS result and prunes obsolete checkpoints to minimal use.
+images/locked artifacts. Check actual liveness; recorded observations grant no
+power/replay authority. After genuine terminal0/workers absent, collect the
+actual closed wrapper/core results, preserve the normal converted branch,
+then qualify mutation/reboot on this exact candidate as needed for the freeze.
 The coordinating agent owns VM mutations. Delegated agents work on source only
 unless explicitly assigned a native action.
 
@@ -99,7 +111,7 @@ for full hashes, exact archived reports and limits.
 
 The new bundle producer from bb7677e passed the actual controlled native exit86
 and original checksum publication. Affirmative public Resume/Finalize passed;
-the separate public Rollback is running.
+the separate public Rollback also passed.
 Its sealed main SHA-256 is
 2cac76e012b4cf9b9d9ea5a90a3a77933856061afb4395a2c7e4b9ab4dc33ef0;
 compact SHA-256 is
@@ -108,8 +120,9 @@ Decline/default-No and wrong-checksum smoke checks passed without device actions
 Do not inherit older builds' results. Later code286d914/5ac7a36 adds stderr
 phases and shared-read hash optimizations in handoff/preparation; code7da08e0
 routes offline public recovery by actual verified journal lifecycle. These
-changes are release-built but NOT the sealed binary in the current VM run and
-have no inherited native qualification. See their separate build records.
+changes plus code2ff5f01 CNG whole-image hashing are release-built and now running
+as candidatefb5548. They do not inherit sealed2cac's native results. See the
+separate build records and actual new dispatch above.
 
 ## Source and recovery invariants
 

@@ -112,6 +112,9 @@ an old journal. Older runs without a bundle still require the explicit pinned
 `ntfs2refs-compact` recovery inputs below. Sealed main `2cac76...` passed actual
 public Resume/Finalize after the controlled one-write interruption and reboot:
 15 native objects, 10 complete stream hashes, label/mount preservation and HND.
+Separate public `--rollback` on that saved interrupted state also passed native
+exit 0, exact original pre-mount NTFS hash, ABT, original label and F: mount.
+This rollback result does not claim a separate post-mount per-file hash pass.
 Later read optimizations and lifecycle routing do not inherit that binary's
 native qualification. Those builds have separate release-build evidence.
 

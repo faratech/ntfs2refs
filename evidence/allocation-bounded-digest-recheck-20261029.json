@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-digest-recheck",
+  "run_id": "8bc1ff106b384d2fa52de5fd9124b7c1",
+  "engine_run_id": "d52acf2bbb9c673cba31b5010a16efbb",
+  "source_commit": "48d6a8ef06cdd5df374e4df2adeb80e2827e89ac",
+  "change": "target verification rechecks the XXH3-128 NTFS-allocated-range digest instead of re-running the complete NTFS inspection; admission records the inspection's reads and refuses unless all lie inside the digested ranges",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "46e7f6eaf5ca6e746b9ffd377388539ca162270a737368dd8e489dab8889f069",
+  "public_cli": {
+    "sha256": "28e99c7cf2955f895abd9b6fd6dad56370a55d115e8ff261e9098f1f69683b2e",
+    "argv": ["--drive", "F", "--partition", "2"],
+    "actual_native_exit": 0
+  },
+  "outcome": {
+    "wrapper_success": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "selected_ranges": 160,
+    "selected_bytes": 70606848,
+    "journal_bytes": 141234848,
+    "result_sha256": "f291e682294b61cd16afdc8d1a2f039e32569c843d9cfaa1cd961463bcc35189",
+    "finalization_sha256": "6c953f08a15e89a8dd59f8096d1234ecd93d744986717a183bfba2bc888dbf1c",
+    "inspection_read_ranges": 10,
+    "inspection_reads_within_digest": true,
+    "frozen_source_inventory_basis": "allocated-range digest recheck; admission proved the inspection read only those ranges"
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 116.7,
+    "previous_seconds": {"xxh3_overlap_7605ee7": 134.7, "parallel_hash_e6e22f6": 258.7, "speedups_1_5_bd9ef21": 356.7},
+    "phase_markers_seconds": {"building_refs_metadata": 40, "verifying_target": 46, "preparing_recovery_journal": 88, "applying_conversion": 92, "verifying_files": 94},
+    "artifact_write_timeline_seconds": {
+      "note": "LastWriteTimeUtc of run-directory artifacts relative to native process creation",
+      "source_frozen_after_inspection_and_digest": 20.1,
+      "source_basis": 20.8,
+      "native_source_observation": 38.7,
+      "source_assessment_after_second_digest": 39.9,
+      "construction_freeze_shadow_built": 45.7,
+      "changed_clusters_compared": 87.0,
+      "target_preservation_and_certificate": 87.5,
+      "recovery_bundle_and_activation": 91.0,
+      "apply": 94.6,
+      "handoff": 97.0,
+      "finalization_files_verified": 115.2
+    }
+  },
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-8bc1ff106b384d2fa52de5fd9124b7c1/closed-conversion",
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "interruption_resume_rollback_tested_on_this_build": false,
+    "mutation_restart_tested_on_this_build": false,
+    "release_qualified": false
+  },
+  "scope": "One default-mode conversion of the 52 GiB fixture. Correct result in 116.7 s."
+}

@@ -72,5 +72,26 @@
       "user_files_matching_xxh3": "7/7"
     }
   },
-  "scope": "Hyper-V Stop-VM -TurnOff of the guest; host-cached VHDX writes survive it, so physical power loss remains untested"
+  "scope": "Hyper-V Stop-VM -TurnOff of the guest; host-cached VHDX writes survive it, so physical power loss remains untested",
+  "build_followup": {
+    "conversion": {
+      "run_id": "15b0ab1efc104f0fae8f5dc4143eb43b",
+      "engine_run_id": "21440905291aaa427db52bfa1b93a2d7",
+      "seconds": 40.7,
+      "native_objects": 15,
+      "complete_logical_hashes": 10,
+      "label_and_mount_verified": true,
+      "result_sha256": "7252e24aa781c2ca7d3d67096504a0255d6efb21b1cbc8589d0ec70d9f7c08d0",
+      "finalization_sha256": "80126c3b3c986998506503448128be5d343d6084f6ad15edd7de99fd8f764849",
+      "admission_seconds": 10.6,
+      "note": "vs 36.6 s best on 730efe1; admission includes the extra hive flushes (freeze, lease set and restore)"
+    },
+    "mutation_restart": {
+      "run_id": "cb74730b8ab74d72b14f219a99f8abb0",
+      "original_user_files_verified": 7,
+      "new_files_verified": 2,
+      "entries_verified": 128,
+      "refs_warning_or_error_events": 0
+    }
+  }
 }

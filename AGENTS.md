@@ -191,6 +191,16 @@ interruption points, physical power loss, other fixtures/builds. Next: bracket
 the shadow observation over its allocation; more interruption points.
 The VM's CheckpointType was set to Standard for that temporary checkpoint; its
 earlier value was not recorded.
+Performance (2026-10-29, default mode, 52GiB fixture, native exit 0, 15/10,
+label/mount verified): #1-5 (bd9ef21) 356.7s; parallel bracket/source hashing
+(e6e22f6) 258.7s; plus CNG read/hash overlap for file streams (e535477) and
+XXH3-128 bracket/source change-detection digests (7605ee7, user suggestion)
+134.7s (run fc94b1ef; evidence/allocation-bounded-xxh3-overlap-20261029.json).
+The lab CPU (i9-9900K) has no SHA extensions: CNG SHA-256 ~511MB/s/core, sha2
+software 300MB/s; VHDX reads 8-30GB/s mostly from host cache
+(src/bin/lab-read-bench.rs, evidence/allocation-bounded-parallel-hash-20261029.json).
+File content records and NTFS inspection stream hashes stay SHA-256. Recovery,
+interruption and mutation have not been rerun on these builds.
 
 ## Source and recovery invariants
 

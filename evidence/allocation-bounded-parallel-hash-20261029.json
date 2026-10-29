@@ -1,14 +1,15 @@
 {
   "schema_version": 1,
-  "kind": "native-allocation-bounded-conversion-parallel-bracket-hash",
-  "run_id": "6305b532a82045958b2cc8d80a63be1a",
-  "engine_run_id": "a8ce1abe6d78b0fef6e8d709e36a6bd2",
-  "source_commit": "311d3afdd7dda356a5e6c5111aea0fdfd930b838",
+  "kind": "native-allocation-bounded-conversion-parallel-hash",
+  "run_id": "73ed2e10233540e4bcb9fa995707e357",
+  "engine_run_id": "642b8374d0ed55280b89a6a69fcc50a1",
+  "source_commit": "e6e22f631c17aeb5943b1a16f96a3dd73c8f81ca",
+  "change": "shadow bracket 1 MiB chunk SHA-256 and source allocated-range 4 MiB piece SHA-256 hashed on available_parallelism - 1 workers (3 in the 4-vCPU guest)",
   "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
-  "toolset_manifest_sha256": "79a387499382bded088521120101fe1e049f2fa3c17722347e8e43b3d63caa18",
+  "toolset_manifest_sha256": "0addb50ce7ad125fe5433b35fe3aca13f83728c658193aa2263f71bd50bdbb58",
   "public_cli": {
-    "sha256": "e142368a51e2ebf5bef97e4eda2a76d84d49f903637a4f3342eccfb1e9eacabf",
-    "argv": ["--drive", "F", "--partition", "2", "--experimental-allocation-bounded"],
+    "sha256": "51f744f8bdbae53bb9cfa7c591b4212f98478c08b0b8f5ed8f5aeff9b513b92b",
+    "argv": ["--drive", "F", "--partition", "2"],
     "actual_native_exit": 0
   },
   "outcome": {
@@ -16,30 +17,40 @@
     "native_objects": 15,
     "complete_logical_hashes": 10,
     "label_and_mount_verified": true,
-    "selected_ranges": 152,
-    "selected_bytes": 70721536,
-    "shadow_bracket_closing_bytes_reread": 14771290112,
-    "result_sha256": "2f90920b3ee5c8487d0101ef3d5892333678f1e57efc83047d9b0a9481845143",
-    "finalization_sha256": "683959212f90dbf180efd17829689dce003145f5170dd8c3623b08e81486003e",
-    "records_hashes_verified_on_host": true
+    "selected_ranges": 150,
+    "selected_bytes": 70623232,
+    "journal_bytes": 141266816,
+    "result_sha256": "7e074e3c48cc61d7f8c15907e4311cf2fdf94344ffca77ed83866e68d498ec97",
+    "finalization_sha256": "24e397832dfdf754eaf5a8c45d3a12a524a97e27762baecc19c1cfcf0dbf1f35"
   },
   "timing": {
     "measure": "native process creation to the wrapper's native-terminal record",
-    "seconds": 492.8,
-    "previous_seconds": {"allocation_brackets_f9d8694": 592.8, "allocation_bounded_7ef0ee2": 772.8, "allocation_bounded_1ac5682": 952.9, "head_whole_image": 2813.3, "frozen_alpha": 3351.7},
-    "phase_markers_seconds": {"building_refs_metadata": 168, "verifying_target": 174, "preparing_recovery_journal": 426, "applying_conversion": 430, "verifying_files": 434},
-    "verify_target_phase_seconds": {"this_run": 252, "previous_f9d8694": 360}
+    "seconds": 258.7,
+    "previous_seconds": {"speedups_1_5_bd9ef21": 356.7},
+    "phase_markers_seconds": {"building_refs_metadata": 86, "verifying_target": 92, "preparing_recovery_journal": 206, "applying_conversion": 210, "verifying_files": 214},
+    "previous_phase_markers_seconds": {"building_refs_metadata": 130, "verifying_target": 136, "preparing_recovery_journal": 288, "applying_conversion": 290, "verifying_files": 294}
   },
-  "io": {
-    "last_sample_read_bytes": 154847093769,
-    "last_sample_utc": "2026-10-29T18:34:45Z"
+  "io": {"last_sample_read_bytes": 108300000000, "note": "last 30 s monitor sample, rounded to 0.1 GB"},
+  "device_measurements": {
+    "tool": "lab-read-bench (06351c5) in the guest, disk 1, 1 GiB per cell, fresh region per cell",
+    "profile": {"bus_type": 10, "maximum_transfer_bytes": 8388608, "maximum_physical_pages": 4096, "physical_sector_bytes": 4096, "incurs_seek_penalty": null},
+    "raw_read_mb_per_second": {
+      "1MiB": {"qd1": 7834, "qd2": 15417, "qd4": 16157, "qd8": 31982},
+      "2MiB": {"qd1": 11196, "qd2": 18606, "qd4": 21503, "qd8": 17323},
+      "4MiB": {"qd1": 11929, "qd2": 21019, "qd4": 18699, "qd8": 22438},
+      "8MiB": {"qd1": 12754, "qd2": 17292, "qd4": 15418, "qd8": 17725}
+    },
+    "raw_read_caveat": "VHDX reads are largely served from the 64 GB host's cache; not a physical-device measurement",
+    "sha256_single_thread_mb_per_second": {"guest_cng": 511, "host_cng": 506, "host_sha2_software": 300},
+    "cpu": "Intel Core i9-9900K (no SHA extensions); guest 4 vCPU",
+    "conclusion": "hashing, not request size, bounded the passes on this machine"
   },
-  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-6305b532a82045958b2cc8d80a63be1a/closed-conversion",
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-73ed2e10233540e4bcb9fa995707e357/closed-conversion",
   "qualification": {
     "normal_public_conversion_passed": true,
     "interruption_resume_rollback_tested_on_this_build": false,
     "mutation_restart_tested_on_this_build": false,
     "release_qualified": false
   },
-  "scope": "One normal conversion of the 52 GiB fixture after hashing the opening shadow bracket on two worker threads. Correct result in 492.8 s (8m13s)."
+  "scope": "One default-mode conversion of the 52 GiB fixture with parallel bracket/source hashing. Correct result in 258.7 s."
 }

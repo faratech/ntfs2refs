@@ -17,6 +17,9 @@ use std::{
     path::Path,
 };
 
+mod allocation;
+pub use allocation::ProtectedAllocationCoverage;
+
 fn bracket_image<R: Read + Seek, T>(
     image: &mut R,
     length: u64,
@@ -75,6 +78,7 @@ pub struct ProtectedTargetLayout {
     frozen_state: GeneralDiskState,
     resources: crate::ntfs_admission::ResourceProfile,
     routes: n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
+    allocation_coverage: ProtectedAllocationCoverage,
     raw_image_unchanged: bool,
     logical_payload_verified: bool,
     complete_allocation_graph_verified: bool,
@@ -100,6 +104,9 @@ impl ProtectedTargetLayout {
     }
     pub fn resource_profile(&self) -> crate::ntfs_admission::ResourceProfile {
         self.resources
+    }
+    pub fn allocation_coverage(&self) -> &ProtectedAllocationCoverage {
+        &self.allocation_coverage
     }
 }
 
@@ -158,13 +165,13 @@ fn verify_frozen_layout_profile(
     };
     let input = general_shadow::native_inputs(&tree);
     let length = target.byte_len();
-    let (native, raw_sha256) =
+    let ((native, anchors), raw_sha256) =
         bracket_image_with_resource_profile(target, length, resources, |target| {
             let same_security = |a: &[u8], b: &[u8]| {
                 ntfs_attestation::same_security(a, b)
                     .map_err(|error| std::io::Error::other(error.to_string()))
             };
-            Ok(match residuals {
+            let native = match residuals {
                 Some(residuals) => target.observe_refs_layout_residuals_with_resource_profile(
                     pair.clone(),
                     &input,
@@ -180,7 +187,14 @@ fn verify_frozen_layout_profile(
                     resources.native_profile(),
                     events,
                 )?,
-            })
+            };
+            // This bounded raw inspection shares the same unchanged-image
+            // bracket. Unknown/rejected anchor forms remain explicit diagnostics;
+            // they must not silently establish required-byte completeness.
+            let anchors = refs_inspect::inspect_with_resource_profile(target, length, resources)
+                .and_then(|refs| crate::refs_write_set::observed_anchors(&refs))
+                .map_err(|error| format!("{error:#}"));
+            Ok((native, anchors))
         })?;
     ensure!(
         native.before() == &before
@@ -192,6 +206,7 @@ fn verify_frozen_layout_profile(
     );
     let routes =
         n2r_win32::shadow_native::private_tree::SourceBackedRoutes::from_protected_layout(&native)?;
+    let allocation_coverage = allocation::reconcile(&native, anchors, &raw_sha256, length)?;
     Ok(ProtectedTargetLayout {
         native,
         raw_sha256,
@@ -199,6 +214,7 @@ fn verify_frozen_layout_profile(
         frozen_state: before,
         resources,
         routes,
+        allocation_coverage,
         raw_image_unchanged: true,
         logical_payload_verified: false,
         complete_allocation_graph_verified: false,

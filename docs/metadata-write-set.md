@@ -1,5 +1,18 @@
 # Candidate ReFS target write set
 
+The dated observations below retain their original checkpoint and storage
+counts. Current laboratory state and cleanup policy are in [AGENTS.md](../AGENTS.md).
+
+Protected layout observation now captures the paginated metadata-inclusive
+bitmap through its existing read-only volume lease. Coverage diagnostics bind
+that map and its page proof to the unchanged before/after raw-shadow hash, then
+report uncovered known anchors, uncovered native stream extents and unclassified
+allocated ranges. Rejected or unknown anchor forms remain explicit errors in
+that diagnostic record. Graph completeness, selective capture, source admission
+and raw-write authority remain false; full-address comparison is unchanged.
+This addition passes `cargo check --lib` and has no native qualification yet.
+It is separate from the frozen `2ff5f01` converter that completed its normal run.
+
 ## Exact NTFS rollback and independent native readback
 
 Rollback run `386c482e1fd348a4bf0e95f27d8a1ce4` restored all138 patches,

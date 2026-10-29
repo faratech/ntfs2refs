@@ -1,10 +1,10 @@
 //! Native creation on a separately bound empty ReFS volume. Never writes the
 //! source disk, manufactures ReFS bytes or grants conversion authority.
-mod evacuation;
-mod unwritten;
-pub mod private_tree;
-pub mod valid_data_probe;
 pub mod cache_refresh;
+mod evacuation;
+pub mod private_tree;
+mod unwritten;
+pub mod valid_data_probe;
 use crate::{
     attestation::{PrivilegeState, Snapshot},
     attestation_native::{Privileges, snapshot},
@@ -1098,8 +1098,7 @@ fn validate_existing_profile(
             || standard[20] != 0
             || (standard[21] != 0) != i.directory
             || (!i.directory && layout::u64_at(standard, 8)? != i.logical_length())
-            || (verify_contents
-                && o.logical_sha256 != (!i.directory).then(|| i.logical_sha256()))
+            || (verify_contents && o.logical_sha256 != (!i.directory).then(|| i.logical_sha256()))
             || (!verify_contents && o.logical_sha256.is_some())
         {
             return Err(invalid(
@@ -2092,7 +2091,9 @@ pub(crate) fn observe_general_layout_readonly_with_resource_profile(
     )?;
     validate_existing_profile(&native, input, &same_security, false, None, false)?;
     if native.payload_bytes_written != 0 || native.conversion_qualified {
-        return Err(invalid("protected layout observer granted mutation authority"));
+        return Err(invalid(
+            "protected layout observer granted mutation authority",
+        ));
     }
     Ok(GeneralLayoutReport {
         pair,
@@ -2127,9 +2128,15 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralLayoutReport> {
     let mut report = observe_general_layout_readonly_with_resource_profile(
-        pair, input, &same_security, protected, resource_profile,
+        pair,
+        input,
+        &same_security,
+        protected,
+        resource_profile,
     )?;
-    let required: Vec<_> = input.iter().enumerate()
+    let required: Vec<_> = input
+        .iter()
+        .enumerate()
         .filter(|(_, item)| !item.directory && item.logical_length() % 4096 != 0)
         .collect();
     if required.len() != residuals.len() {
@@ -2142,15 +2149,20 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
             || expected.length != length % 4096
             || expected.length == 0
             || expected.sha256.len() != 64
-            || !expected.sha256.bytes()
+            || !expected
+                .sha256
+                .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
-            return Err(invalid("composite residual expectation escapes initialized suffix"));
+            return Err(invalid(
+                "composite residual expectation escapes initialized suffix",
+            ));
         }
     }
     let binding = &report.native.binding;
     let before = protected.snapshot(binding, &mut report.native.events)?;
-    if before.disk_attributes != 2 || before.device != report.native.before.device
+    if before.disk_attributes != 2
+        || before.device != report.native.before.device
         || before.layout != report.native.before.layout
     {
         return Err(invalid("composite residual native binding changed"));
@@ -2164,7 +2176,9 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
         let path = format!("{}{}", root, object.components.join("\\"));
         let mut file = open_protected_readonly(&path, false)?;
         if snapshot(&file) != object.before {
-            return Err(invalid("composite residual identity or metadata changed before read"));
+            return Err(invalid(
+                "composite residual identity or metadata changed before read",
+            ));
         }
         file.seek(SeekFrom::Start(expected.logical_offset))?;
         let count = expected.length as usize;
@@ -2173,13 +2187,19 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
             || hex::encode(Sha256::digest(&buffer[..count])) != expected.sha256
             || snapshot(&file) != object.after
         {
-            return Err(invalid("composite initialized suffix contents, EOF or metadata differ"));
+            return Err(invalid(
+                "composite initialized suffix contents, EOF or metadata differ",
+            ));
         }
-        bytes_read = bytes_read.checked_add(expected.length)
+        bytes_read = bytes_read
+            .checked_add(expected.length)
             .ok_or_else(|| invalid("composite residual byte count overflow"))?;
     }
     privileges.restore()?;
-    report.native.privilege_states.extend_from_slice(privileges.audit());
+    report
+        .native
+        .privilege_states
+        .extend_from_slice(privileges.audit());
     let after = protected.snapshot(binding, &mut report.native.events)?;
     if serde_json::to_vec(&before)? != serde_json::to_vec(&after)? {
         return Err(invalid("composite residual protection changed"));
@@ -2600,7 +2620,9 @@ fn run_role_profile(
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<Report> {
     if mode == Mode::ObserveLayout && protected.is_none() {
-        return Err(invalid("ReFS layout observation requires a protected native lease"));
+        return Err(invalid(
+            "ReFS layout observation requires a protected native lease",
+        ));
     }
     let (maximum_objects, maximum_logical_bytes) = match resource_profile {
         None => (160usize, 256u64 * 1024 * 1024),
@@ -3199,8 +3221,8 @@ fn run_role_profile(
         volume.sync_all()?;
     }
     // Full semantic verification retains both bitmap observations. Layout-only
-    // observation makes no complete-allocation claim and does not turn a
-    // mounted bitmap into a frozen graph proof.
+    // collection queries the metadata-inclusive view through the actual
+    // protected post-freeze volume; this is still not an allocation graph proof.
     let bitmaps = if mode == Mode::ObserveLayout {
         None
     } else {
@@ -3220,13 +3242,34 @@ fn run_role_profile(
         )?;
         Some((legacy, metadata))
     };
-    let metadata_allocation = bitmaps.as_ref()
-        .map(|(_, metadata)| metadata.allocation_map(binding.identity.partition_bytes))
+    let layout_metadata = if mode == Mode::ObserveLayout {
+        if protected.is_none() {
+            return Err(invalid(
+                "layout allocation requires the protected read-only lease",
+            ));
+        }
+        let mut input = [0u8; 16];
+        input[8] = 1; // Same existing metadata-inclusive bitmap request.
+        Some(crate::bitmap_observation::Observation::capture(
+            volume,
+            &input,
+            binding.identity.partition_bytes,
+            resource_profile.is_some(),
+        )?)
+    } else {
+        None
+    };
+    let metadata_view = layout_metadata
+        .as_ref()
+        .or_else(|| bitmaps.as_ref().map(|(_, metadata)| metadata));
+    let metadata_allocation = metadata_view
+        .map(|metadata| metadata.allocation_map(binding.identity.partition_bytes))
         .transpose()?;
     // These maps are immutable for the complete verification pass. Hash each
     // only once even if many files report a source-placement candidate. Move
     // attempts above still collect and recheck fresh native bitmaps separately.
-    let candidate_views = if let Some((legacy_bitmap, metadata_bitmap)) = bitmaps.as_ref()
+    let candidate_views = if let Some((legacy_bitmap, metadata_bitmap)) = bitmaps
+        .as_ref()
         .filter(|_| input.iter().any(|i| i.source_offset.is_some()))
     {
         Some((
@@ -3400,7 +3443,8 @@ fn run_role_profile(
             namespace,
             streams,
             source_candidate: i
-                .source_offset.filter(|_| mode != Mode::ObserveLayout)
+                .source_offset
+                .filter(|_| mode != Mode::ObserveLayout)
                 .map(|offset| -> io::Result<_> {
                     let (legacy_view, metadata_view) = candidate_views
                         .as_ref()
@@ -3410,10 +3454,16 @@ fn run_role_profile(
                             .candidate(offset, i.logical_length().next_multiple_of(4096))?,
                         metadata_inclusive: metadata_view
                             .candidate(offset, i.logical_length().next_multiple_of(4096))?,
-                        legacy_page_proof: bitmaps.as_ref()
-                            .ok_or_else(|| invalid("candidate legacy bitmap missing"))?.0.proof(),
-                        metadata_page_proof: bitmaps.as_ref()
-                            .ok_or_else(|| invalid("candidate metadata bitmap missing"))?.1.proof(),
+                        legacy_page_proof: bitmaps
+                            .as_ref()
+                            .ok_or_else(|| invalid("candidate legacy bitmap missing"))?
+                            .0
+                            .proof(),
+                        metadata_page_proof: bitmaps
+                            .as_ref()
+                            .ok_or_else(|| invalid("candidate metadata bitmap missing"))?
+                            .1
+                            .proof(),
                     })
                 })
                 .transpose()?,
@@ -3437,7 +3487,7 @@ fn run_role_profile(
         after,
         objects,
         metadata_allocation,
-        metadata_allocation_page_proof: bitmaps.as_ref().map(|(_, metadata)| metadata.proof()),
+        metadata_allocation_page_proof: metadata_view.map(|metadata| metadata.proof()),
         base_sectors: 0,
         privilege_states: privileges.audit().to_vec(),
         events,

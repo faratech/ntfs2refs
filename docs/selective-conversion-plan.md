@@ -97,8 +97,25 @@ Remaining reads by phase (approximate): inspect and build 135 GB, verify target
 145 GB (about two complete shadow bracket hashes plus the 2 × 14.77 GB
 allocation comparison), file verification about 11 GB. Next savings, in order:
 bracket the protected shadow observation over its allocation only (about 80 GB),
-then replace the whole-source certificate hash (step 4). Recovery is not yet
-supported for this mode (step 4), and nothing here is interruption-qualified.
+then replace the whole-source certificate hash (step 4).
+
+Recovery for this mode is implemented in `b49eae6` but not yet exercised
+natively. The conversion publishes `allocation-recovery-bundle.json` (pins only)
+before activation and prints its checksum; `--recover` routes to
+`general_recovery::recover_allocation` when only that bundle exists. The
+selected journal's own lifecycle chooses the action:
+
+| Journal state | `--recover` | `--recover --rollback` |
+|---|---|---|
+| Clear (apply never started) | refused: would be a fresh apply | close with ABT after proving old bytes, mount NTFS |
+| Apply intent | resume, HND, native ReFS checks | restore old bytes, ABT, mount NTFS |
+| Rollback intent | refused | finish rollback, ABT, mount NTFS |
+| HND | recheck new bytes, native ReFS checks | refused |
+| ABT | refused | recheck old bytes, mount NTFS |
+
+The journal holds both byte versions, so recovery needs neither the shadow nor
+the packed capture. The lab binary injects the fault with `--selected-devices
+--allocation-bounded --interrupt-after-writes N`.
 
 ## Proposed path
 

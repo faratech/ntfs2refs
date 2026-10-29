@@ -160,9 +160,17 @@ launcher lab/Start-AllocationBoundedConversion.ps1, 1ac5682) converted the
 fixture natively in 952.9s (vs 2,813.3s whole-image HEAD), reading >=295.0GB,
 15 objects/10 hashes, label/mount verified; see
 evidence/allocation-bounded-conversion-20261029.json. No interruption, recovery,
-mutation or reboot results; public --recover cannot read its N2RSEL01 journal.
-Next: bracket the protected shadow observation over its allocation only, then
-selective certificate and recovery-bundle support, then the recovery matrix.
+mutation or reboot results.
+Recovery (b49eae6): the conversion publishes allocation-recovery-bundle.json
+before activation; --recover routes to general_recovery::recover_allocation when
+only that bundle exists; the journal lifecycle selects resume/verify-handoff or
+rollback/abandon/verify-abort, never a fresh apply. Lab fault entry:
+lab-convert-native-composite --selected-devices --allocation-bounded
+--interrupt-after-writes N (exit 86). NOT yet exercised natively. Next: adapt
+Start-OptimizedCompactInterruption.ps1 / Save-OptimizedPartial.ps1 /
+Start-OptimizedRecovery.ps1 (pinned to old runs; do not reuse blindly) for this
+mode, checkpoint the interrupted state once, then run --recover resume and
+--rollback from it. Then bracket the shadow observation over its allocation.
 
 ## Source and recovery invariants
 

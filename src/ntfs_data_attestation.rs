@@ -158,8 +158,22 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
     }
     let mut observed = 0u64;
     let mut complete = 0u64;
+    ensure!(
+        matches!(native.content_passes, 1 | 2),
+        "native content pass count is unsupported"
+    );
     for file in &data.files {
-        for h in file.before.iter().chain(&file.after) {
+        // A single content pass is mirrored into `after`; count it once.
+        ensure!(
+            native.content_passes == 2 || file.after == file.before,
+            "single-pass native logical data is not mirrored exactly"
+        );
+        let after: &[_] = if native.content_passes == 1 {
+            &[]
+        } else {
+            &file.after
+        };
+        for h in file.before.iter().chain(after) {
             observed = observed
                 .checked_add(h.outcome.bytes_read)
                 .context("native logical byte sum overflow")?;

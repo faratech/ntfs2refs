@@ -18,7 +18,7 @@ use std::{
 };
 
 mod allocation;
-pub use allocation::ProtectedAllocationCoverage;
+pub use allocation::{CapturedDeltaAllocationDiagnostic, ProtectedAllocationCoverage};
 
 fn bracket_image<R: Read + Seek, T>(
     image: &mut R,

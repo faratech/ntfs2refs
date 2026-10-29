@@ -65,6 +65,10 @@ impl DeltaLayout {
         self.ranges.len()
     }
 
+    pub(crate) fn intervals(&self) -> &[ChangedRange] {
+        &self.ranges
+    }
+
     /// Journal patch splitting may differ, but its write set must cover exactly
     /// these changed bytes. No source-backed complement byte may be armed.
     pub fn require_exact_write_ranges(&self, patches: &[(u64, u64)]) -> Result<()> {

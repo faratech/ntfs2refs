@@ -24,6 +24,87 @@ pub struct ProtectedAllocationCoverage {
     raw_write_authority: bool,
 }
 
+/// Retrospective size accounting over an already completed full capture.
+/// Neither category proves that a changed byte is safe to omit.
+#[derive(Debug, Serialize)]
+pub struct CapturedDeltaAllocationDiagnostic {
+    changed_bytes: u64,
+    changed_in_observed_bitmap_or_known_ranges: u64,
+    changed_outside_observed_bitmap_and_known_ranges: u64,
+    hypothetical_packed_bytes_avoided: u64,
+    hypothetical_journal_payload_bytes_avoided: u64,
+    known_anchor_observation_complete: bool,
+    allocation_graph_complete: bool,
+    selective_capture_executable: bool,
+    raw_write_authority: bool,
+}
+
+impl ProtectedAllocationCoverage {
+    /// Compare actual full-capture ranges with the bitmap and known anchor and
+    /// stream ranges already held by the protected layout. This performs no disk
+    /// I/O and does not assert that bitmap-free bytes are unused by ReFS.
+    pub(crate) fn classify_capture(
+        &self,
+        native: &GeneralLiveRefsLayoutObservation,
+        layout: &crate::refs_hybrid::delta::DeltaLayout,
+    ) -> Result<CapturedDeltaAllocationDiagnostic> {
+        let map = native
+            .report()
+            .native()
+            .metadata_allocation
+            .as_ref()
+            .context("protected allocation bitmap absent")?;
+        ensure!(
+            layout.partition_bytes() == self.partition_bytes
+                && map.bitmap_sha256 == self.metadata_bitmap_sha256
+                && map.cluster_count.checked_mul(4096) == Some(self.partition_bytes),
+            "delta diagnostic bitmap or partition binding differs"
+        );
+        let allocated = map.ranges.iter().map(|range| ByteRange {
+            offset: range.offset,
+            length: range.length,
+        });
+        // Known anchors and stream extents outside the bitmap remain included.
+        let observed = union(
+            allocated
+                .chain(self.anchors_uncovered_by_bitmap.iter().copied())
+                .chain(self.streams_uncovered_by_bitmap.iter().copied())
+                .collect(),
+            self.partition_bytes,
+        )?;
+        let changed = union(
+            layout
+                .intervals()
+                .iter()
+                .map(|range| ByteRange {
+                    offset: range.offset,
+                    length: range.length,
+                })
+                .collect(),
+            self.partition_bytes,
+        )?;
+        let changed_bytes = total(&changed)?;
+        ensure!(
+            changed_bytes == layout.changed_bytes(),
+            "delta byte total differs"
+        );
+        let outside = total(&subtract(&changed, &observed)?)?;
+        Ok(CapturedDeltaAllocationDiagnostic {
+            changed_bytes,
+            changed_in_observed_bitmap_or_known_ranges: changed_bytes - outside,
+            changed_outside_observed_bitmap_and_known_ranges: outside,
+            hypothetical_packed_bytes_avoided: outside,
+            hypothetical_journal_payload_bytes_avoided: outside
+                .checked_mul(2)
+                .context("hypothetical journal payload total overflow")?,
+            known_anchor_observation_complete: self.anchor_observation_error.is_none(),
+            allocation_graph_complete: false,
+            selective_capture_executable: false,
+            raw_write_authority: false,
+        })
+    }
+}
+
 fn union(mut ranges: Vec<ByteRange>, length: u64) -> Result<Vec<ByteRange>> {
     ensure!(
         ranges.len() <= 131072,

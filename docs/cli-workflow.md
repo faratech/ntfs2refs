@@ -88,6 +88,14 @@ reads and verifies the flushed journal, saving another complete journal read.
 Compact capture also batches adjacent changed clusters into bounded writes;
 the byte budget and packed image remain unchanged. These changes are awaiting
 native qualification and have not been measured end to end.
+The capture's full source and candidate hashes use CNG; on multicore systems
+the candidate hash runs on a bounded worker while the source is processed.
+Their framing and complete-byte checks are unchanged. This change also awaits
+native qualification and an end-to-end measurement.
+After a complete capture, its report estimates how many changed bytes lie
+outside the observed allocation bitmap and known ranges. Those estimates do
+not authorize omitting those bytes: the complete ReFS allocation graph is not
+yet proven, and the converter continues to capture the full address space.
 
 For the Windows streaming-v2 profile, whole-image reconstruction and recovery
 hashes now use the existing fallible CNG SHA-256 backend, including normalized

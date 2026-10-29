@@ -3,7 +3,7 @@
 //! proves the compact backing. This module issues no source/write certificate.
 use crate::{
     general_shadow::source_backed::{DifferenceCapture, SourceBackedShadow},
-    general_target_preservation::{self, ProtectedTargetLayout},
+    general_target_preservation::{self, CapturedDeltaAllocationDiagnostic, ProtectedTargetLayout},
     lab_reconstruct,
     ntfs_admission::ResourceProfile,
     ntfs_inspect, ntfs_source_view,
@@ -101,6 +101,8 @@ pub struct FrozenCompositeTargetPreservation {
     protected: ProtectedTargetLayout,
     residuals: Vec<LayoutResidualExpectation>,
     capture: DifferenceCapture,
+    allocation_delta_diagnostic: Option<CapturedDeltaAllocationDiagnostic>,
+    allocation_delta_diagnostic_error: Option<String>,
     backing: PinnedBacking,
     composite_target_sha256: String,
     comparison: RetainedCompareRequest,
@@ -383,6 +385,15 @@ pub fn verify_and_capture(
             && !capture.conversion_qualified,
         "composite capture does not cover the complete frozen source address space"
     );
+    // Retrospective accounting only: the complete capture remains unchanged.
+    // A partial/unsupported diagnostic cannot alter conversion admission.
+    let (allocation_delta_diagnostic, allocation_delta_diagnostic_error) = match protected
+        .allocation_coverage()
+        .classify_capture(protected.native(), &capture.layout)
+    {
+        Ok(value) => (Some(value), None),
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
     let mut backing = PinnedBacking::open(
         packed_path,
         capture.layout.changed_bytes(),
@@ -456,6 +467,8 @@ pub fn verify_and_capture(
         protected,
         residuals,
         capture,
+        allocation_delta_diagnostic,
+        allocation_delta_diagnostic_error,
         backing,
         composite_target_sha256,
         comparison,

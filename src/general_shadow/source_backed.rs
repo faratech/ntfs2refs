@@ -12,6 +12,45 @@ use std::io::{self, Read, Seek, SeekFrom};
 const NATIVE_CAPTURE_BYTES: usize = 1024 * 1024;
 const LOGICAL_SOURCE_READ_BYTES: usize = 65536;
 
+// Hash the candidate in parallel with source comparison on machines with
+// spare CPUs. The bounded worker receives precisely the same framed bytes;
+// one-core machines keep the digest on the caller instead.
+enum CaptureDigest {
+    Serial(crate::retained_compare::stream_digest::StreamDigest),
+    Worker(crate::retained_compare::digest_pipeline::Pipeline),
+}
+
+impl CaptureDigest {
+    fn new() -> Result<Self> {
+        if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2) {
+            Ok(Self::Worker(
+                crate::retained_compare::digest_pipeline::Pipeline::with_native_backend(
+                    NATIVE_CAPTURE_BYTES,
+                    true,
+                )?,
+            ))
+        } else {
+            Ok(Self::Serial(
+                crate::retained_compare::stream_digest::StreamDigest::new(true)?,
+            ))
+        }
+    }
+
+    fn update(&mut self, bytes: &[u8]) -> Result<()> {
+        match self {
+            Self::Serial(hash) => hash.update(bytes),
+            Self::Worker(hash) => hash.update(bytes),
+        }
+    }
+
+    fn finish(self) -> Result<[u8; 32]> {
+        match self {
+            Self::Serial(hash) => hash.finish(),
+            Self::Worker(hash) => hash.finish(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct ReadCounts {
     pub source_logical_bytes: u64,
@@ -209,7 +248,7 @@ impl<'a> SourceBackedShadow<'a> {
         // the exact 4 KiB comparison, budget and output loop is unchanged.
         let mut original = vec![0u8; NATIVE_CAPTURE_BYTES];
         let mut candidate = vec![0u8; NATIVE_CAPTURE_BYTES];
-        let mut source_digest = Sha256::new();
+        let mut source_digest = crate::retained_compare::stream_digest::StreamDigest::new(true)?;
         let mut source_raw = if selection.len() == 1
             && selection[0].offset == 0
             && selection[0].length == self.length
@@ -219,16 +258,18 @@ impl<'a> SourceBackedShadow<'a> {
         } else {
             None
         };
-        let mut candidate_digest = Sha256::new();
+        let mut candidate_digest = CaptureDigest::new()?;
         let mut packed_digest = Sha256::new();
         let mut changed = 0u64;
         let mut compared = 0u64;
         let mut ranges: Vec<ChangedRange> = Vec::new();
         for range in selection {
-            for digest in [&mut source_digest, &mut candidate_digest] {
-                digest.update(range.offset.to_le_bytes());
-                digest.update(range.length.to_le_bytes());
-            }
+            let offset = range.offset.to_le_bytes();
+            let length = range.length.to_le_bytes();
+            source_digest.update(&offset)?;
+            source_digest.update(&length)?;
+            candidate_digest.update(&offset)?;
+            candidate_digest.update(&length)?;
             let mut done = 0;
             while done < range.length {
                 let count = (range.length - done).min(original.len() as u64) as usize;
@@ -237,11 +278,11 @@ impl<'a> SourceBackedShadow<'a> {
                 self.read_exact(&mut candidate[..count])?;
                 self.source.seek(SeekFrom::Start(at))?;
                 self.source.read_exact(&mut original[..count])?;
-                source_digest.update(&original[..count]);
+                source_digest.update(&original[..count])?;
                 if let Some(digest) = &mut source_raw {
                     digest.update(&original[..count])?;
                 }
-                candidate_digest.update(&candidate[..count]);
+                candidate_digest.update(&candidate[..count])?;
                 let mut offset = 0;
                 while offset < count {
                     if original[offset..offset + 4096] == candidate[offset..offset + 4096] {
@@ -309,8 +350,8 @@ impl<'a> SourceBackedShadow<'a> {
             selected_bytes_compared: compared,
             equal_selected_bytes: compared - changed,
             read_counts,
-            source_selected_sha256: hex::encode(source_digest.finalize()),
-            candidate_selected_sha256: hex::encode(candidate_digest.finalize()),
+            source_selected_sha256: hex::encode(source_digest.finish()?),
+            candidate_selected_sha256: hex::encode(candidate_digest.finish()?),
             packed_sha256: hex::encode(packed_digest.finalize()),
             input_plan_sha256,
             conversion_qualified: false,

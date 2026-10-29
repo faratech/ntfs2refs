@@ -295,7 +295,15 @@ fn prepare_source_context(
     } else {
         ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?
     };
-    let observed = source.observe_ntfs_files(&request, events)?;
+    // In the allocation-bounded mode the allocated-range digest brackets this
+    // observation over the frozen, read-only source, so one content pass is
+    // enough; the whole-image path keeps both passes.
+    let observed = match digest_kind {
+        SourceDigest::WholeImage => source.observe_ntfs_files(&request, events)?,
+        SourceDigest::NtfsAllocated => {
+            source.observe_ntfs_files_single_content_pass(&request, events)?
+        }
+    };
     save(output, "native-source.json", observed.report())?;
     let assessment = match &allocated {
         None => general_source_admission::assess(

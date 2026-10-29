@@ -454,6 +454,9 @@ pub struct FrozenAllocationTargetPreservation {
     residuals: Vec<LayoutResidualExpectation>,
     selection: Vec<crate::refs_write_set::ByteRange>,
     selection_sha256: String,
+    /// The selection minus payload proven in place by identical physical runs.
+    compared: Vec<crate::refs_write_set::ByteRange>,
+    in_place_payload_bytes_not_compared: u64,
     capture: DifferenceCapture,
     backing: PinnedBacking,
     source_before: GeneralDiskState,
@@ -546,6 +549,122 @@ impl FrozenAllocationTargetPreservation {
     }
 }
 
+/// Shadow routes whose physical location equals the frozen NTFS run for the
+/// same logical bytes. The source-backed candidate reads those very bytes, so
+/// comparing them with the source is redundant. Only whole granules below the
+/// stream's EOF qualify; relocated pieces and EOF tails stay compared.
+fn in_place_payload_ranges(
+    raw: &ntfs_inspect::NtfsInspection,
+    tree: &shadow_tree::Tree,
+    routes: &n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
+) -> Result<Vec<crate::refs_write_set::ByteRange>> {
+    let mut found = Vec::new();
+    for route in routes.entries() {
+        let object = tree
+            .objects
+            .get(route.object_index)
+            .context("in-place route object absent")?;
+        let files: Vec<_> = raw
+            .files
+            .iter()
+            .filter(|file| {
+                file.record_number == object.record_number
+                    && file.sequence_number == object.sequence_number
+            })
+            .collect();
+        ensure!(files.len() == 1, "in-place route source file is ambiguous");
+        let data: Vec<_> = files[0]
+            .attributes
+            .iter()
+            .filter(|a| a.type_code == 0x80 && a.name_utf16.is_empty())
+            .collect();
+        let [data] = data.as_slice() else {
+            continue; // Ambiguous or absent unnamed data: keep it compared.
+        };
+        if data.resident || data.flags != 0 || data.lowest_vcn != 0 {
+            continue;
+        }
+        let whole_end = route.stream_length / 4096 * 4096;
+        let route_end = route
+            .logical_offset
+            .checked_add(route.length)
+            .context("route overflow")?
+            .min(whole_end);
+        for extent in &data.extents {
+            let Some(physical) = extent.physical_offset else {
+                continue;
+            };
+            let start = extent.logical_offset.max(route.logical_offset);
+            let end = extent
+                .logical_offset
+                .checked_add(extent.length)
+                .context("NTFS extent overflow")?
+                .min(route_end);
+            if end <= start {
+                continue;
+            }
+            let ntfs_physical = physical + (start - extent.logical_offset);
+            let shadow_physical = route.target_physical_offset + (start - route.logical_offset);
+            if ntfs_physical == shadow_physical
+                && start.is_multiple_of(4096)
+                && end.is_multiple_of(4096)
+            {
+                found.push(crate::refs_write_set::ByteRange {
+                    offset: shadow_physical,
+                    length: end - start,
+                });
+            }
+        }
+    }
+    found.sort_by_key(|range| range.offset);
+    let mut merged: Vec<crate::refs_write_set::ByteRange> = Vec::with_capacity(found.len());
+    for range in found {
+        match merged.last_mut() {
+            Some(last) if range.offset <= last.offset + last.length => {
+                last.length =
+                    (last.offset + last.length).max(range.offset + range.length) - last.offset;
+            }
+            _ => merged.push(range),
+        }
+    }
+    Ok(merged)
+}
+
+/// `left` minus `right`, both sorted and coalesced.
+fn subtract_ranges(
+    left: &[crate::refs_write_set::ByteRange],
+    right: &[crate::refs_write_set::ByteRange],
+) -> Vec<crate::refs_write_set::ByteRange> {
+    let mut out = Vec::new();
+    let mut first = 0usize;
+    for range in left {
+        let end = range.offset + range.length;
+        while first < right.len() && right[first].offset + right[first].length <= range.offset {
+            first += 1;
+        }
+        let mut cursor = range.offset;
+        for other in &right[first..] {
+            if other.offset >= end {
+                break;
+            }
+            if cursor < other.offset {
+                out.push(crate::refs_write_set::ByteRange {
+                    offset: cursor,
+                    length: other.offset - cursor,
+                });
+            }
+            cursor = cursor.max((other.offset + other.length).min(end));
+        }
+        if cursor < end {
+            out.push(crate::refs_write_set::ByteRange {
+                offset: cursor,
+                length: end - cursor,
+            });
+        }
+    }
+    out
+}
+
 /// Allocation-bounded target proof: the shared protected prefix, then a
 /// source-backed capture over only the protected native allocation.
 #[allow(clippy::too_many_arguments)]
@@ -588,7 +707,13 @@ pub fn verify_and_select(
         .allocation_coverage()
         .observed_ranges(protected.native())?;
     let selection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&selection)?));
-    let selected_bytes: u64 = selection.iter().map(|range| range.length).sum();
+    // Payload that stayed at its NTFS location is the same physical bytes in
+    // both images; compare everything else in the selection.
+    let in_place = in_place_payload_ranges(raw, &tree, protected.routes())?;
+    let compared = subtract_ranges(&selection, &in_place);
+    let compared_bytes: u64 = compared.iter().map(|range| range.length).sum();
+    let selection_bytes: u64 = selection.iter().map(|range| range.length).sum();
+    let in_place_bytes = selection_bytes - compared_bytes;
     let capture = SourceBackedShadow::new(
         source,
         target,
@@ -597,13 +722,13 @@ pub fn verify_and_select(
         protected.routes(),
         protected.routes().payload_bytes().max(1),
     )?
-    .capture_listed_differences_to_new_file(&selection, packed_path, max_changed_bytes)?;
+    .capture_listed_differences_to_new_file(&compared, packed_path, max_changed_bytes)?;
     ensure!(
-        capture.selected_bytes_compared == selected_bytes
+        capture.selected_bytes_compared == compared_bytes
             && capture
                 .equal_selected_bytes
                 .checked_add(capture.layout.changed_bytes())
-                == Some(selected_bytes)
+                == Some(compared_bytes)
             && capture.layout.changed_bytes() > 0
             && !capture.conversion_qualified,
         "allocation-bounded capture does not cover exactly the protected selection"
@@ -641,6 +766,8 @@ pub fn verify_and_select(
         residuals,
         selection,
         selection_sha256,
+        compared,
+        in_place_payload_bytes_not_compared: in_place_bytes,
         capture,
         backing,
         source_before,

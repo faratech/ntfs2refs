@@ -231,6 +231,9 @@ fn verify_frozen_layout_profile(
 #[derive(Debug, Serialize)]
 pub struct AllocationBracketClosure {
     opening: &'static str,
+    raw_sha256_meaning: &'static str,
+    opening_chunks: usize,
+    opening_bytes: u64,
     closing_ranges: usize,
     closing_chunks: usize,
     closing_bytes_reread: u64,
@@ -239,75 +242,8 @@ pub struct AllocationBracketClosure {
 
 const BRACKET_CHUNK: u64 = 1024 * 1024;
 
-/// Opening pass over the complete frozen image: its SHA-256 plus a digest of
-/// every 1 MiB chunk, so the closing pass can recheck only part of it. The image
-/// is read once on this thread; two workers hash the same buffers in parallel.
-fn open_chunked_bracket<R: Read + Seek>(
-    image: &mut R,
-    length: u64,
-) -> Result<(String, Vec<[u8; 32]>)> {
-    use std::sync::{Arc, mpsc};
-    let expected_chunks = usize::try_from(length.div_ceil(BRACKET_CHUNK))?;
-    image.seek(SeekFrom::Start(0))?;
-    std::thread::scope(|scope| -> Result<(String, Vec<[u8; 32]>)> {
-        let (whole_tx, whole_rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(4);
-        let (chunk_tx, chunk_rx) = mpsc::sync_channel::<Arc<Vec<u8>>>(4);
-        // Each worker creates its CNG objects on its own thread.
-        let whole = scope.spawn(move || -> std::io::Result<[u8; 32]> {
-            let mut hash = n2r_win32::sha256_native::Sha256::new()?;
-            for buffer in whole_rx {
-                hash.update(&buffer)?;
-            }
-            hash.finish()
-        });
-        let chunked = scope.spawn(move || -> std::io::Result<Vec<[u8; 32]>> {
-            let mut hash = n2r_win32::sha256_native::Sha256Reusable::new()?;
-            let mut digests = Vec::with_capacity(expected_chunks);
-            for buffer in chunk_rx {
-                digests.push(hash.digest(&buffer)?);
-            }
-            Ok(digests)
-        });
-        let mut done = 0u64;
-        let mut read = Ok(());
-        while done < length {
-            let count = usize::try_from((length - done).min(BRACKET_CHUNK))?;
-            let mut buffer = vec![0u8; count];
-            if let Err(error) = image.read_exact(&mut buffer) {
-                read = Err(error);
-                break;
-            }
-            let shared = Arc::new(buffer);
-            if whole_tx.send(Arc::clone(&shared)).is_err() || chunk_tx.send(shared).is_err() {
-                break; // A worker failed; its error is reported below.
-            }
-            done += count as u64;
-        }
-        drop(whole_tx);
-        drop(chunk_tx);
-        let whole = whole
-            .join()
-            .map_err(|_| anyhow::anyhow!("whole-image bracket hash worker panicked"))??;
-        let chunks = chunked
-            .join()
-            .map_err(|_| anyhow::anyhow!("chunk bracket hash worker panicked"))??;
-        read?;
-        ensure!(
-            done == length && chunks.len() == expected_chunks,
-            "opening bracket pass did not cover the complete image"
-        );
-        Ok((hex::encode(whole), chunks))
-    })
-}
-
-/// Recheck every opening chunk that overlaps the sorted `ranges`. Chunks
-/// outside them are not read again.
-fn close_chunked_bracket<R: Read + Seek>(
-    image: &mut R,
-    length: u64,
-    chunks: &[[u8; 32]],
-    ranges: &[crate::refs_write_set::ByteRange],
-) -> Result<(usize, u64)> {
+/// Sorted distinct 1 MiB chunk indices overlapping the sorted `ranges`.
+fn chunk_indices(ranges: &[crate::refs_write_set::ByteRange], length: u64) -> Result<Vec<u64>> {
     let mut indices: Vec<u64> = Vec::new();
     for range in ranges {
         let end = range
@@ -316,7 +252,7 @@ fn close_chunked_bracket<R: Read + Seek>(
             .context("bracket range overflow")?;
         ensure!(
             range.length != 0 && end <= length,
-            "bracket closing range escapes the image"
+            "bracket range escapes the image"
         );
         for index in range.offset / BRACKET_CHUNK..=(end - 1) / BRACKET_CHUNK {
             if indices.last() != Some(&index) {
@@ -326,16 +262,92 @@ fn close_chunked_bracket<R: Read + Seek>(
     }
     indices.sort_unstable();
     indices.dedup();
+    Ok(indices)
+}
+
+/// Opening pass over only the chunks overlapping `ranges`: their digests, plus
+/// one SHA-256 over every (index, digest) pair. The image is read on this
+/// thread while a worker hashes the previous buffers.
+fn open_allocated_bracket<R: Read + Seek>(
+    image: &mut R,
+    length: u64,
+    ranges: &[crate::refs_write_set::ByteRange],
+) -> Result<(String, Vec<(u64, [u8; 32])>, u64)> {
+    use std::sync::mpsc;
+    let indices = chunk_indices(ranges, length)?;
+    std::thread::scope(|scope| -> Result<(String, Vec<(u64, [u8; 32])>, u64)> {
+        let (tx, rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(4);
+        let expected = indices.len();
+        // The worker creates its CNG object on its own thread.
+        let worker = scope.spawn(move || -> std::io::Result<Vec<(u64, [u8; 32])>> {
+            let mut hash = n2r_win32::sha256_native::Sha256Reusable::new()?;
+            let mut digests = Vec::with_capacity(expected);
+            for (index, buffer) in rx {
+                digests.push((index, hash.digest(&buffer)?));
+            }
+            Ok(digests)
+        });
+        let mut read = Ok(());
+        let mut bytes = 0u64;
+        for &index in &indices {
+            let at = index * BRACKET_CHUNK;
+            let count = usize::try_from((length - at).min(BRACKET_CHUNK))?;
+            let mut buffer = vec![0u8; count];
+            if let Err(error) = image
+                .seek(SeekFrom::Start(at))
+                .and_then(|_| image.read_exact(&mut buffer))
+            {
+                read = Err(error);
+                break;
+            }
+            bytes += count as u64;
+            if tx.send((index, buffer)).is_err() {
+                break; // The worker failed; its error is reported below.
+            }
+        }
+        drop(tx);
+        let digests = worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("bracket chunk hash worker panicked"))??;
+        read?;
+        ensure!(
+            digests.len() == indices.len(),
+            "opening bracket pass did not cover every allocated chunk"
+        );
+        let mut summary = n2r_win32::sha256_native::Sha256::new()?;
+        for (index, digest) in &digests {
+            summary.update(&index.to_le_bytes())?;
+            summary.update(digest)?;
+        }
+        Ok((hex::encode(summary.finish()?), digests, bytes))
+    })
+}
+
+/// Recheck every chunk overlapping the sorted `ranges` against the opening
+/// pass. A chunk the opening pass did not hash refuses.
+fn close_allocated_bracket<R: Read + Seek>(
+    image: &mut R,
+    length: u64,
+    opened: &[(u64, [u8; 32])],
+    ranges: &[crate::refs_write_set::ByteRange],
+) -> Result<(usize, u64)> {
+    let indices = chunk_indices(ranges, length)?;
     let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
     let mut hash = n2r_win32::sha256_native::Sha256Reusable::new()?;
     let mut reread = 0u64;
     for &index in &indices {
+        let expected = opened
+            .binary_search_by_key(&index, |(opened, _)| *opened)
+            .map(|position| opened[position].1)
+            .map_err(|_| {
+                anyhow::anyhow!("closing allocation includes a chunk the opening pass did not hash")
+            })?;
         let at = index * BRACKET_CHUNK;
         let count = usize::try_from((length - at).min(BRACKET_CHUNK))?;
         image.seek(SeekFrom::Start(at))?;
         image.read_exact(&mut buffer[..count])?;
         ensure!(
-            Some(&hash.digest(&buffer[..count])?) == chunks.get(usize::try_from(index)?),
+            hash.digest(&buffer[..count])? == expected,
             "protected observation changed allocated frozen image bytes"
         );
         reread += count as u64;
@@ -345,8 +357,10 @@ fn close_chunked_bracket<R: Read + Seek>(
 
 /// Allocation-bounded counterpart of
 /// [`verify_frozen_layout_residuals_with_resource_profile`] under the user's
-/// allocation guarantee: the opening pass covers the complete image, the closing
-/// pass only the chunks overlapping the protected native allocation.
+/// allocation guarantee. A first protected read-only mount supplies the native
+/// allocation map; the bracket opens over its chunks, the full observation runs,
+/// both mounts must report the identical map, and the bracket closes over the
+/// observed allocation. No pass reads the complete image.
 pub fn verify_frozen_layout_residuals_allocation_closed(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
@@ -375,7 +389,18 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
     };
     let input = general_shadow::native_inputs(&tree);
     let length = target.byte_len();
-    let (raw_sha256, chunks) = open_chunked_bracket(target, length)?;
+    let witness = target.observe_refs_allocation_readonly(resources.native_profile(), events)?;
+    target.validate_readonly_allocation_witness(&witness, events)?;
+    let premap = witness.snapshot().metadata_inclusive();
+    let opening: Vec<_> = premap
+        .ranges
+        .iter()
+        .map(|range| crate::refs_write_set::ByteRange {
+            offset: range.offset,
+            length: range.length,
+        })
+        .collect();
+    let (raw_sha256, chunks, opening_bytes) = open_allocated_bracket(target, length, &opening)?;
     let same_security = |a: &[u8], b: &[u8]| {
         ntfs_attestation::same_security(a, b)
             .map_err(|error| std::io::Error::other(error.to_string()))
@@ -399,12 +424,23 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
             && target.state(events)? == before,
         "protected layout observation changed its identity or persistent exclusion"
     );
+    let observed_map = native
+        .report()
+        .native()
+        .metadata_allocation
+        .as_ref()
+        .context("protected allocation bitmap absent")?;
+    ensure!(
+        observed_map.bitmap_sha256 == premap.bitmap_sha256
+            && observed_map.cluster_count == premap.cluster_count,
+        "the two protected read-only mounts reported different allocation maps"
+    );
     let routes =
         n2r_win32::shadow_native::private_tree::SourceBackedRoutes::from_protected_layout(&native)?;
     let allocation_coverage = allocation::reconcile(&native, anchors, &raw_sha256, length)?;
     let selection = allocation_coverage.observed_ranges(&native)?;
     let (closing_chunks, closing_bytes_reread) =
-        close_chunked_bracket(target, length, &chunks, &selection)?;
+        close_allocated_bracket(target, length, &chunks, &selection)?;
     ensure!(
         target.state(events)? == before,
         "protected allocation bracket changed persistent exclusion"
@@ -419,7 +455,10 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
         allocation_coverage,
         raw_image_unchanged: false,
         bracket_closure: Some(AllocationBracketClosure {
-            opening: "complete image SHA-256 plus 1 MiB chunk digests",
+            opening: "1 MiB chunk digests over the allocation map of a prior protected read-only mount",
+            raw_sha256_meaning: "SHA-256 over the opening (chunk index, chunk digest) pairs; not a whole-image hash",
+            opening_chunks: chunks.len(),
+            opening_bytes,
             closing_ranges: selection.len(),
             closing_chunks,
             closing_bytes_reread,

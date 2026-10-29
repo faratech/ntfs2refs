@@ -358,6 +358,19 @@ impl Drop for Privileges {
 }
 
 pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
+    collect_file_metadata_with_passes(request, false)
+}
+
+/// Read each stream's content once and mirror it as the second capture. Only
+/// for callers that bracket the whole observation over the frozen source.
+pub fn collect_file_metadata_single_content_pass(request: &Request) -> io::Result<Report> {
+    collect_file_metadata_with_passes(request, true)
+}
+
+fn collect_file_metadata_with_passes(
+    request: &Request,
+    single_content_pass: bool,
+) -> io::Result<Report> {
     request.validate()?;
     let limits = request.limits();
     let volume = open(request.volume.trim_end_matches('\\'))?;
@@ -443,23 +456,28 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             );
             obs.streams_before = Some(capture);
             logical.before = hashes;
-            let (capture, hashes) = crate::stream_native::capture(
-                &file,
-                request,
-                identity,
-                &mut read_budget,
-                limits
-                    .stream_evidence_bytes
-                    .saturating_sub(stream_bytes)
-                    .saturating_sub(
-                        obs.streams_before
-                            .as_ref()
-                            .map_or(0, StreamCapture::retained_bytes),
-                    )
-                    .saturating_sub(hash_retained_bytes(&logical.before)),
-            );
-            obs.streams_after = Some(capture);
-            logical.after = hashes;
+            if single_content_pass {
+                obs.streams_after = obs.streams_before.clone();
+                logical.after = logical.before.clone();
+            } else {
+                let (capture, hashes) = crate::stream_native::capture(
+                    &file,
+                    request,
+                    identity,
+                    &mut read_budget,
+                    limits
+                        .stream_evidence_bytes
+                        .saturating_sub(stream_bytes)
+                        .saturating_sub(
+                            obs.streams_before
+                                .as_ref()
+                                .map_or(0, StreamCapture::retained_bytes),
+                        )
+                        .saturating_sub(hash_retained_bytes(&logical.before)),
+                );
+                obs.streams_after = Some(capture);
+                logical.after = hashes;
+            }
             obs.after = Some(snapshot(&file));
             for s in [&obs.before, &obs.after].into_iter().flatten() {
                 security_bytes +=
@@ -540,6 +558,7 @@ pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
             files: logical_files,
         }),
         namespace: Some(namespace),
+        content_passes: if single_content_pass { 1 } else { 2 },
     };
     if let Some(profile) = request.resource_profile {
         report.resources = Some(report.measured_resources(profile)?);

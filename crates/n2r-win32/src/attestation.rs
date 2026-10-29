@@ -270,6 +270,14 @@ pub struct Report {
     pub logical_data: Option<LogicalData>,
     #[serde(default)]
     pub namespace: Option<NamespaceData>,
+    /// 2: each stream's content is read twice through its open handle. 1: read
+    /// once and mirrored, with stability proven by the caller's bracket over the
+    /// frozen, physically read-only source (allocation-bounded mode).
+    #[serde(default = "two_content_passes")]
+    pub content_passes: u8,
+}
+fn two_content_passes() -> u8 {
+    2
 }
 /// Retained evidence payload bytes; table counts and individual responses are
 /// independently bounded. This is not a measurement of process RSS.
@@ -681,8 +689,20 @@ impl Report {
         let mut observed = 0u64;
         let mut complete_reservations = 0u64;
         let mut complete_streams = 0u64;
+        if !matches!(self.content_passes, 1 | 2) {
+            return Err(invalid());
+        }
         for file in &data.files {
-            for pass in [&file.before, &file.after] {
+            // A single content pass is mirrored into `after`; count it once.
+            if self.content_passes == 1 && file.after != file.before {
+                return Err(invalid());
+            }
+            let passes: &[&Vec<StreamHash>] = if self.content_passes == 1 {
+                &[&file.before]
+            } else {
+                &[&file.before, &file.after]
+            };
+            for pass in passes.iter().copied() {
                 if pass.len() > crate::stream_layout::MAX_STREAMS {
                     return Err(invalid());
                 }
@@ -761,7 +781,7 @@ impl Report {
             || !data
                 .audit
                 .read_calls
-                .checked_mul(64 * 1024)
+                .checked_mul(crate::logical_hash::CHUNK as u64)
                 .is_some_and(|maximum| observed <= maximum)
             || data
                 .files

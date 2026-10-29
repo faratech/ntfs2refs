@@ -38,7 +38,9 @@ const UNLOCK: u32 = 0x0009001c;
 const DISMOUNT: u32 = 0x00090020;
 const OFFLINE: u64 = 1;
 const READ_ONLY: u64 = 2;
-const MAX_IO: usize = 1024 * 1024;
+// Largest single device request and the size of each handle's aligned buffer.
+// Larger sequential requests cut per-call overhead on fast storage.
+const MAX_IO: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct NativeEvent {
@@ -2002,6 +2004,25 @@ impl GeneralFrozenPartition {
         request: &crate::attestation::Request,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveNtfsObservation> {
+        self.observe_ntfs_files_with_passes(request, events, false)
+    }
+
+    /// As `observe_ntfs_files`, reading each stream's content once. Only for a
+    /// caller that brackets the whole observation over this frozen source.
+    pub fn observe_ntfs_files_single_content_pass(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
+        self.observe_ntfs_files_with_passes(request, events, true)
+    }
+
+    fn observe_ntfs_files_with_passes(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+        single_content_pass: bool,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
         request.validate()?;
         if !matches!(request.schema_version, 2 | 3)
             || request.disk_number != self.binding.disk_number
@@ -2061,7 +2082,11 @@ impl GeneralFrozenPartition {
                 "general read-only volume was not published within 15 seconds",
             ));
         }
-        let collected = crate::attestation_native::collect_file_metadata(request);
+        let collected = if single_content_pass {
+            crate::attestation_native::collect_file_metadata_single_content_pass(request)
+        } else {
+            crate::attestation_native::collect_file_metadata(request)
+        };
         let (txf, txf_error) = match crate::txf_native::observe_general(self.binding.clone()) {
             Ok(observation) => (Some(observation), None),
             Err(error) => (None, Some(error.to_string())),

@@ -184,7 +184,7 @@ impl Drop for Sha256Reusable {
     }
 }
 
-/// Hash every requested byte, with a fixed 1 MiB buffer and exact reads. No
+/// Hash every requested byte, with a fixed 4 MiB buffer and exact reads. No
 /// sampling, skipped zero ranges, alternate digest or source mutation.
 pub fn hash_range(
     reader: &mut (impl Read + Seek),
@@ -196,7 +196,7 @@ pub fn hash_range(
         .ok_or_else(|| io::Error::other("SHA-256 range overflow"))?;
     reader.seek(SeekFrom::Start(offset))?;
     let mut hash = Sha256::new()?;
-    let mut buffer = vec![0; length.min(1024 * 1024) as usize];
+    let mut buffer = vec![0; length.min(4 * 1024 * 1024) as usize];
     let mut left = length;
     while left > 0 {
         let count = left.min(buffer.len() as u64) as usize;

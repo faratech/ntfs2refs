@@ -333,14 +333,15 @@ pub(crate) fn hash_range_with_resource_profile<R: Read + Seek>(
 }
 /// Framed native SHA-256 over sorted disjoint ranges: each range contributes
 /// its offset and length (little-endian) before its bytes. Never a whole-image
-/// hash; bytes outside the ranges are not read.
+/// hash; bytes outside the ranges are not read. Reads run on the caller's thread
+/// in 4 MiB requests while a worker hashes the same ordered byte stream.
 #[cfg(windows)]
 pub(crate) fn hash_ranges_native<R: Read + Seek>(
     io: &mut R,
     ranges: &[(u64, u64)],
 ) -> Result<[u8; 32]> {
-    let mut hash = n2r_win32::sha256_native::Sha256::new()?;
-    let mut buffer = vec![0u8; BUFFER];
+    use std::sync::mpsc;
+    const READ: u64 = 4 * 1024 * 1024;
     let mut previous_end = 0u64;
     for &(offset, length) in ranges {
         ensure!(
@@ -350,18 +351,50 @@ pub(crate) fn hash_ranges_native<R: Read + Seek>(
         previous_end = offset
             .checked_add(length)
             .context("hashed range overflow")?;
-        hash.update(&offset.to_le_bytes())?;
-        hash.update(&length.to_le_bytes())?;
-        io.seek(SeekFrom::Start(offset))?;
-        let mut left = length;
-        while left != 0 {
-            let count = usize::try_from(left.min(BUFFER as u64))?;
-            io.read_exact(&mut buffer[..count])?;
-            hash.update(&buffer[..count])?;
-            left -= count as u64;
-        }
     }
-    Ok(hash.finish()?)
+    std::thread::scope(|scope| -> Result<[u8; 32]> {
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
+        // The worker creates its CNG object on its own thread.
+        let worker = scope.spawn(move || -> io::Result<[u8; 32]> {
+            let mut hash = n2r_win32::sha256_native::Sha256::new()?;
+            for bytes in rx {
+                hash.update(&bytes)?;
+            }
+            hash.finish()
+        });
+        let mut read = Ok(());
+        'ranges: for &(offset, length) in ranges {
+            let mut frame = Vec::with_capacity(16);
+            frame.extend_from_slice(&offset.to_le_bytes());
+            frame.extend_from_slice(&length.to_le_bytes());
+            if tx.send(frame).is_err() {
+                break;
+            }
+            if let Err(error) = io.seek(SeekFrom::Start(offset)) {
+                read = Err(error);
+                break;
+            }
+            let mut left = length;
+            while left != 0 {
+                let count = usize::try_from(left.min(READ))?;
+                let mut buffer = vec![0u8; count];
+                if let Err(error) = io.read_exact(&mut buffer) {
+                    read = Err(error);
+                    break 'ranges;
+                }
+                if tx.send(buffer).is_err() {
+                    break 'ranges; // The worker failed; its error is reported below.
+                }
+                left -= count as u64;
+            }
+        }
+        drop(tx);
+        let digest = worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("range hash worker panicked"))??;
+        read?;
+        Ok(digest)
+    })
 }
 
 fn validate_binding(binding: &JournalBinding) -> Result<()> {

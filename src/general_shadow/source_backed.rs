@@ -9,7 +9,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 // Match the native partition reader's bounded aligned batch. Logical NTFS
 // sessions retain their separate 64 KiB range-read contract below.
-const NATIVE_CAPTURE_BYTES: usize = 1024 * 1024;
+const NATIVE_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 const LOGICAL_SOURCE_READ_BYTES: usize = 65536;
 
 // Hash the candidate in parallel with source comparison on machines with

@@ -219,6 +219,10 @@ interruption after the first flushed write, clean restart, temporary checkpoint
 (since removed), then --recover resumed to ReFS 15/10 and --recover --rollback
 restored NTFS with 7/7 user files; see
 evidence/allocation-bounded-recovery-current-20261029.json.
+Then one target flush per apply phase and CNG journal pins (f15e060): 40.7s and
+40.6s; on that build the interruption/resume/rollback matrix (7/7 user files
+each, native 15/10 on resume) and mutation plus restart passed again; see
+evidence/allocation-bounded-final-build-20261029.json.
 OPEN (power loss): after the same interruption followed by Stop-VM -TurnOff,
 disk 1 came back offline AND read-only (the activation's READ_ONLY clear did not
 survive), and the recovery launcher refused before running the engine. Recovery

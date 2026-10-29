@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-final-build-qualification",
+  "source_commit": "f15e06091bb521dde628090ac52985c322c1c3e8",
+  "toolset": ".lab/hyperv/streaming-v2-20261027/head-drive-tools-20261029-onesync",
+  "changes_since_lanes": "one target flush per apply phase (no per-chunk flush/readback); journal SHA-256 pins on CNG",
+  "conversions": [
+    {
+      "run_id": "579f50c60d894849ba391a83f5c054d7",
+      "engine_run_id": "84661680e81c8d6dfaf39f736e1c5334",
+      "seconds": 40.7,
+      "native_objects": 15,
+      "complete_logical_hashes": 10,
+      "label_and_mount_verified": true,
+      "result_sha256": "ebfaae943eaba66bd5e88af1b68df31dade0d8efaf8e8a422e9da6bce7ae0431",
+      "finalization_sha256": "978ae1e67941b04770a98ccb496c755fe9bc9d277a16f9db36ff5840f7f0890e",
+      "artifact_write_timeline_seconds": {
+        "source_assessment": 9.9,
+        "construction_freeze": 15.8,
+        "changed_clusters": 27.6,
+        "target_preservation": 28.1,
+        "activation": 30.4,
+        "apply": 32.6,
+        "handoff": 34.1,
+        "finalization": 38.7
+      }
+    },
+    {
+      "run_id": "c8e7d8c652454b5788f0305560cbb909",
+      "engine_run_id": "9ccde9065eb739ea26bbdcb6c24c6ec8",
+      "seconds": 40.6,
+      "native_objects": 15,
+      "complete_logical_hashes": 10,
+      "label_and_mount_verified": true,
+      "result_sha256": "f69d07d026c789048bf4793c92f0e506eec90713709f19dda7e6e0acb5a24df6",
+      "finalization_sha256": "287372995c214e85e5b24148aeddd7b1a1fab10a621484a2295449c796c45b50"
+    }
+  ],
+  "phase_change_vs_lanes_build": {
+    "journal_and_activation_seconds": "3.5 -> 2.3",
+    "apply_seconds": "3.7 -> 2.2",
+    "handoff_seconds": "2.4 -> 1.5",
+    "note": "target verification varied 10.2-11.8 s between runs (host cache), so the total stayed about 40.7 s"
+  },
+  "interruption_matrix": {
+    "interrupt_run": "6fa6cca623fd453f8ec65f58bdcdb3a7",
+    "interrupt_after_writes": 1,
+    "native_exit": 86,
+    "restart": "clean guest shutdown and boot",
+    "temporary_checkpoint": "bfba8b1f-9b4e-47c7-9921-fdcbaffaa5b8 (removed)",
+    "resume": {
+      "recover_run": "166550da3254454583befae70cd880e4",
+      "lifecycle": "apply_intent",
+      "action": "resume",
+      "outcome": "refs_completed",
+      "native_objects": 15,
+      "native_hashes": 10,
+      "user_files_matching_xxh3": "7/7",
+      "result_sha256": "f020006fd2d95943d727cfecf65f9f764e312045cd67f724c4c4236b93b7a9c1"
+    },
+    "rollback": {
+      "recover_run": "85c2d22c7635462dbccf808a9e49c41a",
+      "lifecycle": "apply_intent",
+      "action": "rollback",
+      "outcome": "ntfs_restored",
+      "user_files_matching_xxh3": "7/7",
+      "result_sha256": "726ed22627c54569de74c34df972d32f052fd45bcde9b40b80d6d0593cac19f0"
+    }
+  },
+  "mutation_restart": {
+    "run_id": "aa126f962d3e49cd9066c657ee73cb52",
+    "conversion_engine_run_id": "9ccde9065eb739ea26bbdcb6c24c6ec8",
+    "original_user_files_verified": 7,
+    "new_files_verified": 2,
+    "entries_verified": 128,
+    "refs_warning_or_error_events": 0,
+    "raw_device_access": false
+  },
+  "open": [
+    "hard power-off right after activation left disk 1 read-only (see evidence/allocation-bounded-recovery-current-20261029.json)",
+    "only this one fixture (one 8 GiB file); the mixed fixture lab/New-MixedFixture.ps1 has not been run",
+    "physical (non-VHDX) devices not measured"
+  ],
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "mutation_restart_tested_on_this_build": true,
+    "interruption_resume_rollback_tested_on_this_build": true,
+    "hard_poweroff_recovery_open": true,
+    "release_qualified": false
+  }
+}

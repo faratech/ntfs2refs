@@ -29,6 +29,9 @@ pub struct TreeFootprint {
     pub pages_read: u32,
     pub leaf_rows: u64,
     pub expected_leaf_rows: u64,
+    pub embedded_attribute_tables: usize,
+    pub external_attribute_pages: u32,
+    pub external_extent_pages: u32,
     pub index_descendants_complete: bool,
     pub leaf_external_references_followed: bool,
 }
@@ -45,6 +48,7 @@ pub struct MetadataFootprint {
     pub physical_ranges: Vec<crate::refs_write_set::ByteRange>,
     pub page_transcript_sha256: String,
     pub trees: Vec<TreeFootprint>,
+    pub data_storage: DataStorageFootprint,
     pub complete_allocation_graph_verified: bool,
     pub selective_capture_executable: bool,
 }
@@ -54,6 +58,8 @@ struct Pending {
     checksum: u64,
     level: Option<u8>,
     depth: u8,
+    attribute_tree: Option<usize>,
+    extent_tree: bool,
 }
 
 struct TreeRequest {
@@ -71,13 +77,16 @@ fn enqueue(
     pending: &mut Vec<Pending>,
     read: u32,
     limits: WalkLimits,
+    attribute_tree: Option<usize>,
+    reserved_roots: usize,
 ) -> Result<()> {
     ensure!(
         level > 0 && !rows.is_empty() && depth < limits.max_depth,
         "metadata index level, children or depth unsupported"
     );
     ensure!(
-        u64::from(read) + pending.len() as u64 + rows.len() as u64 <= u64::from(limits.max_pages),
+        u64::from(read) + pending.len() as u64 + rows.len() as u64 + reserved_roots as u64
+            <= u64::from(limits.max_pages),
         "metadata page budget exhausted before following children"
     );
     for row in rows.iter().rev() {
@@ -98,7 +107,142 @@ fn enqueue(
             checksum: u64le(value, 0x28),
             level: Some(level - 1),
             depth: depth + 1,
+            attribute_tree,
+            extent_tree: false,
         });
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct DataStorageFootprint {
+    pub streams_observed: u64,
+    pub extent_records: u64,
+    pub allocated_cluster_references: u64,
+    pub distinct_physical_clusters: u64,
+    pub sparse_clusters: u64,
+    pub physical_ranges: Vec<crate::refs_write_set::ByteRange>,
+    pub external_payload_bytes_read: u64,
+    pub complete_stream_inventory: bool,
+}
+
+fn consume_extent_node(
+    node: crate::refs_extent_refs::ExtentNode,
+    map: &CommonMap<'_>,
+    volume_clusters: u64,
+    storage: &mut DataStorageFootprint,
+    pending: &mut Vec<Pending>,
+    depth: u8,
+    total_pages: u32,
+    limits: WalkLimits,
+    reserved_roots: usize,
+) -> Result<()> {
+    use crate::refs_extent_refs::{ExtentKind, ExtentNodeRows};
+    match node.rows {
+        ExtentNodeRows::Leaf(records) => {
+            for record in records {
+                storage.extent_records = storage
+                    .extent_records
+                    .checked_add(1)
+                    .context("extent record count overflow")?;
+                if record.kind == ExtentKind::SparseHole {
+                    storage.sparse_clusters = storage
+                        .sparse_clusters
+                        .checked_add(u64::from(record.clusters))
+                        .context("sparse count overflow")?;
+                    continue;
+                }
+                // This initial profile admits only runs contained by one
+                // virtual container. It never guesses how a wider run steps
+                // across the reserved virtual-address gap.
+                let offset = record.virtual_lcn & (CPC - 1);
+                let count = u64::from(record.clusters);
+                ensure!(
+                    count <= CPC - offset,
+                    "cross-container extent translation is not implemented"
+                );
+                let (base, _) = map
+                    .lookup(record.virtual_lcn >> 15)
+                    .context("data extent container absent")?;
+                let physical = base
+                    .checked_add(offset)
+                    .context("data physical address overflow")?;
+                ensure!(
+                    physical
+                        .checked_add(count)
+                        .is_some_and(|end| end <= volume_clusters),
+                    "data extent outside volume"
+                );
+                ensure!(
+                    storage.physical_ranges.len() < 131_072,
+                    "data extent range budget exceeded"
+                );
+                storage
+                    .physical_ranges
+                    .push(crate::refs_write_set::ByteRange {
+                        offset: physical * CLUSTER,
+                        length: count * CLUSTER,
+                    });
+                storage.allocated_cluster_references = storage
+                    .allocated_cluster_references
+                    .checked_add(count)
+                    .context("allocated extent count overflow")?;
+            }
+        }
+        ExtentNodeRows::Index(children) => {
+            ensure!(
+                depth < limits.max_depth
+                    && u64::from(total_pages)
+                        + pending.len() as u64
+                        + children.len() as u64
+                        + reserved_roots as u64
+                        <= u64::from(limits.max_pages),
+                "extent child page/depth budget exceeded"
+            );
+            for child in children {
+                pending.push(Pending {
+                    slots: child.virtual_lcn_slots,
+                    checksum: child.crc64_nvme,
+                    level: Some(child.expected_child_level),
+                    depth: depth + 1,
+                    attribute_tree: None,
+                    extent_tree: true,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn consume_attribute_rows(
+    rows: &[refs_node::NodeRowObservation],
+    map: &CommonMap<'_>,
+    volume_clusters: u64,
+    storage: &mut DataStorageFootprint,
+    pending: &mut Vec<Pending>,
+    depth: u8,
+    total_pages: u32,
+    limits: WalkLimits,
+    reserved_roots: usize,
+) -> Result<()> {
+    for row in rows {
+        if let Some(data) = crate::refs_record_refs::inspect_data_extent_node(row)? {
+            storage.streams_observed = storage
+                .streams_observed
+                .checked_add(1)
+                .context("data stream count overflow")?;
+            consume_extent_node(
+                data.node,
+                map,
+                volume_clusters,
+                storage,
+                pending,
+                depth,
+                total_pages,
+                limits,
+                reserved_roots,
+            )?;
+        }
     }
     Ok(())
 }
@@ -159,9 +303,10 @@ pub fn inspect<R: Read + Seek>(
     }
     let mut visited = BTreeSet::new();
     let mut transcript = Sha256::new();
-    transcript.update(b"n2r-refs-virtual-and-object-index-footprint-v2\0");
+    transcript.update(b"n2r-refs-index-attribute-and-extent-footprint-v4\0");
     let mut total_pages = 0u32;
     let mut trees = Vec::new();
+    let mut data_storage = DataStorageFootprint::default();
     let mut requests = VecDeque::new();
     for (root_index, table_id) in ROOTS {
         let reference = &fields.roots[root_index];
@@ -192,11 +337,17 @@ pub fn inspect<R: Read + Seek>(
             checksum,
             level: None,
             depth: 0,
+            attribute_tree: None,
+            extent_tree: false,
         }];
         let start_pages = total_pages;
         let mut expected_rows = None;
         let mut schema_id = None;
         let mut leaves = 0u64;
+        let mut attribute_expected = Vec::new();
+        let mut attribute_observed = Vec::new();
+        let mut attribute_pages = 0u32;
+        let mut extent_pages = 0u32;
         while let Some(item) = pending.pop() {
             ensure!(
                 total_pages < limits.max_pages,
@@ -237,16 +388,45 @@ pub fn inspect<R: Read + Seek>(
                 "metadata page checksum, header, table or self-address differs"
             );
             total_pages += 1;
+            if item.attribute_tree.is_some() {
+                attribute_pages += 1;
+            }
             transcript.update(
                 root_index
                     .map_or(u64::MAX, |index| index as u64)
                     .to_le_bytes(),
             );
             transcript.update(table_id.to_le_bytes());
+            transcript.update([u8::from(item.extent_tree)]);
+            transcript.update(
+                item.attribute_tree
+                    .map_or(u64::MAX, |id| id as u64)
+                    .to_le_bytes(),
+            );
             for lcn in physical {
                 transcript.update(lcn.to_le_bytes());
             }
             transcript.update(&bytes);
+            if item.extent_tree {
+                extent_pages += 1;
+                let offset = 0x50usize
+                    .checked_add(u32le(&bytes, 0x50) as usize)
+                    .context("extent page node offset overflow")?;
+                let node = crate::refs_extent_refs::inspect_extent_node(&bytes, offset)?;
+                ensure!(item.level == Some(node.level), "extent child level differs");
+                consume_extent_node(
+                    node,
+                    &map,
+                    clusters,
+                    &mut data_storage,
+                    &mut pending,
+                    item.depth,
+                    total_pages,
+                    limits,
+                    requests.len(),
+                )?;
+                continue;
+            }
             let (level, index_node, rows) = if item.depth == 0 {
                 let root = if object_id.is_some() {
                     refs_node::inspect_object_root_node(&bytes, table_id)
@@ -275,7 +455,16 @@ pub fn inspect<R: Read + Seek>(
                 "metadata node level or index form differs"
             );
             if index_node {
-                enqueue(&rows, level, item.depth, &mut pending, total_pages, limits)?;
+                enqueue(
+                    &rows,
+                    level,
+                    item.depth,
+                    &mut pending,
+                    total_pages,
+                    limits,
+                    item.attribute_tree,
+                    requests.len(),
+                )?;
             } else {
                 if matches!(root_index, Some(0 | 5)) {
                     let objects = if root_index == Some(0) {
@@ -292,15 +481,93 @@ pub fn inspect<R: Read + Seek>(
                         );
                     }
                 }
-                leaves = leaves
-                    .checked_add(rows.len() as u64)
-                    .context("metadata leaf row count overflow")?;
+                if let Some(index) = item.attribute_tree {
+                    let count: &mut u64 = attribute_observed
+                        .get_mut(index)
+                        .context("attribute tree counter absent")?;
+                    *count = count
+                        .checked_add(rows.len() as u64)
+                        .context("attribute row count overflow")?;
+                    consume_attribute_rows(
+                        &rows,
+                        &map,
+                        clusters,
+                        &mut data_storage,
+                        &mut pending,
+                        item.depth,
+                        total_pages,
+                        limits,
+                        requests.len(),
+                    )?;
+                } else {
+                    leaves = leaves
+                        .checked_add(rows.len() as u64)
+                        .context("metadata leaf row count overflow")?;
+                    if object_id.is_some() && schema_id == Some(0x130) {
+                        for row in &rows {
+                            if let Some(record) =
+                                crate::refs_record_refs::inspect_embedded_file(row)?
+                            {
+                                ensure!(
+                                    attribute_expected.len() < 65_536,
+                                    "embedded attribute table budget exceeded"
+                                );
+                                let index = attribute_expected.len();
+                                attribute_expected.push(record.expected_attribute_rows);
+                                attribute_observed.push(if record.node.index_node {
+                                    0
+                                } else {
+                                    record.node.rows.len() as u64
+                                });
+                                if record.node.index_node {
+                                    ensure!(
+                                        item.depth < limits.max_depth
+                                            && record.node.node_level <= limits.max_depth
+                                            && u64::from(total_pages)
+                                                + pending.len() as u64
+                                                + record.node.rows.len() as u64
+                                                + requests.len() as u64
+                                                <= u64::from(limits.max_pages),
+                                        "embedded attribute page/depth budget exceeded"
+                                    );
+                                    for row in &record.node.rows {
+                                        let child = crate::refs_record_refs::attribute_child(row)?;
+                                        pending.push(Pending {
+                                            slots: child.virtual_slots,
+                                            checksum: child.crc64_nvme,
+                                            level: Some(record.node.node_level - 1),
+                                            depth: item.depth + 1,
+                                            attribute_tree: Some(index),
+                                            extent_tree: false,
+                                        });
+                                    }
+                                } else {
+                                    consume_attribute_rows(
+                                        &record.node.rows,
+                                        &map,
+                                        clusters,
+                                        &mut data_storage,
+                                        &mut pending,
+                                        item.depth,
+                                        total_pages,
+                                        limits,
+                                        requests.len(),
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         let expected = expected_rows.context("metadata root was not visited")?;
         ensure!(
             leaves == expected,
             "metadata leaf count differs from root descriptor"
+        );
+        ensure!(
+            attribute_expected == attribute_observed,
+            "embedded attribute row totals differ"
         );
         trees.push(TreeFootprint {
             root_index,
@@ -310,6 +577,9 @@ pub fn inspect<R: Read + Seek>(
             pages_read: total_pages - start_pages,
             leaf_rows: leaves,
             expected_leaf_rows: expected,
+            embedded_attribute_tables: attribute_expected.len(),
+            external_attribute_pages: attribute_pages,
+            external_extent_pages: extent_pages,
             index_descendants_complete: true,
             leaf_external_references_followed: false,
         });
@@ -335,6 +605,38 @@ pub fn inspect<R: Read + Seek>(
         }
     }
     let mut ranges: Vec<crate::refs_write_set::ByteRange> = Vec::new();
+    for range in &data_storage.physical_ranges {
+        let span = range.offset / CLUSTER..(range.offset + range.length) / CLUSTER;
+        ensure!(
+            visited.range(span.clone()).next().is_none() && protected.range(span).next().is_none(),
+            "observed data extent overlaps metadata or protected bootstrap/container storage"
+        );
+    }
+    data_storage
+        .physical_ranges
+        .sort_unstable_by_key(|range| range.offset);
+    let mut data_ranges: Vec<crate::refs_write_set::ByteRange> = Vec::new();
+    for range in data_storage.physical_ranges.drain(..) {
+        if let Some(last) = data_ranges
+            .last_mut()
+            .filter(|last| last.offset + last.length >= range.offset)
+        {
+            last.length =
+                (last.offset + last.length).max(range.offset + range.length) - last.offset;
+        } else {
+            data_ranges.push(range);
+        }
+    }
+    data_storage.physical_ranges = data_ranges;
+    data_storage.distinct_physical_clusters =
+        data_storage
+            .physical_ranges
+            .iter()
+            .try_fold(0u64, |count, range| {
+                count
+                    .checked_add(range.length / CLUSTER)
+                    .context("distinct data cluster count overflow")
+            })?;
     for lcn in visited {
         let offset = lcn * CLUSTER;
         if let Some(last) = ranges
@@ -354,7 +656,7 @@ pub fn inspect<R: Read + Seek>(
         }
     }
     Ok(MetadataFootprint {
-        profile: "refs-3.14-4k-crc64-virtual-and-object-index-footprint-v2",
+        profile: "refs-3.14-4k-crc64-index-attribute-and-extent-footprint-v4",
         checkpoint_lcn: checkpoint.lcn,
         checkpoint_sha256: checkpoint.sha256.clone(),
         mapping_sha256: binding
@@ -366,6 +668,7 @@ pub fn inspect<R: Read + Seek>(
         physical_ranges: ranges,
         page_transcript_sha256: hex::encode(transcript.finalize()),
         trees,
+        data_storage,
         complete_allocation_graph_verified: false,
         selective_capture_executable: false,
     })

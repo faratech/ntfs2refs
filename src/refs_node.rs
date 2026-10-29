@@ -274,6 +274,29 @@ pub fn inspect_container_child_node(bytes: &[u8]) -> Result<NodeBodyObservation>
 }
 
 fn inspect_node_body(bytes: &[u8], node_offset: usize) -> Result<NodeBodyObservation> {
+    inspect_node_body_with_prefix(bytes, node_offset, ROOT_OFFSET)
+}
+
+/// A bounded inline node inside an authenticated record's value. Offsets in
+/// the returned rows are relative to that value. The caller identifies the
+/// record and owns page authentication; this parses no disk addresses.
+pub fn inspect_embedded_node(bytes: &[u8], node_offset: usize) -> Result<NodeBodyObservation> {
+    ensure!(
+        bytes.len() <= PAGE_BYTES,
+        "embedded node exceeds one metadata page"
+    );
+    inspect_node_body_with_prefix(bytes, node_offset, 0)
+}
+
+fn inspect_node_body_with_prefix(
+    bytes: &[u8],
+    node_offset: usize,
+    prefix_start: usize,
+) -> Result<NodeBodyObservation> {
+    ensure!(
+        node_offset >= prefix_start,
+        "node overlaps its prefix origin"
+    );
     let node_header_range = range(node_offset, NODE_HEADER_BYTES, bytes.len())?;
     let header = &bytes[node_header_range.clone()];
     let level = header[0xc];
@@ -362,7 +385,7 @@ fn inspect_node_body(bytes: &[u8], node_offset: usize) -> Result<NodeBodyObserva
     }
     Ok(NodeBodyObservation {
         node_offset,
-        node_prefix_bytes_hex: hex::encode(&bytes[ROOT_OFFSET..node_offset]),
+        node_prefix_bytes_hex: hex::encode(&bytes[prefix_start..node_offset]),
         node_header_bytes_hex: hex::encode(header),
         node_level: level,
         node_flags: flags,

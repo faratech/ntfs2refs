@@ -72,6 +72,7 @@ pub mod preparation_progress;
 #[cfg(windows)]
 pub mod reference_file_verification;
 pub mod refs_allocator;
+pub mod refs_extent_refs;
 pub mod refs_bootstrap;
 pub mod refs_containers;
 pub mod refs_cow_overlay;
@@ -79,6 +80,7 @@ pub mod refs_hybrid;
 pub mod refs_inspect;
 pub mod refs_node;
 pub mod refs_object_refs;
+pub mod refs_record_refs;
 #[cfg(windows)]
 pub mod refs_reference_import;
 pub mod refs_reference_transport;

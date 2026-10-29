@@ -43,3 +43,22 @@ Only compact 80/88-byte CRC64 Object Table values are decoded; legacy/upgraded
 forms still refuse. Directory/file embedded leaf references, log storage and
 the other omissions above are not yet resolved. See the
 [expanded receipt](../evidence/refs-object-footprint-20261029.json).
+
+The next reader version decodes inline filename records, follows supported
+spilled attribute pages, and follows indexed DATA extent maps. It translates
+supported allocated runs into physical ranges without reading their payloads;
+sparse holes create no physical range. Data ranges must avoid visited metadata
+and protected bootstrap/container pages. Queued roots retain page-budget
+reservations while children are admitted.
+
+The existing image exercised three inline attribute tables, two DATA versions,
+68 extent records and 1,025 allocated clusters. Total reader input stayed at
+1,897,488 bytes, with no external payload reads. It did not exercise spilled
+attribute or extent pages; those paths remain unqualified. See the
+[extent receipt](../evidence/refs-extent-footprint-20261029.json).
+
+Only compact 3.14 DATA records and the documented plain/checksummed extent
+forms are accepted. Cross-container data runs currently refuse rather than
+assuming how they cross the virtual-address gap. Split own-record forms,
+system log storage, complete stream inventory and all allocation/refcount
+relationships remain unresolved. The converter still uses complete capture.

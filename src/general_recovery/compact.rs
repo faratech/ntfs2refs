@@ -97,15 +97,15 @@ impl ExperimentalCompactInputs {
 
 /// The exact input handles stay open throughout recovery. A path, JSON flag or
 /// hash of a different reopened file does not replace these held-file pins.
-struct HeldInput {
+pub(super) struct HeldInput {
     file: File,
-    snapshot: ReferenceFileSnapshot,
+    pub(super) snapshot: ReferenceFileSnapshot,
     modified: SystemTime,
-    bytes: Vec<u8>,
+    pub(super) bytes: Vec<u8>,
     sha256: String,
 }
 impl HeldInput {
-    fn open(path: &Path, expected: &str, limit: u64) -> Result<Self> {
+    pub(super) fn open(path: &Path, expected: &str, limit: u64) -> Result<Self> {
         ensure!(
             canonical_pin(expected),
             "invalid compact recovery input pin"
@@ -139,7 +139,7 @@ impl HeldInput {
         held.revalidate()?;
         Ok(held)
     }
-    fn revalidate(&mut self) -> Result<()> {
+    pub(super) fn revalidate(&mut self) -> Result<()> {
         ensure!(
             reference_file::observe_reference_file_handle(&self.file)? == self.snapshot
                 && self.file.metadata()?.modified()? == self.modified,

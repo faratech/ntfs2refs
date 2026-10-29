@@ -111,6 +111,22 @@ pub fn convert_fresh_compact_selected(
     )
 }
 
+/// Controlled selected-device experiment of the allocation-bounded backend,
+/// under the same preflight and genuine fresh SourceCertificate requirement.
+pub fn convert_fresh_allocation_selected(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    crate::general_conversion::convert_allocation_selected_for_lab(
+        request,
+        budget,
+        output,
+        interrupt_after_writes,
+    )
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApplyReport {
     pub kind: &'static str,

@@ -30,6 +30,9 @@ fn main() -> anyhow::Result<()> {
         maximum_exception_bytes: u64,
         #[arg(long)]
         interrupt_after_writes: Option<u32>,
+        /// Use the allocation-bounded backend (requires --selected-devices).
+        #[arg(long, requires = "selected_devices")]
+        allocation_bounded: bool,
     }
     let args = Args::parse();
     ensure!(
@@ -60,7 +63,14 @@ fn main() -> anyhow::Result<()> {
         maximum_placement_submissions: args.maximum_placement_submissions,
         maximum_exception_bytes: args.maximum_exception_bytes,
     };
-    if args.selected_devices {
+    if args.allocation_bounded {
+        ntfs2refs::general_lab::convert_fresh_allocation_selected(
+            &request,
+            budget,
+            &args.output,
+            args.interrupt_after_writes,
+        )
+    } else if args.selected_devices {
         ntfs2refs::general_lab::convert_fresh_compact_selected(
             &request,
             budget,

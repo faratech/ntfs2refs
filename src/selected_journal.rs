@@ -704,6 +704,118 @@ pub fn rollback<T: DurableIo, J: DurableIo>(
     execute(target, journal, plan, ticket, false, false)
 }
 
+/// Durable journal state, read after the complete immutable journal checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectedLifecycle {
+    PreparedClear,
+    ApplyIntent,
+    RollbackIntent,
+    Handoff,
+    Aborted,
+}
+
+/// Classify the markers of a fully verified journal. Foreign or torn markers
+/// refuse; this never writes.
+pub fn lifecycle<J: ReadSeek>(
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+) -> Result<SelectedLifecycle> {
+    load(journal, plan, ticket)?;
+    classify(journal, ticket)
+}
+
+fn classify<J: Read + Seek>(journal: &mut J, ticket: &SelectedTicket) -> Result<SelectedLifecycle> {
+    let mut completed = [0u8; GRANULE as usize];
+    let mut intent = [0u8; GRANULE as usize];
+    at(journal, 0, &mut completed)?;
+    at(journal, GRANULE, &mut intent)?;
+    let zero = [0u8; GRANULE as usize];
+    if completed == marker(b"N2RSHN01", ticket, &ticket.new_selected_sha256) {
+        return Ok(SelectedLifecycle::Handoff);
+    }
+    if completed == marker(b"N2RSAB01", ticket, &ticket.old_selected_sha256) {
+        return Ok(SelectedLifecycle::Aborted);
+    }
+    ensure!(
+        completed == zero,
+        "selected completion marker is foreign or torn"
+    );
+    if intent == zero {
+        Ok(SelectedLifecycle::PreparedClear)
+    } else if intent == marker(b"N2RSAP01", ticket, &ticket.new_selected_sha256) {
+        Ok(SelectedLifecycle::ApplyIntent)
+    } else if intent == marker(b"N2RSRB01", ticket, &ticket.old_selected_sha256) {
+        Ok(SelectedLifecycle::RollbackIntent)
+    } else {
+        anyhow::bail!("selected intent marker is foreign or torn")
+    }
+}
+
+/// Close replay for an apply that never wrote its intent: no target write can
+/// have happened, and the complete selected old digest must still hold.
+pub fn abandon<T: DurableIo, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+) -> Result<SelectedResult> {
+    let records = load(journal, plan, ticket)?;
+    let (apply_intent, rollback_intent) = read_markers(journal, ticket)?;
+    ensure!(
+        !apply_intent && !rollback_intent,
+        "selected abandon requires a journal with no operation intent"
+    );
+    target.sync_all()?;
+    let selected_sha256 = check_target(
+        target,
+        journal,
+        plan,
+        &records,
+        Some(&ticket.old_selected_sha256),
+    )?;
+    let completed = marker(b"N2RSAB01", ticket, &ticket.old_selected_sha256);
+    write_marker(journal, 0, &completed)?;
+    Ok(SelectedResult {
+        selected_sha256,
+        selected_bytes: ticket.selected_bytes,
+        range_count: ticket.range_count,
+        replay_closed: true,
+        whole_image_verified: false,
+        conversion_qualified: false,
+    })
+}
+
+/// Recheck a journal already closed by HND or ABT: the complete selected digest
+/// must be the committed side. This writes nothing.
+pub fn verify_closed<T: ReadSeek, J: ReadSeek>(
+    target: &mut T,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+) -> Result<(SelectedLifecycle, SelectedResult)> {
+    let records = load(journal, plan, ticket)?;
+    let state = classify(journal, ticket)?;
+    let expected = match state {
+        SelectedLifecycle::Handoff => &ticket.new_selected_sha256,
+        SelectedLifecycle::Aborted => &ticket.old_selected_sha256,
+        _ => anyhow::bail!("selected journal is not closed by HND or ABT"),
+    };
+    let selected_sha256 = check_target(target, journal, plan, &records, Some(expected))?;
+    Ok((
+        state,
+        SelectedResult {
+            selected_sha256,
+            selected_bytes: ticket.selected_bytes,
+            range_count: ticket.range_count,
+            replay_closed: true,
+            whole_image_verified: false,
+            conversion_qualified: false,
+        },
+    ))
+}
+
 /// Permanently close raw replay before the caller permits a native mount.
 pub fn handoff<T: DurableIo, J: DurableIo>(
     target: &mut T,

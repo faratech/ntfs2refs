@@ -133,7 +133,26 @@ pub fn convert_allocation_experimental(
             && !request.verify_existing_shadow,
         "allocation-bounded conversion requires the explicit streaming profile and a fresh shadow"
     );
-    allocation::convert_allocation_selected(request, budget, output)
+    allocation::convert_allocation_selected(request, budget, output, None)
+}
+
+/// Lab-only selected-device fault entry for the allocation-bounded backend.
+/// The public drive command always passes no interruption.
+pub(crate) fn convert_allocation_selected_for_lab(
+    request: &Request,
+    budget: qualification::CompactConstructionBudget,
+    output: &Path,
+    interrupt_after_writes: Option<u32>,
+) -> Result<()> {
+    request.validate()?;
+    budget.validate(request.pair.source.identity.partition_bytes)?;
+    ensure!(
+        request.source_resource_profile
+            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+            && !request.verify_existing_shadow,
+        "allocation-bounded lab exercise requires the explicit streaming profile and a fresh shadow"
+    );
+    allocation::convert_allocation_selected(request, budget, output, interrupt_after_writes)
 }
 
 /// Explicit owning-guest exercise: synchronize the known small source cache

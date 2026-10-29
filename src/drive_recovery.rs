@@ -97,6 +97,10 @@ mod windows {
             "recovery directory must be an absolute ordinary local path without traversal"
         );
         let bundle_path = directory.join("compact-recovery-bundle.json");
+        let allocation_bundle = directory.join("allocation-recovery-bundle.json");
+        if !bundle_path.exists() && allocation_bundle.exists() {
+            return run_allocation(&allocation_bundle, recovery_sha256, rollback);
+        }
         let mut held = HeldBundle::open(&bundle_path, recovery_sha256)
             .context("cannot load the original pinned compact recovery bundle")?;
         let source = held.bundle().source.clone();
@@ -222,6 +226,87 @@ mod windows {
                 "NTFS rollback completed."
             } else {
                 "ReFS recovery completed."
+            },
+            output.display()
+        );
+        Ok(0)
+    }
+
+    /// An allocation-bounded run's journal holds both versions of every planned
+    /// range, so recovery needs neither the shadow nor the packed capture.
+    fn run_allocation(bundle_path: &Path, recovery_sha256: &str, rollback: bool) -> Result<u8> {
+        let source = crate::general_recovery::preview_allocation(bundle_path, recovery_sha256)
+            .context("cannot load the original pinned allocation recovery bundle")?;
+        println!(
+            "Pinned source: disk {}, partition {}, {} bytes at offset {}",
+            source.disk_number,
+            source.identity.partition_number,
+            source.identity.partition_bytes,
+            source.identity.partition_offset
+        );
+        println!(
+            "Disk GUID: {}\nPartition GUID: {}",
+            display(&source.identity.disk_guid),
+            display(&source.identity.partition_guid)
+        );
+        println!(
+            "Action: {}",
+            if rollback {
+                "restore the original NTFS ranges and close journal replay"
+            } else {
+                "resume the interrupted selected-range conversion, then verify ReFS"
+            }
+        );
+        println!("The native recovery gates will recheck the actual device and journal state.");
+        if !confirm()? {
+            println!("Recovery cancelled.");
+            return Ok(0);
+        }
+        let (os_root, output) = output_location()?;
+        println!("Recovery records: {}", output.display());
+        let os = discovery::discover(
+            &os_root,
+            Role::Journal {
+                allow_additional_partitions: true,
+            },
+        )
+        .context("cannot verify independent Windows-volume recovery storage")?;
+        ensure!(
+            os.disk_is_windows_disk
+                && os.binding.disk_number == os.windows_disk_number
+                && os.binding.disk_number != source.disk_number,
+            "recovery records must be on the Windows disk, independent of the source"
+        );
+        general_qualification::create_output(&output)?;
+        general_qualification::save(
+            &output,
+            "drive-recovery-intent.json",
+            &serde_json::json!({
+                "schema_version": 1,
+                "kind": "confirmed-allocation-drive-recovery",
+                "bundle_path": bundle_path,
+                "bundle_sha256": recovery_sha256,
+                "operation": if rollback { "rollback" } else { "resume_then_finalize" },
+                "source": source,
+                "fresh_apply_authorized": false,
+                "source_certificate_recreated": false,
+                "serialized_bundle_grants_recovery_authority": false
+            }),
+        )?;
+        let outcome = crate::general_recovery::recover_allocation(
+            bundle_path,
+            recovery_sha256,
+            rollback,
+            &output.join(if rollback { "rollback" } else { "resume" }),
+        )
+        .context("allocation recovery refused or stopped; no alternate action was attempted")?;
+        println!(
+            "{} Recovery records: {}",
+            match outcome {
+                crate::general_recovery::AllocationRecoveryOutcome::NtfsRestored =>
+                    "NTFS rollback completed.",
+                crate::general_recovery::AllocationRecoveryOutcome::RefsCompleted =>
+                    "ReFS recovery completed.",
             },
             output.display()
         );

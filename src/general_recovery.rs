@@ -17,6 +17,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod allocation;
+pub use allocation::{AllocationRecoveryOutcome, preview_allocation, recover_allocation};
 mod compact;
 pub use compact::{
     ExperimentalCompactInputs, ExperimentalCompactOperation, recover_compact_experimental,

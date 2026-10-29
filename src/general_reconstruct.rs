@@ -804,9 +804,15 @@ pub(crate) fn execute_interrupted_apply(
     )
 }
 
-struct InterruptingGeneralTarget<'a> {
+pub(crate) struct InterruptingGeneralTarget<'a> {
     inner: &'a mut GeneralJournaledPartition,
     remaining: u32,
+}
+impl<'a> InterruptingGeneralTarget<'a> {
+    /// Lab-only: flush and exit(86) after `remaining` accepted writes.
+    pub(crate) fn new(inner: &'a mut GeneralJournaledPartition, remaining: u32) -> Self {
+        Self { inner, remaining }
+    }
 }
 impl Read for InterruptingGeneralTarget<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {

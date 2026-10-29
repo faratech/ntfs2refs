@@ -1,8 +1,8 @@
 //! Experimental allocation-bounded conversion under the ntfs2btrfs-style
 //! guarantee: only ranges the protected frozen shadow's native allocator reports
 //! allocated are compared, journaled and written. The original live certificate
-//! is still required. Recovery after an interruption is lab-only for now: the
-//! public recovery bundle and typed Resume/Rollback do not read `N2RSEL01`.
+//! is still required. An interrupted run is recovered from its published
+//! allocation recovery bundle by `general_recovery::allocation`.
 use super::*;
 use crate::selected_journal as sj;
 use n2r_win32::{GeneralFrozenPartition, WritePolicy};
@@ -16,8 +16,13 @@ pub(super) fn convert_allocation_selected(
     request: &Request,
     construction: qualification::CompactConstructionBudget,
     output: &Path,
+    interrupt_after_writes: Option<u32>,
 ) -> Result<()> {
     request.validate()?;
+    ensure!(
+        interrupt_after_writes.is_none_or(|writes| (1..=4096).contains(&writes)),
+        "allocation-bounded interruption count must be 1..=4096"
+    );
     announce_conversion_phase("checking request and device identities");
     let preflight = composite::selected_device_preflight(request)?;
     qualification::create_output(output)?;
@@ -28,8 +33,9 @@ pub(super) fn convert_allocation_selected(
         &serde_json::json!({
             "schema_version":1,"kind":"experimental-allocation-bounded-conversion-intent",
             "request":request,"construction_budget":construction,
+            "interrupt_after_writes":interrupt_after_writes,
             "requires_original_live_source_certificate":true,
-            "free_space_contents_compared":false,"public_recovery_supported":false,
+            "free_space_contents_compared":false,"recovery_bundle_published_before_activation":true,
             "source_admitted":false,"execution_authorized":false,
             "general_conversion_qualified":false,
         }),
@@ -150,20 +156,33 @@ pub(super) fn convert_allocation_selected(
         );
         qualification::save(output, "preparation-events.json", &preparation_events)?;
         let ticket_pin = qualification::save(output, "selected-ticket.json", &ticket)?;
-        qualification::save(
+        // Publish one checksummed locator before activation. It carries pins
+        // only; the recovery engine rechecks the journal and device itself.
+        let request_pin = qualification::save(output, "request.json", request)?;
+        let verification_pin = qualification::save(
             output,
-            "selected-recovery.json",
+            "verification.json",
             &serde_json::json!({
-                "schema_version":1,"kind":"lab-only-selected-recovery-pins",
-                "plan":output.join("selected-plan.json"),"plan_sha256":plan_pin,
-                "ticket":output.join("selected-ticket.json"),"ticket_sha256":ticket_pin,
-                "journal":journal_path,"packed":packed_path,
-                "expectation_sha256":expectation_pin,
-                "public_recovery_supported":false,
-                "note":"Resume or roll back only with selected_journal and this exact plan and ticket, on the lab VM.",
+                "expected_mount_paths":mount_paths.paths,
+                "expected_source_label":source_label.label(),
+            }),
+        )?;
+        let recovery_pin = qualification::save(
+            output,
+            "allocation-recovery-bundle.json",
+            &serde_json::json!({
+                "schema_version":1,"kind":"allocation-bounded-recovery-bundle",
+                "request":{"path":output.join("request.json"),"sha256":request_pin},
+                "plan":{"path":output.join("selected-plan.json"),"sha256":plan_pin},
+                "ticket":{"path":output.join("selected-ticket.json"),"sha256":ticket_pin},
+                "expectation":{"path":output.join("expectation.json"),"sha256":expectation_pin},
+                "verification":{"path":output.join("verification.json"),"sha256":verification_pin},
+                "journal":journal_path,"source":request.pair.source,
+                "serialized_bundle_grants_recovery_authority":false,
             }),
         )?;
         println!("Recovery directory: {}", output.display());
+        println!("Recovery checksum: {recovery_pin}");
 
         phase = "selected-activation";
         announce_conversion_phase("activating the frozen source for selected writes");
@@ -193,7 +212,19 @@ pub(super) fn convert_allocation_selected(
 
         phase = "selected-apply";
         announce_conversion_phase("applying the selected ranges");
-        let applied = sj::apply(&mut target, &mut journal, &plan, &ticket)?;
+        let applied = match interrupt_after_writes {
+            Some(remaining) => {
+                // Lab fault: the wrapper flushes then exits the process with 86.
+                let mut interrupted =
+                    reconstruct::InterruptingGeneralTarget::new(&mut target, remaining);
+                let result = sj::apply(&mut interrupted, &mut journal, &plan, &ticket)?;
+                anyhow::bail!(
+                    "allocation-bounded interruption not reached: {} ranges written",
+                    result.range_count
+                )
+            }
+            None => sj::apply(&mut target, &mut journal, &plan, &ticket)?,
+        };
         qualification::save(output, "apply.json", &applied)?;
 
         phase = "selected-handoff";
@@ -247,7 +278,7 @@ pub(super) fn convert_allocation_selected(
                 "expected_tree_sha256":expected_tree_sha256,
                 "selected_ranges":plan.ranges.len(),"selected_bytes":selected_bytes,
                 "journal_bytes":journal_bytes,"selection_sha256":proof.selection_sha256(),
-                "free_space_contents_compared":false,"public_recovery_supported":false,
+                "free_space_contents_compared":false,"recovery_bundle_sha256":recovery_pin,
                 "general_conversion_qualified":false,
             }),
         )?;
@@ -260,7 +291,8 @@ pub(super) fn convert_allocation_selected(
             "failed.json",
             &serde_json::json!({
                 "phase":phase,"error":format!("{error:#}"),"recovery_materials":output,
-                "automatic_rollback_attempted":false,"public_recovery_supported":false,
+                "automatic_rollback_attempted":false,
+                "recover_with_published_bundle_if_present":"allocation-recovery-bundle.json",
                 "general_conversion_qualified":false,
             }),
         )?;

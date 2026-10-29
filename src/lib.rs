@@ -81,7 +81,9 @@ pub mod refs_inspect;
 pub mod refs_node;
 pub mod refs_mlog_refs;
 pub mod refs_object_refs;
+pub mod refs_ownership;
 pub mod refs_record_refs;
+pub mod refs_required_ranges;
 pub mod refs_split_refs;
 #[cfg(windows)]
 pub mod refs_reference_import;

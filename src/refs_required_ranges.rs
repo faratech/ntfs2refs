@@ -1,14 +1,14 @@
 //! Read-only union of independently authenticated checkpoint generations.
 //! Cross-generation reuse is expected under COW and is not an ownership error.
-use anyhow::{Context, Result, ensure};
-use ntfs2refs::{
+use crate::{
     refs_bootstrap::{AnchorProbe, BootstrapProbe, RootReference, crc64_nvme},
     refs_containers::{self, ContainerLimits, ContainerRootTarget, ContainerTablesProbe},
-    refs_inspect::{RefsGeometry, RefsInspection},
+    refs_inspect::RefsGeometry,
     refs_node,
     refs_virtual_roots::walk::{self, MetadataFootprint, WalkLimits},
     refs_write_set::ByteRange,
 };
+use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -189,9 +189,12 @@ fn cluster_ranges(clusters: &BTreeSet<u64>, volume_bytes: u64) -> Result<Vec<Byt
     Ok(ranges)
 }
 
-fn anchors(observation: &RefsInspection) -> Result<BTreeSet<u64>> {
-    let bootstrap = observation.bootstrap.as_ref().context("bootstrap absent")?;
-    let mut protected = BTreeSet::from([0, observation.backup_probe_offset / CLUSTER]);
+fn anchors(geometry: &RefsGeometry, bootstrap: &BootstrapProbe) -> Result<BTreeSet<u64>> {
+    let backup_probe_offset = geometry
+        .volume_bytes
+        .checked_sub(u64::from(geometry.bytes_per_sector))
+        .context("backup header position underflow")?;
+    let mut protected = BTreeSet::from([0, backup_probe_offset / CLUSTER]);
     for anchor in bootstrap.superblocks.iter().chain(&bootstrap.checkpoints) {
         let end = anchor
             .byte_offset
@@ -200,7 +203,7 @@ fn anchors(observation: &RefsInspection) -> Result<BTreeSet<u64>> {
         ensure!(
             anchor.bytes_read > 0
                 && anchor.byte_offset.is_multiple_of(CLUSTER)
-                && end <= observation.geometry.volume_bytes,
+                && end <= geometry.volume_bytes,
             "bootstrap anchor range outside volume"
         );
         protected.extend(anchor.byte_offset / CLUSTER..end.div_ceil(CLUSTER));
@@ -436,21 +439,27 @@ fn inspect_small<R: Read + Seek>(
     ))
 }
 
+/// Build a diagnostic union from bootstrap observations collected through this
+/// same stable reader. Serialized reports grant no authority to skip reads or
+/// write a device; all generation maps and referenced tree pages are freshly
+/// checked below. Both generations consume one shared page budget.
 pub fn inspect<R: Read + Seek>(
     reader: &mut R,
-    observation: &RefsInspection,
+    geometry: &RefsGeometry,
+    bootstrap: &BootstrapProbe,
     max_pages: u32,
 ) -> Result<GenerationUnion> {
-    let geometry = &observation.geometry;
     ensure!(
         (10..=1_048_576).contains(&max_pages)
             && geometry.major_version == 3
             && geometry.minor_version == 14
             && geometry.bytes_per_cluster == 4096
-            && geometry.volume_bytes.is_multiple_of(CLUSTER),
+            && geometry.volume_bytes.is_multiple_of(CLUSTER)
+            && geometry.volume_bytes <= geometry.image_bytes
+            && geometry.bytes_per_sector > 0
+            && u64::from(geometry.bytes_per_sector) <= CLUSTER,
         "unsupported generation-union geometry/budget"
     );
-    let bootstrap = observation.bootstrap.as_ref().context("bootstrap absent")?;
     ensure!(
         bootstrap.vbr_checksum_matches && bootstrap.checkpoints.len() <= 2,
         "bootstrap checksum or checkpoint count differs"
@@ -482,7 +491,7 @@ pub fn inspect<R: Read + Seek>(
         used: 0,
     };
     budget.charge(bootstrap_physical_page_reads)?;
-    let anchors = anchors(observation)?;
+    let anchors = anchors(geometry, bootstrap)?;
     let anchor_ranges = cluster_ranges(&anchors, geometry.volume_bytes)?;
     let mut all_metadata = anchor_ranges.clone();
     let mut all_data = Vec::new();

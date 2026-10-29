@@ -9,6 +9,7 @@ use n2r_win32::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+mod ownership;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +42,16 @@ impl Request {
 /// Leaves the selected disk offline/read-only. Reporting errors never bring
 /// it online; the lab operator must inspect its actual state before recovery.
 pub fn capture(request: &Request, output: &Path) -> Result<()> {
+    capture_profile(request, output, false)
+}
+
+/// Collect the required graph and raw/native allocation comparison through
+/// the same live freeze witness. This remains a read-only observation.
+pub fn capture_with_required_ownership(request: &Request, output: &Path) -> Result<()> {
+    capture_profile(request, output, true)
+}
+
+fn capture_profile(request: &Request, output: &Path, required_ownership: bool) -> Result<()> {
     request.validate()?;
     artifacts::create_output(output)?;
     artifacts::save(
@@ -49,6 +60,7 @@ pub fn capture(request: &Request, output: &Path) -> Result<()> {
         &serde_json::json!({
         "schema_version":1,"kind":"locked-refs-allocation-capture-intent",
         "request":request,"leaves_disk_offline_read_only":true,
+        "required_ownership_requested":required_ownership,
         "raw_writes_authorized":false,"reconstruction_authorized":false}),
     )?;
     let mut events = Vec::new();
@@ -87,6 +99,16 @@ pub fn capture(request: &Request, output: &Path) -> Result<()> {
             "frozen ReFS profile differs"
         );
         artifacts::save(output, "frozen-refs.json", &refs)?;
+        if required_ownership {
+            phase = "frozen-required-ownership";
+            let report = ownership::collect(
+                &mut frozen,
+                &witness,
+                request.resource_profile.unwrap_or_default(),
+                &mut events,
+            )?;
+            artifacts::save(output, "required-ownership.json", &report)?;
+        }
         let state = frozen.state(&mut events)?;
         ensure!(
             state.disk_attributes == 3,

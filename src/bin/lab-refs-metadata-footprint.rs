@@ -1,14 +1,12 @@
 //! Read-only ordinary raw-volume metadata traversal, never conversion authority.
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
-use ntfs2refs::refs_inspect;
+use ntfs2refs::{refs_inspect, refs_required_ranges as generations};
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
 };
-#[path = "lab-refs-metadata-footprint/generations.rs"]
-mod generations;
 #[derive(Parser)]
 struct Args {
     /// Ordinary raw ReFS volume image starting at byte zero, not VHD/VHDX.
@@ -178,7 +176,7 @@ fn main() -> Result<()> {
         geometry.bytes_per_cluster == 4096,
         "4KiB cluster profile required"
     );
-    let generation_union = generations::inspect(&mut input, &observation, args.max_pages)?;
+    let generation_union = generations::inspect(&mut input, geometry, bootstrap, args.max_pages)?;
     let footprint = &generation_union
         .generations
         .iter()

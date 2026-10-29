@@ -19,6 +19,9 @@ fn main() -> anyhow::Result<()> {
         request_sha256: String,
         #[arg(long)]
         output: PathBuf,
+        /// Compare required metadata/data ranges with raw and native allocators.
+        #[arg(long)]
+        required_ownership: bool,
     }
     fn pinned(args: &Args) -> Result<Vec<u8>> {
         let meta = fs::symlink_metadata(&args.request)?;
@@ -48,7 +51,11 @@ fn main() -> anyhow::Result<()> {
     }
     let args = Args::parse();
     let request: Request = serde_json::from_slice(&pinned(&args)?)?;
-    general_allocation_capture::capture(&request, &args.output)
+    if args.required_ownership {
+        general_allocation_capture::capture_with_required_ownership(&request, &args.output)
+    } else {
+        general_allocation_capture::capture(&request, &args.output)
+    }
 }
 #[cfg(not(windows))]
 fn main() {

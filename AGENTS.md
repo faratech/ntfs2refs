@@ -25,11 +25,12 @@ when unchanged evidence already answers the question.
 
 The coordinating agent reports VM
 2401593c-4b30-472e-9b6d-c9534cbaa599 RUNNING with parent checkpoint
-5125d335-09b4-4838-bc64-28b079e3f2b9 (the saved NTFS rollback branch).
+f06aa7fd-e157-44ed-8449-4cee98afa114 (the saved optimized partial branch).
 The VM has fixed 4 GiB RAM, 4 CPUs and no network adapter.
-Only two checkpoints remain after user-authorized cleanup:
+Three checkpoints remain after saving the new partial:
 - Public bundle NTFS rollback: 5125d335-09b4-4838-bc64-28b079e3f2b9.
 - Optimized ReFS after mutation/reboot: 632b630a-c77b-43b2-9b9a-eafbbd87106d.
+- Optimized controlled partial: f06aa7fd-e157-44ed-8449-4cee98afa114.
 
 A bundle-enabled controlled conversion has completed with actual native and
 wrapper exit 86 after one flushed source write. Its run ID is
@@ -107,7 +108,7 @@ evidence/paired-hash-host-benchmark-20261029.json; it is not a disk benchmark.
 Same-binary interruption/recovery on fb5548 remains unqualified; sealed2cac's
 separate controlled Resume/Rollback evidence must remain distinct.
 
-The same-candidate controlled interruption is NOW RUNNING:
+The same-candidate controlled interruption COMPLETED with native/task86:
 c0218eb07cc742d8b8cb2b2738e31de3, task
 N2R-OptimizedCompactInterrupt-c0218eb07cc742d8b8cb2b2738e31de3, guest
 C:\ntfs2refs\optimized-compact-interrupt-c0218eb07cc742d8b8cb2b2738e31de3.
@@ -116,16 +117,22 @@ Actual controlled core PID4856/creation1793257320594, wrapper1472/creation
 with public recovery main fb5548...; old daed9.../4bd15... binaries are used
 only to provision the fresh shadow and read-only bind devices. Dispatch SHA
 348f605d91bca90a2451136e5cea6ae745737fa677236d2d9089710d67d58fbb.
-The same task and PID/creation identity were still live at 07:49:52Z, with
-727,388,001,798 bytes read and source/shadow protected offline/read-only.
-The task must be observed to genuine terminal completion; do not restart it.
-Expected native and wrapper exit86 follows one flushed source write; it is not
-conversion success. Delta monitors metadata only. Do not interrupt or open live
-source/J/packed/capture/bundle/images/locked artifacts. Check actual task and
-PID creation identity; a timeout is not termination. After genuine terminal86
-and workers absent, preserve the original native-generated bundle and partial
-state, then reboot that actual partial and use the same candidate's public
-recovery CLI. Root owns all VM mutations. Two retained checkpoints are5125/632.
+At07:56:29Z both workers were absent. Save-OptimizedPartial preserved actual
+checkpointf06, receiptSHA9308c8b65d3c8cd25c4d6dd55215ad0552b5f10fad91d8c486805c3c69fd7563.
+Native bundleSHA4d3ad80646231dc69323e571a13b950d89f2a109cef548f3b0806e1e75586dca,
+publicationSHA3b4f44750d6cb7f4c54b4c27f41ba4e3ad9068de350b7db9c783a4d4cfed8e7d.
+Root booted that actual partial WITHOUT restore; source stayed offline/attrs1,
+and the managed shadow was absent after reboot. See
+evidence/optimized-drive-alpha-interruption-20261029.json.
+Public Resume c3a1f20f5f9f4c7c84a56b334e0511a2 is NOW RUNNING with fb5548:
+taskN2R-OptimizedRecovery-Resume-c3a1f20f5f9f4c7c84a56b334e0511a2,
+guestC:\ntfs2refs\optimized-recovery-resume-c3a1f20f5f9f4c7c84a56b334e0511a2,
+hostc021case/recovery-cli-resume-c3a1f20f5f9f4c7c84a56b334e0511a2/dispatch.json.
+At08:01:12Z actual mainPID4060/creation1793260781855 and wrapper4540/creation
+1793260777216 were live, taskRunning/267009, read52,308,961,305B. Source1 attrs1;
+correctd6e shadow6 reattached/attrs3. Expected0 is not yet observed. Do not
+restart, power, restore, replay or open protected live artifacts. A timeout is
+not termination. Root owns VM mutations; delta metadata-only observation.
 Local frozen package: .lab/releases/ntfs2refs-alpha-20261029-fb5548.zip,
 SHAf826606342c9b2a06ef18a35996915d60c0c54fd840fbc71c21ddb26f854577b.
 It contains the exact tested mainfb5548 and the scope/instructions in

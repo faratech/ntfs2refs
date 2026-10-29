@@ -57,6 +57,11 @@ Recovery on this exact candidate remains separately unqualified. The earlier
 `2cac76...` executable passed public resume and rollback after a controlled
 one-write interruption and reboot; those results are included as separate
 evidence and do not transfer automatically to this executable.
+The same-source controlled converter subsequently reached its intended exit86
+after one flushed write, published its original native recovery bundle, and
+preserved the interrupted branch. That branch booted with its source still
+offline; public resume has started but is not yet qualified. See the
+[interruption receipt](../evidence/optimized-drive-alpha-interruption-20261029.json).
 
 Other sizes, Windows builds and features need their own qualification.
 Arbitrary-size conversion, boot conversion and physical power-loss recovery

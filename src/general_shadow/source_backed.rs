@@ -242,21 +242,35 @@ impl<'a> SourceBackedShadow<'a> {
                     digest.update(&original[..count])?;
                 }
                 candidate_digest.update(&candidate[..count]);
-                for offset in (0..count).step_by(4096) {
+                let mut offset = 0;
+                while offset < count {
                     if original[offset..offset + 4096] == candidate[offset..offset + 4096] {
+                        offset += 4096;
                         continue;
                     }
-                    let next = changed
-                        .checked_add(4096)
-                        .context("delta byte count overflow")?;
+                    // Pack consecutive changed clusters in one write. Keep
+                    // the budget boundary at a cluster: if only part of a
+                    // run fits, write that prefix and refuse the next cluster
+                    // exactly as the original per-cluster loop did.
+                    let mut end = offset + 4096;
+                    while end < count && original[end..end + 4096] != candidate[end..end + 4096] {
+                        end += 4096;
+                    }
+                    let allowed = max_changed_bytes.saturating_sub(changed) / 4096;
                     ensure!(
-                        next <= max_changed_bytes,
+                        allowed != 0,
                         "delta capture budget exhausted before next output write; preserve partial artifact"
                     );
+                    let clusters =
+                        usize::try_from(u64::try_from((end - offset) / 4096)?.min(allowed))?;
+                    let bytes = clusters * 4096;
+                    let next = changed
+                        .checked_add(bytes as u64)
+                        .context("delta byte count overflow")?;
                     let address = at + offset as u64;
                     if let Some(last) = ranges.last_mut().filter(|r| r.offset + r.length == address)
                     {
-                        last.length += 4096;
+                        last.length += bytes as u64;
                     } else {
                         ensure!(
                             ranges.len() < 65536,
@@ -264,13 +278,14 @@ impl<'a> SourceBackedShadow<'a> {
                         );
                         ranges.push(ChangedRange {
                             offset: address,
-                            length: 4096,
+                            length: bytes as u64,
                             packed_offset: changed,
                         });
                     }
-                    file.write_all(&candidate[offset..offset + 4096])?;
-                    packed_digest.update(&candidate[offset..offset + 4096]);
+                    file.write_all(&candidate[offset..offset + bytes])?;
+                    packed_digest.update(&candidate[offset..offset + bytes]);
                     changed = next;
+                    offset += bytes;
                 }
                 done += count as u64;
                 compared = compared

@@ -387,6 +387,7 @@ fn copy_pinned<R: Read + Seek, J: Write>(
     length: u64,
     journal: &mut J,
     expected: &str,
+    immutable: &mut Sha256,
 ) -> Result<()> {
     source.seek(SeekFrom::Start(offset))?;
     let mut hash = Sha256::new();
@@ -397,12 +398,21 @@ fn copy_pinned<R: Read + Seek, J: Write>(
         source.read_exact(&mut buffer[..count])?;
         hash.update(&buffer[..count]);
         journal.write_all(&buffer[..count])?;
+        immutable.update(&buffer[..count]);
         left -= count as u64;
     }
     ensure!(
         hex::encode(hash.finalize()) == expected,
         "payload changed while preparing journal"
     );
+    Ok(())
+}
+
+/// Feed the ticket digest only after a complete journal write succeeds. The
+/// later post-flush load independently verifies every byte against this digest.
+fn write_immutable<J: Write>(journal: &mut J, bytes: &[u8], hash: &mut Sha256) -> Result<()> {
+    journal.write_all(bytes)?;
+    hash.update(bytes);
     Ok(())
 }
 
@@ -617,8 +627,9 @@ fn prepare_journal_using_comparison<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     progress.update(Subphase::WritingJournal, 0);
     journal.seek(SeekFrom::Start(0))?;
     journal.write_all(&[0; BODY_START as usize])?;
-    journal.write_all(&header)?;
-    journal.write_all(&metadata)?;
+    let mut immutable = Sha256::new();
+    write_immutable(journal, &header, &mut immutable)?;
+    write_immutable(journal, &metadata, &mut immutable)?;
     let mut root = Sha256::new();
     root.update(header);
     root.update(&metadata);
@@ -634,13 +645,14 @@ fn prepare_journal_using_comparison<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         record[96..128].copy_from_slice(&chain);
         chain = digest(&record[..128]);
         record[128..].copy_from_slice(&chain);
-        journal.write_all(&record)?;
+        write_immutable(journal, &record, &mut immutable)?;
         copy_pinned(
             source,
             patch.offset,
             patch.length,
             journal,
             &patch.before_sha256,
+            &mut immutable,
         )?;
         copy_pinned(
             shadow,
@@ -648,6 +660,7 @@ fn prepare_journal_using_comparison<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             patch.length,
             journal,
             &patch.after_sha256,
+            &mut immutable,
         )?;
     }
     let end = journal.stream_position()?;
@@ -659,7 +672,7 @@ fn prepare_journal_using_comparison<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     footer[56..88].copy_from_slice(&digest(&header));
     let hash = digest(&footer[..96]);
     footer[96..].copy_from_slice(&hash);
-    journal.write_all(&footer)?;
+    write_immutable(journal, &footer, &mut immutable)?;
     ensure!(
         journal.byte_len()? == journal_length,
         "prepared journal length mismatch"
@@ -669,11 +682,7 @@ fn prepare_journal_using_comparison<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let ticket = JournalTicket {
         schema_version: profile.version(),
         binding: binding.clone(),
-        immutable_sha256: hex::encode(hash_range(
-            journal,
-            BODY_START,
-            journal_length - BODY_START,
-        )?),
+        immutable_sha256: hex::encode(immutable.finalize()),
         immutable_length: journal_length - BODY_START,
         journal_length,
     };
@@ -2014,8 +2023,7 @@ pub(crate) fn execute_compact<S: Read + Seek, J: DurableIo>(
     let before = shadow.paired_target_state(target, request.expected_length, &ranges, events)?;
     let mut candidate = vec![0; BUFFER];
     let native = native_full_image_digest(&loaded.manifest.binding);
-    let mut pipeline = if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2)
-    {
+    let mut pipeline = if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2) {
         Some(retained_compare::digest_pipeline::Pipeline::with_native_backend(BUFFER, native)?)
     } else {
         None
@@ -2032,7 +2040,10 @@ pub(crate) fn execute_compact<S: Read + Seek, J: DurableIo>(
         if let Some(digest) = pipeline.as_mut() {
             digest.update(output)
         } else {
-            serial.as_mut().expect("serial digest is present").update(output)
+            serial
+                .as_mut()
+                .expect("serial digest is present")
+                .update(output)
         }
     })?;
     let candidate_hash = if let Some(digest) = pipeline {

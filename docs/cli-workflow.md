@@ -83,6 +83,11 @@ Journal loading also computes its complete immutable pin while checking each
 payload digest in the same sequential pass, saving one immutable-journal read
 per load. It still checks the complete pin before allowing reconstruction; this
 change likewise awaits native qualification.
+Journal preparation hashes the bytes as they are written, then independently
+reads and verifies the flushed journal, saving another complete journal read.
+Compact capture also batches adjacent changed clusters into bounded writes;
+the byte budget and packed image remain unchanged. These changes are awaiting
+native qualification and have not been measured end to end.
 
 For the Windows streaming-v2 profile, whole-image reconstruction and recovery
 hashes now use the existing fallible CNG SHA-256 backend, including normalized

@@ -126,5 +126,21 @@ construction, about 29.5 GB of allocation-bounded comparison, the 141 MB journal
 write readback, and about 8.6 GB of mounted file hashing. That projects to tens of
 GB instead of about 850 GB; it is a projection until a selective run measures it.
 Admission is the stage that needs the most care: it is where "never recreate the
-certificate from JSON" and "no whole-image hash" must both hold. Projected end-to-end reads are tens of GB rather than ~816 GB;
+certificate from JSON" and "no whole-image hash" must both hold.
+
+### What already exists for the write side, and the first blocker
+
+- `reconstruct::compact::activate` turns the frozen source into a
+  `GeneralJournaledPartition` (offline, writable) through its own binding checks.
+- `GeneralJournaledPartition::arm_writes(WritePolicy { allowed, retained,
+  maximum_bytes, journal_profile })` permits native writes only inside `allowed`,
+  bounded and single-use; `bring_online` stays the only mount transition. It
+  implements `DurableIo`, so `selected_journal::apply`/`handoff` can write through
+  it with `allowed` set to the planned ranges.
+- Blocker: admission is coupled to the complete capture.
+  `assessment.qualify_composite_target(&raw, &proof)` and
+  `proof.data_ties_verified()` require `complete_native_address_space_compared`.
+  Even a staged selective mode that keeps today's whole-source certificate needs a
+  new selective preservation proof type and a certificate method that accepts it.
+  That is the first code step. Projected end-to-end reads are tens of GB rather than ~816 GB;
 that remains a projection until step 5 measures it.

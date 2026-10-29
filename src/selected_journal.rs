@@ -82,12 +82,18 @@ fn get_u32(bytes: &[u8], offset: usize) -> u32 {
 fn get_u64(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("fixed field"))
 }
-fn finish(hash: Sha256) -> [u8; 32] {
-    hash.finalize().into()
+/// SHA-256 for the journal's pins: CNG on Windows (faster on CPUs without SHA
+/// instructions), the sha2 crate elsewhere. The digest is identical.
+type PinHash = crate::retained_compare::stream_digest::StreamDigest;
+fn pin_hash() -> Result<PinHash> {
+    PinHash::new(cfg!(windows))
 }
-fn frame(hash: &mut Sha256, range: &SelectedRange) {
-    hash.update(range.offset.to_le_bytes());
-    hash.update(range.length.to_le_bytes());
+fn finish(hash: PinHash) -> Result<[u8; 32]> {
+    hash.finish()
+}
+fn frame(hash: &mut PinHash, range: &SelectedRange) -> Result<()> {
+    hash.update(&range.offset.to_le_bytes())?;
+    hash.update(&range.length.to_le_bytes())
 }
 
 impl SelectedPlan {
@@ -249,38 +255,38 @@ pub(crate) fn finish_changed_plan(
 
 fn hash_range<R: Read + Seek>(io: &mut R, offset: u64, length: u64) -> Result<[u8; 32]> {
     io.seek(SeekFrom::Start(offset))?;
-    let mut hash = Sha256::new();
+    let mut hash = pin_hash()?;
     let mut buffer = vec![0; BUFFER];
     let mut remaining = length;
     while remaining > 0 {
         let count = usize::try_from(remaining.min(BUFFER as u64))?;
         io.read_exact(&mut buffer[..count])?;
-        hash.update(&buffer[..count]);
+        hash.update(&buffer[..count])?;
         remaining -= count as u64;
     }
-    Ok(finish(hash))
+    finish(hash)
 }
 
 fn copy_selected<R: Read + Seek, J: Write>(
     input: &mut R,
     range: &SelectedRange,
     journal: &mut J,
-    selected: &mut Sha256,
+    selected: &mut PinHash,
 ) -> Result<[u8; 32]> {
     input.seek(SeekFrom::Start(range.offset))?;
-    frame(selected, range);
-    let mut hash = Sha256::new();
+    frame(selected, range)?;
+    let mut hash = pin_hash()?;
     let mut buffer = vec![0; BUFFER];
     let mut remaining = range.length;
     while remaining > 0 {
         let count = usize::try_from(remaining.min(BUFFER as u64))?;
         input.read_exact(&mut buffer[..count])?;
         journal.write_all(&buffer[..count])?;
-        selected.update(&buffer[..count]);
-        hash.update(&buffer[..count]);
+        selected.update(&buffer[..count])?;
+        hash.update(&buffer[..count])?;
         remaining -= count as u64;
     }
-    Ok(finish(hash))
+    finish(hash)
 }
 
 /// Create and durably verify a new external journal. Only selected ranges are
@@ -308,8 +314,8 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal.seek(SeekFrom::Start(0))?;
     journal.write_all(&[0; BODY as usize])?;
     journal.write_all(&header)?;
-    let mut old_selected = Sha256::new();
-    let mut new_selected = Sha256::new();
+    let mut old_selected = pin_hash()?;
+    let mut new_selected = pin_hash()?;
     for range in &plan.ranges {
         let record_at = journal.stream_position()?;
         journal.write_all(&[0; RECORD])?;
@@ -325,8 +331,8 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         journal.write_all(&record)?;
         journal.seek(SeekFrom::Start(next))?;
     }
-    let old_selected_sha256 = finish(old_selected);
-    let new_selected_sha256 = finish(new_selected);
+    let old_selected_sha256 = finish(old_selected)?;
+    let new_selected_sha256 = finish(new_selected)?;
     let mut footer = [0u8; FOOTER];
     footer[..8].copy_from_slice(b"N2RSEND1");
     footer[8..40].copy_from_slice(&old_selected_sha256);
@@ -394,8 +400,8 @@ fn load<J: ReadSeek>(
         "selected journal header differs"
     );
     let mut records = Vec::with_capacity(plan.ranges.len());
-    let mut old_selected = Sha256::new();
-    let mut new_selected = Sha256::new();
+    let mut old_selected = pin_hash()?;
+    let mut new_selected = pin_hash()?;
     let mut buffer = vec![0; BUFFER];
     for range in &plan.ranges {
         let mut record = [0u8; RECORD];
@@ -420,18 +426,18 @@ fn load<J: ReadSeek>(
             (after_at, &mut new_selected, &record[48..80]),
         ] {
             journal.seek(SeekFrom::Start(offset))?;
-            frame(selected, range);
-            let mut hash = Sha256::new();
+            frame(selected, range)?;
+            let mut hash = pin_hash()?;
             let mut remaining = range.length;
             while remaining > 0 {
                 let count = usize::try_from(remaining.min(BUFFER as u64))?;
                 journal.read_exact(&mut buffer[..count])?;
-                selected.update(&buffer[..count]);
-                hash.update(&buffer[..count]);
+                selected.update(&buffer[..count])?;
+                hash.update(&buffer[..count])?;
                 remaining -= count as u64;
             }
             ensure!(
-                finish(hash).as_slice() == expected,
+                finish(hash)?.as_slice() == expected,
                 "selected journal payload hash differs"
             );
         }
@@ -448,8 +454,8 @@ fn load<J: ReadSeek>(
             && footer[8..40] == ticket.old_selected_sha256
             && footer[40..72] == ticket.new_selected_sha256
             && get_u64(&footer, 72) == journal_length
-            && finish(old_selected) == ticket.old_selected_sha256
-            && finish(new_selected) == ticket.new_selected_sha256
+            && finish(old_selected)? == ticket.old_selected_sha256
+            && finish(new_selected)? == ticket.new_selected_sha256
             && journal.stream_position()? == journal_length,
         "selected journal footer or selected digest differs"
     );
@@ -518,9 +524,9 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
     let mut current = vec![0; BUFFER];
     let mut before = vec![0; BUFFER];
     let mut after = vec![0; BUFFER];
-    let mut digest = Sha256::new();
+    let mut digest = pin_hash()?;
     for record in records {
-        frame(&mut digest, &record.range);
+        frame(&mut digest, &record.range)?;
         let mut done = 0u64;
         while done < record.range.length {
             let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
@@ -535,11 +541,11 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
                     .all(|((&actual, &old), &new)| actual == old || actual == new),
                 "selected target contains a foreign byte"
             );
-            digest.update(&current[..count]);
+            digest.update(&current[..count])?;
             done += count as u64;
         }
     }
-    let digest = finish(digest);
+    let digest = finish(digest)?;
     ensure!(
         expected.is_none_or(|expected| *expected == digest),
         "selected target digest differs"
@@ -583,16 +589,13 @@ fn write_span<T: DurableIo, J: Read + Seek>(
             done += count as u64;
             continue;
         }
+        // No flush or readback per chunk: replay accepts old or new bytes, the
+        // caller flushes every span before the first granule and again after
+        // it, and check_target then rereads every selected byte.
         target.seek(SeekFrom::Start(offset))?;
         ensure!(
             target.write(desired)? == count,
             "short selected target write"
-        );
-        target.sync_all()?;
-        at(target, offset, &mut current[..count])?;
-        ensure!(
-            &current[..count] == desired,
-            "selected target write readback differs"
         );
         done += count as u64;
     }

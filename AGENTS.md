@@ -148,6 +148,11 @@ allocation-based guarantee. Bytes that ReFS's own allocator marks free in the
 protected frozen shadow need not be compared or written; the per-range write
 policy and end-to-end mounted-file verification stay. Free-space contents are no
 longer proven equal in that mode, and its evidence must say so.
+Extension (user, 2026-10-29): in the allocation-bounded mode the source-side
+admission bracket may also be bounded to NTFS-allocated ranges, so the live
+certificate binds the NTFS inspection plus an allocated-range digest instead of
+a whole-source hash; NTFS free space is then not proven unchanged during
+admission. The composite/whole-image path keeps its whole-source hash.
 On the HEAD run, 100% of the 70,615,040 changed bytes lie inside the frozen
 shadow's native metadata-inclusive allocation (14.77GB); 286,720 of them are
 relocated file data inside routes, so routes cannot simply be skipped. Commit

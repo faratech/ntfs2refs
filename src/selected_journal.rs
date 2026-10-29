@@ -170,13 +170,7 @@ pub fn changed_plan<R: ReadSeek, S: ReadSeek>(
     max_selected_bytes: u64,
     max_journal_bytes: u64,
 ) -> Result<SelectedPlan> {
-    SelectedPlan {
-        image_length,
-        ranges: coarse.to_vec(),
-        max_selected_bytes: image_length,
-        max_journal_bytes: u64::MAX,
-    }
-    .validate()?;
+    validate_coarse(image_length, coarse)?;
     ensure!(
         source.byte_len()? == image_length && candidate.byte_len()? == image_length,
         "planning inputs differ in length from the image"
@@ -191,17 +185,54 @@ pub fn changed_plan<R: ReadSeek, S: ReadSeek>(
             let base = range.offset + done;
             at(source, base, &mut before[..count])?;
             at(candidate, base, &mut after[..count])?;
-            let granules = before[..count]
-                .chunks(GRANULE as usize)
-                .zip(after[..count].chunks(GRANULE as usize));
-            for (index, (old, new)) in granules.enumerate() {
-                if old != new {
-                    extend(&mut runs, base + index as u64 * GRANULE, GRANULE)?;
-                }
-            }
+            record_differing_granules(&mut runs, base, &before[..count], &after[..count])?;
             done += count as u64;
         }
     }
+    finish_changed_plan(image_length, runs, max_selected_bytes, max_journal_bytes)
+}
+
+/// Geometry check for a coarse planning selection; budgets apply to the result.
+pub(crate) fn validate_coarse(image_length: u64, coarse: &[SelectedRange]) -> Result<()> {
+    SelectedPlan {
+        image_length,
+        ranges: coarse.to_vec(),
+        max_selected_bytes: image_length,
+        max_journal_bytes: u64::MAX,
+    }
+    .validate()?;
+    Ok(())
+}
+
+/// Append the differing 4 KiB granules of one paired chunk read at `base`.
+/// Shared by readers that cannot lend two independent handles to `changed_plan`.
+pub(crate) fn record_differing_granules(
+    runs: &mut Vec<SelectedRange>,
+    base: u64,
+    before: &[u8],
+    after: &[u8],
+) -> Result<()> {
+    ensure!(
+        before.len() == after.len() && before.len().is_multiple_of(GRANULE as usize),
+        "paired planning chunks differ or are not granule aligned"
+    );
+    let granules = before
+        .chunks(GRANULE as usize)
+        .zip(after.chunks(GRANULE as usize));
+    for (index, (old, new)) in granules.enumerate() {
+        if old != new {
+            extend(runs, base + index as u64 * GRANULE, GRANULE)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn finish_changed_plan(
+    image_length: u64,
+    runs: Vec<SelectedRange>,
+    max_selected_bytes: u64,
+    max_journal_bytes: u64,
+) -> Result<SelectedPlan> {
     ensure!(
         !runs.is_empty(),
         "coarse selection contains no differing granule"

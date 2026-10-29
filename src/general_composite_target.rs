@@ -103,6 +103,8 @@ pub struct FrozenCompositeTargetPreservation {
     capture: DifferenceCapture,
     allocation_delta_diagnostic: Option<CapturedDeltaAllocationDiagnostic>,
     allocation_delta_diagnostic_error: Option<String>,
+    selective_plan_diagnostic: Option<SelectivePlanDiagnostic>,
+    selective_plan_diagnostic_error: Option<String>,
     backing: PinnedBacking,
     composite_target_sha256: String,
     comparison: RetainedCompareRequest,
@@ -394,6 +396,21 @@ pub fn verify_and_capture(
         Ok(value) => (Some(value), None),
         Err(error) => (None, Some(format!("{error:#}"))),
     };
+    // Retrospective and non-gating, like the diagnostic above: would a selection
+    // driven by the protected shadow allocation have found exactly this write
+    // set? It reads only the observed allocation through a fresh view.
+    let (selective_plan_diagnostic, selective_plan_diagnostic_error) = match selective_plan(
+        source,
+        target,
+        raw,
+        &tree,
+        &protected,
+        &capture,
+        max_changed_bytes,
+    ) {
+        Ok(value) => (Some(value), None),
+        Err(error) => (None, Some(format!("{error:#}"))),
+    };
     let mut backing = PinnedBacking::open(
         packed_path,
         capture.layout.changed_bytes(),
@@ -469,6 +486,8 @@ pub fn verify_and_capture(
         capture,
         allocation_delta_diagnostic,
         allocation_delta_diagnostic_error,
+        selective_plan_diagnostic,
+        selective_plan_diagnostic_error,
         backing,
         composite_target_sha256,
         comparison,
@@ -484,6 +503,94 @@ pub fn verify_and_capture(
         complete_allocation_graph_verified: false,
         source_admitted: false,
         conversion_qualified: false,
+    })
+}
+
+/// Retrospective comparison of an allocation-driven selection with the complete
+/// capture. It grants nothing; the complete capture remains authoritative.
+#[derive(Debug, Serialize)]
+pub struct SelectivePlanDiagnostic {
+    coarse_ranges: usize,
+    coarse_bytes: u64,
+    planned_ranges: usize,
+    planned_bytes: u64,
+    planned_journal_bytes: u64,
+    complete_capture_ranges: usize,
+    equals_complete_capture: bool,
+    original_bytes_read: u64,
+    candidate_source_logical_bytes_read: u64,
+    candidate_shadow_bytes_read: u64,
+    elapsed_seconds: f64,
+    selective_capture_executable: bool,
+    raw_write_authority: bool,
+}
+
+fn coalesced(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    ranges.sort_unstable();
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+    for (offset, length) in ranges {
+        match out.last_mut() {
+            Some(last) if last.0 + last.1 == offset => last.1 += length,
+            _ => out.push((offset, length)),
+        }
+    }
+    out
+}
+
+fn selective_plan(
+    source: &mut GeneralFrozenPartition,
+    target: &mut GeneralFrozenPartition,
+    raw: &ntfs_inspect::NtfsInspection,
+    tree: &shadow_tree::Tree,
+    protected: &ProtectedTargetLayout,
+    capture: &DifferenceCapture,
+    max_changed_bytes: u64,
+) -> Result<SelectivePlanDiagnostic> {
+    let started = std::time::Instant::now();
+    let coarse: Vec<_> = protected
+        .allocation_coverage()
+        .observed_ranges(protected.native())?
+        .into_iter()
+        .map(|range| crate::selected_journal::SelectedRange {
+            offset: range.offset,
+            length: range.length,
+        })
+        .collect();
+    let coarse_bytes: u64 = coarse.iter().map(|range| range.length).sum();
+    let view = SourceBackedShadow::new(
+        source,
+        target,
+        raw,
+        tree,
+        protected.routes(),
+        protected.routes().payload_bytes().max(1),
+    )?;
+    let (plan, counts, original_bytes_read) =
+        view.plan_changed_granules(&coarse, max_changed_bytes, u64::MAX)?;
+    let (planned_bytes, planned_journal_bytes) = plan.validate()?;
+    let complete = coalesced(
+        capture
+            .layout
+            .intervals()
+            .iter()
+            .map(|range| (range.offset, range.length))
+            .collect(),
+    );
+    let planned: Vec<_> = plan.ranges.iter().map(|r| (r.offset, r.length)).collect();
+    Ok(SelectivePlanDiagnostic {
+        coarse_ranges: coarse.len(),
+        coarse_bytes,
+        planned_ranges: planned.len(),
+        planned_bytes,
+        planned_journal_bytes,
+        complete_capture_ranges: complete.len(),
+        equals_complete_capture: planned == complete,
+        original_bytes_read,
+        candidate_source_logical_bytes_read: counts.source_logical_bytes,
+        candidate_shadow_bytes_read: counts.shadow_bytes,
+        elapsed_seconds: started.elapsed().as_secs_f64(),
+        selective_capture_executable: false,
+        raw_write_authority: false,
     })
 }
 

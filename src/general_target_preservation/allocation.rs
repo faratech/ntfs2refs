@@ -48,30 +48,11 @@ impl ProtectedAllocationCoverage {
         native: &GeneralLiveRefsLayoutObservation,
         layout: &crate::refs_hybrid::delta::DeltaLayout,
     ) -> Result<CapturedDeltaAllocationDiagnostic> {
-        let map = native
-            .report()
-            .native()
-            .metadata_allocation
-            .as_ref()
-            .context("protected allocation bitmap absent")?;
         ensure!(
-            layout.partition_bytes() == self.partition_bytes
-                && map.bitmap_sha256 == self.metadata_bitmap_sha256
-                && map.cluster_count.checked_mul(4096) == Some(self.partition_bytes),
-            "delta diagnostic bitmap or partition binding differs"
+            layout.partition_bytes() == self.partition_bytes,
+            "delta diagnostic partition binding differs"
         );
-        let allocated = map.ranges.iter().map(|range| ByteRange {
-            offset: range.offset,
-            length: range.length,
-        });
-        // Known anchors and stream extents outside the bitmap remain included.
-        let observed = union(
-            allocated
-                .chain(self.anchors_uncovered_by_bitmap.iter().copied())
-                .chain(self.streams_uncovered_by_bitmap.iter().copied())
-                .collect(),
-            self.partition_bytes,
-        )?;
+        let observed = self.observed_ranges(native)?;
         let changed = union(
             layout
                 .intervals()
@@ -102,6 +83,40 @@ impl ProtectedAllocationCoverage {
             selective_capture_executable: false,
             raw_write_authority: false,
         })
+    }
+}
+
+impl ProtectedAllocationCoverage {
+    /// The bitmap's allocated ranges plus known anchors and stream extents
+    /// outside it, sorted and coalesced. Held from the protected observation;
+    /// performs no disk I/O and is not a complete allocation graph.
+    pub(crate) fn observed_ranges(
+        &self,
+        native: &GeneralLiveRefsLayoutObservation,
+    ) -> Result<Vec<ByteRange>> {
+        let map = native
+            .report()
+            .native()
+            .metadata_allocation
+            .as_ref()
+            .context("protected allocation bitmap absent")?;
+        ensure!(
+            map.bitmap_sha256 == self.metadata_bitmap_sha256
+                && map.cluster_count.checked_mul(4096) == Some(self.partition_bytes),
+            "allocation diagnostic bitmap or partition binding differs"
+        );
+        let allocated = map.ranges.iter().map(|range| ByteRange {
+            offset: range.offset,
+            length: range.length,
+        });
+        // Known anchors and stream extents outside the bitmap remain included.
+        union(
+            allocated
+                .chain(self.anchors_uncovered_by_bitmap.iter().copied())
+                .chain(self.streams_uncovered_by_bitmap.iter().copied())
+                .collect(),
+            self.partition_bytes,
+        )
     }
 }
 

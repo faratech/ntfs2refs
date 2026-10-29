@@ -224,6 +224,48 @@ impl<'a> SourceBackedShadow<'a> {
         self.capture_difference_ranges(&selection, length, identity, output, max_changed_bytes)
     }
 
+    /// Retrospective planning over a coarse selection: compare the original
+    /// bytes with this candidate view only inside `coarse` and return the
+    /// differing granules as a selected plan, with the view's read counts and
+    /// the original bytes read. Nothing outside `coarse` is read. This grants
+    /// nothing and does not replace the complete capture.
+    pub fn plan_changed_granules(
+        mut self,
+        coarse: &[crate::selected_journal::SelectedRange],
+        max_selected_bytes: u64,
+        max_journal_bytes: u64,
+    ) -> Result<(crate::selected_journal::SelectedPlan, ReadCounts, u64)> {
+        use crate::selected_journal as sj;
+        let length = self.length;
+        sj::validate_coarse(length, coarse)?;
+        let mut original = vec![0u8; NATIVE_CAPTURE_BYTES];
+        let mut candidate = vec![0u8; NATIVE_CAPTURE_BYTES];
+        let mut runs = Vec::new();
+        let mut original_bytes = 0u64;
+        for range in coarse {
+            let mut done = 0;
+            while done < range.length {
+                let count = (range.length - done).min(original.len() as u64) as usize;
+                let at = range.offset + done;
+                self.seek(SeekFrom::Start(at))?;
+                self.read_exact(&mut candidate[..count])?;
+                self.source.seek(SeekFrom::Start(at))?;
+                self.source.read_exact(&mut original[..count])?;
+                sj::record_differing_granules(
+                    &mut runs,
+                    at,
+                    &original[..count],
+                    &candidate[..count],
+                )?;
+                original_bytes += count as u64;
+                done += count as u64;
+            }
+        }
+        let counts = self.finish()?;
+        let plan = sj::finish_changed_plan(length, runs, max_selected_bytes, max_journal_bytes)?;
+        Ok((plan, counts, original_bytes))
+    }
+
     fn capture_difference_ranges(
         mut self,
         selection: &[crate::refs_write_set::ByteRange],

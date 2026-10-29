@@ -5,7 +5,7 @@ use crate::{
     general_shadow, lab_reconstruct, ntfs_attestation, ntfs_inspect, refs_inspect,
     refs_retained_allocation, shadow_tree, tree_placement,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralDiskState, GeneralFrozenPartition, GeneralLiveRefsLayoutObservation,
     GeneralLiveRefsObservation, NativeEvent, general_layout::GeneralSourceShadowBinding,
@@ -13,7 +13,7 @@ use n2r_win32::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Seek},
+    io::{Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -80,6 +80,10 @@ pub struct ProtectedTargetLayout {
     routes: n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
     allocation_coverage: ProtectedAllocationCoverage,
     raw_image_unchanged: bool,
+    /// Present only when the closing bracket covered the protected allocation
+    /// rather than the complete image (allocation-bounded mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bracket_closure: Option<AllocationBracketClosure>,
     logical_payload_verified: bool,
     complete_allocation_graph_verified: bool,
     source_admitted: bool,
@@ -216,6 +220,174 @@ fn verify_frozen_layout_profile(
         routes,
         allocation_coverage,
         raw_image_unchanged: true,
+        bracket_closure: None,
+        logical_payload_verified: false,
+        complete_allocation_graph_verified: false,
+        source_admitted: false,
+        conversion_qualified: false,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct AllocationBracketClosure {
+    opening: &'static str,
+    closing_ranges: usize,
+    closing_chunks: usize,
+    closing_bytes_reread: u64,
+    free_space_rechecked: bool,
+}
+
+const BRACKET_CHUNK: u64 = 1024 * 1024;
+
+/// Opening pass over the complete frozen image: its SHA-256 plus a digest of
+/// every 1 MiB chunk, so the closing pass can recheck only part of it.
+fn open_chunked_bracket<R: Read + Seek>(
+    image: &mut R,
+    length: u64,
+) -> Result<(String, Vec<[u8; 32]>)> {
+    image.seek(SeekFrom::Start(0))?;
+    let mut whole = n2r_win32::sha256_native::Sha256::new()?;
+    let mut chunks = Vec::with_capacity(usize::try_from(length.div_ceil(BRACKET_CHUNK))?);
+    let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
+    let mut done = 0u64;
+    while done < length {
+        let count = usize::try_from((length - done).min(BRACKET_CHUNK))?;
+        image.read_exact(&mut buffer[..count])?;
+        whole.update(&buffer[..count])?;
+        let mut chunk = n2r_win32::sha256_native::Sha256::new()?;
+        chunk.update(&buffer[..count])?;
+        chunks.push(chunk.finish()?);
+        done += count as u64;
+    }
+    Ok((hex::encode(whole.finish()?), chunks))
+}
+
+/// Recheck every opening chunk that overlaps the sorted `ranges`. Chunks
+/// outside them are not read again.
+fn close_chunked_bracket<R: Read + Seek>(
+    image: &mut R,
+    length: u64,
+    chunks: &[[u8; 32]],
+    ranges: &[crate::refs_write_set::ByteRange],
+) -> Result<(usize, u64)> {
+    let mut indices: Vec<u64> = Vec::new();
+    for range in ranges {
+        let end = range
+            .offset
+            .checked_add(range.length)
+            .context("bracket range overflow")?;
+        ensure!(
+            range.length != 0 && end <= length,
+            "bracket closing range escapes the image"
+        );
+        for index in range.offset / BRACKET_CHUNK..=(end - 1) / BRACKET_CHUNK {
+            if indices.last() != Some(&index) {
+                indices.push(index);
+            }
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
+    let mut reread = 0u64;
+    for &index in &indices {
+        let at = index * BRACKET_CHUNK;
+        let count = usize::try_from((length - at).min(BRACKET_CHUNK))?;
+        image.seek(SeekFrom::Start(at))?;
+        image.read_exact(&mut buffer[..count])?;
+        let mut hash = n2r_win32::sha256_native::Sha256::new()?;
+        hash.update(&buffer[..count])?;
+        ensure!(
+            Some(&hash.finish()?) == chunks.get(usize::try_from(index)?),
+            "protected observation changed allocated frozen image bytes"
+        );
+        reread += count as u64;
+    }
+    Ok((indices.len(), reread))
+}
+
+/// Allocation-bounded counterpart of
+/// [`verify_frozen_layout_residuals_with_resource_profile`] under the user's
+/// allocation guarantee: the opening pass covers the complete image, the closing
+/// pass only the chunks overlapping the protected native allocation.
+pub fn verify_frozen_layout_residuals_allocation_closed(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    resources: crate::ntfs_admission::ResourceProfile,
+    residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
+    events: &mut Vec<NativeEvent>,
+) -> Result<ProtectedTargetLayout> {
+    pair.validate_with_resource_profile(resources.native_profile())?;
+    expected.validate_with_resource_profile(resources)?;
+    ensure!(
+        target.binding() == &pair.shadow,
+        "protected layout target binding differs"
+    );
+    let before = target.state(events)?;
+    ensure!(
+        before.disk_attributes == 3,
+        "layout observation requires a frozen target"
+    );
+    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?));
+    let tree = shadow_tree::Tree {
+        profile: resources.ordinary_shadow_profile(),
+        objects: expected.objects.clone(),
+        logical_bytes: expected.logical_bytes,
+        internal_replacement_pending: expected.internal_replacement_pending.clone(),
+    };
+    let input = general_shadow::native_inputs(&tree);
+    let length = target.byte_len();
+    let (raw_sha256, chunks) = open_chunked_bracket(target, length)?;
+    let same_security = |a: &[u8], b: &[u8]| {
+        ntfs_attestation::same_security(a, b)
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    };
+    let native = target.observe_refs_layout_residuals_with_resource_profile(
+        pair.clone(),
+        &input,
+        residuals,
+        same_security,
+        resources.native_profile(),
+        events,
+    )?;
+    let anchors = refs_inspect::inspect_with_resource_profile(target, length, resources)
+        .and_then(|refs| crate::refs_write_set::observed_anchors(&refs))
+        .map_err(|error| format!("{error:#}"));
+    ensure!(
+        native.before() == &before
+            && native.after() == &before
+            && native.observed_readonly().disk_attributes == 2
+            && native.report().pair() == &pair
+            && target.state(events)? == before,
+        "protected layout observation changed its identity or persistent exclusion"
+    );
+    let routes =
+        n2r_win32::shadow_native::private_tree::SourceBackedRoutes::from_protected_layout(&native)?;
+    let allocation_coverage = allocation::reconcile(&native, anchors, &raw_sha256, length)?;
+    let selection = allocation_coverage.observed_ranges(&native)?;
+    let (closing_chunks, closing_bytes_reread) =
+        close_chunked_bracket(target, length, &chunks, &selection)?;
+    ensure!(
+        target.state(events)? == before,
+        "protected allocation bracket changed persistent exclusion"
+    );
+    Ok(ProtectedTargetLayout {
+        native,
+        raw_sha256,
+        expected_tree_sha256,
+        frozen_state: before,
+        resources,
+        routes,
+        allocation_coverage,
+        raw_image_unchanged: false,
+        bracket_closure: Some(AllocationBracketClosure {
+            opening: "complete image SHA-256 plus 1 MiB chunk digests",
+            closing_ranges: selection.len(),
+            closing_chunks,
+            closing_bytes_reread,
+            free_space_rechecked: false,
+        }),
         logical_payload_verified: false,
         complete_allocation_graph_verified: false,
         source_admitted: false,

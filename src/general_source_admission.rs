@@ -82,6 +82,9 @@ pub struct AllocationCertificate {
     changed_bytes: u64,
     assessment_sha256: String,
     free_space_contents_proven_equal: bool,
+    /// `source_sha256` is the framed digest of the NTFS-allocated ranges, not a
+    /// whole-source hash (the user's extended allocation guarantee).
+    source_digest: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_resource_profile: Option<ntfs_admission::ResourceProfile>,
 }
@@ -172,6 +175,7 @@ impl LiveAssessment {
             changed_bytes: target.capture().layout.changed_bytes(),
             assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
             free_space_contents_proven_equal: false,
+            source_digest: "ntfs_allocated_ranges",
             source_resource_profile: match self.context.resources {
                 ntfs_admission::ResourceProfile::AlphaV1 => None,
                 resource => Some(resource),
@@ -325,6 +329,43 @@ pub fn assess(
     observed: &GeneralLiveNtfsObservation,
     events: &mut Vec<NativeEvent>,
 ) -> Result<LiveAssessment> {
+    assess_with_source_digest(
+        source,
+        raw,
+        canonical_inspection_sha256,
+        expected_source_sha256,
+        backups,
+        log_restart,
+        observed,
+        events,
+        |source, resources| {
+            Ok(hex::encode(
+                lab_reconstruct::hash_range_with_resource_profile(
+                    source,
+                    0,
+                    source.byte_len(),
+                    resources,
+                )?,
+            ))
+        },
+    )
+}
+
+/// `assess` with the caller's frozen-source digest, which must reproduce the
+/// digest taken before the native observation. The allocation-bounded mode
+/// passes its NTFS-allocated-range digest; the default is the whole image.
+#[allow(clippy::too_many_arguments)]
+pub fn assess_with_source_digest(
+    source: &mut GeneralFrozenPartition,
+    raw: &ntfs_inspect::NtfsInspection,
+    canonical_inspection_sha256: &str,
+    expected_source_sha256: &str,
+    backups: &ntfs_backup::VerifiedBackups,
+    log_restart: Option<&ntfs_log::VerifiedRestart>,
+    observed: &GeneralLiveNtfsObservation,
+    events: &mut Vec<NativeEvent>,
+    digest: impl FnOnce(&mut GeneralFrozenPartition, ntfs_admission::ResourceProfile) -> Result<String>,
+) -> Result<LiveAssessment> {
     let resources = match (
         observed.report().request.schema_version,
         observed.report().request.resource_profile,
@@ -353,12 +394,7 @@ pub fn assess(
         before.disk_attributes == 3,
         "general source is not offline read-only"
     );
-    let source_sha256 = hex::encode(lab_reconstruct::hash_range_with_resource_profile(
-        source,
-        0,
-        source.byte_len(),
-        resources,
-    )?);
+    let source_sha256 = digest(source, resources)?;
     let after = source.state(events)?;
     ensure!(
         before == after && source_sha256 == expected_source_sha256,

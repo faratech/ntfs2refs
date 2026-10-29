@@ -191,6 +191,76 @@ pub struct NtfsInspection {
     pub stream_hash_limit_bytes: u64,
 }
 
+impl NtfsInspection {
+    /// Byte ranges NTFS owns: every nonresident attribute extent, as claimed by
+    /// the allocation reconciliation, plus the sectors past the cluster domain
+    /// (the backup boot sector). Valid only when the raw model reconciled exactly
+    /// with the volume bitmap, so the union is the bitmap's allocated set.
+    pub fn allocated_byte_ranges(&self, partition_bytes: u64) -> Result<Vec<(u64, u64)>> {
+        ensure!(
+            self.allocation_reconciliation
+                .as_ref()
+                .is_some_and(|r| r.status == AllocationReconciliationStatus::ConsistentRawModel),
+            "NTFS allocated ranges need an exactly reconciled raw allocation model"
+        );
+        let cluster = u64::from(self.geometry.cluster_size);
+        let domain = self
+            .geometry
+            .total_clusters
+            .checked_mul(cluster)
+            .context("NTFS cluster domain overflow")?;
+        ensure!(
+            domain <= partition_bytes,
+            "NTFS cluster domain exceeds the partition"
+        );
+        let list_storage = self.attribute_assemblies.iter().filter_map(|assembly| {
+            assembly
+                .base
+                .attributes
+                .iter()
+                .find(|a| a.type_code == 0x20 && !a.resident)
+        });
+        let mut ranges = Vec::new();
+        for attribute in self
+            .files
+            .iter()
+            .flat_map(|file| file.attributes.iter())
+            .chain(list_storage)
+        {
+            if attribute.resident {
+                continue;
+            }
+            for extent in &attribute.extents {
+                let Some(physical) = extent.physical_offset else {
+                    continue; // Sparse holes have no physical owner.
+                };
+                let end = physical
+                    .checked_add(extent.length)
+                    .context("NTFS extent overflow")?;
+                ensure!(
+                    extent.length != 0 && end <= domain,
+                    "NTFS extent escapes the cluster domain"
+                );
+                ranges.push((physical, extent.length));
+            }
+        }
+        if domain < partition_bytes {
+            ranges.push((domain, partition_bytes - domain));
+        }
+        ranges.sort_unstable();
+        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+        for (offset, length) in ranges {
+            match merged.last_mut() {
+                Some(last) if offset <= last.0 + last.1 => {
+                    last.1 = last.1.max(offset + length - last.0);
+                }
+                _ => merged.push((offset, length)),
+            }
+        }
+        Ok(merged)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AllocationReconciliationStatus {

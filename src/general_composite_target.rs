@@ -291,6 +291,7 @@ pub fn verify_and_capture(
         packed_path,
         max_changed_bytes,
         events,
+        false,
     )?;
     let capture = SourceBackedShadow::new(
         source,
@@ -581,6 +582,7 @@ pub fn verify_and_select(
         packed_path,
         max_changed_bytes,
         events,
+        true,
     )?;
     let selection = protected
         .allocation_coverage()
@@ -682,6 +684,7 @@ fn protected_prefix(
     packed_path: &Path,
     max_changed_bytes: u64,
     events: &mut Vec<NativeEvent>,
+    allocation_closed_bracket: bool,
 ) -> Result<ProtectedPrefix> {
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
@@ -761,7 +764,16 @@ fn protected_prefix(
             sha256: proof.sha256,
         });
     }
-    let protected =
+    let protected = if allocation_closed_bracket {
+        general_target_preservation::verify_frozen_layout_residuals_allocation_closed(
+            target,
+            pair.clone(),
+            &expected,
+            resources,
+            &residuals,
+            events,
+        )?
+    } else {
         general_target_preservation::verify_frozen_layout_residuals_with_resource_profile(
             target,
             pair.clone(),
@@ -769,7 +781,8 @@ fn protected_prefix(
             resources,
             &residuals,
             events,
-        )?;
+        )?
+    };
     ensure!(
         protected.expected_tree_sha256() == expected_tree_sha256
             && protected.native().report().residual_contents_verified()

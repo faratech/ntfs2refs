@@ -190,6 +190,17 @@ struct PreparedSourceContext {
 
 /// Shared unchanged source sequence for full-shadow and composite targets.
 /// The caller creates the fresh output and validates the pair/resource budget.
+/// How the frozen source is bound across its native observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SourceDigest {
+    /// Complete source image SHA-256 (the composite path).
+    WholeImage,
+    /// Framed digest of the NTFS-allocated ranges only (allocation-bounded mode,
+    /// under the user's extended allocation guarantee).
+    NtfsAllocated,
+}
+
 fn prepare_source_context(
     pair: &GeneralSourceShadowBinding,
     output: &Path,
@@ -197,6 +208,7 @@ fn prepare_source_context(
     events: &mut Vec<NativeEvent>,
     phase: &mut &'static str,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
+    digest_kind: SourceDigest,
 ) -> Result<PreparedSourceContext> {
     let mut online = n2r_win32::GeneralPartitionReader::open(pair.source.clone(), events)?;
     let mut boot = [0; 512];
@@ -216,24 +228,49 @@ fn prepare_source_context(
     events.clear();
     let mut source = GeneralFrozenPartition::isolate_observed_ntfs(pair.source.clone(), events)?;
     let length = source.byte_len();
-    let source_hash = hex::encode(lab_reconstruct::hash_range_with_resource_profile(
-        &mut source,
-        0,
-        length,
-        resources,
-    )?);
+    // The allocated ranges come from the inspection, so that mode inspects the
+    // frozen source first. The whole-image path keeps its original order.
+    let early_raw = match digest_kind {
+        SourceDigest::WholeImage => None,
+        SourceDigest::NtfsAllocated => Some(ntfs_inspect::inspect_with_limits(
+            &mut source,
+            length,
+            ntfs_inspect::limits_for_resource_profile(resources),
+        )?),
+    };
+    let allocated = match &early_raw {
+        Some(raw) => Some(raw.allocated_byte_ranges(length)?),
+        None => None,
+    };
+    let source_hash = match &allocated {
+        None => hex::encode(lab_reconstruct::hash_range_with_resource_profile(
+            &mut source,
+            0,
+            length,
+            resources,
+        )?),
+        Some(ranges) => hex::encode(lab_reconstruct::hash_ranges_native(&mut source, ranges)?),
+    };
+    let digest_bytes: Option<u64> = allocated
+        .as_ref()
+        .map(|ranges| ranges.iter().map(|range| range.1).sum());
     save_source_frozen_then(
         output,
         &serde_json::json!({"schema_version":1,
         "kind":"observed-frozen-source-identity","binding":source.binding(),"source_sha256":source_hash,
+        "source_digest_kind":digest_kind,"source_digest_ranges":allocated.as_ref().map(Vec::len),
+        "source_digest_bytes":digest_bytes,
         "state":source.state(events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
         |artifact_sha256| after_source_freeze(&source, &source_hash, artifact_sha256),
     )?;
-    let raw = ntfs_inspect::inspect_with_limits(
-        &mut source,
-        length,
-        ntfs_inspect::limits_for_resource_profile(resources),
-    )?;
+    let raw = match early_raw {
+        Some(raw) => raw,
+        None => ntfs_inspect::inspect_with_limits(
+            &mut source,
+            length,
+            ntfs_inspect::limits_for_resource_profile(resources),
+        )?,
+    };
     let source_label_frozen =
         crate::source_volume_label::verify(&mut source, &raw, source_label.label())?;
     save(output, "source-label-frozen.json", &source_label_frozen)?;
@@ -260,16 +297,33 @@ fn prepare_source_context(
     };
     let observed = source.observe_ntfs_files(&request, events)?;
     save(output, "native-source.json", observed.report())?;
-    let assessment = general_source_admission::assess(
-        &mut source,
-        &raw,
-        &pin,
-        &source_hash,
-        &backups,
-        Some(&log),
-        &observed,
-        events,
-    )?;
+    let assessment = match &allocated {
+        None => general_source_admission::assess(
+            &mut source,
+            &raw,
+            &pin,
+            &source_hash,
+            &backups,
+            Some(&log),
+            &observed,
+            events,
+        )?,
+        Some(ranges) => general_source_admission::assess_with_source_digest(
+            &mut source,
+            &raw,
+            &pin,
+            &source_hash,
+            &backups,
+            Some(&log),
+            &observed,
+            events,
+            |source, _| {
+                Ok(hex::encode(lab_reconstruct::hash_ranges_native(
+                    source, ranges,
+                )?))
+            },
+        )?,
+    };
     save(output, "source-assessment.json", &assessment)?;
     save(output, "source-events.json", &events)?;
     events.clear();
@@ -360,6 +414,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             &mut events,
             &mut phase,
             after_source_freeze,
+            SourceDigest::WholeImage,
         )?;
         let views = assessment
             .assessment

@@ -331,6 +331,39 @@ pub(crate) fn hash_range_with_resource_profile<R: Read + Seek>(
     }
     hash_range(io, at, length)
 }
+/// Framed native SHA-256 over sorted disjoint ranges: each range contributes
+/// its offset and length (little-endian) before its bytes. Never a whole-image
+/// hash; bytes outside the ranges are not read.
+#[cfg(windows)]
+pub(crate) fn hash_ranges_native<R: Read + Seek>(
+    io: &mut R,
+    ranges: &[(u64, u64)],
+) -> Result<[u8; 32]> {
+    let mut hash = n2r_win32::sha256_native::Sha256::new()?;
+    let mut buffer = vec![0u8; BUFFER];
+    let mut previous_end = 0u64;
+    for &(offset, length) in ranges {
+        ensure!(
+            length != 0 && offset >= previous_end,
+            "hashed ranges must be sorted, disjoint and nonempty"
+        );
+        previous_end = offset
+            .checked_add(length)
+            .context("hashed range overflow")?;
+        hash.update(&offset.to_le_bytes())?;
+        hash.update(&length.to_le_bytes())?;
+        io.seek(SeekFrom::Start(offset))?;
+        let mut left = length;
+        while left != 0 {
+            let count = usize::try_from(left.min(BUFFER as u64))?;
+            io.read_exact(&mut buffer[..count])?;
+            hash.update(&buffer[..count])?;
+            left -= count as u64;
+        }
+    }
+    Ok(hash.finish()?)
+}
+
 fn validate_binding(binding: &JournalBinding) -> Result<()> {
     ensure!(
         binding.experiment_id.len() == 32

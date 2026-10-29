@@ -21,6 +21,92 @@ pub struct ReadCounts {
 
 const SELECTED_CHUNK_DIGEST: &str = "sha256-over-frames-and-xxh3-128-per-compared-chunk";
 
+/// Reads a capture's original (source) chunks through a second frozen-source
+/// handle, one chunk ahead of the comparison, when the device takes more than
+/// one outstanding read. The chunk sequence equals the comparison loop's.
+struct OriginalPrefetch {
+    filled: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+    free: std::sync::mpsc::SyncSender<Vec<u8>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl OriginalPrefetch {
+    fn start(
+        source: &GeneralFrozenPartition,
+        selection: &[crate::refs_write_set::ByteRange],
+    ) -> Result<Option<Self>> {
+        if source.io_profile().queue_depth < 2 {
+            return Ok(None);
+        }
+        let Some(mut lane) = source.read_lanes(1, &mut Vec::new())?.pop() else {
+            return Ok(None);
+        };
+        let mut chunks = Vec::new();
+        for range in selection {
+            let mut done = 0;
+            while done < range.length {
+                let count = (range.length - done).min(NATIVE_CAPTURE_BYTES as u64);
+                chunks.push((range.offset + done, count as usize));
+                done += count;
+            }
+        }
+        let (filled_tx, filled) = std::sync::mpsc::sync_channel(2);
+        let (free, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(3);
+        for _ in 0..3 {
+            let _ = free.send(vec![0u8; NATIVE_CAPTURE_BYTES]);
+        }
+        let worker = std::thread::Builder::new()
+            .name("n2r-original-prefetch".into())
+            .spawn(move || {
+                for (at, count) in chunks {
+                    let Ok(mut buffer) = free_rx.recv() else {
+                        return;
+                    };
+                    buffer.resize(count, 0);
+                    let result = lane
+                        .seek(SeekFrom::Start(at))
+                        .and_then(|_| lane.read_exact(&mut buffer))
+                        .map(|_| buffer);
+                    let stop = result.is_err();
+                    if filled_tx.send(result).is_err() || stop {
+                        return;
+                    }
+                }
+            })?;
+        Ok(Some(Self {
+            filled,
+            free,
+            worker: Some(worker),
+        }))
+    }
+
+    fn next(&mut self, count: usize) -> Result<Vec<u8>> {
+        let buffer = self
+            .filled
+            .recv()
+            .map_err(|_| anyhow::anyhow!("original prefetch stopped early"))??;
+        ensure!(buffer.len() == count, "original prefetch chunk differs");
+        Ok(buffer)
+    }
+
+    fn recycle(&self, buffer: Vec<u8>) {
+        let _ = self.free.send(buffer);
+    }
+
+    fn finish(mut self) -> Result<()> {
+        ensure!(
+            self.filled.try_recv().is_err(),
+            "original prefetch read beyond the comparison"
+        );
+        if let Some(worker) = self.worker.take() {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("original prefetch panicked"))?;
+        }
+        Ok(())
+    }
+}
+
 /// Framed digest of the bytes one side of a capture compared. `Stream` and
 /// `Overlapped` are a SHA-256 of the framed byte stream (recomputed by the
 /// complete path). `Chunks` is a SHA-256 over the same frames and the
@@ -386,6 +472,7 @@ impl<'a> SourceBackedShadow<'a> {
         let mut changed = 0u64;
         let mut compared = 0u64;
         let mut ranges: Vec<ChangedRange> = Vec::new();
+        let mut prefetch = OriginalPrefetch::start(self.source, selection)?;
         for range in selection {
             let offset = range.offset.to_le_bytes();
             let length = range.length.to_le_bytes();
@@ -399,11 +486,18 @@ impl<'a> SourceBackedShadow<'a> {
                 let at = range.offset + done;
                 self.seek(SeekFrom::Start(at))?;
                 self.read_exact(&mut candidate[..count])?;
-                self.source.seek(SeekFrom::Start(at))?;
-                self.source.read_exact(&mut original[..count])?;
-                source_digest.chunk(&original[..count])?;
+                let prefetched = match &mut prefetch {
+                    Some(prefetch) => Some(prefetch.next(count)?),
+                    None => {
+                        self.source.seek(SeekFrom::Start(at))?;
+                        self.source.read_exact(&mut original[..count])?;
+                        None
+                    }
+                };
+                let original: &[u8] = prefetched.as_deref().unwrap_or(&original[..count]);
+                source_digest.chunk(original)?;
                 if let Some(digest) = &mut source_raw {
-                    digest.update(&original[..count])?;
+                    digest.update(original)?;
                 }
                 candidate_digest.chunk(&candidate[..count])?;
                 let mut offset = 0;
@@ -451,11 +545,17 @@ impl<'a> SourceBackedShadow<'a> {
                     changed = next;
                     offset += bytes;
                 }
+                if let (Some(prefetch), Some(buffer)) = (&prefetch, prefetched) {
+                    prefetch.recycle(buffer);
+                }
                 done += count as u64;
                 compared = compared
                     .checked_add(count as u64)
                     .context("delta comparison overflow")?;
             }
+        }
+        if let Some(prefetch) = prefetch {
+            prefetch.finish()?;
         }
         file.sync_all()?;
         ensure!(

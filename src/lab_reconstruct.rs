@@ -340,11 +340,11 @@ pub(crate) fn hash_range_with_resource_profile<R: Read + Seek>(
 /// outside the ranges are not read. Pieces are read on the caller's thread and
 /// hashed on the spare cores, in bounded batches.
 #[cfg(windows)]
-pub(crate) fn hash_ranges_xxh3<R: Read + Seek>(
-    io: &mut R,
+pub(crate) fn hash_ranges_xxh3(
+    io: &mut n2r_win32::GeneralFrozenPartition,
     ranges: &[(u64, u64)],
 ) -> Result<[u8; 32]> {
-    use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES, digest_chunks};
+    use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES, digest_frozen_chunks};
     const PIECE: u64 = MAX_CHUNK_BYTES as u64;
     const BATCH: usize = 2048;
     let mut previous_end = 0u64;
@@ -362,7 +362,7 @@ pub(crate) fn hash_ranges_xxh3<R: Read + Seek>(
     let mut pieces: Vec<Chunk> = Vec::with_capacity(BATCH);
     let mut frames: Vec<Option<(u64, u64)>> = Vec::with_capacity(BATCH);
     let mut flush = |pieces: &mut Vec<Chunk>, frames: &mut Vec<Option<(u64, u64)>>| -> Result<()> {
-        let digests = digest_chunks(io, pieces)?;
+        let digests = digest_frozen_chunks(io, pieces)?;
         for (frame, digest) in frames.iter().zip(&digests) {
             if let Some((offset, length)) = frame {
                 summary.update(&offset.to_le_bytes())?;

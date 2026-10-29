@@ -31,6 +31,95 @@ pub(crate) fn xxh3_128(bytes: &[u8]) -> [u8; 16] {
     xxhash_rust::xxh3::xxh3_128(bytes).to_be_bytes()
 }
 
+/// Like [`digest_chunks`] over a frozen partition, with as many outstanding
+/// reads as its storage profile allows: this thread and each extra read lane
+/// claim the next chunk, read it and hash it. Results are in chunk order and
+/// do not depend on the lane count.
+pub(crate) fn digest_frozen_chunks(
+    image: &mut n2r_win32::GeneralFrozenPartition,
+    chunks: &[Chunk],
+) -> Result<Vec<[u8; 16]>> {
+    let depth = image
+        .io_profile()
+        .queue_depth
+        .clamp(1, 8)
+        .min(chunks.len().max(1));
+    if depth <= 1 {
+        return digest_chunks(image, chunks);
+    }
+    let mut events = Vec::new();
+    let mut lanes = image.read_lanes(depth - 1, &mut events)?;
+    digest_chunks_lanes(image, &mut lanes, chunks)
+}
+
+fn digest_chunks_lanes<R: Read + Seek, L: Read + Seek + Send>(
+    image: &mut R,
+    lanes: &mut [L],
+    chunks: &[Chunk],
+) -> Result<Vec<[u8; 16]>> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    ensure!(
+        chunks
+            .iter()
+            .all(|chunk| (1..=MAX_CHUNK_BYTES).contains(&chunk.length)),
+        "parallel digest chunk must be between one byte and 4MiB"
+    );
+    let largest = chunks.iter().map(|chunk| chunk.length).max().unwrap_or(0);
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    fn lane<T: Read + Seek>(
+        reader: &mut T,
+        chunks: &[Chunk],
+        largest: usize,
+        next: &AtomicUsize,
+        failed: &AtomicBool,
+    ) -> Result<Vec<(usize, [u8; 16])>> {
+        let mut buffer = vec![0u8; largest];
+        let mut digests = Vec::new();
+        while !failed.load(Ordering::Acquire) {
+            let position = next.fetch_add(1, Ordering::AcqRel);
+            let Some(chunk) = chunks.get(position) else {
+                break;
+            };
+            let bytes = &mut buffer[..chunk.length];
+            let read = reader
+                .seek(SeekFrom::Start(chunk.offset))
+                .and_then(|_| reader.read_exact(bytes));
+            if let Err(error) = read {
+                failed.store(true, Ordering::Release);
+                return Err(error.into());
+            }
+            digests.push((position, xxh3_128(bytes)));
+        }
+        Ok(digests)
+    }
+    let mut found = std::thread::scope(|scope| -> Result<Vec<(usize, [u8; 16])>> {
+        let others: Vec<_> = lanes
+            .iter_mut()
+            .map(|reader| scope.spawn(|| lane(reader, chunks, largest, &next, &failed)))
+            .collect();
+        let mut found = lane(image, chunks, largest, &next, &failed)?;
+        for other in others {
+            found.extend(
+                other
+                    .join()
+                    .map_err(|_| anyhow!("parallel read lane panicked"))??,
+            );
+        }
+        Ok(found)
+    })?;
+    found.sort_unstable_by_key(|(position, _)| *position);
+    ensure!(
+        found.len() == chunks.len()
+            && found
+                .iter()
+                .enumerate()
+                .all(|(index, (position, _))| index == *position),
+        "parallel read lanes did not hash every chunk exactly once"
+    );
+    Ok(found.into_iter().map(|(_, digest)| digest).collect())
+}
+
 /// The XXH3-128 of each chunk, in `chunks` order. Every chunk is read in full
 /// or the call fails; no partial result is returned.
 pub(crate) fn digest_chunks<R: Read + Seek>(

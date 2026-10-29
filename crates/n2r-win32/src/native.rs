@@ -2865,6 +2865,99 @@ impl Seek for GeneralFrozenPartition {
     }
 }
 
+/// An additional read-only handle on a frozen partition, so several reads can
+/// be outstanding at once. Opening proves its route equals the frozen state; it
+/// exposes aligned reads only and never changes attributes or mounts.
+pub struct GeneralFrozenLane {
+    file: File,
+    binding: GeneralDiskBinding,
+    position: u64,
+    buffer: AlignedBuffer,
+}
+
+// SAFETY: the lane uniquely owns its aligned allocation and device handle;
+// moving it to another thread moves that exclusive ownership.
+unsafe impl Send for GeneralFrozenLane {}
+
+impl GeneralFrozenPartition {
+    /// The storage transfer profile Windows reports for this frozen disk.
+    pub fn io_profile(&self) -> crate::io_profile::IoProfile {
+        crate::io_profile::for_disk(&self.file)
+    }
+
+    /// Open `count` read lanes, each a fresh handle whose route must equal the
+    /// frozen state.
+    pub fn read_lanes(
+        &self,
+        count: usize,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Vec<GeneralFrozenLane>> {
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        (0..count)
+            .map(|_| {
+                let file = device_file(&path, false, true)?;
+                if general_disk_state(&file, &self.binding, events)? != self.frozen_state {
+                    return Err(invalid("frozen read lane route differs"));
+                }
+                Ok(GeneralFrozenLane {
+                    file,
+                    binding: self.binding.clone(),
+                    position: 0,
+                    buffer: AlignedBuffer::new()?,
+                })
+            })
+            .collect()
+    }
+}
+
+impl Read for GeneralFrozenLane {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let length = self.binding.identity.partition_bytes;
+        if output.is_empty() || self.position == length {
+            return Ok(0);
+        }
+        let aligned = self.position / GRANULE * GRANULE;
+        let prefix = (self.position - aligned) as usize;
+        let wanted = output
+            .len()
+            .min(MAX_IO - prefix)
+            .min((length - self.position) as usize);
+        let count = (prefix + wanted).div_ceil(GRANULE as usize) * GRANULE as usize;
+        if aligned + count as u64 > length {
+            return Err(invalid("aligned frozen lane read escapes partition"));
+        }
+        self.file.seek(SeekFrom::Start(
+            self.binding.identity.partition_offset + aligned,
+        ))?;
+        let read = self.file.read(&mut self.buffer.bytes_mut()[..count])?;
+        if read != count {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "short frozen lane read",
+            ));
+        }
+        output[..wanted].copy_from_slice(&self.buffer.bytes_mut()[prefix..prefix + wanted]);
+        self.position += wanted as u64;
+        Ok(wanted)
+    }
+}
+
+impl Seek for GeneralFrozenLane {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let length = self.binding.identity.partition_bytes;
+        let position = match from {
+            SeekFrom::Start(value) => i128::from(value),
+            SeekFrom::Current(value) => i128::from(self.position) + i128::from(value),
+            SeekFrom::End(value) => i128::from(length) + i128::from(value),
+        };
+        if position < 0 || position > i128::from(length) {
+            return Err(invalid("seek escapes frozen lane"));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
+}
+
 pub(crate) fn refresh_disk_properties(
     file: &File,
     events: &mut Vec<NativeEvent>,

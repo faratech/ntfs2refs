@@ -182,11 +182,13 @@ pub fn for_disk(file: &File) -> IoProfile {
     while request * 2 <= MAX_REQUEST_BYTES && (request * 2) as u64 <= cap {
         request *= 2;
     }
+    // A rotational disk keeps one sequential stream. A disk that reports no
+    // seek-penalty property (the Hyper-V lab disk) gets two: measured there,
+    // two outstanding 1-4 MiB reads were about twice as fast as one.
     let queue_depth = match (incurs_seek_penalty, bus_type) {
         (Some(true), _) => 1,
         (_, Some(BUS_TYPE_NVME)) => 4,
-        (Some(false), _) => 2,
-        _ => 1,
+        _ => 2,
     };
     IoProfile {
         bus_type,

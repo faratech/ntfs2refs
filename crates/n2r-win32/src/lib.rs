@@ -54,7 +54,8 @@ mod native;
 #[cfg(windows)]
 pub use native::{
     DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
-    GeneralAllocationSnapshot, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenPartition,
+    GeneralAllocationSnapshot, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenLane,
+    GeneralFrozenPartition,
     GeneralJournalReadView, GeneralJournaledPartition, GeneralLiveNtfsObservation,
     GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation, GeneralLockedPartition,
     GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness,

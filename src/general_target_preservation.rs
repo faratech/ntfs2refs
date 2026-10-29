@@ -282,14 +282,14 @@ fn bracket_chunks(indices: &[u64], length: u64) -> Result<Vec<crate::parallel_di
 /// Opening pass over only the chunks overlapping `ranges`: their XXH3-128
 /// change-detection digests, plus one SHA-256 over every (index, digest) pair.
 /// The image is read on this thread while the spare cores hash.
-fn open_allocated_bracket<R: Read + Seek>(
-    image: &mut R,
+fn open_allocated_bracket(
+    image: &mut GeneralFrozenPartition,
     length: u64,
     ranges: &[crate::refs_write_set::ByteRange],
 ) -> Result<(String, Vec<(u64, [u8; 16])>, u64)> {
     let indices = chunk_indices(ranges, length)?;
     let chunks = bracket_chunks(&indices, length)?;
-    let hashed = crate::parallel_digest::digest_chunks(image, &chunks)?;
+    let hashed = crate::parallel_digest::digest_frozen_chunks(image, &chunks)?;
     let bytes = chunks.iter().map(|chunk| chunk.length as u64).sum();
     let digests: Vec<_> = indices.into_iter().zip(hashed).collect();
     let mut summary = n2r_win32::sha256_native::Sha256::new()?;
@@ -302,8 +302,8 @@ fn open_allocated_bracket<R: Read + Seek>(
 
 /// Recheck every chunk overlapping the sorted `ranges` against the opening
 /// pass. A chunk the opening pass did not hash refuses before any read.
-fn close_allocated_bracket<R: Read + Seek>(
-    image: &mut R,
+fn close_allocated_bracket(
+    image: &mut GeneralFrozenPartition,
     length: u64,
     opened: &[(u64, [u8; 16])],
     ranges: &[crate::refs_write_set::ByteRange],
@@ -323,7 +323,7 @@ fn close_allocated_bracket<R: Read + Seek>(
         })
         .collect::<Result<Vec<_>>>()?;
     let chunks = bracket_chunks(&indices, length)?;
-    let hashed = crate::parallel_digest::digest_chunks(image, &chunks)?;
+    let hashed = crate::parallel_digest::digest_frozen_chunks(image, &chunks)?;
     ensure!(
         hashed == expected,
         "protected observation changed allocated frozen image bytes"

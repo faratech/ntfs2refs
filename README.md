@@ -8,6 +8,16 @@ The [frozen 2026-10-29 drive alpha](docs/frozen-drive-alpha-20261029.md) passed
 normal conversion, ordinary file mutation and reboot readback on its 52 GiB
 fixture: 15 objects and all 10 file hashes matched. Its exact executable and
 qualification limits are pinned separately from later development builds.
+That same build also passed public resume/finalize and independent rollback
+after a controlled one-write interruption and reboot. See the
+[resume](evidence/optimized-drive-alpha-resume-20261029.json) and
+[rollback](evidence/optimized-drive-alpha-rollback-20261029.json) observations.
+Other interruption points and physical power loss remain unqualified.
+
+The current converter still performs repeated whole-volume scans. Work toward
+metadata-proportional conversion now includes a bounded authenticated ReFS
+[metadata and extent footprint reader](docs/refs-metadata-footprint.md); it
+does not yet enable selective conversion or establish large-volume performance.
 
 The drive-oriented Windows entry point is now available:
 
@@ -40,8 +50,10 @@ preserved. See [the exact recovery result](evidence/bundle-cli-resume-20261029.j
 The same public build also passed separate rollback from the saved interrupted
 state, restoring the exact original pre-mount NTFS image and closing replay.
 See [the rollback result](evidence/bundle-cli-rollback-20261029.json).
-Later read optimizations and completion-marker routing are release-built and
-undergoing their own normal conversion run; they do not inherit those results.
+The later frozen `fb5548...` candidate passed its own normal conversion,
+mutation/reboot and controlled interruption/recovery matrix described above.
+More recent performance code remains release-built without native conversion
+qualification; results do not transfer between binaries.
 
 The affirmative drive command has completed on the existing 52 GiB test
 partition with automatic staging and an observed native exit 0. Native ReFS

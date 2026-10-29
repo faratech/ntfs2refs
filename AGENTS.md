@@ -23,179 +23,75 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-29
 
-The coordinating agent reports VM
-2401593c-4b30-472e-9b6d-c9534cbaa599 RUNNING with parent checkpoint
-f06aa7fd-e157-44ed-8449-4cee98afa114 (the saved optimized partial branch).
-The VM has fixed 4 GiB RAM, 4 CPUs and no network adapter.
-Four checkpoints remain after saving the recovered branch:
-- Public bundle NTFS rollback: 5125d335-09b4-4838-bc64-28b079e3f2b9.
-- Optimized ReFS after mutation/reboot: 632b630a-c77b-43b2-9b9a-eafbbd87106d.
-- Optimized controlled partial: f06aa7fd-e157-44ed-8449-4cee98afa114.
-- Optimized public Resume: 52d37819-2b9c-4041-9232-bd7eac3c21bb.
+Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
+The branch tracks the same origin branch. The existing one-line src/main.rs
+capabilities change belongs to the user; never edit, format, stage or reset it.
 
-A bundle-enabled controlled conversion has completed with actual native and
-wrapper exit 86 after one flushed source write. Its run ID is
-`9340223f9d124a9f88e563ba669f0787`, task
-`N2R-BundleCli-Interrupt-9340223f9d124a9f88e563ba669f0787`, and guest directory
-`C:\ntfs2refs\bundle-cli-20261029-9340223f9d124a9f88e563ba669f0787`.
-The actual converter PID was 5828, creation time 1793245511151, parent PID 5736;
-both workers were absent before preservation. New shadow disk 6 has GPT GUID
-c8ac8d6e-5a5e-4818-bba1-d399f5a8b38b.
-The converter hash is 56b92ac2ccc67692b16bfffebff5401c58979946ca8f0414abcee1c6725a9ee7;
-the sealed tool manifest is in bundle-recovery-cli-tools-20261029 with hash
-f83b31828fb37f0e4a8d30238dabd76452a60134969db1d733b9bfb4493fb31c.
-The native-generated bundle matched its original printed checksum
-3f3636d1ad2d64ac28920f722462d6d94639bd7d26e0ba0cecd9be7c618ee204.
-Closed metadata and the actual partial checkpoint are recorded under the case's
-`partial/`; the partial publication pin is
-46f476a29ca3670484547e0bfeb34aed933cd59dc5b22ffc7a695bb73187686b.
-The VM was cleanly stopped/checkpointed/started without restoring another branch;
-source 1 stayed offline/attrs1 and the managed shadow was absent after boot.
+VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0 with current NTFS
+checkpoint5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec. It has fixed4GiB RAM,
+4CPU,no NIC. Only two checkpoints remain:
+- NTFS after optimized public rollback: 5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec.
+- ReFS after optimized public resume: 52d37819-2b9c-4041-9232-bd7eac3c21bb.
 
-Public CLI Resume c698a0cfd50d4199ba49bcca7dfd1614 completed with actual native
-and wrapper exit0, exact target b920ced8c88c491405cc4c77ca309c7d272ef6f20582445295d94355d9c60115,
-HND, 15 native objects/10 complete hashes, original label and mount. Its closed
-archive and successful checkpoint25a are saved under recovery-cli-resume-c698...;
-see evidence/bundle-cli-resume-20261029.json. This used sealed2cac and only the
-original directory/checksum plus yes.
+No native conversion/recovery job remains running. Root preserved both successful
+branches and removed obsolete632b630a/f06aa7fd/5125d335 through Hyper-V APIs.
+Do not restore/recreate those deleted IDs. Old harnesses pinning those baselines
+must not be blindly reused. Cleanup receipt:
+.lab/hyperv/streaming-v2-20261027/checkpoint-cleanup-optimized-20261029/receipt.json,
+SHAfe8adf0749674d2c2ef69badc945b9b544cc1cb80e939bb6fbbf6699f6a72df1.
 
-Separate public Rollback0017552259514d9a883b398e97b40f82 passed native/wrapper0,
-exact original pre-mount SHA13c7808742ac3d7994ebfac438f9fc609e6d9f75f5017f1d19dd517b1999f480,
-ABT and native NTFS64K/label/F. No post-mount logical-file hashes are claimed.
-Closed receipt SHA5b591a021912285ee885efb1be28032da727202f08937a5f2ad3a7d0e2cbbfc1;
-preserved-checkpoint receipt SHA5857cacfc120cfacd9b6ffbbee7e055f0465aa74ce7c318ff8fc0ffbfd1ddb66.
-After saving actual5125, root deleted obsolete0872/693/d121 through Hyper-V.
-The cleanup receipt is checkpoint-cleanup-bundle-20261029/receipt.json; old IDs
-in historical reports must not be recreated or restored.
+The frozen source2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7/mainfb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c
+passed normal public conversion, mutation and reboot on the52GiB fixture.
+Its same-source controlled coree2a832e0986ce785d4700ec4501e28a4a3f0b3f3e2fb8a1df2fdc25fd52e6976
+then exited86 after one flushed write (runc0218eb07cc742d8b8cb2b2738e31de3),
+published its original native bundle and preserved the interrupted state.
+Exact bundleSHA4d3ad80646231dc69323e571a13b950d89f2a109cef548f3b0806e1e75586dca.
+Actual same-build public Resume/Finalize c3a1f20f5f9f4c7c84a56b334e0511a2
+passed native/task0, exact ReFS targete96a21e5cf2acda1f8a7ea4b984788bef5f6c91ce1560d38b32ce097e6d8aa25,
+HND,15objects/10fullfilehashes,label/F. Separate public Rollback
+ a2e4be16c5f74b588f27ee6ed5ea86cb passed native/task0 from that actual partial,
+exact pre-mount NTFSc5b58e4869d2a9c366c6b8daeb63f4507ef0b660ec98d7a743f404b4047e7734,
+ABT,NTFS64K,label/F. No post-mount NTFS file hashes or physical power-loss claim.
+See evidence/optimized-drive-alpha-{interruption,resume,rollback}-20261029.json
+and docs/frozen-drive-alpha-20261029.md. Do not transfer this qualification to
+later performance or metadata-reader code.
 
-NORMAL optimized public --drive F --partition2 PASSED native/wrapper0:
-2c0a76e195f540218d60e98266f4e14d, task
-N2R-OptimizedDriveAlpha-2c0a76e195f540218d60e98266f4e14d, guest
-C:\ntfs2refs\optimized-drive-alpha-2c0a76e195f540218d60e98266f4e14d.
-Actual main892/creation1793251802144 closed06:25:53Z; wrapper1260 also exited0.
-Frozen mainfb5548cc80a1de57e5a1c3c853a0ccfc43338515d00e15867305fa5f59c6079c
-uses the two read optimizations, lifecycle routing and CNG image hashes.
-Source commit2ff5f017c03977c5e6ba9d31ba64dc634bfa2fe7; sealed manifest
-optimized-drive-alpha-tools-20261029/manifest.json SHA230c08850b41bcab1defa0b81aa35406ea0760e25a4042657602d191e0065d6b.
-Host case optimized-drive-alpha-20261029-2c0a76e195f540218d60e98266f4e14d;
-dispatch SHA628f14f6755e1263fade86c49fd5c70696593260ce1d7d7b6246a3305ef0794f.
-No fault was requested; main provisions its own managed shadow/journal.
-Closed normal receipt SHA8287357c7cbe3567951be974df4d870a048db00243391a545e3ad23d3c682335.
-It proves152 patches/70,631,424B, exact target2b63f03280fa7ce9b817334f81ef97cf6f11c3e445c8ee012886b4ad9ca89c26,
-fresh source admission, HND, native15/10, original label and F mount.
-Independent mutation875faa1d295849ae8e4fb11a65761b9d passed all3 native processes,
-strict15/10 before/after and the50→80→10MiB/128-entry new-path workload.
-Mutation closed receipt SHA3c196cfccb8f4fc5c25518d94f6fd97587866646cc01dc68ac3cbfc6f80243d1;
-report SHA45c968b90da79cb386e45b998e3b1d5d47425a1b32290493de1d198983de4fb0.
-The SAME working branch clean-stopped/started WITHOUT restore; fresh boot was
-06:35:29Z after mutation ended06:31:24Z. Postbootbef2125926714a76a7f10c0cba2049ce
-passed native/task0 and strict15/10. Its closed receipt SHA is
-c55f61175a92f10aef6f24e36f5d68fcf98c2981c85219f4f726b16c1ff15356.
-Actual preserved checkpoint632 receipt SHA004d70b74d7af8a8dfbbbca3e33cd97386965c0137c93c8f5758b5f084fc41f2.
-Old25a was then retired via Hyper-V; cleanup receipt SHAd44305eea44e44d9b4693f388c23d654fa1043331414a3728d782d15b4633275.
-At cleanup the VM was OFF/RAM0, D free118,738,907,136B and lab224,349,834,679B.
-Keep the exact sealed2ff artifacts; do not substitute a later build into these results.
-The later frozen-allocation-map diagnostic codea8da755 passed cargo check--lib,
-has no native qualification and does not enable selective capture.
-Later commits 7e318ce, 541f76f and 46e0dcc reduce repeated source, candidate,
-recovery and journal reads while keeping complete integrity checks. Their
-focused release builds passed, but they have not passed the native workflow.
-7f6d93e batches changed-cluster writes and removes a preparation journal reread;
-a4419ca parallelizes capture hashing and reports allocation/scratch estimates.
-Both passed focused release builds and await native qualification. The estimate
-does not authorize selective capture or establish a complete allocation graph.
-The paired-digest host memory measurement is recorded in
-evidence/paired-hash-host-benchmark-20261029.json; it is not a disk benchmark.
-Same-build interruption and public Resume/Finalize on fb5548 have passed.
-Public Rollback on fb5548 is currently running and remains unqualified;
-sealed2cac's separate controlled Resume/Rollback evidence remains distinct.
-New reader59ecbf5/79ef512 follows ten authenticated virtual system indexes
-and compact Object Table references into directory/system-object indexes.
-Its existing52GiB research-image run read1,897,488B total,46pages/14object trees.
-It is metadata-only evidence: leaf-linked data/embedded trees, MLog, fallback
-generations and full allocator/refcount ownership remain unresolved. It does
-not enable selective conversion. No unit tests added or run.
-
-The same-candidate controlled interruption COMPLETED with native/task86:
-c0218eb07cc742d8b8cb2b2738e31de3, task
-N2R-OptimizedCompactInterrupt-c0218eb07cc742d8b8cb2b2738e31de3, guest
-C:\ntfs2refs\optimized-compact-interrupt-c0218eb07cc742d8b8cb2b2738e31de3.
-Actual controlled core PID4856/creation1793257320594, wrapper1472/creation
-1793257311441 was live at07:02:06Z. It is sealed e2a832... from source2ff,
-with public recovery main fb5548...; old daed9.../4bd15... binaries are used
-only to provision the fresh shadow and read-only bind devices. Dispatch SHA
-348f605d91bca90a2451136e5cea6ae745737fa677236d2d9089710d67d58fbb.
-At07:56:29Z both workers were absent. Save-OptimizedPartial preserved actual
-checkpointf06, receiptSHA9308c8b65d3c8cd25c4d6dd55215ad0552b5f10fad91d8c486805c3c69fd7563.
-Native bundleSHA4d3ad80646231dc69323e571a13b950d89f2a109cef548f3b0806e1e75586dca,
-publicationSHA3b4f44750d6cb7f4c54b4c27f41ba4e3ad9068de350b7db9c783a4d4cfed8e7d.
-Root booted that actual partial WITHOUT restore; source stayed offline/attrs1,
-and the managed shadow was absent after reboot. See
-evidence/optimized-drive-alpha-interruption-20261029.json.
-Public Resume c3a1f20f5f9f4c7c84a56b334e0511a2 PASSED with fb5548:
-taskN2R-OptimizedRecovery-Resume-c3a1f20f5f9f4c7c84a56b334e0511a2,
-guestC:\ntfs2refs\optimized-recovery-resume-c3a1f20f5f9f4c7c84a56b334e0511a2,
-hostc021case/recovery-cli-resume-c3a1f20f5f9f4c7c84a56b334e0511a2/dispatch.json.
-At08:13:55Z taskReady0 and both workers absent. Closed archive verified exact
-targete96a21e5cf2acda1f8a7ea4b984788bef5f6c91ce1560d38b32ce097e6d8aa25,
-HND/rollback closed,native15objects/10hashes,label/F preserved. ReceiptSHA
-b691138a5e18e632b9fb3042aa0eb26205507bba9c3271fb21d55e1467cbdc55.
-Root saved actual ReFS checkpoint52d, then restored actual partialf06 once
-and booted it for independent rollback. No journal replay on the HND branch.
-Public Rollback a2e4be16c5f74b588f27ee6ed5ea86cb is NOW DISPATCHED with fb5548:
-taskN2R-OptimizedRecovery-Rollback-a2e4be16c5f74b588f27ee6ed5ea86cb,
-guestC:\ntfs2refs\optimized-recovery-rollback-a2e4be16c5f74b588f27ee6ed5ea86cb,
-hostc021case/recovery-cli-rollback-a2e4be16c5f74b588f27ee6ed5ea86cb/dispatch.json.
-Expected0 is not yet observed. Do not restart, power, restore, replay or open
-protected live artifacts. Check actual process creation identities. A timeout
-is not termination. Root owns VM mutations; delta metadata-only observation.
-Local frozen package: .lab/releases/ntfs2refs-alpha-20261029-fb5548.zip,
+Frozen package .lab/releases/ntfs2refs-alpha-20261029-fb5548.zip remains unchanged,
 SHAf826606342c9b2a06ef18a35996915d60c0c54fd840fbc71c21ddb26f854577b.
-It contains the exact tested mainfb5548 and the scope/instructions in
-docs/frozen-drive-alpha-20261029.md. Package record:
-evidence/frozen-drive-alpha-package-20261029.json. No runtime authority is
-granted by this package. Keep the existing user main.rs hunk unstaged.
-The coordinating agent owns VM mutations. Delegated agents work on source only
-unless explicitly assigned a native action.
+It includes the packaging-time main.rs snapshot because of the user-owned hunk.
+No clean historical tree or reproducible build is claimed.
 
-The bundle case uses the release built from the bb7677e recovery implementation;
-later harness and handoff-only commits do not replace the running binaries.
-src/main.rs has an existing one-line user capabilities change. Do not edit,
-format, stage or overwrite that hunk without an explicit instruction.
+## Current implementation direction
 
-## What the recorded results establish
+The user rejected the repeated whole-volume scan cost and asked to follow
+ntfs2btrfs's allocation/metadata-driven approach. Prioritize real code toward
+selective capture and retained extents; do not merely remove integrity gates.
+The original native-shadow converter remains the qualified experimental path.
+It still reads whole images and is not an efficient arbitrary-volume release.
 
-See [build provenance](docs/experimental-build-provenance.md) and its
-[evidence index](evidence/experimental-build-provenance-20261029.json)
-for full hashes, exact archived reports and limits.
+Later commits7e318ce/541f76f/46e0dcc/7f6d93e/a4419ca reduce redundant reads,
+journal passes and small writes, and parallelize capture/image hashing.
+Focused release builds pass; no native conversion qualification is assigned.
+The host paired-hash memory benchmark is not an end-to-end disk measurement.
 
-- Public affirmative drive CLI 866fc5..., source cfc48ff, completed its
-  separate conversion and cold-boot user-file readback.
-- Controlled converter 48094c..., source cf191083, deliberately exited 86
-  after one flushed source patch. Recovery 565fb0..., source 5a9bae2,
-  completed actual Resume/Finalize and independent Rollback with native exits 0.
-- That managed recovered ReFS branch passed a new current mutation workload,
-  strict verification before/after, and strict verification after clean reboot.
-  The rollback branch passed seven user hashes and scoped native metadata checks.
-- These exact builds do not establish arbitrary-volume or release-ready safety.
-  Do not claim the public 866fc5... producer was tested with recovery 565fb0....
-  Do not transfer old 5e156f... mutation evidence to a different build.
+Reader59ecbf5/79ef512 and later code follows checksum-authenticated system,
+Object Table and directory/system-object index pages. Current code also parses
+embedded file-attribute nodes and indexed DATA extents, retaining separate
+metadata and physical-data footprints. On the existing research image it reads
+1,897,488B for46pages,3inline attribute tables,2DATA versions/68extents and
+1,025distinct data clusters, without external payload reads. No spilled
+attribute/extent page path was exercised in that image. Cross-container data
+runs currently refuse. See docs/refs-metadata-footprint.md and its evidence.
+It remains read-only: split own-record forms, system log storage, fallback
+checkpoint generations, complete stream inventory and allocator/refcount
+reconciliation are unresolved. Complete graph/selective conversion flags stay
+false. Next work must cover those references and bind a required footprint to
+live frozen inputs before any production skip/read/write authorization.
 
-The new bundle producer from bb7677e passed the actual controlled native exit86
-and original checksum publication. Affirmative public Resume/Finalize passed;
-the separate public Rollback also passed.
-Its sealed main SHA-256 is
-2cac76e012b4cf9b9d9ea5a90a3a77933856061afb4395a2c7e4b9ab4dc33ef0;
-compact SHA-256 is
-b41ef940c3c534c3a41115d2f9c7d900f2554d61259407bc7b5e3723e2ed4eb2.
-Decline/default-No and wrong-checksum smoke checks passed without device actions.
-Do not inherit older builds' results. Later code286d914/5ac7a36 adds stderr
-phases and shared-read hash optimizations in handoff/preparation; code7da08e0
-routes offline public recovery by actual verified journal lifecycle. These
-changes plus code2ff5f01 CNG whole-image hashing passed normal conversion,
-mutation and reboot as frozen candidatefb5548. They do not inherit sealed2cac's
-interruption/recovery results. See the
-separate build records and actual new dispatch above.
+Do not add or run unit tests. Focused builds and necessary native integration
+only. Keep ignored images, journals, binaries and secrets out of Git. The
+coordinating agent owns VM mutation; delegated agents work on source unless
+explicitly assigned metadata-only observation.
 
 ## Source and recovery invariants
 

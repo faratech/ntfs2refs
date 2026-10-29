@@ -143,6 +143,11 @@ coordinating agent owns VM mutation; delegated agents work on source unless
 explicitly assigned metadata-only observation.
 
 Selective path direction (user chose it, 2026-10-29): docs/selective-conversion-plan.md.
+Guarantee decision (user, 2026-10-29): selective mode adopts the ntfs2btrfs
+allocation-based guarantee. Bytes that ReFS's own allocator marks free in the
+protected frozen shadow need not be compared or written; the per-range write
+policy and end-to-end mounted-file verification stay. Free-space contents are no
+longer proven equal in that mode, and its evidence must say so.
 On the HEAD run, 100% of the 70,615,040 changed bytes lie inside the frozen
 shadow's native metadata-inclusive allocation (14.77GB); 286,720 of them are
 relocated file data inside routes, so routes cannot simply be skipped. Commit

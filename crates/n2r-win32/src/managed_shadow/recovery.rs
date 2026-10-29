@@ -1,6 +1,9 @@
 //! Existing pinned shadow attachment only: no create, GPT, format or replay.
 use super::*;
-use windows_sys::Win32::System::Ioctl::IOCTL_DISK_SET_DISK_ATTRIBUTES;
+use windows_sys::Win32::{
+    Foundation::ERROR_WRITE_PROTECT,
+    System::Ioctl::{IOCTL_DISK_IS_WRITABLE, IOCTL_DISK_SET_DISK_ATTRIBUTES},
+};
 
 pub struct ReattachedShadow {
     pub binding: GeneralDiskBinding,
@@ -122,6 +125,21 @@ fn operation_error(operation: &str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{operation}: {error}"))
 }
 
+fn require_write_protected(disk: &File, software_attributes: u64, phase: &str) -> io::Result<()> {
+    let operation = format!(
+        "{phase}: software_attributes={software_attributes:#x}, IOCTL_DISK_IS_WRITABLE={IOCTL_DISK_IS_WRITABLE:#x}"
+    );
+    // This is a query, not a trial data write. Only the positive native
+    // ERROR_WRITE_PROTECT response proves this device is already protected.
+    match control(disk, IOCTL_DISK_IS_WRITABLE, &[], 0) {
+        Err(error) if error.raw_os_error() == Some(ERROR_WRITE_PROTECT as i32) => Ok(()),
+        Ok(_) => Err(invalid(&format!(
+            "{operation}: device is writable; no protection shortcut authorized"
+        ))),
+        Err(error) => Err(operation_error(&operation, error)),
+    }
+}
+
 impl RecoveryAttachment {
     fn require_offline_readonly(&self, expected: &GeneralDiskBinding) -> io::Result<()> {
         let mut events = Vec::new();
@@ -130,21 +148,35 @@ impl RecoveryAttachment {
         let before = native::observe_general_disk_state_readonly(expected.clone(), &mut events)?;
         match before.disk_attributes {
             3 => return Ok(()),
-            2 => {}
+            0..=2 => {}
             _ => {
-                return Err(invalid(
-                    "recovery shadow must already be READ_ONLY; no attributes changed",
-                ));
+                return Err(invalid(&format!(
+                    "recovery shadow has unknown software attributes {:#x}; no attributes changed",
+                    before.disk_attributes
+                )));
             }
         }
         // The device path comes only from this owned, verified virtual-disk
         // handle, and its exact recorded number was checked by the caller.
         // GENERIC_WRITE is for the attribute IOCTL; no data writes are issued.
-        let disk =
-            native::device_file(&format!("\\\\.\\PhysicalDrive{}", self.number), true, false)
-                .map_err(|e| {
-                    operation_error("open verified READ_ONLY shadow for OFFLINE control", e)
-                })?;
+        let disk = native::device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.number),
+            true,
+            false,
+        )
+        .map_err(|e| {
+            operation_error(
+                &format!(
+                    "open verified shadow for protection control: software_attributes={:#x}",
+                    before.disk_attributes
+                ),
+                e,
+            )
+        })?;
+        // A READ_ONLY virtual-disk attachment can report software attributes
+        // zero while its provider still write-protects the underlying device.
+        // Never turn an actually writable device read-only to pass this gate.
+        require_write_protected(&disk, before.disk_attributes, "before protection control")?;
         if native::current_windows_disk(&mut events)? == self.number
             || native::general_disk_state(&disk, expected, &mut events)? != before
         {
@@ -155,13 +187,26 @@ impl RecoveryAttachment {
         let mut attributes = [0u8; 40];
         attributes[..4].copy_from_slice(&40u32.to_le_bytes());
         attributes[4] = 1; // Persist the restriction across restart.
-        attributes[8..16].copy_from_slice(&1u64.to_le_bytes());
-        attributes[16..24].copy_from_slice(&1u64.to_le_bytes());
-        // Only OFFLINE is in the mask. READ_ONLY is neither set nor cleared.
+        let missing = 3u64 & !before.disk_attributes;
+        attributes[8..16].copy_from_slice(&3u64.to_le_bytes());
+        attributes[16..24].copy_from_slice(&missing.to_le_bytes());
+        // Set only missing protection bits; no existing bit can be cleared.
+        let operation = format!(
+            "persist missing protection bits on verified protected shadow: software_attributes={:#x}, mask={missing:#x}, IOCTL_DISK_SET_DISK_ATTRIBUTES={IOCTL_DISK_SET_DISK_ATTRIBUTES:#x}",
+            before.disk_attributes
+        );
         control(&disk, IOCTL_DISK_SET_DISK_ATTRIBUTES, &attributes, 0)
-            .map_err(|e| operation_error("persist OFFLINE on verified READ_ONLY shadow", e))?;
+            .map_err(|e| operation_error(&operation, e))?;
         control(&disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)
-            .map_err(|e| operation_error("refresh verified OFFLINE recovery shadow", e))?;
+            .map_err(|e| {
+                operation_error(
+                    &format!(
+                        "refresh protected recovery shadow: prior_software_attributes={:#x}, IOCTL_DISK_UPDATE_PROPERTIES={IOCTL_DISK_UPDATE_PROPERTIES:#x}",
+                        before.disk_attributes
+                    ),
+                    e,
+                )
+            })?;
         let mut required = before;
         required.disk_attributes = 3;
         if native::general_disk_state(&disk, expected, &mut events)? != required
@@ -172,15 +217,17 @@ impl RecoveryAttachment {
                 "recovery shadow did not retain exact OFFLINE|READ_ONLY state",
             ));
         }
+        require_write_protected(&disk, required.disk_attributes, "after protection control")?;
         Ok(())
     }
 }
 
 /// Reattach a pinned existing VHDX read-only, then require the exact recorded
-/// disk route and GPT/geometry. Reuse an existing exact attachment. If Windows
-/// restored READ_ONLY without OFFLINE, persist only that additional restriction;
-/// any state without READ_ONLY is rejected. No source certificate, replay,
-/// writable attachment or transition to online is authorized.
+/// disk route and GPT/geometry. Reuse an existing exact attachment. A native
+/// write-protection query must prove protection before adding missing persistent
+/// OFFLINE/READ_ONLY bits. An actually writable device is never changed to pass
+/// this gate. No source certificate, replay, writable attachment or transition
+/// to online is authorized.
 pub fn reattach_existing(
     path: &Path,
     pinned_virtual_disk_id: &str,

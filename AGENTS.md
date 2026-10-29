@@ -25,28 +25,42 @@ when unchanged evidence already answers the question.
 
 The coordinating agent reports VM
 2401593c-4b30-472e-9b6d-c9534cbaa599 running with parent checkpoint
-0872b74c-5b3d-43cf-9ccf-fc64fda0cd93 (the verified NTFS rollback branch).
+d121235d-f9fb-4e0e-843e-1ea4c3883221 (the new bundle interruption branch).
 The VM has fixed 4 GiB RAM, 4 CPUs and no network adapter.
-Only two checkpoints remain:
+Three checkpoints remain during recovery:
 - NTFS: 0872b74c-5b3d-43cf-9ccf-fc64fda0cd93.
 - ReFS after mutation/reboot: 693a364c-b86a-4e14-a3cc-a910645f4ce3.
+- Bundle partial: d121235d-f9fb-4e0e-843e-1ea4c3883221.
 
-A bundle-enabled controlled conversion is now running. Its run ID is
+A bundle-enabled controlled conversion has completed with actual native and
+wrapper exit 86 after one flushed source write. Its run ID is
 `9340223f9d124a9f88e563ba669f0787`, task
 `N2R-BundleCli-Interrupt-9340223f9d124a9f88e563ba669f0787`, and guest directory
 `C:\ntfs2refs\bundle-cli-20261029-9340223f9d124a9f88e563ba669f0787`.
-The actual converter PID was 5828, creation time 1793245511151, parent PID 5736,
-at 03:45:32 UTC. It had read 7.516 GB and written 125,632 bytes at that observation.
-Source disk 1 was offline/read-only; new shadow disk 6 was writable during
-source collection. Its GPT GUID is c8ac8d6e-5a5e-4818-bba1-d399f5a8b38b.
+The actual converter PID was 5828, creation time 1793245511151, parent PID 5736;
+both workers were absent before preservation. New shadow disk 6 has GPT GUID
+c8ac8d6e-5a5e-4818-bba1-d399f5a8b38b.
 The converter hash is 56b92ac2ccc67692b16bfffebff5401c58979946ca8f0414abcee1c6725a9ee7;
 the sealed tool manifest is in bundle-recovery-cli-tools-20261029 with hash
 f83b31828fb37f0e4a8d30238dabd76452a60134969db1d733b9bfb4493fb31c.
-Expected exit is 86 after one flushed write, not conversion success. The
-wrapper additionally checks the native-created bundle against its printed pin.
-Delta monitors metadata only. Do not interrupt this worker or open its source,
-journal, packed backing, images or locked metadata. Recheck actual state before
-any action; these observations are not current liveness or permission to restore.
+The native-generated bundle matched its original printed checksum
+3f3636d1ad2d64ac28920f722462d6d94639bd7d26e0ba0cecd9be7c618ee204.
+Closed metadata and the actual partial checkpoint are recorded under the case's
+`partial/`; the partial publication pin is
+46f476a29ca3670484547e0bfeb34aed933cd59dc5b22ffc7a695bb73187686b.
+The VM was cleanly stopped/checkpointed/started without restoring another branch;
+source 1 stayed offline/attrs1 and the managed shadow was absent after boot.
+
+Public CLI Resume is now running: c698a0cfd50d4199ba49bcca7dfd1614,
+task N2R-BundleCliRecovery-Resume-c698a0cfd50d4199ba49bcca7dfd1614,
+guest C:\ntfs2refs\bundle-recovery-cli-resume-c698a0cfd50d4199ba49bcca7dfd1614.
+Actual main PID4296/creation1793248538222, wrapper1068/creation1793248533040
+was live at04:35:56Z. It uses only --recover, original directory/checksum and yes,
+with the sealed2cac executable. Delta monitors metadata only. Do not interrupt
+or open live source/J/packed/images/locked artifacts. Check actual liveness;
+none of these recorded observations authorizes power or replay.
+After genuine terminal0/workers absent, use Save-BundleCliRecovery.ps1 with the
+actual recovery dispatch path/hash before root preserves its final branch.
 The coordinating agent owns VM mutations. Delegated agents work on source only
 unless explicitly assigned a native action.
 
@@ -73,14 +87,18 @@ for full hashes, exact archived reports and limits.
   Do not claim the public 866fc5... producer was tested with recovery 565fb0....
   Do not transfer old 5e156f... mutation evidence to a different build.
 
-The new bundle CLI from bb7677e is built but has not passed an affirmative
-native conversion/recovery run. Its current sealed main SHA-256 is
+The new bundle producer from bb7677e passed the actual controlled native exit86
+and original checksum publication. Affirmative public recovery is still running.
+Its sealed main SHA-256 is
 2cac76e012b4cf9b9d9ea5a90a3a77933856061afb4395a2c7e4b9ab4dc33ef0;
 compact SHA-256 is
 b41ef940c3c534c3a41115d2f9c7d900f2554d61259407bc7b5e3723e2ed4eb2.
 Decline/default-No and wrong-checksum smoke checks passed without device actions.
-Publishing the new bundle before activation and affirmative bundle recovery
-still need native qualification. Do not inherit older builds' results.
+Affirmative bundle recovery still needs its actual terminal result. Do not
+inherit older builds' results. Later code286d914 adds stderr phases and a compact
+handoff shared-read hash optimization; its build record is
+evidence/compact-handoff-build-20261029.json. It is release-built but NOT the
+sealed binary running in the VM and has no inherited native qualification.
 
 ## Source and recovery invariants
 

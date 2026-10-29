@@ -700,6 +700,26 @@ fn load_completed_journal<J: ReadSeek>(journal: &mut J, ticket: &JournalTicket) 
     load_journal_state(journal, ticket, false)
 }
 
+/// Hash an exact sequential payload into both its own digest and the complete
+/// immutable-journal digest, without reading the payload a second time.
+fn read_journal_payload<J: Read>(
+    journal: &mut J,
+    length: u64,
+    buffer: &mut [u8],
+    immutable: &mut Sha256,
+) -> Result<[u8; 32]> {
+    let mut payload = Sha256::new();
+    let mut remaining = length;
+    while remaining != 0 {
+        let count = usize::try_from(remaining.min(buffer.len() as u64))?;
+        journal.read_exact(&mut buffer[..count])?;
+        immutable.update(&buffer[..count]);
+        payload.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    Ok(payload.finalize().into())
+}
+
 fn load_journal_state<J: ReadSeek>(
     journal: &mut J,
     ticket: &JournalTicket,
@@ -729,12 +749,11 @@ fn load_journal_state<J: ReadSeek>(
             "handoff may have started; all reconstruction recovery is closed"
         );
     }
-    ensure!(
-        hash_range(journal, BODY_START, ticket.immutable_length)? == pin(&ticket.immutable_sha256)?,
-        "immutable journal differs from trusted ticket"
-    );
+    let immutable_pin = pin(&ticket.immutable_sha256)?;
+    let mut immutable = Sha256::new();
     let mut header = [0; HEADER_SIZE];
     read_at(journal, BODY_START, &mut header)?;
+    immutable.update(header);
     ensure!(
         &header[..8] == b"N2RPREP1"
             && u32_at(&header, 8) == profile.version()
@@ -755,6 +774,7 @@ fn load_journal_state<J: ReadSeek>(
     );
     let mut metadata = vec![0; metadata_length];
     journal.read_exact(&mut metadata)?;
+    immutable.update(&metadata);
     ensure!(
         header[40..72] == digest(&metadata),
         "journal metadata digest differs"
@@ -778,9 +798,11 @@ fn load_journal_state<J: ReadSeek>(
     let mut previous_end = 0;
     let mut payload_bytes = 0_u64;
     let mut retained_index = 0;
+    let mut payload_buffer = vec![0; BUFFER];
     for index in 0..count {
         let mut bytes = [0; RECORD_SIZE];
         journal.read_exact(&mut bytes)?;
+        immutable.update(bytes);
         ensure!(
             &bytes[..8] == b"N2RREC01"
                 && u64_at(&bytes, 8) == u64::from(index)
@@ -836,8 +858,10 @@ fn load_journal_state<J: ReadSeek>(
         let before_hash: [u8; 32] = bytes[32..64].try_into().expect("fixed bounds");
         let after_hash: [u8; 32] = bytes[64..96].try_into().expect("fixed bounds");
         ensure!(
-            hash_range(journal, before_data, length)? == before_hash
-                && hash_range(journal, after_data, length)? == after_hash,
+            read_journal_payload(journal, length, &mut payload_buffer, &mut immutable)?
+                == before_hash
+                && read_journal_payload(journal, length, &mut payload_buffer, &mut immutable)?
+                    == after_hash,
             "journal payload digest differs"
         );
         records.push(Record {
@@ -853,6 +877,7 @@ fn load_journal_state<J: ReadSeek>(
     let footer_at = journal.stream_position()?;
     let mut footer = [0; FOOTER_SIZE];
     journal.read_exact(&mut footer)?;
+    immutable.update(footer);
     ensure!(
         &footer[..8] == b"N2REND01"
             && u64_at(&footer, 8) == u64::from(count)
@@ -863,6 +888,10 @@ fn load_journal_state<J: ReadSeek>(
             && footer[96..] == digest(&footer[..96])
             && journal.stream_position()? == ticket.journal_length,
         "journal completion footer is absent or invalid"
+    );
+    ensure!(
+        <[u8; 32]>::from(immutable.finalize()) == immutable_pin,
+        "immutable journal differs from trusted ticket"
     );
     Ok(Loaded { manifest, records })
 }

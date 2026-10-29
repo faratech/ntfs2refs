@@ -79,6 +79,10 @@ candidate digest, avoiding another partition length minus changed bytes of
 logical reads. The source normalization, foreign-byte checks, complete image
 hashes, and post-write verification remain in place. This recovery change has
 not yet been qualified in a native conversion or recovery run.
+Journal loading also computes its complete immutable pin while checking each
+payload digest in the same sequential pass, saving one immutable-journal read
+per load. It still checks the complete pin before allowing reconstruction; this
+change likewise awaits native qualification.
 
 For the Windows streaming-v2 profile, whole-image reconstruction and recovery
 hashes now use the existing fallible CNG SHA-256 backend, including normalized

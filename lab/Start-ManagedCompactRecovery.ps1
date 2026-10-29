@@ -16,8 +16,8 @@ $originalStage='C:\ntfs2refs\managed-compact-interrupt-'+$original;$originalOutp
 $id=[guid]'2401593c-4b30-472e-9b6d-c9534cbaa599';$provider='c87de389-e6ac-457a-bcbd-ad0cc0b15164'
 $originalManifestPin='c60df8172afa853f7be612851057c6bc2920f4fb6ec690f25906a8f00d28c411'
 # Recovery-only constants may advance after a new toolset is sealed. Original94 remains bound to c60 above.
-$manifestPath=Join-Path $base 'managed-recovery-tools-20261029-reattach\manifest.json';$manifestPin='a8633d8a2e99572809722bda4b23ee21fb368d096164acd3bcaaed1e76490afe'
-$binaryPin='a61ff9806c96ffe91d43c557ac0980b53ed8f88b2c8523b0d4485e967eb2edeb';$binaryBytes=4675072
+$manifestPath=Join-Path $base 'managed-recovery-tools-20261029-writeprotect\manifest.json';$manifestPin='d3d810f0b97f0ef76d0f47f0aa78fb93ca5a273b642979b5bd9c3bd85fd158dd'
+$binaryPin='565fb0a70d03b3587417f326036e38ffe7f12c6d78fe48afe6fb99ea82f9d3f0';$binaryBytes=4677120
 $run=[guid]::NewGuid().ToString('N');$stage='C:\ntfs2refs\managed-compact-recovery-'+$Operation.ToLowerInvariant()+'-'+$run;$task='N2R-ManagedCompactRecovery-'+$Operation+'-'+$run
 $held=[Collections.Generic.List[IO.FileStream]]::new();$loadedBytes=[long]0;$session=$null;$created=$false;$phase='closed-host-evidence'
 function Need([bool]$Ok,[string]$Message){if(-not$Ok){throw $Message}}

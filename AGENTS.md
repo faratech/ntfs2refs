@@ -136,7 +136,11 @@ Later authorized checkpoint removal through Hyper-V succeeded; these are
 different actions. Preserve original evidence and active recovery material.
 Keep .lab, images, VM chains, journals, ISOs, binaries and secrets out of Git.
 Check exact resolved paths before cleanup and use native PowerShell literal-path
-operations. Do not push without a user request.
+operations. The user has explicitly requested regular commits and pushes of
+stable work. Commit task-owned source and documentation at coherent milestones,
+then push normally to the current branch; do not force-push. Do not stage the
+existing user-owned main.rs hunk. The working branch now tracks
+origin/codex/isolated-journal-observation.
 
 ## Code map
 

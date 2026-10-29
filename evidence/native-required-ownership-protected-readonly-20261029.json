@@ -53,7 +53,18 @@
     "beyond_prefix_bytes": 8594452480,
     "conservative_required_fraction_of_partition": 0.2645,
     "complement_bytes_if_inputs_were_authenticated": 41066106880,
-    "role_of_prefix_zone": "unproven; the native metadata-inclusive view marks the whole zone allocated while the Medium allocator reports part of it free. Treating the whole zone as required is conservative, not a measured need."
+    "role_of_prefix_zone": "consistent with the ReFS format-time metadata zone, by comparison with a different volume of identical geometry; not proven for this volume. Treating the whole zone as required remains the conservative choice.",
+    "fresh_format_comparison": {
+      "source": ".lab/hyperv/retained-preparation/win11-20261024T034206826Z/pair/ (a separate fresh ReFS format, 13,631,488 clusters, 4 KiB)",
+      "legacy_bitmap_sha256": "4eaa9312c508e4f456c03f9cc1e5daedd4d6e72f8797c0d9d7196485ea038ba9",
+      "metadata_inclusive_bitmap_sha256": "0fa647bc116f9f5b59c2200ab6e45eeb0e0f6e318fbf855e5c27ccab4067bc6b",
+      "hashes_verified_on_host": true,
+      "metadata_inclusive_allocated_runs": [[0, 1507360], [1635808, 4], [13631484, 4]],
+      "metadata_inclusive_allocated_inside_first_1507328_clusters": 1507328,
+      "legacy_allocated_inside_first_1507328_clusters": 327912,
+      "matches_converted_volume": ["prefix ends at LCN 1507328", "checkpoint at LCN 1635808", "final 16384-byte range at offset 55834558464"],
+      "differs_from_converted_volume": "the fresh format also has LCN 1507328..1507359 allocated; the converted volume's native view has that range free"
+    }
   },
   "scope": "One observation of the already-converted disposable ReFS volume. Every range the raw metadata reader requires is allocated in the native bitmap, and the raw union is a subset of the native allocation. The 5,166,432,256 natively allocated bytes the raw reader does not account for lie entirely inside one contiguous prefix; their role is not established. This is neither a source certificate nor permission to skip or preserve any complement.",
   "next_implementation": "Account for or explicitly bound the native-only allocation, authenticate the footprint inputs, and bind the selected-range journal to an actual device, exclusion and write policy before any selected-range native conversion."

@@ -105,9 +105,15 @@ native allocation is one contiguous prefix `[0, 6,174,015,488)` (LCN 0..1,507,32
 the Medium allocator agree exactly. Inside it the allocator accounts for
 1,007,583,232 bytes and the native view marks the other 5,166,432,256 bytes
 allocated, so the prefix is exactly the allocator's ranges plus the native-only
-ranges. Why the metadata-inclusive view marks the whole zone is not established;
-including it is conservative (the required union is 26.5% of the partition).
-Until the zone is explained or authenticated, the report keeps `complete_graph_verified`, `complement_safe_to_preserve`,
+ranges. The pinned bitmaps of a separate fresh ReFS format with identical
+geometry (13,631,488 clusters) show the same structure: the metadata-inclusive
+view marks `[0, 1,507,360)` as one allocated run plus the checkpoint cluster
+range at LCN 1,635,808 and the last four clusters, while the legacy view marks
+only 327,912 of the first 1,507,328 clusters. The converted volume's prefix
+boundary, checkpoint LCN and final range match. That makes the prefix consistent
+with a format-time metadata zone, but it is a comparison with another volume,
+not a proof for this one. Including the zone is conservative (the required union
+is 26.5% of the partition). Until the zone is authenticated, the report keeps `complete_graph_verified`, `complement_safe_to_preserve`,
 `source_admitted` and `raw_write_authority` false. The footprint inputs are also
 not yet authenticated. This is an observation of an already converted volume,
 not a conversion, and it authorizes no selective write.

@@ -122,11 +122,14 @@ raw reader, so complete_graph/complement-safe/source_admitted stay false. Host
 analysis: those bytes all lie in one prefix [0,6,174,015,488) (LCN<1,507,328,
 92x64MiB) that the native view marks fully allocated; beyond it native equals
 the Medium allocator exactly. The conservative required union (14.77GB, 26.5%
-of the partition) already includes the prefix. See
+of the partition) already includes the prefix. A fresh ReFS format of identical
+geometry (pinned query-070/071 in retained-preparation win11-20261024T034206826Z)
+shows the same metadata-inclusive prefix, checkpoint LCN and final range, so the
+prefix is consistent with the format metadata zone (inference, not proof). See
 evidence/native-required-ownership-protected-readonly-20261029.json and the end
-of docs/refs-metadata-footprint.md. Next: establish what the prefix zone is (or
-keep it as required), authenticate the footprint inputs, then wire the selected
-journal to a device. Expect the journal to hold old+new for the whole union.
+of docs/refs-metadata-footprint.md. Next: authenticate the footprint inputs
+(keep the prefix zone as required), then wire the selected journal to a device.
+Expect the journal to hold old+new for the whole union.
 
 Do not add or run unit tests. Focused builds and necessary native integration
 only. Keep ignored images, journals, binaries and secrets out of Git. The

@@ -58,8 +58,12 @@ the fresh target and its packed-change overlay from one target scan, using two
 1 MiB buffers, instead of rereading unchanged target bytes. Both complete hashes
 and the existing journal, device and handoff checks remain required. This saves
 one partition length minus changed bytes of target reads at that phase; other
-full-volume passes remain. The optimization passes the release build and has
-not yet been qualified in a native run.
+full-volume passes remain. Target preparation also combines its final frozen
+source and candidate scans, retaining raw and framed hashes for both. The native
+shadow is rechecked before that final source scan and the packed backing is
+rechecked afterward. This removes another partition length minus changed bytes
+of source reads. These optimizations pass the release build and have not yet
+been qualified in a native run.
 
 ## Recovering a drive run
 

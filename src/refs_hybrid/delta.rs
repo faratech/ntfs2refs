@@ -125,6 +125,108 @@ impl<'a, R: Read + Seek, S: Read + Seek> DifferenceImage<'a, R, S> {
             position: 0,
         })
     }
+
+    /// Replace only changed-range intersections in an already-read source
+    /// chunk. This shares byte mechanics, not an admission or digest proof.
+    #[cfg(windows)]
+    fn overlay_packed_chunk(&mut self, offset: u64, candidate: &mut [u8]) -> Result<()> {
+        let end = offset
+            .checked_add(candidate.len() as u64)
+            .context("paired compact chunk overflow")?;
+        ensure!(
+            !candidate.is_empty() && end <= self.layout.partition_bytes,
+            "paired compact chunk escapes partition"
+        );
+        let first = self
+            .layout
+            .ranges
+            .partition_point(|range| range.offset + range.length <= offset);
+        for range in self.layout.ranges[first..]
+            .iter()
+            .take_while(|range| range.offset < end)
+        {
+            let start = offset.max(range.offset);
+            let stop = end.min(range.offset + range.length);
+            let local = usize::try_from(start - offset)?;
+            let length = usize::try_from(stop - start)?;
+            let packed_offset = range
+                .packed_offset
+                .checked_add(start - range.offset)
+                .context("paired compact packed offset overflow")?;
+            self.packed.seek(SeekFrom::Start(packed_offset))?;
+            self.packed
+                .read_exact(&mut candidate[local..local + length])?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+pub(crate) struct FrozenPairDigests {
+    pub(crate) source_raw: String,
+    pub(crate) source_framed: String,
+    pub(crate) candidate_raw: String,
+    pub(crate) candidate_framed: String,
+}
+
+#[cfg(windows)]
+impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
+    /// Fresh final source/candidate scan. Both raw and complete-range-framed
+    /// digests consume identical logical bytes to independent hash_image scans.
+    pub(crate) fn hash_pair_for_frozen_source(
+        &mut self,
+        source_binding: &n2r_win32::general_layout::GeneralDiskBinding,
+        expected_length: u64,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<FrozenPairDigests> {
+        ensure!(
+            self.original.binding() == source_binding
+                && self.original.byte_len() == expected_length
+                && self.layout.partition_bytes == expected_length
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+            "paired frozen hash differs from actual source binding or backing"
+        );
+        let source_before = self.original.state(events)?;
+        ensure!(
+            source_before.disk_attributes == 3,
+            "paired frozen hash requires persistently excluded read-only source"
+        );
+        self.original.seek(SeekFrom::Start(0))?;
+        let mut source = vec![0u8; 1024 * 1024];
+        let mut candidate = vec![0u8; 1024 * 1024];
+        let mut source_raw = n2r_win32::sha256_native::Sha256::new()?;
+        let mut source_framed = n2r_win32::sha256_native::Sha256::new()?;
+        let mut candidate_raw = n2r_win32::sha256_native::Sha256::new()?;
+        let mut candidate_framed = n2r_win32::sha256_native::Sha256::new()?;
+        for framed in [&mut source_framed, &mut candidate_framed] {
+            framed.update(&0u64.to_le_bytes())?;
+            framed.update(&expected_length.to_le_bytes())?;
+        }
+        let mut offset = 0u64;
+        while offset < expected_length {
+            let count = (expected_length - offset).min(source.len() as u64) as usize;
+            self.original.read_exact(&mut source[..count])?;
+            source_raw.update(&source[..count])?;
+            source_framed.update(&source[..count])?;
+            candidate[..count].copy_from_slice(&source[..count]);
+            self.overlay_packed_chunk(offset, &mut candidate[..count])?;
+            candidate_raw.update(&candidate[..count])?;
+            candidate_framed.update(&candidate[..count])?;
+            offset += count as u64;
+        }
+        ensure!(
+            self.original.state(events)? == source_before
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+            "paired frozen inputs changed around the complete scan"
+        );
+        self.position = expected_length;
+        Ok(FrozenPairDigests {
+            source_raw: hex::encode(source_raw.finish()?),
+            source_framed: hex::encode(source_framed.finish()?),
+            candidate_raw: hex::encode(candidate_raw.finish()?),
+            candidate_framed: hex::encode(candidate_framed.finish()?),
+        })
+    }
 }
 
 #[cfg(windows)]
@@ -160,7 +262,6 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
         let mut actual_hash = n2r_win32::sha256_native::Sha256::new()?;
         let mut candidate_hash = n2r_win32::sha256_native::Sha256::new()?;
         let mut offset = 0u64;
-        let mut first_range = 0usize;
         while offset < expected_length {
             let count = (expected_length - offset).min(actual.len() as u64) as usize;
             let end = offset + count as u64;
@@ -170,28 +271,7 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
             self.original.read_exact(&mut actual[..count])?;
             actual_hash.update(&actual[..count])?;
             candidate[..count].copy_from_slice(&actual[..count]);
-            while first_range < self.layout.ranges.len()
-                && self.layout.ranges[first_range].offset + self.layout.ranges[first_range].length
-                    <= offset
-            {
-                first_range += 1;
-            }
-            for range in self.layout.ranges[first_range..]
-                .iter()
-                .take_while(|range| range.offset < end)
-            {
-                let start = offset.max(range.offset);
-                let stop = end.min(range.offset + range.length);
-                let local = usize::try_from(start - offset)?;
-                let length = usize::try_from(stop - start)?;
-                let packed_offset = range
-                    .packed_offset
-                    .checked_add(start - range.offset)
-                    .context("paired compact packed offset overflow")?;
-                self.packed.seek(SeekFrom::Start(packed_offset))?;
-                self.packed
-                    .read_exact(&mut candidate[local..local + length])?;
-            }
+            self.overlay_packed_chunk(offset, &mut candidate[..count])?;
             candidate_hash.update(&candidate[..count])?;
             offset = end;
         }

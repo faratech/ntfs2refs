@@ -399,27 +399,36 @@ pub fn verify_and_capture(
             "composite backing must be outside both frozen volumes"
         );
     }
-    let (composite_target_sha256, composite_framed_sha256) = {
-        let mut image = DifferenceImage::new(source, &mut backing.file, &capture.layout)?;
-        hash_image(&mut image, length)?
-    };
-    ensure!(
-        composite_framed_sha256 == capture.candidate_selected_sha256,
-        "reopened compact image differs from the complete supplied candidate"
-    );
-    backing.revalidate()?;
+    // Keep this fresh shadow check before the final source check. The latter
+    // now also hashes the candidate from the same source bytes plus packed
+    // overlays, rather than rereading the source complement separately.
     ensure!(
         hex::encode(lab_reconstruct::hash_range_with_resource_profile(
             target, 0, length, resources,
         )?) == protected.raw_sha256(),
         "raw shadow changed after protected observation"
     );
+    let final_digests = {
+        let mut image = DifferenceImage::new(source, &mut backing.file, &capture.layout)?;
+        image.hash_pair_for_frozen_source(&pair.source, length, events)?
+    };
     ensure!(
-        hex::encode(lab_reconstruct::hash_range_with_resource_profile(
-            source, 0, length, resources,
-        )?) == source_sha256,
+        final_digests.source_raw == source_sha256,
         "source changed around composite preparation"
     );
+    ensure!(
+        final_digests.source_framed == source_framed_sha256
+            && final_digests.source_framed == capture.source_selected_sha256,
+        "final source framing differs from the initial source or capture"
+    );
+    ensure!(
+        final_digests.candidate_framed == capture.candidate_selected_sha256,
+        "reopened compact image differs from the complete supplied candidate"
+    );
+    // As before, the fresh candidate raw digest becomes the comparison pin
+    // only after its complete framed digest matches the captured candidate.
+    let composite_target_sha256 = final_digests.candidate_raw;
+    backing.revalidate()?;
     let source_after = source.state(events)?;
     let target_after = target.state(events)?;
     ensure!(

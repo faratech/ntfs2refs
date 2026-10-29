@@ -98,6 +98,10 @@ has no native qualification and does not enable selective capture.
 Later commits 7e318ce, 541f76f and 46e0dcc reduce repeated source, candidate,
 recovery and journal reads while keeping complete integrity checks. Their
 focused release builds passed, but they have not passed the native workflow.
+7f6d93e batches changed-cluster writes and removes a preparation journal reread;
+a4419ca parallelizes capture hashing and reports allocation/scratch estimates.
+Both passed focused release builds and await native qualification. The estimate
+does not authorize selective capture or establish a complete allocation graph.
 The paired-digest host memory measurement is recorded in
 evidence/paired-hash-host-benchmark-20261029.json; it is not a disk benchmark.
 Same-binary interruption/recovery on fb5548 remains unqualified; sealed2cac's
@@ -112,8 +116,8 @@ Actual controlled core PID4856/creation1793257320594, wrapper1472/creation
 with public recovery main fb5548...; old daed9.../4bd15... binaries are used
 only to provision the fresh shadow and read-only bind devices. Dispatch SHA
 348f605d91bca90a2451136e5cea6ae745737fa677236d2d9089710d67d58fbb.
-The same task and PID/creation identity were still live at 07:36:01Z, with
-507,860,498,976 bytes read and source/shadow protected offline/read-only.
+The same task and PID/creation identity were still live at 07:49:52Z, with
+727,388,001,798 bytes read and source/shadow protected offline/read-only.
 The task must be observed to genuine terminal completion; do not restart it.
 Expected native and wrapper exit86 follows one flushed source write; it is not
 conversion success. Delta monitors metadata only. Do not interrupt or open live
@@ -220,6 +224,9 @@ Keep the VM at its reviewed RAM settings. Keep WSL running as requested.
 
 Past automatic approval review rejected deletion of a disposable research
 image. Do not retry that rejected deletion through another shell or method.
+Another automatic review rejected deletion of the duplicate checkout
+`D:\code\ntfs2refs\.lab\ntfs2btrfs-source-audit` with only “blocked by
+policy”; do not retry that action through another method.
 Later authorized checkpoint removal through Hyper-V succeeded; these are
 different actions. Preserve original evidence and active recovery material.
 Keep .lab, images, VM chains, journals, ISOs, binaries and secrets out of Git.

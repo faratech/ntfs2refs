@@ -99,6 +99,21 @@ allocation comparison), file verification about 11 GB. Next savings, in order:
 bracket the protected shadow observation over its allocation only (about 80 GB),
 then replace the whole-source certificate hash (step 4).
 
+### Where the remaining reads are (allocation-bounded run)
+
+The "Building ReFS metadata" label appears only when shadow construction starts,
+about 520 s in, and construction then takes about 8 s. Almost all of phase 1 is
+source admission, which brackets its native observation with two complete source
+hashes: `prepare_source_context` hashes the frozen source, `observe_ntfs_files`
+reads it through a read-only native mount (about 24 GB at ~128 MB/s), and
+`general_source_admission::assess` hashes the whole source again. The
+verify-target phase brackets the shadow observation the same way. Candidate
+savings: bound the source bracket to NTFS-allocated ranges, which the inspection
+knows beforehand (about 2 × 46 GB less), and close the shadow bracket over its
+native allocation with per-chunk digests from the opening pass (about 41 GB
+less). The source change alters what admission binds, from a whole-source hash
+to an allocated-range digest, so it needs an explicit decision before it is made.
+
 Recovery for this mode is implemented in `b49eae6` and was exercised natively
 from one controlled interruption (exit 86 after the first flushed write), a guest
 restart, then both public directions from the identical interrupted state:

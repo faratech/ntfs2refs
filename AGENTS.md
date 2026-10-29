@@ -255,6 +255,12 @@ entries; raise the coupled caps together to derived ceilings; add owned/move
 counters to the refusal artifact. Window-scoped bitmap probes, sparser source-
 exclusion checks or a narrower per-move retrieval proof change evidence scope
 and need a user decision. The 1024-file tree cap is a product-scope limit.
+SCALE DECISION (user, 2026-10-29): "Redesign theoretically unlimited": capacity
+must be bounded only by machine resources (RAM, temp disk, time), with no fixed
+constant caps on files, directories, extents, runs, moves, ranges or evidence
+size. Evidence may move to disk but must stay complete and verifiable; any
+change that narrows what is checked still needs its own user decision. Design
+workflow: wf_5c358166-e1b; stage-1 placement implementation: wf_40ba8e07-e64.
 
 ## Source and recovery invariants
 

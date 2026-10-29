@@ -464,6 +464,7 @@ pub struct FrozenAllocationTargetPreservation {
     target_before: GeneralDiskState,
     target_after: GeneralDiskState,
     frozen_source_inventory_verified: bool,
+    frozen_source_inventory_basis: &'static str,
     source_views_bound: bool,
     logical_payload_tied_to_frozen_source: bool,
     allocation_bounded_selection_compared: bool,
@@ -775,6 +776,7 @@ pub fn verify_and_select(
         target_before,
         target_after,
         frozen_source_inventory_verified: true,
+        frozen_source_inventory_basis: "allocated-range digest recheck; admission proved the inspection read only those ranges",
         source_views_bound: true,
         logical_payload_tied_to_frozen_source: true,
         allocation_bounded_selection_compared: true,
@@ -834,15 +836,27 @@ fn protected_prefix(
         "composite preparation requires both devices persistently frozen"
     );
     let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
-    let actual = ntfs_inspect::inspect_with_limits(
-        source,
-        length,
-        ntfs_inspect::limits_for_resource_profile(resources),
-    )?;
-    ensure!(
-        hex::encode(Sha256::digest(serde_json::to_vec(&actual)?)) == inspection_sha256,
-        "composite frozen source inventory changed"
-    );
+    if allocation_closed_bracket {
+        // Admission digested the NTFS-allocated ranges and proved its
+        // deterministic inspection read only inside them, so unchanged ranges
+        // mean the same inspection; no second stream-hashing pass is needed.
+        let ranges = raw.allocated_byte_ranges(length)?;
+        ensure!(
+            hex::encode(crate::lab_reconstruct::hash_ranges_xxh3(source, &ranges)?)
+                == source_sha256,
+            "composite frozen source allocated bytes changed"
+        );
+    } else {
+        let actual = ntfs_inspect::inspect_with_limits(
+            source,
+            length,
+            ntfs_inspect::limits_for_resource_profile(resources),
+        )?;
+        ensure!(
+            hex::encode(Sha256::digest(serde_json::to_vec(&actual)?)) == inspection_sha256,
+            "composite frozen source inventory changed"
+        );
+    }
     ensure!(
         source_views.binds_live_source(&inspection_sha256, source_sha256),
         "composite requires the same bound live source views"

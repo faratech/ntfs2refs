@@ -248,18 +248,85 @@ impl NtfsInspection {
         if domain < partition_bytes {
             ranges.push((domain, partition_bytes - domain));
         }
-        ranges.sort_unstable();
-        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
-        for (offset, length) in ranges {
-            match merged.last_mut() {
-                Some(last) if offset <= last.0 + last.1 => {
-                    last.1 = last.1.max(offset + length - last.0);
-                }
-                _ => merged.push((offset, length)),
-            }
-        }
-        Ok(merged)
+        Ok(merge_ranges(ranges))
     }
+}
+
+/// Sorted, merged (offset, length) ranges; touching ranges join.
+fn merge_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
+    ranges.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+    for (offset, length) in ranges {
+        match merged.last_mut() {
+            Some(last) if offset <= last.0 + last.1 => {
+                last.1 = last.1.max(offset + length - last.0);
+            }
+            _ => merged.push((offset, length)),
+        }
+    }
+    merged
+}
+
+/// Records every byte range read through it. Wrapping an inspection proves
+/// which bytes its deterministic result depends on: if those bytes are
+/// unchanged, repeating the inspection reads and returns exactly the same.
+pub struct ReadRecorder<R> {
+    inner: R,
+    position: u64,
+    ranges: Vec<(u64, u64)>,
+}
+
+impl<R: Read + Seek> ReadRecorder<R> {
+    pub fn new(mut inner: R) -> io::Result<Self> {
+        let position = inner.stream_position()?;
+        Ok(Self {
+            inner,
+            position,
+            ranges: Vec::new(),
+        })
+    }
+
+    /// The sorted, merged ranges read so far.
+    pub fn ranges(&self) -> Vec<(u64, u64)> {
+        merge_ranges(self.ranges.clone())
+    }
+}
+
+impl<R: Read> Read for ReadRecorder<R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(output)?;
+        if count != 0 {
+            match self.ranges.last_mut() {
+                Some(last) if last.0 + last.1 == self.position => last.1 += count as u64,
+                _ => self.ranges.push((self.position, count as u64)),
+            }
+            self.position += count as u64;
+        }
+        Ok(count)
+    }
+}
+
+impl<R: Seek> Seek for ReadRecorder<R> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.position = self.inner.seek(from)?;
+        Ok(self.position)
+    }
+}
+
+/// Whether every range in sorted merged `inner` lies inside sorted merged `outer`.
+pub fn ranges_cover(outer: &[(u64, u64)], inner: &[(u64, u64)]) -> bool {
+    let mut cursor = outer.iter().peekable();
+    inner.iter().all(|&(offset, length)| {
+        while cursor
+            .peek()
+            .is_some_and(|&&(start, size)| start + size <= offset)
+        {
+            cursor.next();
+        }
+        cursor
+            .peek()
+            .is_some_and(|&&(start, size)| start <= offset && offset + length <= start + size)
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

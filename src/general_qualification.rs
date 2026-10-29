@@ -229,19 +229,33 @@ fn prepare_source_context(
     let mut source = GeneralFrozenPartition::isolate_observed_ntfs(pair.source.clone(), events)?;
     let length = source.byte_len();
     // The allocated ranges come from the inspection, so that mode inspects the
-    // frozen source first. The whole-image path keeps its original order.
-    let early_raw = match digest_kind {
-        SourceDigest::WholeImage => None,
-        SourceDigest::NtfsAllocated => Some(ntfs_inspect::inspect_with_limits(
-            &mut source,
-            length,
-            ntfs_inspect::limits_for_resource_profile(resources),
-        )?),
+    // frozen source first, recording what it reads. Target verification later
+    // rechecks the allocated-range digest instead of repeating the inspection,
+    // which holds only if the inspection read nothing outside those ranges.
+    // The whole-image path keeps its original order.
+    let (early_raw, inspection_reads) = match digest_kind {
+        SourceDigest::WholeImage => (None, None),
+        SourceDigest::NtfsAllocated => {
+            let mut recorder = ntfs_inspect::ReadRecorder::new(&mut source)?;
+            let raw = ntfs_inspect::inspect_with_limits(
+                &mut recorder,
+                length,
+                ntfs_inspect::limits_for_resource_profile(resources),
+            )?;
+            (Some(raw), Some(recorder.ranges()))
+        }
     };
     let allocated = match &early_raw {
         Some(raw) => Some(raw.allocated_byte_ranges(length)?),
         None => None,
     };
+    if let (Some(ranges), Some(reads)) = (&allocated, &inspection_reads) {
+        ensure!(
+            ntfs_inspect::ranges_cover(ranges, reads),
+            "the NTFS inspection read bytes outside the NTFS-allocated ranges; \
+             convert with --whole-image-verification"
+        );
+    }
     let source_hash = match &allocated {
         None => hex::encode(lab_reconstruct::hash_range_with_resource_profile(
             &mut source,
@@ -260,6 +274,8 @@ fn prepare_source_context(
         "kind":"observed-frozen-source-identity","binding":source.binding(),"source_sha256":source_hash,
         "source_digest_kind":digest_kind,"source_digest_ranges":allocated.as_ref().map(Vec::len),
         "source_digest_bytes":digest_bytes,
+        "inspection_read_ranges":inspection_reads.as_ref().map(Vec::len),
+        "inspection_reads_within_digest":inspection_reads.as_ref().map(|_| true),
         "state":source.state(events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
         |artifact_sha256| after_source_freeze(&source, &source_hash, artifact_sha256),
     )?;

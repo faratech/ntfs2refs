@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "kind": "automatic-drive-cli-native-conversion-and-coldboot-observation",
+  "observation_only": true,
+  "grants_source_or_recovery_authority": false,
+  "command": [
+    "ntfs2refs",
+    "--drive",
+    "F",
+    "--partition",
+    "2"
+  ],
+  "confirmation": "yes CRLF through real standard input",
+  "wrapper_run_id": "d33d2e04518346f8bac2ca4bbfb757b3",
+  "engine_run_id": "58877faed3f4dc12e7e9605ebf717826",
+  "converter_sha256": "866fc5bbf0f95ef5a091eb211e846573197f7b9bd27c9a1848f45e8ba6951627",
+  "actual_native_exit": 0,
+  "actual_wrapper_task_result": 0,
+  "native_exit_observed": true,
+  "source_binding": {
+    "disk_number": 1,
+    "volume_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+    "identity": {
+      "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+      "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+      "partition_number": 2,
+      "disk_bytes": 68719476736,
+      "partition_offset": 16777216,
+      "partition_bytes": 55834574848,
+      "logical_sector_bytes": 512,
+      "physical_sector_bytes": 4096
+    }
+  },
+  "shadow_binding": {
+    "disk_number": 6,
+    "volume_guid": "7789c136-b310-4ed2-8497-f2dd3d1f4be7",
+    "identity": {
+      "disk_guid": "96c193ff-1f57-4ea3-b050-1d72bc456f9b",
+      "partition_guid": "7789c136-b310-4ed2-8497-f2dd3d1f4be7",
+      "partition_number": 2,
+      "disk_bytes": 55901683712,
+      "partition_offset": 33554432,
+      "partition_bytes": 55834574848,
+      "logical_sector_bytes": 512,
+      "physical_sector_bytes": 4096
+    }
+  },
+  "source_before_filesystem": "NTFS",
+  "source_before_cluster_bytes": 65536,
+  "target_filesystem": "ReFS",
+  "target_cluster_bytes": 4096,
+  "partition_bytes": 55834574848,
+  "source_frozen_sha256": "e715b6ba647ecddd7dd295f5c0dd4896fc3af15e542cd054a26ee28e4cd8654b",
+  "target_exact_premount_sha256": "6f4c335cca00a2f7023a0471e7fd6c9d042406e0ed91d95f0c0c715af84546c4",
+  "source_partition_identity_unchanged": true,
+  "manual_shadow_or_journal_binding_supplied": false,
+  "conversion_runs_inside_owning_machine": true,
+  "native_objects": 15,
+  "complete_native_stream_hashes": 10,
+  "earlier_user_files_unchanged": 7,
+  "earlier_user_logical_bytes": 8594391095,
+  "label_preserved": true,
+  "mount_preserved": "F:\\",
+  "patches_written": 157,
+  "target_bytes_written": 70660096,
+  "journal_bytes": 141354590,
+  "handoff_closes_rollback": true,
+  "coldboot_user_hashes_match": true,
+  "coldboot_user_bytes": 8594391095,
+  "coldboot_guest_result_sha256": "145ddaca0d08c7a29c331a1678903ada3172622f7f326e9fdca02e5cf60abc15",
+  "coldboot_receipt_sha256": "142e627735791422e250270681dce8cfeece678a76082b07e4027a05a3d2c676",
+  "converted_checkpoint": "b2142a7d-8dcf-4207-8f38-c2c213214431",
+  "coldboot_checkpoint": "219e3abf-4289-4e16-b27f-2b4d32ac619c",
+  "all50_checkpoints_preserved": true,
+  "preserved_state": "Off",
+  "memory_assigned": 0,
+  "preservation_receipt_sha256": "42572fff4ec1ef74011c5af79c60503ae9afccbca0611c74cbf44c2e5a2074e4",
+  "svi_classification": [
+    {
+      "fresh_bytes": 76,
+      "earlier_svi_preservation_claimed": true,
+      "fresh_sha256": "296be22bb95862b0cc941cb2cde57ae394d143edc9f5523997cc9c6f2ed3123d",
+      "fresh_native_hash_verified": true,
+      "earlier_bytes": 76,
+      "path": "System Volume Information\\IndexerVolumeGuid",
+      "classification": "same_as_earlier_snapshot",
+      "earlier_sha256": "296be22bb95862b0cc941cb2cde57ae394d143edc9f5523997cc9c6f2ed3123d"
+    },
+    {
+      "fresh_bytes": 12,
+      "earlier_svi_preservation_claimed": true,
+      "fresh_sha256": "cd7ef92faa2e441b2814bb43152a014e8450d87b7054e0f10af0773a32107c4e",
+      "fresh_native_hash_verified": true,
+      "earlier_bytes": 12,
+      "path": "System Volume Information\\WPSettings.dat",
+      "classification": "same_as_earlier_snapshot",
+      "earlier_sha256": "cd7ef92faa2e441b2814bb43152a014e8450d87b7054e0f10af0773a32107c4e"
+    },
+    {
+      "fresh_bytes": 20480,
+      "earlier_svi_preservation_claimed": true,
+      "fresh_sha256": "d9e0803ac6164fa0650e41e76649749400eec499ebe29b736f57065f36553d08",
+      "fresh_native_hash_verified": true,
+      "earlier_bytes": 20480,
+      "path": "System Volume Information\\tracking.log",
+      "classification": "same_as_earlier_snapshot",
+      "earlier_sha256": "d9e0803ac6164fa0650e41e76649749400eec499ebe29b736f57065f36553d08"
+    }
+  ],
+  "svi_coldboot_rehashed": false,
+  "native_recovery_qualified_by_this_run": false,
+  "arbitrary_volume_or_feature_support_proven": false,
+  "payload_independent_scratch_proven": false,
+  "all_payload_physical_retention_proven": false,
+  "large_zero_filled_fixture_dominates_logical_bytes": true,
+  "closed_metadata_pins": [
+    {
+      "name": "wrapper-result.json",
+      "sha256": "fe13203ec3db0d7c687ed9bbcbad5fac57017e3844ed1c2cead496278d9376d7",
+      "bytes": 501
+    },
+    {
+      "name": "terminal-output.json",
+      "sha256": "0c18eeabb46d6d6cd9c260d5e7cec4d96930b315c0128b1928bae05419b050a1",
+      "bytes": 1294
+    },
+    {
+      "name": "native-process.json",
+      "sha256": "1ac67e928ba7e94a40ed4d80d9dc07a9603405a2efe8a26273eec82be86c7fce",
+      "bytes": 825
+    },
+    {
+      "name": "wrapper-worker.json",
+      "sha256": "237001c94b39fd6d3557704ddba79015bb85df211bf18d7970ad5ca1e4a83dc4",
+      "bytes": 243
+    },
+    {
+      "name": "drive-selection.json",
+      "sha256": "7fc2c22e5caa53b9e946e9105d73764a32c85d7bafbf0e95f5511dc1a67202a4",
+      "bytes": 7638
+    },
+    {
+      "name": "devices.json",
+      "sha256": "59bc8a0a4623e6b412077a371a17c3800d260f1e01628733df92bee68af54fec",
+      "bytes": 1821
+    },
+    {
+      "name": "request.json",
+      "sha256": "cf31917ecf52cfe35f628163bcdce5fc7233f28162d012b659b73c6d74944f3e",
+      "bytes": 2534
+    },
+    {
+      "name": "ticket.json",
+      "sha256": "c753f298de88a4e6eb5b0074cfba5ded292ef39467e1c376c778c2b0c5097ae6",
+      "bytes": 615
+    },
+    {
+      "name": "expectation.json",
+      "sha256": "086e79b1f0892d42b9ceba5e6670ba69544b10b51b7d2766dde66a1fc15fc1ff",
+      "bytes": 29197
+    },
+    {
+      "name": "apply.json",
+      "sha256": "ffdc9297c70dbcaa43d7b99773b811b256d00096c165b8b7536d7c25ef77df5e",
+      "bytes": 15799
+    },
+    {
+      "name": "finalization.json",
+      "sha256": "f1e4ee657d483d58af66bf36f4b1126bf072b7879d51058a0998beee1ae02658",
+      "bytes": 587354
+    },
+    {
+      "name": "result.json",
+      "sha256": "dd12540266e52bcc9fce75bb71e5869455a23d95ddfbe407a4bd1a34f0b803d8",
+      "bytes": 1086
+    },
+    {
+      "name": "compact-backing.json",
+      "sha256": "fcb6eba78da21dee1992f830a066fd8c13b5ea3a47c59253ddc07584c76a7336",
+      "bytes": 1578
+    },
+    {
+      "name": "journal-location.json",
+      "sha256": "1470743b7b3c4a379603faf19300a63393dd19dac2ec1b5e9e391eb24f953fd0",
+      "bytes": 1173
+    },
+    {
+      "name": "selected-device-preflight.json",
+      "sha256": "95784f6893e4568f8a4f495107a199f9fe71d7eb1bed7e6be10fffd927256d66",
+      "bytes": 48143
+    },
+    {
+      "name": "qualification-result.json",
+      "sha256": "7573e095061d12927f013c1d64da29cdb0245580dbbdeba102442d432baf6b97",
+      "bytes": 19869
+    },
+    {
+      "name": "qualification-certificate.json",
+      "sha256": "274109fad3aa6f7547b045cf0269ee5cfed7f1d061a593a1f064d6aa9bf5fe64",
+      "bytes": 1782
+    },
+    {
+      "name": "qualification-source-basis.json",
+      "sha256": "87c93e44941f46b7e7b10c71b40e09fbff5f382f67b79632d2a02d89f2759d65",
+      "bytes": 283094
+    },
+    {
+      "name": "qualification-source-frozen.json",
+      "sha256": "a3f95658680ff01c43ea3bd0a83d45c8877008e13790a21028138301902ca878",
+      "bytes": 13530
+    },
+    {
+      "name": "qualification-admitted-assessment.json",
+      "sha256": "44d9035982787a3b1c79dad8661fd29563f62bd20b9266ff905d5f21bc908545",
+      "bytes": 104848
+    }
+  ],
+  "scope": "Actual affirmative drive CLI, automatic owned native staging, original source admission, exact pre-mount apply/HND/native verification and seven original user hashes after cold boot. Current experimental fixture/profile only; no post-mount raw equality or universal volume/feature/space claim."
+}

@@ -1,5 +1,31 @@
 # ntfs2refs project guidance
 
+CURRENT — AUTOMATIC DRIVE CLI AND COLD BOOT PASSED / VM OFF50:
+Actual `ntfs2refs --drive F --partition2`, stdinyes, originalmain866fc5... /
+wrapperd33... exited0 OBSERVED. Native source certificate/apply/HND/ReFS verifier
+passed15 objects/10hashes.157patches70,660,096B;J141,354,590B; exactpremount
+target6f4c335cca00a2f7023a0471e7fd6c9d042406e0ed91d95f0c0c715af84546c4.
+Saved49=b2142a7d-8dcf-4207-8f38-c2c213214431,parent48; then singlecoldboot
+and7-user/8,594,391,095B fullhashreadback PASSED (guestreport145ddaca0d08c7a29c331a1678903ada3172622f7f326e9fdca02e5cf60abc15).
+Readbackcase coldboot-readback-8452272a150947a49b5b2e78812124c9,receiptSHA
+142e627735791422e250270681dce8cfeece678a76082b07e4027a05a3d2c676.
+Preserved50=219e3abf-4289-4e16-b27f-2b4d32ac619c,parent49,ALL50 intact,
+OFF/RAM0. Its receipt is under thatreadbackcase/coldboot-preservation,
+SHA42572fff4ec1ef74011c5af79c60503ae9afccbca0611c74cbf44c2e5a2074e4.
+Tracked evidence/drive-cli-native-20261028.json pins exactboundedobservation.
+Never replay original J on completed49/50: HNDclosed. Managedshadow6 may be
+absent after reboot; G4/shadow5 preserved. Delta terminalmonitor stopped.
+No actual recovery run started. Future Start-ManagedCompactInterruption.ps1
+requires pinned49/readback50 receipts and ALREADYrunningrestored48/all50; cannot
+restore/boot itself. Fourtools initially sealed under managed-recovery-tools-
+20261028 (manifest a3714b7fce3213ea1bcc9eb7c3295455a906f6c90677fe925f53db828e95c417).
+Later hash_image bufferoptimization (64KiB stack->1MiBheap) is source-only,
+NOT in original866 or initialsealedtoolset. Preserve exact hash/read/order
+contracts; only native batch size changes, no omitted bytes/passes. Build next.
+Fixed50GB epoch unchanged. Latestlab289,151,138,973 /Dfree56,291,241,984
+(about9.8GB physicalfree decrease vs originalbaseline). No unit tests. Original
+main.rs capabilities1line diff remains UNSTAGED. Broad goal still incomplete.
+
 Latest release build passed for main, compact recovery and lab-convert-native-composite.
 Compact recovery now accepts paired --managed-shadow/--managed-shadow-id, retains
 an original request handle with verified SHA/file identity, and uses its exact

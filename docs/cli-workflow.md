@@ -32,12 +32,18 @@ on failure for inspection. The isolated native staging smoke passed on the
 current Windows11 guest: owned VHDX creation, attachment, empty-GPT/MSR setup,
 native formatting and ReFS3.14/4KiB verification all succeeded for60GiB. Its
 backing file was100MiB. This proves staging on that profile, independently of
-the manually prepared shadow experiments. A full affirmative `--drive F
---partition 2` run is in progress inside the protected Windows guest. Its
-confirmation, automatic scratch creation and native source/tree construction
-have passed; completion is not yet claimed. The current executable also shows
-conversion phases and elapsed time. That display change is not installed over
-the running conversion.
+the manually prepared shadow experiments. The complete affirmative
+`--drive F --partition 2` workflow then passed on the existing 52 GiB NTFS
+partition: actual native exit 0, automatic shadow/journal selection, 157 patches
+writing 70,660,096 bytes, and a 141,354,590-byte recovery journal. Native ReFS
+matched 15 objects and 10 stream hashes. All seven earlier user files
+(8,594,391,095 logical bytes) matched again after cold boot, with the original
+label and F: mount preserved. Both successful branches are saved and all 50
+checkpoints remain. The [automatic CLI observation](../evidence/drive-cli-native-20261028.json)
+pins the reports and exact executable. Most logical bytes are in a zero-filled
+fixture file; this does not prove payload-independent scratch or arbitrary-volume
+support. The current executable also shows phases and elapsed time; that later
+display change is separate from the recorded run.
 
 Run conversion from an elevated Windows terminal. `--scratch-directory` can
 choose another ordinary working folder on the Windows OS volume. The current

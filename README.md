@@ -20,6 +20,11 @@ engine and automatically prepares independent recovery storage. Current scope
 is experimental data volumes; unsupported layouts and features are refused.
 See [the workflow and current native results](docs/cli-workflow.md).
 
+The affirmative drive command has completed on the existing 52 GiB test
+partition with automatic staging and an observed native exit 0. Native ReFS
+verification passed, and all seven user files matched after cold boot.
+See the [exact command, evidence and limits](evidence/drive-cli-native-20261028.json).
+
 **The experimental source-backed native-shadow path converted a fresh15-object/
 10-file tree on its original partition, then passed native mutation and reboot
 checks.** It used genuine live source/target admission,157 patches/67.3MiB and a
@@ -28,8 +33,9 @@ bytes; normalized system streams added20,568 bytes. Peak converter working set
 was68.8MiB in a4GiB VM. The nonzero4MiB file prefix retained its original physical
 mapping. Most of the large zero-filled file changed mappings, so the small write
 count does not establish payload-independent scratch for arbitrary nonzero data.
-Same-build interruption/resume/rollback qualification is still pending. The new
-entry remains enrolled-fixture-only. See the [pinned results and recovery scope](docs/native-composite-experimental.md).
+The frozen laboratory path has since passed same-build interruption, resume
+and rollback. Recovery with the newer automatic managed staging remains a
+separate qualification. See the [pinned results and recovery scope](docs/native-composite-experimental.md).
 
 **The public Rust CLI converted a fourteen-object tree on its original 52 GiB
 partition while retaining a normally allocated 128 MiB payload extent.**

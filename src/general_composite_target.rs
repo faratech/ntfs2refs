@@ -477,7 +477,10 @@ fn hash_image(reader: &mut (impl Read + Seek), length: u64) -> Result<(String, S
     let mut framed = n2r_win32::sha256_native::Sha256::new()?;
     framed.update(&0u64.to_le_bytes())?;
     framed.update(&length.to_le_bytes())?;
-    let mut buffer = [0u8; 65536];
+    // This is a complete native/difference-image hash, not a logical NTFS
+    // parser read. Match the native reader's 1 MiB batch while keeping the
+    // same exact byte sequence and both raw/framed digest contracts.
+    let mut buffer = vec![0u8; 1024 * 1024];
     let mut remaining = length;
     while remaining > 0 {
         let count = remaining.min(buffer.len() as u64) as usize;

@@ -28,9 +28,9 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
-NTFS checkpoint5f30f4a1, but its disks now hold the result of the HEAD
-measurement run3ece94aacf9d483780aeeadfe29f910e (F: converted to ReFS, HND, not
-checkpointed). Any new native run needs a fresh restore of the intended
+NTFS checkpoint5f30f4a1, but its disks now hold the result of the selective-plan
+diagnostic run9ac7538c83b24d5aa6ffbd0bb0d8b686 (F: converted to ReFS, HND, not
+checkpointed; records archived on the host). Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
 least 816.6GB; see evidence/head-drive-measurement-20261029.json and
@@ -145,9 +145,13 @@ explicitly assigned metadata-only observation.
 Selective path direction (user chose it, 2026-10-29): docs/selective-conversion-plan.md.
 On the HEAD run, 100% of the 70,615,040 changed bytes lie inside the frozen
 shadow's native metadata-inclusive allocation (14.77GB); 286,720 of them are
-relocated file data inside routes, so routes cannot simply be skipped. Next code:
-coarse selection from the protected allocation, then changed_plan over the
-source-backed view, then the device-bound N2RSEL01 journal.
+relocated file data inside routes, so routes cannot simply be skipped. Commit
+11e0513's non-gating diagnostic then planned over only the shadow allocation on
+real devices (run 9ac7538c83b24d5aa6ffbd0bb0d8b686): identical write set to the
+complete capture (159 ranges, 70,615,040B), 14.77GB compared per side instead of
+52GiB; see evidence/selective-plan-native-20261029.json. The VM is Off with that
+run's converted ReFS on its disks (parent 5f30f4a1). Next code: the device-bound
+N2RSEL01 journal path using this plan, then admission/recovery binding.
 
 ## Source and recovery invariants
 

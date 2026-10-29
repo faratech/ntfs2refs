@@ -57,6 +57,27 @@ is the same assumption every converter above makes about the target, but this
 project has not yet authenticated that. The diagnostic stays false for
 `allocation_graph_complete`.
 
+## Native confirmation of the allocation-driven write set
+
+Commit `11e0513` added a non-gating diagnostic that, after the complete capture,
+plans the write set over only the frozen shadow's protected allocation through a
+fresh source-backed view. Run `9ac7538c…` (sealed build `c2bae79b…`) converted the
+fixture normally (exit 0, HND, 15 objects / 10 hashes, label and mount verified)
+and recorded:
+
+| | Allocation-driven plan | Complete capture |
+|---|---:|---:|
+| Bytes compared per side | 14,768,467,968 | 55,834,574,848 |
+| Changed ranges | 159 | 159 |
+| Changed bytes | 70,615,040 | 70,615,040 |
+| Identical write set | yes | — |
+
+Its 13.5 s elapsed time was warm-cache (it ran right after the complete capture
+read the same bytes) and is not a cold measurement. The selected journal for the
+plan would be 141,251,152 bytes. See
+[the receipt](../evidence/selective-plan-native-20261029.json). Step 2 below is
+therefore validated on one native run; it still authorizes nothing.
+
 ## Proposed path
 
 1. **Coarse selection from the frozen shadow's allocation.** Take the metadata

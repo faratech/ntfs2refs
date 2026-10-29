@@ -6,13 +6,16 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{ERROR_WRITE_PROTECT, HANDLE, INVALID_HANDLE_VALUE},
     Storage::FileSystem::{
         FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetLogicalDriveStringsW,
         GetVolumeInformationW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
         GetVolumePathNamesForVolumeNameW, QueryDosDeviceW,
     },
-    System::{IO::DeviceIoControl, SystemInformation::GetWindowsDirectoryW},
+    System::{
+        IO::DeviceIoControl, Ioctl::IOCTL_DISK_IS_WRITABLE,
+        SystemInformation::GetWindowsDirectoryW,
+    },
 };
 
 const MAX_REPLY: usize = 1024 * 1024;
@@ -70,8 +73,14 @@ fn open_device(path: &str) -> io::Result<File> {
 fn query(file: &File, code: u32, capacity: usize) -> io::Result<Vec<u8>> {
     if !matches!(
         code,
-        0x0007_405c | 0x0007_00a0 | 0x0007_0050 | 0x0007_00f0 | 0x0056_0000
-    ) || capacity == 0
+        0x0007_405c
+            | 0x0007_00a0
+            | 0x0007_0050
+            | 0x0007_00f0
+            | 0x0056_0000
+            | IOCTL_DISK_IS_WRITABLE
+    ) || (capacity == 0 && code != IOCTL_DISK_IS_WRITABLE)
+        || (code == IOCTL_DISK_IS_WRITABLE && capacity != 0)
         || capacity > MAX_REPLY
     {
         return Err(invalid("read-only inventory query exceeds bounds"));
@@ -86,7 +95,11 @@ fn query(file: &File, code: u32, capacity: usize) -> io::Result<Vec<u8>> {
             code,
             ptr::null(),
             0,
-            bytes.as_mut_ptr().cast(),
+            if capacity == 0 {
+                ptr::null_mut()
+            } else {
+                bytes.as_mut_ptr().cast()
+            },
             capacity as u32,
             &mut returned,
             ptr::null_mut(),
@@ -356,7 +369,7 @@ fn disk(number: u32) -> DiskInventory {
             .errors
             .push(error(&path, "disk length/geometry", value, false)),
     }
-    match query(&file, 0x0007_00f0, 16).and_then(|bytes| {
+    let software_read_only = match query(&file, 0x0007_00f0, 16).and_then(|bytes| {
         if bytes.len() != 16 {
             return Err(invalid("disk attribute reply size differs"));
         }
@@ -364,11 +377,33 @@ fn disk(number: u32) -> DiskInventory {
     }) {
         Ok(value) => {
             result.offline = Some(value & 1 != 0);
-            result.read_only = Some(value & 2 != 0);
+            Some(value & 2 != 0)
         }
-        Err(value) => result
-            .errors
-            .push(error(&path, "disk attributes", value, false)),
+        Err(value) => {
+            result
+                .errors
+                .push(error(&path, "disk attributes", value, false));
+            None
+        }
+    };
+    result.read_only = software_read_only.filter(|value| *value);
+    if software_read_only != Some(true) {
+        // Provider/hardware protection need not appear in the software attribute
+        // bits. This zero-output ANY_ACCESS control only queries writability; it
+        // does not request write access, perform a trial write or alter state.
+        match query(&file, IOCTL_DISK_IS_WRITABLE, 0) {
+            Ok(_) => {
+                if software_read_only == Some(false) {
+                    result.read_only = Some(false);
+                }
+            }
+            Err(value) if value.raw_os_error() == Some(ERROR_WRITE_PROTECT as i32) => {
+                result.read_only = Some(true);
+            }
+            Err(value) => result
+                .errors
+                .push(error(&path, "disk writability", value, false)),
+        }
     }
     match growing_query(&file, 0x0007_0050).and_then(|bytes| layout(&mut result, &bytes)) {
         Ok(()) => (),

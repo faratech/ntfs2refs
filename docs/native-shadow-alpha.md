@@ -1,4 +1,10 @@
-# Frozen native-shadow alpha
+# 2026-10-26 native-shadow alpha candidate (historical)
+
+This page records the earlier candidate and its original laboratory policy.
+Its preserve-all checkpoint and storage-cap instructions are historical. Current
+work follows [AGENTS.md](../AGENTS.md), the user's later checkpoint-cleanup
+authorization and the fixed additional 50 GB budget. Use the [current CLI
+workflow](cli-workflow.md) and exact build evidence for newer candidates.
 
 The active priority is end-to-end native-shadow conversion and recovery. The
 engine source checkpoint is `96720eff89c7e808983c8d5c9800d475fe62515c`, tagged

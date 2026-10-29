@@ -27,8 +27,13 @@ ntfs2refs --recover C:\ProgramData\ntfs2refs\runs\RUN_ID\conversion --recovery-s
 ```
 
 Add `--rollback` to restore NTFS before handoff. The new recovery wrapper defaults
-to No and keeps the existing native recovery gates; affirmative qualification
-for this wrapper remains separate from the proven backend.
+to No and keeps the existing native recovery gates. Sealed public build
+`2cac76...` has now resumed a deliberately interrupted conversion after reboot,
+using only its generated bundle and original printed checksum. Native ReFS
+matched all 15 objects and 10 file hashes, with the original label and mount
+preserved. See [the exact recovery result](evidence/bundle-cli-resume-20261029.json).
+Separate rollback qualification is in progress. Later read optimizations and
+completion-marker routing are release-built and do not inherit that native result.
 
 The affirmative drive command has completed on the existing 52 GiB test
 partition with automatic staging and an observed native exit 0. Native ReFS
@@ -44,8 +49,10 @@ was68.8MiB in a4GiB VM. The nonzero4MiB file prefix retained its original physic
 mapping. Most of the large zero-filled file changed mappings, so the small write
 count does not establish payload-independent scratch for arbitrary nonzero data.
 The frozen laboratory path has since passed same-build interruption, resume
-and rollback. Recovery with the newer automatic managed staging remains a
-separate qualification. See the [pinned results and recovery scope](docs/native-composite-experimental.md).
+and rollback. Newer managed staging has passed typed reboot recovery in both
+directions and the public bundle Resume described above. Exact binaries and
+scopes remain separate; see the [build provenance](docs/experimental-build-provenance.md)
+and [pinned results](docs/native-composite-experimental.md).
 
 **The public Rust CLI converted a fourteen-object tree on its original 52 GiB
 partition while retaining a normally allocated 128 MiB payload extent.**

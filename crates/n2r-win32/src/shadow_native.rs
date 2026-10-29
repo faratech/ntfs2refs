@@ -104,6 +104,59 @@ fn valid_shadow_component(s: &str) -> bool {
         ]
         .contains(&stem.as_str())
 }
+/// `observe` over `items` on up to eight threads, results in item order. Items
+/// are claimed in order, so after a failure every unclaimed item follows it;
+/// the first failure in item order is returned.
+fn observe_in_parallel<T: Sync, U: Send>(
+    items: &[T],
+    observe: impl Fn(&T) -> io::Result<U> + Sync,
+) -> io::Result<Vec<U>> {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |cores| cores.get())
+        .clamp(1, 8)
+        .min(items.len());
+    if workers <= 1 {
+        return items.iter().map(observe).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let slots: Vec<Mutex<Option<io::Result<U>>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                while !failed.load(Ordering::Acquire) {
+                    let index = next.fetch_add(1, Ordering::AcqRel);
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    let result = observe(item);
+                    if result.is_err() {
+                        failed.store(true, Ordering::Release);
+                    }
+                    if let Ok(mut slot) = slots[index].lock() {
+                        *slot = Some(result);
+                    }
+                }
+            });
+        }
+    });
+    let mut reports = Vec::with_capacity(items.len());
+    for slot in slots {
+        let slot = slot
+            .into_inner()
+            .map_err(|_| io::Error::other("parallel observation slot poisoned"))?;
+        match slot {
+            Some(result) => reports.push(result?),
+            None => return Err(io::Error::other("parallel observation stopped early")),
+        }
+    }
+    Ok(reports)
+}
+
 fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> {
     // Streams over 64 KiB are read in 1 MiB requests and hashed by CNG on a
     // worker, so reads overlap hashing. The digest is the same SHA-256.
@@ -3298,8 +3351,10 @@ fn run_role_profile(
     } else {
         None
     };
-    let mut objects = vec![];
-    for i in input {
+    // Objects are independent: each is opened, snapshotted, queried and, when
+    // verifying, hashed under its own handle. Observe them on the available
+    // cores in input order; the first failure in input order is returned.
+    let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
         let path = format!("{}{}", root, i.components.join("\\"));
         let mut h = if protected.is_some() {
             open_protected_readonly(&path, i.directory)?
@@ -3448,7 +3503,7 @@ fn run_role_profile(
             b.truncate(used);
             b
         };
-        objects.push(ObjectReport {
+        Ok(ObjectReport {
             components: i.components.to_vec(),
             before,
             after,
@@ -3486,8 +3541,9 @@ fn run_role_profile(
                     })
                 })
                 .transpose()?,
-        });
-    }
+        })
+    };
+    let objects = observe_in_parallel(input, observe)?;
     let post_mount_indexer_cache = if converted
         && resource_profile
             == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)

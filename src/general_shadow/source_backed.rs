@@ -8,9 +8,10 @@ use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
 
 // Match the native partition reader's bounded aligned batch. Logical NTFS
-// sessions retain their separate 64 KiB range-read contract below.
+// session reads use the same bound, so payload routes are not split into
+// 64 KiB device requests.
 const NATIVE_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
-const LOGICAL_SOURCE_READ_BYTES: usize = 65536;
+const LOGICAL_SOURCE_READ_BYTES: usize = crate::ntfs_inspect::SESSION_READ_BYTES;
 
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct ReadCounts {
@@ -532,9 +533,9 @@ impl<'a> SourceBackedShadow<'a> {
             Some(r) => r.target_physical_offset,
             None => self.length,
         };
-        // A logical source read must stay inside the NTFS session's 64 KiB
-        // contract. Native shadow bytes can use the larger aligned adapter
-        // batch, stopping at the same next payload boundary and logical EOF.
+        // A logical source read must stay inside the NTFS session's read
+        // bound; native shadow bytes use the aligned adapter batch. Both stop
+        // at the next payload boundary and logical EOF.
         let limit = if in_payload {
             LOGICAL_SOURCE_READ_BYTES
         } else {

@@ -21,6 +21,8 @@ pub use assembled_io::validate_record_coverage;
 pub(crate) const MAX_MFT_RECORDS: u64 = 1_000_000;
 const STREAM_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const LARGE_STREAM_HASH_BYTES: usize = 4 * 1024 * 1024;
+/// Largest single read of a plain stream session; the caller owns the buffer.
+pub const SESSION_READ_BYTES: usize = 4 * 1024 * 1024;
 const ALPHA_MAX_PLAIN_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Bounds retained inventory data independently of the separately bounded
@@ -2779,7 +2781,7 @@ impl PlainStreamRangeSession {
     ) -> Result<()> {
         ensure!(
             !self.poisoned
-                && output.len() <= STREAM_HASH_BUFFER_BYTES
+                && output.len() <= SESSION_READ_BYTES
                 && offset
                     .checked_add(output.len() as u64)
                     .is_some_and(|v| v <= self.stream_length()),

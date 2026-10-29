@@ -417,6 +417,49 @@ pub(crate) fn set_attributes(
     if attributes(file, events)? != value {
         return Err(invalid("disk attribute transition did not take effect"));
     }
+    // Persist=1 lands in the SYSTEM hive (the disk's Partmgr "Attributes"
+    // value, observed equal to these bits), which Windows writes lazily: a hard
+    // power-off after an activation reverted OFFLINE to OFFLINE|READ_ONLY. Do
+    // not report the transition until the hive is on disk.
+    flush_persisted_attributes(events)
+}
+
+/// RegFlushKey on HKLM\SYSTEM: returns once the hive holding the persisted
+/// disk attributes is written to disk. Opens the key for query only, writes no
+/// registry value and changes no attribute; failure refuses without retry.
+pub(crate) fn flush_persisted_attributes(events: &mut Vec<NativeEvent>) -> io::Result<()> {
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, RegCloseKey, RegFlushKey, RegOpenKeyExW,
+    };
+    if events.len() >= 128 {
+        return Err(invalid("native control budget exceeded"));
+    }
+    let name: Vec<u16> = "SYSTEM\0".encode_utf16().collect();
+    let mut key: HKEY = ptr::null_mut();
+    // SAFETY: predefined root key, NUL-terminated name and a live output slot.
+    let opened = unsafe {
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, name.as_ptr(), 0, KEY_QUERY_VALUE, &mut key)
+    };
+    let status = if opened == 0 {
+        // SAFETY: `key` was opened above and is closed exactly once here.
+        let flushed = unsafe { RegFlushKey(key) };
+        // SAFETY: as above; the close result does not change the flush outcome.
+        unsafe { RegCloseKey(key) };
+        flushed
+    } else {
+        opened
+    };
+    events.push(NativeEvent {
+        operation: "flush-persisted-disk-attributes".into(),
+        control_code: 0,
+        input: b"HKLM\\SYSTEM".to_vec(),
+        succeeded: status == 0,
+        native_error: (status != 0).then_some(status as i32),
+        output: Vec::new(),
+    });
+    if status != 0 {
+        return Err(io::Error::from_raw_os_error(status as i32));
+    }
     Ok(())
 }
 

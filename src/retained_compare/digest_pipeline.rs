@@ -27,9 +27,11 @@ impl Pipeline {
         native: bool,
         prefix: Option<[u8; 16]>,
     ) -> Result<Self> {
+        // Two recycled buffers bound the worker's memory; 4 MiB matches the
+        // largest native device request.
         anyhow::ensure!(
-            (1..=1024 * 1024).contains(&chunk_bytes),
-            "digest buffer must be between one byte and 1MiB"
+            (1..=4 * 1024 * 1024).contains(&chunk_bytes),
+            "digest buffer must be between one byte and 4MiB"
         );
         let (input, chunks) = sync_channel::<Vec<u8>>(1);
         let (buffers, recycled) = sync_channel(1);

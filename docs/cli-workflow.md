@@ -32,13 +32,19 @@ restricted to the planned ranges, the journal keeps the old and new bytes of eac
 and the mounted ReFS tree is verified afterwards, including every file's content
 hash. The prompt shows `Mode: allocation-bounded …` before you confirm.
 
+File-content hashes (the inspection, the Windows read of each source file and the
+final ReFS check) are XXH3-128, in canonical big-endian hex, in fields that keep
+their historical `*sha256` names. XXH3 detects accidental difference but is not a
+cryptographic hash, and these values do not match `Get-FileHash`. Artifact pins
+(requests, journals, backing files, recovery bundles) remain SHA-256.
+
 ```powershell
 ntfs2refs --drive d --partition 2                             # allocation-bounded (default)
 ntfs2refs --drive d --partition 2 --whole-image-verification  # compare every byte; much slower
 ```
 
 `--whole-image-verification` runs the earlier whole-image comparison and journal.
-On the 52 GiB lab fixture it took about 47 minutes, against about 10 minutes for
+On the 52 GiB lab fixture it took about 47 minutes, against under 2 minutes for
 the default; see [the selective plan](selective-conversion-plan.md).
 `--recover` handles interrupted runs of either mode from their published bundle.
 

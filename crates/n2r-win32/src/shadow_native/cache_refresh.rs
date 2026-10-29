@@ -350,7 +350,7 @@ pub fn run(
     if wanted.len() != 1
         || wanted[0].directory
         || wanted[0].logical_length() != 76
-        || wanted[0].logical_sha256() != hex::encode(Sha256::digest(payload))
+        || wanted[0].logical_sha256() != crate::content_digest::of(payload)
     {
         return Err(invalid(
             "source indexer cache bytes do not match expectation",

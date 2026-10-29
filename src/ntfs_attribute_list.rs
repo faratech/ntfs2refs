@@ -207,10 +207,7 @@ fn validate_initialized_metadata(
                 && attribute
                     .resident_sha256
                     .as_ref()
-                    .is_some_and(|hash| hash.len() == 64
-                        && hash
-                            .bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))),
+                    .is_some_and(|hash| n2r_win32::content_digest::is_hex(hash)),
             "resident attribute-list storage differs"
         );
         return Ok(());

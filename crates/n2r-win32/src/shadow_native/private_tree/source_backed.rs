@@ -269,10 +269,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
             .expected_sha256
             .ok_or_else(|| invalid("payload source digest absent"))?;
         if item.directory
-            || expected.len() != 64
-            || !expected
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !crate::content_digest::is_hex(expected)
             || initial["components"]
                 != serde_json::to_value(item.components).map_err(io::Error::other)?
             || initial["payload_expected_sha256"].as_str() != Some(expected)

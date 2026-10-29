@@ -79,10 +79,11 @@ impl Input<'_> {
     fn logical_length(&self) -> u64 {
         self.expected_length.unwrap_or(self.payload.len() as u64)
     }
+    /// The expected [`crate::content_digest`] (historical name).
     fn logical_sha256(&self) -> String {
         self.expected_sha256
             .map(str::to_owned)
-            .unwrap_or_else(|| hex::encode(Sha256::digest(self.payload)))
+            .unwrap_or_else(|| crate::content_digest::of(self.payload))
     }
 }
 fn valid_shadow_component(s: &str) -> bool {
@@ -157,29 +158,13 @@ fn observe_in_parallel<T: Sync, U: Send>(
     Ok(reports)
 }
 
+/// The [`crate::content_digest`] of exactly `length` bytes, then confirmed EOF.
+/// Reads are at most 1 MiB; the buffer never exceeds the stream.
 fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> {
-    // Streams over 64 KiB are read in 1 MiB requests and hashed by CNG on a
-    // worker, so reads overlap hashing. The digest is the same SHA-256.
-    const LARGE: usize = 1024 * 1024;
-    if length > 65536 {
-        let mut hash = crate::sha256_native::Overlapped::new(LARGE)?;
-        let mut remaining = length;
-        let mut buffer = vec![0u8; LARGE];
-        while remaining > 0 {
-            let count = usize::try_from(remaining.min(LARGE as u64))
-                .map_err(|_| invalid("stream read bound"))?;
-            reader.read_exact(&mut buffer[..count])?;
-            hash.update(&buffer[..count])?;
-            remaining -= count as u64;
-        }
-        if reader.read(&mut buffer[..1])? != 0 {
-            return Err(invalid("converted stream has data beyond expected EOF"));
-        }
-        return Ok(hex::encode(hash.finish()?));
-    }
-    let mut hash = Sha256::new();
+    const REQUEST: u64 = 1024 * 1024;
+    let mut hash = crate::content_digest::Hasher::new();
     let mut remaining = length;
-    let mut buffer = [0u8; 65536];
+    let mut buffer = vec![0u8; length.clamp(1, REQUEST) as usize];
     while remaining > 0 {
         let count = usize::try_from(remaining.min(buffer.len() as u64))
             .map_err(|_| invalid("stream read bound"))?;
@@ -190,7 +175,7 @@ fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> 
     if reader.read(&mut buffer[..1])? != 0 {
         return Err(invalid("converted stream has data beyond expected EOF"));
     }
-    Ok(hex::encode(hash.finalize()))
+    Ok(hash.finish())
 }
 
 fn resident_allocation(logical: u64, allocated: u64) -> bool {
@@ -2838,11 +2823,7 @@ fn run_role_profile(
                 || i.expected_length.is_none()
                 || i.expected_sha256.is_none()
                 || !i.payload.is_empty()
-                || !i.expected_sha256.is_some_and(|s| {
-                    s.len() == 64
-                        && s.bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                }))
+                || !i.expected_sha256.is_some_and(crate::content_digest::is_hex))
         {
             return Err(invalid("invalid hash-only verification input"));
         }
@@ -3468,7 +3449,7 @@ fn run_role_profile(
                     if bytes != i.payload {
                         return Err(invalid("shadow logical bytes or EOF differ"));
                     }
-                    Some(hex::encode(Sha256::digest(&bytes)))
+                    Some(crate::content_digest::of(&bytes))
                 };
                 (
                     logical_hash,
@@ -3916,7 +3897,7 @@ mod tests {
     #[test]
     fn hash_only_verification_enforces_exact_eof() {
         let bytes = vec![0x5a; 65537];
-        let expected = hex::encode(Sha256::digest(&bytes));
+        let expected = crate::content_digest::of(&bytes);
         assert_eq!(
             hash_exact_stream(&mut bytes.as_slice(), bytes.len() as u64).unwrap(),
             expected
@@ -3925,7 +3906,7 @@ mod tests {
         assert!(hash_exact_stream(&mut bytes.as_slice(), bytes.len() as u64 - 1).is_err());
         assert_eq!(
             hash_exact_stream(&mut &[][..], 0).unwrap(),
-            hex::encode(Sha256::digest([]))
+            crate::content_digest::of(&[])
         );
     }
 }

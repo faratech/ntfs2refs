@@ -723,11 +723,11 @@ impl Report {
                             || !h.outcome.eof_confirmed
                             || h.outcome.native_error.is_some()
                             || h.outcome.detail.is_some()
-                            || !h.outcome.sha256.as_ref().is_some_and(|s| {
-                                s.len() == 64
-                                    && s.bytes()
-                                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                            })
+                            || !h
+                                .outcome
+                                .sha256
+                                .as_deref()
+                                .is_some_and(crate::content_digest::is_hex)
                         {
                             return Err(invalid());
                         }

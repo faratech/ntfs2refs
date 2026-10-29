@@ -199,8 +199,15 @@ XXH3-128 bracket/source change-detection digests (7605ee7, user suggestion)
 The lab CPU (i9-9900K) has no SHA extensions: CNG SHA-256 ~511MB/s/core, sha2
 software 300MB/s; VHDX reads 8-30GB/s mostly from host cache
 (src/bin/lab-read-bench.rs, evidence/allocation-bounded-parallel-hash-20261029.json).
-File content records and NTFS inspection stream hashes stay SHA-256. Recovery,
-interruption and mutation have not been rerun on these builds.
+Then: digest recheck instead of a second source inspection (48d6a8e, 116.7s; the
+admission inspection's reads must lie inside the digested NTFS-allocated ranges),
+parallel ReFS object observation and 4 MiB payload-route reads (e91ead3, 112.6s).
+CONTENT DIGEST (user, 2026-10-29): file-content hashes (NTFS inspection stream
+and resident digests, native logical reads, converted-file verification) are
+XXH3-128 via n2r_win32::content_digest, in fields that keep their *sha256 names;
+they no longer match Get-FileHash. Artifact pins, residual tails, metadata and
+whole-image hashes stay SHA-256. Recovery, interruption and mutation have not
+been rerun on these builds.
 
 ## Source and recovery invariants
 

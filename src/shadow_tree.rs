@@ -27,6 +27,7 @@ pub struct Object {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_extents: Vec<ntfs::Extent>,
     pub length: u64,
+    /// The stream's [`n2r_win32::content_digest`] (XXH3-128; historical name).
     pub sha256: Option<String>,
 }
 #[derive(Debug, Serialize)]
@@ -158,10 +159,7 @@ impl ExpectedTree {
                 );
                 let digest = object.sha256.as_deref().unwrap_or("");
                 ensure!(
-                    digest.len() == 64
-                        && digest
-                            .bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                    n2r_win32::content_digest::is_hex(digest),
                     "expected stream digest differs"
                 );
                 bytes = bytes

@@ -45,10 +45,19 @@ fn main() -> anyhow::Result<()> {
         }
         let _ = native.finish()?;
         let native_rate = (rounds * buffer.len()) as f64 / started.elapsed().as_secs_f64() / 1e6;
+        let started = std::time::Instant::now();
+        let mut xxh3 = xxhash_rust::xxh3::Xxh3::new();
+        for _ in 0..rounds {
+            xxh3.update(&buffer);
+        }
+        let _ = xxh3.digest128();
+        let xxh3_rate = (rounds * buffer.len()) as f64 / started.elapsed().as_secs_f64() / 1e6;
         println!(
             "{}",
-            serde_json::json!({"kind":"sha256-backend-benchmark","bytes":rounds*buffer.len(),
-                "sha2_software_mb_per_second":soft_rate,"cng_mb_per_second":native_rate})
+            serde_json::json!({"kind":"hash-backend-benchmark","bytes":rounds*buffer.len(),
+                "sha2_software_mb_per_second":soft_rate,"cng_mb_per_second":native_rate,
+                "xxh3_128_mb_per_second":xxh3_rate,
+                "xxh3_avx2_compiled":cfg!(target_feature = "avx2")})
         );
         return Ok(());
     }

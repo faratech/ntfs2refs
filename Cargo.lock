@@ -367,6 +367,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "windows-sys",
+ "xxhash-rust",
 ]
 
 [[package]]

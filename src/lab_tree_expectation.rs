@@ -71,7 +71,7 @@ pub fn capture(request: &Request, events: &mut Vec<NativeEvent>) -> Result<Expec
             source.seek(SeekFrom::Start(offset))?;
             source.read_exact(&mut payload)?;
             ensure!(
-                o.sha256.as_deref() == Some(&hex::encode(Sha256::digest(&payload))),
+                o.sha256.as_deref() == Some(&n2r_win32::content_digest::of(&payload)),
                 "source payload differs"
             );
         }

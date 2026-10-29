@@ -43,7 +43,7 @@ pub fn inspect_scope(raw: &NtfsInspection) -> Result<Scope> {
                 && txf[0]
                     .resident_sha256
                     .as_ref()
-                    .is_some_and(|hash| hash.len() == 64),
+                    .is_some_and(|hash| n2r_win32::content_digest::is_hex(hash)),
             "user, secondary-RM or unknown transactional metadata at record {}",
             file.record_number
         );

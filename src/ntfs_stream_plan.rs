@@ -84,12 +84,10 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
         for stream in &file.streams {
             let named = !stream.name_utf16.is_empty();
             let complete = stream.logical_hash_status == LogicalHashStatus::Complete
-                && stream.logical_sha256.as_ref().is_some_and(|hash| {
-                    hash.len() == 64
-                        && hash
-                            .bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                });
+                && stream
+                    .logical_sha256
+                    .as_ref()
+                    .is_some_and(|hash| n2r_win32::content_digest::is_hex(hash));
             let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
             let physical = single.and_then(|e| e.physical_offset);
             let full_prefix = stream.initialized_size.min(stream.logical_size) / CLUSTER * CLUSTER;

@@ -445,9 +445,11 @@ pub struct StreamInventory {
     pub allocated_size: u64,
     pub extents: Vec<Extent>,
     /// Raw resident bytes only; not a complete logical digest for unsupported layouts.
+    /// A [`n2r_win32::content_digest`] (XXH3-128; historical name).
     pub resident_sha256: Option<String>,
     /// Complete logical content [0, EOF), with holes and uninitialized tails zeroed.
-    /// Present only when logical_hash_status is Complete.
+    /// Present only when logical_hash_status is Complete. A
+    /// [`n2r_win32::content_digest`] (XXH3-128; historical name).
     #[serde(default)]
     pub logical_sha256: Option<String>,
     #[serde(default)]
@@ -889,7 +891,7 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
             };
         let resident_sha256 = resident_value
             .as_ref()
-            .map(|v| hex::encode(Sha256::digest(v)));
+            .map(|v| n2r_win32::content_digest::of(v));
         let resident_metadata_hex = if matches!(
             type_code,
             0x10 | 0x30 | 0x40 | 0x50 | 0x70 | 0xc0 | 0xd0 | 0xe0
@@ -1313,16 +1315,10 @@ fn hash_stream<R: Read + Seek>(
     // Reserve all work before the first DATA read, including CPU work hashing
     // zeros. No partial digest or partial report is returned on exhaustion.
     budget.reserve(a.logical_size)?;
-    // Streams over 4 MiB are read in 4 MiB requests and hashed natively on a
-    // worker, so reads overlap hashing; smaller streams keep the fixed 64 KiB
-    // buffer on the caller. Both produce the same SHA-256.
-    use crate::retained_compare::{digest_pipeline::Overlapped, stream_digest::StreamDigest};
+    // Streams over 4 MiB are read in 4 MiB requests; smaller streams keep the
+    // fixed 64 KiB buffer. The result is the stream's content digest.
     let large = a.logical_size > LARGE_STREAM_HASH_BYTES as u64;
-    let mut hasher = if large {
-        Overlapped::new(LARGE_STREAM_HASH_BYTES)?
-    } else {
-        Overlapped::Serial(StreamDigest::new(cfg!(windows))?)
-    };
+    let mut hasher = n2r_win32::content_digest::Hasher::new();
     let mut small = [0u8; STREAM_HASH_BUFFER_BYTES];
     let mut large_buffer = if large {
         vec![0u8; LARGE_STREAM_HASH_BYTES]
@@ -1360,14 +1356,11 @@ fn hash_stream<R: Read + Seek>(
             } else {
                 buffer[..count].fill(0);
             }
-            hasher.update(&buffer[..count])?;
+            hasher.update(&buffer[..count]);
             done += count as u64;
         }
     }
-    Ok((
-        LogicalHashStatus::Complete,
-        Some(hex::encode(hasher.finish()?)),
-    ))
+    Ok((LogicalHashStatus::Complete, Some(hasher.finish())))
 }
 
 fn blocker(
@@ -2443,10 +2436,7 @@ fn checked_plain_attribute<R: Read + Seek>(
         .as_deref()
         .context("inspected logical stream digest absent")?;
     ensure!(
-        digest.len() == 64
-            && digest
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        n2r_win32::content_digest::is_hex(digest),
         "invalid inspected logical stream hash"
     );
     Ok((data.clone(), digest.into()))
@@ -2610,7 +2600,7 @@ fn copy_checked_attribute<R: Read + Seek, W: Write>(
     stream_name_utf16: &[u16],
     output: &mut W,
 ) -> Result<StreamCopyProof> {
-    let mut digest = Sha256::new();
+    let mut digest = n2r_win32::content_digest::Hasher::new();
     let mut copied = 0u64;
     let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
     while copied < attribute.report.logical_size {
@@ -2620,7 +2610,7 @@ fn copy_checked_attribute<R: Read + Seek, W: Write>(
         digest.update(&buffer[..count]);
         copied += count as u64;
     }
-    let actual = hex::encode(digest.finalize());
+    let actual = digest.finish();
     ensure!(
         actual == expected,
         "copied logical stream differs from inspected hash"
@@ -2691,7 +2681,11 @@ fn hash_checked_attribute_range<R: Read + Seek>(
             .is_some_and(|end| end <= attribute.report.logical_size),
         "requested logical stream range escapes EOF"
     );
+    // The returned range hash stays SHA-256 (placement compares it with target
+    // ranges); a whole-stream range is also checked against the content digest.
+    let whole = offset == 0 && length == attribute.report.logical_size;
     let mut hash = Sha256::new();
+    let mut content = whole.then(n2r_win32::content_digest::Hasher::new);
     let mut copied = 0u64;
     let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
     while copied < length {
@@ -2704,13 +2698,18 @@ fn hash_checked_attribute_range<R: Read + Seek>(
             geometry,
         )?;
         hash.update(&buffer[..count]);
+        if let Some(content) = &mut content {
+            content.update(&buffer[..count]);
+        }
         copied += count as u64;
     }
-    let actual = hex::encode(hash.finalize());
-    if offset == 0 && length == attribute.report.logical_size {
-        ensure!(actual == expected, "logical stream changed from inspection");
+    if let Some(content) = content {
+        ensure!(
+            content.finish() == expected,
+            "logical stream changed from inspection"
+        );
     }
-    Ok(actual)
+    Ok(hex::encode(hash.finalize()))
 }
 
 /// Materialize the same verified stream into bounded memory for the existing
@@ -2847,11 +2846,13 @@ pub fn read_plain_stream_range_into<R: Read + Seek>(
     );
     budget.reserve(length)?;
     read_attribute_range(reader, &attribute, offset, output, &raw.geometry)?;
+    // The range proof stays SHA-256 (residual tails are compared as SHA-256);
+    // a whole stream is also checked against the inspected content digest.
     let actual = hex::encode(Sha256::digest(&*output));
     let whole = offset == 0 && length == attribute.report.logical_size;
     if whole {
         ensure!(
-            actual == expected,
+            n2r_win32::content_digest::of(output) == expected,
             "materialized whole stream differs from inspection"
         );
     }

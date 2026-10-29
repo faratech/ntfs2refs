@@ -1,6 +1,5 @@
 //! Bounded logical reads. No digest is returned for partial or unbounded data.
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::{self, Read, Seek, SeekFrom};
 pub const DEFAULT_LIMIT: u64 = 1024 * 1024 * 1024;
 // 1 MiB logical requests: the same bytes and digest as smaller requests, with
@@ -111,42 +110,8 @@ impl Budget {
         true
     }
 }
-/// The digest of one stream: on Windows, streams longer than one request are
-/// hashed by CNG on a worker so reads overlap hashing. Same SHA-256 either way.
-enum StreamHash {
-    Inline(Sha256),
-    #[cfg(windows)]
-    Overlapped(crate::sha256_native::Overlapped),
-}
-impl StreamHash {
-    fn new(expected: u64) -> io::Result<Self> {
-        #[cfg(windows)]
-        if expected > CHUNK as u64 {
-            return Ok(Self::Overlapped(crate::sha256_native::Overlapped::new(
-                CHUNK,
-            )?));
-        }
-        let _ = expected;
-        Ok(Self::Inline(Sha256::new()))
-    }
-    fn update(&mut self, bytes: &[u8]) -> io::Result<()> {
-        match self {
-            Self::Inline(hash) => hash.update(bytes),
-            #[cfg(windows)]
-            Self::Overlapped(hash) => hash.update(bytes)?,
-        }
-        Ok(())
-    }
-    fn finish(self) -> io::Result<String> {
-        let digest: [u8; 32] = match self {
-            Self::Inline(hash) => hash.finalize().into(),
-            #[cfg(windows)]
-            Self::Overlapped(hash) => hash.finish()?,
-        };
-        Ok(hex::encode(digest))
-    }
-}
-
+/// Read exactly `expected` bytes then confirm EOF; `Outcome::sha256` carries
+/// the stream's [`crate::content_digest`] (historical field name).
 pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) -> Outcome {
     let mut out = Outcome {
         status: Status::BudgetExceeded,
@@ -164,10 +129,7 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
         Ok(_) => return Outcome::refused(io::Error::other("stream did not seek to zero")),
         Err(e) => return Outcome::refused(e),
     }
-    let mut digest = match StreamHash::new(expected) {
-        Ok(digest) => digest,
-        Err(error) => return Outcome::refused(error),
-    };
+    let mut digest = crate::content_digest::Hasher::new();
     let mut buffer = vec![0; CHUNK];
     let mut calls = 0;
     let mut interrupted = 0;
@@ -218,23 +180,16 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
                 out.bytes_read += n as u64;
                 return out;
             }
-            return match digest.finish() {
-                Ok(sha256) => {
-                    out.status = Status::Complete;
-                    out.eof_confirmed = true;
-                    out.sha256 = Some(sha256);
-                    out
-                }
-                Err(error) => Outcome::refused(error),
-            };
+            out.status = Status::Complete;
+            out.eof_confirmed = true;
+            out.sha256 = Some(digest.finish());
+            return out;
         }
         if n == 0 {
             out.status = Status::UnexpectedEof;
             return out;
         }
-        if let Err(error) = digest.update(&buffer[..n]) {
-            return Outcome::refused(error);
-        }
+        digest.update(&buffer[..n]);
         out.bytes_read += n as u64;
     }
 }

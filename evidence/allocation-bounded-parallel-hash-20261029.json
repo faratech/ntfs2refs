@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-conversion-parallel-bracket-hash",
+  "run_id": "6305b532a82045958b2cc8d80a63be1a",
+  "engine_run_id": "a8ce1abe6d78b0fef6e8d709e36a6bd2",
+  "source_commit": "311d3afdd7dda356a5e6c5111aea0fdfd930b838",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "toolset_manifest_sha256": "79a387499382bded088521120101fe1e049f2fa3c17722347e8e43b3d63caa18",
+  "public_cli": {
+    "sha256": "e142368a51e2ebf5bef97e4eda2a76d84d49f903637a4f3342eccfb1e9eacabf",
+    "argv": ["--drive", "F", "--partition", "2", "--experimental-allocation-bounded"],
+    "actual_native_exit": 0
+  },
+  "outcome": {
+    "wrapper_success": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "selected_ranges": 152,
+    "selected_bytes": 70721536,
+    "shadow_bracket_closing_bytes_reread": 14771290112,
+    "result_sha256": "2f90920b3ee5c8487d0101ef3d5892333678f1e57efc83047d9b0a9481845143",
+    "finalization_sha256": "683959212f90dbf180efd17829689dce003145f5170dd8c3623b08e81486003e",
+    "records_hashes_verified_on_host": true
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 492.8,
+    "previous_seconds": {"allocation_brackets_f9d8694": 592.8, "allocation_bounded_7ef0ee2": 772.8, "allocation_bounded_1ac5682": 952.9, "head_whole_image": 2813.3, "frozen_alpha": 3351.7},
+    "phase_markers_seconds": {"building_refs_metadata": 168, "verifying_target": 174, "preparing_recovery_journal": 426, "applying_conversion": 430, "verifying_files": 434},
+    "verify_target_phase_seconds": {"this_run": 252, "previous_f9d8694": 360}
+  },
+  "io": {
+    "last_sample_read_bytes": 154847093769,
+    "last_sample_utc": "2026-10-29T18:34:45Z"
+  },
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-6305b532a82045958b2cc8d80a63be1a/closed-conversion",
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "interruption_resume_rollback_tested_on_this_build": false,
+    "mutation_restart_tested_on_this_build": false,
+    "release_qualified": false
+  },
+  "scope": "One normal conversion of the 52 GiB fixture after hashing the opening shadow bracket on two worker threads. Correct result in 492.8 s (8m13s)."
+}

@@ -45,6 +45,35 @@ entirely the shorter target verification; journal preparation got slower. One
 run per build on a shared host is not a benchmark distribution. This HEAD binary
 has no mutation, reboot or interruption/resume/rollback results of its own.
 
+### Where HEAD's reads go
+
+Bytes read per CLI phase, interpolated from process I/O samples about 2 minutes
+apart (approximate):
+
+| Phase | Seconds | Read | 52 GiB volumes |
+|---|---:|---:|---:|
+| Inspect and build ReFS metadata | 430 | 134 GB | 2.4 |
+| Verify target | 1,048 | 346 GB | 6.2 |
+| Prepare journal | 634 | 177 GB | 3.2 |
+| Apply | 294 | 111 GB | 2.0 |
+| Verify files | 401 | ≥ 47 GB | ≥ 0.8 |
+
+The verify-target phase (`general_composite_target::verify_and_capture`) makes six
+full-volume reads: the protected native observation is bracketed by two complete
+shadow hashes (`general_target_preservation::bracket_image_with_resource_profile`),
+the complete difference capture reads source and shadow, the shadow is hashed
+again, and the final pair hash reads the source. The shadow stays persistently
+frozen throughout, yet is read four times in this phase.
+
+A candidate saving that keeps every check: compute the shadow's raw SHA-256
+inside the capture's existing shadow read and use it as the bracket's closing
+hash. The capture runs after the observation, so a match proves the same thing
+over a longer window, and the separate fresh rehash after capture remains. That
+saves one volume read (about 160 s at the measured rate, roughly 6%). It changes
+when an integrity check happens, so it needs review and a native run before use.
+The dominant cost, about 15 volume reads in total, only goes away with the
+selective path.
+
 ## Where the performance work stands
 
 Selective capture is the route to a large speedup. Done so far, all read-only or

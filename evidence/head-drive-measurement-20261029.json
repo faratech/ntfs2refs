@@ -65,7 +65,15 @@
     "final_totals_observed": false,
     "head_last_sample_write_bytes": 285699804,
     "frozen_last_sample_write_bytes": 285716985,
-    "head_peak_working_set_kib": 70512
+    "head_peak_working_set_kib": 70512,
+    "per_phase_read_gb_interpolated": {
+      "inspect_and_build": 134.1,
+      "verify_target": 345.7,
+      "prepare_journal": 177.0,
+      "apply": 111.1,
+      "verify_files_at_least": 46.7
+    },
+    "per_phase_note": "Linear interpolation between samples about 122 s apart; approximate. verify_target corresponds to six full-volume reads in verify_and_capture (two bracket shadow hashes, capture of source and shadow, shadow rehash, final source pair hash)."
   },
   "archive": ".lab/hyperv/streaming-v2-20261027/head-drive-measure-20261029-3ece94aacf9d483780aeeadfe29f910e/closed-conversion",
   "qualification": {

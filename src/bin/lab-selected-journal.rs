@@ -333,6 +333,123 @@ fn verify(dir: &Path, ranges: &[sj::SelectedRange]) -> Result<u64> {
     }
     Ok(read)
 }
+fn planned(dir: &Path) -> Result<serde_json::Value> {
+    const MIB: u64 = 1024 * 1024;
+    let coarse = vec![
+        sj::SelectedRange {
+            offset: 2 * MIB,
+            length: 3 * MIB,
+        },
+        sj::SelectedRange {
+            offset: 7 * MIB,
+            length: 65536,
+        },
+    ];
+    let differing = vec![
+        sj::SelectedRange {
+            offset: 2 * MIB + 8192,
+            length: 4096,
+        },
+        sj::SelectedRange {
+            offset: 3 * MIB - 4096,
+            length: 8192,
+        },
+        sj::SelectedRange {
+            offset: 7 * MIB + 16384,
+            length: 4096,
+        },
+    ];
+    setup(&dir.join("plan-source.bin"), false, &[])?;
+    setup(&dir.join("plan-candidate.bin"), true, &differing)?;
+    setup(&dir.join("plan-target.bin"), false, &[])?;
+    let mut source = Fenced::open(&dir.join("plan-source.bin"), Some(&coarse), false, false)?;
+    let mut candidate = Fenced::open(&dir.join("plan-candidate.bin"), Some(&coarse), false, false)?;
+    let coarse_bytes: u64 = coarse.iter().map(|r| r.length).sum();
+    let plan = sj::changed_plan(&mut source, &mut candidate, IMAGE, &coarse, 16384, JOURNAL)?;
+    let planning_source = source.count.clone();
+    let planning_candidate = candidate.count.clone();
+    ensure!(
+        plan.ranges == differing
+            && planning_source.bytes_read == coarse_bytes
+            && planning_candidate.bytes_read == coarse_bytes
+            && planning_source.denied == 0
+            && planning_candidate.denied == 0,
+        "planned ranges or planning reads differ from the exact expectation"
+    );
+    let (planned_bytes, planned_journal) = plan.validate()?;
+    let (_, coarse_journal) = sj::SelectedPlan {
+        image_length: IMAGE,
+        ranges: coarse.clone(),
+        max_selected_bytes: IMAGE,
+        max_journal_bytes: u64::MAX,
+    }
+    .validate()?;
+    ensure!(
+        planned_journal < JOURNAL && coarse_journal > JOURNAL,
+        "pruning must bring the journal inside a bound the coarse selection exceeds"
+    );
+    let mut target = Fenced::open(
+        &dir.join("plan-target.bin"),
+        Some(&plan.ranges),
+        true,
+        false,
+    )?;
+    let mut journal = Fenced::open(&dir.join("plan.journal"), None, true, true)?;
+    let ticket = sj::prepare(&mut source, &mut candidate, &mut journal, &plan)?;
+    sj::apply(&mut target, &mut journal, &plan, &ticket)?;
+    let result = sj::handoff(&mut target, &mut journal, &plan, &ticket)?;
+    ensure!(
+        result.replay_closed
+            && result.selected_sha256 == ticket.new_selected_sha256
+            && source.count.denied == 0
+            && candidate.count.denied == 0
+            && target.count.denied == 0
+            && journal.count.denied == 0,
+        "pruned apply scope or core fence failed"
+    );
+    drop((source, candidate, target, journal));
+    let mut verified = 0u64;
+    let mut target = File::open(dir.join("plan-target.bin"))?;
+    let mut expected = File::open(dir.join("plan-candidate.bin"))?;
+    for r in &coarse {
+        let mut a = vec![0; r.length as usize];
+        let mut b = vec![0; r.length as usize];
+        target.seek(SeekFrom::Start(r.offset))?;
+        expected.seek(SeekFrom::Start(r.offset))?;
+        target.read_exact(&mut a)?;
+        expected.read_exact(&mut b)?;
+        verified += r.length * 2;
+        ensure!(
+            a == b,
+            "coarse region differs from the candidate after pruned apply"
+        );
+    }
+    let mut original = File::open(dir.join("plan-source.bin"))?;
+    for at in [0, MIB, 5 * MIB + 4096, 6 * MIB, IMAGE - 4096] {
+        let mut a = [0u8; G];
+        let mut b = [0u8; G];
+        target.seek(SeekFrom::Start(at))?;
+        original.seek(SeekFrom::Start(at))?;
+        target.read_exact(&mut a)?;
+        original.read_exact(&mut b)?;
+        verified += 2 * G as u64;
+        ensure!(a == b, "block outside the coarse selection changed");
+    }
+    Ok(serde_json::json!({
+        "coarse_ranges": coarse,
+        "coarse_bytes": coarse_bytes,
+        "coarse_journal_bytes": coarse_journal,
+        "planned_ranges": plan.ranges,
+        "planned_bytes": planned_bytes,
+        "planned_journal_bytes": planned_journal,
+        "planning_source_io": planning_source,
+        "planning_candidate_io": planning_candidate,
+        "selected_sha256": hex::encode(result.selected_sha256),
+        "independent_verification_bytes_read": verified,
+        "outside_sentinel_blocks_checked": 5,
+        "whole_image_verified": false
+    }))
+}
 fn main() -> Result<()> {
     let args = Args::parse();
     fresh(&args.directory)?;
@@ -388,7 +505,8 @@ fn main() -> Result<()> {
     drop(source);
     drop(candidate);
     let verification_bytes = verify(&args.directory, &plan.ranges)?;
-    let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
+    let pruned = planned(&args.directory)?;
+    let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"changed_granule_planning":pruned,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
     let bytes = serde_json::to_vec_pretty(&report)?;
     ensure!(bytes.len() <= 65536, "report exceeds64KiB");
     let mut output = OpenOptions::new()

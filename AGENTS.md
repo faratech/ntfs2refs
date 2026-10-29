@@ -109,8 +109,11 @@ The drive CLI remains on the existing full-image journal. A native adapter still
 needs an authenticated complete footprint, actual device/exclusion/write-policy
 binding, source admission, and versioned recovery-bundle handling. Do not turn a
 JSON footprint or selected ticket into those permissions. The journal currently
-stores every selected byte (including equal bytes), so exact selection/budget
-planning remains necessary. See docs/selected-range-journal.md and its evidence.
+stores every selected byte (including equal bytes), so feed it a pruned plan:
+selected_journal::changed_plan narrows a coarse selection to the differing 4 KiB
+granules (ordinary-file integration passed; evidence/selected-journal-changed-plan-20261029.json).
+It authenticates nothing and is valid only under the caller's exclusion.
+See docs/selected-range-journal.md and its evidence.
 
 Native allocation observation: commit f539345 reads the ReFS bitmap through a
 protected physically read-only mount after freeze (the earlier post-lock query

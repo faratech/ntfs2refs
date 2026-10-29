@@ -140,6 +140,82 @@ impl SelectedPlan {
     }
 }
 
+fn extend(runs: &mut Vec<SelectedRange>, offset: u64, length: u64) -> Result<()> {
+    if let Some(last) = runs.last_mut()
+        && last.offset + last.length == offset
+    {
+        last.length += length;
+        return Ok(());
+    }
+    ensure!(
+        runs.len() < MAX_RANGES,
+        "differing granule runs exceed the selected journal range limit"
+    );
+    runs.push(SelectedRange { offset, length });
+    Ok(())
+}
+
+/// Narrow a coarse selection to the 4 KiB granules in which `source` and
+/// `candidate` differ, so equal bytes are neither journaled nor written. Both
+/// inputs are read once over the coarse ranges and nowhere else. The coarse
+/// selection is validated with the plan geometry rules but not authenticated,
+/// and the result holds only while both inputs stay unchanged under the
+/// caller's exclusion until the apply completes. It certifies nothing about
+/// bytes outside the coarse selection.
+pub fn changed_plan<R: ReadSeek, S: ReadSeek>(
+    source: &mut R,
+    candidate: &mut S,
+    image_length: u64,
+    coarse: &[SelectedRange],
+    max_selected_bytes: u64,
+    max_journal_bytes: u64,
+) -> Result<SelectedPlan> {
+    SelectedPlan {
+        image_length,
+        ranges: coarse.to_vec(),
+        max_selected_bytes: image_length,
+        max_journal_bytes: u64::MAX,
+    }
+    .validate()?;
+    ensure!(
+        source.byte_len()? == image_length && candidate.byte_len()? == image_length,
+        "planning inputs differ in length from the image"
+    );
+    let mut before = vec![0; BUFFER];
+    let mut after = vec![0; BUFFER];
+    let mut runs = Vec::new();
+    for range in coarse {
+        let mut done = 0u64;
+        while done < range.length {
+            let count = usize::try_from((range.length - done).min(BUFFER as u64))?;
+            let base = range.offset + done;
+            at(source, base, &mut before[..count])?;
+            at(candidate, base, &mut after[..count])?;
+            let granules = before[..count]
+                .chunks(GRANULE as usize)
+                .zip(after[..count].chunks(GRANULE as usize));
+            for (index, (old, new)) in granules.enumerate() {
+                if old != new {
+                    extend(&mut runs, base + index as u64 * GRANULE, GRANULE)?;
+                }
+            }
+            done += count as u64;
+        }
+    }
+    ensure!(
+        !runs.is_empty(),
+        "coarse selection contains no differing granule"
+    );
+    let plan = SelectedPlan {
+        image_length,
+        ranges: runs,
+        max_selected_bytes,
+        max_journal_bytes,
+    };
+    plan.validate()?;
+    Ok(plan)
+}
+
 fn hash_range<R: Read + Seek>(io: &mut R, offset: u64, length: u64) -> Result<[u8; 32]> {
     io.seek(SeekFrom::Start(offset))?;
     let mut hash = Sha256::new();

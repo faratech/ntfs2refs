@@ -73,6 +73,17 @@ every check; the remaining shadow hashes are deliberate freshness checks on a
 persistently frozen device and are not removed. The dominant cost, about 15
 volume reads in total, only goes away with the selective path.
 
+## Allocation-bounded mode (experimental)
+
+Under the user-chosen ntfs2btrfs-style guarantee, the hidden
+`--experimental-allocation-bounded` mode converted the same fixture in 952.9 s
+(15m53s) with at least 295.0 GB read, against 2,813.3 s and at least 816.6 GB for
+the whole-image HEAD build: same 15 objects / 10 hashes, label and mount
+verified. See [the receipt](../evidence/allocation-bounded-conversion-20261029.json)
+and [the plan](selective-conversion-plan.md). It is not release-ready: it has no
+interruption, recovery, mutation or reboot results, and `--recover` cannot read
+its journal yet.
+
 ## Where the performance work stands
 
 Selective capture is the route to a large speedup. Done so far, all read-only or

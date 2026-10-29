@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "kind": "native-allocation-bounded-public-drive-conversion",
+  "run_id": "3869576ae5a0480488061ebc95de8666",
+  "engine_run_id": "9167695d4e2c9ed8d88e6143a2cedf48",
+  "source_commit": "1ac5682331ab4d39b504dfa98f74182fd8198ea7",
+  "backend_commit": "45f263a",
+  "launcher": "lab/Start-AllocationBoundedConversion.ps1",
+  "working_tree_note": "Built with the existing user-owned src/main.rs capabilities hunk present and unstaged.",
+  "guarantee": "User-chosen ntfs2btrfs-style allocation-based guarantee: only ranges the protected frozen shadow's native allocator reports allocated are compared, journaled and written; free-space contents are not compared.",
+  "toolset_manifest_sha256": "e3e253ed7afcb1c8657ae2fc3cc0f2f1bf4423ea9b3604daa737b2933f800f2b",
+  "public_cli": {
+    "sha256": "7eb67285857a9f1d943d06bb687bb24e0304e3d6c71a6cc224270dbfb775ecb2",
+    "bytes": 7344640,
+    "argv": ["--drive", "F", "--partition", "2", "--experimental-allocation-bounded"],
+    "stdin": "yes CRLF",
+    "actual_native_exit": 0,
+    "actual_task_result": 0
+  },
+  "vm_parent_checkpoint": "5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec",
+  "restore_verified_in_guest": "F: NTFS 64 KiB, prior run directory absent",
+  "outcome": {
+    "wrapper_success": true,
+    "source_admitted_by_core": true,
+    "selected_journal_handoff_replay_closed": true,
+    "native_objects": 15,
+    "complete_logical_hashes": 10,
+    "label_and_mount_verified": true,
+    "final_volume": "ReFS 4096-byte clusters, label n2r-stream-source, F:",
+    "selection_ranges": 5,
+    "selection_bytes": 14768467968,
+    "selected_ranges": 151,
+    "selected_bytes": 70647808,
+    "journal_bytes": 141316048,
+    "free_space_contents_compared": false,
+    "result_sha256": "2bb907879617fc549d7239049d53e7276b9de2f87a8fc74ee2e2e32ea9417ccf",
+    "finalization_sha256": "1ae0d8b4ecf166703f4f2341042171c1b5504bbad63f8dd6ca9822a49104f637",
+    "expectation_sha256": "6e08b75997d7a1b239514ebf4eebeca02a1e06b25f136836b1cbf547b871f2c3",
+    "target_preservation_sha256": "6f1d9abcb7e89f3903c60648a6c9d2dee558b4d694b36bdca2142e1ab5ca31dd",
+    "certificate_sha256": "c28b583b771bf46392e409a23128811e29a56a927168273839b015858094ccc5",
+    "records_hashes_verified_on_host": true
+  },
+  "timing": {
+    "measure": "native process creation to the wrapper's native-terminal record",
+    "seconds": 952.9,
+    "comparison_seconds": {"frozen_fb5548": 3351.7, "head_da13331_whole_image": 2813.3, "head_83a1fd3_with_diagnostic": 2391.4},
+    "phase_markers_seconds": {
+      "building_refs_metadata": 520,
+      "verifying_target": 528,
+      "preparing_recovery_journal": 902,
+      "applying_conversion": 906,
+      "verifying_files": 908
+    }
+  },
+  "io": {
+    "method": "guest Win32_Process ReadTransferCount of ntfs2refs.exe sampled about every 62 s",
+    "last_sample_read_bytes": 295024275943,
+    "last_sample_seconds_before_exit": 18,
+    "last_sample_write_bytes": 285562570,
+    "per_phase_read_gb_interpolated": {
+      "inspect_and_build": 135.4,
+      "verify_target": 145.1,
+      "prepare_selected_journal": 1.6,
+      "apply": 0.8,
+      "verify_files_at_least": 10.8
+    },
+    "verify_target_note": "About two complete shadow bracket hashes (2 x 55.8 GB) plus the allocation-bounded comparison (2 x 14.77 GB).",
+    "comparison_last_sample_read_bytes": {"frozen_fb5548_at_least": 996148308370, "head_da13331_at_least": 816573617335}
+  },
+  "archive": ".lab/hyperv/streaming-v2-20261027/alloc-drive-20261029-3869576ae5a0480488061ebc95de8666/closed-conversion",
+  "qualification": {
+    "normal_public_conversion_passed": true,
+    "mutation_tested": false,
+    "reboot_tested": false,
+    "interruption_resume_rollback_tested": false,
+    "public_recovery_supported": false,
+    "release_qualified": false
+  },
+  "scope": "One normal conversion of the 52 GiB NTFS 64 KiB fixture through the hidden experimental flag. It converted correctly in 15m53s, about a third of the whole-image build's time, but has no interruption, recovery, mutation or reboot results, and public --recover does not support its journal."
+}

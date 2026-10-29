@@ -78,6 +78,28 @@ plan would be 141,251,152 bytes. See
 [the receipt](../evidence/selective-plan-native-20261029.json). Step 2 below is
 therefore validated on one native run; it still authorizes nothing.
 
+## First allocation-bounded native conversion
+
+Commits `45f263a` (backend) and `1ac5682` (launcher) implement steps 1–3 behind
+the hidden `--experimental-allocation-bounded` drive flag. Run `3869576a…`
+converted the fixture: native exit 0, 15 objects / 10 complete hashes, label and
+mount verified, F: ReFS 4 KiB. See
+[the receipt](../evidence/allocation-bounded-conversion-20261029.json).
+
+| | Whole-image HEAD | Allocation-bounded |
+|---|---:|---:|
+| Process start to exit | 2,813.3 s (46m53s) | 952.9 s (15m53s) |
+| Bytes read (last sample) | ≥ 816.6 GB | ≥ 295.0 GB |
+| Journal preparation / apply | 634 s / 294 s | about 4 s / 2 s |
+| Bytes written | 70,615,040 | 70,647,808 (151 ranges) |
+
+Remaining reads by phase (approximate): inspect and build 135 GB, verify target
+145 GB (about two complete shadow bracket hashes plus the 2 × 14.77 GB
+allocation comparison), file verification about 11 GB. Next savings, in order:
+bracket the protected shadow observation over its allocation only (about 80 GB),
+then replace the whole-source certificate hash (step 4). Recovery is not yet
+supported for this mode (step 4), and nothing here is interruption-qualified.
+
 ## Proposed path
 
 1. **Coarse selection from the frozen shadow's allocation.** Take the metadata

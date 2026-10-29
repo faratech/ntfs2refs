@@ -28,8 +28,8 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
-NTFS checkpoint5f30f4a1, but its disks now hold the result of the selective-plan
-diagnostic run9ac7538c83b24d5aa6ffbd0bb0d8b686 (F: converted to ReFS, HND, not
+NTFS checkpoint5f30f4a1, but its disks now hold the result of the allocation-
+bounded run3869576ae5a0480488061ebc95de8666 (F: converted to ReFS, not
 checkpointed; records archived on the host). Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
@@ -154,9 +154,15 @@ relocated file data inside routes, so routes cannot simply be skipped. Commit
 11e0513's non-gating diagnostic then planned over only the shadow allocation on
 real devices (run 9ac7538c83b24d5aa6ffbd0bb0d8b686): identical write set to the
 complete capture (159 ranges, 70,615,040B), 14.77GB compared per side instead of
-52GiB; see evidence/selective-plan-native-20261029.json. The VM is Off with that
-run's converted ReFS on its disks (parent 5f30f4a1). Next code: the device-bound
-N2RSEL01 journal path using this plan, then admission/recovery binding.
+52GiB; see evidence/selective-plan-native-20261029.json.
+Allocation-bounded backend (45f263a, hidden --experimental-allocation-bounded;
+launcher lab/Start-AllocationBoundedConversion.ps1, 1ac5682) converted the
+fixture natively in 952.9s (vs 2,813.3s whole-image HEAD), reading >=295.0GB,
+15 objects/10 hashes, label/mount verified; see
+evidence/allocation-bounded-conversion-20261029.json. No interruption, recovery,
+mutation or reboot results; public --recover cannot read its N2RSEL01 journal.
+Next: bracket the protected shadow observation over its allocation only, then
+selective certificate and recovery-bundle support, then the recovery matrix.
 
 ## Source and recovery invariants
 

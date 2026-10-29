@@ -1,5 +1,38 @@
 # ntfs2refs project guidance
 
+CURRENT LIVE — NATIVE RESUME bc1... AFTER ACTUAL REBOOT, ONLY3 CHECKPOINTS:
+Newpartial checkpoint48cf6276-fa77-4f35-b56e-8bdd6017b192 saved via newtyped
+postcleanupreceipt (notfake51), parent9e63, currentVM240Running/4GiB/noNIC.
+Receipt original94case/partial-after-cleanup/partial-checkpoint.json SHA
+4d4f1dcb8bf2425a34c4580031d29b14be6adc86c7dbaf98037b4be8db0726e4.
+ArchiveOSbaseC:\Users\mfara\ntfs2refs-archive\exports\win11-installed-clean\
+ntfs2refs-win11\Virtual Hard Disks\os.vhdx is legitimate exactslot0 ancestor;
+metadata-only chain guard permits this exact existing parent, not arbitrarypaths.
+Firstresume7f...task1 beforewrapper: processExecutionPolicyRestricted; fixed
+PROCESSscopeBypass (no globalpolicychange), failurearchived. Second2e...b1
+task/native1: WindowsR6 hardwareRO butsoftwareOFFLINE notrestored. Thirdd096...
+a61task/native1: softwareattrs0 despiteGetDiskIsReadOnlytrue. ALLpre-core(output
+resume dirABSENT), source1stayedOFF1. ClosedCfailurelogs saved inhost94case;
+restoredactualpartial3betweennativeattempts, no rawretry orHND encountered.
+Nativefix5a9bae2 positiveIOCTL_DISK_IS_WRITABLE/ERROR_WRITE_PROTECT19 before
+setting ONLYmissing softwareprotectionbits to3; writable/unknownrefuse.
+EXACTproviderID/GPT/route/currentWindows exclusion/heldfile guards retained.
+Newsealed managed-recovery-tools-20261029-writeprotect manifest
+d3d810f0b97f0ef76d0f47f0aa78fb93ca5a273b642979b5bd9c3bd85fd158dd;
+native565fb0a70d03b3587417f326036e38ffe7f12c6d78fe48afe6fb99ea82f9d3f0.
+ACTUAL taskN2R-ManagedCompactRecovery-Resume-bc1f392dd42f4ab0af052e8235728cc8,
+stageC:\ntfs2refs\managed-compact-recovery-resume-bc1f392dd42f4ab0af052e8235728cc8,
+hostoriginal94case/recovery-resume. Wrappera9d564dd789bc60e650ee3cb51763f8b8ea25da8490eafc6fb22d7e3bd52669f.
+01:52:50Z native3032/creation1793238747837,parent4692 LIVE read11.021GB/write64980;
+SOURCE1OFFLINE1, correctf65managedshadow6 nowOFFLINE|RO3. CoreSTARTED successfully.
+ExpectedResume0 thenwrappercheckscompleteofflineimage andstartsseparateFinalize0
+withnewPID, eventualtask0. DoNOT stop/restart/restore/replay/remount/openSource/J/
+packed/image orlockedCmetadata whilelive. Delta monitorsmetadataonly; rootcontrols.
+OriginalrequestSHA3de2a056f3d135d021fb556c8b28c1892137a263c47397e47e59a0de6c18a15a,
+ticketf0809b7f928c8b94815a38a2665348ef35d546e680f7e7f91464de5f16c9c8f6;
+allotheroriginal94Cinputpins unchanged; NO SourceCertrecreated/freshApply.
+Releasebuildpassed, no unit tests. Originalmain.rs1line remainsunstaged.
+
 USER OVERRIDE / CURRENT CHECKPOINT CLEANUP COMPLETED:
 User explicitly ordered: "Delete most of the checkpoints its junk. Don't
 preserve them." This supersedes older preserve-all instructions for this testVM.

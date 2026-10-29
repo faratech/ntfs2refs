@@ -99,11 +99,15 @@ also take the paired `--managed-shadow <original.vhdx>` and
 `--managed-shadow-id <original-provider-GUID>` options. The original provider ID
 is saved in `managed-shadow.json` by the drive workflow. Reattachment opens the
 existing backing read-only and checks its provider identity, geometry, exact
-original disk number, GPT layout and persisted offline/read-only state. It
-cannot create, format, repair attributes or rewrite a stale request/ticket.
+original disk number and GPT layout. Windows can restore the provider's hardware
+write protection without restoring the software disk attributes. The converter
+therefore queries native write protection before adding any missing persistent
+offline/read-only restrictions. It never clears protection bits, brings the
+shadow online or changes an actually writable device to pass the gate. It
+cannot create, format or rewrite a stale request/ticket.
 All existing recovery inputs and independent pins are still required. This
 reattachment path has release-build evidence; native recovery qualification
-remains pending. Windows must retain the shadow's offline state across restart.
+remains pending; a real post-reboot recovery run is now exercising this path.
 
 The selected-device backend completed a separately prepared 60 GiB native
 conversion, with five ordinary user files and a successful cold-boot hash

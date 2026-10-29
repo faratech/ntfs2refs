@@ -28,11 +28,14 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
-ReFS checkpoint52d37819-2b9c-4041-9232-bd7eac3c21bb (restored once more on
-2026-10-29 for the protected read-only ownership run below), but the guest's
-disk1 is now frozen offline/read-only by that probe and no longer matches the
-checkpoint. Any new native run needs a fresh restore of 52d37819, verified
-from a new PowerShell process. It has fixed4GiB RAM, 4CPU, no NIC. Host
+NTFS checkpoint5f30f4a1, but its disks now hold the result of the HEAD
+measurement run3ece94aacf9d483780aeeadfe29f910e (F: converted to ReFS, HND, not
+checkpointed). Any new native run needs a fresh restore of the intended
+checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
+52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
+least 816.6GB; see evidence/head-drive-measurement-20261029.json and
+docs/release-0.0.1-readiness.md. That binary has no mutation/reboot/recovery
+results. lab/Start-HeadDriveMeasurement.ps1 runs a sealed HEAD toolset. It has fixed4GiB RAM, 4CPU, no NIC. Host
 hostname is SINGULARITY: the lab VMs and the WSL Ubuntu distro are local to it.
 Only two checkpoints remain:
 - NTFS after optimized public rollback: 5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec.

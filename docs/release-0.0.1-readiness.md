@@ -20,8 +20,30 @@ one Windows build, disposable data volumes, no boot volume.
 |---|---|
 | Stable | One fixture; other sizes, builds and features unqualified; physical power loss untested. |
 | Quick | The conversion took about 55m52s (terminal-observed, includes observation overhead) and read almost 1 TB, on the order of 18 volume-sized passes. Most bytes were a zero-filled file, so this is not payload-independent. |
-| Maximum performance | The converter reads whole images. Later commits (`7e318ce`, `541f76f`, `46e0dcc`, `7f6d93e`, `a4419ca`) remove redundant reads and parallelize hashing, but no end-to-end native time was measured for them. The only throughput figure is an in-memory hashing benchmark that is explicitly not a storage measurement. |
+| Maximum performance | The converter reads whole images. The later read/hash optimizations are now measured once end to end (below): 16.1% faster, still at least 816.6 GB read for a 52 GiB volume. |
 | Reproducible | The frozen build included an uncommitted `src/main.rs` edit; no clean tree or reproducible build is claimed. A clean-tree 0.0.1 would be a different binary and would not inherit the alpha's qualification. |
+
+## Measured HEAD build
+
+The sealed HEAD build (`da13331`, public CLI `fa4ab753…`, launched by
+`lab/Start-HeadDriveMeasurement.ps1`) converted the same fixture through the same
+public command: native and task exit 0, HND, 15 native objects with 10 complete
+hashes, label and mount verified, F: now ReFS 4 KiB. See
+[the receipt](../evidence/head-drive-measurement-20261029.json).
+
+| Measure (same method for both) | Frozen `fb5548` | HEAD `da13331` |
+|---|---:|---:|
+| Process start to exit | 3,351.7 s (55m52s) | 2,813.3 s (46m53s) |
+| Verify-target phase | 1,686 s | 1,048 s |
+| Journal-preparation phase | 530 s | 634 s |
+| Bytes read, last sample | ≥ 996.1 GB (58 s before exit) | ≥ 816.6 GB (104 s before exit) |
+| Bytes written | 285.7 MB | 285.7 MB |
+
+HEAD's exact read total was not observed; it is at most 862.3 GB if its last
+104 s never exceeded the fastest sampled rate (441 MB/s). The gain is almost
+entirely the shorter target verification; journal preparation got slower. One
+run per build on a shared host is not a benchmark distribution. This HEAD binary
+has no mutation, reboot or interruption/resume/rollback results of its own.
 
 ## Where the performance work stands
 
@@ -47,7 +69,7 @@ that run exists; none is claimed here.
 
 1. Finish and qualify the selective path on the lab VM.
 2. Measure end-to-end time and bytes read on the final build, against the 55m52s
-   baseline above.
+   baseline and the 46m53s HEAD measurement above.
 3. Build from a clean committed tree and re-run the interruption, resume and
    rollback matrix on that exact binary.
 4. Only then set the version, tag, and publish with the qualified scope stated.

@@ -159,9 +159,9 @@ fn observe_in_parallel<T: Sync, U: Send>(
 }
 
 /// The [`crate::content_digest`] of exactly `length` bytes, then confirmed EOF.
-/// Reads are at most 1 MiB; the buffer never exceeds the stream.
+/// Reads are at most 4 MiB; the buffer never exceeds the stream.
 fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> {
-    const REQUEST: u64 = 1024 * 1024;
+    const REQUEST: u64 = 4 * 1024 * 1024;
     let mut hash = crate::content_digest::Hasher::new();
     let mut remaining = length;
     let mut buffer = vec![0u8; length.clamp(1, REQUEST) as usize];

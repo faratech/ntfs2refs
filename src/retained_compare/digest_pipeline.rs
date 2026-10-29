@@ -118,6 +118,42 @@ impl Pipeline {
     }
 }
 
+/// A native SHA-256 that hashes on a worker when a spare core exists, so the
+/// caller's reads overlap hashing; one-core machines hash on the caller. Both
+/// see exactly the same ordered bytes and produce the same digest.
+pub(crate) enum Overlapped {
+    Serial(StreamDigest),
+    Worker(Pipeline),
+}
+
+impl Overlapped {
+    pub(crate) fn new(chunk_bytes: usize) -> Result<Self> {
+        let native = cfg!(windows);
+        if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2) {
+            Ok(Self::Worker(Pipeline::with_native_backend(
+                chunk_bytes,
+                native,
+            )?))
+        } else {
+            Ok(Self::Serial(StreamDigest::new(native)?))
+        }
+    }
+
+    pub(crate) fn update(&mut self, bytes: &[u8]) -> Result<()> {
+        match self {
+            Self::Serial(hash) => hash.update(bytes),
+            Self::Worker(hash) => hash.update(bytes),
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<[u8; 32]> {
+        match self {
+            Self::Serial(hash) => hash.finish(),
+            Self::Worker(hash) => hash.finish(),
+        }
+    }
+}
+
 impl Drop for Pipeline {
     fn drop(&mut self) {
         // Error exits must close both channels before joining, including when

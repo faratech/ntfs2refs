@@ -105,6 +105,25 @@ fn valid_shadow_component(s: &str) -> bool {
         .contains(&stem.as_str())
 }
 fn hash_exact_stream(reader: &mut impl Read, length: u64) -> io::Result<String> {
+    // Streams over 64 KiB are read in 1 MiB requests and hashed by CNG on a
+    // worker, so reads overlap hashing. The digest is the same SHA-256.
+    const LARGE: usize = 1024 * 1024;
+    if length > 65536 {
+        let mut hash = crate::sha256_native::Overlapped::new(LARGE)?;
+        let mut remaining = length;
+        let mut buffer = vec![0u8; LARGE];
+        while remaining > 0 {
+            let count = usize::try_from(remaining.min(LARGE as u64))
+                .map_err(|_| invalid("stream read bound"))?;
+            reader.read_exact(&mut buffer[..count])?;
+            hash.update(&buffer[..count])?;
+            remaining -= count as u64;
+        }
+        if reader.read(&mut buffer[..1])? != 0 {
+            return Err(invalid("converted stream has data beyond expected EOF"));
+        }
+        return Ok(hex::encode(hash.finish()?));
+    }
     let mut hash = Sha256::new();
     let mut remaining = length;
     let mut buffer = [0u8; 65536];

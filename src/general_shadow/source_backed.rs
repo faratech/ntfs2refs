@@ -12,45 +12,6 @@ use std::io::{self, Read, Seek, SeekFrom};
 const NATIVE_CAPTURE_BYTES: usize = 4 * 1024 * 1024;
 const LOGICAL_SOURCE_READ_BYTES: usize = 65536;
 
-// Hash the candidate in parallel with source comparison on machines with
-// spare CPUs. The bounded worker receives precisely the same framed bytes;
-// one-core machines keep the digest on the caller instead.
-enum CaptureDigest {
-    Serial(crate::retained_compare::stream_digest::StreamDigest),
-    Worker(crate::retained_compare::digest_pipeline::Pipeline),
-}
-
-impl CaptureDigest {
-    fn new() -> Result<Self> {
-        if std::thread::available_parallelism().is_ok_and(|cores| cores.get() >= 2) {
-            Ok(Self::Worker(
-                crate::retained_compare::digest_pipeline::Pipeline::with_native_backend(
-                    NATIVE_CAPTURE_BYTES,
-                    true,
-                )?,
-            ))
-        } else {
-            Ok(Self::Serial(
-                crate::retained_compare::stream_digest::StreamDigest::new(true)?,
-            ))
-        }
-    }
-
-    fn update(&mut self, bytes: &[u8]) -> Result<()> {
-        match self {
-            Self::Serial(hash) => hash.update(bytes),
-            Self::Worker(hash) => hash.update(bytes),
-        }
-    }
-
-    fn finish(self) -> Result<[u8; 32]> {
-        match self {
-            Self::Serial(hash) => hash.finish(),
-            Self::Worker(hash) => hash.finish(),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct ReadCounts {
     pub source_logical_bytes: u64,
@@ -328,7 +289,10 @@ impl<'a> SourceBackedShadow<'a> {
         } else {
             None
         };
-        let mut candidate_digest = CaptureDigest::new()?;
+        // Hash the candidate in parallel with source comparison on machines
+        // with spare CPUs; the worker receives precisely the same framed bytes.
+        let mut candidate_digest =
+            crate::retained_compare::digest_pipeline::Overlapped::new(NATIVE_CAPTURE_BYTES)?;
         let mut packed_digest = Sha256::new();
         let mut changed = 0u64;
         let mut compared = 0u64;

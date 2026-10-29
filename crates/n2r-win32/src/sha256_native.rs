@@ -184,6 +184,96 @@ impl Drop for Sha256Reusable {
     }
 }
 
+/// One stream's SHA-256, computed by CNG on a worker thread while the caller
+/// reads its next buffer. One buffer of at most `chunk_bytes` is in flight; the
+/// digest equals a serial SHA-256 of the same ordered bytes.
+pub struct Overlapped {
+    input: Option<std::sync::mpsc::SyncSender<Vec<u8>>>,
+    recycled: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+    spare: Option<Vec<u8>>,
+    worker: Option<std::thread::JoinHandle<io::Result<[u8; 32]>>>,
+    chunk_bytes: usize,
+}
+
+impl Overlapped {
+    pub fn new(chunk_bytes: usize) -> io::Result<Self> {
+        let (input, chunks) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+        let (buffers, recycled) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("n2r-stream-digest".into())
+            .spawn(move || {
+                // The CNG object lives only on this worker.
+                let mut hash = Sha256::new()?;
+                while let Ok(buffer) = chunks.recv() {
+                    hash.update(&buffer)?;
+                    if buffers.send(buffer).is_err() {
+                        break;
+                    }
+                }
+                hash.finish()
+            })?;
+        Ok(Self {
+            input: Some(input),
+            recycled: Some(recycled),
+            spare: Some(Vec::with_capacity(chunk_bytes)),
+            worker: Some(worker),
+            chunk_bytes,
+        })
+    }
+
+    pub fn update(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() > self.chunk_bytes {
+            return Err(io::Error::other("overlapped digest chunk exceeds bound"));
+        }
+        let buffer = match self.spare.take() {
+            Some(buffer) => Some(buffer),
+            None => self.recycled.as_ref().and_then(|r| r.recv().ok()),
+        };
+        let Some(mut buffer) = buffer else {
+            return Err(self.stopped());
+        };
+        buffer.clear();
+        buffer.extend_from_slice(bytes);
+        let sent = self.input.as_ref().is_some_and(|i| i.send(buffer).is_ok());
+        if !sent {
+            return Err(self.stopped());
+        }
+        Ok(())
+    }
+
+    fn stopped(&mut self) -> io::Error {
+        self.input.take();
+        self.recycled.take();
+        match self.worker.take().map(std::thread::JoinHandle::join) {
+            Some(Ok(Err(error))) => error,
+            Some(Err(_)) => io::Error::other("overlapped digest worker panicked"),
+            _ => io::Error::other("overlapped digest worker stopped before all input"),
+        }
+    }
+
+    pub fn finish(mut self) -> io::Result<[u8; 32]> {
+        // Only one buffer exists, so nothing is queued behind the final chunk;
+        // closing the recycle receiver releases the worker after hashing it.
+        self.input.take();
+        self.recycled.take();
+        self.worker
+            .take()
+            .ok_or_else(|| io::Error::other("missing overlapped digest worker"))?
+            .join()
+            .map_err(|_| io::Error::other("overlapped digest worker panicked"))?
+    }
+}
+
+impl Drop for Overlapped {
+    fn drop(&mut self) {
+        self.input.take();
+        self.recycled.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 /// Hash every requested byte, with a fixed 4 MiB buffer and exact reads. No
 /// sampling, skipped zero ranges, alternate digest or source mutation.
 pub fn hash_range(

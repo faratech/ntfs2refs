@@ -20,8 +20,38 @@ fn main() -> anyhow::Result<()> {
         sizes_mib: Vec<usize>,
         #[arg(long, value_delimiter = ',', default_value = "1,2,4")]
         depths: Vec<usize>,
+        /// Measure single-thread SHA-256 backends in memory instead of reads.
+        #[arg(long)]
+        hash_only: bool,
     }
     let args = Args::parse();
+    if args.hash_only {
+        use sha2::Digest;
+        let buffer: Vec<u8> = (0..4 * 1024 * 1024u32)
+            .map(|i| i.wrapping_mul(2_654_435_761) as u8)
+            .collect();
+        let rounds = 256;
+        let started = std::time::Instant::now();
+        let mut soft = sha2::Sha256::new();
+        for _ in 0..rounds {
+            soft.update(&buffer);
+        }
+        let _ = soft.finalize();
+        let soft_rate = (rounds * buffer.len()) as f64 / started.elapsed().as_secs_f64() / 1e6;
+        let started = std::time::Instant::now();
+        let mut native = n2r_win32::sha256_native::Sha256::new()?;
+        for _ in 0..rounds {
+            native.update(&buffer)?;
+        }
+        let _ = native.finish()?;
+        let native_rate = (rounds * buffer.len()) as f64 / started.elapsed().as_secs_f64() / 1e6;
+        println!(
+            "{}",
+            serde_json::json!({"kind":"sha256-backend-benchmark","bytes":rounds*buffer.len(),
+                "sha2_software_mb_per_second":soft_rate,"cng_mb_per_second":native_rate})
+        );
+        return Ok(());
+    }
     let handle = OpenOptions::new()
         .read(true)
         .share_mode(3)

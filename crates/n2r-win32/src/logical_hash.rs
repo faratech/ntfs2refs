@@ -111,6 +111,42 @@ impl Budget {
         true
     }
 }
+/// The digest of one stream: on Windows, streams longer than one request are
+/// hashed by CNG on a worker so reads overlap hashing. Same SHA-256 either way.
+enum StreamHash {
+    Inline(Sha256),
+    #[cfg(windows)]
+    Overlapped(crate::sha256_native::Overlapped),
+}
+impl StreamHash {
+    fn new(expected: u64) -> io::Result<Self> {
+        #[cfg(windows)]
+        if expected > CHUNK as u64 {
+            return Ok(Self::Overlapped(crate::sha256_native::Overlapped::new(
+                CHUNK,
+            )?));
+        }
+        let _ = expected;
+        Ok(Self::Inline(Sha256::new()))
+    }
+    fn update(&mut self, bytes: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Inline(hash) => hash.update(bytes),
+            #[cfg(windows)]
+            Self::Overlapped(hash) => hash.update(bytes)?,
+        }
+        Ok(())
+    }
+    fn finish(self) -> io::Result<String> {
+        let digest: [u8; 32] = match self {
+            Self::Inline(hash) => hash.finalize().into(),
+            #[cfg(windows)]
+            Self::Overlapped(hash) => hash.finish()?,
+        };
+        Ok(hex::encode(digest))
+    }
+}
+
 pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) -> Outcome {
     let mut out = Outcome {
         status: Status::BudgetExceeded,
@@ -128,7 +164,10 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
         Ok(_) => return Outcome::refused(io::Error::other("stream did not seek to zero")),
         Err(e) => return Outcome::refused(e),
     }
-    let mut digest = Sha256::new();
+    let mut digest = match StreamHash::new(expected) {
+        Ok(digest) => digest,
+        Err(error) => return Outcome::refused(error),
+    };
     let mut buffer = vec![0; CHUNK];
     let mut calls = 0;
     let mut interrupted = 0;
@@ -179,16 +218,23 @@ pub fn read<R: Read + Seek>(reader: &mut R, expected: u64, budget: &mut Budget) 
                 out.bytes_read += n as u64;
                 return out;
             }
-            out.status = Status::Complete;
-            out.eof_confirmed = true;
-            out.sha256 = Some(hex::encode(digest.finalize()));
-            return out;
+            return match digest.finish() {
+                Ok(sha256) => {
+                    out.status = Status::Complete;
+                    out.eof_confirmed = true;
+                    out.sha256 = Some(sha256);
+                    out
+                }
+                Err(error) => Outcome::refused(error),
+            };
         }
         if n == 0 {
             out.status = Status::UnexpectedEof;
             return out;
         }
-        digest.update(&buffer[..n]);
+        if let Err(error) = digest.update(&buffer[..n]) {
+            return Outcome::refused(error);
+        }
         out.bytes_read += n as u64;
     }
 }

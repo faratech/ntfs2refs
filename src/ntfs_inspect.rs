@@ -20,6 +20,7 @@ pub use assembled_io::validate_record_coverage;
 
 pub(crate) const MAX_MFT_RECORDS: u64 = 1_000_000;
 const STREAM_HASH_BUFFER_BYTES: usize = 64 * 1024;
+const LARGE_STREAM_HASH_BYTES: usize = 4 * 1024 * 1024;
 const ALPHA_MAX_PLAIN_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Bounds retained inventory data independently of the separately bounded
@@ -1243,8 +1244,23 @@ fn hash_stream<R: Read + Seek>(
     // Reserve all work before the first DATA read, including CPU work hashing
     // zeros. No partial digest or partial report is returned on exhaustion.
     budget.reserve(a.logical_size)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
+    // Streams over 4 MiB are read in 4 MiB requests and hashed natively on a
+    // worker, so reads overlap hashing; smaller streams keep the fixed 64 KiB
+    // buffer on the caller. Both produce the same SHA-256.
+    use crate::retained_compare::{digest_pipeline::Overlapped, stream_digest::StreamDigest};
+    let large = a.logical_size > LARGE_STREAM_HASH_BYTES as u64;
+    let mut hasher = if large {
+        Overlapped::new(LARGE_STREAM_HASH_BYTES)?
+    } else {
+        Overlapped::Serial(StreamDigest::new(cfg!(windows))?)
+    };
+    let mut small = [0u8; STREAM_HASH_BUFFER_BYTES];
+    let mut large_buffer = if large {
+        vec![0u8; LARGE_STREAM_HASH_BYTES]
+    } else {
+        Vec::new()
+    };
+    let buffer: &mut [u8] = if large { &mut large_buffer } else { &mut small };
     for extent in &a.extents {
         if extent.logical_offset >= a.logical_size {
             break;
@@ -1275,13 +1291,13 @@ fn hash_stream<R: Read + Seek>(
             } else {
                 buffer[..count].fill(0);
             }
-            hasher.update(&buffer[..count]);
+            hasher.update(&buffer[..count])?;
             done += count as u64;
         }
     }
     Ok((
         LogicalHashStatus::Complete,
-        Some(hex::encode(hasher.finalize())),
+        Some(hex::encode(hasher.finish()?)),
     ))
 }
 
@@ -2798,7 +2814,9 @@ pub fn read_plain_stream_range_into<R: Read + Seek>(
 /// The report limit bounds retained inventory data, not the entire process's
 /// resident set. Volume bitmap scans use a fixed 64 KiB window; parser working
 /// storage is limited to one 64 KiB-or-smaller file record and its attributes.
-/// Logical stream hashing uses a fixed 64 KiB buffer and a cumulative byte limit.
+/// Logical stream hashing uses a fixed 64 KiB buffer (streams over 4 MiB: one
+/// 4 MiB read buffer and at most three 4 MiB worker buffers) and a cumulative
+/// byte limit.
 /// Metadata ancestry adds at most MAX_MFT_RECORDS states and 4096 stack frames.
 /// Raw namespace working storage has a separate 16 MiB read budget, 16,384 keys,
 /// 131,072 UTF-16 name units, 4096 directories and 64 B-tree levels.

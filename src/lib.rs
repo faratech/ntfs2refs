@@ -67,6 +67,8 @@ pub mod ntfs_source_view;
 pub mod ntfs_stream_attestation;
 pub mod ntfs_stream_plan;
 pub mod ntfs_transactions;
+#[cfg(windows)]
+pub(crate) mod parallel_digest;
 pub mod planner;
 pub mod preparation_progress;
 #[cfg(windows)]

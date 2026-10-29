@@ -13,7 +13,7 @@ use n2r_win32::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek},
     path::Path,
 };
 
@@ -265,66 +265,43 @@ fn chunk_indices(ranges: &[crate::refs_write_set::ByteRange], length: u64) -> Re
     Ok(indices)
 }
 
+/// The bracket chunks at `indices`, each clipped to the image end.
+fn bracket_chunks(indices: &[u64], length: u64) -> Result<Vec<crate::parallel_digest::Chunk>> {
+    indices
+        .iter()
+        .map(|&index| {
+            let offset = index * BRACKET_CHUNK;
+            Ok(crate::parallel_digest::Chunk {
+                offset,
+                length: usize::try_from((length - offset).min(BRACKET_CHUNK))?,
+            })
+        })
+        .collect()
+}
+
 /// Opening pass over only the chunks overlapping `ranges`: their digests, plus
 /// one SHA-256 over every (index, digest) pair. The image is read on this
-/// thread while a worker hashes the previous buffers.
+/// thread while the spare cores hash the chunks already read.
 fn open_allocated_bracket<R: Read + Seek>(
     image: &mut R,
     length: u64,
     ranges: &[crate::refs_write_set::ByteRange],
 ) -> Result<(String, Vec<(u64, [u8; 32])>, u64)> {
-    use std::sync::mpsc;
     let indices = chunk_indices(ranges, length)?;
-    std::thread::scope(|scope| -> Result<(String, Vec<(u64, [u8; 32])>, u64)> {
-        let (tx, rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(4);
-        let expected = indices.len();
-        // The worker creates its CNG object on its own thread.
-        let worker = scope.spawn(move || -> std::io::Result<Vec<(u64, [u8; 32])>> {
-            let mut hash = n2r_win32::sha256_native::Sha256Reusable::new()?;
-            let mut digests = Vec::with_capacity(expected);
-            for (index, buffer) in rx {
-                digests.push((index, hash.digest(&buffer)?));
-            }
-            Ok(digests)
-        });
-        let mut read = Ok(());
-        let mut bytes = 0u64;
-        for &index in &indices {
-            let at = index * BRACKET_CHUNK;
-            let count = usize::try_from((length - at).min(BRACKET_CHUNK))?;
-            let mut buffer = vec![0u8; count];
-            if let Err(error) = image
-                .seek(SeekFrom::Start(at))
-                .and_then(|_| image.read_exact(&mut buffer))
-            {
-                read = Err(error);
-                break;
-            }
-            bytes += count as u64;
-            if tx.send((index, buffer)).is_err() {
-                break; // The worker failed; its error is reported below.
-            }
-        }
-        drop(tx);
-        let digests = worker
-            .join()
-            .map_err(|_| anyhow::anyhow!("bracket chunk hash worker panicked"))??;
-        read?;
-        ensure!(
-            digests.len() == indices.len(),
-            "opening bracket pass did not cover every allocated chunk"
-        );
-        let mut summary = n2r_win32::sha256_native::Sha256::new()?;
-        for (index, digest) in &digests {
-            summary.update(&index.to_le_bytes())?;
-            summary.update(digest)?;
-        }
-        Ok((hex::encode(summary.finish()?), digests, bytes))
-    })
+    let chunks = bracket_chunks(&indices, length)?;
+    let hashed = crate::parallel_digest::digest_chunks(image, &chunks)?;
+    let bytes = chunks.iter().map(|chunk| chunk.length as u64).sum();
+    let digests: Vec<_> = indices.into_iter().zip(hashed).collect();
+    let mut summary = n2r_win32::sha256_native::Sha256::new()?;
+    for (index, digest) in &digests {
+        summary.update(&index.to_le_bytes())?;
+        summary.update(digest)?;
+    }
+    Ok((hex::encode(summary.finish()?), digests, bytes))
 }
 
 /// Recheck every chunk overlapping the sorted `ranges` against the opening
-/// pass. A chunk the opening pass did not hash refuses.
+/// pass. A chunk the opening pass did not hash refuses before any read.
 fn close_allocated_bracket<R: Read + Seek>(
     image: &mut R,
     length: u64,
@@ -332,26 +309,26 @@ fn close_allocated_bracket<R: Read + Seek>(
     ranges: &[crate::refs_write_set::ByteRange],
 ) -> Result<(usize, u64)> {
     let indices = chunk_indices(ranges, length)?;
-    let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
-    let mut hash = n2r_win32::sha256_native::Sha256Reusable::new()?;
-    let mut reread = 0u64;
-    for &index in &indices {
-        let expected = opened
-            .binary_search_by_key(&index, |(opened, _)| *opened)
-            .map(|position| opened[position].1)
-            .map_err(|_| {
-                anyhow::anyhow!("closing allocation includes a chunk the opening pass did not hash")
-            })?;
-        let at = index * BRACKET_CHUNK;
-        let count = usize::try_from((length - at).min(BRACKET_CHUNK))?;
-        image.seek(SeekFrom::Start(at))?;
-        image.read_exact(&mut buffer[..count])?;
-        ensure!(
-            hash.digest(&buffer[..count])? == expected,
-            "protected observation changed allocated frozen image bytes"
-        );
-        reread += count as u64;
-    }
+    let expected = indices
+        .iter()
+        .map(|&index| {
+            opened
+                .binary_search_by_key(&index, |(opened, _)| *opened)
+                .map(|position| opened[position].1)
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "closing allocation includes a chunk the opening pass did not hash"
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let chunks = bracket_chunks(&indices, length)?;
+    let hashed = crate::parallel_digest::digest_chunks(image, &chunks)?;
+    ensure!(
+        hashed == expected,
+        "protected observation changed allocated frozen image bytes"
+    );
+    let reread = chunks.iter().map(|chunk| chunk.length as u64).sum();
     Ok((indices.len(), reread))
 }
 

@@ -332,16 +332,19 @@ pub(crate) fn hash_range_with_resource_profile<R: Read + Seek>(
     hash_range(io, at, length)
 }
 /// Framed native SHA-256 over sorted disjoint ranges: each range contributes
-/// its offset and length (little-endian) before its bytes. Never a whole-image
-/// hash; bytes outside the ranges are not read. Reads run on the caller's thread
-/// in 4 MiB requests while a worker hashes the same ordered byte stream.
+/// its offset and length (little-endian), then the SHA-256 of each consecutive
+/// 4 MiB piece of it (the last may be shorter). The piece size is fixed, so the
+/// digest depends on neither the device nor the worker count. Never a
+/// whole-image hash; bytes outside the ranges are not read. Pieces are read on
+/// the caller's thread and hashed on the spare cores, in bounded batches.
 #[cfg(windows)]
 pub(crate) fn hash_ranges_native<R: Read + Seek>(
     io: &mut R,
     ranges: &[(u64, u64)],
 ) -> Result<[u8; 32]> {
-    use std::sync::mpsc;
-    const READ: u64 = 4 * 1024 * 1024;
+    use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES, digest_chunks};
+    const PIECE: u64 = MAX_CHUNK_BYTES as u64;
+    const BATCH: usize = 2048;
     let mut previous_end = 0u64;
     for &(offset, length) in ranges {
         ensure!(
@@ -352,49 +355,42 @@ pub(crate) fn hash_ranges_native<R: Read + Seek>(
             .checked_add(length)
             .context("hashed range overflow")?;
     }
-    std::thread::scope(|scope| -> Result<[u8; 32]> {
-        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
-        // The worker creates its CNG object on its own thread.
-        let worker = scope.spawn(move || -> io::Result<[u8; 32]> {
-            let mut hash = n2r_win32::sha256_native::Sha256::new()?;
-            for bytes in rx {
-                hash.update(&bytes)?;
+    let mut summary = n2r_win32::sha256_native::Sha256::new()?;
+    // Each piece, and the range frame that precedes it when it starts a range.
+    let mut pieces: Vec<Chunk> = Vec::with_capacity(BATCH);
+    let mut frames: Vec<Option<(u64, u64)>> = Vec::with_capacity(BATCH);
+    let mut flush = |pieces: &mut Vec<Chunk>, frames: &mut Vec<Option<(u64, u64)>>| -> Result<()> {
+        let digests = digest_chunks(io, pieces)?;
+        for (frame, digest) in frames.iter().zip(&digests) {
+            if let Some((offset, length)) = frame {
+                summary.update(&offset.to_le_bytes())?;
+                summary.update(&length.to_le_bytes())?;
             }
-            hash.finish()
-        });
-        let mut read = Ok(());
-        'ranges: for &(offset, length) in ranges {
-            let mut frame = Vec::with_capacity(16);
-            frame.extend_from_slice(&offset.to_le_bytes());
-            frame.extend_from_slice(&length.to_le_bytes());
-            if tx.send(frame).is_err() {
-                break;
-            }
-            if let Err(error) = io.seek(SeekFrom::Start(offset)) {
-                read = Err(error);
-                break;
-            }
-            let mut left = length;
-            while left != 0 {
-                let count = usize::try_from(left.min(READ))?;
-                let mut buffer = vec![0u8; count];
-                if let Err(error) = io.read_exact(&mut buffer) {
-                    read = Err(error);
-                    break 'ranges;
-                }
-                if tx.send(buffer).is_err() {
-                    break 'ranges; // The worker failed; its error is reported below.
-                }
-                left -= count as u64;
+            summary.update(digest)?;
+        }
+        pieces.clear();
+        frames.clear();
+        Ok(())
+    };
+    for &(offset, length) in ranges {
+        let mut done = 0u64;
+        while done < length {
+            let count = (length - done).min(PIECE);
+            pieces.push(Chunk {
+                offset: offset + done,
+                length: count as usize,
+            });
+            frames.push((done == 0).then_some((offset, length)));
+            done += count;
+            if pieces.len() == BATCH {
+                flush(&mut pieces, &mut frames)?;
             }
         }
-        drop(tx);
-        let digest = worker
-            .join()
-            .map_err(|_| anyhow::anyhow!("range hash worker panicked"))??;
-        read?;
-        Ok(digest)
-    })
+    }
+    if !pieces.is_empty() {
+        flush(&mut pieces, &mut frames)?;
+    }
+    Ok(summary.finish()?)
 }
 
 fn validate_binding(binding: &JournalBinding) -> Result<()> {

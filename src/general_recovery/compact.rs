@@ -6,6 +6,11 @@ use crate::refs_hybrid::delta::VerifiedDeltaArtifact;
 use n2r_win32::reference_file::{self, ReferenceFileSnapshot};
 use std::{fs::File, path::Component, time::SystemTime};
 
+fn announce_recovery_phase(operation: ExperimentalCompactOperation, message: &str) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr(), "Recovery {operation:?}: {message}");
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExperimentalCompactOperation {
@@ -145,6 +150,7 @@ pub fn recover_compact_experimental(
     output: &Path,
 ) -> Result<()> {
     inputs.validate()?;
+    announce_recovery_phase(operation, "checking original input and backing hashes");
     let mut request_input = HeldInput::open(&inputs.request, &inputs.request_sha256, 131072)?;
     let request: protocol::Request = serde_json::from_slice(&request_input.bytes)?;
     request.validate()?;
@@ -235,6 +241,10 @@ pub fn recover_compact_experimental(
     )?;
     let mut phase = "compact-journal-preflight";
     let attempted = (|| -> Result<()> {
+        announce_recovery_phase(
+            operation,
+            "checking journal identity and frozen device state",
+        );
         let metadata = fs::symlink_metadata(&inputs.journal)?;
         ensure!(
             metadata.is_file()
@@ -278,6 +288,10 @@ pub fn recover_compact_experimental(
         match operation {
             ExperimentalCompactOperation::Resume | ExperimentalCompactOperation::Rollback => {
                 phase = "compact-journal-recovery";
+                announce_recovery_phase(
+                    operation,
+                    "scanning complete images and applying journaled recovery patches",
+                );
                 let mode = if operation == ExperimentalCompactOperation::Resume {
                     protocol::RecoveryOperation::Resume
                 } else {
@@ -305,6 +319,10 @@ pub fn recover_compact_experimental(
                 );
                 if operation == ExperimentalCompactOperation::Rollback {
                     phase = "compact-rollback-completion";
+                    announce_recovery_phase(
+                        operation,
+                        "closing replay and checking the restored NTFS filesystem",
+                    );
                     let completed = protocol::compact_finalize::complete_rollback(
                         &request,
                         target,
@@ -329,6 +347,10 @@ pub fn recover_compact_experimental(
             ExperimentalCompactOperation::Finalize
             | ExperimentalCompactOperation::FinalizeAfterMarker => {
                 phase = "compact-refs-handoff";
+                announce_recovery_phase(
+                    operation,
+                    "verifying ReFS handoff and mounted file contents",
+                );
                 let mut completed = if operation == ExperimentalCompactOperation::Finalize {
                     protocol::compact_finalize::finalize(
                         &request,
@@ -360,6 +382,7 @@ pub fn recover_compact_experimental(
             }
             ExperimentalCompactOperation::FinalizeRollback => {
                 phase = "compact-rollback-after-marker";
+                announce_recovery_phase(operation, "checking the completed NTFS rollback");
                 let completed = protocol::compact_finalize::resume_completed_rollback(
                     &request,
                     target,

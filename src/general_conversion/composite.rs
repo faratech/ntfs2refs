@@ -4,6 +4,11 @@
 use super::*;
 use n2r_win32::GeneralFrozenPartition;
 
+fn announce_conversion_phase(message: &str) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr(), "Conversion: {message}");
+}
+
 /// Retain the original source admission capability through compact preparation,
 /// activation and handoff. A source-backed capture/report alone never enters
 /// this path. The optional stop uses the existing flushed-write fault injector.
@@ -121,6 +126,7 @@ fn convert_composite(
     selected_devices: bool,
 ) -> Result<()> {
     request.validate()?;
+    announce_conversion_phase("checking request and device identities");
     ensure!(
         request.verify_existing_shadow == construction.is_none(),
         "experimental composite fresh/existing selection differs from its request"
@@ -161,6 +167,11 @@ fn convert_composite(
         )?;
         let qualification_root = output.join("qualification");
         let packed_path = qualification_root.join("changed-clusters.bin");
+        announce_conversion_phase(if construction.is_some() {
+            "inspecting NTFS, building the ReFS shadow and scanning complete images"
+        } else {
+            "inspecting NTFS and scanning complete source/target images"
+        });
         let qualification::QualifiedCompositeTree {
             mut source,
             native_target,
@@ -253,6 +264,7 @@ fn convert_composite(
         )?;
 
         phase = "compact-journal-preparation";
+        announce_conversion_phase("preparing the recovery journal with complete image scans");
         let parent = std::path::PathBuf::from(format!(
             "{}\\ntfs2refs-shadow",
             request.journal.disk.volume_path()?,
@@ -413,6 +425,7 @@ fn convert_composite(
         }
 
         phase = "compact-activation";
+        announce_conversion_phase("activating the frozen source for journaled writes");
         ensure!(
             certificate.binds_request(&plan),
             "original live certificate no longer binds the composite activation plan"
@@ -430,6 +443,7 @@ fn convert_composite(
         qualification::save(output, "activation-events.json", &events)?;
         events.clear();
         phase = "compact-apply";
+        announce_conversion_phase("applying journaled patches and verifying the complete result");
         let applied = reconstruct::compact::execute(
             reconstruct::RecoveryOperation::Apply,
             &plan,
@@ -444,6 +458,7 @@ fn convert_composite(
         qualification::save(output, "apply.json", &applied)?;
         qualification::save(output, "apply-events.json", &events)?;
         phase = "compact-handoff";
+        announce_conversion_phase("completing ReFS handoff and verifying mounted file contents");
         let finalization = reconstruct::compact_finalize::finalize(
             &plan,
             original,

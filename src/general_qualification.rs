@@ -249,7 +249,7 @@ fn prepare_source_context(
             length,
             resources,
         )?),
-        Some(ranges) => hex::encode(lab_reconstruct::hash_ranges_native(&mut source, ranges)?),
+        Some(ranges) => hex::encode(lab_reconstruct::hash_ranges_xxh3(&mut source, ranges)?),
     };
     let digest_bytes: Option<u64> = allocated
         .as_ref()
@@ -326,7 +326,7 @@ fn prepare_source_context(
             &observed,
             events,
             |source, _| {
-                Ok(hex::encode(lab_reconstruct::hash_ranges_native(
+                Ok(hex::encode(lab_reconstruct::hash_ranges_xxh3(
                     source, ranges,
                 )?))
             },

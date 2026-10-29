@@ -175,7 +175,7 @@ impl LiveAssessment {
             changed_bytes: target.capture().layout.changed_bytes(),
             assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
             free_space_contents_proven_equal: false,
-            source_digest: "ntfs_allocated_ranges_4mib_pieces",
+            source_digest: "ntfs_allocated_ranges_xxh3_128_4mib_pieces",
             source_resource_profile: match self.context.resources {
                 ntfs_admission::ResourceProfile::AlphaV1 => None,
                 resource => Some(resource),

@@ -279,14 +279,14 @@ fn bracket_chunks(indices: &[u64], length: u64) -> Result<Vec<crate::parallel_di
         .collect()
 }
 
-/// Opening pass over only the chunks overlapping `ranges`: their digests, plus
-/// one SHA-256 over every (index, digest) pair. The image is read on this
-/// thread while the spare cores hash the chunks already read.
+/// Opening pass over only the chunks overlapping `ranges`: their XXH3-128
+/// change-detection digests, plus one SHA-256 over every (index, digest) pair.
+/// The image is read on this thread while the spare cores hash.
 fn open_allocated_bracket<R: Read + Seek>(
     image: &mut R,
     length: u64,
     ranges: &[crate::refs_write_set::ByteRange],
-) -> Result<(String, Vec<(u64, [u8; 32])>, u64)> {
+) -> Result<(String, Vec<(u64, [u8; 16])>, u64)> {
     let indices = chunk_indices(ranges, length)?;
     let chunks = bracket_chunks(&indices, length)?;
     let hashed = crate::parallel_digest::digest_chunks(image, &chunks)?;
@@ -305,7 +305,7 @@ fn open_allocated_bracket<R: Read + Seek>(
 fn close_allocated_bracket<R: Read + Seek>(
     image: &mut R,
     length: u64,
-    opened: &[(u64, [u8; 32])],
+    opened: &[(u64, [u8; 16])],
     ranges: &[crate::refs_write_set::ByteRange],
 ) -> Result<(usize, u64)> {
     let indices = chunk_indices(ranges, length)?;
@@ -432,8 +432,8 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
         allocation_coverage,
         raw_image_unchanged: false,
         bracket_closure: Some(AllocationBracketClosure {
-            opening: "1 MiB chunk digests over the allocation map of a prior protected read-only mount",
-            raw_sha256_meaning: "SHA-256 over the opening (chunk index, chunk digest) pairs; not a whole-image hash",
+            opening: "1 MiB chunk XXH3-128 digests over the allocation map of a prior protected read-only mount",
+            raw_sha256_meaning: "SHA-256 over the opening (chunk index, XXH3-128 chunk digest) pairs; detects change between the two passes, not a cryptographic content hash or a whole-image hash",
             opening_chunks: chunks.len(),
             opening_bytes,
             closing_ranges: selection.len(),

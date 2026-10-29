@@ -1,10 +1,12 @@
-//! Bounded parallel SHA-256 of independent chunks. The caller's thread reads
-//! every chunk in order through its one handle; up to [`workers`] threads hash
-//! them. Digests return in chunk order, so a result never depends on how many
-//! workers ran or on the device's request size.
+//! Bounded parallel XXH3-128 of independent chunks, for change detection
+//! between two passes over the same frozen bytes in one run. It is not a
+//! cryptographic content hash; file content records keep SHA-256. The caller's
+//! thread reads every chunk in order through its one handle; up to [`workers`]
+//! threads hash them. Digests return in chunk order, so a result never depends
+//! on how many workers ran or on the device's request size.
 use anyhow::{Result, anyhow, ensure};
 use std::{
-    io::{self, Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
     sync::{Arc, Mutex, mpsc},
 };
 
@@ -24,12 +26,17 @@ pub(crate) fn workers() -> usize {
         .clamp(1, 8)
 }
 
-/// The SHA-256 of each chunk, in `chunks` order. Every chunk is read in full or
-/// the call fails; no partial result is returned.
+/// The canonical (big-endian) XXH3-128 of `bytes`.
+pub(crate) fn xxh3_128(bytes: &[u8]) -> [u8; 16] {
+    xxhash_rust::xxh3::xxh3_128(bytes).to_be_bytes()
+}
+
+/// The XXH3-128 of each chunk, in `chunks` order. Every chunk is read in full
+/// or the call fails; no partial result is returned.
 pub(crate) fn digest_chunks<R: Read + Seek>(
     image: &mut R,
     chunks: &[Chunk],
-) -> Result<Vec<[u8; 32]>> {
+) -> Result<Vec<[u8; 16]>> {
     ensure!(
         chunks
             .iter()
@@ -38,11 +45,11 @@ pub(crate) fn digest_chunks<R: Read + Seek>(
     );
     let workers = workers().min(chunks.len()).max(1);
     let largest = chunks.iter().map(|chunk| chunk.length).max().unwrap_or(0);
-    std::thread::scope(|scope| -> Result<Vec<[u8; 32]>> {
+    std::thread::scope(|scope| -> Result<Vec<[u8; 16]>> {
         let (jobs, queue) = mpsc::sync_channel::<(usize, Vec<u8>)>(workers);
         let queue = Arc::new(Mutex::new(queue));
         let (recycle, free) = mpsc::channel::<Vec<u8>>();
-        let (done, results) = mpsc::channel::<(usize, [u8; 32])>();
+        let (done, results) = mpsc::channel::<(usize, [u8; 16])>();
         // One buffer per worker plus two in reading or queued bounds memory.
         for _ in 0..workers + 2 {
             let _ = recycle.send(Vec::with_capacity(largest));
@@ -52,19 +59,16 @@ pub(crate) fn digest_chunks<R: Read + Seek>(
             let queue = Arc::clone(&queue);
             let recycle = recycle.clone();
             let done = done.clone();
-            // Each worker creates its CNG object on its own thread.
-            hashers.push(scope.spawn(move || -> io::Result<()> {
-                let mut hash = n2r_win32::sha256_native::Sha256Reusable::new()?;
+            hashers.push(scope.spawn(move || -> Result<()> {
                 loop {
                     let job = queue
                         .lock()
-                        .map_err(|_| io::Error::other("parallel digest queue poisoned"))?
+                        .map_err(|_| anyhow!("parallel digest queue poisoned"))?
                         .recv();
                     let Ok((position, buffer)) = job else {
                         return Ok(());
                     };
-                    let digest = hash.digest(&buffer)?;
-                    if done.send((position, digest)).is_err() {
+                    if done.send((position, xxh3_128(&buffer))).is_err() {
                         return Ok(());
                     }
                     let _ = recycle.send(buffer);

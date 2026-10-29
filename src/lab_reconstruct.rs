@@ -331,14 +331,16 @@ pub(crate) fn hash_range_with_resource_profile<R: Read + Seek>(
     }
     hash_range(io, at, length)
 }
-/// Framed native SHA-256 over sorted disjoint ranges: each range contributes
-/// its offset and length (little-endian), then the SHA-256 of each consecutive
-/// 4 MiB piece of it (the last may be shorter). The piece size is fixed, so the
-/// digest depends on neither the device nor the worker count. Never a
-/// whole-image hash; bytes outside the ranges are not read. Pieces are read on
-/// the caller's thread and hashed on the spare cores, in bounded batches.
+/// Framed change-detection digest over sorted disjoint ranges: a SHA-256 over
+/// each range's offset and length (little-endian), then the XXH3-128 of each
+/// consecutive 4 MiB piece of it (the last may be shorter). It detects change
+/// between two passes over the same frozen source in one run; it is not a
+/// cryptographic content hash. The piece size is fixed, so the digest depends
+/// on neither the device nor the worker count. Never a whole-image hash; bytes
+/// outside the ranges are not read. Pieces are read on the caller's thread and
+/// hashed on the spare cores, in bounded batches.
 #[cfg(windows)]
-pub(crate) fn hash_ranges_native<R: Read + Seek>(
+pub(crate) fn hash_ranges_xxh3<R: Read + Seek>(
     io: &mut R,
     ranges: &[(u64, u64)],
 ) -> Result<[u8; 32]> {

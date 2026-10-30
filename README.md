@@ -20,6 +20,11 @@ allocated-range reads, fixed resource limits and relocation costs remain, so
 this is not yet a metadata-proportional, arbitrary-volume release. See the
 [current performance and compatibility limits](docs/release-0.0.1-readiness.md).
 
+The [NTFS compatibility comparison](docs/ntfs-compatibility-comparison-20261030.md)
+separates our native results and remaining gaps from ntfs2btrfs, btrfs-convert,
+fstransform and NTFS-3G. No tool in that comparison establishes universal,
+lossless NTFS-to-ReFS compatibility.
+
 A later build also passed a same-partition sparse-file/ADS conversion and cold
 boot: 12 objects, 8 default-stream hashes, 6 named-stream hashes and 3 sparse
 layouts. The all-hole file remained unallocated. The same runtime also passed

@@ -784,6 +784,14 @@ origin/codex/isolated-journal-observation.
 REFSNT and forensic parsers remain external research. Do not copy GPL reference
 engines into the Rust product runtime or claim compatibility from their checkers.
 
+The source/evidence comparison in docs/ntfs-compatibility-comparison-20261030.md
+pins ntfs2btrfs and similar upstream tools. Do not copy their skip/truncate
+policies into a lossless claim. The audit found no explicit live VSS or
+directory case-sensitivity gate/preservation path; these are admission gaps,
+not already implemented refusals. Conversion preserves hard-link groups using
+new ReFS file IDs, not original numeric NTFS IDs. SACLs, absent/null DACLs,
+user EAs and reparse points remain outside the current preservation profile.
+
 ## Build tools
 
 Work explicitly in D:\code\ntfs2refs. Rust is pinned to 1.98.1.

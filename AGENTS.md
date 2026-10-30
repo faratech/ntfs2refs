@@ -27,11 +27,18 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off/RAM0 at NTFS
-fixture checkpoint1057eb82-d152-4572-881b-53ff9dbb82dd; all41 checkpoints
+Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
+performance checkpointe9bc8adf-1faf-4725-94e6-e3c5d2b254be; all42 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
-Latest runtime4c58d38/publicf7e432babadcc7761a855a8d7c00069b7bbed9505fd37a53512d6f061c969cf6
+Latest runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
+passed same-source conversion610f3f55/core2cf74f00 in92.959s versus138.754s on
+4c58d38 (33.0% shorter in this fixture). All13objects/9default/8named hashes,
+3sparse layouts and1024 original payload extents (4MiB) match. Movement counts
+and phase snapshots also match. Evidence: evidence/bitmap-planning-performance-20261030.json.
+No reboot/mutation/recovery qualification transfers to940f4e2 from older builds.
+
+Prior runtime4c58d38/publicf7e432babadcc7761a855a8d7c00069b7bbed9505fd37a53512d6f061c969cf6
 passed public conversion29db7e40/core60e84507:13 objects,9 default hashes,
 8 named hashes and3 sparse layouts. Source record47 was assembled from its base
 plus7 extension records, including resident filenames/Note ADS and two fragmented
@@ -51,14 +58,15 @@ Next: reduce redundant bitmap hashing/planning work without dropping coverage,
 expand remaining NTFS metadata/geometry support, and qualify new-build recovery
 and mutation separately. Current bounds and general-compatibility gaps remain.
 No unit tests were added or run. Keep the user-owned main.rs overlay untouched.
-The performance candidate now reuses opaque original-collector first-page
+The performance implementation reuses opaque original-collector first-page
 evidence instead of reprocessing/rehashing it during live bitmap capture.
 Untrusted replay remains unchanged. Streamed retention planners validate the
 two immutable summaries once per phase and binary-seek relevant ranges; they
 are dropped/rebuilt whenever drift refreshes the observations. Every per-move
 native bitmap and retrieval check remains. Library check and focused public
-release build pass. Next: same41-checkpoint NTFS fixture comparison against
-the138.754-second4c58d38 result, with all13/9/8 hashes and1024 retained extents.
+release build and the native same-fixture comparison pass. Native query coverage
+was not reduced; physical I/O reduction was not measured. The large-volume cost
+of full per-move bitmaps and remaining fixed resource caps are still unfinished.
 
 ### Previous milestones and fixture setup
 

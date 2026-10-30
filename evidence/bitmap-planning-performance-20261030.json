@@ -1,0 +1,142 @@
+{
+  "complete_default_hashes": 9,
+  "checks_preserved": [
+    "complete native bitmap acquisition",
+    "all page/status/domain/overlap checks",
+    "same digest and transcript encodings",
+    "untrusted-summary replay",
+    "per-move live occupancy captures",
+    "actual placement and complete logical stream checks"
+  ],
+  "speedup": 1.492629414040536,
+  "physical_io_reduction_measured": false,
+  "schema_version": 1,
+  "independent_old_ads_views": 15,
+  "original_extents_verified": 1024,
+  "native_exit": 0,
+  "measurement_scope": "one same-snapshot Windows11 VM fixture; no arbitrary-volume or HDD forecast",
+  "run_id": "610f3f5538ac43df8604a8574bdbacf9",
+  "independent_sparse_paths": 4,
+  "not_claimed": [
+    "new-build reboot/mutation/recovery",
+    "statistically representative benchmark",
+    "arbitrary NTFS features or volume sizes",
+    "maximum performance or release readiness"
+  ],
+  "candidate_seconds": 92.9594884,
+  "named_stream_hashes": 8,
+  "storage": {
+    "packed_bytes": 3489792,
+    "selected_bytes": 77496320,
+    "selected_ranges": 172,
+    "journal_bytes": 81010976
+  },
+  "baseline_source_commit": "4c58d380d9deb15c141271f6ee199b789e12f9d6",
+  "reduction_percent": 33.004134141172536,
+  "converted_checkpoint": "e9bc8adf-1faf-4725-94e6-e3c5d2b254be",
+  "native_objects": 13,
+  "proofs": [
+    {
+      "sha256": "c5ec14c3e04de1c5ec14fa697f668641fc90ffb1e18285910ccb9778e7a45eac",
+      "path": "D:\\code\\ntfs2refs\\evidence\\attribute-list-native-conversion-20261030.json",
+      "bytes": 8020
+    },
+    {
+      "sha256": "bbe72832de4fa1095105c8cc97455a06c5d2897329d76201a03e64cab7ab77e0",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\closed\\wrapper\\native-process.json",
+      "bytes": 516
+    },
+    {
+      "sha256": "5b69ae0ca3061914e52a5f2a4ad204193baa977ec9a5b5cecaa05cb466312c0a",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\closed\\wrapper\\native-terminal.json",
+      "bytes": 2182
+    },
+    {
+      "sha256": "5294c72f212c9af1a1dd93fb2a810197edfaf16b455e3be4bc1166e51ac33b4d",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\performance-tools-940f4e2\\manifest.json",
+      "bytes": 755
+    },
+    {
+      "sha256": "b9224b72db3a48c07c505e2e0ddcfa437a1f028157161fe9b3c52f83cb920cce",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\comparison.json",
+      "bytes": 822
+    },
+    {
+      "sha256": "68559de308b0250a86b873e1b3b6b177d3fcdb7aa990cd68a9156b9340755014",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\checkpoint.json",
+      "bytes": 152
+    },
+    {
+      "sha256": "426c93719deb4e8b17e1a54e92c5e4d27b3c68347c7609944bedc01f0fe63b9b",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\closed\\archive.json",
+      "bytes": 31176
+    },
+    {
+      "sha256": "e443b8855d67602a7ffe85ab8a203aa71c2e5824c81830f89fd121930c93e8a3",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\closed\\wrapper\\native-process.json",
+      "bytes": 516
+    },
+    {
+      "sha256": "92d25bb894586efedd06c070690ae7f44481b4d9bf0638c60184bc56a00e10d8",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\closed\\wrapper\\native-terminal.json",
+      "bytes": 2178
+    },
+    {
+      "sha256": "b2b9b99a776ca64c5ace502fcc3a1e0a3b7bf6fdf6f2c43bf577166da39c5619",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\closed\\wrapper\\wrapper-result.json",
+      "bytes": 3871
+    },
+    {
+      "sha256": "f90a5a6cdd382c929b47862e4d840ee296d22869fcf464b6d6dd99ca79124918",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\closed\\wrapper\\attribute-after.json",
+      "bytes": 5020
+    },
+    {
+      "sha256": "83b503c65d83589d1c08540dbca8d1e17499b003a22d7c868b0fa391b919ac66",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\closed\\core\\conversion\\result.json",
+      "bytes": 1041
+    },
+    {
+      "sha256": "10000abd8e0a8f5a2dbaccc005feb385e8ec897587be918bbc9e6bdc5e234810",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\closed\\core\\conversion\\finalization.json",
+      "bytes": 1687620
+    },
+    {
+      "sha256": "566289a6c79fda047876dd6085fd7acf9a0bfe2e102deeadc9b290fb829699d5",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\bitmap-performance-610f3f55\\closed\\core\\conversion\\qualification\\construction-placement.json",
+      "bytes": 58421450
+    }
+  ],
+  "kind": "native-bitmap-planning-performance",
+  "baseline_seconds": 138.7540667,
+  "source_commit": "940f4e21911a5d71dbd71c717352e3372652a871",
+  "source_checkpoint": "1057eb82-d152-4572-881b-53ff9dbb82dd",
+  "query_schedule_preserved_by_code_review": true,
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "retained_payload_bytes": 4194304,
+  "core_run_id": "2cf74f009dbefb4eba5fd8ccec273c09",
+  "independent_new_alias_stream_sha256_views": 9,
+  "matching_workload": {
+    "named_carrier_streams": 3,
+    "named_streams": 8,
+    "phase_bitmap_snapshots": 3,
+    "deferred_scratch_submissions": 5,
+    "deferred_original_submissions": 2,
+    "files": 5,
+    "evacuation_submissions": 0,
+    "named_carrier_bytes": 4268032,
+    "desired_runs": 1031,
+    "tracked_extents": 14,
+    "final_submissions": 1022,
+    "sparse_carrier_bytes": 266240
+  },
+  "sparse_layouts": 3,
+  "public_executable_sha256": "95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98",
+  "timing_method": "native process creation timestamp through closed terminal receipt UTC",
+  "changes": [
+    "retain and reuse original collector first-page proof/prefix",
+    "validate immutable streamed planning snapshots once per phase",
+    "binary-search relevant allocation intervals for each query",
+    "rebuild planners after native drift refresh"
+  ]
+}

@@ -299,8 +299,17 @@ layouts. The run took138.754 seconds for this intentionally fragmented fixture;
 there is no valid speed comparison against earlier failed builds. See
 [the evidence](../evidence/attribute-list-native-conversion-20261030.json).
 
-Continue in concrete slices: (1) reduce redundant bitmap hashing and planning
-while preserving complete checks; (2) qualify sparse mutation and broader
+Source `940f4e2` then converted the same NTFS checkpoint in 92.959 s compared
+with 138.754 s on `4c58d38`, a 33.0% reduction in this single VM fixture. All
+13 objects/9 default/8 named hashes, 3 sparse layouts and 1,024 original payload
+extents matched. Movement/phase counts also matched. The change reuses opaque
+first-page evidence and immutable phase planners; complete native acquisition
+and per-move checks remain. It reduces repeated CPU work, with no measured
+physical-I/O reduction. See [the scoped comparison](../evidence/bitmap-planning-performance-20261030.json).
+Reboot, mutation and recovery coverage for this exact build remain pending.
+
+Continue in concrete slices: (1) address large-volume bitmap acquisition and
+remaining fixed resource limits; (2) qualify sparse mutation and broader
 extension-record forms, which expands practical fragmentation, link and stream coverage;
 (3) preserve SACL/null/empty security distinctions and native reparse/EAs;
 (4) materialize compressed/WOF logical content with exact space forecasts;

@@ -34,6 +34,10 @@ conversion and reboot. Both fragmented 2 MiB streams retained all 1,024 original
 physical extents. This adds a bounded compatibility result, not universal NTFS
 support; see the [pinned evidence](evidence/attribute-list-native-conversion-20261030.json).
 
+Reusing bitmap evidence and phase planners reduced the same fragmented fixture
+from 138.75 s to 92.96 s (33% shorter), with matching checks and retained extents.
+This is one VM measurement; see [the performance evidence](evidence/bitmap-planning-performance-20261030.json).
+
 The drive-oriented Windows entry point is now available:
 
 ```powershell

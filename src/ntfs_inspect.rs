@@ -2322,6 +2322,28 @@ fn checked_plain_attribute<R: Read + Seek>(
     max_bytes: u64,
     alpha_limit: bool,
 ) -> Result<(Attribute, String)> {
+    checked_data_attribute(
+        reader,
+        raw,
+        record_number,
+        stream_name_utf16,
+        max_bytes,
+        alpha_limit,
+        false,
+    )
+}
+
+/// Shared metadata/identity checks. Sparse support is an explicit reader
+/// policy; it does not widen plain callers or source/target admission.
+fn checked_data_attribute<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    max_bytes: u64,
+    alpha_limit: bool,
+    allow_sparse: bool,
+) -> Result<(Attribute, String)> {
     if !raw.attribute_assemblies.is_empty() {
         validate_record_coverage(raw)?;
     }
@@ -2340,7 +2362,7 @@ fn checked_plain_attribute<R: Read + Seek>(
         .find(|s| s.name_utf16 == stream_name_utf16)
         .context("requested DATA stream absent")?;
     ensure!(
-        stream.flags == 0
+        (stream.flags == 0 || (allow_sparse && stream.flags == 0x8000))
             && stream.logical_hash_status == LogicalHashStatus::Complete
             && stream.logical_size <= max_bytes
             && (!alpha_limit || max_bytes <= ALPHA_MAX_PLAIN_BYTES),
@@ -2423,11 +2445,24 @@ fn checked_plain_attribute<R: Read + Seek>(
         .context("source DATA inventory absent")?;
     ensure!(
         serde_json::to_vec(&data.report)? == serde_json::to_vec(expected)?
-            && data.report.flags == 0
-            && data.report.compression_unit == 0
+            && ((data.report.flags == 0 && data.report.compression_unit == 0)
+                || (allow_sparse
+                    && data.report.flags == 0x8000
+                    && !data.report.resident
+                    && matches!(data.report.compression_unit, 0 | 4)))
             && data.report.logical_size == stream.logical_size,
         "source DATA attribute changed"
     );
+    if allow_sparse {
+        ensure!(
+            stream.flags == data.report.flags
+                && stream.resident == data.report.resident
+                && stream.initialized_size == data.report.initialized_size
+                && stream.allocated_size == data.report.allocated_size
+                && stream.extents == data.report.extents,
+            "sparse DATA inventory differs from the actual attribute mapping"
+        );
+    }
     if !data.report.resident {
         validate_stream_mapping(&data.report, geometry)?;
     }
@@ -2777,6 +2812,44 @@ pub fn read_plain_stream<R: Read + Seek>(
     Ok(payload)
 }
 
+/// Raw mapping accounting, not a volume-allocation or native-ownership proof.
+/// For sparse nonresident DATA, the header's allocation field and the sum of
+/// physical runs are deliberately retained as different quantities.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct StreamAllocationEvidence {
+    pub sparse: bool,
+    pub resident: bool,
+    pub initialized_bytes: u64,
+    pub header_allocated_bytes: u64,
+    pub mapped_logical_bytes: u64,
+    pub mapped_physical_bytes: u64,
+    pub allocation_ownership_reconciled: bool,
+}
+
+fn data_allocation_evidence(attribute: &AttributeInventory) -> Result<StreamAllocationEvidence> {
+    let mut mapped_logical_bytes = 0u64;
+    let mut mapped_physical_bytes = 0u64;
+    for extent in &attribute.extents {
+        mapped_logical_bytes = mapped_logical_bytes
+            .checked_add(extent.length)
+            .context("logical extent accounting overflow")?;
+        if extent.physical_offset.is_some() {
+            mapped_physical_bytes = mapped_physical_bytes
+                .checked_add(extent.length)
+                .context("physical extent accounting overflow")?;
+        }
+    }
+    Ok(StreamAllocationEvidence {
+        sparse: attribute.flags & 0x8000 != 0,
+        resident: attribute.resident,
+        initialized_bytes: attribute.initialized_size,
+        header_allocated_bytes: attribute.allocated_size,
+        mapped_logical_bytes,
+        mapped_physical_bytes,
+        allocation_ownership_reconciled: false,
+    })
+}
+
 #[derive(Debug, Serialize)]
 pub struct StreamRangeReadProof {
     pub record_number: u64,
@@ -2789,6 +2862,9 @@ pub struct StreamRangeReadProof {
     pub expected_stream_sha256: String,
     pub sha256: String,
     pub whole_stream_hash_matched: bool,
+    /// Present only for the explicitly opted-in sparse-aware reader.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allocation: Option<StreamAllocationEvidence>,
 }
 
 /// One bounded mapping cache for reads under an externally held immutable
@@ -2797,6 +2873,7 @@ pub struct StreamRangeReadProof {
 pub struct PlainStreamRangeSession {
     record_number: u64,
     stream_name_utf16: Vec<u16>,
+    allow_sparse: bool,
     attribute: Attribute,
     expected: String,
     poisoned: bool,
@@ -2820,21 +2897,62 @@ impl PlainStreamRangeSession {
         stream_name_utf16: &[u16],
         max_bytes: u64,
     ) -> Result<Self> {
-        ensure!(
-            stream_name_utf16.len() <= 255,
-            "stream name exceeds NTFS limit"
-        );
-        let (attribute, expected) = checked_plain_attribute(
+        Self::open_policy(
             reader,
             raw,
             record_number,
             stream_name_utf16,
             max_bytes,
             false,
+        )
+    }
+
+    /// Explicitly accept uncompressed sparse DATA as well as plain DATA. A
+    /// hole or bytes after VDL read as zeros; they issue no payload-device read.
+    /// Full logical-byte hashing/budgets are unchanged, and physical ownership
+    /// must still be independently reconciled before conversion.
+    pub fn open_sparse_named<R: Read + Seek>(
+        reader: &mut R,
+        raw: &NtfsInspection,
+        record_number: u64,
+        stream_name_utf16: &[u16],
+        max_bytes: u64,
+    ) -> Result<Self> {
+        Self::open_policy(
+            reader,
+            raw,
+            record_number,
+            stream_name_utf16,
+            max_bytes,
+            true,
+        )
+    }
+
+    fn open_policy<R: Read + Seek>(
+        reader: &mut R,
+        raw: &NtfsInspection,
+        record_number: u64,
+        stream_name_utf16: &[u16],
+        max_bytes: u64,
+        allow_sparse: bool,
+    ) -> Result<Self> {
+        ensure!(
+            stream_name_utf16.len() <= 255,
+            "stream name exceeds NTFS limit"
+        );
+        let (attribute, expected) = checked_data_attribute(
+            reader,
+            raw,
+            record_number,
+            stream_name_utf16,
+            max_bytes,
+            false,
+            allow_sparse,
         )?;
         Ok(Self {
             record_number,
             stream_name_utf16: stream_name_utf16.to_vec(),
+            allow_sparse,
             attribute,
             expected,
             poisoned: false,
@@ -2855,6 +2973,9 @@ impl PlainStreamRangeSession {
     }
     pub fn expected_sha256(&self) -> &str {
         &self.expected
+    }
+    pub fn allocation_evidence(&self) -> Result<StreamAllocationEvidence> {
+        data_allocation_evidence(&self.attribute.report)
     }
     pub fn read<R: Read + Seek>(
         &mut self,
@@ -2880,13 +3001,14 @@ impl PlainStreamRangeSession {
     }
     pub fn finish<R: Read + Seek>(self, reader: &mut R, raw: &NtfsInspection) -> Result<()> {
         ensure!(!self.poisoned, "failed plain stream session cannot finish");
-        let (after, expected) = checked_plain_attribute(
+        let (after, expected) = checked_data_attribute(
             reader,
             raw,
             self.record_number,
             &self.stream_name_utf16,
             self.stream_length(),
             false,
+            self.allow_sparse,
         )?;
         ensure!(
             expected == self.expected
@@ -2927,6 +3049,54 @@ pub fn read_plain_named_stream_range_into<R: Read + Seek>(
     output: &mut [u8],
     budget: &mut StreamTransferBudget,
 ) -> Result<StreamRangeReadProof> {
+    read_data_stream_range_into(
+        reader,
+        raw,
+        record_number,
+        stream_name_utf16,
+        offset,
+        output,
+        budget,
+        false,
+    )
+}
+
+/// Sparse-aware counterpart of the plain named range reader. Only flags zero
+/// or SPARSE (0x8000) are accepted; compression and EFS remain refused. The
+/// existing logical reader preserves holes and uninitialized zero semantics,
+/// and the proof distinguishes header allocation from physical mapped bytes.
+pub fn read_sparse_named_stream_range_into<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    offset: u64,
+    output: &mut [u8],
+    budget: &mut StreamTransferBudget,
+) -> Result<StreamRangeReadProof> {
+    read_data_stream_range_into(
+        reader,
+        raw,
+        record_number,
+        stream_name_utf16,
+        offset,
+        output,
+        budget,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_data_stream_range_into<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    offset: u64,
+    output: &mut [u8],
+    budget: &mut StreamTransferBudget,
+    allow_sparse: bool,
+) -> Result<StreamRangeReadProof> {
     ensure!(
         stream_name_utf16.len() <= 255,
         "stream name exceeds NTFS limit"
@@ -2935,13 +3105,14 @@ pub fn read_plain_named_stream_range_into<R: Read + Seek>(
         output.len() <= STREAM_HASH_BUFFER_BYTES,
         "materialization range exceeds fixed buffer"
     );
-    let (attribute, expected) = checked_plain_attribute(
+    let (attribute, expected) = checked_data_attribute(
         reader,
         raw,
         record_number,
         stream_name_utf16,
         budget.max_stream_bytes,
         false,
+        allow_sparse,
     )?;
     let length = output.len() as u64;
     ensure!(
@@ -2964,13 +3135,14 @@ pub fn read_plain_named_stream_range_into<R: Read + Seek>(
     }
     // Revalidate identity, geometry, mapping and initialized-length evidence
     // after the read too. No serialized success flag supplies that evidence.
-    let (_, after) = checked_plain_attribute(
+    let (_, after) = checked_data_attribute(
         reader,
         raw,
         record_number,
         stream_name_utf16,
         budget.max_stream_bytes,
         false,
+        allow_sparse,
     )?;
     ensure!(
         after == expected,
@@ -2985,6 +3157,11 @@ pub fn read_plain_named_stream_range_into<R: Read + Seek>(
         expected_stream_sha256: expected,
         sha256: actual,
         whole_stream_hash_matched: whole,
+        allocation: if allow_sparse {
+            Some(data_allocation_evidence(&attribute.report)?)
+        } else {
+            None
+        },
     })
 }
 

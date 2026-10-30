@@ -76,21 +76,31 @@ copied and hash-checked; a bounded archived observer independently accepts
 933/811. See evidence/payload-reference-native-mixed-20261030.json.
 No mutation/reboot or independent recovery of this build has run yet.
 
+Revised validation candidate: a lab-only --interrupt-after-first-copy-write
+hook now derives its destination from the actual admitted reference plan,
+flushes one accepted copied-payload write and exits86. Numeric fault limits
+and the public drive path are unchanged. Mixed harnesses accept explicit
+capacity/checkpoint sets,64MiB completion records and pinned expectations.
+Mutation verification now batches at most64 paths/20,000 UTF-16 units and
+requires explicit digest/result/completion pins. Focused builds and AST checks
+pass; this candidate has no native results yet. Do not transfer156241e results.
+
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is Running/4GiB. Its current parent is
-mixed NTFS checkpoint6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e, created for the
-source-reference run; the current branch now holds the completed ReFS. Its independently seeded tree has808 files/120 directories,
+mixed NTFS checkpoint6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e, restored for the
+revised validation. Its independently seeded tree has808 files/120 directories,
 9,885,781,381 bytes; manifest is under mixed-fixture-20261029-3dccf8e8fa38487db6731284a12bceb9.
-The two older52d37819 and5f30f4a1 checkpoints also remain. Do not restore this
-branch while original run artifacts are still being preserved. The complete
+The completed156241e ReFS branch and its attached shadow were preserved before
+restore as checkpoint1683b2be-c372-45b2-8583-3b6028fd72f1. The two older52d37819
+and5f30f4a1 checkpoints also remain; none was removed. The complete
 metadata archive is under copy-reference-20261030/closed-run-2586aba6; its
 inventory records retained original bulk paths. The13,713,024,832-byte journal
 has now been exported and verified against its immutable-body hash and both
 completion/intent markers; the1,180,688,384-byte backing was exported and
 verified against its capture hash. See bulk-preservation.json in that archive.
-The742,391,808-byte shadow VHDX is still
-attached and cannot be exported through an ordinary read; no bypass or detach
-has been attempted. Preserve it before any restore. No new test/conversion
-worker is active, and the archive review changed no VM/disk state or checkpoint.
+The742,391,808-byte original shadow VHDX could not be exported through an
+ordinary read; no bypass or detach was attempted. The whole original branch,
+including that image, is retained in1683b2be. No revised conversion worker has
+started yet. Do not remove preservation checkpoints without specific approval.
 Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at

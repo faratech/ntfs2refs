@@ -127,6 +127,18 @@ pub fn convert_fresh_allocation_selected(
     )
 }
 
+/// Stop after the first actual native target write into the first qualified
+/// old-payload-copy destination. The selected plan determines the destination.
+pub fn convert_fresh_allocation_selected_after_first_copy(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+) -> Result<()> {
+    crate::general_conversion::convert_allocation_first_copy_interrupted_for_lab(
+        request, budget, output,
+    )
+}
+
 #[derive(Debug, Serialize)]
 pub struct ApplyReport {
     pub kind: &'static str,

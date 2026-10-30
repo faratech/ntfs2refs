@@ -854,6 +854,87 @@ impl lab_reconstruct::DurableIo for InterruptingGeneralTarget<'_> {
     }
 }
 
+/// Lab-only semantic fault. Only writes accepted by this native target handle
+/// are observed; journal writes never pass through this wrapper.
+pub(crate) struct FirstCopyInterruptingGeneralTarget<'a> {
+    inner: &'a mut GeneralJournaledPartition,
+    copy_offset: u64,
+    copy_length: u64,
+    copy_end: u64,
+}
+impl<'a> FirstCopyInterruptingGeneralTarget<'a> {
+    pub(crate) fn new(
+        inner: &'a mut GeneralJournaledPartition,
+        copy_offset: u64,
+        copy_length: u64,
+    ) -> io::Result<Self> {
+        let copy_end = copy_offset.checked_add(copy_length).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "copy interruption range overflow",
+            )
+        })?;
+        if copy_length == 0
+            || !copy_offset.is_multiple_of(4096)
+            || !copy_length.is_multiple_of(4096)
+            || copy_end > inner.byte_len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "copy interruption requires an aligned range inside the actual target",
+            ));
+        }
+        Ok(Self {
+            inner,
+            copy_offset,
+            copy_length,
+            copy_end,
+        })
+    }
+}
+impl Read for FirstCopyInterruptingGeneralTarget<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(bytes)
+    }
+}
+impl Seek for FirstCopyInterruptingGeneralTarget<'_> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(from)
+    }
+}
+impl Write for FirstCopyInterruptingGeneralTarget<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let offset = self.inner.stream_position()?;
+        let written = self.inner.write(bytes)?;
+        let end = offset
+            .checked_add(written as u64)
+            .ok_or_else(|| io::Error::other("accepted target write offset overflow"))?;
+        if written > 0 && offset < self.copy_end && self.copy_offset < end {
+            self.inner.sync_all()?;
+            eprintln!(
+                "Controlled first-copy target interruption: write_offset={offset} write_bytes={written} copy_offset={} copy_length={}; target flushed; source stays offline; recover using the pinned ticket.",
+                self.copy_offset, self.copy_length
+            );
+            io::stderr().flush()?;
+            std::process::exit(86);
+        }
+        Ok(written)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.sync_all()
+    }
+}
+impl lab_reconstruct::ReadSeek for FirstCopyInterruptingGeneralTarget<'_> {
+    fn byte_len(&mut self) -> io::Result<u64> {
+        Ok(GeneralJournaledPartition::byte_len(self.inner))
+    }
+}
+impl lab_reconstruct::DurableIo for FirstCopyInterruptingGeneralTarget<'_> {
+    fn sync_all(&mut self) -> io::Result<()> {
+        self.inner.sync_all()
+    }
+}
+
 fn execute_with_interruption(
     operation: RecoveryOperation,
     request: &Request,

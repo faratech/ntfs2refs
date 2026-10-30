@@ -133,7 +133,7 @@ pub fn convert_allocation_experimental(
             && !request.verify_existing_shadow,
         "allocation-bounded conversion requires the explicit streaming profile and a fresh shadow"
     );
-    allocation::convert_allocation_selected(request, budget, output, None)
+    allocation::convert_allocation_selected(request, budget, output, None, false)
 }
 
 /// Lab-only selected-device fault entry for the allocation-bounded backend.
@@ -152,7 +152,25 @@ pub(crate) fn convert_allocation_selected_for_lab(
             && !request.verify_existing_shadow,
         "allocation-bounded lab exercise requires the explicit streaming profile and a fresh shadow"
     );
-    allocation::convert_allocation_selected(request, budget, output, interrupt_after_writes)
+    allocation::convert_allocation_selected(request, budget, output, interrupt_after_writes, false)
+}
+
+/// Semantic lab fault, derived from the actual qualified copy map rather than
+/// a fixture-specific write count. Never exposed by the public drive command.
+pub(crate) fn convert_allocation_first_copy_interrupted_for_lab(
+    request: &Request,
+    budget: qualification::CompactConstructionBudget,
+    output: &Path,
+) -> Result<()> {
+    request.validate()?;
+    budget.validate(request.pair.source.identity.partition_bytes)?;
+    ensure!(
+        request.source_resource_profile
+            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+            && !request.verify_existing_shadow,
+        "copy-write lab exercise requires the explicit streaming profile and a fresh shadow"
+    );
+    allocation::convert_allocation_selected(request, budget, output, None, true)
 }
 
 /// Explicit owning-guest exercise: synchronize the known small source cache

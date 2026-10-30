@@ -28,8 +28,16 @@ fn main() -> anyhow::Result<()> {
         maximum_placement_submissions: usize,
         #[arg(long, default_value_t = 16777216)]
         maximum_exception_bytes: u64,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "interrupt_after_first_copy_write")]
         interrupt_after_writes: Option<u32>,
+        /// Stop after the first flushed payload write into the actual first
+        /// old-payload-copy destination of the qualified allocation plan.
+        #[arg(
+            long,
+            requires = "allocation_bounded",
+            conflicts_with = "interrupt_after_writes"
+        )]
+        interrupt_after_first_copy_write: bool,
         /// Use the allocation-bounded backend (requires --selected-devices).
         #[arg(long, requires = "selected_devices")]
         allocation_bounded: bool,
@@ -64,12 +72,20 @@ fn main() -> anyhow::Result<()> {
         maximum_exception_bytes: args.maximum_exception_bytes,
     };
     if args.allocation_bounded {
-        ntfs2refs::general_lab::convert_fresh_allocation_selected(
-            &request,
-            budget,
-            &args.output,
-            args.interrupt_after_writes,
-        )
+        if args.interrupt_after_first_copy_write {
+            ntfs2refs::general_lab::convert_fresh_allocation_selected_after_first_copy(
+                &request,
+                budget,
+                &args.output,
+            )
+        } else {
+            ntfs2refs::general_lab::convert_fresh_allocation_selected(
+                &request,
+                budget,
+                &args.output,
+                args.interrupt_after_writes,
+            )
+        }
     } else if args.selected_devices {
         ntfs2refs::general_lab::convert_fresh_compact_selected(
             &request,

@@ -18,11 +18,16 @@ pub(super) fn convert_allocation_selected(
     construction: qualification::CompactConstructionBudget,
     output: &Path,
     interrupt_after_writes: Option<u32>,
+    interrupt_after_first_copy_write: bool,
 ) -> Result<()> {
     request.validate()?;
     ensure!(
         interrupt_after_writes.is_none_or(|writes| (1..=4096).contains(&writes)),
         "allocation-bounded interruption count must be 1..=4096"
+    );
+    ensure!(
+        !interrupt_after_first_copy_write || interrupt_after_writes.is_none(),
+        "copy-write and numeric interruptions are mutually exclusive"
     );
     announce_conversion_phase("checking request and device identities");
     let preflight = composite::selected_device_preflight(request)?;
@@ -35,6 +40,7 @@ pub(super) fn convert_allocation_selected(
             "schema_version":1,"kind":"experimental-allocation-bounded-conversion-intent",
             "request":request,"construction_budget":construction,
             "interrupt_after_writes":interrupt_after_writes,
+            "interrupt_after_first_copy_write":interrupt_after_first_copy_write,
             "requires_original_live_source_certificate":true,
             "free_space_contents_compared":false,"recovery_bundle_published_before_activation":true,
             "source_admitted":false,"execution_authorized":false,
@@ -93,6 +99,25 @@ pub(super) fn convert_allocation_selected(
         let new_copy_bytes = plan.new_copy_bytes()?;
         let packed_bytes = proof.capture().layout.packed_bytes();
         let plan_pin = qualification::save(output, "selected-plan.json", &plan)?;
+        let copy_interruption_target = if interrupt_after_first_copy_write {
+            let copy = plan.new_copy_ranges.first().context(
+                "first-copy interruption requires a qualified old-payload reference; source writes have not started",
+            )?.clone();
+            qualification::save(
+                output,
+                "copy-interruption-target.json",
+                &serde_json::json!({
+                    "kind":"first-copy-write-interruption-target",
+                    "offset":copy.offset,"length":copy.length,
+                    "source_offset":copy.source_offset,"actual_plan_bound":true,
+                    "plan_sha256":plan_pin,"expected_exit_code":86,
+                    "write_executed":false,
+                }),
+            )?;
+            Some(copy)
+        } else {
+            None
+        };
 
         let journal_volume_root = request.journal.disk.volume_path()? + "\\";
         let space = n2r_win32::discovery::observe_volume_space(&journal_volume_root)?;
@@ -243,8 +268,8 @@ pub(super) fn convert_allocation_selected(
 
         phase = "selected-apply";
         announce_conversion_phase("applying the selected ranges");
-        let applied = match interrupt_after_writes {
-            Some(remaining) => {
+        let applied = match (interrupt_after_writes, copy_interruption_target.as_ref()) {
+            (Some(remaining), _) => {
                 // Lab fault: the wrapper flushes then exits the process with 86.
                 let mut interrupted =
                     reconstruct::InterruptingGeneralTarget::new(&mut target, remaining);
@@ -254,7 +279,21 @@ pub(super) fn convert_allocation_selected(
                     result.range_count
                 )
             }
-            None => sj::apply(&mut target, &mut journal, &plan, &ticket)?,
+            (None, Some(copy)) => {
+                let mut interrupted = reconstruct::FirstCopyInterruptingGeneralTarget::new(
+                    &mut target,
+                    copy.offset,
+                    copy.length,
+                )?;
+                let result = sj::apply(&mut interrupted, &mut journal, &plan, &ticket)?;
+                anyhow::bail!(
+                    "first-copy interruption not reached: qualified copy at {} for {} bytes; {} ranges applied",
+                    copy.offset,
+                    copy.length,
+                    result.range_count
+                )
+            }
+            (None, None) => sj::apply(&mut target, &mut journal, &plan, &ticket)?,
         };
         qualification::save(output, "apply.json", &applied)?;
 

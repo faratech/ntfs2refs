@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeSet,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     os::windows::{
@@ -703,5 +704,274 @@ pub fn create(probe_id: &str) -> Value {
     }
     report["created_paths"] = json!(created);
     report["moves"] = json!(moves);
+    report
+}
+
+/// Complete observations for an already fragmented fixture. Prior JSON binds
+/// the expected experiment only: it cannot authorize allocation or conversion.
+/// Every source handle in this path is opened read-only; no fixture creation,
+/// relocation, flush, deletion, privilege change or recovery is performed.
+pub fn observe_existing(probe_id: &str, prior: &Value) -> Value {
+    let mut report = json!({"schema_version":1,"kind":"ntfs-attribute-list-fixture",
+        "probe_id":probe_id,"success":false,"read_only_completion":true,
+        "prior_error":prior["error"],"automatic_retry":false,
+        "formats_performed":0,"raw_volume_write_calls":0,"deletions_performed":0,
+        "created_paths":[],"moves":[],"move_file_calls":0,"source_write_requests":0,
+        "conversion_authorized":false,"cluster_bytes":CLUSTER,
+        "default_stream_bytes":STREAM_BYTES,"named_stream_bytes":STREAM_BYTES});
+    let attempt = (|| -> io::Result<()> {
+        require(
+            probe_id.len() == 32
+                && probe_id
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "lowercase 32-character probe ID required",
+        )?;
+        require(
+            std::env::var("COMPUTERNAME").as_deref() == Ok("N2R-WIN11"),
+            "owning enrolled Windows guest required",
+        )?;
+        require(
+            prior["schema_version"] == 1
+                && prior["kind"] == "ntfs-attribute-list-fixture"
+                && prior["probe_id"] == probe_id
+                && prior["success"] == false
+                && prior["error"] == "FILE update-sequence mismatch"
+                && prior["read_only_completion"].is_null()
+                && prior["planned_move_count"] == 2 * CLUSTERS
+                && prior["cluster_bytes"] == CLUSTER
+                && prior["default_stream_bytes"] == STREAM_BYTES
+                && prior["named_stream_bytes"] == STREAM_BYTES
+                && prior["formats_performed"] == 0
+                && prior["raw_volume_write_calls"] == 0
+                && prior["deletions_performed"] == 0,
+            "prior report is not the exact completed-moves FILE-query refusal",
+        )?;
+        let base = PathBuf::from(format!(r"H:\attribute-list-{probe_id}.bin"));
+        let segments = PathBuf::from(format!("{}:Segments:$DATA", base.display()));
+        let note = PathBuf::from(format!("{}:Note:$DATA", base.display()));
+        let aliases = [
+            PathBuf::from(format!(r"H:\attribute-list-{probe_id}-alias.bin")),
+            PathBuf::from(format!(r"H:\nested\attribute-list-{probe_id}-nested.bin")),
+        ];
+        let initial = prior["initial_streams"]
+            .as_array()
+            .filter(|values| values.len() == 3)
+            .ok_or_else(|| invalid("prior report requires exactly three initialized streams"))?;
+        let names: [Vec<u16>; 3] = [
+            vec![],
+            "Segments".encode_utf16().collect(),
+            "Note".encode_utf16().collect(),
+        ];
+        for (entry, (path, name)) in initial
+            .iter()
+            .zip([&base, &segments, &note].into_iter().zip(&names))
+        {
+            require(
+                entry["path"] == json!(path) && entry["name_utf16"] == json!(name),
+                "prior initialized stream path/name differs",
+            )?;
+        }
+        let expected_id = initial[0]["file_id_info"]
+            .as_str()
+            .filter(|id| id.len() == 48 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or_else(|| invalid("prior fixture identity is absent"))?;
+        require(
+            initial
+                .iter()
+                .all(|entry| entry["file_id_info"] == expected_id),
+            "prior stream identities differ",
+        )?;
+        let window = &prior["free_window"];
+        let first = window["selected_start_lcn"]
+            .as_u64()
+            .ok_or_else(|| invalid("prior free-window start missing"))?;
+        require(
+            window["search_start_lcn"] == WINDOW_START
+                && window["search_clusters"] == WINDOW_CLUSTERS
+                && window["selected_clusters"] == 4 * CLUSTERS
+                && first >= WINDOW_START
+                && first
+                    .checked_add(4 * CLUSTERS)
+                    .is_some_and(|end| end <= WINDOW_START + WINDOW_CLUSTERS),
+            "prior fragmentation window differs",
+        )?;
+        let moves = prior["moves"]
+            .as_array()
+            .filter(|values| values.len() == (2 * CLUSTERS) as usize)
+            .ok_or_else(|| invalid("prior report does not contain all 1024 moves"))?;
+        let mut seen = BTreeSet::new();
+        for movement in moves {
+            let stream = movement["stream"]
+                .as_str()
+                .ok_or_else(|| invalid("prior move stream missing"))?;
+            let vcn = movement["vcn"]
+                .as_u64()
+                .filter(|vcn| *vcn < CLUSTERS)
+                .ok_or_else(|| invalid("prior move VCN outside fixture"))?;
+            let stream_index = match stream {
+                "" => 0u8,
+                "Segments" => 1u8,
+                _ => return Err(invalid("prior move names another stream")),
+            };
+            let destination = first + 4 * vcn + 2 * u64::from(stream_index);
+            require(
+                seen.insert((stream_index, vcn))
+                    && movement["clusters"] == 1
+                    && movement["destination_lcn"] == destination
+                    && movement["actual_lcn"] == destination
+                    && movement["file_id_info"] == expected_id
+                    && movement["submitted"] == true
+                    && movement["verified"] == true
+                    && movement["native_error"].is_null(),
+                "prior move uniqueness, destination or verified outcome differs",
+            )?;
+            for field in [
+                "before_mapping_sha256",
+                "after_mapping_sha256",
+                "free_bitmap_sha256",
+            ] {
+                require(
+                    movement[field].as_str().is_some_and(|value| {
+                        value.len() == 64
+                            && value
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    }),
+                    "prior move query hash missing",
+                )?;
+            }
+        }
+        require(
+            seen.len() == (2 * CLUSTERS) as usize,
+            "prior move coverage incomplete",
+        )?;
+        report["prior_verified_move_count"] = json!(seen.len());
+        report["prior_initial_streams"] = json!(initial);
+        report["free_window"] = window.clone();
+        let before = source()?;
+        require(
+            prior["source"]["binding"]
+                == serde_json::to_value(&before.binding).map_err(io::Error::other)?
+                && prior["source"]["volume_guid_path"] == before.volume_guid_path,
+            "actual source is not the prior enrolled volume",
+        )?;
+        ordinary_directory(Path::new(r"H:\"))?;
+        ordinary_directory(Path::new(r"H:\nested"))?;
+        let volume = OpenOptions::new()
+            .read(true)
+            .share_mode(7)
+            .open(before.volume_guid_path.trim_end_matches('\\'))?;
+        let serial = prior["ntfs_serial"]
+            .as_u64()
+            .ok_or_else(|| invalid("prior NTFS serial missing"))?;
+        let total_clusters = prior["ntfs_total_clusters"]
+            .as_u64()
+            .ok_or_else(|| invalid("prior NTFS cluster count missing"))?;
+        verify_volume(&volume, Some((serial, total_clusters)))?;
+        report["source"] = serde_json::to_value(&before).map_err(io::Error::other)?;
+        report["ntfs_serial"] = json!(serial);
+        report["ntfs_total_clusters"] = json!(total_clusters);
+        let open = |path: &Path| -> io::Result<File> {
+            let file = OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .custom_flags(0x0020_0000)
+                .open(path)?;
+            require(
+                file.metadata()?.is_file() && file.metadata()?.file_attributes() & 0x4e00 == 0,
+                "ordinary existing fixture stream required",
+            )?;
+            same_identity(&file, serial, expected_id)?;
+            require(
+                standard(&file)?["number_of_links"] == 3,
+                "existing fixture does not have exactly three names",
+            )?;
+            Ok(file)
+        };
+        let mut default = open(&base)?;
+        let mut named = open(&segments)?;
+        let mut note_file = open(&note)?;
+        let held_aliases = [open(&aliases[0])?, open(&aliases[1])?];
+        let default_map = mapping(&default)?;
+        let named_map = mapping(&named)?;
+        for (stream_index, map) in [&default_map, &named_map].into_iter().enumerate() {
+            require(
+                map.runs.len() == CLUSTERS as usize,
+                "existing fixture no longer has 512 complete extents",
+            )?;
+            for vcn in 0..CLUSTERS {
+                require(
+                    lcn_at(&map.runs, vcn)? == first + 4 * vcn + 2 * stream_index as u64,
+                    "current mapping differs from verified prior move destination",
+                )?;
+            }
+        }
+        let default_hash = hashes(&mut default, STREAM_BYTES)?;
+        let named_hash = hashes(&mut named, STREAM_BYTES)?;
+        let note_hash = hashes(&mut note_file, 64)?;
+        require(
+            default_hash == initial[0]["hashes"]
+                && named_hash == initial[1]["hashes"]
+                && note_hash == initial[2]["hashes"],
+            "current logical stream hashes differ from pre-move initialized bytes",
+        )?;
+        let note_residency = resident_note(&note_file)?;
+        report["note_residency_after"] = note_residency.clone();
+        require(
+            note_residency["resident_data_observed"] == true,
+            "existing small Note ADS is not resident",
+        )?;
+        report["final_streams"] = json!([
+            {"path":base,"name_utf16":[],"file_id_info":expected_id,"hashes":default_hash,"mapping":map_json(&default_map)},
+            {"path":segments,"name_utf16":names[1],"file_id_info":expected_id,"hashes":named_hash,"mapping":map_json(&named_map)},
+            {"path":note,"name_utf16":names[2],"file_id_info":expected_id,"hashes":note_hash,"resident_observation":note_residency}
+        ]);
+        report["hard_links"] = json!(
+            aliases
+                .iter()
+                .map(|path| json!({"path":path,"file_id_info":expected_id}))
+                .collect::<Vec<_>>()
+        );
+        report["logical_bytes_hashed"] = json!(2 * STREAM_BYTES + 64);
+        report["current_complete_extent_count"] = json!(2 * CLUSTERS);
+        report["all_prior_payload_mappings_match"] = json!(true);
+        report["all_initial_logical_hashes_match"] = json!(true);
+        // Retain the independently completed mapping/content observations even
+        // if the native FILE-record representation still refuses strict USA.
+        report["base_file_record"] = base_record(&volume, expected_id)?;
+        require(
+            report["base_file_record"]["attribute_list_present"] == true,
+            "no base ATTRIBUTE_LIST in existing fragmented fixture",
+        )?;
+        for file in [&default, &named, &note_file]
+            .into_iter()
+            .chain(held_aliases.iter())
+        {
+            same_identity(file, serial, expected_id)?;
+            require(
+                standard(file)?["number_of_links"] == 3,
+                "fixture hard-link identity changed around observation",
+            )?;
+        }
+        require(
+            mapping(&default)?.canonical == default_map.canonical
+                && mapping(&named)?.canonical == named_map.canonical,
+            "fixture mapping changed around read-only observation",
+        )?;
+        verify_volume(&volume, Some((serial, total_clusters)))?;
+        let after = source()?;
+        require(
+            before.binding == after.binding && before.volume_guid_path == after.volume_guid_path,
+            "source route changed around read-only observation",
+        )?;
+        report["source_after"] = serde_json::to_value(after).map_err(io::Error::other)?;
+        report["success"] = json!(true);
+        Ok(())
+    })();
+    if let Err(error) = attempt {
+        report["error"] = json!(error.to_string());
+        report["native_error"] = json!(error.raw_os_error());
+    }
     report
 }

@@ -27,8 +27,8 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off/RAM0 at sparse
-NTFS rollback checkpoint1ad67365-8a17-46d7-aac1-f2a38748d7ba; all32 checkpoints
+Current state supersedes all older VM states below: VM is running at fragmented
+NTFS checkpoint637d286f-ecb3-46e0-8621-e7d89fe4862a; all35 checkpoints
 remain. The clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Source5aeaf40/public61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b
 completed public H:/partition2 conversionba1480fc/coreb8d43b36 inside the VM:
@@ -66,7 +66,20 @@ Focused library check and release builds of ntfs2refs plus the new
 lab-create-attribute-list-fixture helper passed; no native qualification yet.
 The helper uses only NTFS file creation and FSCTL_MOVE_FILE on enrolled H: to
 force fragmented streams, confirms a real ATTRIBUTE_LIST and preserves failures.
-Next: create that fresh fixture in the VM, then run the candidate converter.
+Candidate code is committed inaff21d0. The sealed public executable is
+7547b3732706b2548d96db1615d68b797a7d8a8fddf3e0b3113caf442089392f
+under .lab/hyperv/streaming-v2-20261027/attribute-tools-aff21d0.
+Fixturec1f6b081dac24e158708c97ef3151934 completed all1024 verified moves and
+compared payload hashes, then stopped in the final FSCTL file-record observer
+on its update-sequence assumption. Its actual files remain intact at637d286f;
+do not repeat their creation/moves. Closed fixture report SHA
+44c863bf6c6688a7674d0527c43070330adea68846930ff18784f3819cc298cb
+is under attribute-fixture-c1f6b081dac24e158708c97ef3151934/closed.
+Next: read-only completion of that existing fixture, then the candidate public
+conversion through lab/Start-AttributeListConversion.ps1. No converter is active.
+Earlier helper-only refusals are preserved under attribute-fixture-68d14605
+(read-only discovery flag), -9d172c41 (resident allocation observation; checkpoint
+9d98ce2a) and -eed02ff5 (temporary preallocation tail; checkpointf96b8890).
 Keep current binaries/evidence/checkpoints. No unit tests were added or run.
 The earlier EOF, dense-prefix and directory-aggregate sparse flag refusals are
 preserved in0bf53231/f4bf5238/289cf0f3 and their matching sparse-*-refusal folders.

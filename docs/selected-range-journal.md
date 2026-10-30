@@ -109,9 +109,14 @@ then passed the public drive conversion on the 52 GiB fixture: 15 objects and
 of the same selected changes would require 211,965,696 bytes combined; the
 encoded representation requires 76,446,832 bytes (about 64% less). The run took
 60.82 seconds, so this establishes storage reduction, not a timing improvement.
-Independent native recovery and mutation/reboot on this exact build remain
-unverified. The initial pre-activation capacity-query refusal is retained in
-the same evidence record.
+The same662f4ae build subsequently passed controlled one-write interruption,
+guest restart, public resume to ReFS15 objects/10 hashes and an independent
+public rollback to NTFS with7/7 user-file hashes matching. Both directions
+started from the same interrupted snapshot; see the
+[native recovery record](../evidence/zero-payload-recovery-20261030.json).
+Mutation/reboot and physical power loss on this build remain unverified. The
+initial pre-activation capacity-query refusal is retained in the conversion
+evidence record. These native results do not qualify later loader changes.
 
 ## Single-pass journal authentication
 

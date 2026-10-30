@@ -40,14 +40,26 @@ then passed one native public conversion (run78e69128139549f68b1c041366b13691),
 2,887,680 B and journal73,559,152 B versus211,965,696 B combined for a dense
 representation of the same changes (about64% lower storage). Duration60.82s;
 no timing improvement is established. See evidence/zero-payload-native-20261030.json.
-This build has not run native interruption/recovery or mutation/reboot checks.
+The same662f4ae build subsequently passed controlled interruption after one
+flushed write, a guest restart, public resume to ReFS15/10 and independent
+public rollback to NTFS with7/7 user files matching from the same interrupted
+checkpoint. See evidence/zero-payload-recovery-20261030.json. This does not
+cover physical power loss or mutation/reboot checks on that build.
 An initial run refused before activation due to a volume-root spelling bug;
 that failure is archived and the fix is in662f4ae. This does not implement staged
 N2RSEL02-H or remove the16GiB actual journal limit. Exact sizing precedes activation.
 
+Later source8d65a02 removes the duplicate immutable-journal read inside each
+load while preserving every validation boundary. The ordinary-file integration
+and byte-identical v1/v2 journals pass; evidence/journal-single-pass-20261030.json.
+Do not assign the662f4ae native results to this later loader. Source7327629 adds
+payload_copy_plan, a pure checked source/target mapping and journal-old/retained
+source segment planner. It is not wired to a payload-reference journal and
+grants no write authority. No new unit tests were written or run.
+
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
-NTFS checkpoint5f30f4a1, but its disks now hold the ReFS from the zero-payload
-run78e69128139549f68b1c041366b13691 (not checkpointed;
+NTFS checkpoint5f30f4a1, but its disks now hold the verified NTFS rollback from
+run9b8a4615dab0418eac759b5be632b266 (not checkpointed;
 records archived on the host). Only 52d37819 and 5f30f4a1 remain. Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
@@ -58,6 +70,11 @@ hostname is SINGULARITY: the lab VMs and the WSL Ubuntu distro are local to it.
 Only two checkpoints remain:
 - NTFS after optimized public rollback: 5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec.
 - ReFS after optimized public resume: 52d37819-2b9c-4041-9232-bd7eac3c21bb.
+
+Temporary zero-journal interruption checkpoint3008f75c was removed through
+Hyper-V after both recovery directions and rollback file readback passed.
+Do not reuse that deleted ID. Closed records are under
+.lab/hyperv/streaming-v2-20261027/zero-recovery-20261030.
 
 No native conversion/recovery job remains running. Root preserved both successful
 branches and removed obsolete632b630a/f06aa7fd/5125d335 through Hyper-V APIs.

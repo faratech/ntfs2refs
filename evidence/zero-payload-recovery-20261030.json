@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "kind": "native-zero-journal-interruption-recovery",
+  "source_commit": "662f4ae9d825d124ae68c8193e49c6a55ee4c6b8",
+  "public_executable_sha256": "5187c16083b66923bfe7b17838e5deb8e3616e87d7278279ed2b819d6c4a7a89",
+  "controlled_executable_sha256": "e797d7fb57f5e0114293a57ebf09e49fa0070d457774bcd7eacd98ff90dab711",
+  "format": "N2RZERO1",
+  "initial_interrupt": {
+    "run_id": "fb387c9c10794677b7b04fb0f87f542a",
+    "source_readonly": false,
+    "intent": "N2RSAP01",
+    "after_flushed_writes": 1,
+    "native_exit": 86,
+    "source_offline": true
+  },
+  "resume": {
+    "native_objects": 15,
+    "run_id": "66af219a12144a0daf7acdd476f26dd7",
+    "outcome": "refs_completed",
+    "observed_lifecycle": "apply_intent",
+    "native_exit": 0,
+    "file_hashes": 10
+  },
+  "rollback": {
+    "digest_helper_sha256": "6ec8bde8d97dfb8e231625c2522f4786afc51a039a8ad08ca9348544237c7451",
+    "run_id": "9b8a4615dab0418eac759b5be632b266",
+    "user_files_matching": 7,
+    "outcome": "ntfs_restored",
+    "digest_algorithm": "xxh3-128",
+    "observed_lifecycle": "apply_intent",
+    "native_exit": 0
+  },
+  "same_interrupted_checkpoint": "3008f75c-65d5-477b-914a-b48c8144550f",
+  "guest_restarted_before_each_recovery": true,
+  "archive_root": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\zero-recovery-20261030",
+  "archive_receipt_sha256": {
+    "rollback": "ffc44a72fbae594824367858a95fd54b1c33c7b9f42361e3a9b755bec6a0ae2a",
+    "rollback_readback": "b4cf1283675d8ec77eb4df47c6636f8f81240998aa882d8dcbe6ba8fcaed8193",
+    "resume": "1d3f2b43c5e07ac137f1f712a4f8c72732f401a3ea101f2b82ac5b641a1a74d3",
+    "interruption": "60709e0ca1fa144f440b8061482df2516f2cb1e26cee31a3df979a02adc01cd8"
+  },
+  "unit_tests_run": false,
+  "physical_power_loss_tested": false,
+  "native_mutation_reboot_tested": false,
+  "later_single_pass_loader_qualified_by_this": false,
+  "arbitrary_size_qualified": false
+}

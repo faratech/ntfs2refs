@@ -66,7 +66,11 @@ fn source() -> io::Result<discovery::VolumeDiscovery> {
             && source.binding.identity.partition_bytes == PARTITION_BYTES
             && source.binding.identity.disk_bytes == 56 * 1024 * 1024 * 1024
             && !source.disk_is_windows_disk
-            && !source.read_only
+            // `read_only` describes discovery's access, not the disk state.
+            // Role::Source has independently required online writable media.
+            && source.read_only
+            && source.source_write_requests == 0
+            && u64_at(&source.evidence.disk_attributes, 8)? == 0
             && source.filesystem == "NTFS"
             && source.label == "n2r-links-source"
             && source.bytes_per_sector == 512

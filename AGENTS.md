@@ -55,6 +55,22 @@ feature slices are identity/named-stream modeling, hard links/sparse/VDL,
 security/reparse/EAs/extension records and compressed logical content. ReFS
 capability and target-version limits remain explicit pre-write refusals.
 
+Hard-link candidate (next native qualification): canonical Object and native
+Input now carry additional_names while retaining one payload per file identity.
+Source names resolve by exact parent record/sequence using binary search;
+native construction uses held file/directory handles to create no-overwrite
+links, then verifies alias IDs, link counts and complete directory membership.
+The public executable and digest helper build. This is not yet a native
+hard-link conversion result. The new standalone disk6/H: fixture has three
+file identities/nine names (ordinary, resident-sized and empty data, nested
+Unicode aliases), NTFS4KiB,52GiB. It is saved in checkpoint914bb77d; eight
+checkpoints now remain. Host VHDX/provision records are in
+.lab/hyperv/streaming-v2-20261027/hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0.
+The independent fixture manifest is in hardlink-fixture-4c29c8e7017541bbb19625416625ec98.
+Never send old disk1/F: recovery tickets to this new disk. Its source GPT is
+f95141cb-fe7e-439a-a82b-c2b3f55965d2, partition2 at32MiB. Existing disk1/F:
+and every historical checkpoint remain unchanged by this fixture creation.
+
 Storage update (2026-10-30): the allocation-bounded path now captures explicit
 zero ranges without storing their new bytes in the packed backing, and issues
 `N2RZERO1` selected journals when the plan has `new_zero_ranges`. Every old byte

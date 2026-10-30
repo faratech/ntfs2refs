@@ -330,7 +330,7 @@ impl PrivateTree {
         self.require_source_excluded()?;
         let mut files = Vec::with_capacity(self.files.len());
         for (&index, file) in &self.files {
-            let mut row = file_observation(index, &file.path, file.metadata_handle())?;
+            let mut row = file_observation(index, &file.path, file.metadata_handle(), 1)?;
             row["materialized_bytes"] = file.materialized_bytes().into();
             row["readback_bytes"] = file.readback_bytes().into();
             row["valid_prefix_bytes"] = file.valid_prefix().into();
@@ -366,11 +366,16 @@ impl PrivateTree {
     }
 }
 
-fn file_observation(index: usize, path: &str, file: &File) -> io::Result<serde_json::Value> {
+fn file_observation(
+    index: usize,
+    path: &str,
+    file: &File,
+    expected_links: u32,
+) -> io::Result<serde_json::Value> {
     let standard = info(file, 1, 24)?;
     let logical = layout::u64_at(&standard, 8)?;
     let allocated = layout::u64_at(&standard, 0)?;
-    if layout::u32_at(&standard, 16)? != 1 || standard[20] != 0 || standard[21] != 0 {
+    if layout::u32_at(&standard, 16)? != expected_links || standard[20] != 0 || standard[21] != 0 {
         return Err(invalid("private file type, deletion or link count differs"));
     }
     // Empty and subcluster allocations have no promised nonresident retrieval
@@ -399,6 +404,11 @@ pub fn observe_existing(
     pair: &GeneralSourceShadowBinding,
     input: &[Input<'_>],
 ) -> io::Result<serde_json::Value> {
+    super::hard_links::validate(
+        input,
+        super::hard_links::MAX_NAMES,
+        crate::shadow_names::valid_unicode_component,
+    )?;
     pair.validate_with_resource_profile(Some(
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
     ))?;
@@ -470,24 +480,23 @@ pub fn observe_existing(
                 .collect();
             let expected: BTreeSet<_> = input
                 .iter()
-                .filter(|i| {
-                    i.components.len() == item.components.len() + 1
-                        && i.components[..item.components.len()] == *item.components
+                .flat_map(super::hard_links::paths)
+                .filter(|path| {
+                    path.len() == item.components.len() + 1 && path.starts_with(item.components)
                 })
-                .map(|i| {
-                    i.components
-                        .last()
-                        .unwrap()
-                        .encode_utf16()
-                        .collect::<Vec<_>>()
-                })
+                .map(|path| path.last().unwrap().encode_utf16().collect::<Vec<_>>())
                 .collect();
             if actual != expected {
                 return Err(invalid("private user namespace differs from supplied tree"));
             }
             directories.push(serde_json::json!({"object_index":index,"components":item.components,"snapshot":snapshot(&file)}));
         } else {
-            let row = file_observation(index, &path, &file)?;
+            let mut row = file_observation(index, &path, &file, super::hard_links::count(item)?)?;
+            let aliases = super::hard_links::observe(&root, item, &snapshot(&file), false)?;
+            if !aliases.is_empty() {
+                row["additional_names"] =
+                    serde_json::to_value(aliases).map_err(io::Error::other)?;
+            }
             if row["logical_length"] != item.logical_length() {
                 return Err(invalid("private file length differs"));
             }
@@ -560,6 +569,11 @@ fn allocate_checked(
     input: &[Input<'_>],
     enrollment: Option<ConstructionEnrollment<'_>>,
 ) -> io::Result<PrivateTree> {
+    super::hard_links::validate(
+        input,
+        super::hard_links::MAX_NAMES,
+        crate::shadow_names::valid_unicode_component,
+    )?;
     if input.is_empty()
         || input.len() > 1280
         || !input[0].directory
@@ -739,6 +753,7 @@ fn allocate_checked(
         if item.directory {
             let private = Input {
                 components: item.components,
+                additional_names: &[],
                 directory: true,
                 times: item.times,
                 attributes: 16,

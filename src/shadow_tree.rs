@@ -12,6 +12,10 @@ pub struct Object {
     pub record_number: u64,
     pub sequence_number: u16,
     pub path: Vec<String>,
+    /// Other full volume-relative paths for this same file identity. Payload,
+    /// metadata and allocation are owned once by the canonical object.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_names: Vec<Vec<String>>,
     pub directory: bool,
     /// FILE_BASIC_INFO order: creation, access, write, change.
     pub stored_times: [u64; 4],
@@ -122,7 +126,16 @@ impl ExpectedTree {
         let mut paths = BTreeMap::new();
         let mut identities = BTreeSet::new();
         let mut bytes = 0u64;
+        let mut name_count = 0usize;
         for object in &self.objects {
+            name_count = name_count
+                .checked_add(1)
+                .and_then(|n| n.checked_add(object.additional_names.len()))
+                .context("expected name count overflow")?;
+            ensure!(
+                name_count <= crate::ntfs_namespace::MAX_ENTRIES,
+                "expected namespace name count exceeds the raw namespace bound"
+            );
             if let Some(api) = &object.api_security {
                 ensure!(api.len() <= 65536, "API descriptor exceeds bound");
                 ntfs_security::parse_descriptor(api)?;
@@ -152,6 +165,22 @@ impl ExpectedTree {
                 );
             }
             paths.insert(path_key, object.directory);
+            ensure!(
+                !object.directory || object.additional_names.is_empty(),
+                "directory hard links are unsupported"
+            );
+            for alias in &object.additional_names {
+                ensure!(
+                    !alias.is_empty()
+                        && alias.len() <= 16
+                        && alias
+                            .iter()
+                            .all(|part| valid_component_with_resources(part, resources))
+                        && !paths.contains_key(&destination_key(alias, resources)),
+                    "expected additional file name is invalid or collides"
+                );
+                paths.insert(destination_key(alias, resources), false);
+            }
             if !object.directory {
                 ensure!(
                     object.length <= limits.maximum_stream_bytes,
@@ -201,6 +230,18 @@ impl ExpectedTree {
                 );
             }
         }
+        // Additional names are created after all canonical objects. Their
+        // directory parents may therefore occur later than the file's primary
+        // path, but must still be real canonical directories, never aliases.
+        for object in &self.objects {
+            for alias in &object.additional_names {
+                let parent = destination_key(&alias[..alias.len() - 1], resources);
+                ensure!(
+                    paths.get(&parent) == Some(&true),
+                    "expected additional name has no directory parent"
+                );
+            }
+        }
         ensure!(
             bytes == self.logical_bytes && bytes <= limits.maximum_logical_bytes,
             "expected logical byte total differs"
@@ -242,6 +283,10 @@ fn derive_profile(
     let limits = resources.limits();
     ntfs::validate_record_coverage(raw)?;
     ensure!(
+        ntfs_admission::has_unique_sorted_records(raw),
+        "source path lookup requires uniquely ordered canonical records"
+    );
+    ensure!(
         raw.schema_version == 1 && resources.supports_source_geometry(&raw.geometry),
         "incomplete record scan or unsupported source geometry"
     );
@@ -281,17 +326,30 @@ fn derive_profile(
             tree.internal_replacement_pending.push(role);
             continue;
         }
-        let p = ntfs_admission::path(raw, f).context("unresolved source path")?;
+        let mut names = if ordinary {
+            ntfs_admission::user_paths(raw, f).context("unresolved source names")?
+        } else {
+            vec![ntfs_admission::path(raw, f).context("unresolved source path")?]
+        };
         ensure!(
-            p.len() <= 16
-                && p.iter()
-                    .all(|c| valid_component_with_resources(c, resources)),
-            "unsupported Windows path"
+            !names.is_empty() && (!f.is_directory || names.len() == 1),
+            "missing source name or unsupported directory links"
         );
-        ensure!(
-            paths.insert(destination_key(&p, resources)),
-            "colliding destination name"
-        );
+        for name in &names {
+            ensure!(
+                name.len() <= 16
+                    && name
+                        .iter()
+                        .all(|c| valid_component_with_resources(c, resources)),
+                "unsupported Windows path"
+            );
+            ensure!(
+                paths.len() < crate::ntfs_namespace::MAX_ENTRIES
+                    && paths.insert(destination_key(name, resources)),
+                "colliding destination name or namespace name budget exceeded"
+            );
+        }
+        let p = names.remove(0);
         if f.record_number == 5 {
             // Root is reconstructed only as a shadow experiment. Its NTFS
             // transactional attribute is explicitly unresolved for admission.
@@ -416,6 +474,7 @@ fn derive_profile(
             record_number: f.record_number,
             sequence_number: f.sequence_number,
             path: p,
+            additional_names: names,
             directory: f.is_directory,
             stored_times: times,
             attributes: si.file_attributes | if f.is_directory { 16 } else { 0 },

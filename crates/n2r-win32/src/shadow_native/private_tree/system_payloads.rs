@@ -56,6 +56,7 @@ pub(super) fn run(
         let components = vec![system.to_owned()];
         let item = Input {
             components: &components,
+            additional_names: &[],
             directory: true,
             times: [0; 4],
             attributes: 16,
@@ -109,6 +110,7 @@ pub(super) fn run(
         } else {
             let target = Input {
                 components: item.components,
+                additional_names: &[],
                 directory: false,
                 times: item.times,
                 attributes: 32,

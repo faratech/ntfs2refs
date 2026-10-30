@@ -1,6 +1,8 @@
 //! Native creation on a separately bound empty ReFS volume. Never writes the
 //! source disk, manufactures ReFS bytes or grants conversion authority.
 pub mod cache_refresh;
+mod hard_links;
+pub use hard_links::Observation as HardLinkObservation;
 mod evacuation;
 pub mod private_tree;
 mod unwritten;
@@ -56,6 +58,7 @@ fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) -> io::Result
 
 pub struct Input<'a> {
     pub components: &'a [String],
+    pub additional_names: &'a [Vec<String>],
     pub directory: bool,
     pub times: [u64; 4],
     pub attributes: u32,
@@ -214,6 +217,8 @@ pub struct CandidateReport {
 #[derive(Debug, Serialize)]
 pub struct ObjectReport {
     pub components: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub additional_names: Vec<HardLinkObservation>,
     pub before: Snapshot,
     pub after: Snapshot,
     pub logical_sha256: Option<String>,
@@ -1154,7 +1159,7 @@ fn validate_existing_profile(
             return Err(invalid("duplicate existing shadow identity"));
         }
         let standard = query_bytes(&o.before, 1, 24)?;
-        if layout::u32_at(standard, 16)? != 1
+        if layout::u32_at(standard, 16)? != hard_links::count(i)?
             || standard[20] != 0
             || (standard[21] != 0) != i.directory
             || (!i.directory && layout::u64_at(standard, 8)? != i.logical_length())
@@ -1165,6 +1170,7 @@ fn validate_existing_profile(
                 "existing shadow links, type, EOF or contents differ",
             ));
         }
+        hard_links::verify(i, &o.before, &o.additional_names)?;
         let kernel = o
             .before
             .kernel_security
@@ -1206,20 +1212,11 @@ fn validate_existing_profile(
     {
         let expected: BTreeMap<_, _> = input
             .iter()
-            .filter(|c| {
-                c.components.len() == i.components.len() + 1
-                    && c.components.starts_with(i.components)
+            .flat_map(|c| hard_links::paths(c).map(move |path| (c, path)))
+            .filter(|(_, path)| {
+                path.len() == i.components.len() + 1 && path.starts_with(i.components)
             })
-            .map(|c| {
-                (
-                    c.components
-                        .last()
-                        .unwrap()
-                        .encode_utf16()
-                        .collect::<Vec<_>>(),
-                    c,
-                )
-            })
+            .map(|(c, path)| (path.last().unwrap().encode_utf16().collect::<Vec<_>>(), c))
             .collect();
         let mut seen = BTreeSet::new();
         let mut cache_seen = false;
@@ -2765,6 +2762,15 @@ fn run_role_profile(
             "streaming payload callback is restricted to ordinary shadow construction",
         ));
     }
+    hard_links::validate(input, hard_links::MAX_NAMES, |part| {
+        if resource_profile
+            == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
+        {
+            crate::shadow_names::valid_unicode_component(part)
+        } else {
+            valid_shadow_component(part)
+        }
+    })?;
     let mut total = 0u64;
     let mut source_allocations = Vec::new();
     for i in input {
@@ -3245,7 +3251,29 @@ fn run_role_profile(
                 }
             }
         }
-        // Final metadata follows every child creation. Root security has
+        if input.iter().any(|i| !i.additional_names.is_empty()) {
+            let mut handles = std::collections::BTreeMap::new();
+            for (index, item) in input.iter().enumerate() {
+                handles.insert(
+                    index,
+                    open(
+                        &format!("{root}{}", item.components.join("\\")),
+                        item.directory,
+                        true,
+                    )?,
+                );
+            }
+            let links = hard_links::create_owned(input, &handles)?;
+            events.push(NativeEvent {
+                operation: "create-owned-hard-links".into(),
+                control_code: 11,
+                input: Vec::new(),
+                succeeded: true,
+                native_error: None,
+                output: serde_json::to_vec(&links).map_err(io::Error::other)?,
+            });
+        }
+        // Final metadata follows every child/alias creation. Root security has
         // already matched the source through both independent query views.
         for i in input.iter().rev() {
             let h = open(
@@ -3489,6 +3517,7 @@ fn run_role_profile(
         };
         Ok(ObjectReport {
             components: i.components.to_vec(),
+            additional_names: hard_links::observe(&root, i, &before, protected.is_some())?,
             before,
             after,
             logical_sha256,
@@ -3658,6 +3687,7 @@ mod tests {
         let digest = "1fb89041274dbd08edef3d324be87aebfc4e303c7e87d01c7a29d8b547b124b1";
         let source = Input {
             components: &path,
+            additional_names: &[],
             directory: false,
             times: [134374560922807180; 4],
             attributes: 0x26,
@@ -3688,6 +3718,7 @@ mod tests {
             let path = vec!["System Volume Information".into(), name.into()];
             let make_source = |length| Input {
                 components: &path,
+                additional_names: &[],
                 directory: false,
                 times: [1; 4],
                 attributes: 0x20,
@@ -3798,6 +3829,7 @@ mod tests {
     fn api_projection_never_substitutes_for_the_stored_kernel_descriptor() {
         let input = Input {
             components: &[],
+            additional_names: &[],
             directory: false,
             times: [1; 4],
             attributes: 32,

@@ -46,6 +46,18 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             hash.update(run.length.to_le_bytes());
         }
     }
+    if input.iter().any(|i| !i.additional_names.is_empty()) {
+        hash.update(b"n2r-private-hard-links-v1");
+        for item in input {
+            hash.update((item.additional_names.len() as u64).to_le_bytes());
+            for path in item.additional_names {
+                hash.update((path.len() as u64).to_le_bytes());
+                for part in path {
+                    bytes(&mut hash, part.as_bytes());
+                }
+            }
+        }
+    }
     hash.finalize().into()
 }
 
@@ -105,6 +117,8 @@ pub(super) fn complete(
         }
     }
     tree.require_source_excluded()?;
+    let links = super::super::hard_links::create_owned(input, &tree.metadata_targets)?;
+    tree.require_source_excluded()?;
     // This consumes the only tree owner on success AND failure. A diagnostic
     // return cannot resume a partially public/private metadata transition.
     let mut report = super::super::cache_refresh::complete_owned_metadata(
@@ -118,6 +132,9 @@ pub(super) fn complete(
     tree.require_source_excluded()?;
     tree.privileges.restore()?;
     report["source_input_sha256"] = hex::encode(tree.metadata_input_sha256).into();
+    if !links.is_empty() {
+        report["hard_links"] = links.into();
+    }
     report["privileges"] =
         serde_json::to_value(tree.privileges.audit()).map_err(io::Error::other)?;
     Ok(report)

@@ -125,6 +125,7 @@ fn main() -> anyhow::Result<()> {
     fn inputs(object: &ntfs2refs::shadow_tree::Object) -> n2r_win32::shadow_native::Input<'_> {
         n2r_win32::shadow_native::Input {
             components: &object.path,
+            additional_names: &object.additional_names,
             directory: object.directory,
             times: object.stored_times,
             attributes: object.attributes,

@@ -39,6 +39,15 @@ pub fn capture(request: &Request, events: &mut Vec<NativeEvent>) -> Result<Expec
     } else {
         shadow_tree::derive(&raw)?
     };
+    // This historical fixture schema records one name without a file-identity
+    // group. Refuse aliases rather than dropping them from its saved contract.
+    // General conversion uses ExpectedTree, which carries additional_names.
+    ensure!(
+        tree.objects
+            .iter()
+            .all(|object| object.additional_names.is_empty()),
+        "legacy lab expectation cannot represent hard-link aliases"
+    );
     let inspection = crate::planner::Inspection {
         schema_version: 1,
         source: crate::block_io::SourceIdentity {
@@ -211,6 +220,7 @@ impl Expectation {
             .enumerate()
             .map(|(i, o)| shadow_native::Input {
                 components: &o.path,
+                additional_names: &[],
                 directory: o.directory,
                 times: o.times,
                 attributes: o.attributes,

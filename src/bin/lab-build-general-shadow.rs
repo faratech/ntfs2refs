@@ -106,6 +106,7 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .map(|object| shadow_native::Input {
             components: &object.path,
+            additional_names: &object.additional_names,
             directory: object.directory,
             times: object.stored_times,
             attributes: object.attributes,

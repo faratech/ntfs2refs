@@ -12,6 +12,11 @@ pub struct PayloadRoute {
     pub components: Vec<String>,
     pub expected_sha256: String,
     pub native_file_id: Vec<u8>,
+    #[serde(skip_serializing_if = "one_link")]
+    pub expected_link_count: u32,
+}
+fn one_link(count: &u32) -> bool {
+    *count == 1
 }
 
 #[derive(Debug, Serialize)]
@@ -56,20 +61,27 @@ impl SourceBackedRoutes {
                 .as_ref()
                 .ok_or_else(|| invalid("protected stream digest expectation absent"))?;
             if object.resident_data || object.retrieval_page_proof.is_none() {
-                return Err(invalid("protected payload prefix has no complete native map"));
+                return Err(invalid(
+                    "protected payload prefix has no complete native map",
+                ));
             }
             let id = query_bytes(&object.before, 18, 24)?[8..24].to_vec();
             let mut covered = 0u64;
             for run in stream_layout::parse_complete_retrieval(&object.retrieval)? {
-                let at = run.vcn.checked_mul(4096)
+                let at = run
+                    .vcn
+                    .checked_mul(4096)
                     .ok_or_else(|| invalid("protected payload VCN overflow"))?;
                 if at >= prefix {
                     break;
                 }
-                let bytes = run.clusters.checked_mul(4096)
+                let bytes = run
+                    .clusters
+                    .checked_mul(4096)
                     .ok_or_else(|| invalid("protected payload length overflow"))?
                     .min(prefix - at);
-                let offset = run.lcn
+                let offset = run
+                    .lcn
                     .ok_or_else(|| invalid("protected payload prefix contains a hole"))?
                     .checked_mul(4096)
                     .ok_or_else(|| invalid("protected payload LCN overflow"))?;
@@ -85,23 +97,28 @@ impl SourceBackedRoutes {
                     components: object.components.clone(),
                     expected_sha256: expected.clone(),
                     native_file_id: id.clone(),
+                    expected_link_count: layout::u32_at(standard, 16)?,
                 });
                 if entries.len() > 4096 {
                     return Err(invalid("protected source-backed route budget exceeded"));
                 }
-                covered = covered.checked_add(bytes)
+                covered = covered
+                    .checked_add(bytes)
                     .ok_or_else(|| invalid("protected prefix total overflow"))?;
             }
             if covered != prefix {
                 return Err(invalid("protected full-cluster prefix incomplete"));
             }
-            payload_bytes = payload_bytes.checked_add(prefix)
+            payload_bytes = payload_bytes
+                .checked_add(prefix)
                 .ok_or_else(|| invalid("protected payload total overflow"))?;
         }
         entries.sort_unstable_by_key(|route| route.target_physical_offset);
         let mut end = 0;
         for route in &entries {
-            let next = route.target_physical_offset.checked_add(route.length)
+            let next = route
+                .target_physical_offset
+                .checked_add(route.length)
                 .filter(|next| *next <= observed.pair().shadow.identity.partition_bytes)
                 .ok_or_else(|| invalid("protected payload escapes the partition"))?;
             if route.target_physical_offset < end {
@@ -152,7 +169,7 @@ impl SourceBackedRoutes {
             if id != route.native_file_id
                 || !ids.insert(id)
                 || layout::u64_at(standard, 8)? != route.stream_length
-                || layout::u32_at(standard, 16)? != 1
+                || layout::u32_at(standard, 16)? != route.expected_link_count
                 || standard[20] != 0
                 || standard[21] != 0
             {
@@ -298,6 +315,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
                 components: item.components.to_vec(),
                 expected_sha256: expected.to_owned(),
                 native_file_id: info(file.metadata_handle(), 18, 24)?[8..24].to_vec(),
+                expected_link_count: super::super::hard_links::count(item)?,
             });
             if entries.len() > 4096 {
                 return Err(invalid("source-backed route budget exceeded"));

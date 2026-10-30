@@ -77,6 +77,11 @@ pub(super) fn complete_owned_metadata(
     handles: &BTreeMap<usize, File>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
+    super::hard_links::validate(
+        input,
+        super::hard_links::MAX_NAMES,
+        crate::shadow_names::valid_unicode_component,
+    )?;
     if input.is_empty()
         || input.len() > 1280
         || handles.len() != input.len()
@@ -143,7 +148,7 @@ pub(super) fn complete_owned_metadata(
             let streams = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
             let (streams, _) = stream_layout::parse_streams(&streams)?;
             if layout::u64_at(&standard, 8)? != item.logical_length()
-                || layout::u32_at(&standard, 16)? != 1
+                || layout::u32_at(&standard, 16)? != super::hard_links::count(item)?
                 || standard[20] != 0
                 || standard[21] != 0
                 || streams.len() != 1
@@ -172,12 +177,9 @@ pub(super) fn complete_owned_metadata(
                     .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
                 let mut path = directory.components.to_vec();
                 path.push(name);
-                let (child_index, child) = input
-                    .iter()
-                    .enumerate()
-                    .find(|(_, i)| i.components == path)
+                let (child_index, child) = super::hard_links::find(input, &path)
                     .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
-                if !seen.insert(child_index)
+                if !seen.insert(path.clone())
                     || (entry.attributes & 16 != 0) != child.directory
                     || entry.attributes & 0x400 != 0
                     || entry.file_id.as_slice() != &identities[&child_index][8..24]
@@ -187,12 +189,12 @@ pub(super) fn complete_owned_metadata(
             }
             if input
                 .iter()
-                .enumerate()
-                .filter(|(_, i)| {
-                    i.components.len() == directory.components.len() + 1
-                        && i.components.starts_with(directory.components)
+                .flat_map(super::hard_links::paths)
+                .filter(|path| {
+                    path.len() == directory.components.len() + 1
+                        && path.starts_with(directory.components)
                 })
-                .any(|(child, _)| !seen.contains(&child))
+                .any(|path| !seen.contains(path))
             {
                 return Err(invalid("missing owned metadata namespace entry"));
             }
@@ -255,7 +257,7 @@ pub(super) fn complete_owned_metadata(
             let streams = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
             let (streams, _) = stream_layout::parse_streams(&streams)?;
             if layout::u64_at(&standard, 8)? != item.logical_length()
-                || layout::u32_at(&standard, 16)? != 1
+                || layout::u32_at(&standard, 16)? != super::hard_links::count(item)?
                 || standard[20] != 0
                 || standard[21] != 0
                 || streams.len() != 1
@@ -264,6 +266,12 @@ pub(super) fn complete_owned_metadata(
             {
                 return Err(invalid("final owned metadata stream shape differs"));
             }
+            super::hard_links::observe(
+                &format!("{}\\", pair.shadow.volume_path()?),
+                item,
+                &actual,
+                false,
+            )?;
         }
     }
     target.revalidate_route(&mut events)?;
@@ -294,6 +302,11 @@ pub fn run(
     payload: &[u8],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
+    super::hard_links::validate(
+        input,
+        super::hard_links::MAX_NAMES,
+        crate::shadow_names::valid_unicode_component,
+    )?;
     pair.validate_with_resource_profile(Some(
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
     ))?;
@@ -408,9 +421,7 @@ pub fn run(
             }
             let mut path = directory.components.to_vec();
             path.push(name);
-            let expected = input
-                .iter()
-                .find(|i| i.components == path)
+            let (_, expected) = super::hard_links::find(input, &path)
                 .ok_or_else(|| invalid("unexpected existing-shadow entry"))?;
             if (entry.attributes & 16 != 0) != expected.directory
                 || entry.attributes & 0x400 != 0
@@ -429,19 +440,43 @@ pub fn run(
             }
             identities.insert(path, entry.file_id.to_vec());
         }
-        for child in input.iter().filter(|i| {
-            i.components.len() == directory.components.len() + 1
-                && i.components.starts_with(directory.components)
-        }) {
-            if !seen.contains(child.components) && child.components != cache.components {
+        for child_path in input
+            .iter()
+            .flat_map(super::hard_links::paths)
+            .filter(|path| {
+                path.len() == directory.components.len() + 1
+                    && path.starts_with(directory.components)
+            })
+        {
+            if !seen.contains(child_path) && child_path != cache.components {
                 return Err(invalid("missing existing-shadow entry"));
             }
         }
     }
     let path = format!("{}{}", root, cache.components.join("\\"));
-    let unique: BTreeSet<_> = identities.values().collect();
-    if unique.len() != identities.len() {
-        return Err(invalid("aliased shadow identities are unsupported"));
+    if input.iter().any(|i| !i.additional_names.is_empty()) {
+        let mut logical_ids = BTreeSet::new();
+        for item in input {
+            if item.components == cache.components && !cache_exists {
+                continue;
+            }
+            let canonical = identities
+                .get(item.components)
+                .ok_or_else(|| invalid("canonical cache-refresh identity missing"))?;
+            if !logical_ids.insert(canonical) {
+                return Err(invalid("unrelated logical files share a native identity"));
+            }
+            for name in super::hard_links::paths(item) {
+                if identities.get(name) != Some(canonical) {
+                    return Err(invalid("hard-link cache-refresh identity differs"));
+                }
+            }
+        }
+    } else {
+        let unique: BTreeSet<_> = identities.values().collect();
+        if unique.len() != identities.len() {
+            return Err(invalid("aliased shadow identities are unsupported"));
+        }
     }
     let mut payload_written = 0u64;
     if cache_exists {
@@ -570,6 +605,13 @@ pub fn run(
             return Err(invalid(
                 "final shadow metadata readback differs from source",
             ));
+        }
+        if !item.directory {
+            if layout::u32_at(query_bytes(&actual, 1, 24)?, 16)? != super::hard_links::count(item)?
+            {
+                return Err(invalid("refreshed hard-link count differs"));
+            }
+            super::hard_links::observe(&root, item, &actual, false)?;
         }
         metadata_verified += 1;
     }

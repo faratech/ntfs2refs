@@ -179,6 +179,7 @@ fn main() -> anyhow::Result<()> {
             .zip(&payloads)
             .map(|(o, p)| shadow_native::Input {
                 components: &o.path,
+                additional_names: &o.additional_names,
                 directory: o.directory,
                 times: o.stored_times,
                 attributes: o.attributes,

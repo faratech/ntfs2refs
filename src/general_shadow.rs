@@ -34,11 +34,14 @@ pub fn observed_tree(
     Ok((tree, views))
 }
 
+/// One native input per file identity. Additional names are namespace links to
+/// that input, never extra payload allocations or source-backed routes.
 pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_native::Input<'_>> {
     tree.objects
         .iter()
         .map(|object| n2r_win32::shadow_native::Input {
             components: &object.path,
+            additional_names: &object.additional_names,
             directory: object.directory,
             times: object.stored_times,
             attributes: object.attributes,

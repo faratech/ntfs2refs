@@ -640,6 +640,7 @@ mod tests {
                     record_number: 16,
                     sequence_number: 2,
                     path: vec!["file.bin".into()],
+                    additional_names: vec![],
                     directory: false,
                     stored_times: [1; 4],
                     attributes: 32,

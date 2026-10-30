@@ -11,7 +11,7 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 #[cfg(windows)]
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 pub const PROFILE: &str = "existing-data-tree-v1";
 pub const ORDINARY_PROFILE: &str = "ordinary-data-tree-v2";
@@ -504,8 +504,40 @@ pub struct Assessment {
 fn reference(f: &FileInventory) -> u64 {
     f.record_number | (u64::from(f.sequence_number) << 48)
 }
+/// The inspector emits this canonical order. Admission and tree derivation
+/// check it once, rather than rebuilding a record map for each file name.
+pub(crate) fn has_unique_sorted_records(raw: &ntfs::NtfsInspection) -> bool {
+    raw.files.iter().all(|file| file.record_number < 1 << 48)
+        && raw
+            .files
+            .windows(2)
+            .all(|pair| pair[0].record_number < pair[1].record_number)
+}
+
+fn file_by_reference(raw: &ntfs::NtfsInspection, id: u64) -> Option<&FileInventory> {
+    let number = id & 0x0000_ffff_ffff_ffff;
+    let index = raw
+        .files
+        .binary_search_by_key(&number, |file| file.record_number)
+        .ok()?;
+    let file = &raw.files[index];
+    // Full sequence identity remains mandatory. The adjacent checks also
+    // refuse duplicate records locally; the callers' one-time order check
+    // and physical-record coverage gate reject all other duplicate forms.
+    if reference(file) != id
+        || index
+            .checked_sub(1)
+            .is_some_and(|i| raw.files[i].record_number == number)
+        || raw
+            .files
+            .get(index + 1)
+            .is_some_and(|f| f.record_number == number)
+    {
+        return None;
+    }
+    Some(file)
+}
 pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<String>> {
-    let objects: BTreeMap<_, _> = raw.files.iter().map(|f| (reference(f), f)).collect();
     let mut cursor = f;
     let mut components = vec![];
     let mut seen = BTreeSet::new();
@@ -525,12 +557,87 @@ pub(crate) fn path(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<Vec<
             return None;
         }
         components.push(String::from_utf16(&name.name_utf16).ok()?);
-        cursor = objects
-            .get(&(name.parent_record_number | (u64::from(name.parent_sequence_number) << 48)))?;
+        cursor = file_by_reference(
+            raw,
+            name.parent_record_number | (u64::from(name.parent_sequence_number) << 48),
+        )?;
         if !cursor.is_directory {
             return None;
         }
     }
+}
+/// Every addressable name of one ordinary source identity. Directories keep a
+/// single parent; files may have multiple non-DOS links. The raw namespace must
+/// already reconcile each name with its directory index, and callers must
+/// have checked `has_unique_sorted_records` once. This resolves names, not
+/// native target support or conversion authority.
+pub(crate) fn user_paths(
+    raw: &ntfs::NtfsInspection,
+    f: &FileInventory,
+) -> Option<Vec<Vec<String>>> {
+    if !raw
+        .namespace_reconciliation
+        .as_ref()
+        .is_some_and(|n| n.status == ntfs_namespace::Status::ConsistentRawModel)
+        || f.names.is_empty()
+        || usize::from(f.hard_link_count) != f.names.len()
+        || f.names
+            .iter()
+            .any(|name| !matches!(name.namespace, 0 | 1 | 3))
+        || (f.is_directory && f.names.len() != 1)
+    {
+        return None;
+    }
+    fn directory_path(raw: &ntfs::NtfsInspection, mut current: u64) -> Option<Vec<String>> {
+        let mut components = Vec::new();
+        let mut seen = BTreeSet::new();
+        loop {
+            if !seen.insert(current) || components.len() > 16 {
+                return None;
+            }
+            let directory = file_by_reference(raw, current)?;
+            if !directory.is_directory
+                || directory.hard_link_count != 1
+                || directory.names.len() != 1
+            {
+                return None;
+            }
+            let name = &directory.names[0];
+            if !matches!(name.namespace, 0 | 1 | 3) {
+                return None;
+            }
+            let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+            if directory.record_number == 5 {
+                if name.name_utf16 != [u16::from(b'.')] || parent != current {
+                    return None;
+                }
+                components.reverse();
+                return Some(components);
+            }
+            components.push(String::from_utf16(&name.name_utf16).ok()?);
+            current = parent;
+        }
+    }
+    if f.is_directory {
+        return Some(vec![directory_path(raw, reference(f))?]);
+    }
+    let mut paths = Vec::with_capacity(f.names.len());
+    for name in &f.names {
+        let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+        let mut components = directory_path(raw, parent)?;
+        components.push(String::from_utf16(&name.name_utf16).ok()?);
+        if components.len() > 16 {
+            return None;
+        }
+        paths.push(components);
+    }
+    // Prefer the shallowest name, then exact component order. One-name trees
+    // keep the previous canonical path and serialization unchanged.
+    paths.sort_by(|left, right| (left.len(), left).cmp(&(right.len(), right)));
+    if paths.windows(2).any(|pair| pair[0] == pair[1]) {
+        return None;
+    }
+    Some(paths)
 }
 /// Exact role/name/ancestry recognition, never `is_metadata` as an exemption.
 /// Recognition only identifies the replacement obligation; it does not prove
@@ -625,9 +732,14 @@ fn user_issues_profile(
     {
         issues.push("source object role is unresolved or unsupported".into());
     }
-    if path(raw, f).is_none() || f.hard_link_count != 1 || f.names.iter().any(|n| n.namespace == 2)
-    {
-        issues.push("names, depth, short-name aliases or hard links exceed the profile".into());
+    let names_supported = if ordinary {
+        user_paths(raw, f).is_some()
+    } else {
+        path(raw, f).is_some() && f.hard_link_count == 1
+    };
+    if !names_supported || f.names.iter().any(|n| n.namespace == 2) {
+        issues
+            .push("names, depth, short-name aliases or directory links exceed the profile".into());
     }
     if f.base_file_reference != 0
         || f.attributes.iter().any(|a| {
@@ -813,6 +925,7 @@ fn assess_source_view_profile(
     resources: ResourceProfile,
 ) -> Assessment {
     let limits = resources.limits();
+    let path_index_valid = has_unique_sorted_records(raw);
     let backups = backups.filter(|b| b.binds(raw));
     let view_is_live = source_view
         .as_ref()
@@ -966,8 +1079,8 @@ fn assess_source_view_profile(
     );
     gate(
         "raw_mft_record_coverage",
-        ntfs::validate_record_coverage(raw).is_ok(),
-        "every allocated physical record must be a canonical file or a uniquely bound extension",
+        path_index_valid && ntfs::validate_record_coverage(raw).is_ok(),
+        "canonical files must be uniquely ordered and every allocated physical record must be a canonical file or a uniquely bound extension",
     );
     gate(
         "raw_namespace",

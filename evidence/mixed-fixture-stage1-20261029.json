@@ -50,7 +50,30 @@
     "complete_logical_hashes": 10,
     "seconds": 56.7,
     "shadow_construction_seconds": 4.3,
-    "note": "all phases slower under concurrent host load from a running design workflow; to be retimed"
+    "note": "all phases slower under concurrent host load from a running design workflow; to be retimed",
+    "retime": {
+      "run_id": "dd1a2526748641dc8a828847dc9f4518",
+      "engine_run_id": "b217beda2844c8811d4bc38d45b07ce0",
+      "success": true,
+      "native_objects": 15,
+      "complete_logical_hashes": 10,
+      "seconds": 52.8,
+      "timeline_seconds": {
+        "source_frozen": 7.7,
+        "native_source": 13.6,
+        "source_assessment": 15.9,
+        "construction_placement": 19.3,
+        "construction_freeze": 19.6,
+        "changed_clusters": 35.3,
+        "activation": 39.0,
+        "apply": 42.3,
+        "handoff": 44.4,
+        "finalization": 52.4
+      },
+      "host_load": "concurrent full cargo rebuild on the host",
+      "comparison_vs_f467cbe": "admission 10.6->15.9 s and final verification 4.3->8.0 s (code untouched by stage 1) slowed; shadow construction 6.2->3.7 s (stage 1) faster",
+      "conclusion": "no stage-1 regression evident; a load-free retime is still owed"
+    }
   },
   "findings": [
     "stage 1 lifts the 1024 ownership refusal: placement completes for 808 fragmented files",

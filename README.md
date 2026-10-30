@@ -22,9 +22,11 @@ this is not yet a metadata-proportional, arbitrary-volume release. See the
 
 A later build also passed a same-partition sparse-file/ADS conversion and cold
 boot: 12 objects, 8 default-stream hashes, 6 named-stream hashes and 3 sparse
-layouts. The all-hole file remained unallocated. This bounded result has not
-yet passed sparse interruption/recovery or mutation tests; see the
-[pinned evidence](evidence/sparse-native-conversion-20261030.json).
+layouts. The all-hole file remained unallocated. The same runtime also passed
+a controlled first-write interruption, guest restart, public resume and
+independent NTFS rollback. Sparse mutation and broader failure coverage remain
+pending. See the [conversion evidence](evidence/sparse-native-conversion-20261030.json)
+and [recovery evidence](evidence/sparse-native-recovery-20261030.json).
 
 The drive-oriented Windows entry point is now available:
 

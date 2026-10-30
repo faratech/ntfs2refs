@@ -28,7 +28,7 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 Current state supersedes all older VM states below: VM is Off/RAM0 at sparse
-ReFS cold-boot checkpointacb5449f-7b5d-461d-ba93-a4ca6320ce99; all29 checkpoints
+NTFS rollback checkpoint1ad67365-8a17-46d7-aac1-f2a38748d7ba; all32 checkpoints
 remain. The clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Source5aeaf40/public61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b
 completed public H:/partition2 conversionba1480fc/coreb8d43b36 inside the VM:
@@ -45,9 +45,20 @@ Converted checkpoint496bcf38-53ac-49ab-9551-2d4e24651f32 is preserved separately
 Cold boot65dff08d passed live hashes, sparse flags/extents/file IDs and old link
 IDs unchanged; it does not claim a new storage-validity query after boot.
 Archive64 closed files: .lab/hyperv/streaming-v2-20261027/sparse-success-ba1480fc.
-Next: same-build sparse interrupted Apply, public Resume and independent
-Rollback, then mutation. lab/Invoke-SparseRecovery.ps1 exists and parses but has
-not run. Its canonical counts derive from the pinned original expectation.
+The same runtime now passed sparse first-flushed-write interruptionc6ced707,
+guest restart with disk6 still offline, public Resumeb22ef74e and independent
+Rollback76cd0c1e from the same original bundle
+d16bede65e4f0e450bf48fb81b5d2fb219fb290f462107e9f03b6da8ac76e996.
+Interrupted statea6497e33, resumed ReFS37414e94 and restored NTFS1ad67365 are
+preserved. Both directions checked9 old names/15 ADS views and4 sparse paths;
+rollback matched original file IDs and exact sparse extents/flags/EOF. See
+evidence/sparse-native-recovery-20261030.json. This is a controlled stop, not
+physical power loss or arbitrary interruption coverage. Sparse mutation is pending.
+Next code work: extend ordinary ATTRIBUTE_LIST assembly for hard links/ADS.
+The existing assembler already handles a narrow single-link/unnamed stream
+case; do not delete the admission refusal. Extend a versioned assembly profile,
+match exact stream names and local instances, replay the physical-record ledger
+in ntfs_assembled_io/ntfs_inspect, and keep unsupported spill forms refused.
 Keep current binaries/evidence/checkpoints. No unit tests were added or run.
 The earlier EOF, dense-prefix and directory-aggregate sparse flag refusals are
 preserved in0bf53231/f4bf5238/289cf0f3 and their matching sparse-*-refusal folders.

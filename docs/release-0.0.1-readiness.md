@@ -169,8 +169,8 @@ to read source metadata. None of these projects establishes full NTFS-to-ReFS
 compatibility. Upstream comparison was refreshed on 2026-10-30. Our native
 results cover bounded ordinary files, hard links and file ADS, including their
 recorded recovery cases. Source `5aeaf40` subsequently passed a sparse-file/ADS
-conversion and cold boot; sparse interruption/recovery and mutation remain
-pending. Reparse points, compressed/encrypted files, arbitrary
+conversion, cold boot, controlled interruption, public resume and independent
+rollback. Sparse mutation remains pending. Reparse points, compressed/encrypted files, arbitrary
 security descriptors, short-name aliases and boot conversion remain outside
 that evidence. The research-only refresh is separate from the later native run.
 
@@ -219,11 +219,11 @@ Current Rust conversion boundaries, confirmed in source:
 | Ordinary unnamed data | Resident/empty files, fragmented plain extents and partial/uninitialized tails have semantic materialization/retention paths; mixed-fixture conversion is recorded separately above. |
 | Hard links and DOS-only aliases | Ordinary hard links now share one canonical payload object plus additional names. The bounded native result below verifies three names per file; hard-link files requiring unsupported attribute-list assembly remain refused. DOS-only aliases remain refused. |
 | ADS and directory streams | Ordinary file ADS now use one canonical file plus per-stream names, mappings, lengths and hashes. Native tests cover five ADS through hard links, including empty, Unicode and 2 MiB data. Directory and System Volume Information ADS remain refused; the existing limit is64 streams per file. |
-| Sparse files and sparse file ADS | Source island/hole/VDL modeling and native dense-carrier construction passed bounded conversion and cold boot on `5aeaf40`. This includes an all-hole file, sparse ADS, hard-link alias and partial EOF. Sparse interruption/recovery and mutation are pending; arbitrary sparse layouts are not qualified. |
+| Sparse files and sparse file ADS | Source island/hole/VDL modeling and native dense-carrier construction passed bounded conversion, cold boot and controlled first-write resume/rollback on `5aeaf40`. This includes an all-hole file, sparse ADS, hard-link alias and partial EOF. Mutation and arbitrary sparse layouts are not qualified. |
 | NTFS compression, WOF, EFS | Compression/encryption flags and WOF reparse semantics remain refused. Compressed content needs logical decoding and rewritten extents. EFS needs a separate encryption-preservation path. |
 | Reparse points and Windows EAs | Outside the admitted attribute whitelist; no target preservation claim. |
 | ACLs | Owner/group/present DACL plus observed API/kernel views are represented. Construction requires absent SACL; even a present empty SACL is outside this profile. Missing/null DACL is also outside the construction profile. |
-| Attribute lists | Reader/assembly machinery exists, but user admission still refuses extension/unassembled attribute forms and `$ATTRIBUTE_LIST`; fragmented base-record extents do not establish extension-record support. |
+| Attribute lists | A narrow single-link file with one unnamed nonresident stream can be assembled and admitted after physical-record ledger checks. Hard-link/ADS assembly and remaining unassembled extension forms are refused. Fragmented base-record extents alone do not establish extension-record support. |
 | Object IDs, quotas, transaction state | User Object IDs/nondefault quotas remain refused. Recognized filesystem-internal state has narrowly bound replacement policies, not user-semantic preservation. |
 | Times and names | Four stored times are represented. Names preserve supported UTF-16 spelling, but reserved Win32 names, trailing dot/space, invalid characters and conservative case collisions are refused. Case-sensitive NT namespaces are not fully supported. |
 | Geometry and resource limits | Depth is capped at 16, streaming profile at 1,024 files/256 directories, with 64 streams/file and 16,384 streams/tree. Source geometry requires 512-byte sectors, 1,024-byte file records and 4 KiB indexes; experimental cluster admission extends from 4 KiB to 2 MiB. Target is 4 KiB ReFS 3.14. The 16 GiB journal limit remains. Parser/address bounds are not capacity qualification. |
@@ -284,9 +284,17 @@ success; a corrected read-only observation verified the complete expectation.
 The 16.651-second runtime is only this small fixture. Journal plus packed backing
 used81,408,000 bytes. See [the scoped result](../evidence/sparse-native-conversion-20261030.json).
 
-Continue in concrete slices: (1) complete sparse interruption/recovery and
-mutation; (2) admit complete extension-record/attribute-list
-files, which also expands practical fragmentation, link and stream coverage;
+The same runtime then passed a controlled first-flushed-write stop, guest
+restart with the partial source still offline, public resume and independent
+NTFS rollback from the original interrupted checkpoint. Both directions verified
+the old9names/15ADS views and4sparse paths; rollback restored the original file
+IDs and exact sparse mappings. See [the recovery matrix](../evidence/sparse-native-recovery-20261030.json).
+This does not establish physical power-loss or arbitrary failure-point safety.
+
+Continue in concrete slices: (1) extend the existing ordinary attribute-list
+assembler to hard links and named streams while keeping a complete physical
+record ledger; (2) qualify sparse mutation and broader extension-record forms,
+which expands practical fragmentation, link and stream coverage;
 (3) preserve SACL/null/empty security distinctions and native reparse/EAs;
 (4) materialize compressed/WOF logical content with exact space forecasts;
 (5) expand geometry and remove coupled fixed caps with bounded working memory.

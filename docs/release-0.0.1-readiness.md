@@ -25,6 +25,17 @@ mutation, reboot or recovery experiment was started during the archive review.
 The sections below preserve earlier milestone observations and their original
 qualification scope; their old "not wired" statements are historical.
 
+The revised validation build `9099110` now stops after the first actual copied
+payload write rather than relying on a numeric count. It passed that controlled
+interruption, a reboot and public resume (933 objects/811 hashes), mutation and
+cold reboot (808 originals, two retained test files and 128 entries), and
+independent public rollback from the same interrupted checkpoint. After
+rollback, all 808 user-file SHA-256 hashes and 120 directory names matched.
+See [the exact-build matrix](../evidence/revised-copy-validation-20261030.json).
+The original build's result remains separate. These tests do not establish
+physical power-loss safety, arbitrary-volume compatibility, maximum performance,
+or an uninterrupted public conversion on the revised binary.
+
 Status: **not ready as "stable" or "maximum performance".** No 0.0.1 tag, version
 bump or release was created. `Cargo.toml` is `0.1.0`; the existing tags are
 `alpha-native-shadow-20261026` and `alpha-native-shadow-20261029-fb5548`.

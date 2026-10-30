@@ -94,12 +94,16 @@ Public Resume94122a2c65a4438285d40411c224af26 passed native/task0, ReFS933/811.
 Mutation/reboot773ef72dd2ae44f98989f46985e0fa9f then passed808 original files,
 two retained new files and128 entries, with zero recorded ReFS warnings/errors.
 The revised successful branch is preserved as20068b68-ffc2-4443-bea8-179a797c1495.
-Root is now validating independent rollback from9f32dee4; no other native test
-may overlap the sequence. Do not transfer156241e results to this candidate.
+Independent rollback13a04e4fddb94cc0845c464d031b6f96 then passed native/task0.
+All808 user-file SHA-256 hashes match the original independent fixture and
+all120 user directory names match the frozen expectation. The scoped matrix
+is in evidence/revised-copy-validation-20261030.json. No validation worker is
+active. Do not transfer these results to a different executable or profile.
 
-VM2401593c-4b30-472e-9b6d-c9534cbaa599 is Running/4GiB. Its current parent is
-interrupted-copy checkpoint9f32dee4-0691-4b2a-9ec2-e7834b6d11db, booted for
-independent rollback. The underlying mixed NTFS baseline is6fe2d6b6. The tree has808 files/120 directories,
+VM2401593c-4b30-472e-9b6d-c9534cbaa599 is Off/RAM0. Its current parent is
+interrupted-copy checkpoint9f32dee4-0691-4b2a-9ec2-e7834b6d11db, but its current
+disks contain the verified NTFS rollback. Restore an intended checkpoint before
+starting another native case. The mixed baseline is6fe2d6b6, with808 files/120 directories,
 9,885,781,381 bytes; manifest is under mixed-fixture-20261029-3dccf8e8fa38487db6731284a12bceb9.
 The completed156241e ReFS branch and its attached shadow were preserved before
 restore as checkpoint1683b2be-c372-45b2-8583-3b6028fd72f1. The two older52d37819
@@ -111,8 +115,9 @@ completion/intent markers; the1,180,688,384-byte backing was exported and
 verified against its capture hash. See bulk-preservation.json in that archive.
 The742,391,808-byte original shadow VHDX could not be exported through an
 ordinary read; no bypass or detach was attempted. The whole original branch,
-including that image, is retained in1683b2be. The revised rollback sequence above
-owns the VM. Six checkpoints remain. Do not remove preservation checkpoints without specific approval.
+including that image, is retained in1683b2be. Six checkpoints remain, including
+the revised successful ReFS mutation/reboot branch in20068b68. Do not remove
+preservation checkpoints without specific approval.
 Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at

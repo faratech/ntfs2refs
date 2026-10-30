@@ -105,6 +105,8 @@ pub fn allocate_private_tree_enrolled(
 
 /// Copy only bounded recognized system streams; large user streams remain
 /// source-backed. All source bytes are checked through the existing NTFS reader.
+/// An absent IndexerVolumeGuid produces an empty optional cache payload; no
+/// replacement cache content is invented for fresh NTFS data volumes.
 #[cfg(windows)]
 pub fn materialize_private_system_payloads(
     source: &mut n2r_win32::GeneralFrozenPartition,
@@ -193,30 +195,35 @@ pub fn materialize_private_system_payloads(
     let cache = selected
         .iter()
         .find(|(_, o)| o.path == ["System Volume Information", "IndexerVolumeGuid"])
-        .context("source indexer cache required by bounded metadata restorer")?
-        .1;
-    ensure!(cache.length == 76, "source indexer cache length differs");
-    let mut payload = vec![0u8; 76];
-    let proof = crate::ntfs_inspect::read_plain_stream_range_into(
-        source,
-        raw,
-        cache.record_number,
-        0,
-        &mut payload,
-        budget,
-    )?;
-    // The range proof is SHA-256; the cached object carries a content digest.
-    ensure!(
-        proof.whole_stream_hash_matched
-            && Some(&n2r_win32::content_digest::of(&payload)) == cache.sha256.as_ref(),
-        "source indexer cache digest differs"
-    );
+        .map(|(_, object)| *object);
+    let payload = if let Some(cache) = cache {
+        ensure!(cache.length == 76, "source indexer cache length differs");
+        let mut payload = vec![0u8; 76];
+        let proof = crate::ntfs_inspect::read_plain_stream_range_into(
+            source,
+            raw,
+            cache.record_number,
+            0,
+            &mut payload,
+            budget,
+        )?;
+        // The range proof is SHA-256; the cached object carries a content digest.
+        ensure!(
+            proof.whole_stream_hash_matched
+                && Some(&n2r_win32::content_digest::of(&payload)) == cache.sha256.as_ref(),
+            "source indexer cache digest differs"
+        );
+        payload
+    } else {
+        Vec::new()
+    };
     ensure!(
         source.state(&mut events)? == before,
         "system source state changed"
     );
     Ok((
         serde_json::json!({"native":native,"source_receipts":receipts,"source_payload_writes":0,
+        "indexer_payload_present":cache.is_some(),"indexer_payload_bytes":payload.len(),
         "conversion_qualified":false}),
         payload,
     ))

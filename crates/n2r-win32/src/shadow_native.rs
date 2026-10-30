@@ -3273,9 +3273,12 @@ fn run_role_profile(
                 output: serde_json::to_vec(&links).map_err(io::Error::other)?,
             });
         }
-        // Final metadata follows every child/alias creation. Root security has
-        // already matched the source through both independent query views.
-        for i in input.iter().rev() {
+        // Directory ACLs can propagate through any hard-link name. Finish all
+        // parent-first directory security before restoring each logical file
+        // once, even when its canonical name is shallower than an alias.
+        let mut security_order: Vec<_> = input.iter().collect();
+        security_order.sort_by_key(|i| (!i.directory, i.components.len()));
+        for i in security_order {
             let h = open(
                 &format!("{}{}", root, i.components.join("\\")),
                 i.directory,
@@ -3297,6 +3300,15 @@ fn run_role_profile(
                     backup,
                 });
             }
+        }
+        // Basic metadata is independent of ACL inheritance. Restore it only
+        // after all security propagation, with children before their parents.
+        for i in input.iter().rev() {
+            let h = open(
+                &format!("{}{}", root, i.components.join("\\")),
+                i.directory,
+                true,
+            )?;
             basic(&h, i)?;
             if !i.directory {
                 h.sync_all()?;

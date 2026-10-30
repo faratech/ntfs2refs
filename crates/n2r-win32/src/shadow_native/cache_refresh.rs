@@ -205,7 +205,13 @@ pub(super) fn complete_owned_metadata(
     let mut ordered: Vec<_> = input.iter().enumerate().collect();
     ordered.sort_by_key(|(_, i)| i.components.len());
     let mut protection_updates = 0;
-    for &(index, item) in &ordered {
+    // Finish every directory's inheritance propagation before restoring any
+    // file. A shallow canonical file may also have a name under a deep parent.
+    for &(index, item) in ordered
+        .iter()
+        .filter(|(_, item)| item.directory)
+        .chain(ordered.iter().filter(|(_, item)| !item.directory))
+    {
         let handle = &handles[&index];
         if info(handle, 18, 24)? != identities[&index] {
             return Err(invalid(
@@ -532,12 +538,17 @@ pub fn run(
             query_bytes(&snapshot(&file), 18, 24)?[8..24].to_vec(),
         );
     }
-    // Private staging starts with protected SYSTEM-only directories. Restore
-    // parent security first so child API inheritance views use source context.
+    // Private staging starts with protected SYSTEM-only directories. Complete
+    // all parent-first directory ACL propagation before restoring canonical
+    // files, including files with aliases under deeper directories.
     let mut ordered: Vec<_> = input.iter().collect();
     ordered.sort_by_key(|i| i.components.len());
     let mut protection_updates = 0;
-    for item in &ordered {
+    for item in ordered
+        .iter()
+        .filter(|item| item.directory)
+        .chain(ordered.iter().filter(|item| !item.directory))
+    {
         let handle = open(
             &format!("{}{}", root, item.components.join("\\")),
             item.directory,

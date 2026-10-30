@@ -70,6 +70,17 @@ The independent fixture manifest is in hardlink-fixture-4c29c8e7017541bbb1962541
 Never send old disk1/F: recovery tickets to this new disk. Its source GPT is
 f95141cb-fe7e-439a-a82b-c2b3f55965d2, partition2 at32MiB. Existing disk1/F:
 and every historical checkpoint remain unchanged by this fixture creation.
+The first hard-link run f9c8a0fd (public7e7bb4aa, source8cc4245) stopped before
+source activation because the fresh NTFS volume has no IndexerVolumeGuid.
+Its 28 closed metadata files and complete failed VM branch are preserved in
+hardlink-compatibility-20261030-696083aa434743978f9842a93f1058d0 and checkpoint
+174011ed-b989-46cf-b5d3-8a25333759d5. All nine checkpoints remain. The source
+was restored to914bb77d for a new attempt. Absence of the optional indexer
+cache is now recorded without manufacturing one; existing caches still receive
+their full checks. ACL restoration now processes directory parents before
+canonical files, then restores timestamps bottom-up. The corrected public
+build is65776bd4127ca911ec2698cde1fe660c43d879eb895233b66f2838c5f6ec29fb;
+its native qualification is pending. No unit tests were added or run.
 
 Storage update (2026-10-30): the allocation-bounded path now captures explicit
 zero ranges without storing their new bytes in the packed backing, and issues

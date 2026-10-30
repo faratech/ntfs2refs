@@ -93,8 +93,8 @@ pub(super) fn convert_allocation_selected(
         let packed_bytes = proof.capture().layout.packed_bytes();
         let plan_pin = qualification::save(output, "selected-plan.json", &plan)?;
 
-        let space =
-            n2r_win32::discovery::observe_volume_space(&request.journal.disk.volume_path()?)?;
+        let journal_volume_root = request.journal.disk.volume_path()? + "\\";
+        let space = n2r_win32::discovery::observe_volume_space(&journal_volume_root)?;
         let reserve = 1024_u64 * 1024 * 1024;
         ensure!(
             space.available_bytes_to_caller >= journal_bytes.saturating_add(reserve),

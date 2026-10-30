@@ -28,7 +28,7 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 Current sparse follow-up supersedes the older VM states below: VM is Off at
-the clean NTFS sparse fixture9c42e1fd, with all26 checkpoints preserved. The
+the clean NTFS sparse fixture9c42e1fd, with all27 checkpoints preserved. The
 third attemptd78c2df3 stopped before cutover because ReFS relocated only the
 final partial EOF cluster during truncation. Complete failed state is preserved
 in checkpoint0bf53231-6b6d-4427-b6dd-3c1936c70b06 and metadata in
@@ -42,8 +42,13 @@ cutover at the old dense-prefix source-placement rule. Checkpointf4bf5238
 preserves the attempt;42 closed metadata files are in sparse-placement-refusal-66400017.
 The source verifier now permits gaps only inside declared initialized sparse
 islands; alignment, bounds, ordering and full-cluster checks remain. Its focused
-public release build passed. No unit tests were added or run. Native retry is
-next; this does not yet qualify sparse conversion.
+public release build passed. Native1bcee66 then passed placement and stopped at
+the directory-entry attribute comparison. The candidate now expects the exact
+aggregate sparse flag for directory entries when any named/default stream is
+sparse; per-stream flags and all other attributes/identities remain exact.
+Failure8b25611f is preserved in checkpoint289cf0f3 and42 closed metadata files
+under sparse-namespace-refusal-8b25611f. Focused release build passed. No unit
+tests were added or run. Native retry is next; sparse conversion is unqualified.
 The GitHub comparison refresh is committed in0ef8652; it adds no runtime change.
 
 Sparse integration candidate: SparseLayout now binds allocated islands, exact

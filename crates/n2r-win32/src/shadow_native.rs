@@ -1290,13 +1290,25 @@ fn validate_existing_profile(
             let child = expected
                 .get(&entry.name_utf16)
                 .ok_or_else(|| invalid("unexpected existing shadow directory entry"))?;
-            if !seen.insert(entry.name_utf16.clone())
-                || entry.attributes != child.attributes
-                || identities
-                    .get(child.components)
-                    .is_none_or(|id| id.as_slice() != entry.file_id)
-            {
-                return Err(invalid("existing shadow namespace identity differs"));
+            // Directory enumeration reports the file's aggregate sparse bit,
+            // including sparse ADS. The unnamed handle is checked separately
+            // against the default stream's exact attributes.
+            let expected_attributes = child.attributes | if has_sparse(child) { 0x200 } else { 0 };
+            let duplicate = !seen.insert(entry.name_utf16.clone());
+            let identity_matches = identities
+                .get(child.components)
+                .is_some_and(|id| id.as_slice() == entry.file_id);
+            if duplicate || entry.attributes != expected_attributes || !identity_matches {
+                let context = serde_json::json!({
+                    "path": child.components,
+                    "duplicate": duplicate,
+                    "actual_attributes": entry.attributes,
+                    "expected_attributes": expected_attributes,
+                    "identity_matches": identity_matches,
+                });
+                return Err(invalid(&format!(
+                    "existing shadow namespace identity differs: {context}"
+                )));
             }
         }
         if seen.len() != expected.len() {

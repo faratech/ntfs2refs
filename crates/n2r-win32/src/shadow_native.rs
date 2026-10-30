@@ -44,7 +44,7 @@ use windows_sys::Win32::{
 };
 
 // Shared native format check for expanded observations and live construction.
-fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) -> io::Result<u64> {
+pub(crate) fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) -> io::Result<u64> {
     let data = ctl(volume, 0x000902d8, &[], 256)?;
     if data.len() < 64
         || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))

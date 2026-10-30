@@ -27,7 +27,7 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
+Current state supersedes all older VM states below: VM is running at ReFS
 performance checkpointe9bc8adf-1faf-4725-94e6-e3c5d2b254be; all42 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
@@ -67,6 +67,11 @@ native bitmap and retrieval check remains. Library check and focused public
 release build and the native same-fixture comparison pass. Native query coverage
 was not reduced; physical I/O reduction was not measured. The large-volume cost
 of full per-move bitmaps and remaining fixed resource caps are still unfinished.
+The new bitmap_window/native modules and lab-probe-bitmap-windows binary are
+read-only D1 preparation. Window proofs have a distinct encoding and retain
+raw queries for replay; they cannot populate full-map Candidate hashes or
+authorize moves. Focused probe build passes. Production per-move checks remain
+full-volume pending the recorded D1 user decision. No converter is active.
 
 ### Previous milestones and fixture setup
 

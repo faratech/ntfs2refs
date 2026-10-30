@@ -27,6 +27,30 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
+Latest state: VM is Off/RAM0, parent7f926b79-465f-4945-a00b-bdaae2607cd4;
+all21 checkpoints remain. Disk6/H: is verified NTFS after ADS rollback. The
+latest branch also preserves a separate owned ReFS sparse-probe volume; never
+reuse its binding as a conversion source or treat it as the H: fixture.
+The ADS build3ba75be/public2220164 passed first-flushed-write interruption,
+restart, public resume and independent public rollback from the same original
+bundle26b78b9ab5f574614e4df9457202dfef23a47b37238f512dee0ed4fea18f3cc9.
+Both recovery directions preserved9 file paths and15 ADS views, including
+empty/literal-$DATA/Unicode/large streams. See evidence/ads-native-recovery-20261030.json.
+Original interruption:2f9ef65b; recovered ReFS:6264afb3; recovered NTFS:a6604468.
+
+Source9589ff8 adds explicit sparse-aware range reads while existing plain
+readers and public sparse refusal stay unchanged. Source7126f6f adds a lab-only
+sparse-carrier probe. That probe passed on a newly owned ReFS3.14 volume: a
+16KiB nonsparse carrier was cloned into two ranges of a256MiB sparse target;
+mapped allocation stayed32KiB (16KiB shared payload), data/storage validity
+and zero-hole samples survived deletion of the identity-checked owned carrier.
+It wrote64 payload bytes and read147456 bytes. See
+evidence/sparse-carrier-native-20261030.json. This is not sparse NTFS conversion
+support. Next: model sparse islands/holes per stream, reuse dense carrier
+placement, clone to sparse logical offsets, and bind hole/allocation/VDL proofs
+into the existing source-backed converter. Do not densely allocate or hash-skip
+holes without an explicit verified policy. Keep ordinary digest compatibility.
+
 ADS implementation: canonical objects now carry named_streams while
 payload handles, placement, routes, source reads and copy planning distinguish
 the exact UTF-16 stream name. Native construction/verification supports ordinary
@@ -46,9 +70,9 @@ in45924882-3aab-4fec-82fd-3848461e0225. A cold boot retained all stream hashes,
 names and file IDs; mutation through the Unicode alias propagated correctly,
 and restoration through another alias recovered all original hashes without
 changing default streams. Evidence: evidence/ads-native-conversion-20261030.json.
-VM is Off/RAM0 with parentbb8a6475-7104-43cc-874b-1245b5171aab; seventeen
-checkpoints remain preserved. The ADS build's interrupted recovery is still
-unqualified, as are directory ADS, encodings and broader geometry. Fixture:
+That initial ADS stage was saved under parentbb8a6475 with seventeen checkpoints.
+Subsequent interrupted recovery is recorded above; directory ADS, encodings and
+broader geometry remain unqualified. Fixture:
 .lab/hyperv/streaming-v2-20261027/ads-fixture-d951c1ed45c142f69d40efae28f260c8/fixture.json,
 SHAa17bafe1afbb796e7517b50ebd33aa784cd40a00a43e00f581e052cb7c6aaaf1.
 Use the new ADS launcher and fresh candidate pins; old hard-link expectations

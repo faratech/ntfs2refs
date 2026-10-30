@@ -1,0 +1,128 @@
+{
+  "toolset": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-tools-05ae240\\manifest.json",
+    "bytes": 1566,
+    "sha256": "7541f65e01e3fd366459a5733ea097386ecb6a62b56c8208c31294feecb8c74f"
+  },
+  "resume": {
+    "checkpoint": "6264afb3-6031-4e5e-bd9a-ef9b4b0d4490",
+    "native_default_hashes": 4,
+    "outcome": "refs_completed",
+    "run_id": "1487f172f4824221a7dbedf740442d15",
+    "native_exit": 0,
+    "native_named_hashes": 5,
+    "independent_default_paths": 9,
+    "independent_ads_views": 15,
+    "metadata_files": 24,
+    "native_objects": 8
+  },
+  "proofs": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-interruption\\archive.json",
+      "bytes": 18639,
+      "sha256": "cd915fc6ff1bde6a7925924458b0d4f36276b03433b37e3de4ccb7e7894f4691"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-interruption\\wrapper-result.json",
+      "bytes": 826,
+      "sha256": "424289f267b7bf71ccfa31acfd0b75d2c01ecaf1ea20294874c2e2176852d9d6"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-interruption\\conversion\\allocation-recovery-bundle.json",
+      "bytes": 1769,
+      "sha256": "26b78b9ab5f574614e4df9457202dfef23a47b37238f512dee0ed4fea18f3cc9"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-resume\\archive.json",
+      "bytes": 7149,
+      "sha256": "87a801e8c5e0b62911358ba7e4962c9fe0efb6ecffdab3cad7098ff99c5f2058"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-resume\\stage\\wrapper-result.json",
+      "bytes": 1428,
+      "sha256": "691d6076149a4a4938f9cf2155c529f25ffbd837acac5c2c798cd6c41ea08b00"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-resume\\stage\\ads-after.json",
+      "bytes": 28821,
+      "sha256": "33dcb8616d0b823209daabddcadb0f8df9e81e966fc2b1cd092a84a6f834f079"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-resume\\result\\completion.json",
+      "bytes": 642523,
+      "sha256": "aecec1d33973809c0abb042d49ec36c99006aaf62767c8b7da659aa9243faa95"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-rollback\\archive.json",
+      "bytes": 6883,
+      "sha256": "2c386717167f41a6103e472d541d76d83156d38bfabedee6cf1ad219ee008b84"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-rollback\\stage\\wrapper-result.json",
+      "bytes": 1442,
+      "sha256": "841c996c7a97edc1fc542a6a9600efb5c5499a3a2e998a38e8e97f7f5aebe68c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-rollback\\stage\\ads-after.json",
+      "bytes": 28821,
+      "sha256": "33dcb8616d0b823209daabddcadb0f8df9e81e966fc2b1cd092a84a6f834f079"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\closed-rollback\\result\\completion.json",
+      "bytes": 42462,
+      "sha256": "46edfe03781524641f601ddb0831a11f889eb9195ca85ca834d7c06e5c03718a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\interrupted-checkpoint.json",
+      "bytes": 220,
+      "sha256": "20178d4e25317ffb27a6790c6fb659977c8ea2876fd707f9c775bf6ca781581b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\resumed-checkpoint.json",
+      "bytes": 135,
+      "sha256": "d5927704cc7a5eee05ad75b326c0280277d4d81d9085aed41a14fffad4c98a39"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-recovery-20261030\\rollback-checkpoint.json",
+      "bytes": 151,
+      "sha256": "9102f3636444ec14728e98851bb278a07e6a580b11179276d107b796d63e3ce9"
+    }
+  ],
+  "helper_runtime_code_matches_converter_commit": true,
+  "kind": "ads-native-recovery-matrix",
+  "limitations": [
+    "Controlled interruption only after first flushed write; no physical power-loss claim",
+    "Three file identities, nine hard-link names and five ADS; not arbitrary feature-combination qualification",
+    "Directory ADS, unsupported encodings, sparse conversion, full security and boot remain outside this tested profile",
+    "Later sparse reader/probe changes do not inherit this binary qualification"
+  ],
+  "helper_build_commit": "05ae240fc0187a6c152f6d134550f36d7098f996",
+  "unit_tests_added_or_run": false,
+  "original_bundle_sha256": "26b78b9ab5f574614e4df9457202dfef23a47b37238f512dee0ed4fea18f3cc9",
+  "utc": "2026-10-30T12:51:53.2531352Z",
+  "main_overlay_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "controlled_sha256": "5560591a8b3ff1af223dd5d1a9af9e871f64df1553e5082e6de2756f7432af12",
+  "rollback": {
+    "native_exit": 0,
+    "original_default_paths": 9,
+    "checkpoint": "a6604468-b624-47ed-aec2-06d12095e6f5",
+    "run_id": "62568f094c8e4710af245aec50cd0ac9",
+    "outcome": "ntfs_restored",
+    "original_file_identities": 3,
+    "independent_ads_views": 15,
+    "metadata_files": 23
+  },
+  "schema_version": 1,
+  "public_sha256": "2220164aaeef4c9db8bf11339fc4d11a365871d10a8665ce69c415288ed20710",
+  "converter_code_commit": "3ba75be0a91dddd7009ab6b356158b7f728d2d53",
+  "interruption": {
+    "native_exit": 86,
+    "checkpoint": "2f9ef65b-bac7-4614-9855-4e64160d4518",
+    "run_id": "9a207469c928428c94d98778d491f60a",
+    "marker": "N2RSAP01",
+    "completion_clear": true,
+    "flushed_writes": 1,
+    "source_persistently_offline": true,
+    "metadata_files": 60
+  }
+}

@@ -241,11 +241,23 @@ an empty stream, a Unicode name, a literal `$DATA` name and 2 MiB+19 bytes of
 content. The 15 alias/stream views and all nine default paths matched. Cold-boot
 checks and a named-stream write through one alias, followed by restoration
 through another, passed without changing the default streams. The source still
-uses bounded resources and this ADS build has no interrupted-recovery evidence
-yet. See [the native ADS result](../evidence/ads-native-conversion-20261030.json).
+uses bounded resources. See [the native ADS result](../evidence/ads-native-conversion-20261030.json).
+The same ADS converter subsequently passed first-flushed-write interruption,
+restart, public resume and separate public rollback from the original AP
+journal. Both directions preserved all nine paths and15 named-stream views;
+rollback also recovered the original NTFS identities. See
+[the ADS recovery matrix](../evidence/ads-native-recovery-20261030.json).
 
-Continue in concrete slices: (1) qualify interrupted recovery with ADS;
-(2) preserve sparse/VDL semantics through native construction and semantic
+A separate native sparse experiment now establishes the carrier approach:
+clone initialized ranges from a nonsparse carrier into sparse logical offsets,
+then retire the carrier through the filesystem. The256MiB test retained32KiB
+of mapped ranges (16KiB shared data), valid cloned contents and zero-hole
+samples after carrier deletion. Payload writes were64 bytes; metadata and
+scratch-volume overhead are separate. This is a primitive proof, not yet
+sparse NTFS conversion. See [the native sparse-carrier evidence](../evidence/sparse-carrier-native-20261030.json).
+
+Continue in concrete slices: (1) connect sparse island/hole layout to the
+native carrier/clone primitive; (2) preserve sparse/VDL semantics through construction and semantic
 verification; (3) add SACL/null/empty
 security distinctions, opaque reparse/EAs and complete extension-record admission;
 (4) materialize compressed logical content with exact space forecasts; (5) expand

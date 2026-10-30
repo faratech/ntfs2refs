@@ -27,8 +27,8 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
-cold-boot checkpoint f981e1df-398e-4c08-997d-d1aea8361267; all41 checkpoints
+Current state supersedes all older VM states below: VM is Off/RAM0 at NTFS
+fixture checkpoint1057eb82-d152-4572-881b-53ff9dbb82dd; all41 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Latest runtime4c58d38/publicf7e432babadcc7761a855a8d7c00069b7bbed9505fd37a53512d6f061c969cf6
@@ -51,6 +51,14 @@ Next: reduce redundant bitmap hashing/planning work without dropping coverage,
 expand remaining NTFS metadata/geometry support, and qualify new-build recovery
 and mutation separately. Current bounds and general-compatibility gaps remain.
 No unit tests were added or run. Keep the user-owned main.rs overlay untouched.
+The performance candidate now reuses opaque original-collector first-page
+evidence instead of reprocessing/rehashing it during live bitmap capture.
+Untrusted replay remains unchanged. Streamed retention planners validate the
+two immutable summaries once per phase and binary-seek relevant ranges; they
+are dropped/rebuilt whenever drift refreshes the observations. Every per-move
+native bitmap and retrieval check remains. Library check and focused public
+release build pass. Next: same41-checkpoint NTFS fixture comparison against
+the138.754-second4c58d38 result, with all13/9/8 hashes and1024 retained extents.
 
 ### Previous milestones and fixture setup
 

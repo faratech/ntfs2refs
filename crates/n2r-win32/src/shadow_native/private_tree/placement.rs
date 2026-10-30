@@ -637,6 +637,7 @@ fn plan_deferred(
         Err(message) => return Ok(Err(message)),
     };
     counters.scratch_free_intervals = scratch.free.len();
+    let planner = legacy.retention_planner(metadata, partition)?;
     let mut deferred = Vec::new();
     for &(index, start, end) in holes {
         // A deferred range has no old physical ownership to evacuate.
@@ -650,14 +651,12 @@ fn plan_deferred(
             if from >= to {
                 continue;
             }
-            let plan = legacy.plan_free_subruns(
-                metadata,
+            let plan = planner.plan(
                 retention_layout::SourceRun {
                     logical_offset: from,
                     physical_offset: run.physical_offset.unwrap() + from - run.logical_offset,
                     length: to - from,
                 },
-                partition,
                 max_moves,
             )?;
             for subrun in plan.subruns {
@@ -1211,6 +1210,7 @@ pub(super) fn run(
     // from one fresh snapshot, a bounded number of times. Pieces already
     // placed are allocated in it and so are not planned again.
     let (mut legacy, mut metadata) = views(tree)?;
+    let mut planner = legacy.retention_planner(&metadata, partition)?;
     counters.phase_bitmap_snapshots += 1;
     for &index in &indexes {
         for run in &desired[&index] {
@@ -1228,14 +1228,12 @@ pub(super) fn run(
                         ),
                     ));
                 };
-                let plan = legacy.plan_free_subruns(
-                    &metadata,
+                let plan = planner.plan(
                     retention_layout::SourceRun {
                         logical_offset: run.logical_offset,
                         physical_offset: run.physical_offset.unwrap(),
                         length: run.length,
                     },
-                    partition,
                     remaining,
                 )?;
                 let required: usize = plan
@@ -1344,7 +1342,9 @@ pub(super) fn run(
                     ));
                 }
                 counters.final_drift_replans += 1;
+                drop(planner);
                 (legacy, metadata) = views(tree)?;
+                planner = legacy.retention_planner(&metadata, partition)?;
                 counters.phase_bitmap_snapshots += 1;
             }
         }

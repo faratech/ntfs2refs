@@ -72,12 +72,22 @@ pub(crate) fn bitmap_streamed_with_input(
     clusters: u64,
     template: &[u8],
 ) -> io::Result<(IoctlQuery, crate::bitmap_streaming::Summary)> {
+    Ok(bitmap_streamed_collected_with_input(file, clusters, template)?.into_legacy_parts())
+}
+
+/// Retain the original collector's first-page proof and validated prefix in an
+/// opaque value, so native consumers do not replay/hash that response again.
+pub(crate) fn bitmap_streamed_collected_with_input(
+    file: &File,
+    clusters: u64,
+    template: &[u8],
+) -> io::Result<crate::bitmap_streaming::CollectedBitmap> {
     crate::bitmap_paging::page_input(template, 0)?;
     let mut collector = crate::bitmap_streaming::Collector::new(
         clusters,
         crate::bitmap_streaming::source_limits(clusters)?,
     )?;
-    let mut first = None;
+    let mut first = true;
     while collector.response_capacity() != 0 {
         let input = crate::bitmap_paging::page_input(template, collector.next_lcn())?;
         let query = ioctl(
@@ -92,18 +102,17 @@ pub(crate) fn bitmap_streamed_with_input(
         {
             return Err(io::Error::from_raw_os_error(error));
         }
-        let complete = collector.push(&query, template, &mut |_| Ok(()))?;
-        if first.is_none() {
-            first = Some(query);
-        }
+        let complete = if first {
+            first = false;
+            collector.push_first_owned(query, template)?
+        } else {
+            collector.push(&query, template, &mut |_| Ok(()))?
+        };
         if complete {
             break;
         }
     }
-    Ok((
-        first.ok_or_else(|| io::Error::other("source bitmap returned no pages"))?,
-        collector.finish()?,
-    ))
+    collector.finish_collected()
 }
 pub(crate) fn bitmap_queries(
     file: &File,

@@ -54,89 +54,126 @@ pub fn plan_free_subruns_streamed(
     partition: u64,
     max_subruns: usize,
 ) -> io::Result<Plan> {
-    if !(1..=MAX_SUBRUNS).contains(&max_subruns)
-        || partition == 0
-        || !partition.is_multiple_of(CLUSTER)
-        || run.length == 0
-        || !run.length.is_multiple_of(CLUSTER)
-        || !run.logical_offset.is_multiple_of(CLUSTER)
-        || !run.physical_offset.is_multiple_of(CLUSTER)
-        || run.logical_offset.checked_add(run.length).is_none()
-        || run
-            .physical_offset
-            .checked_add(run.length)
-            .is_none_or(|end| end > partition)
-    {
-        return Err(invalid("streamed retention run geometry or budget differs"));
-    }
-    let domain = partition / CLUSTER;
-    for summary in [legacy, metadata] {
-        summary.validate(domain, crate::bitmap_streaming::source_limits(domain)?)?;
-        if summary.declared_clusters != domain {
-            return Err(invalid("streamed retention bitmap domain differs"));
+    StreamedPlanner::new(legacy, metadata, partition)?.plan(run, max_subruns)
+}
+
+/// Immutable planning view over two completely validated phase snapshots.
+/// This caches structural validation only. Every native move must still query
+/// live occupancy and verify the actual resulting mapping independently.
+pub struct StreamedPlanner<'a> {
+    legacy: &'a crate::bitmap_streaming::Summary,
+    metadata: &'a crate::bitmap_streaming::Summary,
+    partition: u64,
+}
+
+impl<'a> StreamedPlanner<'a> {
+    pub fn new(
+        legacy: &'a crate::bitmap_streaming::Summary,
+        metadata: &'a crate::bitmap_streaming::Summary,
+        partition: u64,
+    ) -> io::Result<Self> {
+        if partition == 0 || !partition.is_multiple_of(CLUSTER) {
+            return Err(invalid("streamed retention partition geometry differs"));
         }
-    }
-    let start = run.physical_offset / CLUSTER;
-    let end = start + run.length / CLUSTER;
-    let mut left = legacy.allocated_ranges.iter().peekable();
-    let mut right = metadata.allocated_ranges.iter().peekable();
-    let mut cursor = start;
-    let mut free_clusters = 0u64;
-    let mut subruns = Vec::new();
-    let mut push_free = |mut begin: u64, end: u64| -> io::Result<()> {
-        while begin < end {
-            if subruns.len() >= max_subruns {
-                return Err(invalid("retention free-subrun budget exceeded"));
+        let domain = partition / CLUSTER;
+        for summary in [legacy, metadata] {
+            summary.validate(domain, crate::bitmap_streaming::source_limits(domain)?)?;
+            if summary.declared_clusters != domain {
+                return Err(invalid("streamed retention bitmap domain differs"));
             }
-            let count = (end - begin).min(u64::from(u32::MAX)) as u32;
-            let physical_offset = begin * CLUSTER;
-            let logical_offset = run.logical_offset + (begin - start) * CLUSTER;
-            subruns.push(FreeSubrun {
-                logical_offset,
-                physical_offset,
-                length: u64::from(count) * CLUSTER,
-                starting_vcn: logical_offset / CLUSTER,
-                destination_lcn: begin,
-                clusters: count,
-            });
-            free_clusters += u64::from(count);
-            begin += u64::from(count);
         }
-        Ok(())
-    };
-    loop {
-        let next = match (left.peek(), right.peek()) {
-            (Some(a), Some(b)) if a.starting_lcn <= b.starting_lcn => left.next(),
-            (Some(_), Some(_)) => right.next(),
-            (Some(_), None) => left.next(),
-            (None, Some(_)) => right.next(),
-            (None, None) => break,
-        }
-        .unwrap();
-        if next.starting_lcn >= end {
-            break;
-        }
-        let occupied_end = (next.starting_lcn + next.clusters).min(end);
-        if occupied_end <= cursor {
-            continue;
-        }
-        let occupied_start = next.starting_lcn.max(start);
-        if occupied_start > cursor {
-            push_free(cursor, occupied_start)?;
-        }
-        cursor = occupied_end;
+        Ok(Self {
+            legacy,
+            metadata,
+            partition,
+        })
     }
-    if cursor < end {
-        push_free(cursor, end)?;
+
+    pub fn plan(&self, run: SourceRun, max_subruns: usize) -> io::Result<Plan> {
+        let (legacy, metadata, partition) = (self.legacy, self.metadata, self.partition);
+        if !(1..=MAX_SUBRUNS).contains(&max_subruns)
+            || partition == 0
+            || !partition.is_multiple_of(CLUSTER)
+            || run.length == 0
+            || !run.length.is_multiple_of(CLUSTER)
+            || !run.logical_offset.is_multiple_of(CLUSTER)
+            || !run.physical_offset.is_multiple_of(CLUSTER)
+            || run.logical_offset.checked_add(run.length).is_none()
+            || run
+                .physical_offset
+                .checked_add(run.length)
+                .is_none_or(|end| end > partition)
+        {
+            return Err(invalid("streamed retention run geometry or budget differs"));
+        }
+        let start = run.physical_offset / CLUSTER;
+        let end = start + run.length / CLUSTER;
+        let left_start = legacy
+            .allocated_ranges
+            .partition_point(|range| range.starting_lcn + range.clusters <= start);
+        let right_start = metadata
+            .allocated_ranges
+            .partition_point(|range| range.starting_lcn + range.clusters <= start);
+        let mut left = legacy.allocated_ranges[left_start..].iter().peekable();
+        let mut right = metadata.allocated_ranges[right_start..].iter().peekable();
+        let mut cursor = start;
+        let mut free_clusters = 0u64;
+        let mut subruns = Vec::new();
+        let mut push_free = |mut begin: u64, end: u64| -> io::Result<()> {
+            while begin < end {
+                if subruns.len() >= max_subruns {
+                    return Err(invalid("retention free-subrun budget exceeded"));
+                }
+                let count = (end - begin).min(u64::from(u32::MAX)) as u32;
+                let physical_offset = begin * CLUSTER;
+                let logical_offset = run.logical_offset + (begin - start) * CLUSTER;
+                subruns.push(FreeSubrun {
+                    logical_offset,
+                    physical_offset,
+                    length: u64::from(count) * CLUSTER,
+                    starting_vcn: logical_offset / CLUSTER,
+                    destination_lcn: begin,
+                    clusters: count,
+                });
+                free_clusters += u64::from(count);
+                begin += u64::from(count);
+            }
+            Ok(())
+        };
+        loop {
+            let next = match (left.peek(), right.peek()) {
+                (Some(a), Some(b)) if a.starting_lcn <= b.starting_lcn => left.next(),
+                (Some(_), Some(_)) => right.next(),
+                (Some(_), None) => left.next(),
+                (None, Some(_)) => right.next(),
+                (None, None) => break,
+            }
+            .unwrap();
+            if next.starting_lcn >= end {
+                break;
+            }
+            let occupied_end = (next.starting_lcn + next.clusters).min(end);
+            if occupied_end <= cursor {
+                continue;
+            }
+            let occupied_start = next.starting_lcn.max(start);
+            if occupied_start > cursor {
+                push_free(cursor, occupied_start)?;
+            }
+            cursor = occupied_end;
+        }
+        if cursor < end {
+            push_free(cursor, end)?;
+        }
+        Ok(Plan {
+            source: run,
+            legacy_bitmap_sha256: legacy.canonical_bitmap_sha256.clone(),
+            metadata_bitmap_sha256: metadata.canonical_bitmap_sha256.clone(),
+            free_bytes: free_clusters * CLUSTER,
+            blocked_bytes: run.length - free_clusters * CLUSTER,
+            subruns,
+        })
     }
-    Ok(Plan {
-        source: run,
-        legacy_bitmap_sha256: legacy.canonical_bitmap_sha256.clone(),
-        metadata_bitmap_sha256: metadata.canonical_bitmap_sha256.clone(),
-        free_bytes: free_clusters * CLUSTER,
-        blocked_bytes: run.length - free_clusters * CLUSTER,
-        subruns,
-    })
 }
 
 /// Split an already eligible, fully initialized NTFS source run into maximal

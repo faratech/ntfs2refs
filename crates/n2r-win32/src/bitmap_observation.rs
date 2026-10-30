@@ -2,10 +2,9 @@
 //! permission to omit filesystem structures is inferred from these bitmaps.
 use crate::{
     bitmap_layout::{self, AllocationMap, Candidate},
-    bitmap_paging::{self, PageProof, Proof, StreamingProof},
+    bitmap_paging::{self, Proof, StreamingProof},
     bitmap_streaming::Summary,
 };
-use sha2::{Digest, Sha256};
 use std::{fs::File, io};
 
 fn bad(message: &str) -> io::Error {
@@ -28,12 +27,12 @@ impl Observation {
             return Err(bad("target bitmap partition geometry differs"));
         }
         if streaming {
-            let (first, summary) = crate::stream_native::bitmap_streamed_with_input(
+            let collected = crate::stream_native::bitmap_streamed_collected_with_input(
                 volume,
                 partition / 4096,
                 template,
             )?;
-            summary.validate_first_page(&first, template)?;
+            let (first_proof, summary) = collected.into_observation_parts();
             if summary.declared_clusters != partition / 4096 {
                 return Err(bad("target bitmap domain differs from partition"));
             }
@@ -41,13 +40,7 @@ impl Observation {
                 encoding: summary.encoding.clone(),
                 cluster_count: summary.cluster_count,
                 canonical_bitmap_sha256: summary.canonical_bitmap_sha256.clone(),
-                pages: vec![PageProof {
-                    input: first.input.clone(),
-                    response_header: first.bytes[..16].try_into().unwrap(),
-                    response_bytes: first.bytes.len(),
-                    native_error: first.native_error,
-                    response_sha256: hex::encode(Sha256::digest(&first.bytes)),
-                }],
+                pages: vec![first_proof],
                 assembly_profile: bitmap_paging::AssemblyProfile::Legacy,
                 streaming: Some(StreamingProof {
                     bitmap_data_sha256: summary.bitmap_data_sha256.clone(),
@@ -113,6 +106,26 @@ impl Observation {
         }
     }
 
+    pub(crate) fn retention_planner<'a>(
+        &'a self,
+        metadata: &'a Self,
+        partition: u64,
+    ) -> io::Result<RetentionPlanner<'a>> {
+        match (self, metadata) {
+            (Self::Assembled(a), Self::Assembled(b)) => Ok(RetentionPlanner::Assembled {
+                legacy: &a.bitmap,
+                metadata: &b.bitmap,
+                partition,
+            }),
+            (Self::Streamed { summary: a, .. }, Self::Streamed { summary: b, .. }) => {
+                Ok(RetentionPlanner::Streamed(
+                    crate::retention_layout::StreamedPlanner::new(a, b, partition)?,
+                ))
+            }
+            _ => Err(bad("retention bitmap observation profiles differ")),
+        }
+    }
+
     pub(crate) fn plan_free_subruns(
         &self,
         metadata: &Self,
@@ -120,24 +133,39 @@ impl Observation {
         partition: u64,
         max_subruns: usize,
     ) -> io::Result<crate::retention_layout::Plan> {
-        match (self, metadata) {
-            (Self::Assembled(a), Self::Assembled(b)) => crate::retention_layout::plan_free_subruns(
-                &a.bitmap,
-                &b.bitmap,
-                run,
+        self.retention_planner(metadata, partition)?
+            .plan(run, max_subruns)
+    }
+}
+
+pub(crate) enum RetentionPlanner<'a> {
+    Assembled {
+        legacy: &'a [u8],
+        metadata: &'a [u8],
+        partition: u64,
+    },
+    Streamed(crate::retention_layout::StreamedPlanner<'a>),
+}
+
+impl RetentionPlanner<'_> {
+    pub(crate) fn plan(
+        &self,
+        run: crate::retention_layout::SourceRun,
+        max_subruns: usize,
+    ) -> io::Result<crate::retention_layout::Plan> {
+        match self {
+            Self::Assembled {
+                legacy,
+                metadata,
                 partition,
+            } => crate::retention_layout::plan_free_subruns(
+                legacy,
+                metadata,
+                run,
+                *partition,
                 max_subruns,
             ),
-            (Self::Streamed { summary: a, .. }, Self::Streamed { summary: b, .. }) => {
-                crate::retention_layout::plan_free_subruns_streamed(
-                    a,
-                    b,
-                    run,
-                    partition,
-                    max_subruns,
-                )
-            }
-            _ => Err(bad("retention bitmap observation profiles differ")),
+            Self::Streamed(planner) => planner.plan(run, max_subruns),
         }
     }
 }

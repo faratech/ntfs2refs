@@ -44,6 +44,34 @@ pub struct Summary {
     pub allocated_ranges: Vec<ClusterRange>,
 }
 
+/// First-page evidence and the completed summary from one collector lifetime.
+/// No deserializer or public field can pair unrelated response bytes, digest
+/// proofs and summaries. This establishes collection consistency, not device
+/// identity, mount exclusion, allocation ownership or write authority.
+pub(crate) struct CollectedBitmap {
+    first: IoctlQuery,
+    first_proof: PageProof,
+    summary: Summary,
+}
+impl CollectedBitmap {
+    pub(crate) fn into_legacy_parts(self) -> (IoctlQuery, Summary) {
+        (self.first, self.summary)
+    }
+
+    pub(crate) fn into_observation_parts(self) -> (PageProof, Summary) {
+        (self.first_proof, self.summary)
+    }
+}
+
+struct CollectedFirstPage {
+    query: IoctlQuery,
+    proof: PageProof,
+    covered: u64,
+    declared: u64,
+    ranges: Vec<ClusterRange>,
+    complete_summary: Option<Summary>,
+}
+
 impl Summary {
     /// Replay the retained actual first query and cross-check its allocation
     /// prefix. Later-page acquisition is represented by the native transcript;
@@ -195,6 +223,7 @@ pub struct Collector {
     ranges: Vec<ClusterRange>,
     complete: bool,
     poisoned: bool,
+    first_page: Option<CollectedFirstPage>,
 }
 
 impl Collector {
@@ -225,6 +254,7 @@ impl Collector {
             ranges: Vec::new(),
             complete: false,
             poisoned: false,
+            first_page: None,
         })
     }
     pub fn next_lcn(&self) -> u64 {
@@ -255,6 +285,126 @@ impl Collector {
             self.poisoned = true;
         }
         result
+    }
+
+    /// Consume the actual first response when a native caller needs retained
+    /// first-page evidence. The ordinary replay API continues to use `push`.
+    /// Capture its proof and prefix from this original processing pass; do not
+    /// reconstruct a collector or hash the response a second time afterward.
+    pub(crate) fn push_first_owned(
+        &mut self,
+        query: IoctlQuery,
+        template: &[u8],
+    ) -> io::Result<bool> {
+        if self.pages != 0 || self.first_page.is_some() || self.poisoned || self.complete {
+            self.poisoned = true;
+            return Err(bad(
+                "retained first bitmap page must precede every other page",
+            ));
+        }
+        let mut proof = None;
+        let complete = self.push(&query, template, &mut |page| {
+            if proof.replace(page.clone()).is_some() {
+                return Err(bad("first bitmap response produced duplicate page proofs"));
+            }
+            Ok(())
+        })?;
+        let proof = proof.ok_or_else(|| bad("first bitmap response has no page proof"))?;
+        let declared = self
+            .declared
+            .ok_or_else(|| bad("first bitmap page has no declared domain"))?;
+        let complete_summary = if complete {
+            Some(self.completed_summary_snapshot()?)
+        } else {
+            None
+        };
+        let ranges = if complete {
+            Vec::new()
+        } else {
+            self.ranges.clone()
+        };
+        self.first_page = Some(CollectedFirstPage {
+            query,
+            proof,
+            covered: self.covered,
+            declared,
+            ranges,
+            complete_summary,
+        });
+        Ok(complete)
+    }
+
+    // Only used for a complete first response. Cloning/finalizing digest state
+    // does not reread or rehash response data, and retains the old equality
+    // check between complete first-page and complete collection summaries.
+    fn completed_summary_snapshot(&self) -> io::Result<Summary> {
+        if self.poisoned || !self.complete || self.pages == 0 {
+            return Err(bad("streaming bitmap observation is incomplete"));
+        }
+        Ok(Summary {
+            encoding: "streamed-volume-bitmap-v1".into(),
+            cluster_count: self.expected,
+            declared_clusters: self.declared.ok_or_else(|| bad("bitmap domain absent"))?,
+            bitmap_bytes: self.expected.div_ceil(8),
+            bitmap_data_sha256: hex::encode(self.data_hash.clone().finalize()),
+            canonical_bitmap_sha256: hex::encode(self.canonical_hash.clone().finalize()),
+            page_transcript_sha256: hex::encode(self.transcript.clone().finalize()),
+            pages: self.pages,
+            returned_bytes: self.returned,
+            allocated_clusters: self.allocated,
+            free_clusters: self.expected - self.allocated,
+            padding_bits_set: self.padding,
+            allocated_ranges: self.ranges.clone(),
+        })
+    }
+
+    /// Finish the same collector that consumed the owned first response. Keep
+    /// all structural/domain and complete/prefix comparisons of replay, using
+    /// the immutable first-page state that was already derived from its bytes.
+    pub(crate) fn finish_collected(mut self) -> io::Result<CollectedBitmap> {
+        let first = self
+            .first_page
+            .take()
+            .ok_or_else(|| bad("owned first bitmap page absent"))?;
+        let expected = self.expected;
+        let summary = self.finish()?;
+        summary.validate(expected, source_limits(expected)?)?;
+        if let Some(single) = first.complete_summary {
+            if single != summary {
+                return Err(bad(
+                    "single-page bitmap summary differs from its actual response",
+                ));
+            }
+        } else {
+            if summary.pages < 2
+                || summary.returned_bytes <= first.query.bytes.len() as u64
+                || summary.declared_clusters != first.declared
+            {
+                return Err(bad("streamed bitmap summary disagrees with first page"));
+            }
+            let expected_prefix = summary
+                .allocated_ranges
+                .iter()
+                .take_while(|range| range.starting_lcn < first.covered)
+                .map(|range| {
+                    (
+                        range.starting_lcn,
+                        range.clusters.min(first.covered - range.starting_lcn),
+                    )
+                });
+            let observed_prefix = first
+                .ranges
+                .iter()
+                .map(|range| (range.starting_lcn, range.clusters));
+            if !expected_prefix.eq(observed_prefix) {
+                return Err(bad("streamed bitmap first-page allocation prefix differs"));
+            }
+        }
+        Ok(CollectedBitmap {
+            first: first.query,
+            first_proof: first.proof,
+            summary,
+        })
     }
     fn add_range(&mut self, starting_lcn: u64, clusters: u64) -> io::Result<()> {
         if let Some(last) = self.ranges.last_mut()

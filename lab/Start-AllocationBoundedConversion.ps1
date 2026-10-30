@@ -12,7 +12,8 @@
     [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$NtfsReceiptSha256,
     [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$MainSha256,
     [Parameter(Mandatory)][ValidateRange(1,67108864)][int]$MainBytes,
-    [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{40}\z')][string]$SourceCommit
+    [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{40}\z')][string]$SourceCommit,
+    [ValidateRange(0,50000000000)][long]$ForecastAdditionalBytes=7GB
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -75,11 +76,11 @@ try{
     Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force
     $configuration=Get-LabConfiguration -WorkspaceRoot $workspace; $capacity=Get-LabCapacity -Configuration $configuration
     Need ($capacity.MaximumActualBytes -eq 329374052988 -and $capacity.MinimumFreeBytes -eq 17179869184) 'Fixed50GB capacity epoch/16GiB floor differs.'
-    Assert-LabCapacity -Capacity $capacity -AdditionalBytes 7GB
+    Assert-LabCapacity -Capacity $capacity -AdditionalBytes $ForecastAdditionalBytes
     Host-Guard; Need (-not (Test-Path -LiteralPath $root)) 'Fresh host case required.'
     New-Item -ItemType Directory -Path $root -ErrorAction Stop|Out-Null; $created=$true
     $c=@{run_id=$run;stage=$stage;task=$task;main_sha256=$mainPin;main_bytes=$tool.bytes}
-    Save 'intent.json' @{schema_version=1;kind='optimized-drive-alpha-intent';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;tool=$tool;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;ntfs_receipt_grants_source_admission=$false;capacity=$capacity;forecast_bytes=7GB;forecast_is_not_reservation=$true;public_argv=@('--drive','F','--partition','2');stdin='yes CRLF';manual_shadow_journal_binding=$false;source_admission_recreated=$false;power_checkpoint_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
+    Save 'intent.json' @{schema_version=1;kind='optimized-drive-alpha-intent';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;tool=$tool;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;ntfs_receipt_grants_source_admission=$false;capacity=$capacity;forecast_bytes=$ForecastAdditionalBytes;forecast_is_not_reservation=$true;public_argv=@('--drive','F','--partition','2');stdin='yes CRLF';manual_shadow_journal_binding=$false;source_admission_recreated=$false;power_checkpoint_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
     $body=@'
 Set-StrictMode -Version Latest; $ErrorActionPreference='Stop'
 $c=[Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__CONFIG__'))|ConvertFrom-Json
@@ -147,7 +148,7 @@ finally{if($null -ne $process){$process.Dispose()}}
         Register-ScheduledTask -TaskName $Task -Action (New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$path+'"')) -Principal (New-ScheduledTaskPrincipal -UserId SYSTEM -LogonType ServiceAccount -RunLevel Highest) -Settings (New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero)) -ErrorAction Stop|Out-Null
     }
     Host-Guard
-    Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration $configuration) -AdditionalBytes 7GB
+    Assert-LabCapacity -Capacity (Get-LabCapacity -Configuration $configuration) -AdditionalBytes $ForecastAdditionalBytes
     Invoke-Command -Session $session -ArgumentList $stage,$task,$wrapperPin -ScriptBlock {param($Stage,$Task,$Pin)
         Set-StrictMode -Version Latest;$ErrorActionPreference='Stop';$t=Get-ScheduledTask -TaskName $Task -ErrorAction Stop;$info=Get-ScheduledTaskInfo -TaskName $Task -ErrorAction Stop;$path=Join-Path $Stage 'wrapper.ps1'
         if($t.State.ToString() -cne 'Ready' -or $info.LastRunTime.Year -ge 2000 -or @($t.Actions).Count -ne 1 -or $t.Actions[0].Execute -cne "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -or $t.Actions[0].Arguments -cne ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$path+'"') -or $t.Principal.UserId -notin @('SYSTEM','S-1-5-18') -or $t.Principal.RunLevel.ToString() -cne 'Highest' -or (Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $Pin -or @(Get-ScheduledTask -ErrorAction Stop|Where-Object {$_.TaskName -like 'N2R-*' -and $_.State.ToString() -notin @('Ready','Disabled')}).Count){throw 'Only the untouched pinned SYSTEM public drive task may start once.'}

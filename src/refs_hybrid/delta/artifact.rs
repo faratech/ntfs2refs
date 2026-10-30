@@ -39,6 +39,8 @@ struct StoredRange {
     packed_offset: u64,
     #[serde(default)]
     new_is_zero: bool,
+    #[serde(default)]
+    copy_source_offset: Option<u64>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,6 +58,8 @@ struct StoredLayout {
 struct StoredReads {
     source_logical_bytes: u64,
     shadow_bytes: u64,
+    #[serde(default)]
+    source_reference_bytes: u64,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -300,7 +304,8 @@ impl VerifiedDeltaArtifact {
                     .read_counts
                     .source_logical_bytes
                     .checked_add(capture.read_counts.shadow_bytes)
-                    == Some(capture.selected_bytes_compared),
+                    == Some(capture.selected_bytes_compared)
+                && capture.read_counts.source_reference_bytes <= capture.layout.changed_bytes,
             "capture geometry, read totals or selected-byte accounting differs"
         );
         for digest in [
@@ -320,6 +325,7 @@ impl VerifiedDeltaArtifact {
                 length: r.length,
                 packed_offset: r.packed_offset,
                 new_is_zero: r.new_is_zero,
+                copy_source_offset: r.copy_source_offset,
             })
             .collect();
         let layout = match (capture.layout.encoding_version, capture.layout.packed_bytes) {
@@ -329,6 +335,12 @@ impl VerifiedDeltaArtifact {
                 ranges,
             )?,
             (Some(2), Some(packed_bytes)) => DeltaLayout::new_zero_aware(
+                capture.layout.partition_bytes,
+                capture.layout.changed_bytes,
+                packed_bytes,
+                ranges,
+            )?,
+            (Some(3), Some(packed_bytes)) => DeltaLayout::new_reference_aware(
                 capture.layout.partition_bytes,
                 capture.layout.changed_bytes,
                 packed_bytes,

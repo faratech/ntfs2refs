@@ -6,6 +6,8 @@
 //! N2RZERO1 stores every old byte but represents selected all-zero new ranges
 //! without payload. Both formats use the same selected-byte digests and replay
 //! barriers; zero encoding changes storage, not the target write set.
+//! N2RCPY01 additionally resolves new bytes from the journal's immutable old
+//! payloads. It never needs a source device when replaying a copy.
 use crate::lab_reconstruct::{DurableIo, ReadSeek};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -17,17 +19,27 @@ const BODY: u64 = 8192;
 const HEADER: usize = 80;
 const RECORD: usize = 80;
 const ZERO_RECORD: usize = 88;
+const COPY_RECORD: usize = 96;
 const FOOTER: usize = 80;
 const BUFFER: usize = 1024 * 1024;
 const MAX_RANGES: usize = 65_536;
 const FORMAT: u32 = 1;
 const ZERO_FORMAT: u32 = 2;
+const COPY_FORMAT: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SelectedRange {
     pub offset: u64,
     pub length: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedCopyRange {
+    pub offset: u64,
+    pub length: u64,
+    pub source_offset: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +54,10 @@ pub struct SelectedPlan {
     /// actual candidate; this declaration alone never authenticates bytes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub new_zero_ranges: Vec<SelectedRange>,
+    /// New bytes reproduced from original bytes of selected ranges. The
+    /// entire source interval must be covered by the journal's old payloads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub new_copy_ranges: Vec<SelectedCopyRange>,
 }
 
 /// Trusted only when held independently by the caller. This format and its
@@ -73,7 +89,15 @@ pub struct SelectedResult {
 struct JournalRecord {
     range: SelectedRange,
     before_at: u64,
-    after_at: Option<u64>,
+    after: NewBytes,
+    new_sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NewBytes {
+    Payload(u64),
+    Zero,
+    OldReference(u64),
 }
 
 fn at<R: Read + Seek>(io: &mut R, offset: u64, bytes: &mut [u8]) -> Result<()> {
@@ -109,6 +133,67 @@ fn frame(hash: &mut PinHash, range: &SelectedRange) -> Result<()> {
 }
 
 impl SelectedPlan {
+    pub fn new_copy_bytes(&self) -> Result<u64> {
+        self.new_zero_bytes()?;
+        let mut index = 0usize;
+        let mut bytes = 0u64;
+        for copy in &self.new_copy_ranges {
+            while index < self.ranges.len() && self.ranges[index].offset < copy.offset {
+                index += 1;
+            }
+            ensure!(
+                self.ranges
+                    .get(index)
+                    .is_some_and(|r| r.offset == copy.offset && r.length == copy.length),
+                "copy ranges must be a sorted unique exact subset of selected ranges"
+            );
+            ensure!(
+                self.new_zero_ranges
+                    .binary_search_by_key(&copy.offset, |r| r.offset)
+                    .is_err(),
+                "copy and zero destination ranges overlap"
+            );
+            let end = copy
+                .source_offset
+                .checked_add(copy.length)
+                .context("copy source overflow")?;
+            ensure!(
+                copy.source_offset.is_multiple_of(GRANULE)
+                    && copy.length > 0
+                    && copy.length.is_multiple_of(GRANULE)
+                    && end <= self.image_length,
+                "copy source is unaligned or escapes the image"
+            );
+            let mut source_index = self.ranges.partition_point(|r| {
+                r.offset
+                    .checked_add(r.length)
+                    .is_some_and(|end| end <= copy.source_offset)
+            });
+            let mut cursor = copy.source_offset;
+            while cursor < end {
+                let range = self
+                    .ranges
+                    .get(source_index)
+                    .context("copy source leaves selected old payload")?;
+                let range_end = range
+                    .offset
+                    .checked_add(range.length)
+                    .context("selected old range overflow")?;
+                ensure!(
+                    range.offset <= cursor && cursor < range_end,
+                    "copy source crosses an unjournaled gap"
+                );
+                cursor = end.min(range_end);
+                source_index += 1;
+            }
+            bytes = bytes
+                .checked_add(copy.length)
+                .context("copy byte total overflow")?;
+            index += 1;
+        }
+        Ok(bytes)
+    }
+
     pub fn new_zero_bytes(&self) -> Result<u64> {
         let mut index = 0usize;
         let mut bytes = 0u64;
@@ -132,6 +217,47 @@ impl SelectedPlan {
         !self.new_zero_ranges.is_empty()
     }
 
+    fn copy_encoded(&self) -> bool {
+        !self.new_copy_ranges.is_empty()
+    }
+
+    fn copy_source(&self, range: &SelectedRange) -> Option<u64> {
+        self.new_copy_ranges
+            .binary_search_by_key(&range.offset, |r| r.offset)
+            .ok()
+            .map(|i| self.new_copy_ranges[i].source_offset)
+    }
+
+    fn format(&self) -> u32 {
+        if self.copy_encoded() {
+            COPY_FORMAT
+        } else if self.zero_encoded() {
+            ZERO_FORMAT
+        } else {
+            FORMAT
+        }
+    }
+
+    fn magic(&self) -> &'static [u8; 8] {
+        if self.copy_encoded() {
+            b"N2RCPY01"
+        } else if self.zero_encoded() {
+            b"N2RZERO1"
+        } else {
+            b"N2RSEL01"
+        }
+    }
+
+    fn footer_magic(&self) -> &'static [u8; 8] {
+        if self.copy_encoded() {
+            b"N2RCEND1"
+        } else if self.zero_encoded() {
+            b"N2RZEND1"
+        } else {
+            b"N2RSEND1"
+        }
+    }
+
     fn is_new_zero(&self, range: &SelectedRange) -> bool {
         self.new_zero_ranges
             .binary_search_by_key(&range.offset, |r| r.offset)
@@ -139,7 +265,9 @@ impl SelectedPlan {
     }
 
     fn record_size(&self) -> usize {
-        if self.zero_encoded() {
+        if self.copy_encoded() {
+            COPY_RECORD
+        } else if self.zero_encoded() {
             ZERO_RECORD
         } else {
             RECORD
@@ -182,12 +310,20 @@ impl SelectedPlan {
             "selected bytes exceed caller budget"
         );
         let zero_bytes = self.new_zero_bytes()?;
+        let copy_bytes = self.new_copy_bytes()?;
         let journal_length = BODY
             .checked_add(HEADER as u64)
             .and_then(|n| {
                 n.checked_add((self.ranges.len() as u64).checked_mul(self.record_size() as u64)?)
             })
-            .and_then(|n| n.checked_add(changed.checked_mul(2)?.checked_sub(zero_bytes)?))
+            .and_then(|n| {
+                n.checked_add(
+                    changed
+                        .checked_mul(2)?
+                        .checked_sub(zero_bytes)?
+                        .checked_sub(copy_bytes)?,
+                )
+            })
             .and_then(|n| n.checked_add(FOOTER as u64))
             .context("selected journal length overflow")?;
         ensure!(
@@ -258,6 +394,7 @@ pub(crate) fn validate_coarse(image_length: u64, coarse: &[SelectedRange]) -> Re
         max_selected_bytes: image_length,
         max_journal_bytes: u64::MAX,
         new_zero_ranges: Vec::new(),
+        new_copy_ranges: Vec::new(),
     }
     .validate()?;
     Ok(())
@@ -302,6 +439,7 @@ pub(crate) fn finish_changed_plan(
         max_selected_bytes,
         max_journal_bytes,
         new_zero_ranges: Vec::new(),
+        new_copy_ranges: Vec::new(),
     };
     plan.validate()?;
     Ok(plan)
@@ -367,6 +505,50 @@ fn verify_zero_selected<R: Read + Seek>(
     finish(hash)
 }
 
+fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
+    source: &mut R,
+    candidate: &mut S,
+    ranges: &[SelectedRange],
+    range: &SelectedRange,
+    source_offset: u64,
+    selected: &mut PinHash,
+) -> Result<[u8; 32]> {
+    frame(selected, range)?;
+    let mut hash = pin_hash()?;
+    let mut before = vec![0; BUFFER];
+    let mut after = vec![0; BUFFER];
+    let mut done = 0u64;
+    while done < range.length {
+        let count = usize::try_from((range.length - done).min(BUFFER as u64))?;
+        at(candidate, range.offset + done, &mut after[..count])?;
+        let mut cursor = source_offset + done;
+        let mut filled = 0usize;
+        while filled < count {
+            let index = ranges.partition_point(|r| r.offset + r.length <= cursor);
+            let old = ranges
+                .get(index)
+                .context("copy source leaves selected old ranges")?;
+            ensure!(
+                old.offset <= cursor,
+                "copy source crosses an unjournaled gap"
+            );
+            let n =
+                usize::try_from((old.offset + old.length - cursor).min((count - filled) as u64))?;
+            at(source, cursor, &mut before[filled..filled + n])?;
+            cursor += n as u64;
+            filled += n;
+        }
+        ensure!(
+            before[..count] == after[..count],
+            "selected copy differs from original source bytes"
+        );
+        selected.update(&after[..count])?;
+        hash.update(&after[..count])?;
+        done += count as u64;
+    }
+    finish(hash)
+}
+
 /// Create and durably verify a new external journal. Only selected ranges are
 /// read from the two images. Ticket issuance follows an independent readback.
 pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
@@ -384,16 +566,9 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     );
     let mut header = [0u8; HEADER];
     let zero_encoded = plan.zero_encoded();
-    header[..8].copy_from_slice(if zero_encoded {
-        b"N2RZERO1"
-    } else {
-        b"N2RSEL01"
-    });
-    put_u32(
-        &mut header,
-        8,
-        if zero_encoded { ZERO_FORMAT } else { FORMAT },
-    );
+    let copy_encoded = plan.copy_encoded();
+    header[..8].copy_from_slice(plan.magic());
+    put_u32(&mut header, 8, plan.format());
     put_u32(&mut header, 12, u32::try_from(plan.ranges.len())?);
     put_u64(&mut header, 16, plan.image_length);
     put_u64(&mut header, 24, changed);
@@ -405,19 +580,43 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut new_selected = pin_hash()?;
     for range in &plan.ranges {
         let record_at = journal.stream_position()?;
-        let mut record = [0u8; ZERO_RECORD];
+        let mut record = [0u8; COPY_RECORD];
         journal.write_all(&record[..plan.record_size()])?;
         let old_hash = copy_selected(source, range, journal, &mut old_selected)?;
         let is_zero = plan.is_new_zero(range);
+        let copy_source = plan.copy_source(range);
         let new_hash = if is_zero {
             verify_zero_selected(candidate, range, &mut new_selected)?
+        } else if let Some(source_offset) = copy_source {
+            verify_copy_selected(
+                source,
+                candidate,
+                &plan.ranges,
+                range,
+                source_offset,
+                &mut new_selected,
+            )?
         } else {
             copy_selected(candidate, range, journal, &mut new_selected)?
         };
         let next = journal.stream_position()?;
         put_u64(&mut record, 0, range.offset);
         put_u64(&mut record, 8, range.length);
-        let hashes = if zero_encoded {
+        let hashes = if copy_encoded {
+            put_u64(
+                &mut record,
+                16,
+                if is_zero {
+                    1
+                } else if copy_source.is_some() {
+                    2
+                } else {
+                    0
+                },
+            );
+            put_u64(&mut record, 24, copy_source.unwrap_or(0));
+            32
+        } else if zero_encoded {
             put_u64(&mut record, 16, u64::from(is_zero));
             24
         } else {
@@ -432,11 +631,7 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let old_selected_sha256 = finish(old_selected)?;
     let new_selected_sha256 = finish(new_selected)?;
     let mut footer = [0u8; FOOTER];
-    footer[..8].copy_from_slice(if zero_encoded {
-        b"N2RZEND1"
-    } else {
-        b"N2RSEND1"
-    });
+    footer[..8].copy_from_slice(plan.footer_magic());
     footer[8..40].copy_from_slice(&old_selected_sha256);
     footer[40..72].copy_from_slice(&new_selected_sha256);
     put_u64(&mut footer, 72, journal_length);
@@ -493,14 +688,10 @@ fn load<J: ReadSeek>(
     at(journal, BODY, &mut header)?;
     immutable.update(&header)?;
     let zero_encoded = plan.zero_encoded();
+    let copy_encoded = plan.copy_encoded();
     ensure!(
-        &header[..8]
-            == if zero_encoded {
-                b"N2RZERO1"
-            } else {
-                b"N2RSEL01"
-            }
-            && get_u32(&header, 8) == if zero_encoded { ZERO_FORMAT } else { FORMAT }
+        &header[..8] == plan.magic()
+            && get_u32(&header, 8) == plan.format()
             && get_u32(&header, 12) == ticket.range_count
             && get_u64(&header, 16) == plan.image_length
             && get_u64(&header, 24) == changed
@@ -513,7 +704,7 @@ fn load<J: ReadSeek>(
     let mut new_selected = pin_hash()?;
     let mut buffer = vec![0; BUFFER];
     for range in &plan.ranges {
-        let mut record = [0u8; ZERO_RECORD];
+        let mut record = [0u8; COPY_RECORD];
         journal.read_exact(&mut record[..plan.record_size()])?;
         immutable.update(&record[..plan.record_size()])?;
         ensure!(
@@ -525,7 +716,21 @@ fn load<J: ReadSeek>(
             .checked_add(range.length)
             .context("selected journal offset overflow")?;
         let is_zero = plan.is_new_zero(range);
-        let hashes = if zero_encoded {
+        let copy_source = plan.copy_source(range);
+        let hashes = if copy_encoded {
+            let kind = if is_zero {
+                1
+            } else if copy_source.is_some() {
+                2
+            } else {
+                0
+            };
+            ensure!(
+                get_u64(&record, 16) == kind && get_u64(&record, 24) == copy_source.unwrap_or(0),
+                "selected journal copy descriptor differs from the pinned plan"
+            );
+            32
+        } else if zero_encoded {
             ensure!(
                 get_u64(&record, 16) == u64::from(is_zero),
                 "selected journal zero flag differs from the pinned plan"
@@ -535,31 +740,46 @@ fn load<J: ReadSeek>(
             16
         };
         let next = after_at
-            .checked_add(if is_zero { 0 } else { range.length })
+            .checked_add(if is_zero || copy_source.is_some() {
+                0
+            } else {
+                range.length
+            })
             .context("selected journal offset overflow")?;
         ensure!(
             next <= journal_length - FOOTER as u64,
             "selected journal payload truncated"
         );
-        for (offset, selected, expected) in [
-            (
-                Some(before_at),
-                &mut old_selected,
-                &record[hashes..hashes + 32],
-            ),
-            (
-                (!is_zero).then_some(after_at),
-                &mut new_selected,
-                &record[hashes + 32..hashes + 64],
-            ),
-        ] {
+        for old in [true, false] {
+            if !old && copy_source.is_some() {
+                continue; // The complete old-payload table is needed first.
+            }
+            let offset = if old {
+                Some(before_at)
+            } else {
+                (!is_zero).then_some(after_at)
+            };
+            let expected = if old {
+                &record[hashes..hashes + 32]
+            } else {
+                &record[hashes + 32..hashes + 64]
+            };
+            let mut selected = if old {
+                Some(&mut old_selected)
+            } else if !copy_encoded {
+                Some(&mut new_selected)
+            } else {
+                None
+            };
             if let Some(offset) = offset {
                 ensure!(
                     journal.stream_position()? == offset,
                     "selected journal sequential payload position differs"
                 );
             }
-            frame(selected, range)?;
+            if let Some(selected) = selected.as_deref_mut() {
+                frame(selected, range)?;
+            }
             let mut hash = pin_hash()?;
             let mut remaining = range.length;
             while remaining > 0 {
@@ -570,7 +790,9 @@ fn load<J: ReadSeek>(
                 } else {
                     buffer[..count].fill(0);
                 }
-                selected.update(&buffer[..count])?;
+                if let Some(selected) = selected.as_deref_mut() {
+                    selected.update(&buffer[..count])?;
+                }
                 hash.update(&buffer[..count])?;
                 remaining -= count as u64;
             }
@@ -582,7 +804,16 @@ fn load<J: ReadSeek>(
         records.push(JournalRecord {
             range: range.clone(),
             before_at,
-            after_at: (!is_zero).then_some(after_at),
+            after: if is_zero {
+                NewBytes::Zero
+            } else if let Some(source) = copy_source {
+                NewBytes::OldReference(source)
+            } else {
+                NewBytes::Payload(after_at)
+            },
+            new_sha256: record[hashes + 32..hashes + 64]
+                .try_into()
+                .expect("fixed digest"),
         });
         ensure!(
             journal.stream_position()? == next,
@@ -593,17 +824,12 @@ fn load<J: ReadSeek>(
     journal.read_exact(&mut footer)?;
     immutable.update(&footer)?;
     ensure!(
-        &footer[..8]
-            == if zero_encoded {
-                b"N2RZEND1"
-            } else {
-                b"N2RSEND1"
-            }
+        &footer[..8] == plan.footer_magic()
             && footer[8..40] == ticket.old_selected_sha256
             && footer[40..72] == ticket.new_selected_sha256
             && get_u64(&footer, 72) == journal_length
             && finish(old_selected)? == ticket.old_selected_sha256
-            && finish(new_selected)? == ticket.new_selected_sha256
+            && (copy_encoded || finish(new_selected)? == ticket.new_selected_sha256)
             && journal.stream_position()? == journal_length,
         "selected journal footer or selected digest differs"
     );
@@ -611,6 +837,32 @@ fn load<J: ReadSeek>(
         finish(immutable)? == ticket.immutable_sha256,
         "selected immutable journal differs from trusted ticket"
     );
+    if copy_encoded {
+        // All old payloads and descriptors are authenticated before any
+        // reference is followed. References resolve only to those old bytes,
+        // so overlap, forward references and reference cycles are harmless.
+        let mut new_selected = pin_hash()?;
+        for record in &records {
+            frame(&mut new_selected, &record.range)?;
+            let mut hash = pin_hash()?;
+            let mut done = 0u64;
+            while done < record.range.length {
+                let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
+                read_after(journal, &records, record, done, &mut buffer[..count])?;
+                hash.update(&buffer[..count])?;
+                new_selected.update(&buffer[..count])?;
+                done += count as u64;
+            }
+            ensure!(
+                finish(hash)? == record.new_sha256,
+                "selected resolved copy hash differs"
+            );
+        }
+        ensure!(
+            finish(new_selected)? == ticket.new_selected_sha256,
+            "selected resolved new digest differs"
+        );
+    }
     Ok(records)
 }
 
@@ -662,15 +914,43 @@ fn write_marker<J: DurableIo>(
 
 fn read_after<J: Read + Seek>(
     journal: &mut J,
+    records: &[JournalRecord],
     record: &JournalRecord,
     within: u64,
     bytes: &mut [u8],
 ) -> Result<()> {
-    if let Some(offset) = record.after_at {
-        at(journal, offset + within, bytes)
-    } else {
-        bytes.fill(0);
-        Ok(())
+    match record.after {
+        NewBytes::Payload(offset) => at(journal, offset + within, bytes),
+        NewBytes::Zero => {
+            bytes.fill(0);
+            Ok(())
+        }
+        NewBytes::OldReference(source) => {
+            let mut cursor = source + within;
+            let mut filled = 0usize;
+            while filled < bytes.len() {
+                let index = records.partition_point(|r| r.range.offset + r.range.length <= cursor);
+                let original = records
+                    .get(index)
+                    .context("copy leaves immutable old records")?;
+                ensure!(
+                    original.range.offset <= cursor,
+                    "copy crosses an unjournaled old gap"
+                );
+                let count = usize::try_from(
+                    (original.range.offset + original.range.length - cursor)
+                        .min((bytes.len() - filled) as u64),
+                )?;
+                at(
+                    journal,
+                    original.before_at + cursor - original.range.offset,
+                    &mut bytes[filled..filled + count],
+                )?;
+                cursor += count as u64;
+                filled += count;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -698,7 +978,7 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
             let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
             at(target, record.range.offset + done, &mut current[..count])?;
             at(journal, record.before_at + done, &mut before[..count])?;
-            read_after(journal, record, done, &mut after[..count])?;
+            read_after(journal, records, record, done, &mut after[..count])?;
             ensure!(
                 current[..count]
                     .iter()
@@ -722,6 +1002,7 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
 fn write_span<T: DurableIo, J: Read + Seek>(
     target: &mut T,
     journal: &mut J,
+    records: &[JournalRecord],
     record: &JournalRecord,
     start: u64,
     length: u64,
@@ -737,7 +1018,7 @@ fn write_span<T: DurableIo, J: Read + Seek>(
         let offset = record.range.offset + within;
         at(target, offset, &mut current[..count])?;
         at(journal, record.before_at + within, &mut before[..count])?;
-        read_after(journal, record, within, &mut after[..count])?;
+        read_after(journal, records, record, within, &mut after[..count])?;
         ensure!(
             current[..count]
                 .iter()
@@ -813,6 +1094,7 @@ fn execute<T: DurableIo, J: DurableIo>(
         write_span(
             target,
             journal,
+            &records,
             record,
             skip,
             record.range.length - skip,
@@ -821,7 +1103,7 @@ fn execute<T: DurableIo, J: DurableIo>(
     }
     target.sync_all()?;
     if let Some(first) = records.first().filter(|r| r.range.offset == 0) {
-        write_span(target, journal, first, 0, GRANULE, forward)?;
+        write_span(target, journal, &records, first, 0, GRANULE, forward)?;
     }
     target.sync_all()?;
     let expected = if forward {

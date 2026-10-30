@@ -258,7 +258,7 @@ pub fn recover_allocation(
         phase = "selected-journal-recovery";
         let outcome = match action {
             Action::Resume => {
-                if plan.new_zero_ranges.is_empty() {
+                if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
                     target.arm_writes(policy, &mut events)?;
                 } else {
                     target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
@@ -275,7 +275,7 @@ pub fn recover_allocation(
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::Rollback => {
-                if plan.new_zero_ranges.is_empty() {
+                if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
                     target.arm_writes(policy, &mut events)?;
                 } else {
                     target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;

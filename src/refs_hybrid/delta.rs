@@ -1,5 +1,6 @@
-//! Read-only target view backed only by changed clusters. Equal candidate bytes
-//! use the frozen original; no allocator reservation is omitted by inference.
+//! Read-only target view backed by changed literals, explicit zeros, or original
+//! source references. Equal candidate bytes use the frozen original; no
+//! allocator reservation is omitted by inference.
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -16,6 +17,11 @@ pub struct ChangedRange {
     /// zero throughout this interval. The interval remains in the write set.
     #[serde(skip_serializing_if = "is_false")]
     pub(crate) new_is_zero: bool,
+    /// Version-three backing may reference the original frozen source instead
+    /// of storing new payload bytes. Never resolve this against an activated
+    /// target: the original source interval may already have been overwritten.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) copy_source_offset: Option<u64>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -39,10 +45,12 @@ impl DeltaLayout {
         ranges: Vec<ChangedRange>,
     ) -> Result<Self> {
         ensure!(
-            ranges.iter().all(|range| !range.new_is_zero),
-            "legacy delta cannot omit zero payloads"
+            ranges
+                .iter()
+                .all(|range| !range.new_is_zero && range.copy_source_offset.is_none()),
+            "legacy delta cannot omit or reference payloads"
         );
-        Self::checked(partition_bytes, changed_bytes, None, ranges)
+        Self::checked(partition_bytes, changed_bytes, None, None, ranges)
     }
 
     pub(crate) fn new_zero_aware(
@@ -51,12 +59,40 @@ impl DeltaLayout {
         packed_bytes: u64,
         ranges: Vec<ChangedRange>,
     ) -> Result<Self> {
-        Self::checked(partition_bytes, changed_bytes, Some(packed_bytes), ranges)
+        ensure!(
+            ranges
+                .iter()
+                .all(|range| range.copy_source_offset.is_none()),
+            "version-two delta cannot reference source payloads"
+        );
+        Self::checked(
+            partition_bytes,
+            changed_bytes,
+            Some(2),
+            Some(packed_bytes),
+            ranges,
+        )
+    }
+
+    pub(crate) fn new_reference_aware(
+        partition_bytes: u64,
+        changed_bytes: u64,
+        packed_bytes: u64,
+        ranges: Vec<ChangedRange>,
+    ) -> Result<Self> {
+        Self::checked(
+            partition_bytes,
+            changed_bytes,
+            Some(3),
+            Some(packed_bytes),
+            ranges,
+        )
     }
 
     fn checked(
         partition_bytes: u64,
         changed_bytes: u64,
+        encoding_version: Option<u32>,
         packed_bytes: Option<u64>,
         ranges: Vec<ChangedRange>,
     ) -> Result<Self> {
@@ -85,7 +121,18 @@ impl DeltaLayout {
             logical = logical
                 .checked_add(r.length)
                 .context("delta logical byte overflow")?;
-            if !r.new_is_zero {
+            if let Some(source) = r.copy_source_offset {
+                ensure!(
+                    encoding_version == Some(3)
+                        && !r.new_is_zero
+                        && source.is_multiple_of(4096)
+                        && source
+                            .checked_add(r.length)
+                            .is_some_and(|end| end <= partition_bytes),
+                    "delta source reference conflicts with zeros, is unaligned or escapes the original"
+                );
+            }
+            if !r.new_is_zero && r.copy_source_offset.is_none() {
                 packed = packed
                     .checked_add(r.length)
                     .context("delta backing overflow")?;
@@ -98,7 +145,7 @@ impl DeltaLayout {
         Ok(Self {
             partition_bytes,
             changed_bytes,
-            encoding_version: packed_bytes.map(|_| 2),
+            encoding_version,
             packed_bytes,
             ranges,
         })
@@ -120,6 +167,21 @@ impl DeltaLayout {
             .filter(|range| range.new_is_zero)
             .map(|range| (range.offset, range.length))
             .collect()
+    }
+
+    pub fn new_copy_ranges(&self) -> Vec<(u64, u64, u64)> {
+        self.ranges
+            .iter()
+            .filter_map(|range| {
+                range
+                    .copy_source_offset
+                    .map(|source| (range.offset, range.length, source))
+            })
+            .collect()
+    }
+
+    fn requires_original_source(&self) -> bool {
+        self.encoding_version == Some(3)
     }
 
     pub(crate) fn intervals(&self) -> &[ChangedRange] {
@@ -166,6 +228,8 @@ impl DeltaLayout {
 
 /// The constructor checks layout, not capture provenance. A candidate remains
 /// non-executable until the required-byte graph and recovery plan are qualified.
+/// Version-three source references require the original frozen bytes for the
+/// entire view lifetime; an already-modified target is not a substitute.
 pub struct DifferenceImage<'a, R, S> {
     original: &'a mut R,
     packed: &'a mut S,
@@ -185,6 +249,20 @@ impl<'a, R: Read + Seek, S: Read + Seek> DifferenceImage<'a, R, S> {
             layout,
             position: 0,
         })
+    }
+
+    /// An overlay can run between sequential reads of the original, so restore
+    /// its position even when the referenced read fails.
+    #[cfg(windows)]
+    fn read_original_reference(original: &mut R, offset: u64, output: &mut [u8]) -> io::Result<()> {
+        let position = original.stream_position()?;
+        let read = original
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| original.read_exact(output));
+        let restored = original.seek(SeekFrom::Start(position));
+        read?;
+        restored?;
+        Ok(())
     }
 
     /// Replace only changed-range intersections in an already-read source
@@ -212,6 +290,17 @@ impl<'a, R: Read + Seek, S: Read + Seek> DifferenceImage<'a, R, S> {
             let length = usize::try_from(stop - start)?;
             if range.new_is_zero {
                 candidate[local..local + length].fill(0);
+                continue;
+            }
+            if let Some(source) = range.copy_source_offset {
+                let source = source
+                    .checked_add(start - range.offset)
+                    .context("paired compact source reference overflow")?;
+                Self::read_original_reference(
+                    self.original,
+                    source,
+                    &mut candidate[local..local + length],
+                )?;
                 continue;
             }
             let packed_offset = range
@@ -358,6 +447,10 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
         events: &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<n2r_win32::GeneralDiskState> {
         ensure!(
+            !self.layout.requires_original_source(),
+            "reference delta requires the original frozen source, not an activated target"
+        );
+        ensure!(
             self.original.binding() == target.binding()
                 && self.original.byte_len() == expected_length
                 && target.byte_len() == expected_length
@@ -376,6 +469,10 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
 
     /// Overlay the packed candidate on bytes just read from the paired target.
     pub(crate) fn overlay_target_chunk(&mut self, offset: u64, candidate: &mut [u8]) -> Result<()> {
+        ensure!(
+            !self.layout.requires_original_source(),
+            "reference delta cannot overlay an activated target"
+        );
         self.overlay_packed_chunk(offset, candidate)
     }
 
@@ -389,6 +486,10 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
         journal_ranges: &[(u64, u64)],
         events: &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<(String, String)> {
+        ensure!(
+            !self.layout.requires_original_source(),
+            "reference delta cannot hash an activated target as its original"
+        );
         ensure!(
             self.original.binding() == target.binding()
                 && self.original.byte_len() == expected_length
@@ -459,6 +560,17 @@ impl<R: Read + Seek, S: Read + Seek> Read for DifferenceImage<'_, R, S> {
             if r.new_is_zero {
                 output[..count].fill(0);
                 count
+            } else if let Some(source) = r.copy_source_offset {
+                let source = source
+                    .checked_add(self.position - r.offset)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "delta source reference overflow",
+                        )
+                    })?;
+                self.original.seek(SeekFrom::Start(source))?;
+                self.original.read(&mut output[..count])?
             } else {
                 self.packed
                     .seek(SeekFrom::Start(r.packed_offset + self.position - r.offset))?;

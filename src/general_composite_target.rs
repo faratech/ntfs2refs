@@ -541,6 +541,19 @@ impl FrozenAllocationTargetPreservation {
                 .into_iter()
                 .map(|(offset, length)| crate::selected_journal::SelectedRange { offset, length })
                 .collect(),
+            new_copy_ranges: self
+                .capture
+                .layout
+                .new_copy_ranges()
+                .into_iter()
+                .map(
+                    |(offset, length, source_offset)| crate::selected_journal::SelectedCopyRange {
+                        offset,
+                        length,
+                        source_offset,
+                    },
+                )
+                .collect(),
         };
         plan.validate()?;
         Ok(plan)
@@ -644,6 +657,131 @@ fn in_place_payload_ranges(
     Ok(merged)
 }
 
+/// Candidate copy addresses come only from the same inventory and protected
+/// native routes used by the live target proof. Capture still compares their
+/// actual bytes and admits only origins covered by preceding changed ranges.
+fn payload_copy_candidates(
+    volume_bytes: u64,
+    raw: &ntfs_inspect::NtfsInspection,
+    tree: &shadow_tree::Tree,
+    routes: &n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
+) -> Result<Vec<crate::payload_copy_plan::CopySpan>> {
+    use crate::payload_copy_plan::{
+        self as cp, ByteRange, FileIdentity, SourceExtent, SourceStream, TargetRoute,
+    };
+    use std::collections::BTreeMap;
+    let mut attributes = BTreeMap::new();
+    let mut requested = Vec::new();
+    let mut target_routes = Vec::new();
+    for route in routes.entries() {
+        let object = tree
+            .objects
+            .get(route.object_index)
+            .context("copy route object absent")?;
+        let mut matches = raw.files.iter().filter(|file| {
+            file.record_number == object.record_number
+                && file.sequence_number == object.sequence_number
+        });
+        let file = matches.next().context("copy route source absent")?;
+        ensure!(matches.next().is_none(), "copy route source ambiguous");
+        let data: Vec<_> = file
+            .attributes
+            .iter()
+            .filter(|attribute| attribute.type_code == 0x80 && attribute.name_utf16.is_empty())
+            .collect();
+        let [attribute] = data.as_slice() else {
+            continue;
+        };
+        if file.is_directory
+            || object.directory
+            || attribute.resident
+            || attribute.flags != 0
+            || attribute.lowest_vcn != 0
+            || attribute.compression_unit != 0
+            || attribute.extents.iter().any(|extent| {
+                extent.physical_offset.is_none()
+                    || !extent.logical_offset.is_multiple_of(4096)
+                    || !extent.length.is_multiple_of(4096)
+                    || !extent.physical_offset.unwrap_or(1).is_multiple_of(4096)
+            })
+        {
+            continue;
+        }
+        ensure!(
+            attribute.logical_size == route.stream_length,
+            "copy route stream size differs"
+        );
+        let end = route
+            .logical_offset
+            .checked_add(route.length)
+            .context("copy route overflow")?
+            .min(attribute.initialized_size)
+            .min(attribute.logical_size)
+            / 4096
+            * 4096;
+        let start = route
+            .logical_offset
+            .checked_add(4095)
+            .context("copy route alignment overflow")?
+            / 4096
+            * 4096;
+        if end <= start {
+            continue;
+        }
+        let destination_offset = route
+            .target_physical_offset
+            .checked_add(start - route.logical_offset)
+            .context("copy destination overflow")?;
+        let identity = FileIdentity {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+        };
+        attributes.entry(identity).or_insert(*attribute);
+        requested.push(ByteRange {
+            offset: destination_offset,
+            length: end - start,
+        });
+        target_routes.push(TargetRoute {
+            identity,
+            logical_offset: start,
+            destination_offset,
+            length: end - start,
+            stream_length: route.stream_length,
+        });
+    }
+    requested.sort_by_key(|range| range.offset);
+    let storage: Vec<_> = attributes
+        .into_iter()
+        .map(|(identity, attribute)| {
+            let extents: Vec<_> = attribute
+                .extents
+                .iter()
+                .map(|extent| SourceExtent {
+                    logical_offset: extent.logical_offset,
+                    physical_offset: extent.physical_offset,
+                    length: extent.length,
+                })
+                .collect();
+            (identity, attribute, extents)
+        })
+        .collect();
+    let streams: Vec<_> = storage
+        .iter()
+        .map(|(identity, attribute, extents)| SourceStream {
+            identity: *identity,
+            logical_length: attribute.logical_size,
+            initialized_length: attribute.initialized_size,
+            ordinary_file: true,
+            nonresident: true,
+            default_data: true,
+            attribute_flags: attribute.flags,
+            lowest_vcn: attribute.lowest_vcn,
+            extents,
+        })
+        .collect();
+    cp::plan_copies(volume_bytes, &requested, &streams, &target_routes)
+}
+
 /// `left` minus `right`, both sorted and coalesced.
 fn subtract_ranges(
     left: &[crate::refs_write_set::ByteRange],
@@ -732,6 +870,7 @@ pub fn verify_and_select(
     // already required this model; were it unavailable, the split would only
     // mark its NTFS counters unavailable.
     let ntfs_allocated = raw.allocated_byte_ranges(length).ok();
+    let copy_candidates = payload_copy_candidates(length, raw, &tree, protected.routes())?;
     let mut capture = SourceBackedShadow::new(
         source,
         target,
@@ -740,13 +879,14 @@ pub fn verify_and_select(
         protected.routes(),
         protected.routes().payload_bytes().max(1),
     )?
-    .capture_listed_zero_aware_differences_to_new_file(
+    .capture_listed_source_references_to_new_file(
         &compared,
         packed_path,
         max_changed_bytes,
         Some(ChangeClassSplit {
             ntfs_allocated: ntfs_allocated.as_deref(),
         }),
+        &copy_candidates,
     )?;
     // Record the split once, beside the capture, keeping the capture object
     // in its earlier shape.

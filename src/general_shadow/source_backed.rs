@@ -20,6 +20,14 @@ const LOGICAL_SOURCE_READ_BYTES: usize = crate::ntfs_inspect::SESSION_READ_BYTES
 pub struct ReadCounts {
     pub source_logical_bytes: u64,
     pub shadow_bytes: u64,
+    /// Raw equality checks proving an omitted reference, separate from the
+    /// logical candidate reads and their stream-transfer budget.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub source_reference_bytes: u64,
+}
+
+fn is_zero(bytes: &u64) -> bool {
+    *bytes == 0
 }
 
 const SELECTED_CHUNK_DIGEST: &str = "sha256-over-frames-and-xxh3-128-per-compared-chunk";
@@ -317,6 +325,44 @@ fn covered_bytes<T>(items: &[T], span: impl Fn(&T) -> (u64, u64), start: u64, en
     bytes
 }
 
+/// Admit one whole granule only when its source is already part of the
+/// captured write set. Journal preparation can then resolve it solely from
+/// immutable OLD payloads, including when that earlier range is itself a
+/// zero or copy replacement. This never follows the earlier range's NEW data.
+fn captured_copy_source(
+    copies: &[crate::payload_copy_plan::CopySpan],
+    captured: &[crate::refs_hybrid::delta::ChangedRange],
+    destination: u64,
+) -> Option<u64> {
+    let copy = copies
+        .get(copies.partition_point(|copy| copy.destination_offset + copy.length <= destination))?;
+    let destination_end = destination.checked_add(4096)?;
+    if copy.destination_offset > destination
+        || destination_end > copy.destination_offset.checked_add(copy.length)?
+    {
+        return None;
+    }
+    let source = copy
+        .source_offset
+        .checked_add(destination - copy.destination_offset)?;
+    let source_end = source.checked_add(4096)?;
+    if source_end > destination {
+        return None;
+    }
+    let first = captured.partition_point(|range| range.offset + range.length <= source);
+    let mut cursor = source;
+    for range in &captured[first..] {
+        if range.offset > cursor {
+            return None;
+        }
+        cursor = source_end.min(range.offset + range.length);
+        if cursor == source_end {
+            return Some(source);
+        }
+    }
+    None
+}
+
 /// What the changed-byte budget met when a capture refused. The run stops
 /// at the current 4 MiB comparison chunk; `compared_bytes_through_refused_run`
 /// counts every selected byte compared up to the end of that run.
@@ -548,6 +594,7 @@ impl<'a> SourceBackedShadow<'a> {
             true,
             false,
             class_split,
+            None,
         )
     }
 
@@ -579,6 +626,81 @@ impl<'a> SourceBackedShadow<'a> {
             true,
             true,
             class_split,
+            None,
+        )
+    }
+
+    /// Encode selected relocated payload as references to old bytes that the
+    /// journal will already own. Every referenced source granule must be in an
+    /// earlier captured changed range; retained or future source bytes remain
+    /// literal. Raw frozen source bytes are compared with the logical candidate
+    /// before any reference is emitted. Zero replacements retain precedence.
+    pub fn capture_listed_source_references_to_new_file(
+        self,
+        selection: &[crate::refs_write_set::ByteRange],
+        output: &std::path::Path,
+        max_changed_bytes: u64,
+        class_split: Option<ChangeClassSplit<'_>>,
+        copies: &[crate::payload_copy_plan::CopySpan],
+    ) -> Result<DifferenceCapture> {
+        use sha2::{Digest, Sha256};
+        let mut selected_bytes = 0u64;
+        let mut prior_end = 0u64;
+        for range in selection {
+            let end = range
+                .offset
+                .checked_add(range.length)
+                .context("source-reference selection overflow")?;
+            ensure!(
+                range.length > 0
+                    && range.length.is_multiple_of(4096)
+                    && range.offset.is_multiple_of(4096)
+                    && range.offset >= prior_end
+                    && end <= self.length,
+                "invalid source-reference selection"
+            );
+            prior_end = end;
+            selected_bytes = selected_bytes
+                .checked_add(range.length)
+                .context("listed selection overflow")?;
+        }
+        let mut prior_end = 0u64;
+        for copy in copies {
+            let destination_end = copy
+                .destination_offset
+                .checked_add(copy.length)
+                .context("copy destination overflow")?;
+            let source_end = copy
+                .source_offset
+                .checked_add(copy.length)
+                .context("copy source overflow")?;
+            ensure!(
+                copy.length > 0
+                    && copy.length.is_multiple_of(4096)
+                    && copy.destination_offset.is_multiple_of(4096)
+                    && copy.source_offset.is_multiple_of(4096)
+                    && copy.destination_offset >= prior_end
+                    && destination_end <= self.length
+                    && source_end <= self.length,
+                "invalid source-reference copy spans"
+            );
+            prior_end = destination_end;
+        }
+        let identity = hex::encode(Sha256::digest(serde_json::to_vec(&serde_json::json!({
+            "profile":"listed-ranges-source-backed-copy-v3","partition_bytes":self.length,
+            "granule_bytes":4096,"ranges":selection,
+            "copies":copies.iter().map(|copy| (copy.destination_offset, copy.source_offset, copy.length)).collect::<Vec<_>>()
+        }))?));
+        self.capture_difference_ranges_with(
+            selection,
+            selected_bytes,
+            identity,
+            output,
+            max_changed_bytes,
+            true,
+            true,
+            class_split,
+            Some(copies),
         )
     }
 
@@ -641,6 +763,7 @@ impl<'a> SourceBackedShadow<'a> {
             false,
             false,
             None,
+            None,
         )
     }
 
@@ -658,6 +781,7 @@ impl<'a> SourceBackedShadow<'a> {
         chunk_digests: bool,
         zero_payloads: bool,
         class_split: Option<ChangeClassSplit<'_>>,
+        copies: Option<&[crate::payload_copy_plan::CopySpan]>,
     ) -> Result<DifferenceCapture> {
         use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
         use sha2::{Digest, Sha256};
@@ -675,6 +799,7 @@ impl<'a> SourceBackedShadow<'a> {
         // the exact 4 KiB comparison, budget and output loop is unchanged.
         let mut original = vec![0u8; NATIVE_CAPTURE_BYTES];
         let mut candidate = vec![0u8; NATIVE_CAPTURE_BYTES];
+        let mut copy_check = copies.map(|_| vec![0u8; NATIVE_CAPTURE_BYTES]);
         let mut source_digest = if chunk_digests {
             SelectedDigest::chunks()
         } else {
@@ -749,12 +874,26 @@ impl<'a> SourceBackedShadow<'a> {
                         && candidate[offset..offset + 4096]
                             .iter()
                             .all(|&byte| byte == 0);
+                    let copy_source_offset = if new_is_zero {
+                        None
+                    } else {
+                        copies.and_then(|copies| {
+                            captured_copy_source(copies, &ranges, at + offset as u64)
+                        })
+                    };
                     let mut end = offset + 4096;
                     while end < count
                         && original[end..end + 4096] != candidate[end..end + 4096]
                         && (!zero_payloads
                             || candidate[end..end + 4096].iter().all(|&byte| byte == 0)
                                 == new_is_zero)
+                        && (if new_is_zero {
+                            None
+                        } else {
+                            copies.and_then(|copies| {
+                                captured_copy_source(copies, &ranges, at + end as u64)
+                            })
+                        }) == copy_source_offset.map(|source| source + (end - offset) as u64)
                     {
                         end += 4096;
                     }
@@ -789,6 +928,22 @@ impl<'a> SourceBackedShadow<'a> {
                         .checked_add(bytes as u64)
                         .context("delta byte count overflow")?;
                     let address = at + offset as u64;
+                    if let Some(source_offset) = copy_source_offset {
+                        let check = copy_check
+                            .as_mut()
+                            .context("source-reference buffer absent")?;
+                        self.source.seek(SeekFrom::Start(source_offset))?;
+                        self.source.read_exact(&mut check[..bytes])?;
+                        self.counts.source_reference_bytes = self
+                            .counts
+                            .source_reference_bytes
+                            .checked_add(bytes as u64)
+                            .context("source reference read accounting overflow")?;
+                        ensure!(
+                            check[..bytes] == candidate[offset..offset + bytes],
+                            "raw source reference differs from logical candidate"
+                        );
+                    }
                     if let Some(classes) = &mut classes {
                         classes.record(
                             address,
@@ -796,10 +951,15 @@ impl<'a> SourceBackedShadow<'a> {
                             &candidate[offset..offset + bytes],
                         );
                     }
-                    if let Some(last) = ranges
-                        .last_mut()
-                        .filter(|r| r.offset + r.length == address && r.new_is_zero == new_is_zero)
-                    {
+                    if let Some(last) = ranges.last_mut().filter(|r| {
+                        r.offset + r.length == address
+                            && r.new_is_zero == new_is_zero
+                            && match (r.copy_source_offset, copy_source_offset) {
+                                (None, None) => true,
+                                (Some(previous), Some(current)) => previous + r.length == current,
+                                _ => false,
+                            }
+                    }) {
                         last.length += bytes as u64;
                     } else {
                         ensure!(
@@ -811,9 +971,10 @@ impl<'a> SourceBackedShadow<'a> {
                             length: bytes as u64,
                             packed_offset: packed,
                             new_is_zero,
+                            copy_source_offset,
                         });
                     }
-                    if !new_is_zero {
+                    if !new_is_zero && copy_source_offset.is_none() {
                         file.write_all(&candidate[offset..offset + bytes])?;
                         packed_digest.update(&candidate[offset..offset + bytes]);
                         packed = packed
@@ -840,7 +1001,9 @@ impl<'a> SourceBackedShadow<'a> {
             compared == selected_bytes && file.metadata()?.len() == packed,
             "delta comparison/output accounting differs"
         );
-        let layout = if zero_payloads {
+        let layout = if copies.is_some() {
+            DeltaLayout::new_reference_aware(self.length, changed, packed, ranges)?
+        } else if zero_payloads {
             DeltaLayout::new_zero_aware(self.length, changed, packed, ranges)?
         } else {
             DeltaLayout::new(self.length, changed, ranges)?

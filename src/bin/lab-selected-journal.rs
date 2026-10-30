@@ -21,6 +21,10 @@ struct Args {
     /// Exercise the zero-new representation, keeping the legacy case default.
     #[arg(long)]
     zero_new: bool,
+    /// Exercise references to the immutable old payload, including sources
+    /// crossing old-record boundaries in both directions.
+    #[arg(long)]
+    copy_new: bool,
 }
 #[derive(Default, Clone, Serialize)]
 struct Counts {
@@ -253,8 +257,13 @@ fn exercise(
     let validation_read_bytes = journal.count.bytes_read - validation_before;
     // The immutable body is read exactly once; lifecycle then reads the two
     // 4 KiB marker slots. This assertion covers both actual payload formats.
+    let reference_resolution_bytes = if plan.new_copy_ranges.is_empty() {
+        0
+    } else {
+        ticket.selected_bytes - plan.new_zero_bytes()?
+    };
     ensure!(
-        validation_read_bytes == ticket.journal_length,
+        validation_read_bytes == ticket.journal_length + reference_resolution_bytes,
         "lifecycle validation reread or omitted journal bytes"
     );
     let duplicate_pass_read_bytes = 2 * (ticket.journal_length - 2 * G as u64) + 2 * G as u64;
@@ -298,7 +307,7 @@ fn exercise(
         "closed replay or core fence failed"
     );
     Ok(
-        serde_json::json!({"role":role,"interrupted_apply_error":format!("{error:#}"),"fault_persisted_bytes":G,"selected_sha256":hex::encode(result.selected_sha256),"replay_closed":true,"resume_after_close_rejected":resume_rejected,"rollback_after_close_rejected":rollback_rejected,"single_pass_lifecycle_bytes_read":validation_read_bytes,"previous_duplicate_pass_lifecycle_bytes":duplicate_pass_read_bytes,"lifecycle_read_bytes_saved":duplicate_pass_read_bytes-validation_read_bytes,"target_core_io":target.count,"journal_core_io":journal.count}),
+        serde_json::json!({"role":role,"interrupted_apply_error":format!("{error:#}"),"fault_persisted_bytes":G,"selected_sha256":hex::encode(result.selected_sha256),"replay_closed":true,"resume_after_close_rejected":resume_rejected,"rollback_after_close_rejected":rollback_rejected,"single_pass_lifecycle_bytes_read":validation_read_bytes,"reference_resolution_journal_bytes":reference_resolution_bytes,"previous_duplicate_pass_lifecycle_bytes":duplicate_pass_read_bytes,"lifecycle_read_bytes_saved":duplicate_pass_read_bytes.saturating_sub(validation_read_bytes),"target_core_io":target.count,"journal_core_io":journal.count}),
     )
 }
 fn verify(dir: &Path, ranges: &[sj::SelectedRange]) -> Result<u64> {
@@ -324,19 +333,24 @@ fn verify(dir: &Path, ranges: &[sj::SelectedRange]) -> Result<u64> {
             ensure!(a == b, "selected bytes differ after wrapper drop");
         }
         let mut source = File::open(dir.join("source.bin"))?;
-        for at in [
+        let sentinels: Vec<_> = [
             4096,
             1024 * 1024 - 4096,
             1024 * 1024 + 8192,
             4 * 1024 * 1024,
             IMAGE - 8192,
-        ] {
-            ensure!(
-                !ranges
-                    .iter()
-                    .any(|r| at < r.offset + r.length && r.offset < at + G as u64),
-                "sentinel overlaps selection"
-            );
+            6 * 1024 * 1024,
+        ]
+        .into_iter()
+        .filter(|at| {
+            !ranges
+                .iter()
+                .any(|r| *at < r.offset + r.length && r.offset < *at + G as u64)
+        })
+        .take(5)
+        .collect();
+        ensure!(sentinels.len() == 5, "not enough outside sentinels");
+        for at in sentinels {
             let mut a = [0u8; G];
             let mut b = [0u8; G];
             target.seek(SeekFrom::Start(at))?;
@@ -399,6 +413,7 @@ fn planned(dir: &Path) -> Result<serde_json::Value> {
         max_selected_bytes: IMAGE,
         max_journal_bytes: u64::MAX,
         new_zero_ranges: Vec::new(),
+        new_copy_ranges: Vec::new(),
     }
     .validate()?;
     ensure!(
@@ -489,11 +504,62 @@ fn main() -> Result<()> {
         max_selected_bytes: 16384,
         max_journal_bytes: JOURNAL,
         new_zero_ranges: Vec::new(),
+        new_copy_ranges: Vec::new(),
     };
-    let legacy_journal_bytes = plan.validate()?.1;
-    if args.zero_new {
+    if args.copy_new {
+        const MIB: u64 = 1024 * 1024;
+        plan.ranges = vec![
+            sj::SelectedRange {
+                offset: 0,
+                length: 4096,
+            },
+            sj::SelectedRange {
+                offset: MIB,
+                length: 8192,
+            },
+            sj::SelectedRange {
+                offset: 2 * MIB,
+                length: 4096,
+            },
+            sj::SelectedRange {
+                offset: 2 * MIB + 4096,
+                length: 4096,
+            },
+            sj::SelectedRange {
+                offset: 3 * MIB,
+                length: 8192,
+            },
+            sj::SelectedRange {
+                offset: 4 * MIB,
+                length: 4096,
+            },
+            sj::SelectedRange {
+                offset: 4 * MIB + 4096,
+                length: 4096,
+            },
+        ];
+        plan.max_selected_bytes = 36864;
+        plan.new_copy_ranges = vec![
+            sj::SelectedCopyRange {
+                offset: MIB,
+                length: 8192,
+                source_offset: 4 * MIB,
+            },
+            sj::SelectedCopyRange {
+                offset: 3 * MIB,
+                length: 8192,
+                source_offset: 2 * MIB,
+            },
+        ];
+        plan.new_zero_ranges = vec![plan.ranges[0].clone(), plan.ranges[3].clone()];
+    } else if args.zero_new {
         plan.new_zero_ranges = plan.ranges[..2].to_vec();
     }
+    let mut legacy_plan = plan.clone();
+    legacy_plan.new_zero_ranges.clear();
+    legacy_plan.new_copy_ranges.clear();
+    legacy_plan.max_journal_bytes = u64::MAX;
+    let legacy_journal_bytes = legacy_plan.validate()?.1;
     plan.validate()?;
     let mut setup_bytes = 0;
     for (name, candidate) in [
@@ -504,13 +570,21 @@ fn main() -> Result<()> {
     ] {
         setup_bytes += setup(&args.directory.join(name), candidate, &plan.ranges)?;
     }
-    if args.zero_new {
+    if !plan.new_zero_ranges.is_empty() || !plan.new_copy_ranges.is_empty() {
         let mut file = OpenOptions::new()
             .write(true)
             .open(args.directory.join("candidate.bin"))?;
         for range in &plan.new_zero_ranges {
             file.seek(SeekFrom::Start(range.offset))?;
             file.write_all(&vec![0; range.length as usize])?;
+        }
+        let mut original = File::open(args.directory.join("source.bin"))?;
+        for copy in &plan.new_copy_ranges {
+            let mut bytes = vec![0; copy.length as usize];
+            original.seek(SeekFrom::Start(copy.source_offset))?;
+            original.read_exact(&mut bytes)?;
+            file.seek(SeekFrom::Start(copy.offset))?;
+            file.write_all(&bytes)?;
         }
         file.sync_all()?;
     }
@@ -534,7 +608,7 @@ fn main() -> Result<()> {
     );
     let source_io = source.count.clone();
     let candidate_io = candidate.count.clone();
-    let false_zero_claim_rejected = if args.zero_new {
+    let false_zero_claim_rejected = if !plan.new_zero_ranges.is_empty() {
         let mut false_plan = plan.clone();
         false_plan.new_zero_ranges = vec![plan.ranges[2].clone()];
         let mut rejected = Fenced::open(
@@ -548,14 +622,31 @@ fn main() -> Result<()> {
         false
     };
     ensure!(
-        !args.zero_new || false_zero_claim_rejected,
+        plan.new_zero_ranges.is_empty() || false_zero_claim_rejected,
         "nonzero candidate accepted as zero"
+    );
+    let false_copy_claim_rejected = if args.copy_new {
+        let mut false_plan = plan.clone();
+        false_plan.new_copy_ranges[0].source_offset = 2 * 1024 * 1024;
+        let mut rejected = Fenced::open(
+            &args.directory.join("false-copy-claim.journal"),
+            None,
+            true,
+            true,
+        )?;
+        sj::prepare(&mut source, &mut candidate, &mut rejected, &false_plan).is_err()
+    } else {
+        false
+    };
+    ensure!(
+        !args.copy_new || false_copy_claim_rejected,
+        "incorrect original accepted as copy"
     );
     drop(source);
     drop(candidate);
     let verification_bytes = verify(&args.directory, &plan.ranges)?;
     let pruned = planned(&args.directory)?;
-    let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"zero_new_encoding":args.zero_new,"journal_bytes":plan.validate()?.1,"legacy_journal_bytes":legacy_journal_bytes,"new_zero_payload_bytes_omitted":plan.new_zero_bytes()?,"false_zero_claim_rejected":false_zero_claim_rejected,"changed_granule_planning":pruned,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
+    let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"zero_new_encoding":!plan.new_zero_ranges.is_empty(),"copy_new_encoding":args.copy_new,"journal_bytes":plan.validate()?.1,"legacy_journal_bytes":legacy_journal_bytes,"new_zero_payload_bytes_omitted":plan.new_zero_bytes()?,"new_copy_payload_bytes_omitted":plan.new_copy_bytes()?,"false_zero_claim_rejected":false_zero_claim_rejected,"false_copy_claim_rejected":false_copy_claim_rejected,"changed_granule_planning":pruned,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
     let bytes = serde_json::to_vec_pretty(&report)?;
     ensure!(bytes.len() <= 65536, "report exceeds64KiB");
     let mut output = OpenOptions::new()

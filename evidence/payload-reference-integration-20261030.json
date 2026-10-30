@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "journal-old-payload-reference-integration",
+  "base_commit": "f29a0886198f78458166f1a8e67b403b746922af",
+  "binary_sha256": "352c93356c728637b6297b027fa7f1dfc322096750679decd7fbf01407ebc779",
+  "artifact_directory": "D:\\code\\ntfs2refs\\.lab\\performance\\copy-reference-final-20261030-ecf9150903f8406399717e523ab7fa30",
+  "cases": [
+    {
+      "false_copy_rejected": false,
+      "reference_bytes": 0,
+      "mode": "legacy",
+      "journal_bytes": 41360,
+      "zero_bytes": 0,
+      "report_sha256": "13170524cfc6bf188514386fce63938812a73e1cbf3ff5679ba2d2387362162c",
+      "literal_journal_bytes": 41360
+    },
+    {
+      "false_copy_rejected": false,
+      "reference_bytes": 0,
+      "mode": "zero",
+      "journal_bytes": 29096,
+      "zero_bytes": 12288,
+      "report_sha256": "ce2669e487a3115aece07d80c950f19bd592f28b08bdd3967526a8ff88d5f384",
+      "literal_journal_bytes": 41360
+    },
+    {
+      "false_copy_rejected": true,
+      "reference_bytes": 16384,
+      "mode": "copy",
+      "journal_bytes": 58176,
+      "zero_bytes": 8192,
+      "report_sha256": "c42ad3ed2f9968ae6f2469ad2d05a2ed7cd8b890eb3d05ce1d7bb02e2aea6834",
+      "literal_journal_bytes": 82640
+    }
+  ],
+  "all_old_bytes_preserved": true,
+  "only_journal_old_payload_referenced": true,
+  "legacy_encodings_byte_identical": true,
+  "interrupted_resume_and_rollback_passed": true,
+  "closed_replay_refused": true,
+  "unit_tests_run": false,
+  "native_conversion_qualified": false
+}

@@ -4,8 +4,8 @@
 //! is still required. An interrupted run is recovered from its published
 //! allocation recovery bundle by `general_recovery::allocation`.
 use super::*;
-use anyhow::Context;
 use crate::selected_journal as sj;
+use anyhow::Context;
 use n2r_win32::{GeneralFrozenPartition, WritePolicy};
 
 fn announce_conversion_phase(message: &str) {
@@ -90,6 +90,7 @@ pub(super) fn convert_allocation_selected(
         let plan = proof.plan(request.max_journal_bytes)?;
         let (selected_bytes, journal_bytes) = plan.validate()?;
         let new_zero_bytes = plan.new_zero_bytes()?;
+        let new_copy_bytes = plan.new_copy_bytes()?;
         let packed_bytes = proof.capture().layout.packed_bytes();
         let plan_pin = qualification::save(output, "selected-plan.json", &plan)?;
 
@@ -106,6 +107,7 @@ pub(super) fn convert_allocation_selected(
             &serde_json::json!({
                 "journal_bytes":journal_bytes,"packed_bytes":packed_bytes,
                 "selected_bytes":selected_bytes,"new_zero_bytes":new_zero_bytes,
+                "new_copy_bytes":new_copy_bytes,
                 "available_after_shadow_and_backing":space.available_bytes_to_caller,
                 "reserve_bytes":reserve,"source_writes_started":false,
             }),
@@ -150,7 +152,7 @@ pub(super) fn convert_allocation_selected(
             "journal-location.json",
             &serde_json::json!({
                 "path":journal_path,"identity":observed.identity,
-                "format":if new_zero_bytes == 0 {"N2RSEL01"} else {"N2RZERO1"},
+                "format":if new_copy_bytes != 0 {"N2RCPY01"} else if new_zero_bytes != 0 {"N2RZERO1"} else {"N2RSEL01"},
             }),
         )?;
         let mut preparation_events = Vec::new();
@@ -231,7 +233,7 @@ pub(super) fn convert_allocation_selected(
             maximum_bytes: selected_bytes,
             journal_profile: profile,
         };
-        if new_zero_bytes == 0 {
+        if new_zero_bytes == 0 && new_copy_bytes == 0 {
             target.arm_writes(policy, &mut events)?;
         } else {
             target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
@@ -308,6 +310,7 @@ pub(super) fn convert_allocation_selected(
                 "selected_ranges":plan.ranges.len(),"selected_bytes":selected_bytes,
                 "journal_bytes":journal_bytes,"selection_sha256":proof.selection_sha256(),
                 "packed_bytes":packed_bytes,"new_zero_bytes":new_zero_bytes,
+                "new_copy_bytes":new_copy_bytes,
                 "zero_payload_storage_elided":new_zero_bytes > 0,
                 "free_space_contents_compared":false,"recovery_bundle_sha256":recovery_pin,
                 "general_conversion_qualified":false,

@@ -132,3 +132,37 @@ The [focused integration](../evidence/journal-single-pass-20261030.json) observe
 instead of 50,000 bytes for the zero encoding. All four completed journals
 matched the preserved earlier bytes, with interrupted resume and rollback
 passing. This is a journal I/O result, not a native end-to-end speed claim.
+
+## Journal-old payload references
+
+`N2RCPY01` adds 96-byte records whose new contents may refer to immutable old
+payloads elsewhere in the same journal. Every original selected byte is still
+stored. Copy origins must be aligned and completely covered by the selected
+write ranges; references never follow a new value or consult the changed
+device during replay. Preparation compares each proposed copy against the
+actual frozen source. Loading authenticates stored payloads before resolving
+the copies and verifying the complete new selected digest.
+
+The native capture derives possible copies from the admitted NTFS stream
+inventory and protected ReFS routes. It clips them to initialized whole
+clusters and emits a reference only when its origin is already part of the
+captured changed set. It compares the raw origin with the logical candidate
+before omitting that payload. Other ranges retain literal or zero encoding.
+
+The version-3 backing layout reconstructs references from the frozen original
+only during preparation. Activated-target paired views reject this layout;
+recovery uses the self-contained journal instead. These are not the staged
+in-volume rollback references proposed in the hybrid design.
+
+The exact journal size is:
+
+```text
+8192 + 80 + 96 * range_count
+  + 2 * selected_bytes - new_zero_bytes - new_copy_bytes + 80
+```
+
+The [ordinary-file integration](../evidence/payload-reference-integration-20261030.json)
+includes forward and backward copies spanning old records, overwritten
+origins, interruption, resume, rollback, and rejection of an incorrect copy.
+It used 58,176 journal bytes instead of 82,640. Earlier journal encodings
+remained byte-identical. Native results must be established separately.

@@ -57,17 +57,27 @@ payload_copy_plan, a pure checked source/target mapping and journal-old/retained
 source segment planner. It is not wired to a payload-reference journal and
 grants no write authority. No new unit tests were written or run.
 
-VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
-NTFS checkpoint5f30f4a1, but its disks now hold the verified NTFS rollback from
-run9b8a4615dab0418eac759b5be632b266 (not checkpointed;
-records archived on the host). Only 52d37819 and 5f30f4a1 remain. Any new native run needs a fresh restore of the intended
+The next candidate wires that planner into allocation capture and adds
+N2RCPY01: new payload may reference only OLD bytes already stored in the same
+journal. Capture verifies the physical origin and admits only preceding
+changed ranges; all old bytes and required zero writes remain preserved.
+The three-format ordinary-file integration passes, including references across
+old records, overwritten origins, resume/rollback and false-copy refusal.
+See evidence/payload-reference-integration-20261030.json. This candidate has
+no native qualification yet; it is not the staged N2RSEL02-H design.
+
+VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is
+mixed NTFS checkpoint6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e, created for the
+source-reference run. Its independently seeded tree has808 files/120 directories,
+9,885,781,381 bytes; manifest is under mixed-fixture-20261029-3dccf8e8fa38487db6731284a12bceb9.
+The two older52d37819 and5f30f4a1 checkpoints also remain. Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
 least 816.6GB; see evidence/head-drive-measurement-20261029.json and
 docs/release-0.0.1-readiness.md. That binary has no mutation/reboot/recovery
 results. lab/Start-HeadDriveMeasurement.ps1 runs a sealed HEAD toolset. It has fixed4GiB RAM, 4CPU, no NIC. Host
 hostname is SINGULARITY: the lab VMs and the WSL Ubuntu distro are local to it.
-Only two checkpoints remain:
+The two original checkpoints remain:
 - NTFS after optimized public rollback: 5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec.
 - ReFS after optimized public resume: 52d37819-2b9c-4041-9232-bd7eac3c21bb.
 

@@ -260,7 +260,7 @@ fn mapping(file: &File) -> io::Result<crate::retrieval_paging::Capture> {
             && capture
                 .runs
                 .last()
-                .is_some_and(|r| r.vcn + r.clusters == CLUSTERS)
+                .is_some_and(|r| r.vcn + r.clusters >= CLUSTERS)
             && capture.runs.iter().all(|r| r.lcn.is_some()),
         "fixture mapping does not cover initialized 2 MiB",
     )?;
@@ -274,6 +274,8 @@ fn mapping(file: &File) -> io::Result<crate::retrieval_paging::Capture> {
 }
 fn map_json(capture: &crate::retrieval_paging::Capture) -> Value {
     json!({"canonical_sha256":hex::encode(Sha256::digest(&capture.canonical)),
+        "initialized_clusters":CLUSTERS,
+        "allocated_virtual_clusters":capture.proof.virtual_clusters,
         "page_proof":capture.proof,
         "extents":capture.runs.iter().map(|run| json!({"vcn":run.vcn,"lcn":run.lcn,
             "clusters":run.clusters})).collect::<Vec<_>>()})
@@ -414,9 +416,17 @@ fn scatter(
     }
     file.sync_all()?;
     let final_map = mapping(file)?;
+    // NTFS may reserve allocation past EOF while a write handle is open. That
+    // tail is not initialized payload and may be released when handles close.
+    // Require all initialized clusters to be distinct, not an exact total of
+    // allocated clusters including the filesystem's temporary reservation.
+    let payload_runs: Vec<_> = final_map.runs.iter().filter(|r| r.vcn < CLUSTERS).collect();
     require(
-        final_map.runs.len() == CLUSTERS as usize,
-        "fragmentation did not produce 512 distinct extents",
+        payload_runs.len() == CLUSTERS as usize
+            && payload_runs
+                .iter()
+                .all(|r| (r.vcn + r.clusters).min(CLUSTERS) - r.vcn == 1),
+        "fragmentation did not produce 512 distinct initialized extents",
     )?;
     Ok(())
 }

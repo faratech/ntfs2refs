@@ -27,6 +27,32 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
+Current state after hard-link recovery qualification: VM is Off/RAM0, parent
+f3eb7560-4804-47a8-ad91-530cd87221ab, fourteen preserved checkpoints. Disk6/H:
+contains independently verified NTFS restored by public rollback. The original
+interrupted hard-link state is4a084701-74f9-42c2-91ce-6f4436f23180, and its
+successful public resume is preserved in0f685623-9109-4d97-afe7-84fafb232d60.
+Do not infer current state from the older chronological observations below.
+
+Source7b1c8df/public65776bd4127ca911ec2698cde1fe660c43d879eb895233b66f2838c5f6ec29fb
+now has controlled first-flushed-write interruption, guest restart, public
+resume and independent public rollback evidence for the three-file/nine-name
+hard-link fixture. Both recovery directions used the same original bundle
+37984256a70d19b9a17eb395fff83b9bfa7eeb8cb60a3a3e59fefcfabf103fdf and separate
+branches from that interrupted state. All nine paths/hashes/link groups passed;
+rollback also matched original NTFS file IDs. See
+evidence/hardlink-native-recovery-20261030.json. This is not power-loss testing
+or blanket feature/geometry qualification.
+
+Later source2ca1c63 adds bounded named-stream range reads/hashes and makes the
+cached source session key include the exact UTF-16 stream name. Focused cargo
+check passes; public ADS admission remains refused and no native result is
+assigned to this later source. Next integration requires named_streams on the
+canonical/native file, stream-keyed placement/routes/residuals and exact native
+stream-set verification. Keep file identities and hard-link names separate from
+stream identities. Do not copy payload once per alias or use filename strings
+as a substitute for stream identity. No unit tests were added or run.
+
 Latest follow-up: evidence/public-build-provenance-9099110-20261030.json binds
 the tested public121d7dbb binary to9099110 plus the exact saved main.rs overlay
 (SHA c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b).
@@ -89,9 +115,9 @@ A cold boot preserved all nine IDs/hashes, then a one-byte write through the
 Unicode alias propagated across the ordinary file's three names. Restoring via
 the other alias recovered every original hash. See
 evidence/hardlink-native-conversion-20261030.json. No unit tests were added or run.
-Hard-link ATTRIBUTE_LIST, ADS, sparse/encoded streams and this build's native
-interrupted-recovery cases remain unqualified. The broad goal is unfinished.
-VM is now Off/RAM0 with parentd2c6ff09-2e26-4e25-be53-831a916f5489; eleven
+Hard-link ATTRIBUTE_LIST, ADS and sparse/encoded streams remain unqualified.
+The broad goal is unfinished. After that initial conversion check,
+VM was Off/RAM0 with parentd2c6ff09-2e26-4e25-be53-831a916f5489; eleven
 checkpoints remain. The pre-mutation ReFS result is1c23ca96-dd72-4846-b7bf-39fb13389639;
 the clean NTFS hard-link source remains914bb77d-d924-4ed6-ab14-9a40288c3bc9.
 

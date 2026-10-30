@@ -1,0 +1,150 @@
+{
+  "utc": "2026-10-30T12:28:24.9037771Z",
+  "schema_version": 1,
+  "rollback": {
+    "record_path": "C:\\ProgramData\\ntfs2refs\\runs\\recovery-bfa75b4f81e39122df485740ffda80c3\\rollback",
+    "run_id": "40b1e3bea7a0423b879285877c6b0914",
+    "metadata_files_preserved": 21,
+    "action": "rollback",
+    "source_admitted": false,
+    "checkpoint": "f3eb7560-4804-47a8-ad91-530cd87221ab",
+    "independently_verified_original_identities": 3,
+    "observed_lifecycle": "apply_intent",
+    "outcome": "ntfs_restored",
+    "native_exit": 0,
+    "independently_verified_original_names": 9
+  },
+  "converter_code_commit": "7b1c8dfdc7d0353fe9f08bf0192b922d4ed8cd54",
+  "original_bundle_sha256": "37984256a70d19b9a17eb395fff83b9bfa7eeb8cb60a3a3e59fefcfabf103fdf",
+  "proofs": [
+    {
+      "sha256": "1e625a9015ee0af9750d44d55230d49d025b704c503d99627dd71c9c5eb6669d",
+      "bytes": 18108,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-interruption\\archive.json"
+    },
+    {
+      "sha256": "7d3b58de26e0bee6aa8ba1c6e3f9e6ab79bc5a6bf20e3d1fa7e1cf82942449d5",
+      "bytes": 836,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-interruption\\wrapper-result.json"
+    },
+    {
+      "sha256": "9346bacee6d25a95b3bcd0ebf37f603c63d5e86bfa7d51672bc6e8f013ecbe14",
+      "bytes": 1128,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-interruption\\converter-terminal.json"
+    },
+    {
+      "sha256": "37984256a70d19b9a17eb395fff83b9bfa7eeb8cb60a3a3e59fefcfabf103fdf",
+      "bytes": 1794,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-interruption\\conversion\\allocation-recovery-bundle.json"
+    },
+    {
+      "sha256": "7c0905ea95e4996013a1da576a382d508f5a6cd5c1e27f61fdd94ab8fd19bbdb",
+      "bytes": 6650,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-resume\\archive.json"
+    },
+    {
+      "sha256": "19dd3d2f9441cb9c4f46ff900ff830b562aa36b3509aea24e0fa652213d81989",
+      "bytes": 1254,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-resume\\stage\\wrapper-result.json"
+    },
+    {
+      "sha256": "00e3c781ed187ae12f3b938e1fe3352a86671e956aaef39a266f079824306ada",
+      "bytes": 14334,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-resume\\stage\\fixture-after.json"
+    },
+    {
+      "sha256": "99c05eaa237c95fb82f8496ba0bf7705f545f21fa766820dc58788665e2477ce",
+      "bytes": 519653,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-resume\\result\\completion.json"
+    },
+    {
+      "sha256": "a1b08a652e25d28c811bf6f3d8f27906d38144cdbe4598500ffbcc84ad747a26",
+      "bytes": 6384,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-rollback\\archive.json"
+    },
+    {
+      "sha256": "3f132e0338d3f99ead0c0549ce911f7ec8fee5708283c4d2ce2f92cf644310f8",
+      "bytes": 1265,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-rollback\\stage\\wrapper-result.json"
+    },
+    {
+      "sha256": "091f5c9d0e9f081295991a7bbed417c331946c20bf7c89460c7fc08953a78f84",
+      "bytes": 14334,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-rollback\\stage\\fixture-after.json"
+    },
+    {
+      "sha256": "46edfe03781524641f601ddb0831a11f889eb9195ca85ca834d7c06e5c03718a",
+      "bytes": 42462,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\closed-rollback\\result\\completion.json"
+    },
+    {
+      "sha256": "c121acb571c56aa149f6943d5055bd0810dbfb8b70ebf78fc5ec1994cd636665",
+      "bytes": 273,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\interrupted-checkpoint.json"
+    },
+    {
+      "sha256": "929fca918921c691e19bfb6a7758f1ca443319fe5709f17c1b2beabae5801715",
+      "bytes": 144,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\resumed-checkpoint.json"
+    },
+    {
+      "sha256": "eb8488aacaebfaaa66489dd296d75b1014bbcdd740917f0dc3800b69587be43b",
+      "bytes": 209,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-20261030\\rollback-checkpoint.json"
+    }
+  ],
+  "final_state": {
+    "drive": "H:",
+    "vm": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "expected_state": "Off",
+    "preserved_checkpoints": 14,
+    "source_filesystem": "NTFS",
+    "expected_memory": 0,
+    "current_parent": "f3eb7560-4804-47a8-ad91-530cd87221ab"
+  },
+  "controlled_build_commit": "a1688892014b9903f3988e7a0c9e21cd35d0549e",
+  "controlled_sha256": "150797dbe5e0519fc0b3c6a017b95c1ef02d5b660b6159bc9a499f4620e867d2",
+  "interruption": {
+    "completion_marker_clear": true,
+    "run_id": "f4f6cf611a0f4007af894c13fe71edb2",
+    "metadata_files_preserved": 57,
+    "marker": "N2RSAP01",
+    "checkpoint": "4a084701-74f9-42c2-91ce-6f4436f23180",
+    "source_disk": 6,
+    "after_flushed_write": 1,
+    "source_persistently_offline": true,
+    "native_exit": 86
+  },
+  "main_overlay_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "toolset": {
+    "sha256": "03c01cee66e2590c092d737b5a431b91f923ec0537d84a28e38bdbc512907b68",
+    "bytes": 1624,
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\hardlink-recovery-tools-a168889\\manifest.json"
+  },
+  "kind": "hardlink-native-recovery-matrix",
+  "public_sha256": "65776bd4127ca911ec2698cde1fe660c43d879eb895233b66f2838c5f6ec29fb",
+  "original_bundle_path": "C:\\ntfs2refs\\hardlink-interrupt-f4f6cf611a0f4007af894c13fe71edb2\\conversion\\allocation-recovery-bundle.json",
+  "controlled_runtime_code_matches_converter_commit": true,
+  "resume": {
+    "independently_verified_names": 9,
+    "native_objects": 8,
+    "metadata_files_preserved": 22,
+    "native_exit": 0,
+    "source_admitted": false,
+    "action": "resume",
+    "run_id": "cb98f56a028d4588a733ad0084916e27",
+    "outcome": "refs_completed",
+    "complete_native_logical_hashes": 4,
+    "record_path": "C:\\ProgramData\\ntfs2refs\\runs\\recovery-6d72f111c177de29877ec043d891c5ff\\resume",
+    "observed_lifecycle": "apply_intent",
+    "checkpoint": "0f685623-9109-4d97-afe7-84fafb232d60",
+    "independently_verified_identities": 3
+  },
+  "unit_tests_added_or_run": false,
+  "limitations": [
+    "Controlled process termination after one flushed write; no physical power-loss or arbitrary interruption-position claim",
+    "Three user identities with three names each; additional hardlink forms and attribute-list records are not covered",
+    "No ADS, sparse, encoded-stream, boot or arbitrary-size qualification",
+    "The later named-stream reader commit is not assigned these native results"
+  ]
+}

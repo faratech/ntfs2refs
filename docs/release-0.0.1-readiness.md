@@ -223,11 +223,21 @@ Native ReFS verified six alias identity/link-count snapshots. After a cold boot,
 all nine hashes and IDs remained correct; a write through one alias was visible
 through the other names, and restoring the byte through another name recovered
 the original hashes. The run took16.658s for this small fixture and relocated its
-payload; it is not a large-volume performance measurement. This build's native
-interrupted recovery remains unqualified. See
+payload; it is not a large-volume performance measurement. See
 [the recorded native result](../evidence/hardlink-native-conversion-20261030.json).
+The same converter source/public binary subsequently passed a controlled first
+flushed-write interruption, restart and public resume, plus independent public
+rollback from the same interrupted checkpoint. Each direction preserved all
+nine paths, hashes and link groups; rollback also recovered the original NTFS
+file IDs. This qualifies the bounded recovery case, not physical power loss or
+arbitrary feature combinations. See
+[the recovery matrix](../evidence/hardlink-native-recovery-20261030.json).
 The first attempt exposed and led to removal of an unnecessary requirement for
 the source to contain `IndexerVolumeGuid`; absence is now preserved explicitly.
+The next source-reader slice supplies bounded named-stream range reads and
+hashes with an exact UTF-16 stream key, including cached-session revalidation.
+Public ADS admission remains closed until canonical construction, per-stream
+routes and native stream-set verification are connected.
 
 Continue in concrete slices: (1) extend the identity/name model to named
 streams; (2) preserve named streams and sparse/VDL semantics

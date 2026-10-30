@@ -161,3 +161,80 @@ that run exists; none is claimed here.
 If an earlier, honestly labeled release is wanted, the defensible form is the
 existing frozen alpha re-announced as an experimental pre-release with the scope
 above, not a "stable" or "maximum performance" 0.0.1.
+
+## Compatibility research and implementation priorities — 2026-10-30
+
+The comparison below distinguishes a converter's output from a driver's ability
+to read source metadata. None of these projects establishes full NTFS-to-ReFS
+compatibility. Our mixed-tree success covers the admitted ordinary-file profile;
+it does not qualify ADS, hard links, reparse points, compressed/encrypted files,
+SACLs, short-name aliases or boot volumes.
+
+| Project and pinned source | Actual role and preservation boundary |
+|---|---|
+| [ntfs2btrfs `433523ab`](https://github.com/maharmstone/ntfs2btrfs/blob/433523abaff4015db0f473e4f256f9d5671c9cd5/README.md) | NTFS-to-Btrfs converter. Documents files/directories, security descriptors, reparse points, bounded ADS, DOS attributes and WSL metadata; compression/sparse handling appears in its changelog. Also documents unsupported EFS, old Windows EAs, case-sensitivity flags, ADS above its xattr capacity and clusters above 1 MiB. Its Windows command cannot convert the running boot/pagefile volume; Quibble boot is a separate project. |
+| [btrfs-convert manual](https://btrfs.readthedocs.io/en/latest/btrfs-convert.html), [source `2229e1d7`](https://github.com/kdave/btrfs-progs/blob/2229e1d7cbd6ce4c3085fd440e9c3275bc9a97c7/convert/source-ext2.c) | Converts ext2/3/4 and optional ReiserFS; NTFS is delegated to ntfs2btrfs. Preserves supported POSIX metadata/xattrs/ACLs, inode links and symlinks, subject to source/target limits; `--no-xattr` explicitly discards xattrs/ACLs. Requires a clean source and supported block size. This is not Windows security or ADS conversion support. |
+| [fstransform `efc51973`](https://github.com/cosmos72/fstransform/blob/efc519736069b6808f1c0fe74e810626732d5799/README.md) | Massimiliano Ghilardi's Linux sparse-image/remapping converter; tested ext2/3/4, JFS, ReiserFS and XFS. Explicitly excludes NTFS/FAT/exFAT. Requires sparse files, extent queries and mount/mkfs/fsck support. Useful storage-planning reference, not a full-NTFS precedent. |
+| [NTFS-3G manual](https://github.com/tuxera/ntfs-3g/wiki/Manual), [attribute reader `7f0f841f`](https://github.com/tuxera/ntfs-3g/blob/7f0f841fc52cf719106c5c93bafe465004e36816/libntfs-3g/attrib.c) | NTFS driver/reader oracle, not an NTFS-to-another-filesystem converter. Supports named streams, sparse/compressed logical reads and hard links; follows attribute lists into extension MFT records. These abilities do not prove that another target preserves their semantics. |
+
+ntfs2btrfs is deliberately less strict than the preservation contract we should
+claim. Its [pinned converter source](https://github.com/maharmstone/ntfs2btrfs/blob/433523abaff4015db0f473e4f256f9d5671c9cd5/src/ntfs2btrfs.cpp)
+can skip encrypted files, encrypted/compressed ADS and ADS that exceed name or
+item limits; it omits DOS-only names and warns when truncating long UTF-8 names.
+Oversized security descriptors also have a skip path. Its hard-link output uses
+one inode and multiple namespace links; its
+[attribute iterator](https://github.com/maharmstone/ntfs2btrfs/blob/433523abaff4015db0f473e4f256f9d5671c9cd5/src/ntfs2.cpp)
+follows attribute-list records. Reuse the identity/extent design, not its
+warning-and-skip policy: a conversion reporting success must preserve every
+admitted user object or refuse before source writes.
+
+NTFS-3G's [internal metadata interfaces](https://github.com/tuxera/ntfs-3g/wiki/Using-Extended-Attributes)
+are useful inventory references: raw owner/group/DACL/SACL, reparse data, EAs,
+Object IDs and EFS backup data are separate from ordinary file bytes. Standard
+copy tools do not enumerate these internal attributes by default. EFS raw mode
+is ciphertext-plus-metadata backup, not automatic decryption. The documented
+short-name interface discontinues operations on hard-linked files; four times
+are readable but only the first three are settable through that interface.
+
+Current Rust conversion boundaries, confirmed in source:
+
+| Source feature | Current admission/construction behavior |
+|---|---|
+| Ordinary unnamed data | Resident/empty files, fragmented plain extents and partial/uninitialized tails have semantic materialization/retention paths; mixed-fixture conversion is recorded separately above. |
+| Hard links and DOS-only aliases | Refused: exactly one name/link is required. A combined Win32/DOS namespace name is not an independently preserved DOS alias. |
+| ADS and directory streams | Refused: one unnamed file stream; no directory streams. Read-only stream inspection is not conversion support. |
+| Sparse, NTFS compression, EFS | Nonzero stream flags/encoding are refused. Plain uninitialized tails are distinct from sparse-hole support. |
+| Reparse points and Windows EAs | Outside the admitted attribute whitelist; no target preservation claim. |
+| ACLs | Owner/group/present DACL plus observed API/kernel views are represented. Construction requires absent SACL; even a present empty SACL is outside this profile. |
+| Attribute lists | Reader/assembly machinery exists, but user admission still refuses extension/unassembled attribute forms and `$ATTRIBUTE_LIST`; fragmented base-record extents do not establish extension-record support. |
+| Object IDs, quotas, transaction state | User Object IDs/nondefault quotas remain refused. Recognized filesystem-internal state has narrowly bound replacement policies, not user-semantic preservation. |
+| Times, names and geometry | Four stored times are represented. Depth is capped at 16, streaming profile at 1,024 files/256 directories, and source geometry requires 512-byte sectors, 1,024-byte file records, 4 KiB indexes and supported allocation units; target is 4 KiB ReFS. Parser geometry support is not a tested conversion matrix. |
+| Boot | Public drive selection rejects the running Windows partition. Boot conversion is unqualified. |
+
+Relevant implementations are [admission](../src/ntfs_admission.rs),
+[canonical tree](../src/shadow_tree.rs), [stream planning](../src/ntfs_stream_plan.rs)
+and [internal replacement](../src/ntfs_internal.rs). Fixed resource caps remain
+implementation restrictions, despite the intended resource-bounded scale design.
+
+Continue in concrete slices: (1) represent file identity separately from its
+names and streams; (2) preserve named streams, hard links and sparse/VDL semantics
+through native construction and semantic verification; (3) add SACL/null/empty
+security distinctions, opaque reparse/EAs and complete extension-record admission;
+(4) materialize compressed logical content with exact space forecasts; (5) expand
+geometry and remove coupled fixed caps with bounded working memory. Each slice
+needs a small native feature fixture and resume/rollback coverage on its exact
+binary, without restarting the writer or adding another broad unit-test campaign.
+Short names, Object IDs, quotas, EFS and boot require an explicit target-version
+capability/preservation policy before admission changes; a sidecar is not native
+semantic equivalence. Keep unsupported features as pre-write refusals until the
+corresponding preservation path exists.
+
+The [Microsoft ReFS feature comparison](https://learn.microsoft.com/en-us/windows-server/storage/refs/refs-overview#feature-comparison)
+lists named streams, hard links, sparse files, EAs, reparse points and ACLs as
+target capabilities, so those are implementation gaps rather than a reason to
+drop their source data. It lists transactions, Object IDs, short names and quotas
+as unavailable on ReFS, with a short-name simulation caveat; EFS availability is
+limited to Server 2025 in that table. These are target-version boundaries, not
+permission to infer support from the format number or discard metadata. The
+running Windows boot/pagefile exclusion and experimental boot feasibility remain
+separate from Microsoft's supported boot configuration.

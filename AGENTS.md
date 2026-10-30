@@ -28,7 +28,7 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 Current state supersedes all older VM states below: VM is Off at observed
-NTFS checkpoint1057eb82-d152-4572-881b-53ff9dbb82dd; all37 checkpoints
+NTFS checkpoint1057eb82-d152-4572-881b-53ff9dbb82dd; all38 checkpoints
 remain. The clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Source5aeaf40/public61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b
 completed public H:/partition2 conversionba1480fc/coreb8d43b36 inside the VM:
@@ -83,9 +83,16 @@ after511 final submissions. Failed branchb3f9ffae-1aa7-40c2-b59d-a6953416bbff
 and42 metadata files under attribute-list-convert-d4068724549f496f815718e997088958
 are preserved. A SYSTEM read-only query showed all512 default-stream target
 mappings already at the expected source LCNs. The prior error discarded the
-native status; current code now saves the full failed move proof before refusal.
-Focused release build passed; next run must inspect that exact native status,
-not assume a512-extent limit or silently accept it. No converter is active.
+native status. Diagnosticf76af24/runffc6caa3 proved the default512 moves succeeded;
+the first Segments ADS move returned no native error but retained its old mapping.
+Failed branch865bf7b0-5735-42db-8a29-2bafed0ca0cf and40 metadata files are preserved.
+See evidence/refs-named-stream-move-mismatch-20261030.json.
+The new candidate places ordinary ADS >=4KiB through owned nonsparse carriers
+and clones the measured extents into nonsparse target streams. Sparse behavior
+and exact mapping checks remain; no success return alone grants retention.
+Unwritten placement now validates each complete retrieval map once and indexes
+matching intervals without omitting any tracked-range or bitmap checks.
+Focused release build passed; candidate native rerun is next. No converter is active.
 Earlier helper-only refusals are preserved under attribute-fixture-68d14605
 (read-only discovery flag), -9d172c41 (resident allocation observation; checkpoint
 9d98ce2a) and -eed02ff5 (temporary preallocation tail; checkpointf96b8890).

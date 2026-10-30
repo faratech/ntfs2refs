@@ -1048,10 +1048,10 @@ fn allocate_checked(
     let mut sparse_targets = BTreeMap::new();
     let needs_carriers = input.iter().any(|item| {
         item.sparse.is_some_and(|s| !s.allocated.is_empty())
-            || item
-                .named_streams
-                .iter()
-                .any(|s| s.sparse.is_some_and(|v| !v.allocated.is_empty()))
+            || item.named_streams.iter().any(|s| {
+                (s.sparse.is_none() && s.expected_length >= 4096)
+                    || s.sparse.is_some_and(|v| !v.allocated.is_empty())
+            })
     });
     let carrier_directory = if needs_carriers {
         Some(sparse_stream::CarrierDirectory::create(&root)?)
@@ -1164,6 +1164,26 @@ fn allocate_checked(
                         named.name_utf16,
                         named.expected_length,
                         layout,
+                        Some(base),
+                    )?;
+                    register_sparse(
+                        &root,
+                        &carrier_directory,
+                        StreamKey::named(index, named.name_utf16),
+                        target,
+                        &mut files,
+                        &mut sparse_targets,
+                        pair.shadow.identity.partition_bytes,
+                    )?;
+                } else if named.expected_length >= 4096 {
+                    // ReFS may report success for MOVE_FILE on an ADS without
+                    // moving its extents. Place an ordinary owned carrier and
+                    // clone its validated extents into the exact named stream.
+                    let target = sparse_stream::Target::create_plain(
+                        &root,
+                        item.components,
+                        named.name_utf16,
+                        named.expected_length,
                         Some(base),
                     )?;
                     register_sparse(

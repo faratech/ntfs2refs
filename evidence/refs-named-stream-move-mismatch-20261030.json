@@ -1,0 +1,45 @@
+{
+  "source_payload_writes": 0,
+  "native_reported_error": null,
+  "kind": "native-refs-named-stream-move-mismatch",
+  "mapping_matches": false,
+  "scope": "One ReFS3.14 named stream on the enrolled VM; not a universal FSCTL_MOVE_FILE claim",
+  "all_placements_match": false,
+  "proofs": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-list-convert-ffc6caa3ef9549f886ccf3e9bca429fc\\closed\\core\\conversion\\qualification\\construction-placement-refusal.json",
+      "sha256": "6d088dd17aa524cd3526ab4c3f3d5fdd899a6c4ebe4404eecd533e0845629ff6",
+      "bytes": 4903
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-list-convert-ffc6caa3ef9549f886ccf3e9bca429fc\\closed\\wrapper\\native-terminal.json",
+      "sha256": "e5210861444abc10873d4f1eb917ebb12b45b0c58adcc4ef10c662240ac1e807",
+      "bytes": 1748
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-list-convert-ffc6caa3ef9549f886ccf3e9bca429fc\\checkpoint.json",
+      "sha256": "bd5c6f2233ea0c0d02cb502bf5b96c28190f5cdeb9d74d833d47324b7a12852c",
+      "bytes": 164
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-list-convert-ffc6caa3ef9549f886ccf3e9bca429fc\\closed\\archive.json",
+      "sha256": "ea541c97a6a5e2456a193cb98f6b5046733816f1a21ec6cbdb5e9d8cdcad1d2a",
+      "bytes": 18885
+    }
+  ],
+  "schema_version": 1,
+  "requested_vcn": 0,
+  "check_was_not_waived": true,
+  "source_commit": "f76af2424a2ff3ade00aacd923749d7fadabd2c3",
+  "requested_lcn": 3145730,
+  "requested_clusters": 1,
+  "response": "Use ordinary carrier placement and native cloning, then verify final named-stream mappings",
+  "run_id": "ffc6caa3ef9549f886ccf3e9bca429fc",
+  "observed_mapping": {
+    "vcn": 0,
+    "lcn": 1507839,
+    "next_vcn": 512
+  },
+  "placement_slot": 14,
+  "cutover_reached": false
+}

@@ -1,5 +1,6 @@
-//! Sparse targets are constructed from compact, initialized ordinary carriers.
-//! Only allocated islands are cloned; logical holes never receive allocation.
+//! Targets are constructed from compact, initialized ordinary carriers. Sparse
+//! targets clone allocated islands only; plain ADS clone a complete dense run.
+//! Logical holes never receive allocation and plain stream flags stay plain.
 //! Final partial clusters may move when ReFS applies EOF. Their visible bytes
 //! are checked separately; padding writes outside EOF are accounted separately.
 use super::*;
@@ -22,6 +23,7 @@ pub(super) struct Target {
     pub layout: SparseLayout,
     pub islands: Vec<Island>,
     pub dense_length: u64,
+    pub sparse_mode: bool,
 }
 pub(super) struct CarrierDirectory {
     pub path: String,
@@ -102,6 +104,47 @@ impl Target {
         layout: &SparseLayout,
         base: Option<&File>,
     ) -> io::Result<Self> {
+        Self::create_mode(root, components, name, length, layout, base, true)
+    }
+
+    /// ReFS may decline an ADS move without reporting an error. Place an
+    /// ordinary owned carrier instead, then clone its measured allocation into
+    /// the named target while preserving the target's nonsparse stream state.
+    pub fn create_plain(
+        root: &str,
+        components: &[String],
+        name: &[u16],
+        length: u64,
+        base: Option<&File>,
+    ) -> io::Result<Self> {
+        if name.is_empty() || length < 4096 || base.is_none() {
+            return Err(invalid(
+                "plain carrier target requires a nonempty allocated ADS",
+            ));
+        }
+        let rounded = length
+            .checked_next_multiple_of(4096)
+            .ok_or_else(|| invalid("plain ADS EOF overflow"))?;
+        let layout = SparseLayout::from_allocated(
+            length,
+            length,
+            vec![LogicalRange {
+                offset: 0,
+                length: rounded,
+            }],
+        )?;
+        Self::create_mode(root, components, name, length, &layout, base, false)
+    }
+
+    fn create_mode(
+        root: &str,
+        components: &[String],
+        name: &[u16],
+        length: u64,
+        layout: &SparseLayout,
+        base: Option<&File>,
+        sparse_mode: bool,
+    ) -> io::Result<Self> {
         layout.validate(length)?;
         let path = streams::path(root, components, name)?;
         let sd = private_tree::private_descriptor()?;
@@ -133,7 +176,14 @@ impl Target {
             }
         }
         ctl(&file, 0x9c280, &[0; 8], 0)?;
-        ctl(&file, FSCTL_SET_SPARSE, &[1], 0)?;
+        if sparse_mode {
+            ctl(&file, FSCTL_SET_SPARSE, &[1], 0)?;
+        }
+        if (layout::u32_at(&info(&file, 9, 8)?, 0)? & 0x200 != 0) != sparse_mode {
+            return Err(invalid(
+                "carrier target sparse state differs from declared stream",
+            ));
+        }
         file.set_len(
             length
                 .checked_next_multiple_of(4096)
@@ -156,6 +206,7 @@ impl Target {
             layout: layout.clone(),
             islands,
             dense_length: dense,
+            sparse_mode,
         })
     }
     pub fn parts(&self, offset: u64, length: u64, from_dense: bool) -> io::Result<Vec<Island>> {
@@ -326,7 +377,12 @@ impl Target {
         } else {
             None
         };
-        observe(&self.file, &self.layout, self.logical_length)?;
+        observe_mode(
+            &self.file,
+            &self.layout,
+            self.logical_length,
+            self.sparse_mode,
+        )?;
         Ok((self.file, tail_proof))
     }
     fn verify_carrier(
@@ -539,9 +595,18 @@ pub(super) fn observe(
     expected: &SparseLayout,
     length: u64,
 ) -> io::Result<Observation> {
+    observe_mode(file, expected, length, true)
+}
+
+fn observe_mode(
+    file: &File,
+    expected: &SparseLayout,
+    length: u64,
+    sparse_mode: bool,
+) -> io::Result<Observation> {
     expected.validate(length)?;
-    if layout::u32_at(&info(file, 9, 8)?, 0)? & 0x200 == 0 {
-        return Err(invalid("declared sparse stream lacks sparse flag"));
+    if (layout::u32_at(&info(file, 9, 8)?, 0)? & 0x200 != 0) != sparse_mode {
+        return Err(invalid("observed carrier target sparse state differs"));
     }
     let (runs, _) = capture(file, length)?;
     let rounded = length

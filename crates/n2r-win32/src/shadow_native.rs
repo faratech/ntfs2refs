@@ -2,7 +2,9 @@
 //! source disk, manufactures ReFS bytes or grants conversion authority.
 pub mod cache_refresh;
 mod hard_links;
+mod streams;
 pub use hard_links::Observation as HardLinkObservation;
+pub use streams::{Report as NamedStreamReport, StreamKey};
 mod evacuation;
 pub mod private_tree;
 mod unwritten;
@@ -69,6 +71,14 @@ pub struct Input<'a> {
     /// verification. The source reader supplies bytes during construction.
     pub expected_length: Option<u64>,
     pub expected_sha256: Option<&'a str>,
+    pub source_offset: Option<u64>,
+    pub source_runs: Vec<SourceRun>,
+    pub named_streams: Vec<NamedStreamInput<'a>>,
+}
+pub struct NamedStreamInput<'a> {
+    pub name_utf16: &'a [u16],
+    pub expected_length: u64,
+    pub expected_sha256: &'a str,
     pub source_offset: Option<u64>,
     pub source_runs: Vec<SourceRun>,
 }
@@ -219,6 +229,8 @@ pub struct ObjectReport {
     pub components: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub additional_names: Vec<HardLinkObservation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub named_streams: Vec<NamedStreamReport>,
     pub before: Snapshot,
     pub after: Snapshot,
     pub logical_sha256: Option<String>,
@@ -324,6 +336,8 @@ impl GeneralLayoutReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LayoutResidualExpectation {
     pub object_index: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stream_name_utf16: Vec<u16>,
     pub logical_offset: u64,
     pub length: u64,
     pub sha256: String,
@@ -1171,6 +1185,9 @@ fn validate_existing_profile(
             ));
         }
         hard_links::verify(i, &o.before, &o.additional_names)?;
+        if !i.directory {
+            streams::verify(i, o, verify_contents)?;
+        }
         let kernel = o
             .before
             .kernel_security
@@ -2191,17 +2208,23 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
         protected,
         resource_profile,
     )?;
-    let required: Vec<_> = input
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| !item.directory && item.logical_length() % 4096 != 0)
-        .collect();
+    let mut required = Vec::new();
+    for (index, item) in input.iter().enumerate().filter(|(_, i)| !i.directory) {
+        if item.logical_length() % 4096 != 0 {
+            required.push((index, Vec::new(), item.logical_length()));
+        }
+        for stream in &item.named_streams {
+            if stream.expected_length % 4096 != 0 {
+                required.push((index, stream.name_utf16.to_vec(), stream.expected_length));
+            }
+        }
+    }
     if required.len() != residuals.len() {
         return Err(invalid("composite residual stream coverage differs"));
     }
-    for ((index, item), expected) in required.iter().zip(residuals) {
-        let length = item.logical_length();
+    for ((index, name, length), expected) in required.iter().zip(residuals) {
         if expected.object_index != *index
+            || expected.stream_name_utf16 != *name
             || expected.logical_offset != length / 4096 * 4096
             || expected.length != length % 4096
             || expected.length == 0
@@ -2230,9 +2253,19 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
     let mut bytes_read = 0u64;
     for expected in residuals {
         let object = &report.native.objects[expected.object_index];
-        let path = format!("{}{}", root, object.components.join("\\"));
+        let path = streams::path(&root, &object.components, &expected.stream_name_utf16)?;
+        let (before_stream, after_stream) = if expected.stream_name_utf16.is_empty() {
+            (&object.before, &object.after)
+        } else {
+            let stream = object
+                .named_streams
+                .iter()
+                .find(|s| s.name_utf16 == expected.stream_name_utf16)
+                .ok_or_else(|| invalid("named residual stream observation absent"))?;
+            (&stream.before, &stream.after)
+        };
         let mut file = open_protected_readonly(&path, false)?;
-        if snapshot(&file) != object.before {
+        if snapshot(&file) != *before_stream {
             return Err(invalid(
                 "composite residual identity or metadata changed before read",
             ));
@@ -2242,7 +2275,7 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
         file.read_exact(&mut buffer[..count])?;
         if file.read(&mut buffer[..1])? != 0
             || hex::encode(Sha256::digest(&buffer[..count])) != expected.sha256
-            || snapshot(&file) != object.after
+            || snapshot(&file) != *after_stream
         {
             return Err(invalid(
                 "composite initialized suffix contents, EOF or metadata differ",
@@ -2771,6 +2804,14 @@ fn run_role_profile(
             valid_shadow_component(part)
         }
     })?;
+    streams::validate(input, binding.identity.partition_bytes)?;
+    if input.iter().any(|i| !i.named_streams.is_empty())
+        && matches!(mode, Mode::Construct | Mode::ConstructRetaining)
+    {
+        return Err(invalid(
+            "named-stream construction requires the private owning tree path",
+        ));
+    }
     let mut total = 0u64;
     let mut source_allocations = Vec::new();
     for i in input {
@@ -3512,15 +3553,17 @@ fn run_role_profile(
         } else {
             let mut b = info(&h, 7, stream_layout::MAX_STREAM_BUFFER)?;
             let (entries, used) = stream_layout::parse_streams(&b)?;
-            if entries.len() != 1
-                || !entries[0].name.is_empty()
-                || entries[0].logical_size != i.logical_length()
-                || entries[0].allocated_size
-                    != if ordinary {
-                        expected_allocation
-                    } else {
-                        i.logical_length()
-                    }
+            streams::exact_list(&b, i)?;
+            let unnamed = entries
+                .iter()
+                .find(|e| e.name.is_empty())
+                .ok_or_else(|| invalid("unnamed stream missing"))?;
+            if unnamed.allocated_size
+                != if ordinary {
+                    expected_allocation
+                } else {
+                    i.logical_length()
+                }
             {
                 return Err(invalid("unexpected target data stream or allocation"));
             }
@@ -3529,6 +3572,14 @@ fn run_role_profile(
         };
         Ok(ObjectReport {
             components: i.components.to_vec(),
+            named_streams: streams::observe(
+                &root,
+                i,
+                &before,
+                protected.is_some(),
+                mode != Mode::ObserveLayout,
+                clusters,
+            )?,
             additional_names: hard_links::observe(&root, i, &before, protected.is_some())?,
             before,
             after,
@@ -3710,6 +3761,7 @@ mod tests {
             expected_sha256: Some(digest),
             source_offset: Some(25853952),
             source_runs: vec![],
+            named_streams: Vec::new(),
         };
         source_formatter_cache_bounds(&[source]).unwrap();
         assert!(valid_shadow_component(&path[1]));
@@ -3741,6 +3793,7 @@ mod tests {
                 expected_sha256: None,
                 source_offset: None,
                 source_runs: vec![],
+                named_streams: Vec::new(),
             };
             source_formatter_cache_bounds(&[make_source(1024 * 1024)]).unwrap();
             assert!(source_formatter_cache_bounds(&[make_source(1024 * 1024 + 1)]).is_err());
@@ -3852,6 +3905,7 @@ mod tests {
             expected_sha256: None,
             source_offset: None,
             source_runs: vec![],
+            named_streams: Vec::new(),
         };
         let mut actual = Snapshot {
             queries: vec![],

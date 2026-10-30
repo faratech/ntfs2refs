@@ -591,6 +591,13 @@ fn in_place_payload_ranges(
             .objects
             .get(route.object_index)
             .context("in-place route object absent")?;
+        let stream = object
+            .stream(&route.stream_name_utf16)
+            .context("in-place route stream absent")?;
+        ensure!(
+            stream.length == route.stream_length && stream.sha256 == route.expected_sha256,
+            "in-place route stream differs from canonical source"
+        );
         let files: Vec<_> = raw
             .files
             .iter()
@@ -603,15 +610,23 @@ fn in_place_payload_ranges(
         let data: Vec<_> = files[0]
             .attributes
             .iter()
-            .filter(|a| a.type_code == 0x80 && a.name_utf16.is_empty())
+            .filter(|a| a.type_code == 0x80 && a.name_utf16 == route.stream_name_utf16)
             .collect();
         let [data] = data.as_slice() else {
-            continue; // Ambiguous or absent unnamed data: keep it compared.
+            continue; // Ambiguous or absent DATA: keep it compared.
         };
         if data.resident || data.flags != 0 || data.lowest_vcn != 0 {
             continue;
         }
-        let whole_end = route.stream_length / 4096 * 4096;
+        // Only initialized source clusters contain the logical bytes that a
+        // retained target may expose. Allocated NTFS bytes beyond VDL may be
+        // nonzero even though reads return zeros, so they must stay compared.
+        let whole_end = route
+            .stream_length
+            .min(data.logical_size)
+            .min(data.initialized_size)
+            / 4096
+            * 4096;
         let route_end = route
             .logical_offset
             .checked_add(route.length)
@@ -678,6 +693,13 @@ fn payload_copy_candidates(
             .objects
             .get(route.object_index)
             .context("copy route object absent")?;
+        let stream = object
+            .stream(&route.stream_name_utf16)
+            .context("copy route stream absent")?;
+        ensure!(
+            stream.length == route.stream_length && stream.sha256 == route.expected_sha256,
+            "copy route differs from canonical stream"
+        );
         let mut matches = raw.files.iter().filter(|file| {
             file.record_number == object.record_number
                 && file.sequence_number == object.sequence_number
@@ -687,7 +709,9 @@ fn payload_copy_candidates(
         let data: Vec<_> = file
             .attributes
             .iter()
-            .filter(|attribute| attribute.type_code == 0x80 && attribute.name_utf16.is_empty())
+            .filter(|attribute| {
+                attribute.type_code == 0x80 && attribute.name_utf16 == route.stream_name_utf16
+            })
             .collect();
         let [attribute] = data.as_slice() else {
             continue;
@@ -736,13 +760,16 @@ fn payload_copy_candidates(
             record_number: file.record_number,
             sequence_number: file.sequence_number,
         };
-        attributes.entry(identity).or_insert(*attribute);
+        attributes
+            .entry((identity, route.stream_name_utf16.clone()))
+            .or_insert(*attribute);
         requested.push(ByteRange {
             offset: destination_offset,
             length: end - start,
         });
         target_routes.push(TargetRoute {
             identity,
+            stream_name_utf16: &route.stream_name_utf16,
             logical_offset: start,
             destination_offset,
             length: end - start,
@@ -767,13 +794,14 @@ fn payload_copy_candidates(
         .collect();
     let streams: Vec<_> = storage
         .iter()
-        .map(|(identity, attribute, extents)| SourceStream {
+        .map(|((identity, name), attribute, extents)| SourceStream {
             identity: *identity,
+            stream_name_utf16: name,
             logical_length: attribute.logical_size,
             initialized_length: attribute.initialized_size,
             ordinary_file: true,
             nonresident: true,
-            default_data: true,
+            default_data: name.is_empty(),
             attribute_flags: attribute.flags,
             lowest_vcn: attribute.lowest_vcn,
             extents,
@@ -1048,30 +1076,34 @@ fn protected_prefix(
         .enumerate()
         .filter(|(_, item)| !item.directory)
     {
-        let count = (object.length % 4096) as usize;
-        if count == 0 {
-            continue;
+        for stream in object.data_streams() {
+            let count = (stream.length % 4096) as usize;
+            if count == 0 {
+                continue;
+            }
+            let offset = stream.length / 4096 * 4096;
+            let proof = ntfs_inspect::read_plain_named_stream_range_into(
+                source,
+                raw,
+                object.record_number,
+                stream.name_utf16,
+                offset,
+                &mut buffer[..count],
+                &mut residual_budget,
+            )?;
+            ensure!(
+                proof.stream_logical_bytes == stream.length
+                    && stream.sha256 == proof.expected_stream_sha256,
+                "composite residual source stream identity or digest differs"
+            );
+            residuals.push(LayoutResidualExpectation {
+                object_index: index,
+                stream_name_utf16: stream.name_utf16.to_vec(),
+                logical_offset: offset,
+                length: count as u64,
+                sha256: proof.sha256,
+            });
         }
-        let offset = object.length / 4096 * 4096;
-        let proof = ntfs_inspect::read_plain_stream_range_into(
-            source,
-            raw,
-            object.record_number,
-            offset,
-            &mut buffer[..count],
-            &mut residual_budget,
-        )?;
-        ensure!(
-            proof.stream_logical_bytes == object.length
-                && object.sha256.as_deref() == Some(proof.expected_stream_sha256.as_str()),
-            "composite residual source stream identity or digest differs"
-        );
-        residuals.push(LayoutResidualExpectation {
-            object_index: index,
-            logical_offset: offset,
-            length: count as u64,
-            sha256: proof.sha256,
-        });
     }
     let protected = if allocation_closed_bracket {
         general_target_preservation::verify_frozen_layout_residuals_allocation_closed(

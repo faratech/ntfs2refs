@@ -27,7 +27,26 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state after hard-link recovery qualification: VM is Off/RAM0, parent
+ADS candidate in progress: canonical objects now carry named_streams while
+payload handles, placement, routes, source reads and copy planning distinguish
+the exact UTF-16 stream name. Native construction/verification supports ordinary
+file ADS; directory ADS and ADS on System Volume Information remain explicit
+refusals. The existing limit is64 total streams per file and16,384 per tree.
+The source/copy retention check now excludes every cluster beyond source VDL.
+Focused public release build passes, SHA
+2220164aaeef4c9db8bf11339fc4d11a365871d10a8665ce69c415288ed20710.
+This candidate has not yet completed native conversion qualification.
+Five ADS were independently added to disk6/H: and read back through all three
+hard-link names each; default data/IDs remained unchanged. This NTFS source is
+saved in145c0060-b98e-4857-963f-238e72199869. VM is Off/RAM0 with that parent;
+fifteen checkpoints remain preserved. Fixture:
+.lab/hyperv/streaming-v2-20261027/ads-fixture-d951c1ed45c142f69d40efae28f260c8/fixture.json,
+SHAa17bafe1afbb796e7517b50ebd33aa784cd40a00a43e00f581e052cb7c6aaaf1.
+Use the new ADS launcher and fresh candidate pins; old hard-link expectations
+do not include these streams. Do not claim the old7b1c8df native results for
+this new candidate. No unit tests were added or run.
+
+State immediately after hard-link recovery qualification: VM was Off/RAM0, parent
 f3eb7560-4804-47a8-ad91-530cd87221ab, fourteen preserved checkpoints. Disk6/H:
 contains independently verified NTFS restored by public rollback. The original
 interrupted hard-link state is4a084701-74f9-42c2-91ce-6f4436f23180, and its

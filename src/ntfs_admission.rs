@@ -15,9 +15,29 @@ use std::collections::BTreeSet;
 
 pub const PROFILE: &str = "existing-data-tree-v1";
 pub const ORDINARY_PROFILE: &str = "ordinary-data-tree-v2";
+/// A source-model candidate must not silently become public ADS conversion
+/// support before the native stream graph and its verifier are connected.
+
+/// Conservative Win32 DATA-stream names, preserved as their exact UTF-16.
+/// Device basenames are not relevant after the file's stream separator, but
+/// path separators, stream separators, wildcards and normalization tails are.
+pub fn valid_named_stream_name(name: &[u16]) -> bool {
+    if name.is_empty() || name.len() > 255 {
+        return false;
+    }
+    let Ok(text) = String::from_utf16(name) else {
+        return false;
+    };
+    !text.ends_with([' ', '.'])
+        && text
+            .chars()
+            .all(|c| !c.is_control() && !"<>:\"/\\|?*".contains(c))
+}
 pub const MAX_FILES: usize = 128;
 pub const MAX_DIRECTORIES: usize = 32;
 pub const MAX_LOGICAL_BYTES: u64 = 256 * 1024 * 1024;
+/// Canonical default-plus-named DATA stream identities across the whole tree.
+pub const MAX_DATA_STREAMS: usize = 16_384;
 
 /// Explicit source/tree budgets, independent of journal format or capacity.
 /// Selecting a larger profile supplies no native evidence or certificate.
@@ -745,7 +765,10 @@ fn user_issues_profile(
         || f.attributes.iter().any(|a| {
             let plain =
                 matches!(a.type_code, 0x10 | 0x30 | 0x50) && a.name_utf16.is_empty() && a.resident;
-            let data = !f.is_directory && a.type_code == 0x80 && a.name_utf16.is_empty();
+            let data = !f.is_directory
+                && a.type_code == 0x80
+                && (a.name_utf16.is_empty()
+                    || (ordinary && valid_named_stream_name(&a.name_utf16)));
             let index = f.is_directory
                 && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                 && ntfs_namespace::is_i30(&a.name_utf16);
@@ -784,31 +807,56 @@ fn user_issues_profile(
     if descriptor.is_none_or(|d| d.descriptor.sacl.state != ntfs_security::AclState::Absent) {
         issues.push("initial preservation profile requires verified SACL absence".into());
     }
+    if f.streams.iter().any(|stream| !stream.name_utf16.is_empty())
+        && user_paths(raw, f).is_some_and(|paths| {
+            paths.iter().any(|path| {
+                path.first()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("System Volume Information"))
+            })
+        })
+    {
+        issues.push("named streams on System Volume Information objects require a separate system-payload implementation".into());
+    }
     if f.is_directory {
         if !f.streams.is_empty() {
             issues.push("directory data streams exceed the profile".into());
         }
-    } else if f.streams.len() != 1
-        || f.streams.iter().any(|s| {
-            !s.name_utf16.is_empty()
-                || s.flags != 0
-                || s.initialized_size > s.logical_size
-                || (!ordinary
-                    && (s.resident
-                        || s.logical_size == 0
-                        || !s.logical_size.is_multiple_of(65536)
-                        || s.logical_size != s.initialized_size
-                        || s.logical_size != s.allocated_size
-                        || s.extents.len() != 1
-                        || s.extents[0].logical_offset != 0
-                        || s.extents[0].physical_offset.is_none()
-                        || s.extents[0].length != s.logical_size))
-                || s.logical_hash_status != ntfs::LogicalHashStatus::Complete
-        })
-    {
-        issues.push(
-            "stream requires a later resident, sparse, fragmented, tail or encoded profile".into(),
-        );
+    } else {
+        let mut exact_names = BTreeSet::new();
+        let mut folded_names = BTreeSet::new();
+        let stream_names_valid = !f.streams.is_empty()
+            && f.streams.len() <= n2r_win32::stream_layout::MAX_STREAMS
+            && f.streams.iter().filter(|s| s.name_utf16.is_empty()).count() == 1
+            && f.streams.iter().all(|s| {
+                (s.name_utf16.is_empty() || (ordinary && valid_named_stream_name(&s.name_utf16)))
+                    && exact_names.insert(s.name_utf16.clone())
+                    && String::from_utf16(&s.name_utf16)
+                        .is_ok_and(|name| folded_names.insert(name.to_uppercase()))
+            });
+        if !stream_names_valid
+            || (!ordinary && f.streams.len() != 1)
+            || f.streams.iter().any(|s| {
+                (!ordinary && !s.name_utf16.is_empty())
+                    || s.flags != 0
+                    || s.initialized_size > s.logical_size
+                    || (!ordinary
+                        && (s.resident
+                            || s.logical_size == 0
+                            || !s.logical_size.is_multiple_of(65536)
+                            || s.logical_size != s.initialized_size
+                            || s.logical_size != s.allocated_size
+                            || s.extents.len() != 1
+                            || s.extents[0].logical_offset != 0
+                            || s.extents[0].physical_offset.is_none()
+                            || s.extents[0].length != s.logical_size))
+                    || s.logical_hash_status != ntfs::LogicalHashStatus::Complete
+            })
+        {
+            issues.push(
+                "stream requires a later resident, sparse, fragmented, tail or encoded profile"
+                    .into(),
+            );
+        }
     }
     issues
 }
@@ -934,6 +982,7 @@ fn assess_source_view_profile(
     let mut files = 0;
     let mut directories = 0;
     let mut bytes = 0u64;
+    let mut data_streams = 0usize;
     for f in &raw.files {
         let internal = internal_role(raw, f);
         let (disposition, role, mut issues) = if let Some(role) = internal {
@@ -949,6 +998,9 @@ fn assess_source_view_profile(
                 .iter()
                 .try_fold(bytes, |sum, s| sum.checked_add(s.logical_size))
                 .unwrap_or(u64::MAX);
+            data_streams = data_streams
+                .checked_add(f.streams.len())
+                .unwrap_or(usize::MAX);
             let issues = if ordinary {
                 ordinary_user_issues(raw, f)
             } else {
@@ -1121,8 +1173,9 @@ fn assess_source_view_profile(
         files > 0
             && files <= limits.maximum_files
             && directories <= limits.maximum_directories
+            && data_streams <= MAX_DATA_STREAMS
             && bytes <= limits.maximum_logical_bytes,
-        "limit ordinary files/directories/logical bytes; no automatic budget widening",
+        "limit ordinary files/directories, 16,384 total DATA streams and logical bytes; no automatic budget widening",
     );
     gate(
         "source_backups",

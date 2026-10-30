@@ -109,6 +109,39 @@ impl PrivatePlaceholder {
         bytes: u64,
         partition: u64,
     ) -> io::Result<Self> {
+        Self::allocate_data(root, components, &[], bytes, partition)
+    }
+
+    pub fn allocate_named_stream(
+        root: &str,
+        components: &[String],
+        name: &[u16],
+        bytes: u64,
+        partition: u64,
+        base: &File,
+    ) -> io::Result<Self> {
+        if !super::streams::valid_name(name) {
+            return Err(invalid("invalid private stream name"));
+        }
+        let identity = super::info(base, 18, 24)?;
+        let stream = Self::allocate_data(root, components, name, bytes, partition)?;
+        if super::info(base, 18, 24)? != identity
+            || super::info(stream.metadata_handle(), 18, 24)? != identity
+        {
+            return Err(invalid(
+                "private named stream does not belong to its held base file",
+            ));
+        }
+        Ok(stream)
+    }
+
+    fn allocate_data(
+        root: &str,
+        components: &[String],
+        stream_name: &[u16],
+        bytes: u64,
+        partition: u64,
+    ) -> io::Result<Self> {
         if components.is_empty()
             || components.len() > 16
             || components
@@ -139,7 +172,7 @@ impl PrivatePlaceholder {
             lpSecurityDescriptor: descriptor,
             bInheritHandle: 0,
         };
-        let path = format!("{}\\{}", root.trim_end_matches('\\'), components.join("\\"));
+        let path = super::streams::path(root, components, stream_name)?;
         let name = wide(&path);
         // SAFETY: caller-bound volume root, validated components, CREATE_NEW,
         // sharing disabled and SYSTEM-only protected security descriptor.

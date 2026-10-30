@@ -146,14 +146,11 @@ pub(super) fn complete_owned_metadata(
         if !item.directory {
             let standard = info(handle, 1, 24)?;
             let streams = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
-            let (streams, _) = stream_layout::parse_streams(&streams)?;
+            super::streams::exact_list(&streams, item)?;
             if layout::u64_at(&standard, 8)? != item.logical_length()
                 || layout::u32_at(&standard, 16)? != super::hard_links::count(item)?
                 || standard[20] != 0
                 || standard[21] != 0
-                || streams.len() != 1
-                || !streams[0].name.is_empty()
-                || streams[0].logical_size != item.logical_length()
             {
                 return Err(invalid("owned metadata stream shape differs"));
             }
@@ -261,14 +258,11 @@ pub(super) fn complete_owned_metadata(
         if !item.directory {
             let standard = info(handle, 1, 24)?;
             let streams = info(handle, 7, stream_layout::MAX_STREAM_BUFFER)?;
-            let (streams, _) = stream_layout::parse_streams(&streams)?;
+            super::streams::exact_list(&streams, item)?;
             if layout::u64_at(&standard, 8)? != item.logical_length()
                 || layout::u32_at(&standard, 16)? != super::hard_links::count(item)?
                 || standard[20] != 0
                 || standard[21] != 0
-                || streams.len() != 1
-                || !streams[0].name.is_empty()
-                || streams[0].logical_size != item.logical_length()
             {
                 return Err(invalid("final owned metadata stream shape differs"));
             }
@@ -277,6 +271,14 @@ pub(super) fn complete_owned_metadata(
                 item,
                 &actual,
                 false,
+            )?;
+            super::streams::observe(
+                &format!("{}\\", pair.shadow.volume_path()?),
+                item,
+                &actual,
+                false,
+                false,
+                pair.shadow.identity.partition_bytes / 4096,
             )?;
         }
     }
@@ -623,6 +625,14 @@ pub fn run(
                 return Err(invalid("refreshed hard-link count differs"));
             }
             super::hard_links::observe(&root, item, &actual, false)?;
+            super::streams::observe(
+                &root,
+                item,
+                &actual,
+                false,
+                false,
+                pair.shadow.identity.partition_bytes / 4096,
+            )?;
         }
         metadata_verified += 1;
     }

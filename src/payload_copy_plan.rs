@@ -28,12 +28,13 @@ pub struct SourceExtent {
     pub length: u64,
 }
 
-/// Borrow only the participating default-data stream's extent model. Extents
+/// Borrow the participating DATA stream's exact name and extent model. Extents
 /// must be sorted by logical offset. They may extend past EOF because NTFS can
 /// preallocate a stream; only whole initialized clusters may be requested.
 #[derive(Debug)]
 pub struct SourceStream<'a> {
     pub identity: FileIdentity,
+    pub stream_name_utf16: &'a [u16],
     pub logical_length: u64,
     pub initialized_length: u64,
     pub ordinary_file: bool,
@@ -47,8 +48,9 @@ pub struct SourceStream<'a> {
 /// A protected target route after the adapter binds its object index, native
 /// identity, names and stream expectations to the source identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TargetRoute {
+pub struct TargetRoute<'a> {
     pub identity: FileIdentity,
+    pub stream_name_utf16: &'a [u16],
     pub logical_offset: u64,
     pub destination_offset: u64,
     pub length: u64,
@@ -139,7 +141,7 @@ pub fn plan_copies(
     volume_bytes: u64,
     requested: &[ByteRange],
     streams: &[SourceStream<'_>],
-    routes: &[TargetRoute],
+    routes: &[TargetRoute<'_>],
 ) -> Result<Vec<CopySpan>> {
     volume(volume_bytes)?;
     sorted_ranges(requested, volume_bytes)?;
@@ -150,15 +152,18 @@ pub fn plan_copies(
         ensure!(
             stream.ordinary_file
                 && stream.nonresident
-                && stream.default_data
+                && stream.stream_name_utf16.len() <= 255
+                && stream.default_data == stream.stream_name_utf16.is_empty()
                 && stream.attribute_flags == 0
                 && stream.lowest_vcn == 0
                 && stream.initialized_length <= stream.logical_length,
-            "payload copy requires initialized ordinary nonresident default data"
+            "payload copy requires initialized ordinary nonresident DATA"
         );
         ensure!(
-            by_identity.insert(stream.identity, stream).is_none(),
-            "payload copy source identity is duplicated"
+            by_identity
+                .insert((stream.identity, stream.stream_name_utf16), stream)
+                .is_none(),
+            "payload copy source stream identity is duplicated"
         );
         let mut logical_end = 0;
         for extent in stream.extents {
@@ -193,7 +198,7 @@ pub fn plan_copies(
         );
         destination_end = route_end;
         let stream = by_identity
-            .get(&route.identity)
+            .get(&(route.identity, route.stream_name_utf16))
             .context("payload copy route has no source identity")?;
         let logical_end = end(route.logical_offset, route.length)?;
         ensure!(
@@ -202,7 +207,11 @@ pub fn plan_copies(
                 && logical_end <= stream.initialized_length / GRANULE * GRANULE,
             "payload copy route exceeds its initialized whole-cluster stream"
         );
-        logical_routes.push((route.identity, route.logical_offset, logical_end));
+        logical_routes.push((
+            (route.identity, route.stream_name_utf16),
+            route.logical_offset,
+            logical_end,
+        ));
     }
     logical_routes.sort_unstable();
     for pair in logical_routes.windows(2) {
@@ -231,7 +240,7 @@ pub fn plan_copies(
                 route.destination_offset <= cursor,
                 "payload copy destination has a route gap"
             );
-            let stream = by_identity[&route.identity];
+            let stream = by_identity[&(route.identity, route.stream_name_utf16)];
             let route_part_end = request_end.min(end(route.destination_offset, route.length)?);
             let mut logical = end(route.logical_offset, cursor - route.destination_offset)?;
             let mut extent_index = stream.extents.partition_point(|extent| {

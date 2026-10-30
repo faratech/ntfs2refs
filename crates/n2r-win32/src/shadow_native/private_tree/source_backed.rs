@@ -5,6 +5,8 @@ use super::*;
 #[derive(Debug, Serialize)]
 pub struct PayloadRoute {
     pub object_index: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stream_name_utf16: Vec<u16>,
     pub logical_offset: u64,
     pub target_physical_offset: u64,
     pub length: u64,
@@ -52,6 +54,61 @@ impl SourceBackedRoutes {
             if standard[21] != 0 {
                 continue;
             }
+            for named in &object.named_streams {
+                let ns = query_bytes(&named.before, 1, 24)?;
+                let length = layout::u64_at(ns, 8)?;
+                let prefix = length / 4096 * 4096;
+                if prefix == 0 {
+                    continue;
+                }
+                if named.resident_data || named.retrieval_page_proof.is_none() {
+                    return Err(invalid("named payload has no complete native map"));
+                }
+                let id = query_bytes(&named.before, 18, 24)?[8..24].to_vec();
+                let mut covered = 0;
+                for run in stream_layout::parse_complete_retrieval(&named.retrieval)? {
+                    let at = run
+                        .vcn
+                        .checked_mul(4096)
+                        .ok_or_else(|| invalid("named VCN overflow"))?;
+                    if at >= prefix {
+                        break;
+                    }
+                    let bytes = run
+                        .clusters
+                        .checked_mul(4096)
+                        .ok_or_else(|| invalid("named length overflow"))?
+                        .min(prefix - at);
+                    let offset = run
+                        .lcn
+                        .ok_or_else(|| invalid("named prefix hole"))?
+                        .checked_mul(4096)
+                        .ok_or_else(|| invalid("named LCN overflow"))?;
+                    if at != covered || bytes == 0 {
+                        return Err(invalid("named prefix coverage differs"));
+                    }
+                    entries.push(PayloadRoute {
+                        object_index: index,
+                        stream_name_utf16: named.name_utf16.clone(),
+                        logical_offset: at,
+                        target_physical_offset: offset,
+                        length: bytes,
+                        stream_length: length,
+                        components: object.components.clone(),
+                        expected_sha256: named.expected_sha256.clone(),
+                        native_file_id: id.clone(),
+                        expected_link_count: layout::u32_at(ns, 16)?,
+                    });
+                    if entries.len() > 4096 {
+                        return Err(invalid("protected route budget exceeded"));
+                    }
+                    covered += bytes;
+                }
+                if covered != prefix {
+                    return Err(invalid("named full-cluster prefix incomplete"));
+                }
+                payload_bytes += prefix;
+            }
             let length = layout::u64_at(standard, 8)?;
             let prefix = length / 4096 * 4096;
             if prefix == 0 {
@@ -90,6 +147,7 @@ impl SourceBackedRoutes {
                 }
                 entries.push(PayloadRoute {
                     object_index: index,
+                    stream_name_utf16: Vec::new(),
                     logical_offset: at,
                     target_physical_offset: offset,
                     length: bytes,
@@ -152,22 +210,24 @@ impl SourceBackedRoutes {
     }
     fn revalidate_mounted(&self) -> io::Result<()> {
         let mut seen = BTreeSet::new();
-        let mut ids = BTreeSet::new();
+        let mut ids = BTreeMap::new();
         for route in &self.entries {
-            if !seen.insert(route.object_index) {
+            if !seen.insert((route.object_index, route.stream_name_utf16.clone())) {
                 continue;
             }
-            let path = format!(
-                "{}\\{}",
-                self.pair.shadow.volume_path()?,
-                route.components.join("\\")
-            );
+            let path = streams::path(
+                &self.pair.shadow.volume_path()?,
+                &route.components,
+                &route.stream_name_utf16,
+            )?;
             let file = open(&path, false, false)?;
             let state = snapshot(&file);
             let id = query_bytes(&state, 18, 24)?[8..24].to_vec();
             let standard = query_bytes(&state, 1, 24)?;
             if id != route.native_file_id
-                || !ids.insert(id)
+                || ids
+                    .insert(id, route.object_index)
+                    .is_some_and(|old| old != route.object_index)
                 || layout::u64_at(standard, 8)? != route.stream_length
                 || layout::u32_at(standard, 16)? != route.expected_link_count
                 || standard[20] != 0
@@ -179,11 +239,10 @@ impl SourceBackedRoutes {
             }
             let capture = crate::stream_native::retrieval_capture(&file)?;
             let runs = crate::stream_layout::parse_complete_retrieval(&capture.canonical)?;
-            for r in self
-                .entries
-                .iter()
-                .filter(|r| r.object_index == route.object_index)
-            {
+            for r in self.entries.iter().filter(|r| {
+                r.object_index == route.object_index
+                    && r.stream_name_utf16 == route.stream_name_utf16
+            }) {
                 if r.native_file_id != route.native_file_id
                     || !mapping_matches_run(
                         &runs,
@@ -277,10 +336,9 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
     }
     let mut entries = Vec::new();
     let mut payload_bytes = 0u64;
-    for (&index, file) in &tree.files {
-        let item = input
-            .get(index)
-            .ok_or_else(|| invalid("payload input absent"))?;
+    for (key, file) in &tree.files {
+        let index = key.object_index;
+        let item = streams::view(input, key)?;
         let initial = &tree.initial_objects[index];
         let expected = item
             .expected_sha256
@@ -289,11 +347,17 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
             || !crate::content_digest::is_hex(expected)
             || initial["components"]
                 != serde_json::to_value(item.components).map_err(io::Error::other)?
-            || initial["payload_expected_sha256"].as_str() != Some(expected)
+            || (key.name_utf16.is_empty()
+                && initial["payload_expected_sha256"].as_str() != Some(expected))
         {
             return Err(invalid("source-backed canonical input differs"));
         }
-        tree.validate_stream_shape(index, item.components, item.logical_length())?;
+        tree.validate_stream_shape_named(
+            index,
+            &key.name_utf16,
+            item.components,
+            item.logical_length(),
+        )?;
         let prefix = file.logical_length() / 4096 * 4096;
         if file.valid_prefix() < prefix {
             return Err(invalid("source-backed prefix is not storage-valid"));
@@ -308,6 +372,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
             }
             entries.push(PayloadRoute {
                 object_index: index,
+                stream_name_utf16: key.name_utf16.clone(),
                 logical_offset: cursor,
                 target_physical_offset: lcn * 4096,
                 length,
@@ -315,7 +380,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
                 components: item.components.to_vec(),
                 expected_sha256: expected.to_owned(),
                 native_file_id: info(file.metadata_handle(), 18, 24)?[8..24].to_vec(),
-                expected_link_count: super::super::hard_links::count(item)?,
+                expected_link_count: super::super::hard_links::count(&item)?,
             });
             if entries.len() > 4096 {
                 return Err(invalid("source-backed route budget exceeded"));

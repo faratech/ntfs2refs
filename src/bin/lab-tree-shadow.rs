@@ -180,6 +180,7 @@ fn main() -> anyhow::Result<()> {
             .map(|(o, p)| shadow_native::Input {
                 components: &o.path,
                 additional_names: &o.additional_names,
+                named_streams: ntfs2refs::general_shadow::native_named_streams(o),
                 directory: o.directory,
                 times: o.stored_times,
                 attributes: o.attributes,

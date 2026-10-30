@@ -29,14 +29,15 @@ pub fn validate_placement_limits(bytes: u64, submissions: usize) -> io::Result<(
 pub struct PrivateTree {
     // Files close before the volume and privilege lease on drop. No drop path
     // restores public permissions over uninitialized scratch contents.
-    files: BTreeMap<usize, unwritten::PrivatePlaceholder>,
+    files: BTreeMap<StreamKey, unwritten::PrivatePlaceholder>,
+    stream_slots: BTreeMap<usize, StreamKey>,
     volume: File,
     pair: GeneralSourceShadowBinding,
     source_before: native::GeneralDiskState,
     initial_objects: Vec<serde_json::Value>,
     events: Vec<NativeEvent>,
     privileges: Privileges,
-    original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>>,
+    original_coordinates: BTreeMap<StreamKey, Vec<(u64, u64, u64)>>,
     placement_started: bool,
     placement_complete: bool,
     placement_progress: serde_json::Value,
@@ -51,6 +52,49 @@ pub struct PrivateTree {
 }
 
 impl PrivateTree {
+    fn file_by_slot(&self, slot: usize) -> io::Result<&unwritten::PrivatePlaceholder> {
+        self.stream_slots
+            .get(&slot)
+            .and_then(|key| self.files.get(key))
+            .ok_or_else(|| invalid("stream placement slot absent"))
+    }
+    fn file_by_slot_mut(&mut self, slot: usize) -> io::Result<&mut unwritten::PrivatePlaceholder> {
+        let key = self
+            .stream_slots
+            .get(&slot)
+            .ok_or_else(|| invalid("stream placement slot absent"))?;
+        self.files
+            .get_mut(key)
+            .ok_or_else(|| invalid("stream placement file absent"))
+    }
+    fn place_slot(
+        &mut self,
+        slot: usize,
+        vcn: u64,
+        lcn: u64,
+        clusters: u32,
+    ) -> io::Result<serde_json::Value> {
+        let key = self
+            .stream_slots
+            .get(&slot)
+            .cloned()
+            .ok_or_else(|| invalid("stream placement slot absent"))?;
+        self.place_named(key.object_index, &key.name_utf16, vcn, lcn, clusters)
+    }
+    fn reposition_slot(
+        &mut self,
+        slot: usize,
+        vcn: u64,
+        lcn: u64,
+        clusters: u32,
+    ) -> io::Result<serde_json::Value> {
+        let key = self
+            .stream_slots
+            .get(&slot)
+            .cloned()
+            .ok_or_else(|| invalid("stream placement slot absent"))?;
+        self.reposition_named(key.object_index, &key.name_utf16, vcn, lcn, clusters)
+    }
     /// Complete metadata only on this owning disposable maintenance session.
     /// Consumes the owner even on partial failure: no retry/placement authority
     /// is returned. Source-backed prefixes are not logical-content verified by
@@ -107,16 +151,21 @@ impl PrivateTree {
         components: &[String],
         length: u64,
     ) -> io::Result<()> {
+        self.validate_stream_shape_named(index, &[], components, length)
+    }
+    pub fn validate_stream_shape_named(
+        &self,
+        index: usize,
+        name: &[u16],
+        components: &[String],
+        length: u64,
+    ) -> io::Result<()> {
         self.require_source_excluded()?;
         let file = self
             .files
-            .get(&index)
+            .get(&StreamKey::named(index, name))
             .ok_or_else(|| invalid("private verification stream absent"))?;
-        let path = format!(
-            "{}\\{}",
-            self.pair.shadow.volume_path()?,
-            components.join("\\")
-        );
+        let path = streams::path(&self.pair.shadow.volume_path()?, components, name)?;
         let standard = info(file.metadata_handle(), 1, 24)?;
         if file.path != path
             || file.logical_length() != length
@@ -138,6 +187,16 @@ impl PrivateTree {
         offset: u64,
         output: &mut [u8],
     ) -> io::Result<()> {
+        self.read_materialized_range_named(index, &[], offset, output)
+    }
+    pub fn read_materialized_range_named(
+        &mut self,
+        index: usize,
+        name: &[u16],
+        offset: u64,
+        output: &mut [u8],
+    ) -> io::Result<()> {
+        let key = StreamKey::named(index, name);
         if !self.placement_complete {
             return Err(invalid("live complete placement required for hybrid read"));
         }
@@ -145,7 +204,7 @@ impl PrivateTree {
             .checked_add(output.len() as u64)
             .ok_or_else(|| invalid("hybrid read overflow"))?;
         if !output.is_empty()
-            && self.original_coordinates.get(&index).is_some_and(|ranges| {
+            && self.original_coordinates.get(&key).is_some_and(|ranges| {
                 ranges
                     .iter()
                     .any(|(start, _, len)| offset < *start + *len && *start < end)
@@ -156,7 +215,7 @@ impl PrivateTree {
             ));
         }
         self.files
-            .get_mut(&index)
+            .get_mut(&key)
             .ok_or_else(|| invalid("private materialized stream absent"))?
             .read_initialized_at(offset, output)
     }
@@ -187,12 +246,22 @@ impl PrivateTree {
         lcn: u64,
         clusters: u32,
     ) -> io::Result<serde_json::Value> {
+        self.place_named(object_index, &[], vcn, lcn, clusters)
+    }
+    pub fn place_named(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        vcn: u64,
+        lcn: u64,
+        clusters: u32,
+    ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
         self.placement_complete = false;
         self.original_coordinates.clear();
         let file = self
             .files
-            .get_mut(&object_index)
+            .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private user file absent"))?;
         let result = serde_json::to_value(file.place(&self.volume, vcn, lcn, clusters)?)
             .map_err(io::Error::other)?;
@@ -209,12 +278,22 @@ impl PrivateTree {
         lcn: u64,
         clusters: u32,
     ) -> io::Result<serde_json::Value> {
+        self.reposition_named(object_index, &[], vcn, lcn, clusters)
+    }
+    pub fn reposition_named(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        vcn: u64,
+        lcn: u64,
+        clusters: u32,
+    ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
         self.placement_complete = false;
         self.original_coordinates.clear();
         let file = self
             .files
-            .get_mut(&object_index)
+            .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private reposition file absent"))?;
         let proof = serde_json::to_value(file.reposition(&self.volume, vcn, lcn, clusters)?)
             .map_err(io::Error::other)?;
@@ -225,9 +304,17 @@ impl PrivateTree {
     /// All prefix clusters must already be placed. This never restores ACLs
     /// or claims that the scratch file contains the original logical bytes.
     pub fn advance_placed_prefix(&mut self, object_index: usize, bytes: u64) -> io::Result<()> {
+        self.advance_placed_prefix_named(object_index, &[], bytes)
+    }
+    pub fn advance_placed_prefix_named(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        bytes: u64,
+    ) -> io::Result<()> {
         self.require_source_excluded()?;
         self.files
-            .get_mut(&object_index)
+            .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private user file absent"))?
             .advance_valid_data(bytes, true)?;
         self.require_source_excluded()
@@ -240,9 +327,17 @@ impl PrivateTree {
         object_index: usize,
         bytes: u64,
     ) -> io::Result<serde_json::Value> {
+        self.prepare_unplaced_prefix_named(object_index, &[], bytes)
+    }
+    pub fn prepare_unplaced_prefix_named(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        bytes: u64,
+    ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
         self.files
-            .get_mut(&object_index)
+            .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private tail file absent"))?
             .prepare_unplaced_prefix(bytes)?;
         self.require_source_excluded()?;
@@ -263,33 +358,38 @@ impl PrivateTree {
         offset: u64,
         bytes: &[u8],
     ) -> io::Result<serde_json::Value> {
+        self.materialize_range_named(object_index, &[], components, logical_length, offset, bytes)
+    }
+    pub fn materialize_range_named(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        offset: u64,
+        bytes: &[u8],
+    ) -> io::Result<serde_json::Value> {
+        let key = StreamKey::named(object_index, name);
         self.require_source_excluded()?;
         let end = offset
             .checked_add(bytes.len() as u64)
             .ok_or_else(|| invalid("materialization range overflow"))?;
         if !bytes.is_empty()
             && self.placement_complete
-            && self
-                .original_coordinates
-                .get(&object_index)
-                .is_some_and(|ranges| {
-                    ranges
-                        .iter()
-                        .any(|(start, _, len)| offset < *start + *len && *start < end)
-                })
+            && self.original_coordinates.get(&key).is_some_and(|ranges| {
+                ranges
+                    .iter()
+                    .any(|(start, _, len)| offset < *start + *len && *start < end)
+            })
         {
             return Err(invalid(
                 "materialization overlaps an original-coordinate source reference",
             ));
         }
-        let expected_path = format!(
-            "{}\\{}",
-            self.pair.shadow.volume_path()?,
-            components.join("\\")
-        );
+        let expected_path = streams::path(&self.pair.shadow.volume_path()?, components, name)?;
         let file = self
             .files
-            .get_mut(&object_index)
+            .get_mut(&key)
             .ok_or_else(|| invalid("private materialization file absent"))?;
         if file.path != expected_path || file.logical_length() != logical_length {
             return Err(invalid("private materialization object binding differs"));
@@ -329,8 +429,13 @@ impl PrivateTree {
     pub fn report(&self) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
         let mut files = Vec::with_capacity(self.files.len());
-        for (&index, file) in &self.files {
-            let mut row = file_observation(index, &file.path, file.metadata_handle(), 1)?;
+        for (key, file) in &self.files {
+            let mut row =
+                file_observation(key.object_index, &file.path, file.metadata_handle(), 1)?;
+            if !key.name_utf16.is_empty() {
+                row["stream_name_utf16"] =
+                    serde_json::to_value(&key.name_utf16).map_err(io::Error::other)?;
+            }
             row["materialized_bytes"] = file.materialized_bytes().into();
             row["readback_bytes"] = file.readback_bytes().into();
             row["valid_prefix_bytes"] = file.valid_prefix().into();
@@ -574,6 +679,7 @@ fn allocate_checked(
         super::hard_links::MAX_NAMES,
         crate::shadow_names::valid_unicode_component,
     )?;
+    streams::validate(input, pair.shadow.identity.partition_bytes)?;
     if input.is_empty()
         || input.len() > 1280
         || !input[0].directory
@@ -611,6 +717,11 @@ fn allocate_checked(
             total = total
                 .checked_add(item.logical_length())
                 .ok_or_else(|| invalid("private tree length overflow"))?;
+            for named in &item.named_streams {
+                total = total
+                    .checked_add(named.expected_length)
+                    .ok_or_else(|| invalid("private stream total overflow"))?;
+            }
         }
     }
     if total > pair.shadow.identity.partition_bytes
@@ -764,6 +875,7 @@ fn allocate_checked(
                 expected_sha256: None,
                 source_offset: None,
                 source_runs: vec![],
+                named_streams: Vec::new(),
             };
             create(
                 &format!("{root}{}", item.components.join("\\")),
@@ -782,7 +894,18 @@ fn allocate_checked(
                 item.logical_length(),
                 pair.shadow.identity.partition_bytes,
             )?;
-            files.insert(index, file);
+            for named in &item.named_streams {
+                let stream = unwritten::PrivatePlaceholder::allocate_named_stream(
+                    &root,
+                    item.components,
+                    named.name_utf16,
+                    named.expected_length,
+                    pair.shadow.identity.partition_bytes,
+                    file.metadata_handle(),
+                )?;
+                files.insert(StreamKey::named(index, named.name_utf16), stream);
+            }
+            files.insert(StreamKey::unnamed(index), file);
         }
         objects.push(
             serde_json::json!({"object_index":index,"components":item.components,
@@ -793,8 +916,21 @@ fn allocate_checked(
         );
     }
     volume.sync_all()?;
+    let mut stream_slots = BTreeMap::new();
+    let mut next = input.len();
+    for key in files.keys() {
+        let slot = if key.name_utf16.is_empty() {
+            key.object_index
+        } else {
+            let n = next;
+            next += 1;
+            n
+        };
+        stream_slots.insert(slot, key.clone());
+    }
     let tree = PrivateTree {
         files,
+        stream_slots,
         volume,
         pair: pair.clone(),
         source_before,

@@ -126,6 +126,7 @@ fn main() -> anyhow::Result<()> {
         n2r_win32::shadow_native::Input {
             components: &object.path,
             additional_names: &object.additional_names,
+            named_streams: ntfs2refs::general_shadow::native_named_streams(object),
             directory: object.directory,
             times: object.stored_times,
             attributes: object.attributes,

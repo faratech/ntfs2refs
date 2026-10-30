@@ -8,6 +8,27 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct NamedStream {
+    pub name_utf16: Vec<u16>,
+    pub source_offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_extents: Vec<ntfs::Extent>,
+    pub length: u64,
+    /// The inspected content digest, not a native target-verification claim.
+    pub sha256: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct StreamRef<'a> {
+    pub name_utf16: &'a [u16],
+    pub source_offset: Option<u64>,
+    pub source_extents: &'a [ntfs::Extent],
+    pub length: u64,
+    pub sha256: &'a str,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Object {
     pub record_number: u64,
     pub sequence_number: u16,
@@ -33,6 +54,37 @@ pub struct Object {
     pub length: u64,
     /// The stream's [`n2r_win32::content_digest`] (XXH3-128; historical name).
     pub sha256: Option<String>,
+    /// File streams share the canonical file identity and all hard-link names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named_streams: Vec<NamedStream>,
+}
+impl Object {
+    /// Read-only flattened view of a validated object's DATA streams. The
+    /// default stream remains first; directory streams are unsupported.
+    pub fn data_streams(&self) -> impl Iterator<Item = StreamRef<'_>> {
+        self.sha256
+            .as_deref()
+            .filter(|_| !self.directory)
+            .map(|sha256| StreamRef {
+                name_utf16: &[],
+                source_offset: self.source_offset,
+                source_extents: &self.source_extents,
+                length: self.length,
+                sha256,
+            })
+            .into_iter()
+            .chain(self.named_streams.iter().map(|stream| StreamRef {
+                name_utf16: &stream.name_utf16,
+                source_offset: stream.source_offset,
+                source_extents: &stream.source_extents,
+                length: stream.length,
+                sha256: &stream.sha256,
+            }))
+    }
+    pub fn stream(&self, name_utf16: &[u16]) -> Option<StreamRef<'_>> {
+        self.data_streams()
+            .find(|stream| stream.name_utf16 == name_utf16)
+    }
 }
 #[derive(Debug, Serialize)]
 pub struct Tree {
@@ -127,6 +179,8 @@ impl ExpectedTree {
         let mut identities = BTreeSet::new();
         let mut bytes = 0u64;
         let mut name_count = 0usize;
+        let mut stream_count = 0usize;
+        let mut source_ranges = Vec::new();
         for object in &self.objects {
             name_count = name_count
                 .checked_add(1)
@@ -182,6 +236,25 @@ impl ExpectedTree {
                 paths.insert(destination_key(alias, resources), false);
             }
             if !object.directory {
+                stream_count = stream_count
+                    .checked_add(1)
+                    .and_then(|count| count.checked_add(object.named_streams.len()))
+                    .context("expected DATA stream count overflow")?;
+                ensure!(
+                    stream_count <= ntfs_admission::MAX_DATA_STREAMS,
+                    "expected total DATA stream count exceeds 16,384"
+                );
+                ensure!(
+                    object.named_streams.is_empty()
+                        || std::iter::once(&object.path)
+                            .chain(object.additional_names.iter())
+                            .all(|path| {
+                                path.first().is_none_or(|part| {
+                                    !part.eq_ignore_ascii_case("System Volume Information")
+                                })
+                            }),
+                    "named streams on System Volume Information objects are unsupported"
+                );
                 ensure!(
                     object.length <= limits.maximum_stream_bytes,
                     "expected stream exceeds selected resource profile"
@@ -194,40 +267,38 @@ impl ExpectedTree {
                 bytes = bytes
                     .checked_add(object.length)
                     .context("expected byte overflow")?;
+                ensure!(
+                    object.named_streams.len() < n2r_win32::stream_layout::MAX_STREAMS,
+                    "expected named stream count exceeds the native stream-list bound"
+                );
+                let mut exact_names = BTreeSet::new();
+                let mut folded_names = BTreeSet::new();
+                for stream in &object.named_streams {
+                    ensure!(
+                        ntfs_admission::valid_named_stream_name(&stream.name_utf16)
+                            && exact_names.insert(stream.name_utf16.as_slice())
+                            && folded_names
+                                .insert(String::from_utf16(&stream.name_utf16)?.to_uppercase())
+                            && stream.length <= limits.maximum_stream_bytes
+                            && n2r_win32::content_digest::is_hex(&stream.sha256),
+                        "expected named stream identity, size or digest differs"
+                    );
+                    bytes = bytes
+                        .checked_add(stream.length)
+                        .context("named stream byte overflow")?;
+                }
             } else {
                 ensure!(
                     object.length == 0
                         && object.sha256.is_none()
                         && object.source_offset.is_none()
-                        && object.source_extents.is_empty(),
+                        && object.source_extents.is_empty()
+                        && object.named_streams.is_empty(),
                     "expected directory carries stream data"
                 );
             }
-            ensure!(
-                object.source_offset.is_none() || object.source_extents.is_empty(),
-                "expected tree mixes single and fragmented source runs"
-            );
-            if !object.source_extents.is_empty() {
-                let mut covered = 0u64;
-                for extent in &object.source_extents {
-                    ensure!(
-                        extent.logical_offset == covered
-                            && extent.length > 0
-                            && extent.length.is_multiple_of(4096)
-                            && extent.physical_offset.is_some_and(|offset| {
-                                offset.is_multiple_of(4096)
-                                    && offset.checked_add(extent.length).is_some()
-                            }),
-                        "expected fragmented source run differs"
-                    );
-                    covered = covered
-                        .checked_add(extent.length)
-                        .context("source run overflow")?;
-                }
-                ensure!(
-                    covered > 0 && covered <= object.length / 4096 * 4096,
-                    "source initialized-cluster prefix differs"
-                );
+            for stream in object.data_streams() {
+                validate_stream_source(stream, &mut source_ranges)?;
             }
         }
         // Additional names are created after all canonical objects. Their
@@ -242,6 +313,7 @@ impl ExpectedTree {
                 );
             }
         }
+        validate_source_overlap(&mut source_ranges)?;
         ensure!(
             bytes == self.logical_bytes && bytes <= limits.maximum_logical_bytes,
             "expected logical byte total differs"
@@ -320,7 +392,26 @@ fn derive_profile(
     };
     let mut paths = BTreeSet::new();
     let mut source_ranges = vec![];
+    let mut stream_count = 0usize;
     let source_plan = ntfs_stream_plan::classify_with_resource_profile(raw, resources);
+    let source_decisions: BTreeMap<_, _> = source_plan
+        .streams
+        .iter()
+        .map(|decision| {
+            (
+                (
+                    decision.record_number,
+                    decision.sequence_number,
+                    decision.name_utf16.as_slice(),
+                ),
+                decision,
+            )
+        })
+        .collect();
+    ensure!(
+        source_decisions.len() == source_plan.streams.len(),
+        "ambiguous source stream decision"
+    );
     for f in &raw.files {
         if let Some(role) = ntfs_admission::internal_role(raw, f) {
             tree.internal_replacement_pending.push(role);
@@ -349,6 +440,22 @@ fn derive_profile(
                 "colliding destination name or namespace name budget exceeded"
             );
         }
+        if !f.is_directory {
+            stream_count = stream_count
+                .checked_add(f.streams.len())
+                .context("source DATA stream count overflow")?;
+            ensure!(
+                stream_count <= ntfs_admission::MAX_DATA_STREAMS,
+                "source total DATA stream count exceeds 16,384"
+            );
+        }
+        ensure!(
+            !f.streams.iter().any(|stream| !stream.name_utf16.is_empty())
+                || names.iter().all(|path| path
+                    .first()
+                    .is_none_or(|part| !part.eq_ignore_ascii_case("System Volume Information"))),
+            "named streams on System Volume Information objects require a separate system-payload implementation"
+        );
         let p = names.remove(0);
         if f.record_number == 5 {
             // Root is reconstructed only as a shadow experiment. Its NTFS
@@ -419,58 +526,63 @@ fn derive_profile(
                 && si.file_attributes & !0x2027 == 0,
             "unsupported basic metadata"
         );
-        let (source_offset, source_extents, length, sha256) = match f.streams.first() {
-            Some(s) => {
-                let candidate = source_plan.streams.iter().find(|decision| {
-                    decision.record_number == f.record_number
-                        && decision.sequence_number == f.sequence_number
-                        && decision.name_utf16.is_empty()
-                });
-                if resources != ntfs_admission::ResourceProfile::AlphaV1 {
-                    ensure!(
-                        candidate.is_some_and(|decision| decision.disposition
-                            != ntfs_stream_plan::Disposition::Reject),
-                        "source stream is not a candidate under the selected resource profile"
-                    );
+        let (source_offset, source_extents, length, sha256) =
+            match f.streams.iter().find(|s| s.name_utf16.is_empty()) {
+                Some(s) => {
+                    let candidate = source_decisions
+                        .get(&(f.record_number, f.sequence_number, s.name_utf16.as_slice()))
+                        .copied();
+                    let (offset, extents) = planned_stream_source(candidate, resources)?;
+                    (
+                        offset,
+                        extents,
+                        s.logical_size,
+                        Some(s.logical_sha256.clone().context("missing logical digest")?),
+                    )
                 }
-                let offset = candidate
-                    .filter(|decision| {
-                        decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate
-                    })
-                    .and_then(|decision| decision.source_offset);
-                let extents = candidate
-                    .filter(|decision| {
-                        matches!(
-                            decision.disposition,
-                            ntfs_stream_plan::Disposition::RetainCandidate
-                                | ntfs_stream_plan::Disposition::MixedCandidate
-                        )
-                    })
-                    .map(|decision| decision.source_extents.clone())
-                    .unwrap_or_default();
-                if let Some(offset) = offset {
-                    source_ranges.push((offset, s.logical_size));
-                }
-                for extent in &extents {
-                    source_ranges.push((
-                        extent.physical_offset.context("missing source run")?,
-                        extent.length,
-                    ));
-                }
-                (
-                    offset,
-                    extents,
-                    s.logical_size,
-                    Some(s.logical_sha256.clone().context("missing logical digest")?),
-                )
-            }
-            None => (None, Vec::new(), 0, None),
-        };
+                None => (None, Vec::new(), 0, None),
+            };
+        let mut named_streams = Vec::new();
+        for stream in f
+            .streams
+            .iter()
+            .filter(|stream| !stream.name_utf16.is_empty())
+        {
+            ensure!(
+                !f.is_directory && ordinary,
+                "named directory or legacy stream unsupported"
+            );
+            let candidate = source_decisions
+                .get(&(
+                    f.record_number,
+                    f.sequence_number,
+                    stream.name_utf16.as_slice(),
+                ))
+                .copied();
+            let (source_offset, source_extents) = planned_stream_source(candidate, resources)?;
+            named_streams.push(NamedStream {
+                name_utf16: stream.name_utf16.clone(),
+                source_offset,
+                source_extents,
+                length: stream.logical_size,
+                sha256: stream
+                    .logical_sha256
+                    .clone()
+                    .context("missing named stream logical digest")?,
+            });
+        }
+        named_streams.sort_by(|a, b| a.name_utf16.cmp(&b.name_utf16));
         tree.logical_bytes = tree
             .logical_bytes
             .checked_add(length)
             .context("logical size overflow")?;
-        tree.objects.push(Object {
+        for stream in &named_streams {
+            tree.logical_bytes = tree
+                .logical_bytes
+                .checked_add(stream.length)
+                .context("named logical size overflow")?;
+        }
+        let object = Object {
             record_number: f.record_number,
             sequence_number: f.sequence_number,
             path: p,
@@ -484,15 +596,14 @@ fn derive_profile(
             source_extents,
             length,
             sha256,
-        });
+            named_streams,
+        };
+        for stream in object.data_streams() {
+            validate_stream_source(stream, &mut source_ranges)?;
+        }
+        tree.objects.push(object);
     }
-    source_ranges.sort_unstable();
-    ensure!(
-        source_ranges
-            .windows(2)
-            .all(|p| p[0].0.checked_add(p[0].1).is_some_and(|end| end <= p[1].0)),
-        "overlapping user payloads"
-    );
+    validate_source_overlap(&mut source_ranges)?;
     let directories = tree.objects.iter().filter(|o| o.directory).count();
     ensure!(
         directories > 0
@@ -508,6 +619,89 @@ fn derive_profile(
     }
     Ok(tree)
 }
+
+fn planned_stream_source(
+    candidate: Option<&ntfs_stream_plan::StreamDecision>,
+    resources: ntfs_admission::ResourceProfile,
+) -> Result<(Option<u64>, Vec<ntfs::Extent>)> {
+    if resources != ntfs_admission::ResourceProfile::AlphaV1 {
+        ensure!(
+            candidate.is_some_and(
+                |decision| decision.disposition != ntfs_stream_plan::Disposition::Reject
+            ),
+            "source stream is not a candidate under the selected resource profile"
+        );
+    }
+    let source_offset = candidate
+        .filter(|decision| decision.disposition == ntfs_stream_plan::Disposition::RetainCandidate)
+        .and_then(|decision| decision.source_offset);
+    let source_extents = candidate
+        .filter(|decision| {
+            matches!(
+                decision.disposition,
+                ntfs_stream_plan::Disposition::RetainCandidate
+                    | ntfs_stream_plan::Disposition::MixedCandidate
+            )
+        })
+        .map(|decision| decision.source_extents.clone())
+        .unwrap_or_default();
+    Ok((source_offset, source_extents))
+}
+
+fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>) -> Result<()> {
+    ensure!(
+        stream.source_offset.is_none() || stream.source_extents.is_empty(),
+        "expected stream mixes single and fragmented source runs"
+    );
+    if let Some(offset) = stream.source_offset {
+        ensure!(
+            stream.length > 0
+                && stream.length.is_multiple_of(4096)
+                && offset.is_multiple_of(4096)
+                && offset.checked_add(stream.length).is_some(),
+            "expected single source run differs"
+        );
+        physical.push((offset, stream.length));
+    }
+    if !stream.source_extents.is_empty() {
+        let mut covered = 0u64;
+        for extent in stream.source_extents {
+            let offset = extent
+                .physical_offset
+                .context("expected source run has a hole")?;
+            ensure!(
+                extent.logical_offset == covered
+                    && extent.length > 0
+                    && extent.length.is_multiple_of(4096)
+                    && offset.is_multiple_of(4096)
+                    && offset.checked_add(extent.length).is_some(),
+                "expected fragmented source run differs"
+            );
+            covered = covered
+                .checked_add(extent.length)
+                .context("source run overflow")?;
+            physical.push((offset, extent.length));
+        }
+        ensure!(
+            covered <= stream.length / 4096 * 4096,
+            "source initialized-cluster prefix differs"
+        );
+    }
+    Ok(())
+}
+
+fn validate_source_overlap(physical: &mut [(u64, u64)]) -> Result<()> {
+    physical.sort_unstable();
+    ensure!(
+        physical.windows(2).all(|pair| pair[0]
+            .0
+            .checked_add(pair[0].1)
+            .is_some_and(|end| end <= pair[1].0)),
+        "overlapping default or named stream source payloads"
+    );
+    Ok(())
+}
+
 pub(crate) fn valid_component(s: &str) -> bool {
     let upper = s
         .split('.')

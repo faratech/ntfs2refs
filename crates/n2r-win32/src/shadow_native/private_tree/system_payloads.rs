@@ -67,6 +67,7 @@ pub(super) fn run(
             expected_sha256: None,
             source_offset: None,
             source_runs: vec![],
+            named_streams: Vec::new(),
         };
         create(&format!("{root}{system}"), &item, 0, None)?;
         let file = open(&format!("{root}{system}"), true, false)?;
@@ -121,6 +122,7 @@ pub(super) fn run(
                 expected_sha256: item.expected_sha256,
                 source_offset: None,
                 source_runs: vec![],
+                named_streams: Vec::new(),
             };
             create(&path, &target, index, Some(&mut *writer))?;
         }

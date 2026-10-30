@@ -460,8 +460,8 @@ impl<'a> SourceBackedShadow<'a> {
         let max_stream = tree
             .objects
             .iter()
-            .filter(|o| !o.directory)
-            .map(|o| o.length)
+            .flat_map(|object| object.data_streams())
+            .map(|stream| stream.length)
             .max()
             .unwrap_or(1)
             .max(1);
@@ -470,6 +470,9 @@ impl<'a> SourceBackedShadow<'a> {
                 .objects
                 .get(route.object_index)
                 .context("payload object absent")?;
+            let stream = object
+                .stream(&route.stream_name_utf16)
+                .context("payload stream absent from canonical object")?;
             let identities: Vec<_> = raw
                 .files
                 .iter()
@@ -478,8 +481,8 @@ impl<'a> SourceBackedShadow<'a> {
             ensure!(
                 !object.directory
                     && object.path == route.components
-                    && object.length == route.stream_length
-                    && object.sha256.as_deref() == Some(route.expected_sha256.as_str())
+                    && stream.length == route.stream_length
+                    && stream.sha256 == route.expected_sha256
                     && identities.len() == 1
                     && identities[0].sequence_number == object.sequence_number,
                 "source-backed canonical stream identity differs"
@@ -1190,16 +1193,17 @@ impl<'a> SourceBackedShadow<'a> {
             if self
                 .session
                 .as_ref()
-                .is_none_or(|s| !s.matches_stream(object.record_number, &[]))
+                .is_none_or(|s| !s.matches_stream(object.record_number, &route.stream_name_utf16))
             {
                 if let Some(old) = self.session.take() {
                     old.finish(self.source, self.raw)?;
                 }
-                self.session = Some(crate::ntfs_inspect::PlainStreamRangeSession::open(
+                self.session = Some(crate::ntfs_inspect::PlainStreamRangeSession::open_named(
                     self.source,
                     self.raw,
                     object.record_number,
-                    object.length,
+                    &route.stream_name_utf16,
+                    route.stream_length,
                 )?);
             }
             let session = self.session.as_mut().unwrap();

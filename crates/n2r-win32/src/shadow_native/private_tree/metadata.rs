@@ -58,6 +58,27 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             }
         }
     }
+    if input.iter().any(|i| !i.named_streams.is_empty()) {
+        hash.update(b"n2r-private-named-streams-v1");
+        for item in input {
+            hash.update((item.named_streams.len() as u64).to_le_bytes());
+            for stream in &item.named_streams {
+                hash.update((stream.name_utf16.len() as u64).to_le_bytes());
+                for unit in stream.name_utf16 {
+                    hash.update(unit.to_le_bytes());
+                }
+                hash.update(stream.expected_length.to_le_bytes());
+                bytes(&mut hash, stream.expected_sha256.as_bytes());
+                number(&mut hash, stream.source_offset);
+                hash.update((stream.source_runs.len() as u64).to_le_bytes());
+                for run in &stream.source_runs {
+                    hash.update(run.logical_offset.to_le_bytes());
+                    number(&mut hash, run.physical_offset);
+                    hash.update(run.length.to_le_bytes());
+                }
+            }
+        }
+    }
     hash.finalize().into()
 }
 
@@ -91,29 +112,42 @@ pub(super) fn complete(
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
     ))?;
     let mut guards = BTreeMap::new();
-    for (&index, file) in &tree.files {
-        let item = input
-            .get(index)
-            .ok_or_else(|| invalid("owned metadata input absent"))?;
+    for (key, file) in &tree.files {
+        let item = streams::view(input, key)?;
         if item.directory || file.valid_prefix() != item.logical_length() {
             return Err(invalid("private storage-valid stream completion required"));
         }
-        tree.validate_stream_shape(index, item.components, item.logical_length())?;
+        tree.validate_stream_shape_named(
+            key.object_index,
+            &key.name_utf16,
+            item.components,
+            item.logical_length(),
+        )?;
         // Exclusive placeholders cannot be reopened for metadata rights while
         // their read/write handle lives. First hold a zero-access identity
         // guard, which blocks delete/rename continuously across the transfer.
         let guard = reopen(file.metadata_handle(), 0)?;
-        guards.insert(index, (info(file.metadata_handle(), 18, 24)?, guard));
+        guards.insert(key.clone(), (info(file.metadata_handle(), 18, 24)?, guard));
     }
     tree.files.clear();
-    for (index, (identity, guard)) in guards {
+    let mut named_guards = BTreeMap::new();
+    for (key, (identity, guard)) in guards {
         let handle = reopen(&guard, 0x011e01ff)?;
         suppress_access(&handle)?;
         validate_open_type(&handle, false)?;
-        if info(&handle, 18, 24)? != identity
-            || tree.metadata_targets.insert(index, handle).is_some()
-        {
+        if info(&handle, 18, 24)? != identity {
             return Err(invalid("private metadata transfer identity differs"));
+        }
+        if key.name_utf16.is_empty() {
+            if tree
+                .metadata_targets
+                .insert(key.object_index, handle)
+                .is_some()
+            {
+                return Err(invalid("duplicate canonical metadata handle"));
+            }
+        } else {
+            named_guards.insert(key, handle);
         }
     }
     tree.require_source_excluded()?;

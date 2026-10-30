@@ -112,8 +112,7 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
                     valid
                 })
                 && covered == stream.allocated_size;
-            let adoptable_prefix = !named
-                && !stream.resident
+            let adoptable_prefix = !stream.resident
                 && stream.flags == 0
                 && full_prefix > 0
                 && stream.initialized_size <= stream.logical_size
@@ -128,6 +127,8 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
             let (mut disposition, mut reason) = if !resources
                 .supports_source_geometry(&raw.geometry)
                 || stream.flags != 0
+                || (named && !crate::ntfs_admission::valid_named_stream_name(&stream.name_utf16))
+                || plan.streams.len() >= crate::ntfs_admission::MAX_DATA_STREAMS
                 || !complete
                 || stream.logical_size > limits.maximum_stream_bytes
                 || (resources != ResourceProfile::AlphaV1 && file_index >= limits.maximum_files)
@@ -207,7 +208,7 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
                     Vec::new()
                 },
                 disposition,
-                target_named_stream_support_pending: named,
+                target_named_stream_support_pending: false,
                 reason: reason.into(),
             });
         }

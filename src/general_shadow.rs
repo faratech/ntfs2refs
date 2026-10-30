@@ -36,12 +36,37 @@ pub fn observed_tree(
 
 /// One native input per file identity. Additional names are namespace links to
 /// that input, never extra payload allocations or source-backed routes.
+pub fn native_named_streams(
+    object: &crate::shadow_tree::Object,
+) -> Vec<n2r_win32::shadow_native::NamedStreamInput<'_>> {
+    object
+        .named_streams
+        .iter()
+        .map(|stream| n2r_win32::shadow_native::NamedStreamInput {
+            name_utf16: &stream.name_utf16,
+            expected_length: stream.length,
+            expected_sha256: &stream.sha256,
+            source_offset: stream.source_offset,
+            source_runs: stream
+                .source_extents
+                .iter()
+                .map(|run| n2r_win32::shadow_native::SourceRun {
+                    logical_offset: run.logical_offset,
+                    physical_offset: run.physical_offset,
+                    length: run.length,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
 pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_native::Input<'_>> {
     tree.objects
         .iter()
         .map(|object| n2r_win32::shadow_native::Input {
             components: &object.path,
             additional_names: &object.additional_names,
+            named_streams: native_named_streams(object),
             directory: object.directory,
             times: object.stored_times,
             attributes: object.attributes,
@@ -243,6 +268,60 @@ pub fn materialize_private_range(
     length: usize,
     budget: &mut crate::ntfs_inspect::StreamTransferBudget,
 ) -> Result<serde_json::Value> {
+    materialize_private_named_range(
+        source,
+        raw,
+        tree,
+        template,
+        object_index,
+        &[],
+        offset,
+        length,
+        budget,
+    )
+}
+
+#[cfg(windows)]
+fn canonical_stream_shape<'a>(
+    object: &'a crate::shadow_tree::Object,
+    stream_name_utf16: &[u16],
+) -> Result<(u64, &'a str)> {
+    ensure!(!object.directory, "directories do not receive payload");
+    if stream_name_utf16.is_empty() {
+        return Ok((
+            object.length,
+            object
+                .sha256
+                .as_deref()
+                .context("default stream digest absent")?,
+        ));
+    }
+    let mut streams = object
+        .named_streams
+        .iter()
+        .filter(|stream| stream.name_utf16 == stream_name_utf16);
+    let stream = streams.next().context("canonical named stream absent")?;
+    ensure!(
+        streams.next().is_none(),
+        "canonical named stream duplicated"
+    );
+    Ok((stream.length, &stream.sha256))
+}
+
+/// Materialize an exact named or unnamed stream range. A name selects the
+/// already inventoried stream; it is never appended to an arbitrary path.
+#[cfg(windows)]
+pub fn materialize_private_named_range(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    raw: &crate::ntfs_inspect::NtfsInspection,
+    tree: &crate::shadow_tree::Tree,
+    template: &mut n2r_win32::shadow_native::private_tree::PrivateTree,
+    object_index: usize,
+    stream_name_utf16: &[u16],
+    offset: u64,
+    length: usize,
+    budget: &mut crate::ntfs_inspect::StreamTransferBudget,
+) -> Result<serde_json::Value> {
     ensure!(
         length <= 65536 && source.binding() == template.source_binding(),
         "private materialization source binding or buffer bound differs"
@@ -251,7 +330,7 @@ pub fn materialize_private_range(
         .objects
         .get(object_index)
         .context("private object index outside canonical tree")?;
-    ensure!(!object.directory, "directories do not receive payload");
+    let (stream_length, stream_digest) = canonical_stream_shape(object, stream_name_utf16)?;
     let identities: Vec<_> = raw
         .files
         .iter()
@@ -268,27 +347,30 @@ pub fn materialize_private_range(
         "materialization source must remain excluded"
     );
     let mut buffer = [0u8; 65536];
-    let read = crate::ntfs_inspect::read_plain_stream_range_into(
+    let read = crate::ntfs_inspect::read_plain_named_stream_range_into(
         source,
         raw,
         object.record_number,
+        stream_name_utf16,
         offset,
         &mut buffer[..length],
         budget,
     )?;
     ensure!(
-        read.stream_logical_bytes == object.length
-            && Some(&read.expected_stream_sha256) == object.sha256.as_ref(),
+        read.stream_logical_bytes == stream_length
+            && read.stream_name_utf16 == stream_name_utf16
+            && read.expected_stream_sha256 == stream_digest,
         "materialization source differs from canonical object"
     );
     ensure!(
         source.state(&mut events)? == before,
         "source exclusion changed around range read"
     );
-    let write = template.materialize_range(
+    let write = template.materialize_range_named(
         object_index,
+        stream_name_utf16,
         &object.path,
-        object.length,
+        stream_length,
         offset,
         &buffer[..length],
     )?;
@@ -300,10 +382,12 @@ pub fn materialize_private_range(
         source.state(&mut events)? == before,
         "source exclusion changed during materialization"
     );
-    Ok(
-        serde_json::json!({"kind":"private-exception-materialization","object_index":object_index,
-        "source":read,"destination":write,"source_payload_writes":0,"conversion_qualified":false}),
-    )
+    let mut receipt = serde_json::json!({"kind":"private-exception-materialization","object_index":object_index,
+        "source":read,"destination":write,"source_payload_writes":0,"conversion_qualified":false});
+    if !stream_name_utf16.is_empty() {
+        receipt["stream_name_utf16"] = serde_json::json!(stream_name_utf16);
+    }
+    Ok(receipt)
 }
 
 /// Stream only the live plan's non-reference data into private shadow files.
@@ -336,21 +420,22 @@ pub fn materialize_private_supply_plan(
     );
     let mut files = std::collections::BTreeSet::new();
     for range in plan.materialization_ranges() {
-        files.insert(range.object_index);
+        files.insert((range.object_index, range.stream_name_utf16.clone()));
     }
     for range in plan.source_reference_ranges() {
-        files.insert(range.object_index);
+        files.insert((range.object_index, range.stream_name_utf16.clone()));
     }
     // Make complete tracked prefixes valid before later-offset writes. This
     // changes only private metadata; those bytes are not source-authenticated.
-    for &index in &files {
+    for (index, stream_name) in &files {
         let object = tree
             .objects
-            .get(index)
+            .get(*index)
             .context("supply object outside canonical tree")?;
-        let prefix = object.length / 4096 * 4096;
+        let (length, _) = canonical_stream_shape(object, stream_name)?;
+        let prefix = length / 4096 * 4096;
         if prefix > 0 {
-            template.advance_placed_prefix(index, prefix)?;
+            template.advance_placed_prefix_named(*index, stream_name, prefix)?;
         }
     }
     let mut digest = Sha256::new();
@@ -362,12 +447,13 @@ pub fn materialize_private_supply_plan(
         let mut done = 0;
         loop {
             let length = (range.length - done).min(65536) as usize;
-            let receipt = materialize_private_range(
+            let receipt = materialize_private_named_range(
                 source,
                 raw,
                 tree,
                 template,
                 range.object_index,
+                &range.stream_name_utf16,
                 range.logical_offset + done,
                 length,
                 budget,
@@ -421,7 +507,6 @@ pub fn verify_private_hybrid_contents(
     tree: &crate::shadow_tree::Tree,
     template: &mut n2r_win32::shadow_native::private_tree::PrivateTree,
 ) -> Result<serde_json::Value> {
-    use sha2::{Digest, Sha256};
     use std::io::{Read, Seek, SeekFrom};
     ensure!(
         source.binding() == template.source_binding(),
@@ -439,27 +524,35 @@ pub fn verify_private_hybrid_contents(
         .iter()
         .chain(plan.source_reference_ranges())
         .collect();
-    ranges.sort_by_key(|r| (r.object_index, r.logical_offset));
-    let mut grouped = std::collections::BTreeMap::<usize, Vec<_>>::new();
+    ranges.sort_by_key(|r| {
+        (
+            r.object_index,
+            r.stream_name_utf16.clone(),
+            r.logical_offset,
+        )
+    });
+    let mut grouped = std::collections::BTreeMap::<(usize, Vec<u16>), Vec<_>>::new();
     for range in ranges {
-        grouped.entry(range.object_index).or_default().push(range);
+        grouped
+            .entry((range.object_index, range.stream_name_utf16.clone()))
+            .or_default()
+            .push(range);
     }
     let mut files = Vec::new();
     let mut source_bytes = 0u64;
     let mut shadow_bytes = 0u64;
     let mut buffer = [0u8; 65536];
-    for (index, ranges) in grouped {
+    for ((index, stream_name), ranges) in grouped {
         let object = tree
             .objects
             .get(index)
             .context("hybrid stream outside canonical tree")?;
-        ensure!(
-            !object.directory,
-            "hybrid data stream cannot be a directory"
-        );
-        template.validate_stream_shape(index, &object.path, object.length)?;
+        let (stream_length, stream_digest) = canonical_stream_shape(object, &stream_name)?;
+        template.validate_stream_shape_named(index, &stream_name, &object.path, stream_length)?;
         let mut cursor = 0u64;
-        let mut hash = Sha256::new();
+        // Canonical stream digests use content_digest (currently XXH3-128),
+        // including named streams. SHA-256 remains for artifact/range pins.
+        let mut hash = n2r_win32::content_digest::Hasher::new();
         for range in ranges {
             ensure!(
                 range.logical_offset == cursor,
@@ -468,7 +561,7 @@ pub fn verify_private_hybrid_contents(
             let end = cursor
                 .checked_add(range.length)
                 .context("hybrid range overflow")?;
-            ensure!(end <= object.length, "hybrid logical range exceeds EOF");
+            ensure!(end <= stream_length, "hybrid logical range exceeds EOF");
             let mut done = 0;
             while done < range.length {
                 let count = (range.length - done).min(buffer.len() as u64) as usize;
@@ -488,7 +581,12 @@ pub fn verify_private_hybrid_contents(
                         .checked_add(count as u64)
                         .context("hybrid source read accounting overflow")?;
                 } else {
-                    template.read_materialized_range(index, cursor + done, &mut buffer[..count])?;
+                    template.read_materialized_range_named(
+                        index,
+                        &stream_name,
+                        cursor + done,
+                        &mut buffer[..count],
+                    )?;
                     shadow_bytes = shadow_bytes
                         .checked_add(count as u64)
                         .context("hybrid shadow read accounting overflow")?;
@@ -498,18 +596,20 @@ pub fn verify_private_hybrid_contents(
             }
             cursor = end;
         }
-        ensure!(cursor == object.length, "hybrid stream coverage incomplete");
-        let actual = hex::encode(hash.finalize());
+        ensure!(cursor == stream_length, "hybrid stream coverage incomplete");
+        let actual = hash.finish();
         ensure!(
-            Some(&actual) == object.sha256.as_ref(),
+            actual == stream_digest,
             "hybrid logical stream differs: {:?}",
             object.path
         );
-        template.validate_stream_shape(index, &object.path, object.length)?;
-        files.push(
-            serde_json::json!({"object_index":index,"components":object.path,
-            "record_number":object.record_number,"logical_bytes":cursor,"sha256":actual}),
-        );
+        template.validate_stream_shape_named(index, &stream_name, &object.path, stream_length)?;
+        let mut receipt = serde_json::json!({"object_index":index,"components":object.path,
+            "record_number":object.record_number,"logical_bytes":cursor,"sha256":actual});
+        if !stream_name.is_empty() {
+            receipt["stream_name_utf16"] = serde_json::json!(stream_name);
+        }
+        files.push(receipt);
     }
     let after = template.supply_plan()?;
     ensure!(

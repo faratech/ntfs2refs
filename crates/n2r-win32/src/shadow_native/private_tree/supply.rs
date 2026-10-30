@@ -5,6 +5,8 @@ use super::*;
 #[derive(Clone, Serialize)]
 pub struct SupplyRange {
     pub object_index: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stream_name_utf16: Vec<u16>,
     pub logical_offset: u64,
     pub length: u64,
     pub source_physical_offset: Option<u64>,
@@ -45,13 +47,13 @@ pub(super) fn plan(tree: &PrivateTree) -> io::Result<SupplyPlan> {
         payload_contents_verified: false,
         conversion_qualified: false,
     };
-    for (&index, file) in &tree.files {
+    for (key, file) in &tree.files {
         file.check_placements()?;
         let length = file.logical_length();
         let mut cursor = 0;
         let mut reference = tree
             .original_coordinates
-            .get(&index)
+            .get(key)
             .cloned()
             .unwrap_or_default();
         reference.sort_by_key(|r| r.0);
@@ -72,7 +74,8 @@ pub(super) fn plan(tree: &PrivateTree) -> io::Result<SupplyPlan> {
             }
             if logical > cursor {
                 result.materialize.push(SupplyRange {
-                    object_index: index,
+                    object_index: key.object_index,
+                    stream_name_utf16: key.name_utf16.clone(),
                     logical_offset: cursor,
                     length: logical - cursor,
                     source_physical_offset: None,
@@ -84,7 +87,8 @@ pub(super) fn plan(tree: &PrivateTree) -> io::Result<SupplyPlan> {
                         .ok_or_else(|| invalid("materialization total overflow"))?;
             }
             result.source_reference.push(SupplyRange {
-                object_index: index,
+                object_index: key.object_index,
+                stream_name_utf16: key.name_utf16.clone(),
                 logical_offset: logical,
                 length: bytes,
                 source_physical_offset: Some(physical),
@@ -97,7 +101,8 @@ pub(super) fn plan(tree: &PrivateTree) -> io::Result<SupplyPlan> {
         }
         if cursor < length || length == 0 {
             result.materialize.push(SupplyRange {
-                object_index: index,
+                object_index: key.object_index,
+                stream_name_utf16: key.name_utf16.clone(),
                 logical_offset: cursor,
                 length: length - cursor,
                 source_physical_offset: None,

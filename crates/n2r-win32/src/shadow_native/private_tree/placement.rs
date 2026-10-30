@@ -71,6 +71,8 @@ pub(super) fn validate_limits(bytes: u64, submissions: usize) -> io::Result<()> 
 #[derive(Default, serde::Serialize)]
 struct Counters {
     files: usize,
+    #[serde(skip_serializing_if = "zero_count")]
+    named_streams: usize,
     desired_runs: usize,
     desired_runs_limit: usize,
     initial_tracked_extents: usize,
@@ -101,14 +103,59 @@ struct Counters {
     drift_replans_limit_per_phase: usize,
 }
 
+fn zero_count(value: &usize) -> bool {
+    *value == 0
+}
+
+/// Slots are temporary planner IDs. A default stream keeps its historical
+/// object index; every named stream has a distinct synthetic slot. No two
+/// slots may reach the same placeholder or discard a placeholder entirely.
+fn validate_stream_slots(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<()> {
+    if tree.stream_slots.len() != tree.files.len() {
+        return Err(invalid(
+            "stream placement slot/placeholder coverage differs",
+        ));
+    }
+    let mut keys = BTreeSet::new();
+    for (&slot, key) in &tree.stream_slots {
+        if u32::try_from(slot).is_err()
+            || key.object_index >= input.len()
+            || (key.name_utf16.is_empty() && slot != key.object_index)
+            || (!key.name_utf16.is_empty() && slot < input.len())
+            || !tree.files.contains_key(key)
+            || !keys.insert(key.clone())
+        {
+            return Err(invalid("stream placement slot is ambiguous or misbound"));
+        }
+        let stream = streams::view(input, key)?;
+        if stream.directory {
+            return Err(invalid("directory carries a data placement slot"));
+        }
+    }
+    if tree.files.keys().any(|key| !keys.contains(key)) {
+        return Err(invalid("stream placement omits a placeholder"));
+    }
+    Ok(())
+}
+
 fn progress(
     tree: &mut PrivateTree,
     phase: &str,
     charged_bytes: u64,
     verified: &[serde_json::Value],
-    pending: Option<serde_json::Value>,
+    mut pending: Option<serde_json::Value>,
     counters: &Counters,
 ) {
+    if let Some(row) = pending.as_mut()
+        && let Some(slot) = row["object_index"]
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+        && let Some(key) = tree.stream_slots.get(&slot)
+        && !key.name_utf16.is_empty()
+    {
+        row["canonical_object_index"] = key.object_index.into();
+        row["stream_name_utf16"] = serde_json::json!(&key.name_utf16);
+    }
     // Keep a bounded tail, not a second copy of the complete mapping proofs.
     let phases: Vec<_> = verified
         .iter()
@@ -318,11 +365,7 @@ fn reserve_move(
     index: usize,
     length: u64,
 ) -> io::Result<()> {
-    let extents = tree
-        .files
-        .get(&index)
-        .ok_or_else(|| invalid("private user file absent"))?
-        .retrieval_extents();
+    let extents = tree.file_by_slot(index)?.retrieval_extents();
     let bound = reservation
         .bound(extents, length)
         .ok_or_else(|| invalid("placement evidence reservation overflow"))?;
@@ -619,6 +662,7 @@ pub(super) fn run(
     max_moves: usize,
 ) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
+    tree.require_bound_input(input)?;
     validate_limits(max_move_bytes, max_moves)?;
     if tree.placement_started {
         return Err(invalid(
@@ -628,9 +672,20 @@ pub(super) fn run(
     if input.len() != tree.initial_objects.len() {
         return Err(invalid("private placement object count differs"));
     }
+    validate_stream_slots(tree, input)?;
     let partition = tree.pair.shadow.identity.partition_bytes;
     let mut counters = Counters {
-        files: tree.files.len(),
+        files: tree
+            .files
+            .keys()
+            .map(|key| key.object_index)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        named_streams: tree
+            .files
+            .keys()
+            .filter(|key| !key.name_utf16.is_empty())
+            .count(),
         desired_runs_limit: MAX_ADMITTED_RANGES,
         tracked_extents_limit: MAX_TRACKED_EXTENTS,
         owned_intersecting_desired_limit: MAX_OWNED_RANGES,
@@ -643,15 +698,17 @@ pub(super) fn run(
     let mut desired = BTreeMap::new();
     let mut avoid = Vec::new();
 
-    for (&index, file) in &tree.files {
-        let item = input
-            .get(index)
-            .ok_or_else(|| invalid("private placement index differs"))?;
-        let path = format!(
-            "{}\\{}",
-            tree.pair.shadow.volume_path()?,
-            item.components.join("\\")
-        );
+    for (&index, key) in &tree.stream_slots {
+        let file = tree
+            .files
+            .get(key)
+            .ok_or_else(|| invalid("stream placement placeholder absent"))?;
+        let item = streams::view(input, key)?;
+        let path = streams::path(
+            &tree.pair.shadow.volume_path()?,
+            item.components,
+            &key.name_utf16,
+        )?;
         if item.directory
             || file.path != path
             || file.logical_length() != item.logical_length()
@@ -659,7 +716,7 @@ pub(super) fn run(
         {
             return Err(invalid("private placement input or zero-VDL state differs"));
         }
-        let runs = source_runs(item, partition)?;
+        let runs = source_runs(&item, partition)?;
         for run in &runs {
             avoid.push((run.physical_offset.unwrap(), run.length));
         }
@@ -687,17 +744,31 @@ pub(super) fn run(
     }
     let mut evidence = Evidence::default();
     let mut move_bytes = 0u64;
+    let mut parked = Vec::new();
+    if counters.named_streams != 0 {
+        let mapping = serde_json::json!({
+            "strategy":"named-stream-slot-map",
+            "streams":tree.stream_slots.iter().filter(|(_, key)| !key.name_utf16.is_empty())
+                .map(|(slot,key)|serde_json::json!({"placement_slot":slot,
+                    "canonical_object_index":key.object_index,"stream_name_utf16":key.name_utf16}))
+                .collect::<Vec<_>>()
+        });
+        if let Err(message) = evidence.charge(&mapping) {
+            return Err(refuse(tree, &counters, message));
+        }
+        counters.placement_artifact_bytes = evidence.saved_bytes;
+        parked.push(mapping);
+    }
     tree.placement_started = true;
     progress(tree, "track-zero-vdl", 0, &evidence.moves, None, &counters);
-    let mut parked = Vec::new();
-    let indexes: Vec<_> = tree.files.keys().copied().collect();
+    let indexes: Vec<_> = tree.stream_slots.keys().copied().collect();
     // Bind existing allocated ownership of every file before any native move.
     // Tracking only reads a placeholder's own live retrieval map, a move never
     // changes another placeholder's mapping, and every move still verifies its
     // file's complete tracked mapping first. No user bytes are initialized.
     let mut holes = Vec::new();
     for index in &indexes {
-        let file = tree.files.get_mut(index).unwrap();
+        let file = tree.file_by_slot_mut(*index)?;
         let file_holes = file.track_current_prefix()?;
         counters.initial_tracked_extents += file.tracked_mappings().len();
         counters.deferred_holes += file_holes.len();
@@ -745,7 +816,7 @@ pub(super) fn run(
         charge_move(&mut move_bytes, step.length, max_move_bytes)?;
         tree.placement_progress["charged_move_bytes"] = move_bytes.into();
         tree.placement_progress["pending"]["budget_charged"] = true.into();
-        let proof = match tree.place(
+        let proof = match tree.place_slot(
             step.index,
             step.logical / 4096,
             step.destination / 4096,
@@ -816,11 +887,12 @@ pub(super) fn run(
     let mut owned = Vec::new();
     let mut eligible = Vec::new();
     for index in &indexes {
-        let file = &tree.files[index];
+        let file = tree.file_by_slot(*index)?;
         file.check_placements()?;
         for &(v, l, n) in file.tracked_mappings() {
             owned.push(shadow_evacuation::Extent {
-                file_index: *index as u32,
+                file_index: u32::try_from(*index)
+                    .map_err(|_| invalid("placement slot exceeds planner identity"))?,
                 logical_offset: v * 4096,
                 physical_offset: l * 4096,
                 length: u64::from(n) * 4096,
@@ -828,7 +900,8 @@ pub(super) fn run(
         }
         for run in &desired[index] {
             eligible.push(shadow_evacuation::Extent {
-                file_index: *index as u32,
+                file_index: u32::try_from(*index)
+                    .map_err(|_| invalid("placement slot exceeds planner identity"))?,
                 logical_offset: run.logical_offset,
                 physical_offset: run.physical_offset.unwrap(),
                 length: run.length,
@@ -968,7 +1041,7 @@ pub(super) fn run(
             charge_move(&mut move_bytes, length, max_move_bytes)?;
             tree.placement_progress["charged_move_bytes"] = move_bytes.into();
             tree.placement_progress["pending"]["budget_charged"] = true.into();
-            let proof = tree.reposition(
+            let proof = tree.reposition_slot(
                 movement.file_index as usize,
                 (movement.logical_offset + offset) / 4096,
                 (movement.destination_offset + offset) / 4096,
@@ -1074,7 +1147,7 @@ pub(super) fn run(
                         charge_move(&mut move_bytes, length, max_move_bytes)?;
                         tree.placement_progress["charged_move_bytes"] = move_bytes.into();
                         tree.placement_progress["pending"]["budget_charged"] = true.into();
-                        let proof = match tree.reposition(
+                        let proof = match tree.reposition_slot(
                             index,
                             logical / 4096,
                             physical / 4096,
@@ -1150,7 +1223,7 @@ pub(super) fn run(
     original_coordinates.clear();
     retained_bytes = 0;
     for &index in &indexes {
-        let file = &tree.files[&index];
+        let file = tree.file_by_slot(index)?;
         file.check_placements()?;
         for source in &desired[&index] {
             let wanted_vcn = source.logical_offset / 4096;
@@ -1186,7 +1259,18 @@ pub(super) fn run(
         }
     }
     tree.require_source_excluded()?;
-    tree.original_coordinates = original_coordinates;
+    let mut retained_streams = BTreeMap::new();
+    for (slot, ranges) in original_coordinates {
+        let key = tree
+            .stream_slots
+            .get(&slot)
+            .cloned()
+            .ok_or_else(|| invalid("retained stream slot missing"))?;
+        if retained_streams.insert(key, ranges).is_some() {
+            return Err(invalid("retained streams collide after slot translation"));
+        }
+    }
+    tree.original_coordinates = retained_streams;
     tree.placement_complete = true;
     progress(
         tree,

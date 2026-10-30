@@ -65,21 +65,26 @@ pub(super) fn construct(
         .enumerate()
         .filter(|(_, object)| {
             !object.directory
-                && object.length % 4096 != 0
                 && !object
                     .path
                     .first()
                     .is_some_and(|s| s == "System Volume Information")
         })
-        .map(|(index, object)| {
-            (
-                index,
-                object.length / 4096 * 4096,
-                (object.length % 4096) as usize,
-            )
+        .flat_map(|(index, object)| {
+            object
+                .data_streams()
+                .filter(|stream| stream.length % 4096 != 0)
+                .map(move |stream| {
+                    (
+                        index,
+                        stream.name_utf16.to_vec(),
+                        stream.length / 4096 * 4096,
+                        (stream.length % 4096) as usize,
+                    )
+                })
         })
         .collect();
-    let residual_bytes = selected.iter().try_fold(0u64, |sum, (_, _, count)| {
+    let residual_bytes = selected.iter().try_fold(0u64, |sum, (_, _, _, count)| {
         sum.checked_add(*count as u64)
             .context("residual byte budget overflow")
     })?;
@@ -112,8 +117,11 @@ pub(super) fn construct(
     )?;
     // Validate slices from actual source bytes before allocating a namespace.
     let mut buffer = [0u8; 4096];
-    for &(index, offset, count) in &selected {
-        let object = &tree.objects[index];
+    for (index, name, offset, count) in &selected {
+        let object = &tree.objects[*index];
+        let stream = object
+            .stream(name)
+            .context("residual source stream absent")?;
         let file = raw
             .files
             .iter()
@@ -123,17 +131,18 @@ pub(super) fn construct(
             file.sequence_number == object.sequence_number,
             "residual source sequence differs from canonical tree"
         );
-        let read = ntfs_inspect::read_plain_stream_range_into(
+        let read = ntfs_inspect::read_plain_named_stream_range_into(
             source,
             raw,
             object.record_number,
-            offset,
-            &mut buffer[..count],
+            name,
+            *offset,
+            &mut buffer[..*count],
             &mut transfer,
         )?;
         ensure!(
-            read.stream_logical_bytes == object.length
-                && Some(&read.expected_stream_sha256) == object.sha256.as_ref(),
+            read.stream_logical_bytes == stream.length
+                && read.expected_stream_sha256 == stream.sha256,
             "residual source bytes differ from the fresh canonical tree"
         );
     }
@@ -162,15 +171,16 @@ pub(super) fn construct(
     save(output, "construction-placement.json", &placement)?;
     private.prepare_source_backed_prefixes()?;
     let mut residual_receipts = Vec::with_capacity(selected.len());
-    for &(index, offset, count) in &selected {
-        residual_receipts.push(general_shadow::materialize_private_range(
+    for (index, name, offset, count) in &selected {
+        residual_receipts.push(general_shadow::materialize_private_named_range(
             source,
             raw,
             tree,
             &mut private,
-            index,
-            offset,
-            count,
+            *index,
+            name,
+            *offset,
+            *count,
             &mut transfer,
         )?);
     }

@@ -83,9 +83,14 @@ source-reference run; the current branch now holds the completed ReFS. Its indep
 The two older52d37819 and5f30f4a1 checkpoints also remain. Do not restore this
 branch while original run artifacts are still being preserved. The complete
 metadata archive is under copy-reference-20261030/closed-run-2586aba6; its
-inventory records retained original bulk paths. The shadow VHDX is still
+inventory records retained original bulk paths. The13,713,024,832-byte journal
+has now been exported and verified against its immutable-body hash and both
+completion/intent markers; the1,180,688,384-byte backing was exported and
+verified against its capture hash. See bulk-preservation.json in that archive.
+The742,391,808-byte shadow VHDX is still
 attached and cannot be exported through an ordinary read; no bypass or detach
-has been attempted. No new test/conversion worker is active.
+has been attempted. Preserve it before any restore. No new test/conversion
+worker is active, and the archive review changed no VM/disk state or checkpoint.
 Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at

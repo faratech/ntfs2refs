@@ -37,8 +37,12 @@
   "metadata_files_archived": 56,
   "metadata_bytes_archived": 127937093,
   "bulk_originals_unchanged": true,
-  "bulk_export_status": "backing verified; journal export in progress; shadow retained attached",
+  "bulk_export_status": "journal and backing exported and verified; attached shadow original retained",
   "no_mutation_reboot_or_recovery_test_started": true,
   "arbitrary_volumes_qualified": false,
-  "general_conversion_qualified": false
+  "general_conversion_qualified": false,
+  "bulk_preservation_receipt_sha256": "be56ce60eb10776635c92328b947f196da2c86c1a94789c431ef90550d122443",
+  "journal_archive_immutable_body_sha256": "d96b7710a51cb5191a61df206fb77caa4d268d13ba6789573509348ba403731f",
+  "journal_archive_markers_verified": true,
+  "shadow_export_blocker": "Windows sharing violation on attached VHDX; no bypass or detach attempted"
 }

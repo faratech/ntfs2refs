@@ -18,6 +18,9 @@ harnesses need mixed-fixture counts and capacity settings. A copied-payload
 interruption would begin at write 6,135, beyond this build's 4,096-write fault
 hook limit; that stronger test requires a new pinned build. A completed HND
 journal must never be used to roll back the operational ReFS volume.
+The [exact-build gate assessment](../evidence/payload-reference-native-gates-20261030.json)
+records the remaining harness changes and evidence requirements. No new
+mutation, reboot or recovery experiment was started during the archive review.
 
 The sections below preserve earlier milestone observations and their original
 qualification scope; their old "not wired" statements are historical.

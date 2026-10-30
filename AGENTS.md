@@ -285,6 +285,13 @@ HYBRID DECISIONS (user, 2026-10-30):
   shadow-zero granules that no ReFS structure references. The converted volume
   then matches the shadow except in that zone (NTFS remnants, as after a quick
   format). Until proven, keep writing the zeros.
+  RESULT (2026-10-30, evidence/refs-zone-probe-20261030.json): DISPROVED. A fresh
+  Dev Drive ReFS format leaves the 22 GB zone of a 200 GB disk 99.99% zero (it
+  TRIMs the thin disk); overwriting only those zero granules with random data
+  (keeping all 652 nonzero ones) made the volume mount RAW. ReFS depends on the
+  zone zeros, so the converter keeps writing every shadow-zero granule. Do not
+  re-propose skipping them without an authenticated footprint of which zero
+  granules ReFS reads.
 - STAGED-RANGE CHECK (E2): a per-4 KiB XXH3-128 old/new digest table for
   free-destination (staged) ranges; resume refuses any granule matching neither.
 - ROLLBACK AND VSS (E-2): rollback restores every NTFS-allocated byte and leaves

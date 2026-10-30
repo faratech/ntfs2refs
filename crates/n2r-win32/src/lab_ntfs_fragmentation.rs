@@ -142,7 +142,33 @@ fn standard(file: &File) -> io::Result<Value> {
         "invalid/deleting/directory fixture standard info",
     )?;
     Ok(json!({"allocation_size":info[0],"end_of_file":info[1],
-        "number_of_links":info[2] as u32,"delete_pending":false,"directory":false}))
+        "number_of_links":info[2] as u32,"delete_pending":false,"directory":false,
+        "native_information_class":1,
+        "native_bytes":info.iter().flat_map(|word|word.to_le_bytes()).collect::<Vec<_>>()}))
+}
+fn resident_note(file: &File) -> io::Result<Value> {
+    let standard = standard(file)?;
+    let (retrieval, continuation) = stream_native::retrieval_queries(file);
+    let allocation = standard["allocation_size"]
+        .as_u64()
+        .ok_or_else(|| invalid("missing resident allocation observation"))?;
+    let logical = standard["end_of_file"]
+        .as_u64()
+        .ok_or_else(|| invalid("missing resident EOF observation"))?;
+    // NTFS can report rounded resident metadata bytes as AllocationSize.
+    // Match the converter's explicit resident predicate, and independently
+    // require that retrieval reports no physical data extents.
+    let resident = logical == 64
+        && logical <= CLUSTER
+        && allocation >= logical
+        && allocation < CLUSTER
+        && retrieval.native_error == Some(38)
+        && retrieval.bytes.is_empty()
+        && continuation.is_empty();
+    Ok(
+        json!({"resident_data_observed":resident,"standard_info":standard,
+        "retrieval":retrieval,"retrieval_continuation":continuation}),
+    )
 }
 fn ordinary_directory(path: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
@@ -571,15 +597,16 @@ pub fn create(probe_id: &str) -> Value {
         let default_before = hashes(&mut default, STREAM_BYTES)?;
         let named_before = hashes(&mut named, STREAM_BYTES)?;
         let note_before = hashes(&mut note_file, 64)?;
-        let note_standard = standard(&note_file)?;
+        let note_resident = resident_note(&note_file)?;
+        report["note_residency_before"] = note_resident.clone();
         require(
-            note_standard["allocation_size"] == 0 && note_standard["end_of_file"] == 64,
+            note_resident["resident_data_observed"] == true,
             "small Note ADS is not resident",
         )?;
         report["initial_streams"] = json!([
             {"path":base,"name_utf16":[],"file_id_info":id,"hashes":default_before,"mapping":map_json(&mapping(&default)?)},
             {"path":segments,"name_utf16":"Segments".encode_utf16().collect::<Vec<_>>(),"file_id_info":id,"hashes":named_before,"mapping":map_json(&mapping(&named)?)},
-            {"path":note,"name_utf16":"Note".encode_utf16().collect::<Vec<_>>(),"file_id_info":id,"hashes":note_before,"standard_info":note_standard}
+            {"path":note,"name_utf16":"Note".encode_utf16().collect::<Vec<_>>(),"file_id_info":id,"hashes":note_before,"standard_info":note_resident["standard_info"],"resident_observation":note_resident}
         ]);
         let (window, window_report) = find_window(&volume, total_clusters)?;
         report["free_window"] = window_report;
@@ -622,9 +649,10 @@ pub fn create(probe_id: &str) -> Value {
                 "fixture hard-link count differs",
             )?;
         }
-        let note_standard_after = standard(&note_file)?;
+        let note_resident_after = resident_note(&note_file)?;
+        report["note_residency_after"] = note_resident_after.clone();
         require(
-            note_standard_after["allocation_size"] == 0 && note_standard_after["end_of_file"] == 64,
+            note_resident_after["resident_data_observed"] == true,
             "small Note ADS ceased to be resident",
         )?;
         let record = base_record(&volume, &id)?;
@@ -632,7 +660,7 @@ pub fn create(probe_id: &str) -> Value {
         report["final_streams"] = json!([
             {"path":base,"name_utf16":[],"file_id_info":id,"hashes":default_after,"mapping":map_json(&mapping(&default)?)},
             {"path":segments,"name_utf16":"Segments".encode_utf16().collect::<Vec<_>>(),"file_id_info":id,"hashes":named_after,"mapping":map_json(&mapping(&named)?)},
-            {"path":note,"name_utf16":"Note".encode_utf16().collect::<Vec<_>>(),"file_id_info":id,"hashes":note_after,"standard_info":note_standard_after}
+            {"path":note,"name_utf16":"Note".encode_utf16().collect::<Vec<_>>(),"file_id_info":id,"hashes":note_after,"standard_info":note_resident_after["standard_info"],"resident_observation":note_resident_after}
         ]);
         report["hard_links"] = json!(
             aliases

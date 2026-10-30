@@ -96,17 +96,26 @@ impl PrivateTree {
             Ok(item)
         }
     }
-    fn finish_sparse_streams(&mut self) -> io::Result<BTreeMap<StreamKey, File>> {
+    fn finish_sparse_streams(
+        &mut self,
+    ) -> io::Result<(
+        BTreeMap<StreamKey, File>,
+        Vec<(StreamKey, sparse_stream::TailProof)>,
+    )> {
         let mut result = BTreeMap::new();
+        let mut tails = Vec::new();
         for (key, target) in std::mem::take(&mut self.sparse_targets) {
-            let file = target.finish(self.files.remove(&key))?;
+            let (file, tail) = target.finish(self.files.remove(&key))?;
+            if let Some(tail) = tail {
+                tails.push((key.clone(), tail));
+            }
             result.insert(key, file);
         }
         if let Some(directory) = self.carrier_directory.take() {
             directory.retire()?;
         }
         self.volume.sync_all()?;
-        Ok(result)
+        Ok((result, tails))
     }
     fn file_by_slot(&self, slot: usize) -> io::Result<&unwritten::PrivatePlaceholder> {
         self.stream_slots

@@ -1,5 +1,7 @@
 //! Sparse targets are constructed from compact, initialized ordinary carriers.
 //! Only allocated islands are cloned; logical holes never receive allocation.
+//! Final partial clusters may move when ReFS applies EOF. Their visible bytes
+//! are checked separately; padding writes outside EOF are accounted separately.
 use super::*;
 use crate::sparse_layout::{LogicalRange, SparseLayout};
 use windows_sys::Win32::{
@@ -216,7 +218,12 @@ impl Target {
         item.sparse = None;
         Ok(item)
     }
-    pub fn finish(self, carrier: Option<unwritten::PrivatePlaceholder>) -> io::Result<File> {
+    pub fn finish(
+        mut self,
+        carrier: Option<unwritten::PrivatePlaceholder>,
+    ) -> io::Result<(File, Option<TailProof>)> {
+        let mut tail: Option<(u64, u64, Vec<u8>)> = None;
+        let mut padding_bytes = 0u64;
         let expected_carrier = if let Some(mut carrier) = carrier {
             if carrier.logical_length() != self.dense_length
                 || carrier.valid_prefix() != self.dense_length
@@ -226,13 +233,29 @@ impl Target {
             for part in &self.islands {
                 if part.logical + part.length > self.logical_length {
                     let offset = part.dense + self.logical_length.saturating_sub(part.logical);
-                    carrier.initialize_at(
-                        offset,
-                        &vec![0; (part.logical + part.length - self.logical_length) as usize],
-                    )?;
+                    let count = part.logical + part.length - self.logical_length;
+                    carrier.initialize_at(offset, &vec![0; count as usize])?;
+                    padding_bytes = padding_bytes
+                        .checked_add(count)
+                        .ok_or_else(|| invalid("sparse padding accounting overflow"))?;
                 }
             }
             let capture = crate::stream_native::retrieval_capture(carrier.metadata_handle())?;
+            let visible = self.logical_length % 4096;
+            let tail_start = self.logical_length / 4096 * 4096;
+            if visible != 0 {
+                if let Some(island) = self
+                    .islands
+                    .iter()
+                    .find(|i| i.logical <= tail_start && tail_start < i.logical + i.length)
+                {
+                    let dense = island.dense + tail_start - island.logical;
+                    let old_lcn = lcn_at(&capture.runs, dense / 4096)?;
+                    let mut bytes = vec![0; visible as usize];
+                    carrier.read_initialized_at(dense, &mut bytes)?;
+                    tail = Some((tail_start, old_lcn, bytes));
+                }
+            }
             for island in &self.islands {
                 let mut done = 0;
                 while done < island.length {
@@ -249,9 +272,15 @@ impl Target {
                 }
             }
             self.file.sync_all()?;
-            self.verify_carrier(&capture.runs)?;
+            self.verify_carrier(
+                &capture.runs,
+                "before-carrier-retirement",
+                &carrier.path,
+                None,
+            )?;
+            let carrier_path = carrier.path.clone();
             carrier.retire()?;
-            Some(capture.runs)
+            Some((capture.runs, carrier_path))
         } else {
             if self.dense_length != 0 {
                 return Err(invalid("allocated sparse stream has no carrier"));
@@ -260,13 +289,68 @@ impl Target {
         };
         self.file.set_len(self.logical_length)?;
         self.file.sync_all()?;
-        if let Some(runs) = expected_carrier {
-            self.verify_carrier(&runs)?;
+        if let Some((runs, carrier_path)) = expected_carrier {
+            self.verify_carrier(
+                &runs,
+                "after-final-eof",
+                &carrier_path,
+                tail.as_ref().map(|(at, _, _)| at / 4096),
+            )?;
         }
+        let tail_proof = if let Some((offset, old_lcn, expected)) = tail {
+            let after = capture(&self.file, self.logical_length)?.0;
+            let new_lcn = lcn_at(&after, offset / 4096)?;
+            let mut actual = vec![0; expected.len()];
+            self.file.seek(SeekFrom::Start(offset))?;
+            self.file.read_exact(&mut actual)?;
+            if actual != expected {
+                return Err(invalid(
+                    "partial sparse EOF cluster contents changed after truncation",
+                ));
+            }
+            let carrier_sha256 = hex::encode(Sha256::digest(&expected));
+            let target_sha256 = hex::encode(Sha256::digest(&actual));
+            Some(TailProof {
+                logical_offset: offset,
+                visible_bytes: expected.len() as u64,
+                old_lcn,
+                new_lcn,
+                physical_lcn_changed: old_lcn != new_lcn,
+                carrier_sha256,
+                target_sha256,
+                actual_bytes_equal: true,
+                payload_bytes_read: 2 * expected.len() as u64,
+                padding_bytes_written: padding_bytes,
+                padding_bytes_readback: padding_bytes,
+            })
+        } else {
+            None
+        };
         observe(&self.file, &self.layout, self.logical_length)?;
-        Ok(self.file)
+        Ok((self.file, tail_proof))
     }
-    fn verify_carrier(&self, runs: &[stream_layout::Run]) -> io::Result<()> {
+    fn verify_carrier(
+        &self,
+        runs: &[stream_layout::Run],
+        phase: &str,
+        carrier_path: &str,
+        permitted_partial_vcn: Option<u64>,
+    ) -> io::Result<()> {
+        if let Some(vcn) = permitted_partial_vcn {
+            if phase != "after-final-eof"
+                || self.logical_length % 4096 == 0
+                || vcn != self.logical_length / 4096
+                || !self
+                    .layout
+                    .allocated
+                    .iter()
+                    .any(|r| r.offset / 4096 <= vcn && vcn < (r.offset + r.length) / 4096)
+            {
+                return Err(invalid(
+                    "invalid sparse partial-cluster verification exception",
+                ));
+            }
+        }
         let target = capture(&self.file, self.logical_length)?.0;
         for island in &self.islands {
             for run in runs {
@@ -279,22 +363,87 @@ impl Target {
                     .lcn
                     .ok_or_else(|| invalid("sparse carrier contains a hole"))?
                     + (from / 4096 - run.vcn);
-                if !mapping_matches_run(
-                    &target,
-                    (island.logical + from - island.dense) / 4096,
-                    lcn,
-                    u32::try_from((end - from) / 4096).map_err(|_| {
+                let original_target_vcn = (island.logical + from - island.dense) / 4096;
+                let original_target_end = original_target_vcn + (end - from) / 4096;
+                let segments = if let Some(vcn) = permitted_partial_vcn
+                    .filter(|vcn| original_target_vcn <= *vcn && *vcn < original_target_end)
+                {
+                    vec![(original_target_vcn, vcn), (vcn + 1, original_target_end)]
+                } else {
+                    vec![(original_target_vcn, original_target_end)]
+                };
+                for (target_vcn, target_end) in segments {
+                    if target_vcn == target_end {
+                        continue;
+                    }
+                    let lcn = lcn + target_vcn - original_target_vcn;
+                    let clusters = u32::try_from(target_end - target_vcn).map_err(|_| {
                         invalid("sparse carrier verification range exceeds native cluster count")
-                    })?,
-                )? {
-                    return Err(invalid(
-                        "sparse clone does not retain carrier physical mapping",
-                    ));
+                    })?;
+                    if !mapping_matches_run(&target, target_vcn, lcn, clusters)? {
+                        let target_end = target_vcn + u64::from(clusters);
+                        let overlaps = |actual: &&stream_layout::Run| {
+                            actual.vcn < target_end && target_vcn < actual.vcn + actual.clusters
+                        };
+                        let relevant_count = target.iter().filter(overlaps).count();
+                        let actual_runs: Vec<_> = target.iter().filter(overlaps).take(16).map(|actual| {
+                        serde_json::json!({"vcn":actual.vcn,"clusters":actual.clusters,"lcn":actual.lcn})
+                    }).collect();
+                        let first = target.iter().find(|actual| {
+                            actual.vcn <= target_vcn && target_vcn < actual.vcn + actual.clusters
+                        });
+                        let context = serde_json::json!({
+                            "phase":phase,
+                            "target_path":self.path.chars().take(1024).collect::<String>(),
+                            "target_path_sha256":hex::encode(Sha256::digest(self.path.as_bytes())),
+                            "target_logical_bytes":self.logical_length,
+                            "target_standard_info_hex":info(&self.file,1,24).ok().map(hex::encode),
+                            "target_file_id_info_hex":info(&self.file,18,24).ok().map(hex::encode),
+                            "carrier_path":carrier_path.chars().take(1024).collect::<String>(),
+                            "carrier_dense_bytes":self.dense_length,
+                            "carrier_run":{"vcn":run.vcn,"clusters":run.clusters,"lcn":run.lcn},
+                            "island":{"logical_offset":island.logical,"carrier_offset":island.dense,"length":island.length},
+                            "target_vcn":target_vcn,"clusters":clusters,"expected_lcn":lcn,
+                            "first_actual_run_present":first.is_some(),
+                            "first_actual_lcn":first.and_then(|r|r.lcn.map(|base|base+target_vcn-r.vcn)),
+                            "actual_relevant_runs":actual_runs,"actual_relevant_run_count":relevant_count,
+                            "actual_runs_truncated":relevant_count>16,
+                        });
+                        return Err(invalid(&format!(
+                            "sparse clone does not retain carrier physical mapping: {context}"
+                        )));
+                    }
                 }
             }
         }
         Ok(())
     }
+}
+
+fn lcn_at(runs: &[stream_layout::Run], vcn: u64) -> io::Result<u64> {
+    let run = runs
+        .iter()
+        .find(|r| r.vcn <= vcn && vcn < r.vcn + r.clusters)
+        .ok_or_else(|| invalid("partial sparse EOF cluster is absent"))?;
+    run.lcn
+        .and_then(|l| l.checked_add(vcn - run.vcn))
+        .ok_or_else(|| invalid("partial sparse EOF cluster is unallocated or overflows"))
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct TailProof {
+    pub logical_offset: u64,
+    pub visible_bytes: u64,
+    pub old_lcn: u64,
+    pub new_lcn: u64,
+    pub physical_lcn_changed: bool,
+    pub carrier_sha256: String,
+    pub target_sha256: String,
+    pub actual_bytes_equal: bool,
+    pub payload_bytes_read: u64,
+    /// Carrier bytes outside the user-visible EOF, written and read back before cloning.
+    pub padding_bytes_written: u64,
+    pub padding_bytes_readback: u64,
 }
 
 #[derive(Debug, Serialize)]

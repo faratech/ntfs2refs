@@ -151,7 +151,7 @@ pub(super) fn complete(
             item.logical_length(),
         )?;
     }
-    let sparse_files = tree.finish_sparse_streams()?;
+    let (sparse_files, sparse_tails) = tree.finish_sparse_streams()?;
     let mut guards = BTreeMap::new();
     for (key, file) in &tree.files {
         // Exclusive placeholders cannot be reopened for metadata rights while
@@ -202,6 +202,30 @@ pub(super) fn complete(
     tree.require_source_excluded()?;
     tree.privileges.restore()?;
     report["source_input_sha256"] = hex::encode(tree.metadata_input_sha256).into();
+    if !sparse_tails.is_empty() {
+        let tail_bytes = sparse_tails.iter().try_fold(0u64, |sum, (_, proof)| {
+            sum.checked_add(proof.payload_bytes_read)
+                .ok_or_else(|| invalid("sparse tail read count overflow"))
+        })?;
+        let padding_written = sparse_tails.iter().try_fold(0u64, |sum, (_, proof)| {
+            sum.checked_add(proof.padding_bytes_written)
+                .ok_or_else(|| invalid("sparse padding write count overflow"))
+        })?;
+        let padding_read = sparse_tails.iter().try_fold(0u64, |sum, (_, proof)| {
+            sum.checked_add(proof.padding_bytes_readback)
+                .ok_or_else(|| invalid("sparse padding read count overflow"))
+        })?;
+        report["user_payload_bytes_read"] = report["user_payload_bytes_read"]
+            .as_u64()
+            .unwrap_or(0)
+            .checked_add(tail_bytes)
+            .ok_or_else(|| invalid("sparse payload read count overflow"))?
+            .into();
+        report["sparse_tail_readback_bytes"] = tail_bytes.into();
+        report["sparse_carrier_padding_bytes_written"] = padding_written.into();
+        report["sparse_carrier_padding_bytes_readback"] = padding_read.into();
+        report["sparse_tail_verification"]=serde_json::Value::Array(sparse_tails.into_iter().map(|(key,proof)|serde_json::json!({"object_index":key.object_index,"stream_name_utf16":key.name_utf16,"proof":proof})).collect());
+    }
     if !links.is_empty() {
         report["hard_links"] = links.into();
     }

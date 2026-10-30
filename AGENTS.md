@@ -27,6 +27,19 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
+Current sparse follow-up supersedes the older VM states below: VM is running
+the clean NTFS sparse fixture9c42e1fd, with all25 checkpoints preserved. The
+third attemptd78c2df3 stopped before cutover because ReFS relocated only the
+final partial EOF cluster during truncation. Complete failed state is preserved
+in checkpoint0bf53231-6b6d-4427-b6dd-3c1936c70b06 and metadata in
+.lab/hyperv/streaming-v2-20261027/sparse-clone-refusal-d78c2df3.
+The candidate now verifies that cluster's actual visible bytes before/after EOF,
+requires every full cluster to keep its exact mapping, and still verifies the
+whole sparse allocation/storage-validity layout. Padding I/O outside EOF is
+counted separately. Focused public release build passed; no unit tests were
+added or run. Native retry is next; this does not yet qualify sparse conversion.
+The GitHub comparison refresh is committed in0ef8652; it adds no runtime change.
+
 Sparse integration candidate: SparseLayout now binds allocated islands, exact
 logical holes and source VDL per default/named stream. Native construction uses
 compact dense carriers, moves those data ranges, clones them to sparse logical

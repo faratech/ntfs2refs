@@ -468,8 +468,11 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     Ok(ticket)
 }
 
-/// Recheck the pinned complete immutable journal and each payload. Even a
-/// valid serialized ticket must be trusted independently by the caller.
+/// Recheck the pinned complete immutable journal and each payload in one
+/// sequential read pass. Synthetic zero bytes participate in the selected
+/// digests, never the immutable journal digest. No record is returned before
+/// the complete immutable pin and all payload/footer checks have passed.
+/// Even a valid serialized ticket must be trusted independently by the caller.
 fn load<J: ReadSeek>(
     journal: &mut J,
     plan: &SelectedPlan,
@@ -485,12 +488,10 @@ fn load<J: ReadSeek>(
             && journal.byte_len()? == journal_length,
         "selected ticket, plan or journal length differs"
     );
-    ensure!(
-        hash_range(journal, BODY, journal_length - BODY)? == ticket.immutable_sha256,
-        "selected immutable journal differs from trusted ticket"
-    );
+    let mut immutable = pin_hash()?;
     let mut header = [0u8; HEADER];
     at(journal, BODY, &mut header)?;
+    immutable.update(&header)?;
     let zero_encoded = plan.zero_encoded();
     ensure!(
         &header[..8]
@@ -514,6 +515,7 @@ fn load<J: ReadSeek>(
     for range in &plan.ranges {
         let mut record = [0u8; ZERO_RECORD];
         journal.read_exact(&mut record[..plan.record_size()])?;
+        immutable.update(&record[..plan.record_size()])?;
         ensure!(
             get_u64(&record, 0) == range.offset && get_u64(&record, 8) == range.length,
             "selected journal range differs"
@@ -552,7 +554,10 @@ fn load<J: ReadSeek>(
             ),
         ] {
             if let Some(offset) = offset {
-                journal.seek(SeekFrom::Start(offset))?;
+                ensure!(
+                    journal.stream_position()? == offset,
+                    "selected journal sequential payload position differs"
+                );
             }
             frame(selected, range)?;
             let mut hash = pin_hash()?;
@@ -561,6 +566,7 @@ fn load<J: ReadSeek>(
                 let count = usize::try_from(remaining.min(BUFFER as u64))?;
                 if offset.is_some() {
                     journal.read_exact(&mut buffer[..count])?;
+                    immutable.update(&buffer[..count])?;
                 } else {
                     buffer[..count].fill(0);
                 }
@@ -578,10 +584,14 @@ fn load<J: ReadSeek>(
             before_at,
             after_at: (!is_zero).then_some(after_at),
         });
-        journal.seek(SeekFrom::Start(next))?;
+        ensure!(
+            journal.stream_position()? == next,
+            "selected journal sequential record position differs"
+        );
     }
     let mut footer = [0u8; FOOTER];
     journal.read_exact(&mut footer)?;
+    immutable.update(&footer)?;
     ensure!(
         &footer[..8]
             == if zero_encoded {
@@ -596,6 +606,10 @@ fn load<J: ReadSeek>(
             && finish(new_selected)? == ticket.new_selected_sha256
             && journal.stream_position()? == journal_length,
         "selected journal footer or selected digest differs"
+    );
+    ensure!(
+        finish(immutable)? == ticket.immutable_sha256,
+        "selected immutable journal differs from trusted ticket"
     );
     Ok(records)
 }

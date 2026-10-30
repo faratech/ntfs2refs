@@ -112,3 +112,18 @@ encoded representation requires 76,446,832 bytes (about 64% less). The run took
 Independent native recovery and mutation/reboot on this exact build remain
 unverified. The initial pre-activation capacity-query refusal is retained in
 the same evidence record.
+
+## Single-pass journal authentication
+
+The loader computes the immutable journal SHA-256 while parsing the header,
+records, literal payloads and footer. It also verifies every per-range and
+framed digest before returning any record to an execution path. Synthesized
+zeros contribute only to the logical digests. Each lifecycle boundary still
+performs its required fresh verification; this removes the duplicate read
+within that verification, not the boundary itself.
+
+The [focused integration](../evidence/journal-single-pass-20261030.json) observed
+41,360 instead of 74,528 bytes read for one legacy lifecycle check, and 29,096
+instead of 50,000 bytes for the zero encoding. All four completed journals
+matched the preserved earlier bytes, with interrupted resume and rollback
+passing. This is a journal I/O result, not a native end-to-end speed claim.

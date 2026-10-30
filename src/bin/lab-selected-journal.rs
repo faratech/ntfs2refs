@@ -245,6 +245,19 @@ fn exercise(
         !ticket.whole_image_verified,
         "selected ticket cannot claim whole image"
     );
+    let validation_before = journal.count.bytes_read;
+    ensure!(
+        sj::lifecycle(&mut journal, plan, &ticket)? == sj::SelectedLifecycle::PreparedClear,
+        "fresh journal lifecycle differs"
+    );
+    let validation_read_bytes = journal.count.bytes_read - validation_before;
+    // The immutable body is read exactly once; lifecycle then reads the two
+    // 4 KiB marker slots. This assertion covers both actual payload formats.
+    ensure!(
+        validation_read_bytes == ticket.journal_length,
+        "lifecycle validation reread or omitted journal bytes"
+    );
+    let duplicate_pass_read_bytes = 2 * (ticket.journal_length - 2 * G as u64) + 2 * G as u64;
     target.fault = true;
     let error = sj::apply(&mut target, &mut journal, plan, &ticket)
         .err()
@@ -285,7 +298,7 @@ fn exercise(
         "closed replay or core fence failed"
     );
     Ok(
-        serde_json::json!({"role":role,"interrupted_apply_error":format!("{error:#}"),"fault_persisted_bytes":G,"selected_sha256":hex::encode(result.selected_sha256),"replay_closed":true,"resume_after_close_rejected":resume_rejected,"rollback_after_close_rejected":rollback_rejected,"target_core_io":target.count,"journal_core_io":journal.count}),
+        serde_json::json!({"role":role,"interrupted_apply_error":format!("{error:#}"),"fault_persisted_bytes":G,"selected_sha256":hex::encode(result.selected_sha256),"replay_closed":true,"resume_after_close_rejected":resume_rejected,"rollback_after_close_rejected":rollback_rejected,"single_pass_lifecycle_bytes_read":validation_read_bytes,"previous_duplicate_pass_lifecycle_bytes":duplicate_pass_read_bytes,"lifecycle_read_bytes_saved":duplicate_pass_read_bytes-validation_read_bytes,"target_core_io":target.count,"journal_core_io":journal.count}),
     )
 }
 fn verify(dir: &Path, ranges: &[sj::SelectedRange]) -> Result<u64> {

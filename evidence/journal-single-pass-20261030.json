@@ -1,0 +1,54 @@
+{
+  "base_commit": "4092617",
+  "kind": "single-pass-selected-journal-authentication",
+  "binary_sha256": "ad652a3859c656b55027c566b872de618613aee46379925ff73fd074a9d362f5",
+  "unit_tests_run": false,
+  "zero_synthesis_excluded_from_immutable_digest": true,
+  "cases": [
+    {
+      "format": "legacy",
+      "previous_validation_bytes": 74528,
+      "saved_bytes": 33168,
+      "serialized_journals": [
+        {
+          "byte_identical": true,
+          "sha256": "851ccb1942d42c360127234ad968b8968c315ad43041b5c5b6ac0928a9ced51d",
+          "name": "resume.journal"
+        },
+        {
+          "byte_identical": true,
+          "sha256": "6fc56acec55ce7f787b269de30e5fc6d43049238e386f42448f5b088bb7dc0d7",
+          "name": "rollback.journal"
+        }
+      ],
+      "report_sha256": "f5df9c240b7a8fa4a6fb905bc12acfb5de5d24e89ce9f8889443075c154e0fca",
+      "resume_and_rollback_passed": true,
+      "new_validation_bytes": 41360
+    },
+    {
+      "format": "zero",
+      "previous_validation_bytes": 50000,
+      "saved_bytes": 20904,
+      "serialized_journals": [
+        {
+          "byte_identical": true,
+          "sha256": "c6cacfd977c6c7dcebeecbad7f2e4443590846c3a2665ed48e10486cf1c23239",
+          "name": "resume.journal"
+        },
+        {
+          "byte_identical": true,
+          "sha256": "8a655602be62a6fab0bfdfa1265cfd4ae43353a75c6af5b6372b21cf30115486",
+          "name": "rollback.journal"
+        }
+      ],
+      "report_sha256": "e3f0cb9092a188f9da5b5db143132cc910cdfe9387467e2b44e59a55ed7e4d08",
+      "resume_and_rollback_passed": true,
+      "new_validation_bytes": 29096
+    }
+  ],
+  "actual_immutable_bytes_hashed_once": true,
+  "artifact_directory": "D:\\code\\ntfs2refs\\.lab\\performance\\journal-single-pass-20261030-09c22355d46f4a128c944b872d0cb2dd",
+  "all_validation_boundaries_retained": true,
+  "native_results_inherited": false,
+  "schema_version": 1
+}

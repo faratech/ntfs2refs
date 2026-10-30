@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "kind": "native-mixed-fixture-changed-class-split",
+  "source_commit": "9ef77d08e796c13dc57f6e4717d6e8afbeb8ff8d",
+  "run_id": "379a5bbf5bbc4c038fa2b8ea2bb3acb3",
+  "engine_run_id": "23c275adf6b9a1ab531d47a57c0aa9e5",
+  "fixture": "lab/New-MixedFixture.ps1 seed 20261029: 808 files, 120 dirs, 9,885,781,381 B",
+  "outcome": "refused before any write (delta capture budget exhausted)",
+  "writes_to_source": 0,
+  "budget_refusal": {
+    "max_changed_bytes": 4951756800,
+    "changed_bytes_written": 4951756800,
+    "refused_run_bytes": 733184,
+    "compared_bytes_through_refused_run": 5993660416,
+    "selected_bytes": 12225966080
+  },
+  "changed_classes_through_refusal": {
+    "changed_bytes_total": 4952489984,
+    "ntfs_allocated_destination": 4949803008,
+    "ntfs_free_destination": 2686976,
+    "in_payload_route": 0,
+    "outside_routes": 4952489984,
+    "below_first_route_destination": 4952489984,
+    "new_is_zero": 4914585600,
+    "old_is_zero": 2883584,
+    "changed_ranges": 553,
+    "first_route_destination_offset": 6174015488
+  },
+  "timeline_seconds": {
+    "source_frozen": 17.2,
+    "native_source": 32.0,
+    "source_assessment": 39.5,
+    "construction_placement": 366.7,
+    "construction_freeze": 421.5,
+    "changed_clusters_refusal": 478.3
+  },
+  "interpretation": [
+    "The compared selection (12.2 GB) is the ReFS metadata-inclusive prefix [0, 6.17 GB) plus the relocated-payload routes beyond it; the compare was refused at 5.99 GB, still inside the prefix, so the routes (about 6.4 GB, all expected to differ) were never reached.",
+    "99.2% of the changed bytes so far are all-zero on the shadow and overwrite NTFS file data: the fresh ReFS marks the prefix allocated but writes almost none of it (the 52 GiB shadow VHDX stayed 172 MB after format and tree construction, and the earlier run changed only 70 MB there), so the conversion is zeroing a reserved, unreferenced zone over data that placement had to relocate.",
+    "Projected total changed bytes about 12.4 GB (nearly the whole compared selection); an old+new external journal would need about 25 GB plus a 12.4 GB packed backing on the OS volume for a 9.9 GB dataset, above the 16 GiB journal profile ceiling and the guest OS volume free space.",
+    "Measured placement cost at this scale: 327 s for 2,132 moves (about 105-150 ms per move, two whole-volume bitmap captures each)."
+  ],
+  "decisions_needed": [
+    "skip writing shadow-zero granules that no ReFS structure references (guarantee change; needs a ReFS format probe)",
+    "hybrid E2: per-granule old/new digest table for free-destination ranges",
+    "hybrid E-2: rollback leaves staged copies in NTFS free space; VSS gate",
+    "hybrid E3: torn-marker handling"
+  ]
+}

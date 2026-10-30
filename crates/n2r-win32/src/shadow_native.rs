@@ -2,14 +2,15 @@
 //! source disk, manufactures ReFS bytes or grants conversion authority.
 pub mod cache_refresh;
 mod hard_links;
+mod sparse_stream;
 mod streams;
 pub use hard_links::Observation as HardLinkObservation;
 pub use streams::{Report as NamedStreamReport, StreamKey};
 mod evacuation;
 pub mod private_tree;
+pub mod sparse_carrier_probe;
 mod unwritten;
 pub mod valid_data_probe;
-pub mod sparse_carrier_probe;
 use crate::{
     attestation::{PrivilegeState, Snapshot},
     attestation_native::{Privileges, snapshot},
@@ -75,6 +76,7 @@ pub struct Input<'a> {
     pub source_offset: Option<u64>,
     pub source_runs: Vec<SourceRun>,
     pub named_streams: Vec<NamedStreamInput<'a>>,
+    pub sparse: Option<&'a crate::sparse_layout::SparseLayout>,
 }
 pub struct NamedStreamInput<'a> {
     pub name_utf16: &'a [u16],
@@ -82,6 +84,7 @@ pub struct NamedStreamInput<'a> {
     pub expected_sha256: &'a str,
     pub source_offset: Option<u64>,
     pub source_runs: Vec<SourceRun>,
+    pub sparse: Option<&'a crate::sparse_layout::SparseLayout>,
 }
 #[derive(Clone, Debug)]
 pub struct SourceRun {
@@ -232,6 +235,8 @@ pub struct ObjectReport {
     pub additional_names: Vec<HardLinkObservation>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub named_streams: Vec<NamedStreamReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sparse: Option<sparse_stream::Observation>,
     pub before: Snapshot,
     pub after: Snapshot,
     pub logical_sha256: Option<String>,
@@ -1064,6 +1069,21 @@ fn basic_bytes(i: &Input<'_>) -> Vec<u8> {
     b.extend_from_slice(&[0; 4]);
     b
 }
+fn has_sparse(i: &Input<'_>) -> bool {
+    i.sparse.is_some() || i.named_streams.iter().any(|s| s.sparse.is_some())
+}
+fn attributes_allowed(i: &Input<'_>) -> bool {
+    i.attributes & !if has_sparse(i) { 0x2237 } else { 0x2037 } == 0
+}
+fn basic_matches(i: &Input<'_>, actual: &[u8]) -> bool {
+    let mut expected = basic_bytes(i);
+    if has_sparse(i) && actual.len() == 40 {
+        let old = u32::from_le_bytes(expected[32..36].try_into().unwrap());
+        let now = u32::from_le_bytes(actual[32..36].try_into().unwrap());
+        expected[32..36].copy_from_slice(&((old & !0x200) | (now & 0x200)).to_le_bytes());
+    }
+    actual == expected
+}
 // Only a pre-restoration diagnosis. Final comparisons never normalize control
 // flags: BACKUP_SECURITY_DATA must restore the exact original descriptor.
 fn creation_loss_only(
@@ -1159,7 +1179,9 @@ fn validate_existing_profile(
             false
         };
         if i.components != o.components
-            || (actual_basic != expected_basic && !cache_directory_times)
+            || (actual_basic != expected_basic
+                && !(has_sparse(i) && basic_matches(i, actual_basic))
+                && !cache_directory_times)
             || o.before != o.after
         {
             return Err(invalid(
@@ -1908,8 +1930,22 @@ fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
     let mut b = [0u64; 5];
     b[..4].copy_from_slice(&i.times);
     b[4] = i.attributes as u64;
+    let sparse_before = if has_sparse(i) {
+        Some(layout::u32_at(&info(file, 9, 8)?, 0)? & 0x200)
+    } else {
+        None
+    };
+    if sparse_before.is_some() {
+        b[4] &= !0x200;
+    }
     // SAFETY: FILE_BASIC_INFO layout, aligned initialized forty-byte buffer.
-    check(unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0, b.as_ptr().cast(), 40) })
+    check(unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0, b.as_ptr().cast(), 40) })?;
+    if let Some(expected) = sparse_before {
+        if layout::u32_at(&info(file, 9, 8)?, 0)? & 0x200 != expected {
+            return Err(invalid("basic metadata changed managed sparse state"));
+        }
+    }
+    Ok(())
 }
 /// Restricted lab destination: measured disk3, not the source or Windows disk.
 /// Probe/verify have no creation or stored-metadata setters; handle access-time
@@ -2211,11 +2247,25 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
     )?;
     let mut required = Vec::new();
     for (index, item) in input.iter().enumerate().filter(|(_, i)| !i.directory) {
-        if item.logical_length() % 4096 != 0 {
+        if item.logical_length() % 4096 != 0
+            && item.sparse.is_none_or(|s| {
+                s.allocated.iter().any(|r| {
+                    r.offset <= item.logical_length() / 4096 * 4096
+                        && r.offset + r.length > item.logical_length() / 4096 * 4096
+                })
+            })
+        {
             required.push((index, Vec::new(), item.logical_length()));
         }
         for stream in &item.named_streams {
-            if stream.expected_length % 4096 != 0 {
+            if stream.expected_length % 4096 != 0
+                && stream.sparse.is_none_or(|s| {
+                    s.allocated.iter().any(|r| {
+                        r.offset <= stream.expected_length / 4096 * 4096
+                            && r.offset + r.length > stream.expected_length / 4096 * 4096
+                    })
+                })
+            {
                 required.push((index, stream.name_utf16.to_vec(), stream.expected_length));
             }
         }
@@ -2813,6 +2863,9 @@ fn run_role_profile(
             "named-stream construction requires the private owning tree path",
         ));
     }
+    if input.iter().any(has_sparse) && matches!(mode, Mode::Construct | Mode::ConstructRetaining) {
+        return Err(invalid("sparse construction requires private carrier path"));
+    }
     let mut total = 0u64;
     let mut source_allocations = Vec::new();
     for i in input {
@@ -2892,7 +2945,7 @@ fn run_role_profile(
                 }
             })
             || i.times.iter().any(|t| *t == 0 || *t >= i64::MAX as u64)
-            || i.attributes & !0x2037 != 0
+            || !attributes_allowed(i)
             || (i.attributes & 16 != 0) != i.directory
             || (i.directory && !i.payload.is_empty())
             || (!ordinary
@@ -3446,6 +3499,13 @@ fn run_role_profile(
                     && layout::u64_at(&first.bytes, 8)? == 0
                 {
                     vec![]
+                } else if i.sparse.is_some()
+                    && expected_allocation == 0
+                    && first.native_error == Some(38)
+                    && first.bytes.is_empty()
+                    && continuation.is_empty()
+                {
+                    vec![]
                 } else if ordinary
                     && resident_allocation(i.logical_length(), expected_allocation)
                     && first.native_error == Some(38)
@@ -3471,22 +3531,26 @@ fn run_role_profile(
                 let mut end = 0u64;
                 for r in runs {
                     if r.vcn != end
-                        || r.lcn
-                            .is_none_or(|l| l.checked_add(r.clusters).is_none_or(|e| e > clusters))
+                        || match r.lcn {
+                            Some(l) => l.checked_add(r.clusters).is_none_or(|e| e > clusters),
+                            None => i.sparse.is_none(),
+                        }
                     {
                         return Err(invalid("shadow physical mapping is invalid"));
                     }
                     end += r.clusters;
                 }
-                if (!ordinary && end * 4096 != i.logical_length())
-                    || (ordinary
-                        && !resident_data
-                        && (end * 4096 != expected_allocation
-                            || (expected_allocation == 0 && i.logical_length() > 4096)
-                            || (expected_allocation != 0
-                                && expected_allocation
-                                    < i.logical_length().next_multiple_of(4096))
-                            || expected_allocation > i.logical_length().next_multiple_of(65536)))
+                if i.sparse.is_none()
+                    && ((!ordinary && end * 4096 != i.logical_length())
+                        || (ordinary
+                            && !resident_data
+                            && (end * 4096 != expected_allocation
+                                || (expected_allocation == 0 && i.logical_length() > 4096)
+                                || (expected_allocation != 0
+                                    && expected_allocation
+                                        < i.logical_length().next_multiple_of(4096))
+                                || expected_allocation
+                                    > i.logical_length().next_multiple_of(65536))))
                 {
                     return Err(invalid(
                         "shadow allocation differs from initialized payload",
@@ -3494,7 +3558,9 @@ fn run_role_profile(
                 }
                 let mut regions = vec![];
                 for usage in [1u32, 2] {
-                    if ordinary && (expected_allocation == 0 || resident_data) {
+                    if i.sparse.is_some()
+                        || (ordinary && (expected_allocation == 0 || resident_data))
+                    {
                         regions.push(vec![]);
                         continue;
                     }
@@ -3581,6 +3647,10 @@ fn run_role_profile(
                 mode != Mode::ObserveLayout,
                 clusters,
             )?,
+            sparse: i
+                .sparse
+                .map(|s| sparse_stream::observe(&h, s, i.logical_length()))
+                .transpose()?,
             additional_names: hard_links::observe(&root, i, &before, protected.is_some())?,
             before,
             after,
@@ -3763,6 +3833,7 @@ mod tests {
             source_offset: Some(25853952),
             source_runs: vec![],
             named_streams: Vec::new(),
+            sparse: None,
         };
         source_formatter_cache_bounds(&[source]).unwrap();
         assert!(valid_shadow_component(&path[1]));
@@ -3795,6 +3866,7 @@ mod tests {
                 source_offset: None,
                 source_runs: vec![],
                 named_streams: Vec::new(),
+                sparse: None,
             };
             source_formatter_cache_bounds(&[make_source(1024 * 1024)]).unwrap();
             assert!(source_formatter_cache_bounds(&[make_source(1024 * 1024 + 1)]).is_err());
@@ -3907,6 +3979,7 @@ mod tests {
             source_offset: None,
             source_runs: vec![],
             named_streams: Vec::new(),
+            sparse: None,
         };
         let mut actual = Snapshot {
             queries: vec![],

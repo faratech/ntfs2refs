@@ -147,6 +147,12 @@ fn main() -> anyhow::Result<()> {
         } else {
             shadow_tree::derive(&raw)?
         };
+        ensure!(
+            tree.objects
+                .iter()
+                .all(|object| object.data_streams().all(|stream| stream.sparse.is_none())),
+            "legacy tree-shadow experiment cannot represent sparse streams"
+        );
         let mut payloads = vec![];
         for o in &tree.objects {
             let mut bytes = if args.stream_payload {
@@ -180,6 +186,7 @@ fn main() -> anyhow::Result<()> {
             .map(|(o, p)| shadow_native::Input {
                 components: &o.path,
                 additional_names: &o.additional_names,
+                sparse: o.sparse.as_ref(),
                 named_streams: ntfs2refs::general_shadow::native_named_streams(o),
                 directory: o.directory,
                 times: o.stored_times,

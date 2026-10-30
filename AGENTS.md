@@ -27,6 +27,20 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
+Sparse integration candidate: SparseLayout now binds allocated islands, exact
+logical holes and source VDL per default/named stream. Native construction uses
+compact dense carriers, moves those data ranges, clones them to sparse logical
+offsets, and retires only its own carriers. All-hole streams have no carrier.
+Core copy/retained plans use allocated initialized data only; hole tails are not
+materialized. Existing plain digests and nonsparse serialization are unchanged.
+The public release build passes, SHA
+9205002edbe79b35f17eaa17b31142cf30c416878fcbbb101168062b025afc87.
+Native sparse conversion remains unqualified pending the new fixture/run.
+The Rust sparse fixture helper builds (98ea44c36ed5132c377ec1b2fb23322b5f81d0345f662c3a89645ce3a99fa459);
+it creates only new H: sparse files/ADS and preserves old data. No unit tests.
+VM is currently running the preserved NTFS baseline7f926b79 for that fixture;
+all21 checkpoints remain. Do not use the old ADS qualification for this build.
+
 Latest state: VM is Off/RAM0, parent7f926b79-465f-4945-a00b-bdaae2607cd4;
 all21 checkpoints remain. Disk6/H: is verified NTFS after ADS rollback. The
 latest branch also preserves a separate owned ReFS sparse-probe volume; never

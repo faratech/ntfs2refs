@@ -1189,6 +1189,9 @@ impl<'a> SourceBackedShadow<'a> {
         if in_payload {
             let route = route.unwrap();
             let object = &self.tree.objects[route.object_index];
+            let stream = object
+                .stream(&route.stream_name_utf16)
+                .context("source-backed sparse stream absent")?;
             let logical = route.logical_offset + self.position - route.target_physical_offset;
             if self
                 .session
@@ -1198,13 +1201,23 @@ impl<'a> SourceBackedShadow<'a> {
                 if let Some(old) = self.session.take() {
                     old.finish(self.source, self.raw)?;
                 }
-                self.session = Some(crate::ntfs_inspect::PlainStreamRangeSession::open_named(
-                    self.source,
-                    self.raw,
-                    object.record_number,
-                    &route.stream_name_utf16,
-                    route.stream_length,
-                )?);
+                self.session = Some(if stream.sparse.is_some() {
+                    crate::ntfs_inspect::PlainStreamRangeSession::open_sparse_named(
+                        self.source,
+                        self.raw,
+                        object.record_number,
+                        &route.stream_name_utf16,
+                        route.stream_length,
+                    )?
+                } else {
+                    crate::ntfs_inspect::PlainStreamRangeSession::open_named(
+                        self.source,
+                        self.raw,
+                        object.record_number,
+                        &route.stream_name_utf16,
+                        route.stream_length,
+                    )?
+                });
             }
             let session = self.session.as_mut().unwrap();
             ensure!(

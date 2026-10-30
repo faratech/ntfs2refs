@@ -61,8 +61,17 @@ pub(super) fn validate(input: &[Input<'_>], partition: u64) -> io::Result<()> {
                 "named stream count or directory ADS exceeds profile",
             ));
         }
+        if let Some(layout) = object.sparse {
+            if object.directory {
+                return Err(invalid("directory sparse data unsupported"));
+            }
+            layout.validate(object.logical_length())?;
+        }
         let mut names = BTreeSet::new();
         for stream in &object.named_streams {
+            if let Some(layout) = stream.sparse {
+                layout.validate(stream.expected_length)?;
+            }
             if !valid_name(stream.name_utf16)
                 || !names.insert(
                     String::from_utf16(stream.name_utf16)
@@ -111,6 +120,7 @@ pub(super) fn view<'a>(input: &'a [Input<'_>], key: &StreamKey) -> io::Result<In
         source_offset: named.map_or(object.source_offset, |s| s.source_offset),
         source_runs: named.map_or_else(|| object.source_runs.clone(), |s| s.source_runs.clone()),
         named_streams: Vec::new(),
+        sparse: named.map_or(object.sparse, |s| s.sparse),
     })
 }
 
@@ -149,6 +159,8 @@ pub struct Report {
     pub cached_validity: Vec<u8>,
     pub storage_validity: Vec<u8>,
     pub integrity: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sparse: Option<sparse_stream::Observation>,
 }
 
 pub(super) fn observe(
@@ -179,7 +191,8 @@ pub(super) fn observe(
         }
         let allocation = layout::u64_at(standard, 0)?;
         let (first, continuation) = crate::stream_native::retrieval_queries(&file);
-        let resident_data = resident_allocation(named.expected_length, allocation)
+        let resident_data = named.sparse.is_none()
+            && resident_allocation(named.expected_length, allocation)
             && first.native_error == Some(38)
             && first.bytes.is_empty()
             && continuation.is_empty();
@@ -190,28 +203,35 @@ pub(super) fn observe(
             && first.bytes.len() == 16
             && layout::u32_at(&first.bytes, 0)? == 0
             && layout::u64_at(&first.bytes, 8)? == 0;
-        let (retrieval, retrieval_page_proof) = if resident_data || empty {
+        let sparse_empty = named.sparse.is_some()
+            && allocation == 0
+            && first.native_error == Some(38)
+            && first.bytes.is_empty()
+            && continuation.is_empty();
+        let (retrieval, retrieval_page_proof) = if resident_data || empty || sparse_empty {
             (Vec::new(), None)
         } else {
             let cap = crate::retrieval_paging::assemble_queries(&first, &continuation)?;
             let mut end = 0;
             for r in stream_layout::parse_complete_retrieval(&cap.canonical)? {
                 if r.vcn != end
-                    || r.lcn
-                        .is_none_or(|l| l.checked_add(r.clusters).is_none_or(|e| e > clusters))
+                    || match r.lcn {
+                        Some(l) => l.checked_add(r.clusters).is_none_or(|e| e > clusters),
+                        None => named.sparse.is_none(),
+                    }
                 {
                     return Err(invalid("named stream physical mapping invalid"));
                 }
                 end = r.vcn + r.clusters;
             }
-            if end < named.expected_length.div_ceil(4096) {
+            if named.sparse.is_none() && end < named.expected_length.div_ceil(4096) {
                 return Err(invalid("named stream mapping is incomplete"));
             }
             (cap.canonical, Some(cap.proof))
         };
         let mut regions = Vec::new();
         for usage in [1u32, 2] {
-            if allocation == 0 || resident_data {
+            if named.sparse.is_some() || allocation == 0 || resident_data {
                 regions.push(Vec::new());
                 continue;
             }
@@ -243,6 +263,10 @@ pub(super) fn observe(
             return Err(invalid("named stream metadata changed during observation"));
         }
         reports.push(Report {
+            sparse: named
+                .sparse
+                .map(|s| sparse_stream::observe(&file, s, named.expected_length))
+                .transpose()?,
             name_utf16: named.name_utf16.to_vec(),
             expected_sha256: named.expected_sha256.into(),
             before,
@@ -274,6 +298,14 @@ pub(super) fn verify(item: &Input<'_>, object: &ObjectReport, hash: bool) -> io:
             || (!hash && actual.logical_sha256.is_some())
         {
             return Err(invalid("named stream report differs"));
+        }
+        if actual.sparse.as_ref().map(|s| &s.expected) != wanted.sparse
+            || actual
+                .sparse
+                .as_ref()
+                .is_some_and(|s| !s.allocation_matches || !s.data_storage_valid)
+        {
+            return Err(invalid("named sparse evidence differs"));
         }
     }
     Ok(())

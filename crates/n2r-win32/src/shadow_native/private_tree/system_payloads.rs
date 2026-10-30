@@ -68,6 +68,7 @@ pub(super) fn run(
             source_offset: None,
             source_runs: vec![],
             named_streams: Vec::new(),
+            sparse: None,
         };
         create(&format!("{root}{system}"), &item, 0, None)?;
         let file = open(&format!("{root}{system}"), true, false)?;
@@ -123,6 +124,7 @@ pub(super) fn run(
                 source_offset: None,
                 source_runs: vec![],
                 named_streams: Vec::new(),
+                sparse: None,
             };
             create(&path, &target, index, Some(&mut *writer))?;
         }

@@ -160,9 +160,21 @@ pub fn check_metadata(
                 .find(|s| s.name_utf16.is_empty())
                 .context("default stream absent")?;
             if !stream.resident {
+                let expected_allocation = if stream.flags == 0x8000 {
+                    stream
+                        .extents
+                        .iter()
+                        .filter(|extent| extent.physical_offset.is_some())
+                        .try_fold(0u64, |sum, extent| {
+                            sum.checked_add(extent.length)
+                                .context("sparse physical allocation overflow")
+                        })?
+                } else {
+                    stream.allocated_size
+                };
                 ensure!(
                     u64::from_le_bytes(query(s, 1)?[..8].try_into().unwrap())
-                        == stream.allocated_size,
+                        == expected_allocation,
                     "native allocation size differs"
                 );
             }

@@ -154,7 +154,7 @@ pub fn plan_copies(
                 && stream.nonresident
                 && stream.stream_name_utf16.len() <= 255
                 && stream.default_data == stream.stream_name_utf16.is_empty()
-                && stream.attribute_flags == 0
+                && stream.attribute_flags & !0x8000 == 0
                 && stream.lowest_vcn == 0
                 && stream.initialized_length <= stream.logical_length,
             "payload copy requires initialized ordinary nonresident DATA"

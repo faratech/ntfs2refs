@@ -105,6 +105,7 @@ fn main() -> anyhow::Result<()> {
         .map(|object| shadow_native::Input {
             components: &object.path,
             additional_names: &object.additional_names,
+            sparse: object.sparse.as_ref(),
             named_streams: ntfs2refs::general_shadow::native_named_streams(object),
             directory: object.directory,
             times: object.stored_times,

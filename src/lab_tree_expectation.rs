@@ -45,8 +45,10 @@ pub fn capture(request: &Request, events: &mut Vec<NativeEvent>) -> Result<Expec
     ensure!(
         tree.objects
             .iter()
-            .all(|object| object.additional_names.is_empty() && object.named_streams.is_empty()),
-        "legacy lab expectation cannot represent hard-link aliases or named streams"
+            .all(|object| object.additional_names.is_empty()
+                && object.named_streams.is_empty()
+                && object.sparse.is_none()),
+        "legacy lab expectation cannot represent hard-link aliases, named streams or sparse layout"
     );
     let inspection = crate::planner::Inspection {
         schema_version: 1,
@@ -221,6 +223,7 @@ impl Expectation {
             .map(|(i, o)| shadow_native::Input {
                 components: &o.path,
                 additional_names: &[],
+                sparse: None,
                 named_streams: vec![],
                 directory: o.directory,
                 times: o.times,

@@ -2,6 +2,7 @@
 //! source admission, a conversion plan or authority to modify the NTFS source.
 use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security, ntfs_stream_plan};
 use anyhow::{Context, Result, ensure};
+pub use n2r_win32::sparse_layout::{LogicalRange, SparseLayout};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,6 +17,8 @@ pub struct NamedStream {
     pub length: u64,
     /// The inspected content digest, not a native target-verification claim.
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparse: Option<SparseLayout>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -25,6 +28,24 @@ pub struct StreamRef<'a> {
     pub source_extents: &'a [ntfs::Extent],
     pub length: u64,
     pub sha256: &'a str,
+    pub sparse: Option<&'a SparseLayout>,
+}
+impl StreamRef<'_> {
+    pub fn tail_requires_materialization(&self) -> bool {
+        if self.length.is_multiple_of(4096) {
+            return false;
+        }
+        let tail = self.length / 4096 * 4096;
+        self.sparse.is_none_or(|sparse| {
+            sparse.allocated.iter().any(|range| {
+                range.offset <= tail
+                    && range
+                        .offset
+                        .checked_add(range.length)
+                        .is_some_and(|end| tail < end)
+            })
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -57,6 +78,8 @@ pub struct Object {
     /// File streams share the canonical file identity and all hard-link names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_streams: Vec<NamedStream>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sparse: Option<SparseLayout>,
 }
 impl Object {
     /// Read-only flattened view of a validated object's DATA streams. The
@@ -71,6 +94,7 @@ impl Object {
                 source_extents: &self.source_extents,
                 length: self.length,
                 sha256,
+                sparse: self.sparse.as_ref(),
             })
             .into_iter()
             .chain(self.named_streams.iter().map(|stream| StreamRef {
@@ -79,6 +103,7 @@ impl Object {
                 source_extents: &stream.source_extents,
                 length: stream.length,
                 sha256: &stream.sha256,
+                sparse: stream.sparse.as_ref(),
             }))
     }
     pub fn stream(&self, name_utf16: &[u16]) -> Option<StreamRef<'_>> {
@@ -205,7 +230,16 @@ impl ExpectedTree {
                         .stored_times
                         .iter()
                         .all(|time| *time > 0 && *time < i64::MAX as u64)
-                    && object.attributes & !0x2037 == 0
+                    && object.attributes
+                        & !(0x2037
+                            | if object.sparse.is_some()
+                                || object.named_streams.iter().any(|s| s.sparse.is_some())
+                            {
+                                0x200
+                            } else {
+                                0
+                            })
+                        == 0
                     && (object.attributes & 16 != 0) == object.directory
                     && identities.insert((object.record_number, object.sequence_number))
                     && !paths.contains_key(&path_key),
@@ -223,6 +257,24 @@ impl ExpectedTree {
                 !object.directory || object.additional_names.is_empty(),
                 "directory hard links are unsupported"
             );
+            if object.sparse.is_some()
+                || object
+                    .named_streams
+                    .iter()
+                    .any(|stream| stream.sparse.is_some())
+            {
+                ensure!(
+                    !object.directory
+                        && std::iter::once(&object.path)
+                            .chain(object.additional_names.iter())
+                            .all(|path| {
+                                path.first().is_none_or(|name| {
+                                    !name.eq_ignore_ascii_case("System Volume Information")
+                                })
+                            }),
+                    "sparse system-managed or directory streams are unsupported"
+                );
+            }
             for alias in &object.additional_names {
                 ensure!(
                     !alias.is_empty()
@@ -293,7 +345,8 @@ impl ExpectedTree {
                         && object.sha256.is_none()
                         && object.source_offset.is_none()
                         && object.source_extents.is_empty()
-                        && object.named_streams.is_empty(),
+                        && object.named_streams.is_empty()
+                        && object.sparse.is_none(),
                     "expected directory carries stream data"
                 );
             }
@@ -523,10 +576,17 @@ fn derive_profile(
         ];
         ensure!(
             times.iter().all(|t| *t > 0 && *t < i64::MAX as u64)
-                && si.file_attributes & !0x2027 == 0,
+                && si.file_attributes
+                    & !(0x2027
+                        | if f.streams.iter().any(|s| s.flags == 0x8000) {
+                            0x200
+                        } else {
+                            0
+                        })
+                    == 0,
             "unsupported basic metadata"
         );
-        let (source_offset, source_extents, length, sha256) =
+        let (source_offset, source_extents, length, sha256, sparse) =
             match f.streams.iter().find(|s| s.name_utf16.is_empty()) {
                 Some(s) => {
                     let candidate = source_decisions
@@ -538,9 +598,10 @@ fn derive_profile(
                         extents,
                         s.logical_size,
                         Some(s.logical_sha256.clone().context("missing logical digest")?),
+                        candidate.and_then(|decision| decision.sparse.clone()),
                     )
                 }
-                None => (None, Vec::new(), 0, None),
+                None => (None, Vec::new(), 0, None, None),
             };
         let mut named_streams = Vec::new();
         for stream in f
@@ -569,6 +630,7 @@ fn derive_profile(
                     .logical_sha256
                     .clone()
                     .context("missing named stream logical digest")?,
+                sparse: candidate.and_then(|decision| decision.sparse.clone()),
             });
         }
         named_streams.sort_by(|a, b| a.name_utf16.cmp(&b.name_utf16));
@@ -597,6 +659,7 @@ fn derive_profile(
             length,
             sha256,
             named_streams,
+            sparse,
         };
         for stream in object.data_streams() {
             validate_stream_source(stream, &mut source_ranges)?;
@@ -624,7 +687,9 @@ fn planned_stream_source(
     candidate: Option<&ntfs_stream_plan::StreamDecision>,
     resources: ntfs_admission::ResourceProfile,
 ) -> Result<(Option<u64>, Vec<ntfs::Extent>)> {
-    if resources != ntfs_admission::ResourceProfile::AlphaV1 {
+    if resources != ntfs_admission::ResourceProfile::AlphaV1
+        || candidate.is_some_and(|c| c.sparse.is_some())
+    {
         ensure!(
             candidate.is_some_and(
                 |decision| decision.disposition != ntfs_stream_plan::Disposition::Reject
@@ -649,6 +714,54 @@ fn planned_stream_source(
 }
 
 fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>) -> Result<()> {
+    if let Some(sparse) = stream.sparse {
+        sparse.validate(stream.length)?;
+        ensure!(
+            stream.source_offset.is_none(),
+            "sparse stream requires explicit physical islands"
+        );
+        let initialized_end = sparse.initialized_length / 4096 * 4096;
+        let mut expected = Vec::new();
+        for allocated in &sparse.allocated {
+            let end = allocated
+                .offset
+                .checked_add(allocated.length)
+                .context("sparse allocation overflow")?
+                .min(initialized_end);
+            if allocated.offset < end {
+                append_logical(&mut expected, allocated.offset, end - allocated.offset)?;
+            }
+        }
+        let mut actual = Vec::new();
+        let mut previous_end = 0u64;
+        for extent in stream.source_extents {
+            let offset = extent
+                .physical_offset
+                .context("sparse retained island has no physical source")?;
+            let logical_end = extent
+                .logical_offset
+                .checked_add(extent.length)
+                .context("sparse island overflow")?;
+            ensure!(
+                extent.length > 0
+                    && extent.length.is_multiple_of(4096)
+                    && extent.logical_offset.is_multiple_of(4096)
+                    && extent.logical_offset >= previous_end
+                    && logical_end <= initialized_end
+                    && offset.is_multiple_of(4096)
+                    && offset.checked_add(extent.length).is_some(),
+                "invalid sparse initialized physical island"
+            );
+            append_logical(&mut actual, extent.logical_offset, extent.length)?;
+            physical.push((offset, extent.length));
+            previous_end = logical_end;
+        }
+        ensure!(
+            actual == expected,
+            "sparse initialized islands do not cover the allocated VDL prefix"
+        );
+        return Ok(());
+    }
     ensure!(
         stream.source_offset.is_none() || stream.source_extents.is_empty(),
         "expected stream mixes single and fragmented source runs"
@@ -686,6 +799,20 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
             covered <= stream.length / 4096 * 4096,
             "source initialized-cluster prefix differs"
         );
+    }
+    Ok(())
+}
+
+fn append_logical(ranges: &mut Vec<LogicalRange>, offset: u64, length: u64) -> Result<()> {
+    if let Some(last) = ranges.last_mut()
+        && last.offset.checked_add(last.length) == Some(offset)
+    {
+        last.length = last
+            .length
+            .checked_add(length)
+            .context("logical coalescing overflow")?;
+    } else {
+        ranges.push(LogicalRange { offset, length });
     }
     Ok(())
 }

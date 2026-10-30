@@ -79,6 +79,30 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             }
         }
     }
+    if input
+        .iter()
+        .any(|i| i.sparse.is_some() || i.named_streams.iter().any(|s| s.sparse.is_some()))
+    {
+        hash.update(b"n2r-private-sparse-streams-v1");
+        for item in input {
+            hash.update([u8::from(item.sparse.is_some())]);
+            if let Some(s) = item.sparse {
+                bytes(
+                    &mut hash,
+                    &serde_json::to_vec(s).expect("sparse layout serialization"),
+                );
+            }
+            for stream in &item.named_streams {
+                hash.update([u8::from(stream.sparse.is_some())]);
+                if let Some(s) = stream.sparse {
+                    bytes(
+                        &mut hash,
+                        &serde_json::to_vec(s).expect("sparse layout serialization"),
+                    );
+                }
+            }
+        }
+    }
     hash.finalize().into()
 }
 
@@ -111,10 +135,13 @@ pub(super) fn complete(
     tree.pair.validate_with_resource_profile(Some(
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
     ))?;
-    let mut guards = BTreeMap::new();
     for (key, file) in &tree.files {
         let item = streams::view(input, key)?;
-        if item.directory || file.valid_prefix() != item.logical_length() {
+        let expected = tree
+            .sparse_targets
+            .get(key)
+            .map_or(item.logical_length(), |s| s.dense_length);
+        if item.directory || file.valid_prefix() != expected {
             return Err(invalid("private storage-valid stream completion required"));
         }
         tree.validate_stream_shape_named(
@@ -123,11 +150,20 @@ pub(super) fn complete(
             item.components,
             item.logical_length(),
         )?;
+    }
+    let sparse_files = tree.finish_sparse_streams()?;
+    let mut guards = BTreeMap::new();
+    for (key, file) in &tree.files {
         // Exclusive placeholders cannot be reopened for metadata rights while
         // their read/write handle lives. First hold a zero-access identity
         // guard, which blocks delete/rename continuously across the transfer.
         let guard = reopen(file.metadata_handle(), 0)?;
         guards.insert(key.clone(), (info(file.metadata_handle(), 18, 24)?, guard));
+    }
+    for (key, file) in sparse_files {
+        let guard = reopen(&file, 0)?;
+        guards.insert(key, (info(&file, 18, 24)?, guard));
+        drop(file);
     }
     tree.files.clear();
     let mut named_guards = BTreeMap::new();

@@ -31,6 +31,8 @@ pub struct PrivateTree {
     // restores public permissions over uninitialized scratch contents.
     files: BTreeMap<StreamKey, unwritten::PrivatePlaceholder>,
     stream_slots: BTreeMap<usize, StreamKey>,
+    sparse_targets: BTreeMap<StreamKey, sparse_stream::Target>,
+    carrier_directory: Option<sparse_stream::CarrierDirectory>,
     volume: File,
     pair: GeneralSourceShadowBinding,
     source_before: native::GeneralDiskState,
@@ -51,7 +53,61 @@ pub struct PrivateTree {
     construction_enrollment: Option<serde_json::Value>,
 }
 
+fn register_sparse(
+    root: &str,
+    directory: &Option<sparse_stream::CarrierDirectory>,
+    key: StreamKey,
+    target: sparse_stream::Target,
+    files: &mut BTreeMap<StreamKey, unwritten::PrivatePlaceholder>,
+    targets: &mut BTreeMap<StreamKey, sparse_stream::Target>,
+    partition: u64,
+) -> io::Result<()> {
+    if target.dense_length != 0 {
+        let dir = directory
+            .as_ref()
+            .ok_or_else(|| invalid("sparse carrier directory missing"))?;
+        let mut hash = Sha256::new();
+        for unit in &key.name_utf16 {
+            hash.update(unit.to_le_bytes());
+        }
+        let name = format!(
+            "carrier-{}-{}.bin",
+            key.object_index,
+            hex::encode(hash.finalize())
+        );
+        let carrier = unwritten::PrivatePlaceholder::allocate_carrier(
+            root,
+            &[dir.component.clone(), name],
+            target.dense_length,
+            partition,
+        )?;
+        files.insert(key.clone(), carrier);
+    }
+    targets.insert(key, target);
+    Ok(())
+}
+
 impl PrivateTree {
+    fn placement_view<'a>(&self, input: &'a [Input<'_>], key: &StreamKey) -> io::Result<Input<'a>> {
+        let item = streams::view(input, key)?;
+        if let Some(target) = self.sparse_targets.get(key) {
+            target.placement_view(item)
+        } else {
+            Ok(item)
+        }
+    }
+    fn finish_sparse_streams(&mut self) -> io::Result<BTreeMap<StreamKey, File>> {
+        let mut result = BTreeMap::new();
+        for (key, target) in std::mem::take(&mut self.sparse_targets) {
+            let file = target.finish(self.files.remove(&key))?;
+            result.insert(key, file);
+        }
+        if let Some(directory) = self.carrier_directory.take() {
+            directory.retire()?;
+        }
+        self.volume.sync_all()?;
+        Ok(result)
+    }
     fn file_by_slot(&self, slot: usize) -> io::Result<&unwritten::PrivatePlaceholder> {
         self.stream_slots
             .get(&slot)
@@ -161,6 +217,23 @@ impl PrivateTree {
         length: u64,
     ) -> io::Result<()> {
         self.require_source_excluded()?;
+        let key = StreamKey::named(index, name);
+        if let Some(target) = self.sparse_targets.get(&key) {
+            if target.path != streams::path(&self.pair.shadow.volume_path()?, components, name)?
+                || target.logical_length != length
+            {
+                return Err(invalid("sparse stream identity differs"));
+            }
+            if let Some(file) = self.files.get(&key) {
+                if file.logical_length() != target.dense_length {
+                    return Err(invalid("sparse carrier length differs"));
+                }
+                file.check_placements()?;
+            } else if target.dense_length != 0 {
+                return Err(invalid("sparse carrier missing"));
+            }
+            return Ok(());
+        }
         let file = self
             .files
             .get(&StreamKey::named(index, name))
@@ -197,6 +270,33 @@ impl PrivateTree {
         output: &mut [u8],
     ) -> io::Result<()> {
         let key = StreamKey::named(index, name);
+        if !self.placement_complete {
+            return Err(invalid("live complete placement required for sparse read"));
+        }
+        if let Some(target) = self.sparse_targets.get(&key) {
+            let parts = target.parts(offset, output.len() as u64, false)?;
+            if parts.iter().any(|part| {
+                self.original_coordinates.get(&key).is_some_and(|ranges| {
+                    ranges.iter().any(|(start, _, length)| {
+                        part.dense < *start + *length && *start < part.dense + part.length
+                    })
+                })
+            }) {
+                return Err(invalid("sparse shadow read overlaps retained source bytes"));
+            }
+            let file = self
+                .files
+                .get_mut(&key)
+                .ok_or_else(|| invalid("sparse materialization carrier absent"))?;
+            for part in parts {
+                let local = (part.logical - offset) as usize;
+                file.read_initialized_at(
+                    part.dense,
+                    &mut output[local..local + part.length as usize],
+                )?;
+            }
+            return Ok(());
+        }
         if !self.placement_complete {
             return Err(invalid("live complete placement required for hybrid read"));
         }
@@ -313,6 +413,22 @@ impl PrivateTree {
         bytes: u64,
     ) -> io::Result<()> {
         self.require_source_excluded()?;
+        let key = StreamKey::named(object_index, name);
+        if let Some(target) = self.sparse_targets.get(&key) {
+            if target.dense_length == 0 {
+                return Ok(());
+            }
+            if self
+                .files
+                .get(&key)
+                .is_none_or(|f| f.valid_prefix() != target.dense_length)
+            {
+                return Err(invalid(
+                    "sparse carrier must be prepared as dense data first",
+                ));
+            }
+            return Ok(());
+        }
         self.files
             .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private user file absent"))?
@@ -336,6 +452,20 @@ impl PrivateTree {
         bytes: u64,
     ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
+        let key = StreamKey::named(object_index, name);
+        if let Some(target) = self.sparse_targets.get(&key) {
+            if target.dense_length != 0
+                && self
+                    .files
+                    .get(&key)
+                    .is_none_or(|f| f.valid_prefix() != target.dense_length)
+            {
+                return Err(invalid("sparse carrier is not prepared"));
+            }
+            return Ok(
+                serde_json::json!({"object_index":object_index,"stream_name_utf16":name,"sparse_carrier_prepared":true}),
+            );
+        }
         self.files
             .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private tail file absent"))?
@@ -371,6 +501,42 @@ impl PrivateTree {
     ) -> io::Result<serde_json::Value> {
         let key = StreamKey::named(object_index, name);
         self.require_source_excluded()?;
+        if let Some(target) = self.sparse_targets.get(&key) {
+            if target.logical_length != logical_length
+                || target.path != streams::path(&self.pair.shadow.volume_path()?, components, name)?
+            {
+                return Err(invalid("sparse materialization identity differs"));
+            }
+            let parts = target.parts(offset, bytes.len() as u64, false)?;
+            if self.placement_complete
+                && parts.iter().any(|part| {
+                    self.original_coordinates.get(&key).is_some_and(|ranges| {
+                        ranges.iter().any(|(start, _, length)| {
+                            part.dense < *start + *length && *start < part.dense + part.length
+                        })
+                    })
+                })
+            {
+                return Err(invalid(
+                    "sparse materialization overlaps retained source reference",
+                ));
+            }
+            let file = self
+                .files
+                .get_mut(&key)
+                .ok_or_else(|| invalid("sparse materialization carrier absent"))?;
+            let mut proofs = Vec::new();
+            for part in parts {
+                let local = (part.logical - offset) as usize;
+                proofs.push(
+                    file.initialize_at(part.dense, &bytes[local..local + part.length as usize])?,
+                );
+            }
+            self.require_source_excluded()?;
+            return Ok(
+                serde_json::json!({"object_index":object_index,"stream_name_utf16":name,"parts":proofs}),
+            );
+        }
         let end = offset
             .checked_add(bytes.len() as u64)
             .ok_or_else(|| invalid("materialization range overflow"))?;
@@ -826,6 +992,19 @@ fn allocate_checked(
     pair.shadow
         .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
     let mut files = BTreeMap::new();
+    let mut sparse_targets = BTreeMap::new();
+    let needs_carriers = input.iter().any(|item| {
+        item.sparse.is_some_and(|s| !s.allocated.is_empty())
+            || item
+                .named_streams
+                .iter()
+                .any(|s| s.sparse.is_some_and(|v| !v.allocated.is_empty()))
+    });
+    let carrier_directory = if needs_carriers {
+        Some(sparse_stream::CarrierDirectory::create(&root)?)
+    } else {
+        None
+    };
     let mut metadata_targets = BTreeMap::new();
     metadata_targets.insert(0, root_handle);
     // Pin every formatter object the constructor admitted. Subsequent system
@@ -876,6 +1055,7 @@ fn allocate_checked(
                 source_offset: None,
                 source_runs: vec![],
                 named_streams: Vec::new(),
+                sparse: None,
             };
             create(
                 &format!("{root}{}", item.components.join("\\")),
@@ -888,24 +1068,72 @@ fn allocate_checked(
                 open(&format!("{root}{}", item.components.join("\\")), true, true)?,
             );
         } else {
-            let file = unwritten::PrivatePlaceholder::allocate_named(
-                &root,
-                item.components,
-                item.logical_length(),
-                pair.shadow.identity.partition_bytes,
-            )?;
-            for named in &item.named_streams {
-                let stream = unwritten::PrivatePlaceholder::allocate_named_stream(
+            let key = StreamKey::unnamed(index);
+            if let Some(layout) = item.sparse {
+                let target = sparse_stream::Target::create(
                     &root,
                     item.components,
-                    named.name_utf16,
-                    named.expected_length,
-                    pair.shadow.identity.partition_bytes,
-                    file.metadata_handle(),
+                    &[],
+                    item.logical_length(),
+                    layout,
+                    None,
                 )?;
-                files.insert(StreamKey::named(index, named.name_utf16), stream);
+                register_sparse(
+                    &root,
+                    &carrier_directory,
+                    key.clone(),
+                    target,
+                    &mut files,
+                    &mut sparse_targets,
+                    pair.shadow.identity.partition_bytes,
+                )?;
+            } else {
+                files.insert(
+                    key.clone(),
+                    unwritten::PrivatePlaceholder::allocate_named(
+                        &root,
+                        item.components,
+                        item.logical_length(),
+                        pair.shadow.identity.partition_bytes,
+                    )?,
+                );
             }
-            files.insert(StreamKey::unnamed(index), file);
+            for named in &item.named_streams {
+                let base = if let Some(target) = sparse_targets.get(&key) {
+                    &target.file
+                } else {
+                    files[&key].metadata_handle()
+                };
+                if let Some(layout) = named.sparse {
+                    let target = sparse_stream::Target::create(
+                        &root,
+                        item.components,
+                        named.name_utf16,
+                        named.expected_length,
+                        layout,
+                        Some(base),
+                    )?;
+                    register_sparse(
+                        &root,
+                        &carrier_directory,
+                        StreamKey::named(index, named.name_utf16),
+                        target,
+                        &mut files,
+                        &mut sparse_targets,
+                        pair.shadow.identity.partition_bytes,
+                    )?;
+                } else {
+                    let stream = unwritten::PrivatePlaceholder::allocate_named_stream(
+                        &root,
+                        item.components,
+                        named.name_utf16,
+                        named.expected_length,
+                        pair.shadow.identity.partition_bytes,
+                        base,
+                    )?;
+                    files.insert(StreamKey::named(index, named.name_utf16), stream);
+                }
+            }
         }
         objects.push(
             serde_json::json!({"object_index":index,"components":item.components,
@@ -931,6 +1159,8 @@ fn allocate_checked(
     let tree = PrivateTree {
         files,
         stream_slots,
+        sparse_targets,
+        carrier_directory,
         volume,
         pair: pair.clone(),
         source_before,
@@ -952,7 +1182,7 @@ fn allocate_checked(
     Ok(tree)
 }
 
-fn private_descriptor() -> io::Result<Vec<u8>> {
+pub(super) fn private_descriptor() -> io::Result<Vec<u8>> {
     use windows_sys::Win32::{
         Foundation::LocalFree,
         Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,

@@ -58,9 +58,17 @@ impl SourceBackedRoutes {
                 let ns = query_bytes(&named.before, 1, 24)?;
                 let length = layout::u64_at(ns, 8)?;
                 let prefix = length / 4096 * 4096;
-                if prefix == 0 {
+                let sparse = named.sparse.as_ref();
+                if prefix == 0 || (sparse.is_some() && named.retrieval.is_empty()) {
                     continue;
                 }
+                let needed = sparse.map_or(prefix, |s| {
+                    s.expected
+                        .allocated
+                        .iter()
+                        .map(|r| r.length.min(prefix.saturating_sub(r.offset)))
+                        .sum()
+                });
                 if named.resident_data || named.retrieval_page_proof.is_none() {
                     return Err(invalid("named payload has no complete native map"));
                 }
@@ -79,12 +87,17 @@ impl SourceBackedRoutes {
                         .checked_mul(4096)
                         .ok_or_else(|| invalid("named length overflow"))?
                         .min(prefix - at);
-                    let offset = run
-                        .lcn
-                        .ok_or_else(|| invalid("named prefix hole"))?
+                    let Some(lcn) = run.lcn else {
+                        if sparse.is_some() {
+                            continue;
+                        } else {
+                            return Err(invalid("named prefix hole"));
+                        }
+                    };
+                    let offset = lcn
                         .checked_mul(4096)
                         .ok_or_else(|| invalid("named LCN overflow"))?;
-                    if at != covered || bytes == 0 {
+                    if (sparse.is_none() && at != covered) || bytes == 0 {
                         return Err(invalid("named prefix coverage differs"));
                     }
                     entries.push(PayloadRoute {
@@ -104,16 +117,24 @@ impl SourceBackedRoutes {
                     }
                     covered += bytes;
                 }
-                if covered != prefix {
+                if covered != needed {
                     return Err(invalid("named full-cluster prefix incomplete"));
                 }
-                payload_bytes += prefix;
+                payload_bytes += needed;
             }
             let length = layout::u64_at(standard, 8)?;
             let prefix = length / 4096 * 4096;
-            if prefix == 0 {
+            let sparse = object.sparse.as_ref();
+            if prefix == 0 || (sparse.is_some() && object.retrieval.is_empty()) {
                 continue;
             }
+            let needed = sparse.map_or(prefix, |s| {
+                s.expected
+                    .allocated
+                    .iter()
+                    .map(|r| r.length.min(prefix.saturating_sub(r.offset)))
+                    .sum()
+            });
             let expected = observed.expected_stream_sha256[index]
                 .as_ref()
                 .ok_or_else(|| invalid("protected stream digest expectation absent"))?;
@@ -137,12 +158,17 @@ impl SourceBackedRoutes {
                     .checked_mul(4096)
                     .ok_or_else(|| invalid("protected payload length overflow"))?
                     .min(prefix - at);
-                let offset = run
-                    .lcn
-                    .ok_or_else(|| invalid("protected payload prefix contains a hole"))?
+                let Some(lcn) = run.lcn else {
+                    if sparse.is_some() {
+                        continue;
+                    } else {
+                        return Err(invalid("protected payload prefix contains a hole"));
+                    }
+                };
+                let offset = lcn
                     .checked_mul(4096)
                     .ok_or_else(|| invalid("protected payload LCN overflow"))?;
-                if at != covered || bytes == 0 {
+                if (sparse.is_none() && at != covered) || bytes == 0 {
                     return Err(invalid("protected payload prefix coverage differs"));
                 }
                 entries.push(PayloadRoute {
@@ -164,11 +190,11 @@ impl SourceBackedRoutes {
                     .checked_add(bytes)
                     .ok_or_else(|| invalid("protected prefix total overflow"))?;
             }
-            if covered != prefix {
+            if covered != needed {
                 return Err(invalid("protected full-cluster prefix incomplete"));
             }
             payload_bytes = payload_bytes
-                .checked_add(prefix)
+                .checked_add(needed)
                 .ok_or_else(|| invalid("protected payload total overflow"))?;
         }
         entries.sort_unstable_by_key(|route| route.target_physical_offset);
@@ -365,23 +391,51 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
         let mut mapped = file.tracked_mappings().to_vec();
         mapped.sort_unstable_by_key(|r| r.0);
         let mut cursor = 0u64;
+        let mut stream_payload = 0u64;
         for (vcn, lcn, clusters) in mapped {
             let length = u64::from(clusters) * 4096;
             if vcn * 4096 != cursor || length == 0 || cursor + length > prefix {
                 return Err(invalid("source-backed logical coverage differs"));
             }
-            entries.push(PayloadRoute {
-                object_index: index,
-                stream_name_utf16: key.name_utf16.clone(),
-                logical_offset: cursor,
-                target_physical_offset: lcn * 4096,
-                length,
-                stream_length: file.logical_length(),
-                components: item.components.to_vec(),
-                expected_sha256: expected.to_owned(),
-                native_file_id: info(file.metadata_handle(), 18, 24)?[8..24].to_vec(),
-                expected_link_count: super::super::hard_links::count(&item)?,
-            });
+            let parts = if let Some(target) = tree.sparse_targets.get(key) {
+                target.parts(cursor, length, true)?
+            } else {
+                vec![sparse_stream::Island {
+                    logical: cursor,
+                    dense: cursor,
+                    length,
+                }]
+            };
+            let logical_length = tree
+                .sparse_targets
+                .get(key)
+                .map_or(file.logical_length(), |t| t.logical_length);
+            let identity = if let Some(target) = tree.sparse_targets.get(key) {
+                info(&target.file, 18, 24)?
+            } else {
+                info(file.metadata_handle(), 18, 24)?
+            };
+            for part in parts {
+                let n = part
+                    .length
+                    .min((logical_length / 4096 * 4096).saturating_sub(part.logical));
+                if n == 0 {
+                    continue;
+                }
+                entries.push(PayloadRoute {
+                    object_index: index,
+                    stream_name_utf16: key.name_utf16.clone(),
+                    logical_offset: part.logical,
+                    target_physical_offset: lcn * 4096 + part.dense - cursor,
+                    length: n,
+                    stream_length: logical_length,
+                    components: item.components.to_vec(),
+                    expected_sha256: expected.to_owned(),
+                    native_file_id: identity[8..24].to_vec(),
+                    expected_link_count: super::super::hard_links::count(&item)?,
+                });
+                stream_payload += n;
+            }
             if entries.len() > 4096 {
                 return Err(invalid("source-backed route budget exceeded"));
             }
@@ -391,7 +445,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
             return Err(invalid("source-backed full-cluster prefix incomplete"));
         }
         payload_bytes = payload_bytes
-            .checked_add(prefix)
+            .checked_add(stream_payload)
             .ok_or_else(|| invalid("payload total overflow"))?;
     }
     entries.sort_unstable_by_key(|r| r.target_physical_offset);

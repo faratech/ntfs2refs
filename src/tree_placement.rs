@@ -649,6 +649,7 @@ mod tests {
                     source_offset: Some(4096),
                     source_extents: vec![],
                     named_streams: vec![],
+                    sparse: None,
                     length: 8192,
                     sha256: Some(sha.clone()),
                 }],

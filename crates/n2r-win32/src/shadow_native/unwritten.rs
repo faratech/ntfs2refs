@@ -80,6 +80,7 @@ pub(super) struct PrivatePlaceholder {
     move_submissions: usize,
     initial_mapping_tracked: bool,
     retrieval_extents: usize,
+    retire_identity: Option<Vec<u8>>,
 }
 
 impl PrivatePlaceholder {
@@ -109,7 +110,7 @@ impl PrivatePlaceholder {
         bytes: u64,
         partition: u64,
     ) -> io::Result<Self> {
-        Self::allocate_data(root, components, &[], bytes, partition)
+        Self::allocate_data(root, components, &[], bytes, partition, false)
     }
 
     pub fn allocate_named_stream(
@@ -124,7 +125,7 @@ impl PrivatePlaceholder {
             return Err(invalid("invalid private stream name"));
         }
         let identity = super::info(base, 18, 24)?;
-        let stream = Self::allocate_data(root, components, name, bytes, partition)?;
+        let stream = Self::allocate_data(root, components, name, bytes, partition, false)?;
         if super::info(base, 18, 24)? != identity
             || super::info(stream.metadata_handle(), 18, 24)? != identity
         {
@@ -141,6 +142,7 @@ impl PrivatePlaceholder {
         stream_name: &[u16],
         bytes: u64,
         partition: u64,
+        retire: bool,
     ) -> io::Result<Self> {
         if components.is_empty()
             || components.len() > 16
@@ -179,7 +181,7 @@ impl PrivatePlaceholder {
         let handle = unsafe {
             CreateFileW(
                 name.as_ptr(),
-                0xc0020000,
+                0xc0020000 | if retire { 0x10000 } else { 0 },
                 0,
                 &sa,
                 1,
@@ -217,6 +219,11 @@ impl PrivatePlaceholder {
             }
         }
         file.set_len(bytes)?;
+        let retire_identity = if retire {
+            Some(super::info(&file, 18, 24)?)
+        } else {
+            None
+        };
         Ok(Self {
             file,
             path,
@@ -232,7 +239,42 @@ impl PrivatePlaceholder {
             move_submissions: 0,
             initial_mapping_tracked: false,
             retrieval_extents: 0,
+            retire_identity,
         })
+    }
+    pub(super) fn allocate_carrier(
+        root: &str,
+        components: &[String],
+        bytes: u64,
+        partition: u64,
+    ) -> io::Result<Self> {
+        Self::allocate_data(root, components, &[], bytes, partition, true)
+    }
+    pub(super) fn retire(self) -> io::Result<()> {
+        let expected = self
+            .retire_identity
+            .as_ref()
+            .ok_or_else(|| invalid("only constructor-owned carrier may be retired"))?;
+        if super::info(&self.file, 18, 24)? != *expected
+            || crate::layout::u32_at(&super::info(&self.file, 1, 24)?, 16)? != 1
+        {
+            return Err(invalid("carrier identity changed before retirement"));
+        }
+        let disposition =
+            windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO { DeleteFile: true };
+        if unsafe {
+            SetFileInformationByHandle(
+                self.file.as_raw_handle(),
+                4,
+                (&disposition as *const windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO).cast(),
+                mem::size_of_val(&disposition) as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        drop(self);
+        Ok(())
     }
 
     /// Metadata-only access for the enclosing native module's existing query

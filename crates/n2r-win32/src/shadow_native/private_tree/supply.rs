@@ -16,11 +16,18 @@ pub struct SupplyRange {
 pub struct SupplyPlan {
     materialize: Vec<SupplyRange>,
     source_reference: Vec<SupplyRange>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    holes: Vec<SupplyRange>,
+    #[serde(skip_serializing_if = "zero")]
+    pub hole_bytes: u64,
     pub materialize_bytes: u64,
     pub source_reference_bytes: u64,
     pub logical_bytes: u64,
     pub payload_contents_verified: bool,
     pub conversion_qualified: bool,
+}
+fn zero(value: &u64) -> bool {
+    *value == 0
 }
 impl SupplyPlan {
     pub fn materialization_ranges(&self) -> &[SupplyRange] {
@@ -29,6 +36,52 @@ impl SupplyPlan {
     pub fn source_reference_ranges(&self) -> &[SupplyRange] {
         &self.source_reference
     }
+    pub fn hole_ranges(&self) -> &[SupplyRange] {
+        &self.holes
+    }
+}
+
+fn emit(
+    result: &mut SupplyPlan,
+    tree: &PrivateTree,
+    key: &StreamKey,
+    offset: u64,
+    length: u64,
+    physical: Option<u64>,
+) -> io::Result<()> {
+    let parts = if let Some(target) = tree.sparse_targets.get(key) {
+        target.parts(offset, length, true)?
+    } else {
+        vec![sparse_stream::Island {
+            logical: offset,
+            dense: offset,
+            length,
+        }]
+    };
+    for part in parts {
+        let n = tree.sparse_targets.get(key).map_or(part.length, |target| {
+            part.length
+                .min(target.logical_length.saturating_sub(part.logical))
+        });
+        if n == 0 && (length != 0 || tree.sparse_targets.contains_key(key)) {
+            continue;
+        }
+        let range = SupplyRange {
+            object_index: key.object_index,
+            stream_name_utf16: key.name_utf16.clone(),
+            logical_offset: part.logical,
+            length: n,
+            source_physical_offset: physical.map(|p| p + part.dense - offset),
+        };
+        if physical.is_some() {
+            result.source_reference_bytes += n;
+            result.source_reference.push(range);
+        } else {
+            result.materialize_bytes += n;
+            result.materialize.push(range);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn plan(tree: &PrivateTree) -> io::Result<SupplyPlan> {
@@ -41,6 +94,8 @@ pub(super) fn plan(tree: &PrivateTree) -> io::Result<SupplyPlan> {
     let mut result = SupplyPlan {
         materialize: vec![],
         source_reference: vec![],
+        holes: vec![],
+        hole_bytes: 0,
         materialize_bytes: 0,
         source_reference_bytes: 0,
         logical_bytes: 0,
@@ -73,56 +128,48 @@ pub(super) fn plan(tree: &PrivateTree) -> io::Result<SupplyPlan> {
                 ));
             }
             if logical > cursor {
-                result.materialize.push(SupplyRange {
-                    object_index: key.object_index,
-                    stream_name_utf16: key.name_utf16.clone(),
-                    logical_offset: cursor,
-                    length: logical - cursor,
-                    source_physical_offset: None,
-                });
-                result.materialize_bytes =
-                    result
-                        .materialize_bytes
-                        .checked_add(logical - cursor)
-                        .ok_or_else(|| invalid("materialization total overflow"))?;
+                emit(&mut result, tree, key, cursor, logical - cursor, None)?;
             }
-            result.source_reference.push(SupplyRange {
-                object_index: key.object_index,
-                stream_name_utf16: key.name_utf16.clone(),
-                logical_offset: logical,
-                length: bytes,
-                source_physical_offset: Some(physical),
-            });
-            result.source_reference_bytes = result
-                .source_reference_bytes
-                .checked_add(bytes)
-                .ok_or_else(|| invalid("source reference total overflow"))?;
+            emit(&mut result, tree, key, logical, bytes, Some(physical))?;
             cursor = end;
         }
         if cursor < length || length == 0 {
-            result.materialize.push(SupplyRange {
-                object_index: key.object_index,
-                stream_name_utf16: key.name_utf16.clone(),
-                logical_offset: cursor,
-                length: length - cursor,
-                source_physical_offset: None,
-            });
-            result.materialize_bytes = result
-                .materialize_bytes
-                .checked_add(length - cursor)
-                .ok_or_else(|| invalid("materialization total overflow"))?;
+            emit(&mut result, tree, key, cursor, length - cursor, None)?;
         }
         result.logical_bytes = result
             .logical_bytes
-            .checked_add(length)
+            .checked_add(
+                tree.sparse_targets
+                    .get(key)
+                    .map_or(length, |t| t.logical_length),
+            )
             .ok_or_else(|| invalid("logical total overflow"))?;
         if result.materialize.len() + result.source_reference.len() > 4096 {
             return Err(invalid("supply range budget exceeded"));
         }
     }
+    for (key, target) in &tree.sparse_targets {
+        if !tree.files.contains_key(key) {
+            result.logical_bytes += target.logical_length;
+        }
+        for hole in &target.layout.holes {
+            result.holes.push(SupplyRange {
+                object_index: key.object_index,
+                stream_name_utf16: key.name_utf16.clone(),
+                logical_offset: hole.offset,
+                length: hole.length,
+                source_physical_offset: None,
+            });
+            result.hole_bytes += hole.length;
+        }
+    }
+    if result.materialize.len() + result.source_reference.len() + result.holes.len() > 4096 {
+        return Err(invalid("sparse supply range budget exceeded"));
+    }
     if result
         .materialize_bytes
         .checked_add(result.source_reference_bytes)
+        .and_then(|n| n.checked_add(result.hole_bytes))
         != Some(result.logical_bytes)
     {
         return Err(invalid(

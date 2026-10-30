@@ -118,7 +118,7 @@ pub(super) fn complete_owned_metadata(
                 .any(|part| !crate::shadow_names::valid_unicode_component(part))
             || !paths.insert(crate::shadow_names::conservative_path_key(item.components))
             || item.times.iter().any(|v| *v == 0 || *v >= i64::MAX as u64)
-            || item.attributes & !0x2037 != 0
+            || !attributes_allowed(item)
             || (item.attributes & 16 != 0) != item.directory
         {
             return Err(invalid(
@@ -243,7 +243,7 @@ pub(super) fn complete_owned_metadata(
         let handle = &handles[&index];
         let actual = snapshot(handle);
         if query_bytes(&actual, 18, 24)? != identities[&index]
-            || query_bytes(&actual, 0, 40)? != basic_bytes(item)
+            || !basic_matches(item, query_bytes(&actual, 0, 40)?)
             || !security_matches(item, &actual, &same_security)?
         {
             return Err(invalid("final owned source metadata readback differs"));
@@ -280,6 +280,9 @@ pub(super) fn complete_owned_metadata(
                 false,
                 pair.shadow.identity.partition_bytes / 4096,
             )?;
+            if let Some(layout) = item.sparse {
+                super::sparse_stream::observe(handle, layout, item.logical_length())?;
+            }
         }
     }
     target.revalidate_route(&mut events)?;
@@ -350,7 +353,7 @@ pub fn run(
                 .any(|s| !crate::shadow_names::valid_unicode_component(s))
             || !names.insert(item.components.to_vec())
             || item.times.iter().any(|v| *v == 0 || *v >= i64::MAX as u64)
-            || item.attributes & !0x2037 != 0
+            || !attributes_allowed(item)
             || (item.attributes & 16 != 0) != item.directory
         {
             return Err(invalid("invalid bounded cache-refresh input"));
@@ -612,7 +615,7 @@ pub fn run(
         let actual = snapshot(&handle);
         if Some(query_bytes(&actual, 18, 24)?[8..24].to_vec()).as_ref()
             != identities.get(item.components)
-            || query_bytes(&actual, 0, 40)? != basic_bytes(item)
+            || !basic_matches(item, query_bytes(&actual, 0, 40)?)
             || !security_matches(item, &actual, &same_security)?
         {
             return Err(invalid(
@@ -633,6 +636,9 @@ pub fn run(
                 false,
                 pair.shadow.identity.partition_bytes / 4096,
             )?;
+            if let Some(layout) = item.sparse {
+                super::sparse_stream::observe(&handle, layout, item.logical_length())?;
+            }
         }
         metadata_verified += 1;
     }

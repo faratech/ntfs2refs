@@ -73,6 +73,12 @@ struct Counters {
     files: usize,
     #[serde(skip_serializing_if = "zero_count")]
     named_streams: usize,
+    #[serde(skip_serializing_if = "zero_count")]
+    sparse_streams: usize,
+    #[serde(skip_serializing_if = "zero_count")]
+    all_hole_sparse_streams: usize,
+    #[serde(skip_serializing_if = "zero_bytes")]
+    sparse_carrier_bytes: u64,
     desired_runs: usize,
     desired_runs_limit: usize,
     initial_tracked_extents: usize,
@@ -106,6 +112,35 @@ struct Counters {
 fn zero_count(value: &usize) -> bool {
     *value == 0
 }
+fn zero_bytes(value: &u64) -> bool {
+    *value == 0
+}
+
+fn placement_path(tree: &PrivateTree, key: &StreamKey, item: &Input<'_>) -> io::Result<String> {
+    if tree.sparse_targets.contains_key(key) {
+        use sha2::Digest as _;
+        let directory = tree
+            .carrier_directory
+            .as_ref()
+            .ok_or_else(|| invalid("sparse placement carrier directory absent"))?;
+        let mut hash = sha2::Sha256::new();
+        for unit in &key.name_utf16 {
+            hash.update(unit.to_le_bytes());
+        }
+        Ok(format!(
+            "{}\\carrier-{}-{}.bin",
+            directory.path,
+            key.object_index,
+            hex::encode(hash.finalize())
+        ))
+    } else {
+        streams::path(
+            &tree.pair.shadow.volume_path()?,
+            item.components,
+            &key.name_utf16,
+        )
+    }
+}
 
 /// Slots are temporary planner IDs. A default stream keeps its historical
 /// object index; every named stream has a distinct synthetic slot. No two
@@ -127,13 +162,35 @@ fn validate_stream_slots(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<
         {
             return Err(invalid("stream placement slot is ambiguous or misbound"));
         }
-        let stream = streams::view(input, key)?;
-        if stream.directory {
+        let original = streams::view(input, key)?;
+        if original.sparse.is_some() != tree.sparse_targets.contains_key(key) {
+            return Err(invalid("sparse stream and carrier association differs"));
+        }
+        let stream = tree.placement_view(input, key)?;
+        if stream.directory || stream.sparse.is_some() {
             return Err(invalid("directory carries a data placement slot"));
         }
     }
     if tree.files.keys().any(|key| !keys.contains(key)) {
         return Err(invalid("stream placement omits a placeholder"));
+    }
+    for (key, target) in &tree.sparse_targets {
+        let original = streams::view(input, key)?;
+        target.layout.validate(target.logical_length)?;
+        if original.sparse != Some(&target.layout)
+            || original.logical_length() != target.logical_length
+            || target.path
+                != streams::path(
+                    &tree.pair.shadow.volume_path()?,
+                    original.components,
+                    &key.name_utf16,
+                )?
+            || target.dense_length != target.layout.allocated_bytes()?
+            || (target.dense_length == 0 && (tree.files.contains_key(key) || keys.contains(key)))
+            || (target.dense_length != 0 && (!tree.files.contains_key(key) || !keys.contains(key)))
+        {
+            return Err(invalid("sparse target or dense carrier coverage differs"));
+        }
     }
     Ok(())
 }
@@ -686,6 +743,20 @@ pub(super) fn run(
             .keys()
             .filter(|key| !key.name_utf16.is_empty())
             .count(),
+        sparse_streams: tree.sparse_targets.len(),
+        all_hole_sparse_streams: tree
+            .sparse_targets
+            .values()
+            .filter(|target| target.dense_length == 0)
+            .count(),
+        sparse_carrier_bytes: tree
+            .sparse_targets
+            .values()
+            .try_fold(0u64, |bytes, target| {
+                bytes
+                    .checked_add(target.dense_length)
+                    .ok_or_else(|| invalid("sparse carrier byte count overflow"))
+            })?,
         desired_runs_limit: MAX_ADMITTED_RANGES,
         tracked_extents_limit: MAX_TRACKED_EXTENTS,
         owned_intersecting_desired_limit: MAX_OWNED_RANGES,
@@ -703,12 +774,8 @@ pub(super) fn run(
             .files
             .get(key)
             .ok_or_else(|| invalid("stream placement placeholder absent"))?;
-        let item = streams::view(input, key)?;
-        let path = streams::path(
-            &tree.pair.shadow.volume_path()?,
-            item.components,
-            &key.name_utf16,
-        )?;
+        let item = tree.placement_view(input, key)?;
+        let path = placement_path(tree, key, &item)?;
         if item.directory
             || file.path != path
             || file.logical_length() != item.logical_length()
@@ -745,6 +812,20 @@ pub(super) fn run(
     let mut evidence = Evidence::default();
     let mut move_bytes = 0u64;
     let mut parked = Vec::new();
+    if counters.sparse_streams != 0 {
+        let mapping = serde_json::json!({"strategy":"sparse-carrier-coordinate-map",
+            "sparse_stream_placement_offsets_are_dense_carrier_offsets":true,
+            "streams":tree.sparse_targets.iter().map(|(key,target)|serde_json::json!({
+                "canonical_object_index":key.object_index,"stream_name_utf16":key.name_utf16,
+                "logical_length":target.logical_length,"dense_carrier_bytes":target.dense_length,
+                "islands":target.islands.iter().map(|island|serde_json::json!({"logical_offset":island.logical,"dense_offset":island.dense,"length":island.length})).collect::<Vec<_>>()
+            })).collect::<Vec<_>>()});
+        if let Err(message) = evidence.charge(&mapping) {
+            return Err(refuse(tree, &counters, message));
+        }
+        counters.placement_artifact_bytes = evidence.saved_bytes;
+        parked.push(mapping);
+    }
     if counters.named_streams != 0 {
         let mapping = serde_json::json!({
             "strategy":"named-stream-slot-map",

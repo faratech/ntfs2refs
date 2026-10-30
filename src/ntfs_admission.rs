@@ -15,8 +15,8 @@ use std::collections::BTreeSet;
 
 pub const PROFILE: &str = "existing-data-tree-v1";
 pub const ORDINARY_PROFILE: &str = "ordinary-data-tree-v2";
-/// A source-model candidate must not silently become public ADS conversion
-/// support before the native stream graph and its verifier are connected.
+/// Source sparse metadata can be modeled before the native sparse graph is
+/// connected; that does not make a sparse source eligible for conversion.
 
 /// Conservative Win32 DATA-stream names, preserved as their exact UTF-16.
 /// Device basenames are not relevant after the file's stream separator, but
@@ -773,9 +773,13 @@ fn user_issues_profile(
                 && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                 && ntfs_namespace::is_i30(&a.name_utf16);
             let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
+            let sparse_data = ordinary
+                && data
+                && !a.resident
+                && a.flags == 0x8000
+                && matches!(a.compression_unit, 0 | 4);
             !(plain || data || index || root_txf)
-                || a.flags != 0
-                || a.compression_unit != 0
+                || ((a.flags != 0 || a.compression_unit != 0) && !sparse_data)
                 || a.lowest_vcn != 0
         })
     {
@@ -790,10 +794,17 @@ fn user_issues_profile(
     {
         issues.push("duplicate root transaction metadata".into());
     }
-    if f.standard_information
-        .as_ref()
-        .is_none_or(|si| si.file_attributes & !0x2027 != 0)
-    {
+    let has_sparse = f.streams.iter().any(|s| s.flags == 0x8000);
+    if f.standard_information.as_ref().is_none_or(|si| {
+        si.file_attributes
+            & !(0x2027
+                | if has_sparse && !f.is_directory {
+                    0x200
+                } else {
+                    0
+                })
+            != 0
+    }) {
         issues.push("unsupported attributes or missing standard information".into());
     }
     let descriptor = raw.security_reconciliation.as_ref().and_then(|s| {
@@ -817,6 +828,19 @@ fn user_issues_profile(
     {
         issues.push("named streams on System Volume Information objects require a separate system-payload implementation".into());
     }
+    if has_sparse {
+        if user_paths(raw, f).is_some_and(|paths| {
+            paths.iter().any(|path| {
+                path.first()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("System Volume Information"))
+            })
+        }) {
+            issues.push(
+                "sparse system-managed streams require a separate system-payload implementation"
+                    .into(),
+            );
+        }
+    }
     if f.is_directory {
         if !f.streams.is_empty() {
             issues.push("directory data streams exceed the profile".into());
@@ -837,7 +861,7 @@ fn user_issues_profile(
             || (!ordinary && f.streams.len() != 1)
             || f.streams.iter().any(|s| {
                 (!ordinary && !s.name_utf16.is_empty())
-                    || s.flags != 0
+                    || (s.flags != 0 && !(ordinary && !s.resident && s.flags == 0x8000))
                     || s.initialized_size > s.logical_size
                     || (!ordinary
                         && (s.resident

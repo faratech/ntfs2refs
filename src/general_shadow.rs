@@ -44,6 +44,7 @@ pub fn native_named_streams(
         .iter()
         .map(|stream| n2r_win32::shadow_native::NamedStreamInput {
             name_utf16: &stream.name_utf16,
+            sparse: stream.sparse.as_ref(),
             expected_length: stream.length,
             expected_sha256: &stream.sha256,
             source_offset: stream.source_offset,
@@ -66,6 +67,7 @@ pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_n
         .map(|object| n2r_win32::shadow_native::Input {
             components: &object.path,
             additional_names: &object.additional_names,
+            sparse: object.sparse.as_ref(),
             named_streams: native_named_streams(object),
             directory: object.directory,
             times: object.stored_times,
@@ -162,6 +164,10 @@ pub fn materialize_private_system_payloads(
         })
         .collect();
     for (_, object) in &selected {
+        ensure!(
+            object.sparse.is_none(),
+            "legacy system materialization cannot copy a sparse stream"
+        );
         ensure!(
             object.length <= 1024 * 1024,
             "system stream exceeds bounded materialization profile"
@@ -285,7 +291,11 @@ pub fn materialize_private_range(
 fn canonical_stream_shape<'a>(
     object: &'a crate::shadow_tree::Object,
     stream_name_utf16: &[u16],
-) -> Result<(u64, &'a str)> {
+) -> Result<(
+    u64,
+    &'a str,
+    Option<&'a n2r_win32::sparse_layout::SparseLayout>,
+)> {
     ensure!(!object.directory, "directories do not receive payload");
     if stream_name_utf16.is_empty() {
         return Ok((
@@ -294,6 +304,7 @@ fn canonical_stream_shape<'a>(
                 .sha256
                 .as_deref()
                 .context("default stream digest absent")?,
+            object.sparse.as_ref(),
         ));
     }
     let mut streams = object
@@ -305,7 +316,7 @@ fn canonical_stream_shape<'a>(
         streams.next().is_none(),
         "canonical named stream duplicated"
     );
-    Ok((stream.length, &stream.sha256))
+    Ok((stream.length, &stream.sha256, stream.sparse.as_ref()))
 }
 
 /// Materialize an exact named or unnamed stream range. A name selects the
@@ -330,7 +341,7 @@ pub fn materialize_private_named_range(
         .objects
         .get(object_index)
         .context("private object index outside canonical tree")?;
-    let (stream_length, stream_digest) = canonical_stream_shape(object, stream_name_utf16)?;
+    let (stream_length, stream_digest, sparse) = canonical_stream_shape(object, stream_name_utf16)?;
     let identities: Vec<_> = raw
         .files
         .iter()
@@ -347,15 +358,27 @@ pub fn materialize_private_named_range(
         "materialization source must remain excluded"
     );
     let mut buffer = [0u8; 65536];
-    let read = crate::ntfs_inspect::read_plain_named_stream_range_into(
-        source,
-        raw,
-        object.record_number,
-        stream_name_utf16,
-        offset,
-        &mut buffer[..length],
-        budget,
-    )?;
+    let read = if sparse.is_some() {
+        crate::ntfs_inspect::read_sparse_named_stream_range_into(
+            source,
+            raw,
+            object.record_number,
+            stream_name_utf16,
+            offset,
+            &mut buffer[..length],
+            budget,
+        )?
+    } else {
+        crate::ntfs_inspect::read_plain_named_stream_range_into(
+            source,
+            raw,
+            object.record_number,
+            stream_name_utf16,
+            offset,
+            &mut buffer[..length],
+            budget,
+        )?
+    };
     ensure!(
         read.stream_logical_bytes == stream_length
             && read.stream_name_utf16 == stream_name_utf16
@@ -432,7 +455,12 @@ pub fn materialize_private_supply_plan(
             .objects
             .get(*index)
             .context("supply object outside canonical tree")?;
-        let (length, _) = canonical_stream_shape(object, stream_name)?;
+        let (length, _, sparse) = canonical_stream_shape(object, stream_name)?;
+        // The sparse backend prepares its compact carrier from allocated
+        // logical intervals. Advancing to logical EOF would materialize holes.
+        if sparse.is_some() {
+            continue;
+        }
         let prefix = length / 4096 * 4096;
         if prefix > 0 {
             template.advance_placed_prefix_named(*index, stream_name, prefix)?;
@@ -509,6 +537,12 @@ pub fn verify_private_hybrid_contents(
 ) -> Result<serde_json::Value> {
     use std::io::{Read, Seek, SeekFrom};
     ensure!(
+        tree.objects
+            .iter()
+            .all(|object| object.data_streams().all(|stream| stream.sparse.is_none())),
+        "legacy hybrid content verifier cannot account for sparse holes"
+    );
+    ensure!(
         source.binding() == template.source_binding(),
         "hybrid source binding differs"
     );
@@ -547,7 +581,7 @@ pub fn verify_private_hybrid_contents(
             .objects
             .get(index)
             .context("hybrid stream outside canonical tree")?;
-        let (stream_length, stream_digest) = canonical_stream_shape(object, &stream_name)?;
+        let (stream_length, stream_digest, _) = canonical_stream_shape(object, &stream_name)?;
         template.validate_stream_shape_named(index, &stream_name, &object.path, stream_length)?;
         let mut cursor = 0u64;
         // Canonical stream digests use content_digest (currently XXH3-128),

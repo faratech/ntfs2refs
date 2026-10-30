@@ -1507,6 +1507,7 @@ fn verify_converted_tree_scoped(
         .map(|object| shadow_native::Input {
             components: &object.path,
             additional_names: &object.additional_names,
+            sparse: object.sparse.as_ref(),
             named_streams: crate::general_shadow::native_named_streams(object),
             directory: object.directory,
             times: object.stored_times,

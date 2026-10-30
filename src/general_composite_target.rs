@@ -615,7 +615,15 @@ fn in_place_payload_ranges(
         let [data] = data.as_slice() else {
             continue; // Ambiguous or absent DATA: keep it compared.
         };
-        if data.resident || data.flags != 0 || data.lowest_vcn != 0 {
+        ensure!(
+            stream.sparse.is_some() == (data.flags == 0x8000),
+            "in-place source sparse state differs from canonical stream"
+        );
+        if data.resident
+            || data.flags & !0x8000 != 0
+            || data.lowest_vcn != 0
+            || !(data.compression_unit == 0 || (data.flags == 0x8000 && data.compression_unit == 4))
+        {
             continue;
         }
         // Only initialized source clusters contain the logical bytes that a
@@ -716,17 +724,24 @@ fn payload_copy_candidates(
         let [attribute] = data.as_slice() else {
             continue;
         };
+        ensure!(
+            stream.sparse.is_some() == (attribute.flags == 0x8000),
+            "copy source sparse state differs from canonical stream"
+        );
         if file.is_directory
             || object.directory
             || attribute.resident
-            || attribute.flags != 0
+            || attribute.flags & !0x8000 != 0
             || attribute.lowest_vcn != 0
-            || attribute.compression_unit != 0
+            || !(attribute.compression_unit == 0
+                || (attribute.flags == 0x8000 && attribute.compression_unit == 4))
             || attribute.extents.iter().any(|extent| {
-                extent.physical_offset.is_none()
+                (extent.physical_offset.is_none() && attribute.flags != 0x8000)
                     || !extent.logical_offset.is_multiple_of(4096)
                     || !extent.length.is_multiple_of(4096)
-                    || !extent.physical_offset.unwrap_or(1).is_multiple_of(4096)
+                    || extent
+                        .physical_offset
+                        .is_some_and(|offset| !offset.is_multiple_of(4096))
             })
         {
             continue;
@@ -783,6 +798,7 @@ fn payload_copy_candidates(
             let extents: Vec<_> = attribute
                 .extents
                 .iter()
+                .filter(|extent| extent.physical_offset.is_some())
                 .map(|extent| SourceExtent {
                     logical_offset: extent.logical_offset,
                     physical_offset: extent.physical_offset,
@@ -1078,19 +1094,31 @@ fn protected_prefix(
     {
         for stream in object.data_streams() {
             let count = (stream.length % 4096) as usize;
-            if count == 0 {
+            if count == 0 || !stream.tail_requires_materialization() {
                 continue;
             }
             let offset = stream.length / 4096 * 4096;
-            let proof = ntfs_inspect::read_plain_named_stream_range_into(
-                source,
-                raw,
-                object.record_number,
-                stream.name_utf16,
-                offset,
-                &mut buffer[..count],
-                &mut residual_budget,
-            )?;
+            let proof = if stream.sparse.is_some() {
+                ntfs_inspect::read_sparse_named_stream_range_into(
+                    source,
+                    raw,
+                    object.record_number,
+                    stream.name_utf16,
+                    offset,
+                    &mut buffer[..count],
+                    &mut residual_budget,
+                )?
+            } else {
+                ntfs_inspect::read_plain_named_stream_range_into(
+                    source,
+                    raw,
+                    object.record_number,
+                    stream.name_utf16,
+                    offset,
+                    &mut buffer[..count],
+                    &mut residual_budget,
+                )?
+            };
             ensure!(
                 proof.stream_logical_bytes == stream.length
                     && stream.sha256 == proof.expected_stream_sha256,

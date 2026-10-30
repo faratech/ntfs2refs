@@ -43,6 +43,7 @@ pub mod shadow_names;
 pub mod shadow_native;
 #[cfg(windows)]
 pub mod source_cancel;
+pub mod sparse_layout;
 pub mod stream_layout;
 #[cfg(windows)]
 mod stream_native;

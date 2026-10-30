@@ -73,7 +73,7 @@ pub(super) fn construct(
         .flat_map(|(index, object)| {
             object
                 .data_streams()
-                .filter(|stream| stream.length % 4096 != 0)
+                .filter(|stream| stream.tail_requires_materialization())
                 .map(move |stream| {
                     (
                         index,
@@ -131,15 +131,27 @@ pub(super) fn construct(
             file.sequence_number == object.sequence_number,
             "residual source sequence differs from canonical tree"
         );
-        let read = ntfs_inspect::read_plain_named_stream_range_into(
-            source,
-            raw,
-            object.record_number,
-            name,
-            *offset,
-            &mut buffer[..*count],
-            &mut transfer,
-        )?;
+        let read = if stream.sparse.is_some() {
+            ntfs_inspect::read_sparse_named_stream_range_into(
+                source,
+                raw,
+                object.record_number,
+                name,
+                *offset,
+                &mut buffer[..*count],
+                &mut transfer,
+            )?
+        } else {
+            ntfs_inspect::read_plain_named_stream_range_into(
+                source,
+                raw,
+                object.record_number,
+                name,
+                *offset,
+                &mut buffer[..*count],
+                &mut transfer,
+            )?
+        };
         ensure!(
             read.stream_logical_bytes == stream.length
                 && read.expected_stream_sha256 == stream.sha256,

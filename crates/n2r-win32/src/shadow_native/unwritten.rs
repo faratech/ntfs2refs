@@ -1,7 +1,7 @@
 //! Private allocation-only construction primitive. No payload Read/Write or
 //! raw handle is exposed outside the native shadow module. Failed operations
 //! leave the private file for diagnosis; they never authorize target writes.
-use super::{ctl, invalid, mapping_matches_run, wide};
+use super::{ctl, invalid, wide};
 use crate::{bitmap_layout::Candidate, bitmap_observation::Observation};
 use serde::Serialize;
 use std::{
@@ -25,9 +25,63 @@ const MAX_FILE_SUBMISSIONS: usize = super::private_tree::MAX_PLACEMENT_SUBMISSIO
 /// Per-placeholder tracked entries (and tracked entries plus deferred holes).
 /// A retained stream has at most 1024 NTFS runs; each may end as up to four
 /// coalesced pieces (placed, split by metadata, and remainders on each side).
-/// Every move still matches all entries against the complete retrieval map,
-/// at most 4096 x runs comparisons per check.
+/// Every move still matches all entries against the complete retrieval map.
+/// Prepared matching skips runs outside each checked VCN interval.
 const MAX_FILE_PLACEMENTS: usize = 4096;
+
+/// An immutable, fully validated fresh retrieval map. Construction parses the
+/// complete canonical response once; only then may interval matching use its
+/// ordered, disjoint VCN endpoints for binary search. It never substitutes a
+/// retained map for a new native capture or omits a tracked placement check.
+struct PreparedMapping {
+    runs: Vec<crate::stream_layout::Run>,
+}
+impl PreparedMapping {
+    fn parse(canonical: &[u8]) -> io::Result<Self> {
+        let runs = crate::stream_layout::parse_complete_retrieval(canonical)?;
+        // The complete parser establishes increasing contiguous VCNs. Retain
+        // the raw matcher's checked-end error before relying on those ends in
+        // partition_point, including for runs outside a requested interval.
+        for run in &runs {
+            run.vcn
+                .checked_add(run.clusters)
+                .ok_or_else(|| invalid("retention mapping overflow"))?;
+        }
+        Ok(Self { runs })
+    }
+
+    fn matches(&self, starting_vcn: u64, destination_lcn: u64, clusters: u32) -> io::Result<bool> {
+        let limit = starting_vcn
+            .checked_add(u64::from(clusters))
+            .ok_or_else(|| invalid("retention range overflow"))?;
+        let first = self
+            .runs
+            .partition_point(|run| run.vcn + run.clusters <= starting_vcn);
+        let mut covered = starting_vcn;
+        for run in &self.runs[first..] {
+            if run.vcn >= limit {
+                break;
+            }
+            let next = run.vcn + run.clusters;
+            let begin = run.vcn.max(starting_vcn);
+            let end = next.min(limit);
+            if begin < end {
+                if begin != covered
+                    || !run
+                        .lcn
+                        .and_then(|lcn| lcn.checked_add(begin - run.vcn))
+                        .is_some_and(|lcn| {
+                            destination_lcn.checked_add(begin - starting_vcn) == Some(lcn)
+                        })
+                {
+                    return Ok(false);
+                }
+                covered = end;
+            }
+        }
+        Ok(covered == limit)
+    }
+}
 
 /// Merge VCN- and LCN-contiguous neighbours of a VCN-sorted list. The covered
 /// clusters and their linear VCN-to-LCN relation are unchanged, and a merged
@@ -266,7 +320,9 @@ impl PrivatePlaceholder {
             SetFileInformationByHandle(
                 self.file.as_raw_handle(),
                 4,
-                (&disposition as *const windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO).cast(),
+                (&disposition
+                    as *const windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO)
+                    .cast(),
                 mem::size_of_val(&disposition) as u32,
             )
         } == 0
@@ -532,17 +588,12 @@ impl PrivatePlaceholder {
         let moved = ctl(volume, 0x90074, &input, 0);
         let capture = crate::stream_native::retrieval_capture(&self.file)?;
         self.retrieval_extents = capture.runs.len();
-        let mapped = mapping_matches_run(
-            &crate::stream_layout::parse_complete_retrieval(&capture.canonical)?,
-            starting_vcn,
-            destination_lcn,
-            clusters,
-        )?;
+        let mapping = PreparedMapping::parse(&capture.canonical)?;
+        let mapped = mapping.matches(starting_vcn, destination_lcn, clusters)?;
         let native_error = moved.err().map(|e| e.raw_os_error().unwrap_or(31));
-        let runs = crate::stream_layout::parse_complete_retrieval(&capture.canonical)?;
         let mut all_placements_match = true;
         for &(v, l, n) in &next {
-            all_placements_match &= mapping_matches_run(&runs, v, l, n)?;
+            all_placements_match &= mapping.matches(v, l, n)?;
         }
         if native_error.is_none() && mapped && all_placements_match {
             self.placed = next;
@@ -624,9 +675,9 @@ impl PrivatePlaceholder {
             return Ok(());
         }
         let capture = crate::stream_native::retrieval_capture(&self.file)?;
-        let runs = crate::stream_layout::parse_complete_retrieval(&capture.canonical)?;
+        let mapping = PreparedMapping::parse(&capture.canonical)?;
         for &(vcn, lcn, clusters) in &self.placed {
-            if !mapping_matches_run(&runs, vcn, lcn, clusters)? {
+            if !mapping.matches(vcn, lcn, clusters)? {
                 return Err(invalid("private mapping changed after valid-data flush"));
             }
         }

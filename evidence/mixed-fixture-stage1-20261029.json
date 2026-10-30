@@ -73,6 +73,35 @@
       "host_load": "concurrent full cargo rebuild on the host",
       "comparison_vs_f467cbe": "admission 10.6->15.9 s and final verification 4.3->8.0 s (code untouched by stage 1) slowed; shadow construction 6.2->3.7 s (stage 1) faster",
       "conclusion": "no stage-1 regression evident; a load-free retime is still owed"
+    },
+    "retime_load_free": {
+      "run_id": "1ca9c02942fc4af0bb83089e8a138809",
+      "engine_run_id": "d16b26511309df5088dd966343b68518",
+      "source_commit": "9ef77d08e796c13dc57f6e4717d6e8afbeb8ff8d",
+      "success": true,
+      "native_objects": 15,
+      "complete_logical_hashes": 10,
+      "seconds": 55.1,
+      "timeline_seconds": {
+        "source_frozen": 8.0,
+        "native_source": 15.4,
+        "source_assessment": 18.6,
+        "construction_placement": 22.3,
+        "construction_freeze": 22.6,
+        "changed_clusters": 40.0,
+        "activation": 43.6,
+        "apply": 46.0,
+        "handoff": 47.9,
+        "finalization": 53.1
+      },
+      "changed_classes": {
+        "changed_bytes_total": 70565888,
+        "new_is_zero": 67760128,
+        "ntfs_allocated_destination": 70332416,
+        "in_payload_route": 286720,
+        "first_route_destination_offset": 6178459648
+      },
+      "note": "no concurrent host work; admission (untouched by stage 1) 10.6 -> 18.6 s, shadow 6.2 -> 4.0 s; A/B rerun of f467cbe pending"
     }
   },
   "findings": [

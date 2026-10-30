@@ -271,6 +271,27 @@ qualification before use.
 PER-MOVE CHECKS (user, 2026-10-29): D-1 (window-scoped bitmap probes) and D-2
 (incremental retrieval proofs) are deferred: "Decide after measuring" the
 scaled fixture (design stage S10). Keep full per-move checks until then.
+MEASURED (2026-10-29, evidence/mixed-fixture-class-split-20261029.json): on the
+808-file fixture 99.2% of the first 4.95 GB of changed bytes are shadow zeros
+written over NTFS file data inside the ReFS metadata-inclusive prefix
+[0, 6,174,015,488); the fresh ReFS writes almost none of that zone (the shadow
+VHDX stays 172 MB). Projected changed bytes about 12.4 GB of 12.2 GB compared;
+an external old+new journal would need about 37 GB of OS-volume space for a
+9.9 GB dataset. Hybrid design drafts: docs/hybrid-write-model-design.md.
+HYBRID DECISIONS (user, 2026-10-30):
+- ZONE ZEROS: "Probe, then skip if proven": first prove in the lab that a ReFS
+  format over a disk pre-filled with random data leaves the reserved zone's old
+  bytes in place and the volume works under stress; only then skip writing
+  shadow-zero granules that no ReFS structure references. The converted volume
+  then matches the shadow except in that zone (NTFS remnants, as after a quick
+  format). Until proven, keep writing the zeros.
+- STAGED-RANGE CHECK (E2): a per-4 KiB XXH3-128 old/new digest table for
+  free-destination (staged) ranges; resume refuses any granule matching neither.
+- ROLLBACK AND VSS (E-2): rollback restores every NTFS-allocated byte and leaves
+  staged copies in NTFS free space; conversion refuses up front when the source
+  volume has any Volume Shadow Copies.
+- TORN MARKERS (E3): dual-copy markers (two sectors); the intact copy decides;
+  the hard power-off lab test must prove it.
 
 ## Source and recovery invariants
 

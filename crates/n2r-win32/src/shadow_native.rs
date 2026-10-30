@@ -2885,8 +2885,26 @@ fn run_role_profile(
                 let offset = run
                     .physical_offset
                     .ok_or_else(|| invalid("fragmented source hole"))?;
-                if run.logical_offset != covered
+                let logical_end = run
+                    .logical_offset
+                    .checked_add(run.length)
+                    .ok_or_else(|| invalid("source logical placement overflow"))?;
+                // Sparse source runs are initialized allocated islands, not a
+                // dense prefix. Admit gaps only against the already validated
+                // sparse layout; holes and bytes beyond VDL cannot be retained.
+                let logical_placement_ok = if let Some(sparse) = i.sparse {
+                    run.logical_offset >= covered
+                        && logical_end <= sparse.initialized_length / 4096 * 4096
+                        && sparse.allocated.iter().any(|range| {
+                            range.offset <= run.logical_offset
+                                && range.offset + range.length >= logical_end
+                        })
+                } else {
+                    run.logical_offset == covered
+                };
+                if !logical_placement_ok
                     || run.length == 0
+                    || !run.logical_offset.is_multiple_of(4096)
                     || !run.length.is_multiple_of(4096)
                     || !offset.is_multiple_of(4096)
                     || !offset
@@ -2895,9 +2913,7 @@ fn run_role_profile(
                 {
                     return Err(invalid("fragmented source placement differs"));
                 }
-                covered = covered
-                    .checked_add(run.length)
-                    .ok_or_else(|| invalid("source placement overflow"))?;
+                covered = logical_end;
                 source_allocations.push((offset, run.length));
             }
             if i.directory

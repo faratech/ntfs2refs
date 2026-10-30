@@ -27,17 +27,23 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current sparse follow-up supersedes the older VM states below: VM is running
-the clean NTFS sparse fixture9c42e1fd, with all25 checkpoints preserved. The
+Current sparse follow-up supersedes the older VM states below: VM is Off at
+the clean NTFS sparse fixture9c42e1fd, with all26 checkpoints preserved. The
 third attemptd78c2df3 stopped before cutover because ReFS relocated only the
 final partial EOF cluster during truncation. Complete failed state is preserved
 in checkpoint0bf53231-6b6d-4427-b6dd-3c1936c70b06 and metadata in
 .lab/hyperv/streaming-v2-20261027/sparse-clone-refusal-d78c2df3.
-The candidate now verifies that cluster's actual visible bytes before/after EOF,
+Source2287d82 now verifies that cluster's actual visible bytes before/after EOF,
 requires every full cluster to keep its exact mapping, and still verifies the
 whole sparse allocation/storage-validity layout. Padding I/O outside EOF is
-counted separately. Focused public release build passed; no unit tests were
-added or run. Native retry is next; this does not yet qualify sparse conversion.
+counted separately. Its native attempt66400017 passed that check, recording
+123 equal visible bytes and3973 bytes of padding I/O, then stopped before
+cutover at the old dense-prefix source-placement rule. Checkpointf4bf5238
+preserves the attempt;42 closed metadata files are in sparse-placement-refusal-66400017.
+The source verifier now permits gaps only inside declared initialized sparse
+islands; alignment, bounds, ordering and full-cluster checks remain. Its focused
+public release build passed. No unit tests were added or run. Native retry is
+next; this does not yet qualify sparse conversion.
 The GitHub comparison refresh is committed in0ef8652; it adds no runtime change.
 
 Sparse integration candidate: SparseLayout now binds allocated islands, exact

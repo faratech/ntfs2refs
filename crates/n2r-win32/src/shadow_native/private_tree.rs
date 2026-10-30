@@ -502,12 +502,46 @@ impl PrivateTree {
         let key = StreamKey::named(object_index, name);
         self.require_source_excluded()?;
         if let Some(target) = self.sparse_targets.get(&key) {
+            let end = offset
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| invalid("sparse materialization range overflow"))?;
             if target.logical_length != logical_length
                 || target.path != streams::path(&self.pair.shadow.volume_path()?, components, name)?
+                || bytes.len() > 65536
+                || end > logical_length
             {
                 return Err(invalid("sparse materialization identity differs"));
             }
-            let parts = target.parts(offset, bytes.len() as u64, false)?;
+            // A bounded logical request may span real data islands and holes.
+            // Only intersections with allocated islands can be written. Hole
+            // bytes must be zero and never cause carrier allocation or writes.
+            let parts: Vec<_> = target
+                .islands
+                .iter()
+                .filter_map(|island| {
+                    let start = offset.max(island.logical);
+                    let stop = end.min(island.logical + island.length);
+                    (start < stop).then(|| sparse_stream::Island {
+                        logical: start,
+                        dense: island.dense + start - island.logical,
+                        length: stop - start,
+                    })
+                })
+                .collect();
+            let mut allocated = vec![false; bytes.len()];
+            for part in &parts {
+                let local = (part.logical - offset) as usize;
+                allocated[local..local + part.length as usize].fill(true);
+            }
+            if bytes
+                .iter()
+                .zip(&allocated)
+                .any(|(&byte, &is_allocated)| !is_allocated && byte != 0)
+            {
+                return Err(invalid(
+                    "nonzero materialization bytes target a sparse hole",
+                ));
+            }
             if self.placement_complete
                 && parts.iter().any(|part| {
                     self.original_coordinates.get(&key).is_some_and(|ranges| {
@@ -521,20 +555,30 @@ impl PrivateTree {
                     "sparse materialization overlaps retained source reference",
                 ));
             }
-            let file = self
-                .files
-                .get_mut(&key)
-                .ok_or_else(|| invalid("sparse materialization carrier absent"))?;
             let mut proofs = Vec::new();
-            for part in parts {
-                let local = (part.logical - offset) as usize;
-                proofs.push(
-                    file.initialize_at(part.dense, &bytes[local..local + part.length as usize])?,
-                );
+            let mut readback = vec![0u8; bytes.len()];
+            if !parts.is_empty() {
+                let file = self
+                    .files
+                    .get_mut(&key)
+                    .ok_or_else(|| invalid("sparse materialization carrier absent"))?;
+                for part in parts {
+                    let local = (part.logical - offset) as usize;
+                    let stop = local + part.length as usize;
+                    proofs.push(file.initialize_at(part.dense, &bytes[local..stop])?);
+                    file.read_initialized_at(part.dense, &mut readback[local..stop])?;
+                }
             }
+            if readback != bytes {
+                return Err(invalid("sparse logical materialization readback differs"));
+            }
+            let sha256 = hex::encode(Sha256::digest(&readback));
+            let hole_bytes = allocated.iter().filter(|&&value| !value).count();
             self.require_source_excluded()?;
             return Ok(
-                serde_json::json!({"object_index":object_index,"stream_name_utf16":name,"parts":proofs}),
+                serde_json::json!({"object_index":object_index,"stream_name_utf16":name,
+                    "offset":offset,"bytes":bytes.len(),"sha256":sha256,"readback_verified":true,
+                    "logical_hole_bytes":hole_bytes,"parts":proofs,"conversion_qualified":false}),
             );
         }
         let end = offset

@@ -261,6 +261,16 @@ constant caps on files, directories, extents, runs, moves, ranges or evidence
 size. Evidence may move to disk but must stay complete and verifiable; any
 change that narrows what is checked still needs its own user decision. Design
 workflow: wf_5c358166-e1b; stage-1 placement implementation: wf_40ba8e07-e64.
+Draft plan with verifier corrections: docs/unbounded-scale-design.md.
+MOVED-DATA DECISION (user, 2026-10-29): "Hybrid": protect relocated data by
+staging it in the volume's own free space when there is room (ntfs2btrfs model:
+originals stay intact until handoff, so only those ranges need journaling),
+and fall back to the external old+new journal, sized from actual free space
+rather than a fixed cap, when there is not. Needs design and hard power-off
+qualification before use.
+PER-MOVE CHECKS (user, 2026-10-29): D-1 (window-scoped bitmap probes) and D-2
+(incremental retrieval proofs) are deferred: "Decide after measuring" the
+scaled fixture (design stage S10). Keep full per-move checks until then.
 
 ## Source and recovery invariants
 

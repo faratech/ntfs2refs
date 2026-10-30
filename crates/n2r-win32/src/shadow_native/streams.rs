@@ -189,6 +189,12 @@ pub(super) fn observe(
         {
             return Err(invalid("named stream base identity or EOF differs"));
         }
+        if (layout::u32_at(query_bytes(&before, 9, 8)?, 0)? & 0x200 != 0) != named.sparse.is_some()
+        {
+            return Err(invalid(
+                "named stream sparse attribute differs from its declared layout",
+            ));
+        }
         let allocation = layout::u64_at(standard, 0)?;
         let (first, continuation) = crate::stream_native::retrieval_queries(&file);
         let resident_data = named.sparse.is_none()
@@ -300,6 +306,10 @@ pub(super) fn verify(item: &Input<'_>, object: &ObjectReport, hash: bool) -> io:
             return Err(invalid("named stream report differs"));
         }
         if actual.sparse.as_ref().map(|s| &s.expected) != wanted.sparse
+            || (layout::u32_at(query_bytes(&actual.before, 9, 8)?, 0)? & 0x200 != 0)
+                != wanted.sparse.is_some()
+            || (layout::u32_at(query_bytes(&actual.after, 9, 8)?, 0)? & 0x200 != 0)
+                != wanted.sparse.is_some()
             || actual
                 .sparse
                 .as_ref()

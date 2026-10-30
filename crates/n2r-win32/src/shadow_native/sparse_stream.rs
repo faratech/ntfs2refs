@@ -299,7 +299,15 @@ impl Target {
 
 #[derive(Debug, Serialize)]
 pub struct Observation {
+    /// Source sparse contract. Its initialized_length is the NTFS source VDL,
+    /// not a measured ReFS VDL and not a promise of numeric VDL preservation.
     pub expected: SparseLayout,
+    pub source_initialized_length: u64,
+    pub numeric_vdl_preservation_claimed: bool,
+    /// Allocated bytes beyond the source VDL are supplied by the source's
+    /// logical-zero reader and verified by the separate final stream digest.
+    pub logical_zero_policy: &'static str,
+    pub layout_observation_verifies_logical_zero_bytes: bool,
     pub actual_allocated: Vec<LogicalRange>,
     pub allocation_matches: bool,
     pub cached_regions: Vec<crate::attestation::IoctlQuery>,
@@ -423,6 +431,10 @@ pub(super) fn observe(
     let storage_regions = regions(file, &allocated, length, 2)?;
     Ok(Observation {
         expected: expected.clone(),
+        source_initialized_length: expected.initialized_length,
+        numeric_vdl_preservation_claimed: false,
+        logical_zero_policy: "source_uninitialized_allocated_bytes_are_normalized_from_logical_zero_reads; final_full_stream_digest_required",
+        layout_observation_verifies_logical_zero_bytes: false,
         actual_allocated: allocated,
         allocation_matches: true,
         cached_regions,

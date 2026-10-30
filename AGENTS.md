@@ -51,6 +51,17 @@ and failed VM checkpointddf5e717 is preserved. Sparse NTFS fixture9c42e1fd
 has been restored for the corrected attempt; all23 checkpoints remain.
 Corrected public hashd03b72dac69f09ef7f3021dbaf9c45dc161e2051c992ef451632bd8e6867064f
 is built; native retry remains pending. No unit tests were added or run.
+That retry5467246c/source18861e2 passed source reconciliation and stopped before
+source activation on the sparse materialization receipt contract. Sourcea19d9e8
+now returns a SHA256 over actual assembled carrier readback, with zero holes,
+and rejects nonzero hole input. The 32 failure metadata files are preserved in
+.lab/hyperv/streaming-v2-20261027/sparse-materialization-refusal-5467246c;
+checkpoint697fb084-a4b3-4769-b3d8-eea768c70fea preserves the entire attempt.
+All24 checkpoints remain. The VM is running source checkpoint9c42e1fd for the
+next corrected build; no conversion worker is currently active. Final sparse
+flag verification is exact per stream, and source VDL is explicitly recorded
+without claiming equal numeric target VDL. Logical zero semantics require the
+final full-stream digest. Keep both prior failed branches and binaries.
 
 Latest state: VM is Off/RAM0, parent7f926b79-465f-4945-a00b-bdaae2607cd4;
 all21 checkpoints remain. Disk6/H: is verified NTFS after ADS rollback. The

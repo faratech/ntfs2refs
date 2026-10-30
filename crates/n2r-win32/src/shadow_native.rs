@@ -1076,13 +1076,7 @@ fn attributes_allowed(i: &Input<'_>) -> bool {
     i.attributes & !if has_sparse(i) { 0x2237 } else { 0x2037 } == 0
 }
 fn basic_matches(i: &Input<'_>, actual: &[u8]) -> bool {
-    let mut expected = basic_bytes(i);
-    if has_sparse(i) && actual.len() == 40 {
-        let old = u32::from_le_bytes(expected[32..36].try_into().unwrap());
-        let now = u32::from_le_bytes(actual[32..36].try_into().unwrap());
-        expected[32..36].copy_from_slice(&((old & !0x200) | (now & 0x200)).to_le_bytes());
-    }
-    actual == expected
+    actual == basic_bytes(i)
 }
 // Only a pre-restoration diagnosis. Final comparisons never normalize control
 // flags: BACKUP_SECURITY_DATA must restore the exact original descriptor.

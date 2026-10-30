@@ -28,6 +28,12 @@ independent NTFS rollback. Sparse mutation and broader failure coverage remain
 pending. See the [conversion evidence](evidence/sparse-native-conversion-20261030.json)
 and [recovery evidence](evidence/sparse-native-recovery-20261030.json).
 
+Multi-record NTFS files now have a native conversion result too: one file with
+seven extension records, three hard-link names and three streams survived
+conversion and reboot. Both fragmented 2 MiB streams retained all 1,024 original
+physical extents. This adds a bounded compatibility result, not universal NTFS
+support; see the [pinned evidence](evidence/attribute-list-native-conversion-20261030.json).
+
 The drive-oriented Windows entry point is now available:
 
 ```powershell

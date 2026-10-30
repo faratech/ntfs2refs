@@ -27,9 +27,33 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off at observed
-NTFS checkpoint1057eb82-d152-4572-881b-53ff9dbb82dd; all39 checkpoints
-remain. The clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
+Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
+cold-boot checkpoint f981e1df-398e-4c08-997d-d1aea8361267; all41 checkpoints
+remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
+the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
+Latest runtime4c58d38/publicf7e432babadcc7761a855a8d7c00069b7bbed9505fd37a53512d6f061c969cf6
+passed public conversion29db7e40/core60e84507:13 objects,9 default hashes,
+8 named hashes and3 sparse layouts. Source record47 was assembled from its base
+plus7 extension records, including resident filenames/Note ADS and two fragmented
+DATA streams. All1024 payload extents (4MiB) remained at their original physical
+clusters. All3names/3streams passed9 independent SHA256 checks. Cold bootd61535ea
+preserved all hashes, IDs and prior fixture observations. Evidence:
+evidence/attribute-list-native-conversion-20261030.json. Original converted
+checkpointcafe187b-5f44-43e4-b1d9-d71dac5c0f50 remains separate.
+The original observer stopped AFTER native success because raw-only
+inventory_complete is false for recognized internal metadata; a corrected
+read-only observer verified47 physical records, the full assembly and native
+admission. Never replay/rerun a successful conversion to fix an observer.
+Placement now uses ordinary carriers for nonsparse ADS; the driver returned
+success without moving the original named-stream handle in the failed run.
+Full mapping verification, carrier clone/retirement and stream flags remain exact.
+Next: reduce redundant bitmap hashing/planning work without dropping coverage,
+expand remaining NTFS metadata/geometry support, and qualify new-build recovery
+and mutation separately. Current bounds and general-compatibility gaps remain.
+No unit tests were added or run. Keep the user-owned main.rs overlay untouched.
+
+### Previous milestones and fixture setup
+
 Source5aeaf40/public61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b
 completed public H:/partition2 conversionba1480fc/coreb8d43b36 inside the VM:
 native0/HND,12 objects,8 default hashes,6 ADS hashes,3 exact sparse layouts.

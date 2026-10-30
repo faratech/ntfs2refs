@@ -4,7 +4,8 @@ The Rust source reader now handles an ordinary file whose unnamed nonresident
 DATA is split between its base MFT record and extension records. This is wired
 through inspection, allocation/namespace/security reconciliation, native mapping
 comparison, ordinary shadow construction and the checked source stream reader.
-It has synthetic source/test evidence, not a new native conversion qualification.
+The original profile has synthetic source/test evidence. Schema 5 now also has
+a bounded native conversion and cold-boot result, described below.
 The separate [MFT bootstrap profile](ntfs-mft-bootstrap.md) extends the same
 physical-record ledger to record zero without relaxing ordinary-file identities.
 
@@ -24,8 +25,22 @@ rereads reconstruct the same complete physical ledger before returning bytes.
 The broader profile is selected after inspecting the list and extensions, since
 an ordinary-looking base record can own ADS or metadata in another record.
 Current resident observations use the content digest; legacy SHA-256 evidence
-is still checked using its original algorithm. This implementation has focused
-build coverage; new native conversion qualification is pending.
+is still checked using its original algorithm.
+
+Source `4c58d38` converted an independently created NTFS file with seven
+extension records, three hard-link names, two 2 MiB DATA streams and a 64-byte
+resident named stream. Two filenames and the resident stream lived in an
+extension record. All 1,024 payload extents remained at their source physical
+locations, all nine alias/stream SHA-256 checks passed, and a cold boot preserved
+the observations. The result covers this schema-5 fixture; schema 6 and other
+combinations need their own native coverage. See
+[the conversion evidence](../evidence/attribute-list-native-conversion-20261030.json).
+
+Ordinary named streams are placed through owned ordinary carriers and cloned
+into their final nonsparse ADS. This avoids depending on a successful
+FSCTL_MOVE_FILE return as proof that a ReFS named stream actually moved. Every
+final mapping and stream flag is still checked, and carriers are retired through
+the native filesystem.
 
 The original schema-1/2 profile requires:
 

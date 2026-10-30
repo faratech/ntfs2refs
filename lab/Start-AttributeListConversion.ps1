@@ -218,7 +218,14 @@ function VerifyAttributeFixture($Fixture,[string]$Filesystem){
 }
 function VerifyAssemblyLedger([string]$Records,$Fixture){
  # general_qualification.rs saves the actual raw inspection under ntfs here.
- $path=Join-Path $Records 'qualification\source-basis.json';$basis=Json $path;$raw=$basis.ntfs;Need ($raw.inventory_complete-eq$true) 'Frozen raw inventory incomplete.'
+ $path=Join-Path $Records 'qualification\source-basis.json';$basis=Json $path;$raw=$basis.ntfs;Need ($raw.schema_version-eq1-and$raw.records_scanned-gt0) 'Frozen raw inventory absent.'
+ # inventory_complete describes the raw-only diagnostic. Actual admission
+ # combines its system-metadata dispositions with independent native evidence.
+ # Check record conservation here; the enclosing observer checks source_admitted.
+ $physicalRecords=[Collections.Generic.HashSet[UInt64]]::new()
+ foreach($record in $raw.files){Need ($physicalRecords.Add([UInt64]$record.record_number)-and$record.sequence_number-gt0) 'Duplicate canonical physical record.'}
+ foreach($ledger in $raw.attribute_assemblies){foreach($extension in $ledger.extensions){Need ($physicalRecords.Add([UInt64]$extension.record_number)-and$extension.sequence_number-gt0) 'Duplicate physical extension record.'}}
+ Need ($physicalRecords.Count-eq$raw.records_scanned) 'Frozen physical-record ledger is incomplete.'
  $reference=[uint64]$Fixture.base_file_record.file_reference;$number=$reference-band[uint64]281474976710655;$sequence=[uint16]($reference-shr48)
  $assemblies=@($raw.attribute_assemblies|Where-Object {$_.base.record_number-eq$number-and$_.base.sequence_number-eq$sequence});Need ($assemblies.Count-eq1) 'One exact frozen attribute assembly required.';$assembly=$assemblies[0]
  Need ($assembly.schema_version-in@(5,6)-and$assembly.base.base_file_reference-eq0-and$assembly.base.hard_link_count-eq3-and@($assembly.extensions).Count-gt0) 'Versioned multi-stream assembly with owned extensions required.'
@@ -228,7 +235,7 @@ function VerifyAssemblyLedger([string]$Records,$Fixture){
  Need ($file.base_file_reference-eq0-and$file.hard_link_count-eq3-and@($file.names).Count-eq3-and@($file.streams).Count-eq3-and@($file.attributes|Where-Object {$_.type_code-eq32-or$_.lowest_vcn-ne0}).Count-eq0-and@($assembly.canonical_origins).Count-eq@($file.attributes).Count) 'Canonical assembled file coverage differs.'
  for($i=0;$i-lt@($assembly.canonical_origins).Count;$i++){$origin=$assembly.canonical_origins[$i];$record=$physical[[string]$origin.record_number];Need ($null-ne$record-and$record.sequence_number-eq$origin.sequence_number) 'Canonical origin record not owned.';$attrs=@($record.attributes|Where-Object instance -EQ $origin.instance);Need ($attrs.Count-eq1-and$attrs[0].type_code-eq$file.attributes[$i].type_code-and(SameArray $attrs[0].name_utf16 $file.attributes[$i].name_utf16)) 'Canonical origin type/name differs.'}
  $shape=AttributeShape $Fixture;foreach($name in @('','Segments','Note')){$row=$shape.streams[$name];$streams=@($file.streams|Where-Object {SameArray $_.name_utf16 $row.name_utf16});Need ($streams.Count-eq1-and$streams[0].logical_size-eq$row.hashes.length-and$streams[0].logical_sha256-ceq$row.hashes.content_digest) 'Frozen assembled stream differs from fixture.'}
- return @{source_basis_path=$path;source_basis_sha256=(Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant();canonical_inspection_sha256=$basis.canonical_inspection_sha256;record_number=$number;sequence_number=$sequence;assembly_schema=$assembly.schema_version;owned_extensions=@($assembly.extensions).Count;canonical_attributes=@($file.attributes).Count;canonical_origins=@($assembly.canonical_origins).Count;stream_digests_match=$true;source_admission_authority=$false}
+ return @{source_basis_path=$path;source_basis_sha256=(Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant();canonical_inspection_sha256=$basis.canonical_inspection_sha256;record_number=$number;sequence_number=$sequence;assembly_schema=$assembly.schema_version;owned_extensions=@($assembly.extensions).Count;canonical_attributes=@($file.attributes).Count;canonical_origins=@($assembly.canonical_origins).Count;physical_records_verified=$physicalRecords.Count;raw_only_inventory_complete=$raw.inventory_complete;stream_digests_match=$true;source_admission_authority=$false}
 }
 
 try{

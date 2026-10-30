@@ -223,7 +223,7 @@ Current Rust conversion boundaries, confirmed in source:
 | NTFS compression, WOF, EFS | Compression/encryption flags and WOF reparse semantics remain refused. Compressed content needs logical decoding and rewritten extents. EFS needs a separate encryption-preservation path. |
 | Reparse points and Windows EAs | Outside the admitted attribute whitelist; no target preservation claim. |
 | ACLs | Owner/group/present DACL plus observed API/kernel views are represented. Construction requires absent SACL; even a present empty SACL is outside this profile. Missing/null DACL is also outside the construction profile. |
-| Attribute lists | A narrow single-link file with one unnamed nonresident stream can be assembled and admitted after physical-record ledger checks. Hard-link/ADS assembly and remaining unassembled extension forms are refused. Fragmented base-record extents alone do not establish extension-record support. |
+| Attribute lists | Versioned assembly supports ordinary hard links, named streams and resident metadata in owned extension records. A schema-5 file with seven extensions, three names and three streams passed native conversion and reboot. Directory, encoded/sparse DATA assembly and lists needing their own continuation remain refused. Schema-6 combinations still need native coverage. |
 | Object IDs, quotas, transaction state | User Object IDs/nondefault quotas remain refused. Recognized filesystem-internal state has narrowly bound replacement policies, not user-semantic preservation. |
 | Times and names | Four stored times are represented. Names preserve supported UTF-16 spelling, but reserved Win32 names, trailing dot/space, invalid characters and conservative case collisions are refused. Case-sensitive NT namespaces are not fully supported. |
 | Geometry and resource limits | Depth is capped at 16, streaming profile at 1,024 files/256 directories, with 64 streams/file and 16,384 streams/tree. Source geometry requires 512-byte sectors, 1,024-byte file records and 4 KiB indexes; experimental cluster admission extends from 4 KiB to 2 MiB. Target is 4 KiB ReFS 3.14. The 16 GiB journal limit remains. Parser/address bounds are not capacity qualification. |
@@ -291,10 +291,17 @@ the old9names/15ADS views and4sparse paths; rollback restored the original file
 IDs and exact sparse mappings. See [the recovery matrix](../evidence/sparse-native-recovery-20261030.json).
 This does not establish physical power-loss or arbitrary failure-point safety.
 
-Continue in concrete slices: (1) extend the existing ordinary attribute-list
-assembler to hard links and named streams while keeping a complete physical
-record ledger; (2) qualify sparse mutation and broader extension-record forms,
-which expands practical fragmentation, link and stream coverage;
+The attribute-list follow-up on `4c58d38` passed native conversion and cold boot
+for a file assembled from seven extensions. Its two 2 MiB streams retained all
+1,024 physical extents; all three streams matched through three hard-link names.
+The surrounding tree verified13 objects/9 default/8 named hashes and3 sparse
+layouts. The run took138.754 seconds for this intentionally fragmented fixture;
+there is no valid speed comparison against earlier failed builds. See
+[the evidence](../evidence/attribute-list-native-conversion-20261030.json).
+
+Continue in concrete slices: (1) reduce redundant bitmap hashing and planning
+while preserving complete checks; (2) qualify sparse mutation and broader
+extension-record forms, which expands practical fragmentation, link and stream coverage;
 (3) preserve SACL/null/empty security distinctions and native reparse/EAs;
 (4) materialize compressed/WOF logical content with exact space forecasts;
 (5) expand geometry and remove coupled fixed caps with bounded working memory.

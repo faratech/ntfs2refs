@@ -1,0 +1,226 @@
+{
+  "source_admitted": true,
+  "timing_scope": "one intentionally fragmented fixture; failed earlier builds are not a valid speed comparison",
+  "proofs": [
+    {
+      "bytes": 751,
+      "sha256": "d40dd0735a7c5b5c38c90c3e21fe89960083a620e025a272a8d6644cf6d901f9",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-tools-4c58d38\\manifest.json"
+    },
+    {
+      "bytes": 637093,
+      "sha256": "44c863bf6c6688a7674d0527c43070330adea68846930ff18784f3819cc298cb",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-fixture-c1f6b081dac24e158708c97ef3151934\\closed\\fixture.json"
+    },
+    {
+      "bytes": 134109,
+      "sha256": "df017eca451b3daeadfe49cd04bc8043205523e7a0253e6cadc7f03b254434ee",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-observe-3bf491a3f086477cbb40d01e9b7fe492\\fixture.json"
+    },
+    {
+      "bytes": 32793,
+      "sha256": "1aadae4b0870ff1003cb228b97182575762b4ae6fa44038c2a668afc38219389",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\closed\\archive.json"
+    },
+    {
+      "bytes": 163,
+      "sha256": "b12a91f457322a9f52eded2a8f90ca046a8933ce69b52a3a5ae34099ef5a47af",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\checkpoint.json"
+    },
+    {
+      "bytes": 513,
+      "sha256": "74135afe59a50cd72abff2edcabbffe93b12442ba4cbc99f5a41cf9c41672653",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\extent-preservation.json"
+    },
+    {
+      "bytes": 3871,
+      "sha256": "700df969ea34712aa3e80ad88130c11d2b01e85e6c78011099d31427fef8122f",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\closed\\observer\\wrapper-result.json"
+    },
+    {
+      "bytes": 5020,
+      "sha256": "f90a5a6cdd382c929b47862e4d840ee296d22869fcf464b6d6dd99ca79124918",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\closed\\observer\\attribute-after.json"
+    },
+    {
+      "bytes": 1041,
+      "sha256": "d149059c78de324651d98255188a8710e32c2f04b1e47e0525c4953b83c5556a",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\closed\\core\\conversion\\result.json"
+    },
+    {
+      "bytes": 798638,
+      "sha256": "885d2fda6e41c7b66afb1c2a129b14c09545b35544e2f4d05c74bc6de68bb5e6",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\closed\\core\\conversion\\qualification\\source-basis.json"
+    },
+    {
+      "bytes": 1687925,
+      "sha256": "76c821894f0b31016dca66d158cbb388d3db991499db46e25be5970c87528be6",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-success-29db7e40\\closed\\core\\conversion\\finalization.json"
+    },
+    {
+      "bytes": 558,
+      "sha256": "964f61f13cfafdd9a5bd8362d643c8f01b8284a5d74350f5c1f2d8ab11b6d9cc",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-coldboot-d61535eaeed94f3ab7d78cb4d9567cad\\dispatch.json"
+    },
+    {
+      "bytes": 2095,
+      "sha256": "76f4028b977fa865d0309390d6e092e42d824cc7f6c8dddbfaa33b61cf871993",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-coldboot-d61535eaeed94f3ab7d78cb4d9567cad\\closed\\archive.json"
+    },
+    {
+      "bytes": 324,
+      "sha256": "e2bb0199c258d3e28cced1cdc7d312a921951e947b7f1776aeebdf219a085648",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-coldboot-d61535eaeed94f3ab7d78cb4d9567cad\\comparison.json"
+    },
+    {
+      "bytes": 162,
+      "sha256": "37fc1d3c5d8aa72f64dfb54f6c25d75a2164bb18961909839813eb90d9919bd9",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\attribute-coldboot-d61535eaeed94f3ab7d78cb4d9567cad\\checkpoint.json"
+    }
+  ],
+  "run_id": "29db7e40b0e04896a13ea2f5f6a5d6be",
+  "public_executable_sha256": "f7e432babadcc7761a855a8d7c00069b7bbed9505fd37a53512d6f061c969cf6",
+  "handoff_closed": true,
+  "new_file": {
+    "physical_extension_records": 7,
+    "source_fixture_generation": "1024 NTFS-managed one-cluster moves before conversion",
+    "independent_sha256_alias_stream_views": 9,
+    "assembly_schema": 5,
+    "retained_extents": 1024,
+    "streams": 3,
+    "hardlink_names": 3,
+    "retained_payload_bytes": 4194304,
+    "canonical_attribute_origins": [
+      {
+        "physical_instance": 0,
+        "resident": true,
+        "name_utf16": [],
+        "extent_count": 0,
+        "physical_record": 47,
+        "type": 16,
+        "canonical_instance": 0
+      },
+      {
+        "physical_instance": 7,
+        "resident": true,
+        "name_utf16": [],
+        "extent_count": 0,
+        "physical_record": 47,
+        "type": 48,
+        "canonical_instance": 7
+      },
+      {
+        "physical_instance": 0,
+        "resident": true,
+        "name_utf16": [],
+        "extent_count": 0,
+        "physical_record": 48,
+        "type": 48,
+        "canonical_instance": 2
+      },
+      {
+        "physical_instance": 1,
+        "resident": true,
+        "name_utf16": [],
+        "extent_count": 0,
+        "physical_record": 48,
+        "type": 48,
+        "canonical_instance": 1
+      },
+      {
+        "physical_instance": 0,
+        "resident": false,
+        "name_utf16": [],
+        "extent_count": 512,
+        "physical_record": 49,
+        "type": 128,
+        "canonical_instance": 4
+      },
+      {
+        "physical_instance": 3,
+        "resident": true,
+        "name_utf16": [
+          78,
+          111,
+          116,
+          101
+        ],
+        "extent_count": 0,
+        "physical_record": 48,
+        "type": 128,
+        "canonical_instance": 3
+      },
+      {
+        "physical_instance": 0,
+        "resident": false,
+        "name_utf16": [
+          83,
+          101,
+          103,
+          109,
+          101,
+          110,
+          116,
+          115
+        ],
+        "extent_count": 512,
+        "physical_record": 52,
+        "type": 128,
+        "canonical_instance": 5
+      }
+    ],
+    "ntfs_record": 47
+  },
+  "argv": [
+    "--drive",
+    "H",
+    "--partition",
+    "2"
+  ],
+  "coldboot_checkpoint": "f981e1df-398e-4c08-997d-d1aea8361267",
+  "complete_default_hashes": 9,
+  "named_stream_hashes": 8,
+  "core_run_id": "60e84507eac2dd36487eb1f8aee8f7d2",
+  "old_fixture": {
+    "hardlink_names": 9,
+    "sparse_paths": 4,
+    "ads_views": 15
+  },
+  "coldboot": {
+    "live_stream_hashes_and_file_ids_unchanged": true,
+    "fresh_storage_validity_query_claimed": false,
+    "passed": true,
+    "old_fixture_views_unchanged": true
+  },
+  "source_commit": "4c58d380d9deb15c141271f6ee199b789e12f9d6",
+  "kind": "native-attribute-list-conversion",
+  "converted_checkpoint": "cafe187b-5f44-43e4-b1d9-d71dac5c0f50",
+  "partition_bytes": 55834574848,
+  "raw_physical_records": 47,
+  "native_exit": 0,
+  "not_claimed": [
+    "all ATTRIBUTE_LIST or NTFS features",
+    "new-build interruption/resume/rollback",
+    "new-build mutation stress",
+    "arbitrary volume size or maximum performance",
+    "physical power-loss durability"
+  ],
+  "native_objects": 13,
+  "inside_vm": true,
+  "schema_version": 1,
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "native_duration_seconds": 138.754,
+  "observer_correction": "raw-only inventory_complete is false due recognized internal metadata; exact physical-record conservation and native admission/complete stream ledger checked instead",
+  "target_filesystem": "ReFS3.14",
+  "sparse_layouts": 3,
+  "storage": {
+    "packed_bytes": 3485696,
+    "selected_ranges": 168,
+    "journal_bytes": 80977824,
+    "selected_bytes": 77467648
+  },
+  "target_cluster_bytes": 4096,
+  "source_cluster_bytes": 4096,
+  "raw_canonical_files": 40,
+  "source_checkpoint": "1057eb82-d152-4572-881b-53ff9dbb82dd"
+}

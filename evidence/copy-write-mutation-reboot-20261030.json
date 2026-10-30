@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "kind": "first-copy-recovered-mixed-mutation-reboot",
+  "source_commit": "909911062106dbde6cf35fbcdccf4a45b2998671",
+  "public_executable_sha256": "121d7dbb9977618af7790f4fcd78e69fee3c4274e9e2980c1a3d0709dd322f0b",
+  "resume_run": "94122a2c65a4438285d40411c224af26",
+  "mutation_run": "773ef72dd2ae44f98989f46985e0fa9f",
+  "success": true,
+  "original_files_verified": 808,
+  "new_files_verified": 2,
+  "entries_verified": 128,
+  "refs_warning_or_error_events": 0,
+  "result_sha256": "68a51abcd5e1fe78a9d2fd3ecb233a2ce0ce6d21c893097f1aeb0532b4c51115",
+  "before_sha256": "01da872df4583ceda94d7559c9415f8ad5db7bc1fdf374f95d3c563002dc7df8",
+  "after_mutation_sha256": "3e30cbd78275cb5e4ac0fa6f09180706de2a334754b34e85b144b7a64be02199",
+  "after_reboot_sha256": "ead62ea4c4998025b08b5b1c27df0eec0842edf758f8e61db1150e870244199c",
+  "archive": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\alloc-mutation-20261029-773ef72dd2ae44f98989f46985e0fa9f",
+  "physical_power_loss_tested": false,
+  "unit_tests_run": false
+}

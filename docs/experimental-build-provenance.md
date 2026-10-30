@@ -1,5 +1,35 @@
 # Experimental build provenance — 2026-10-29
 
+## Reconciled public build — 2026-10-30
+
+The mixed recovery matrix used public executable SHA-256
+`121d7dbb9977618af7790f4fcd78e69fee3c4274e9e2980c1a3d0709dd322f0b`.
+Its effective source is commit `909911062106dbde6cf35fbcdccf4a45b2998671`
+with `src/main.rs` replaced by the preserved `main.rs.snapshot`, SHA-256
+`c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b`.
+That snapshot is byte-identical to the user's current unstaged edit, which was
+left untouched. The overlay removes two reported experimental capability
+fields; it does not change the conversion or recovery implementation.
+
+The [source/build record](../evidence/public-build-provenance-9099110-20261030.json)
+pins a Git source archive, the exact overlay, an 805-file source manifest,
+the tested executable, and its matching PDB. The compiler is Rust 1.98.1;
+the preserved configuration enables static CRT and release overflow checks.
+
+Bit-for-bit rebuilding of this historical executable remains unproven. Its PE
+contains wall-clock timestamp `1793356395` and CodeView GUID
+`50d664d9-5744-4329-89dd-70d5065f023b`, with no REPRO debug entry. The original
+linker environment was not fully sealed. An ordinary later relink is therefore
+not claimed to reproduce the tested SHA-256. No binary was patched to remove
+that difference, and no fresh build inherits the native qualification.
+
+The original mixed-run duration summary was also corrected from its raw UTC
+terminal string and creation epoch to 1511.1490251 seconds. The earlier summary
+had lost the timestamp's UTC suffix and fractional seconds during reparsing;
+the original native reports and their hashes are unchanged.
+
+## Historical observations
+
 The bounded native-shadow experiment has completed conversion, deliberate
 interruption, reboot recovery in both directions, native file verification,
 and a new post-recovery mutation workload followed by a genuine reboot check.

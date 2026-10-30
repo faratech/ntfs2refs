@@ -16,7 +16,7 @@
   "partition_bytes": 55834574848,
   "source_cluster_bytes": 65536,
   "target_cluster_bytes": 4096,
-  "duration_seconds": 15911.038,
+  "duration_seconds": 1511.1490251,
   "selected_bytes": 12531986432,
   "new_zero_bytes": 5691863040,
   "new_copy_bytes": 5659435008,
@@ -44,5 +44,14 @@
   "bulk_preservation_receipt_sha256": "be56ce60eb10776635c92328b947f196da2c86c1a94789c431ef90550d122443",
   "journal_archive_immutable_body_sha256": "d96b7710a51cb5191a61df206fb77caa4d268d13ba6789573509348ba403731f",
   "journal_archive_markers_verified": true,
-  "shadow_export_blocker": "Windows sharing violation on attached VHDX; no bypass or detach attempted"
+  "shadow_export_blocker": "Windows sharing violation on attached VHDX; no bypass or detach attempted",
+  "duration_correction": {
+    "previous_summary_sha256": "1f47f294e3fc01dea2e61f4f895b17679c85fa18762ff79a3287eae43795840c",
+    "raw_creation_epoch_ms": 1793351295962,
+    "reason": "Prior summary reparsed a JSON-coerced timestamp without its UTC suffix or fractional seconds. Corrected from raw JSON string and creation epoch; original records unchanged.",
+    "original_process_sha256": "3a722a75aec2a477dfad01877358ad95e01182e9c56b3870b035efeab13a292a",
+    "original_terminal_sha256": "3b0ed19f93ada946a139cee691179c09d82d6440d22666a66a3c494acb344109",
+    "previous_summary_value": 15911.038,
+    "raw_terminal_utc": "2026-10-30T09:33:27.1110251Z"
+  }
 }

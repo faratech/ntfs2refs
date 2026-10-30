@@ -1190,7 +1190,7 @@ impl<'a> SourceBackedShadow<'a> {
             if self
                 .session
                 .as_ref()
-                .is_none_or(|s| s.record_number() != object.record_number)
+                .is_none_or(|s| !s.matches_stream(object.record_number, &[]))
             {
                 if let Some(old) = self.session.take() {
                     old.finish(self.source, self.raw)?;

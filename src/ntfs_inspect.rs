@@ -2634,8 +2634,33 @@ pub fn hash_plain_stream_range<R: Read + Seek>(
     length: u64,
     max_bytes: u64,
 ) -> Result<String> {
-    let (attribute, expected) =
-        checked_plain_attribute(reader, raw, record_number, &[], max_bytes, true)?;
+    hash_plain_named_stream_range(reader, raw, record_number, &[], offset, length, max_bytes)
+}
+
+/// Hash a bounded range of the exact named (or unnamed) DATA attribute.
+/// The name selects an already inventoried stream, never a pathname. Source
+/// identity, flags, mapping, EOF and valid-data zero semantics are unchanged.
+pub fn hash_plain_named_stream_range<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    offset: u64,
+    length: u64,
+    max_bytes: u64,
+) -> Result<String> {
+    ensure!(
+        stream_name_utf16.len() <= 255,
+        "stream name exceeds NTFS limit"
+    );
+    let (attribute, expected) = checked_plain_attribute(
+        reader,
+        raw,
+        record_number,
+        stream_name_utf16,
+        max_bytes,
+        true,
+    )?;
     hash_checked_attribute_range(reader, &raw.geometry, &attribute, &expected, offset, length)
 }
 
@@ -2649,11 +2674,38 @@ pub fn hash_plain_stream_range_with_budget<R: Read + Seek>(
     length: u64,
     budget: &mut StreamTransferBudget,
 ) -> Result<String> {
-    let (attribute, expected) = checked_plain_attribute(
+    hash_plain_named_stream_range_with_budget(
         reader,
         raw,
         record_number,
         &[],
+        offset,
+        length,
+        budget,
+    )
+}
+
+/// Named-stream counterpart with the same per-stream and cumulative logical
+/// read budget. Full stream hashes remain content digests; returned range
+/// hashes remain SHA-256, including sparse and uninitialized zero bytes.
+pub fn hash_plain_named_stream_range_with_budget<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    offset: u64,
+    length: u64,
+    budget: &mut StreamTransferBudget,
+) -> Result<String> {
+    ensure!(
+        stream_name_utf16.len() <= 255,
+        "stream name exceeds NTFS limit"
+    );
+    let (attribute, expected) = checked_plain_attribute(
+        reader,
+        raw,
+        record_number,
+        stream_name_utf16,
         budget.max_stream_bytes,
         false,
     )?;
@@ -2728,6 +2780,9 @@ pub fn read_plain_stream<R: Read + Seek>(
 #[derive(Debug, Serialize)]
 pub struct StreamRangeReadProof {
     pub record_number: u64,
+    /// Empty names retain the existing unnamed-stream report encoding.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stream_name_utf16: Vec<u16>,
     pub logical_offset: u64,
     pub logical_bytes: u64,
     pub stream_logical_bytes: u64,
@@ -2741,6 +2796,7 @@ pub struct StreamRangeReadProof {
 /// It grants no source admission and never owns a payload-sized buffer.
 pub struct PlainStreamRangeSession {
     record_number: u64,
+    stream_name_utf16: Vec<u16>,
     attribute: Attribute,
     expected: String,
     poisoned: bool,
@@ -2752,10 +2808,33 @@ impl PlainStreamRangeSession {
         record_number: u64,
         max_bytes: u64,
     ) -> Result<Self> {
-        let (attribute, expected) =
-            checked_plain_attribute(reader, raw, record_number, &[], max_bytes, false)?;
+        Self::open_named(reader, raw, record_number, &[], max_bytes)
+    }
+
+    /// Cache exactly one inventoried DATA stream. Keeping the name in the
+    /// session prevents another stream of the same file from reusing its map.
+    pub fn open_named<R: Read + Seek>(
+        reader: &mut R,
+        raw: &NtfsInspection,
+        record_number: u64,
+        stream_name_utf16: &[u16],
+        max_bytes: u64,
+    ) -> Result<Self> {
+        ensure!(
+            stream_name_utf16.len() <= 255,
+            "stream name exceeds NTFS limit"
+        );
+        let (attribute, expected) = checked_plain_attribute(
+            reader,
+            raw,
+            record_number,
+            stream_name_utf16,
+            max_bytes,
+            false,
+        )?;
         Ok(Self {
             record_number,
+            stream_name_utf16: stream_name_utf16.to_vec(),
             attribute,
             expected,
             poisoned: false,
@@ -2763,6 +2842,13 @@ impl PlainStreamRangeSession {
     }
     pub fn record_number(&self) -> u64 {
         self.record_number
+    }
+    pub fn stream_name_utf16(&self) -> &[u16] {
+        &self.stream_name_utf16
+    }
+    pub fn matches_stream(&self, record_number: u64, stream_name_utf16: &[u16]) -> bool {
+        self.record_number == record_number
+            && self.stream_name_utf16.as_slice() == stream_name_utf16
     }
     pub fn stream_length(&self) -> u64 {
         self.attribute.report.logical_size
@@ -2798,7 +2884,7 @@ impl PlainStreamRangeSession {
             reader,
             raw,
             self.record_number,
-            &[],
+            &self.stream_name_utf16,
             self.stream_length(),
             false,
         )?;
@@ -2825,6 +2911,26 @@ pub fn read_plain_stream_range_into<R: Read + Seek>(
     output: &mut [u8],
     budget: &mut StreamTransferBudget,
 ) -> Result<StreamRangeReadProof> {
+    read_plain_named_stream_range_into(reader, raw, record_number, &[], offset, output, budget)
+}
+
+/// Read one named or unnamed DATA range without allocating a stream-sized
+/// buffer. The exact UTF-16 name is rechecked before and after the read and is
+/// included in the resulting proof. This supplies no target ADS support or
+/// permission to bypass source admission.
+pub fn read_plain_named_stream_range_into<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    record_number: u64,
+    stream_name_utf16: &[u16],
+    offset: u64,
+    output: &mut [u8],
+    budget: &mut StreamTransferBudget,
+) -> Result<StreamRangeReadProof> {
+    ensure!(
+        stream_name_utf16.len() <= 255,
+        "stream name exceeds NTFS limit"
+    );
     ensure!(
         output.len() <= STREAM_HASH_BUFFER_BYTES,
         "materialization range exceeds fixed buffer"
@@ -2833,7 +2939,7 @@ pub fn read_plain_stream_range_into<R: Read + Seek>(
         reader,
         raw,
         record_number,
-        &[],
+        stream_name_utf16,
         budget.max_stream_bytes,
         false,
     )?;
@@ -2862,7 +2968,7 @@ pub fn read_plain_stream_range_into<R: Read + Seek>(
         reader,
         raw,
         record_number,
-        &[],
+        stream_name_utf16,
         budget.max_stream_bytes,
         false,
     )?;
@@ -2872,6 +2978,7 @@ pub fn read_plain_stream_range_into<R: Read + Seek>(
     );
     Ok(StreamRangeReadProof {
         record_number,
+        stream_name_utf16: stream_name_utf16.to_vec(),
         logical_offset: offset,
         logical_bytes: length,
         stream_logical_bytes: attribute.report.logical_size,

@@ -28,7 +28,7 @@ The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
 Current state supersedes all older VM states below: VM is Off at observed
-NTFS checkpoint1057eb82-d152-4572-881b-53ff9dbb82dd; all38 checkpoints
+NTFS checkpoint1057eb82-d152-4572-881b-53ff9dbb82dd; all39 checkpoints
 remain. The clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Source5aeaf40/public61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b
 completed public H:/partition2 conversionba1480fc/coreb8d43b36 inside the VM:
@@ -93,6 +93,11 @@ and exact mapping checks remain; no success return alone grants retention.
 Unwritten placement now validates each complete retrieval map once and indexes
 matching intervals without omitting any tracked-range or bitmap checks.
 Focused release build passed; candidate native rerun is next. No converter is active.
+Candidatead8516b stopped before placement on the older carrier-association
+guard; failed branch e92ade3b-7227-4897-873c-889fa0f317ef is preserved. The
+guard now validates ordinary named carriers as exact full, hole-free layouts
+and sparse carriers against their exact source layout; counters distinguish
+the two. Focused release build passes; next rerun uses the same observed source.
 Earlier helper-only refusals are preserved under attribute-fixture-68d14605
 (read-only discovery flag), -9d172c41 (resident allocation observation; checkpoint
 9d98ce2a) and -eed02ff5 (temporary preallocation tail; checkpointf96b8890).

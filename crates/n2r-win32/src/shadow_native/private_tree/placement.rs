@@ -79,6 +79,10 @@ struct Counters {
     all_hole_sparse_streams: usize,
     #[serde(skip_serializing_if = "zero_bytes")]
     sparse_carrier_bytes: u64,
+    #[serde(skip_serializing_if = "zero_count")]
+    named_carrier_streams: usize,
+    #[serde(skip_serializing_if = "zero_bytes")]
+    named_carrier_bytes: u64,
     desired_runs: usize,
     desired_runs_limit: usize,
     initial_tracked_extents: usize,
@@ -163,8 +167,10 @@ fn validate_stream_slots(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<
             return Err(invalid("stream placement slot is ambiguous or misbound"));
         }
         let original = streams::view(input, key)?;
-        if original.sparse.is_some() != tree.sparse_targets.contains_key(key) {
-            return Err(invalid("sparse stream and carrier association differs"));
+        let needs_carrier = original.sparse.is_some()
+            || (!key.name_utf16.is_empty() && original.logical_length() >= 4096);
+        if needs_carrier != tree.sparse_targets.contains_key(key) {
+            return Err(invalid("stream and carrier association differs"));
         }
         let stream = tree.placement_view(input, key)?;
         if stream.directory || stream.sparse.is_some() {
@@ -177,7 +183,20 @@ fn validate_stream_slots(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<
     for (key, target) in &tree.sparse_targets {
         let original = streams::view(input, key)?;
         target.layout.validate(target.logical_length)?;
-        if original.sparse != Some(&target.layout)
+        let layout_matches = if target.sparse_mode {
+            original.sparse == Some(&target.layout)
+        } else {
+            original.sparse.is_none()
+                && !key.name_utf16.is_empty()
+                && original.logical_length() >= 4096
+                && target.layout.initialized_length == original.logical_length()
+                && target.layout.holes.is_empty()
+                && target.layout.allocated.len() == 1
+                && target.layout.allocated[0].offset == 0
+                && original.logical_length().checked_next_multiple_of(4096)
+                    == Some(target.layout.allocated[0].length)
+        };
+        if !layout_matches
             || original.logical_length() != target.logical_length
             || target.path
                 != streams::path(
@@ -743,19 +762,38 @@ pub(super) fn run(
             .keys()
             .filter(|key| !key.name_utf16.is_empty())
             .count(),
-        sparse_streams: tree.sparse_targets.len(),
+        sparse_streams: tree
+            .sparse_targets
+            .values()
+            .filter(|t| t.sparse_mode)
+            .count(),
         all_hole_sparse_streams: tree
             .sparse_targets
             .values()
-            .filter(|target| target.dense_length == 0)
+            .filter(|target| target.sparse_mode && target.dense_length == 0)
             .count(),
         sparse_carrier_bytes: tree
             .sparse_targets
             .values()
+            .filter(|target| target.sparse_mode)
             .try_fold(0u64, |bytes, target| {
                 bytes
                     .checked_add(target.dense_length)
                     .ok_or_else(|| invalid("sparse carrier byte count overflow"))
+            })?,
+        named_carrier_streams: tree
+            .sparse_targets
+            .values()
+            .filter(|t| !t.sparse_mode)
+            .count(),
+        named_carrier_bytes: tree
+            .sparse_targets
+            .values()
+            .filter(|t| !t.sparse_mode)
+            .try_fold(0u64, |bytes, target| {
+                bytes
+                    .checked_add(target.dense_length)
+                    .ok_or_else(|| invalid("named carrier byte count overflow"))
             })?,
         desired_runs_limit: MAX_ADMITTED_RANGES,
         tracked_extents_limit: MAX_TRACKED_EXTENTS,
@@ -812,12 +850,13 @@ pub(super) fn run(
     let mut evidence = Evidence::default();
     let mut move_bytes = 0u64;
     let mut parked = Vec::new();
-    if counters.sparse_streams != 0 {
+    if !tree.sparse_targets.is_empty() {
         let mapping = serde_json::json!({"strategy":"sparse-carrier-coordinate-map",
             "sparse_stream_placement_offsets_are_dense_carrier_offsets":true,
             "streams":tree.sparse_targets.iter().map(|(key,target)|serde_json::json!({
                 "canonical_object_index":key.object_index,"stream_name_utf16":key.name_utf16,
                 "logical_length":target.logical_length,"dense_carrier_bytes":target.dense_length,
+                "sparse_mode":target.sparse_mode,
                 "islands":target.islands.iter().map(|island|serde_json::json!({"logical_offset":island.logical,"dense_offset":island.dense,"length":island.length})).collect::<Vec<_>>()
             })).collect::<Vec<_>>()});
         if let Err(message) = evidence.charge(&mapping) {

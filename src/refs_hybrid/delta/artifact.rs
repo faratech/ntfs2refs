@@ -37,12 +37,18 @@ struct StoredRange {
     offset: u64,
     length: u64,
     packed_offset: u64,
+    #[serde(default)]
+    new_is_zero: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredLayout {
     partition_bytes: u64,
     changed_bytes: u64,
+    #[serde(default)]
+    encoding_version: Option<u32>,
+    #[serde(default)]
+    packed_bytes: Option<u64>,
     ranges: Vec<StoredRange>,
 }
 #[derive(Deserialize)]
@@ -63,6 +69,10 @@ struct StoredCapture {
     packed_sha256: String,
     input_plan_sha256: String,
     conversion_qualified: bool,
+    #[serde(default, rename = "selected_digest")]
+    _selected_digest: Option<String>,
+    #[serde(default, rename = "changed_classes")]
+    _changed_classes: Option<serde_json::Value>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -301,24 +311,35 @@ impl VerifiedDeltaArtifact {
         ] {
             ensure!(canonical_digest(digest), "noncanonical capture digest");
         }
-        let layout = DeltaLayout::new(
-            capture.layout.partition_bytes,
-            capture.layout.changed_bytes,
-            capture
-                .layout
-                .ranges
-                .into_iter()
-                .map(|r| ChangedRange {
-                    offset: r.offset,
-                    length: r.length,
-                    packed_offset: r.packed_offset,
-                })
-                .collect(),
-        )?;
+        let ranges = capture
+            .layout
+            .ranges
+            .into_iter()
+            .map(|r| ChangedRange {
+                offset: r.offset,
+                length: r.length,
+                packed_offset: r.packed_offset,
+                new_is_zero: r.new_is_zero,
+            })
+            .collect();
+        let layout = match (capture.layout.encoding_version, capture.layout.packed_bytes) {
+            (None, None) => DeltaLayout::new(
+                capture.layout.partition_bytes,
+                capture.layout.changed_bytes,
+                ranges,
+            )?,
+            (Some(2), Some(packed_bytes)) => DeltaLayout::new_zero_aware(
+                capture.layout.partition_bytes,
+                capture.layout.changed_bytes,
+                packed_bytes,
+                ranges,
+            )?,
+            _ => anyhow::bail!("unsupported delta backing encoding or absent physical byte count"),
+        };
         let mut packed = ordinary(packed_path)?;
         let packed_stamp = Stamp::of(&packed.metadata()?)?;
         ensure!(
-            packed_stamp.bytes == layout.changed_bytes(),
+            packed_stamp.bytes == layout.packed_bytes(),
             "packed backing length differs from capture"
         );
         ensure!(

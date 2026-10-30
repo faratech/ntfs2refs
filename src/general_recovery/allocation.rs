@@ -258,7 +258,11 @@ pub fn recover_allocation(
         phase = "selected-journal-recovery";
         let outcome = match action {
             Action::Resume => {
-                target.arm_writes(policy, &mut events)?;
+                if plan.new_zero_ranges.is_empty() {
+                    target.arm_writes(policy, &mut events)?;
+                } else {
+                    target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
+                }
                 let resumed = sj::resume(&mut target, &mut journal, &plan, &ticket)?;
                 artifacts::save(output, "resume.json", &resumed)?;
                 let handoff = sj::handoff(&mut target, &mut journal, &plan, &ticket)?;
@@ -271,7 +275,11 @@ pub fn recover_allocation(
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::Rollback => {
-                target.arm_writes(policy, &mut events)?;
+                if plan.new_zero_ranges.is_empty() {
+                    target.arm_writes(policy, &mut events)?;
+                } else {
+                    target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
+                }
                 let rolled = sj::rollback(&mut target, &mut journal, &plan, &ticket)?;
                 artifacts::save(output, "rollback.json", &rolled)?;
                 AllocationRecoveryOutcome::NtfsRestored

@@ -1,11 +1,10 @@
 # Selected-range journal core
 
-`selected_journal` is the reconstruction core for a future selective conversion
-path. It operates on caller-owned `ReadSeek`/`DurableIo` handles and opens no
+`selected_journal` is the reconstruction core used by the allocation-bounded
+drive conversion path. It operates on caller-owned `ReadSeek`/`DurableIo` handles and opens no
 devices. The caller must supply an authenticated required write set, exact
 device/storage binding, exclusion, native write policy and independently held
-trusted ticket. A plan or ticket is not a source certificate. The drive CLI
-does not currently use this core.
+trusted ticket. A plan or ticket is not a source certificate.
 
 Preparation reads only the declared ranges from source and candidate and stores
 both versions in a new external journal. It flushes and independently verifies
@@ -64,3 +63,41 @@ The [recorded integration](../evidence/selected-journal-integration-20261029.jso
 passed. It is an ordinary-file observation, not Windows device, power-failure,
 filesystem-ownership or native conversion qualification. No unit tests were
 added or run.
+
+## Zero-payload storage (2026-10-30)
+
+The allocation-bounded capture now distinguishes changed bytes from physically
+stored backing bytes. It splits ranges at zero/literal boundaries, records every
+changed zero range in its version-2 layout, and omits only its stored payload.
+`DifferenceImage` synthesizes those zeros. Required zero ranges remain selected
+and are still written to the target; this does not skip the ReFS reserved zone.
+
+When the pinned plan contains `new_zero_ranges`, the journal uses `N2RZERO1`
+with 88-byte records. Each zero entry must exactly match a selected range, and
+preparation verifies the actual candidate bytes. Every old byte remains in the
+journal. New zero bytes are synthesized during validation, apply and recovery.
+The exact journal length is:
+
+```text
+8192 + 80 + 88 * range_count
+  + 2 * selected_bytes - new_zero_bytes + 80
+```
+
+An empty zero map preserves the `N2RSEL01` encoding. The recovery bundle pins the
+plan (including the zero map) and ticket. Both codecs preserve the existing
+intent, readback and handoff/abort rules. This is not the proposed staged
+`N2RSEL02-H` protocol: it introduces no in-volume recovery dependency or new
+rollback guarantee.
+
+Native encoded-journal arming checks the exact journal length against the
+storage profile instead of assuming two payload copies per changed byte. The
+legacy arming path is unchanged. Exact plan sizing and a fresh free-space check
+precede journal creation and source activation. The existing 16 GiB native
+journal ceiling still applies; this change does not claim unbounded capacity.
+
+The [owned-file integration](../evidence/zero-payload-journal-20261030.json)
+stored 16 KiB of selected changes using a 29,096-byte journal versus 41,360
+bytes with the legacy format. It omitted 12 KiB of new zero payload and retained
+all old bytes. Short-write resume/rollback and false-zero rejection passed;
+the legacy output matched the preserved journals byte for byte. This result
+does not establish native-volume or physical power-loss qualification.

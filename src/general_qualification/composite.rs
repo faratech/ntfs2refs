@@ -276,7 +276,10 @@ pub(crate) fn prepare_allocation_fresh_selected(
     budget.validate(pair.source.identity.partition_bytes)?;
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
-        (1..=profile.max_changed_bytes()).contains(&max_change_bytes)
+        (1..=profile
+            .max_journal_bytes()
+            .saturating_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE,))
+            .contains(&max_change_bytes)
             && max_change_bytes <= pair.source.identity.partition_bytes,
         "allocation-bounded qualification changed-byte budget differs"
     );

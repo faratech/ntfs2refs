@@ -534,6 +534,13 @@ impl FrozenAllocationTargetPreservation {
                 .collect(),
             max_selected_bytes: self.capture.layout.changed_bytes(),
             max_journal_bytes,
+            new_zero_ranges: self
+                .capture
+                .layout
+                .new_zero_ranges()
+                .into_iter()
+                .map(|(offset, length)| crate::selected_journal::SelectedRange { offset, length })
+                .collect(),
         };
         plan.validate()?;
         Ok(plan)
@@ -733,7 +740,7 @@ pub fn verify_and_select(
         protected.routes(),
         protected.routes().payload_bytes().max(1),
     )?
-    .capture_listed_differences_to_new_file(
+    .capture_listed_zero_aware_differences_to_new_file(
         &compared,
         packed_path,
         max_changed_bytes,
@@ -756,7 +763,7 @@ pub fn verify_and_select(
     );
     let mut backing = PinnedBacking::open(
         packed_path,
-        capture.layout.changed_bytes(),
+        capture.layout.packed_bytes(),
         &capture.packed_sha256,
     )?;
     for binding in [&pair.source, &pair.shadow] {

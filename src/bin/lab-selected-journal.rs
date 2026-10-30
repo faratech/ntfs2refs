@@ -18,6 +18,9 @@ const JOURNAL: u64 = 65536;
 struct Args {
     #[arg(long)]
     directory: PathBuf,
+    /// Exercise the zero-new representation, keeping the legacy case default.
+    #[arg(long)]
+    zero_new: bool,
 }
 #[derive(Default, Clone, Serialize)]
 struct Counts {
@@ -382,6 +385,7 @@ fn planned(dir: &Path) -> Result<serde_json::Value> {
         ranges: coarse.clone(),
         max_selected_bytes: IMAGE,
         max_journal_bytes: u64::MAX,
+        new_zero_ranges: Vec::new(),
     }
     .validate()?;
     ensure!(
@@ -453,7 +457,7 @@ fn planned(dir: &Path) -> Result<serde_json::Value> {
 fn main() -> Result<()> {
     let args = Args::parse();
     fresh(&args.directory)?;
-    let plan = sj::SelectedPlan {
+    let mut plan = sj::SelectedPlan {
         image_length: IMAGE,
         ranges: vec![
             sj::SelectedRange {
@@ -471,7 +475,12 @@ fn main() -> Result<()> {
         ],
         max_selected_bytes: 16384,
         max_journal_bytes: JOURNAL,
+        new_zero_ranges: Vec::new(),
     };
+    let legacy_journal_bytes = plan.validate()?.1;
+    if args.zero_new {
+        plan.new_zero_ranges = plan.ranges[..2].to_vec();
+    }
     plan.validate()?;
     let mut setup_bytes = 0;
     for (name, candidate) in [
@@ -481,6 +490,16 @@ fn main() -> Result<()> {
         ("rollback-target.bin", false),
     ] {
         setup_bytes += setup(&args.directory.join(name), candidate, &plan.ranges)?;
+    }
+    if args.zero_new {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .open(args.directory.join("candidate.bin"))?;
+        for range in &plan.new_zero_ranges {
+            file.seek(SeekFrom::Start(range.offset))?;
+            file.write_all(&vec![0; range.length as usize])?;
+        }
+        file.sync_all()?;
     }
     let mut source = Fenced::open(
         &args.directory.join("source.bin"),
@@ -502,11 +521,28 @@ fn main() -> Result<()> {
     );
     let source_io = source.count.clone();
     let candidate_io = candidate.count.clone();
+    let false_zero_claim_rejected = if args.zero_new {
+        let mut false_plan = plan.clone();
+        false_plan.new_zero_ranges = vec![plan.ranges[2].clone()];
+        let mut rejected = Fenced::open(
+            &args.directory.join("false-zero-claim.journal"),
+            None,
+            true,
+            true,
+        )?;
+        sj::prepare(&mut source, &mut candidate, &mut rejected, &false_plan).is_err()
+    } else {
+        false
+    };
+    ensure!(
+        !args.zero_new || false_zero_claim_rejected,
+        "nonzero candidate accepted as zero"
+    );
     drop(source);
     drop(candidate);
     let verification_bytes = verify(&args.directory, &plan.ranges)?;
     let pruned = planned(&args.directory)?;
-    let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"changed_granule_planning":pruned,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
+    let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"zero_new_encoding":args.zero_new,"journal_bytes":plan.validate()?.1,"legacy_journal_bytes":legacy_journal_bytes,"new_zero_payload_bytes_omitted":plan.new_zero_bytes()?,"false_zero_claim_rejected":false_zero_claim_rejected,"changed_granule_planning":pruned,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
     let bytes = serde_json::to_vec_pretty(&report)?;
     ensure!(bytes.len() <= 65536, "report exceeds64KiB");
     let mut output = OpenOptions::new()

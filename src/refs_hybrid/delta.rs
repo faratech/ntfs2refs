@@ -12,12 +12,24 @@ pub struct ChangedRange {
     pub(crate) offset: u64,
     pub(crate) length: u64,
     pub(crate) packed_offset: u64,
+    /// Version-two backing omits these bytes; the captured candidate was all
+    /// zero throughout this interval. The interval remains in the write set.
+    #[serde(skip_serializing_if = "is_false")]
+    pub(crate) new_is_zero: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, Serialize)]
 pub struct DeltaLayout {
     partition_bytes: u64,
     changed_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encoding_version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packed_bytes: Option<u64>,
     ranges: Vec<ChangedRange>,
 }
 impl DeltaLayout {
@@ -27,11 +39,34 @@ impl DeltaLayout {
         ranges: Vec<ChangedRange>,
     ) -> Result<Self> {
         ensure!(
+            ranges.iter().all(|range| !range.new_is_zero),
+            "legacy delta cannot omit zero payloads"
+        );
+        Self::checked(partition_bytes, changed_bytes, None, ranges)
+    }
+
+    pub(crate) fn new_zero_aware(
+        partition_bytes: u64,
+        changed_bytes: u64,
+        packed_bytes: u64,
+        ranges: Vec<ChangedRange>,
+    ) -> Result<Self> {
+        Self::checked(partition_bytes, changed_bytes, Some(packed_bytes), ranges)
+    }
+
+    fn checked(
+        partition_bytes: u64,
+        changed_bytes: u64,
+        packed_bytes: Option<u64>,
+        ranges: Vec<ChangedRange>,
+    ) -> Result<Self> {
+        ensure!(
             partition_bytes > 0 && partition_bytes.is_multiple_of(4096) && ranges.len() <= 65536,
             "delta geometry/range budget differs"
         );
         let mut end = 0;
         let mut packed = 0u64;
+        let mut logical = 0u64;
         for r in &ranges {
             let next = r
                 .offset
@@ -47,14 +82,24 @@ impl DeltaLayout {
                 "delta ranges overlap, escape or lack dense backing"
             );
             end = next;
-            packed = packed
+            logical = logical
                 .checked_add(r.length)
-                .context("delta backing overflow")?;
+                .context("delta logical byte overflow")?;
+            if !r.new_is_zero {
+                packed = packed
+                    .checked_add(r.length)
+                    .context("delta backing overflow")?;
+            }
         }
-        ensure!(packed == changed_bytes, "delta byte total differs");
+        ensure!(
+            logical == changed_bytes && packed == packed_bytes.unwrap_or(changed_bytes),
+            "delta logical or backing byte total differs"
+        );
         Ok(Self {
             partition_bytes,
             changed_bytes,
+            encoding_version: packed_bytes.map(|_| 2),
+            packed_bytes,
             ranges,
         })
     }
@@ -63,6 +108,18 @@ impl DeltaLayout {
     }
     pub fn changed_ranges(&self) -> usize {
         self.ranges.len()
+    }
+
+    pub fn packed_bytes(&self) -> u64 {
+        self.packed_bytes.unwrap_or(self.changed_bytes)
+    }
+
+    pub fn new_zero_ranges(&self) -> Vec<(u64, u64)> {
+        self.ranges
+            .iter()
+            .filter(|range| range.new_is_zero)
+            .map(|range| (range.offset, range.length))
+            .collect()
     }
 
     pub(crate) fn intervals(&self) -> &[ChangedRange] {
@@ -119,7 +176,7 @@ impl<'a, R: Read + Seek, S: Read + Seek> DifferenceImage<'a, R, S> {
     pub fn new(original: &'a mut R, packed: &'a mut S, layout: &'a DeltaLayout) -> Result<Self> {
         ensure!(
             original.seek(SeekFrom::End(0))? == layout.partition_bytes
-                && packed.seek(SeekFrom::End(0))? == layout.changed_bytes,
+                && packed.seek(SeekFrom::End(0))? == layout.packed_bytes(),
             "delta backing lengths differ"
         );
         Ok(Self {
@@ -153,6 +210,10 @@ impl<'a, R: Read + Seek, S: Read + Seek> DifferenceImage<'a, R, S> {
             let stop = end.min(range.offset + range.length);
             let local = usize::try_from(start - offset)?;
             let length = usize::try_from(stop - start)?;
+            if range.new_is_zero {
+                candidate[local..local + length].fill(0);
+                continue;
+            }
             let packed_offset = range
                 .packed_offset
                 .checked_add(start - range.offset)
@@ -184,7 +245,7 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
             source.binding() == self.original.binding()
                 && source.byte_len() == self.layout.partition_bytes
                 && self.original.byte_len() == self.layout.partition_bytes
-                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.packed_bytes(),
             "paired preparation does not share the exact frozen source"
         );
         let state = source.state(events)?;
@@ -248,7 +309,7 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
             self.original.binding() == source_binding
                 && self.original.byte_len() == expected_length
                 && self.layout.partition_bytes == expected_length
-                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.packed_bytes(),
             "paired frozen hash differs from actual source binding or backing"
         );
         let source_before = self.original.state(events)?;
@@ -271,7 +332,7 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralFrozenPartition, S> {
         }
         ensure!(
             self.original.state(events)? == source_before
-                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.packed_bytes(),
             "paired frozen inputs changed around the complete scan"
         );
         self.position = expected_length;
@@ -301,7 +362,7 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
                 && self.original.byte_len() == expected_length
                 && target.byte_len() == expected_length
                 && self.layout.partition_bytes == expected_length
-                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.packed_bytes(),
             "paired compact hash is not the exact target read view and backing"
         );
         self.layout.require_exact_write_ranges(journal_ranges)?;
@@ -333,7 +394,7 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
                 && self.original.byte_len() == expected_length
                 && target.byte_len() == expected_length
                 && self.layout.partition_bytes == expected_length
-                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.packed_bytes(),
             "paired compact hash is not the exact target read view and backing"
         );
         self.layout.require_exact_write_ranges(journal_ranges)?;
@@ -365,7 +426,7 @@ impl<S: Read + Seek> DifferenceImage<'_, n2r_win32::GeneralJournalReadView, S> {
         ensure!(
             self.original.state(events)? == view_before
                 && target.state(events)? == target_before
-                && self.packed.seek(SeekFrom::End(0))? == self.layout.changed_bytes,
+                && self.packed.seek(SeekFrom::End(0))? == self.layout.packed_bytes(),
             "paired compact inputs changed around the complete hash scan"
         );
         self.position = expected_length;
@@ -395,9 +456,14 @@ impl<R: Read + Seek, S: Read + Seek> Read for DifferenceImage<'_, R, S> {
         let count = (end - self.position).min(output.len() as u64) as usize;
         let read = if changed {
             let r = range.unwrap();
-            self.packed
-                .seek(SeekFrom::Start(r.packed_offset + self.position - r.offset))?;
-            self.packed.read(&mut output[..count])?
+            if r.new_is_zero {
+                output[..count].fill(0);
+                count
+            } else {
+                self.packed
+                    .seek(SeekFrom::Start(r.packed_offset + self.position - r.offset))?;
+                self.packed.read(&mut output[..count])?
+            }
         } else {
             self.original.seek(SeekFrom::Start(self.position))?;
             self.original.read(&mut output[..count])?

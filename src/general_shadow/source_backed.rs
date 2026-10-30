@@ -546,6 +546,38 @@ impl<'a> SourceBackedShadow<'a> {
             output,
             max_changed_bytes,
             true,
+            false,
+            class_split,
+        )
+    }
+
+    /// Allocation-only capture with an explicitly versioned zero-eliding
+    /// backing. Every changed zero granule remains in the authenticated layout
+    /// and write set, but contributes no bytes to the packed file.
+    pub fn capture_listed_zero_aware_differences_to_new_file(
+        self,
+        selection: &[crate::refs_write_set::ByteRange],
+        output: &std::path::Path,
+        max_changed_bytes: u64,
+        class_split: Option<ChangeClassSplit<'_>>,
+    ) -> Result<DifferenceCapture> {
+        use sha2::{Digest, Sha256};
+        let selected_bytes = selection.iter().try_fold(0u64, |total, range| {
+            total
+                .checked_add(range.length)
+                .context("listed selection overflow")
+        })?;
+        let identity = hex::encode(Sha256::digest(serde_json::to_vec(&serde_json::json!({
+            "profile":"listed-ranges-source-backed-zero-v2","partition_bytes":self.length,
+            "granule_bytes":4096,"ranges":selection}))?));
+        self.capture_difference_ranges_with(
+            selection,
+            selected_bytes,
+            identity,
+            output,
+            max_changed_bytes,
+            true,
+            true,
             class_split,
         )
     }
@@ -607,6 +639,7 @@ impl<'a> SourceBackedShadow<'a> {
             output,
             max_changed_bytes,
             false,
+            false,
             None,
         )
     }
@@ -623,6 +656,7 @@ impl<'a> SourceBackedShadow<'a> {
         output: &std::path::Path,
         max_changed_bytes: u64,
         chunk_digests: bool,
+        zero_payloads: bool,
         class_split: Option<ChangeClassSplit<'_>>,
     ) -> Result<DifferenceCapture> {
         use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
@@ -668,6 +702,7 @@ impl<'a> SourceBackedShadow<'a> {
         };
         let mut packed_digest = Sha256::new();
         let mut changed = 0u64;
+        let mut packed = 0u64;
         let mut compared = 0u64;
         let mut ranges: Vec<ChangedRange> = Vec::new();
         let routes = self.routes;
@@ -710,8 +745,17 @@ impl<'a> SourceBackedShadow<'a> {
                     // the budget boundary at a cluster: if only part of a
                     // run fits, write that prefix and refuse the next cluster
                     // exactly as the original per-cluster loop did.
+                    let new_is_zero = zero_payloads
+                        && candidate[offset..offset + 4096]
+                            .iter()
+                            .all(|&byte| byte == 0);
                     let mut end = offset + 4096;
-                    while end < count && original[end..end + 4096] != candidate[end..end + 4096] {
+                    while end < count
+                        && original[end..end + 4096] != candidate[end..end + 4096]
+                        && (!zero_payloads
+                            || candidate[end..end + 4096].iter().all(|&byte| byte == 0)
+                                == new_is_zero)
+                    {
                         end += 4096;
                     }
                     let allowed = max_changed_bytes.saturating_sub(changed) / 4096;
@@ -752,7 +796,9 @@ impl<'a> SourceBackedShadow<'a> {
                             &candidate[offset..offset + bytes],
                         );
                     }
-                    if let Some(last) = ranges.last_mut().filter(|r| r.offset + r.length == address)
+                    if let Some(last) = ranges
+                        .last_mut()
+                        .filter(|r| r.offset + r.length == address && r.new_is_zero == new_is_zero)
                     {
                         last.length += bytes as u64;
                     } else {
@@ -763,11 +809,17 @@ impl<'a> SourceBackedShadow<'a> {
                         ranges.push(ChangedRange {
                             offset: address,
                             length: bytes as u64,
-                            packed_offset: changed,
+                            packed_offset: packed,
+                            new_is_zero,
                         });
                     }
-                    file.write_all(&candidate[offset..offset + bytes])?;
-                    packed_digest.update(&candidate[offset..offset + bytes]);
+                    if !new_is_zero {
+                        file.write_all(&candidate[offset..offset + bytes])?;
+                        packed_digest.update(&candidate[offset..offset + bytes]);
+                        packed = packed
+                            .checked_add(bytes as u64)
+                            .context("delta packed byte count overflow")?;
+                    }
                     changed = next;
                     offset += bytes;
                 }
@@ -785,10 +837,14 @@ impl<'a> SourceBackedShadow<'a> {
         }
         file.sync_all()?;
         ensure!(
-            compared == selected_bytes && file.metadata()?.len() == changed,
+            compared == selected_bytes && file.metadata()?.len() == packed,
             "delta comparison/output accounting differs"
         );
-        let layout = DeltaLayout::new(self.length, changed, ranges)?;
+        let layout = if zero_payloads {
+            DeltaLayout::new_zero_aware(self.length, changed, packed, ranges)?
+        } else {
+            DeltaLayout::new(self.length, changed, ranges)?
+        };
         let read_counts = self.finish()?;
         let source_raw_sha256 = match source_raw {
             Some(digest) => Some(hex::encode(digest.finish()?)),

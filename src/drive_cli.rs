@@ -451,10 +451,18 @@ mod windows {
             "Windows volume lacks working space for the conversion"
         );
         let reserve = (space.available_bytes_to_caller / 4).min(16 * 1024 * 1024 * 1024);
-        let journal_bytes = ((space.available_bytes_to_caller - reserve) / 3)
-            .min(n2r_win32::journal_file::MAX_EXPERIMENTAL_JOURNAL_BYTES)
-            / 4096
-            * 4096;
+        // Encoded selection stores D old bytes and L literal-new bytes, with
+        // a separate L-byte backing (L <= D). Thus backing <= journal / 2.
+        // Retain the legacy thirds budget for the whole-image route.
+        let usable = space.available_bytes_to_caller - reserve;
+        let journal_share = if allocation_bounded {
+            usable / 3 * 2
+        } else {
+            usable / 3
+        };
+        let journal_bytes =
+            journal_share.min(n2r_win32::journal_file::MAX_EXPERIMENTAL_JOURNAL_BYTES) / 4096
+                * 4096;
         let mut hash = Sha256::new();
         hash.update(
             SystemTime::now()

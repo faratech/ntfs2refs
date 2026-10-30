@@ -273,6 +273,22 @@ pub struct WritePolicy {
 
 impl WritePolicy {
     pub fn validate(&self, length: u64) -> io::Result<()> {
+        self.validate_with_byte_limit(length, self.journal_profile.max_changed_bytes())
+    }
+
+    /// Encoded selected journals retain every old byte but may synthesize the
+    /// new bytes. The exact, independently checked journal length replaces the
+    /// legacy assumption that every changed byte needs two payload copies.
+    fn validate_encoded(&self, length: u64, journal_bytes: u64) -> io::Result<()> {
+        if journal_bytes == 0 || journal_bytes > self.journal_profile.max_journal_bytes() {
+            return Err(invalid(
+                "encoded journal exceeds its native storage profile",
+            ));
+        }
+        self.validate_with_byte_limit(length, journal_bytes)
+    }
+
+    fn validate_with_byte_limit(&self, length: u64, byte_limit: u64) -> io::Result<()> {
         layout::validate_ranges(&self.allowed, length)?;
         // Relocation-only tree plans have no retained ranges. The native
         // fixture adapter still enforces its original one-range profile.
@@ -290,9 +306,7 @@ impl WritePolicy {
                 }
             }
         }
-        if bytes > self.maximum_bytes
-            || self.maximum_bytes > self.journal_profile.max_changed_bytes()
-        {
+        if bytes > self.maximum_bytes || self.maximum_bytes > byte_limit {
             return Err(invalid(
                 "native write policy exceeds the explicit journal-capacity profile",
             ));
@@ -438,7 +452,13 @@ pub(crate) fn flush_persisted_attributes(events: &mut Vec<NativeEvent>) -> io::R
     let mut key: HKEY = ptr::null_mut();
     // SAFETY: predefined root key, NUL-terminated name and a live output slot.
     let opened = unsafe {
-        RegOpenKeyExW(HKEY_LOCAL_MACHINE, name.as_ptr(), 0, KEY_QUERY_VALUE, &mut key)
+        RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            name.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        )
     };
     let status = if opened == 0 {
         // SAFETY: `key` was opened above and is closed exactly once here.
@@ -2335,11 +2355,8 @@ impl GeneralFrozenPartition {
         resource_profile: Option<crate::attestation::ResourceProfile>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveRefsObservation> {
-        let (report, before, observed_readonly, after) = self.with_readonly_refs_observation(
-            &pair,
-            resource_profile,
-            events,
-            |protected| {
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
                 crate::shadow_native::verify_general_ordinary_readonly_with_resource_profile(
                     pair.clone(),
                     input,
@@ -2347,8 +2364,7 @@ impl GeneralFrozenPartition {
                     protected,
                     resource_profile,
                 )
-            },
-        )?;
+            })?;
         Ok(GeneralLiveRefsObservation {
             report,
             before,
@@ -2369,11 +2385,8 @@ impl GeneralFrozenPartition {
         resource_profile: Option<crate::attestation::ResourceProfile>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveRefsLayoutObservation> {
-        let (report, before, observed_readonly, after) = self.with_readonly_refs_observation(
-            &pair,
-            resource_profile,
-            events,
-            |protected| {
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
                 crate::shadow_native::observe_general_layout_readonly_with_resource_profile(
                     pair.clone(),
                     input,
@@ -2381,8 +2394,7 @@ impl GeneralFrozenPartition {
                     protected,
                     resource_profile,
                 )
-            },
-        )?;
+            })?;
         Ok(GeneralLiveRefsLayoutObservation {
             report,
             before,
@@ -2658,10 +2670,33 @@ impl GeneralJournaledPartition {
         policy: WritePolicy,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
+        self.arm_writes_inner(policy, None, events)
+    }
+
+    /// Caller must first authenticate the exact encoded journal and its full
+    /// selected write set. This grants no source or journal authority itself.
+    pub fn arm_encoded_selected_writes(
+        &mut self,
+        policy: WritePolicy,
+        journal_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.arm_writes_inner(policy, Some(journal_bytes), events)
+    }
+
+    fn arm_writes_inner(
+        &mut self,
+        policy: WritePolicy,
+        encoded_journal_bytes: Option<u64>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
         if self.policy.is_some() || self.write_poisoned || self.native_write_bytes_requested != 0 {
             return Err(invalid("general journal write policy is already consumed"));
         }
-        policy.validate(self.byte_len())?;
+        match encoded_journal_bytes {
+            Some(bytes) => policy.validate_encoded(self.byte_len(), bytes)?,
+            None => policy.validate(self.byte_len())?,
+        }
         if self.state(events)?.disk_attributes != OFFLINE {
             return Err(invalid("general target is not excluded from mounting"));
         }

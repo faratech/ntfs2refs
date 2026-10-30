@@ -4,6 +4,7 @@
 //! is still required. An interrupted run is recovered from its published
 //! allocation recovery bundle by `general_recovery::allocation`.
 use super::*;
+use anyhow::Context;
 use crate::selected_journal as sj;
 use n2r_win32::{GeneralFrozenPartition, WritePolicy};
 
@@ -43,11 +44,16 @@ pub(super) fn convert_allocation_selected(
     let mut phase = "allocation-bounded-qualification";
     let attempted = (|| -> Result<()> {
         let profile = JournalProfile::from_schema(request.schema_version)?;
-        let maximum = crate::lab_reconstruct::changed_byte_budget_for_profile(
-            profile,
-            request.max_journal_bytes,
-            request.pair.source.identity.partition_bytes,
-        )?;
+        // Every old byte remains in the encoded journal. New zero bytes need
+        // no stored copy; the exact D + literal-new + metadata size is checked
+        // by the live plan before preparing the journal or activating source.
+        let maximum = request
+            .max_journal_bytes
+            .checked_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
+            .context("selected journal cannot reserve its metadata")?
+            .min(request.pair.source.identity.partition_bytes)
+            / 4096
+            * 4096;
         let qualification_root = output.join("qualification");
         let packed_path = qualification_root.join("changed-clusters.bin");
         announce_conversion_phase(
@@ -83,7 +89,27 @@ pub(super) fn convert_allocation_selected(
         );
         let plan = proof.plan(request.max_journal_bytes)?;
         let (selected_bytes, journal_bytes) = plan.validate()?;
+        let new_zero_bytes = plan.new_zero_bytes()?;
+        let packed_bytes = proof.capture().layout.packed_bytes();
         let plan_pin = qualification::save(output, "selected-plan.json", &plan)?;
+
+        let space =
+            n2r_win32::discovery::observe_volume_space(&request.journal.disk.volume_path()?)?;
+        let reserve = 1024_u64 * 1024 * 1024;
+        ensure!(
+            space.available_bytes_to_caller >= journal_bytes.saturating_add(reserve),
+            "exact selected journal needs {journal_bytes} bytes plus the working-space reserve"
+        );
+        qualification::save(
+            output,
+            "journal-capacity.json",
+            &serde_json::json!({
+                "journal_bytes":journal_bytes,"packed_bytes":packed_bytes,
+                "selected_bytes":selected_bytes,"new_zero_bytes":new_zero_bytes,
+                "available_after_shadow_and_backing":space.available_bytes_to_caller,
+                "reserve_bytes":reserve,"source_writes_started":false,
+            }),
+        )?;
 
         phase = "selected-journal-preparation";
         announce_conversion_phase("preparing the selected-range recovery journal");
@@ -123,7 +149,8 @@ pub(super) fn convert_allocation_selected(
             output,
             "journal-location.json",
             &serde_json::json!({
-                "path":journal_path,"identity":observed.identity,"format":"N2RSEL01",
+                "path":journal_path,"identity":observed.identity,
+                "format":if new_zero_bytes == 0 {"N2RSEL01"} else {"N2RZERO1"},
             }),
         )?;
         let mut preparation_events = Vec::new();
@@ -198,15 +225,17 @@ pub(super) fn convert_allocation_selected(
                 && native_target.state(&mut events)? == shadow_before,
             "selected activation lost exclusion"
         );
-        target.arm_writes(
-            WritePolicy {
-                allowed: plan.ranges.iter().map(|r| (r.offset, r.length)).collect(),
-                retained: Vec::new(),
-                maximum_bytes: selected_bytes,
-                journal_profile: profile,
-            },
-            &mut events,
-        )?;
+        let policy = WritePolicy {
+            allowed: plan.ranges.iter().map(|r| (r.offset, r.length)).collect(),
+            retained: Vec::new(),
+            maximum_bytes: selected_bytes,
+            journal_profile: profile,
+        };
+        if new_zero_bytes == 0 {
+            target.arm_writes(policy, &mut events)?;
+        } else {
+            target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
+        }
         qualification::save(output, "activation-events.json", &events)?;
         events.clear();
 
@@ -278,6 +307,8 @@ pub(super) fn convert_allocation_selected(
                 "expected_tree_sha256":expected_tree_sha256,
                 "selected_ranges":plan.ranges.len(),"selected_bytes":selected_bytes,
                 "journal_bytes":journal_bytes,"selection_sha256":proof.selection_sha256(),
+                "packed_bytes":packed_bytes,"new_zero_bytes":new_zero_bytes,
+                "zero_payload_storage_elided":new_zero_bytes > 0,
                 "free_space_contents_compared":false,"recovery_bundle_sha256":recovery_pin,
                 "general_conversion_qualified":false,
             }),

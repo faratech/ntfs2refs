@@ -27,6 +27,17 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
+Storage update (2026-10-30): the allocation-bounded path now captures explicit
+zero ranges without storing their new bytes in the packed backing, and issues
+`N2RZERO1` selected journals when the plan has `new_zero_ranges`. Every old byte
+is still journaled and every required zero is still written. Legacy empty-zero
+plans retain byte-identical N2RSEL01 output. The owned-file integration passed
+short-write resume/rollback, closed replay and false-zero refusal; see
+evidence/zero-payload-journal-20261030.json. The public CLI and helpers build.
+Native conversion qualification of this change is pending; do not inherit the
+older fast build's results. This does not implement staged N2RSEL02-H or remove
+the 16 GiB actual journal limit. Exact encoded sizing precedes activation.
+
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
 NTFS checkpoint5f30f4a1, but its disks now hold the mutated, restarted ReFS from
 the allocation-bounded run f8faadd6993541afa328798f2fe28e9f (not checkpointed;

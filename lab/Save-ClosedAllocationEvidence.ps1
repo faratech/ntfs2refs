@@ -131,6 +131,11 @@ try {
                     }
                     continue
                 }
+                # Enumeration can cache a VHDX directory-entry time preceding
+                # its last device flush; pin fresh metadata for every file.
+                $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+                $item.Refresh()
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Guest evidence file became a reparse point.' }
                 $bulk = [IO.Path]::GetExtension($path).ToLowerInvariant() -in $bulkExtensions
                 if (-not $bulk -and $item.Length -gt 64MB) { throw ('Nonbulk evidence exceeds 64 MiB: ' + $path) }
                 $digest = $null
@@ -199,7 +204,7 @@ try {
             if ($entry.kind -eq 'directory') {
                 if (-not ($item -is [IO.DirectoryInfo])) { throw 'Guest evidence directory changed type.' }
             } else {
-                if (($item -is [IO.DirectoryInfo]) -or $item.Length -ne $entry.bytes -or $item.LastWriteTimeUtc.ToString('o') -cne $entry.last_write_utc) { throw 'Guest evidence file changed after inventory.' }
+                if (($item -is [IO.DirectoryInfo]) -or $item.Length -ne $entry.bytes -or $item.LastWriteTimeUtc.ToString('o') -cne $entry.last_write_utc) { throw ('Guest evidence file changed after inventory: ' + $entry.path) }
                 if ($entry.disposition -eq 'copy-file' -and (Get-FileHash -LiteralPath $entry.path -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256) { throw 'Guest metadata changed during archive.' }
             }
             $count++

@@ -70,6 +70,7 @@ pub mod ntfs_transactions;
 #[cfg(windows)]
 pub(crate) mod parallel_digest;
 pub mod planner;
+pub mod payload_copy_plan;
 pub mod preparation_progress;
 #[cfg(windows)]
 pub mod reference_file_verification;

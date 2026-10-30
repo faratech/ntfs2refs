@@ -193,6 +193,14 @@ payloads in memory; measured ReFS extents determine what was retained.
 The toolchain is pinned in `rust-toolchain.toml`; use the installed MSVC toolchain.
 Windows builds link the C runtime statically for fresh guests and recovery media.
 
+Later public-CLI native cases also preserve ordinary hard links and file ADS.
+The [hard-link recovery matrix](evidence/hardlink-native-recovery-20261030.json)
+covers interruption, restart, resume and independent rollback. The
+[ADS case](evidence/ads-native-conversion-20261030.json) covers five streams,
+including empty, Unicode-named and 2 MiB data, with cold-boot and alias-write
+checks. These are bounded experimental cases, not full NTFS compatibility;
+directory ADS, unsupported encodings and ADS interruption remain unqualified.
+
 ```powershell
 cargo build --release
 cargo test --workspace --all-targets

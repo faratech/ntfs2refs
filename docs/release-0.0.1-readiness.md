@@ -202,7 +202,7 @@ Current Rust conversion boundaries, confirmed in source:
 |---|---|
 | Ordinary unnamed data | Resident/empty files, fragmented plain extents and partial/uninitialized tails have semantic materialization/retention paths; mixed-fixture conversion is recorded separately above. |
 | Hard links and DOS-only aliases | Ordinary hard links now share one canonical payload object plus additional names. The bounded native result below verifies three names per file; hard-link files requiring unsupported attribute-list assembly remain refused. DOS-only aliases remain refused. |
-| ADS and directory streams | Refused: one unnamed file stream; no directory streams. Read-only stream inspection is not conversion support. |
+| ADS and directory streams | Ordinary file ADS now use one canonical file plus per-stream names, mappings, lengths and hashes. Native tests cover five ADS through hard links, including empty, Unicode and 2 MiB data. Directory and System Volume Information ADS remain refused; the existing limit is64 streams per file. |
 | Sparse, NTFS compression, EFS | Nonzero stream flags/encoding are refused. Plain uninitialized tails are distinct from sparse-hole support. |
 | Reparse points and Windows EAs | Outside the admitted attribute whitelist; no target preservation claim. |
 | ACLs | Owner/group/present DACL plus observed API/kernel views are represented. Construction requires absent SACL; even a present empty SACL is outside this profile. |
@@ -234,14 +234,19 @@ arbitrary feature combinations. See
 [the recovery matrix](../evidence/hardlink-native-recovery-20261030.json).
 The first attempt exposed and led to removal of an unnecessary requirement for
 the source to contain `IndexerVolumeGuid`; absence is now preserved explicitly.
-The next source-reader slice supplies bounded named-stream range reads and
-hashes with an exact UTF-16 stream key, including cached-session revalidation.
-Public ADS admission remains closed until canonical construction, per-stream
-routes and native stream-set verification are connected.
+Source `3ba75be` subsequently connected named-stream range reads, canonical
+stream identities, native allocation/placement and mounted verification. Its
+public conversion preserved five ADS across three hard-linked files, including
+an empty stream, a Unicode name, a literal `$DATA` name and 2 MiB+19 bytes of
+content. The 15 alias/stream views and all nine default paths matched. Cold-boot
+checks and a named-stream write through one alias, followed by restoration
+through another, passed without changing the default streams. The source still
+uses bounded resources and this ADS build has no interrupted-recovery evidence
+yet. See [the native ADS result](../evidence/ads-native-conversion-20261030.json).
 
-Continue in concrete slices: (1) extend the identity/name model to named
-streams; (2) preserve named streams and sparse/VDL semantics
-through native construction and semantic verification; (3) add SACL/null/empty
+Continue in concrete slices: (1) qualify interrupted recovery with ADS;
+(2) preserve sparse/VDL semantics through native construction and semantic
+verification; (3) add SACL/null/empty
 security distinctions, opaque reparse/EAs and complete extension-record admission;
 (4) materialize compressed logical content with exact space forecasts; (5) expand
 geometry and remove coupled fixed caps with bounded working memory. Each slice

@@ -27,7 +27,7 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-ADS candidate in progress: canonical objects now carry named_streams while
+ADS implementation: canonical objects now carry named_streams while
 payload handles, placement, routes, source reads and copy planning distinguish
 the exact UTF-16 stream name. Native construction/verification supports ordinary
 file ADS; directory ADS and ADS on System Volume Information remain explicit
@@ -35,11 +35,20 @@ refusals. The existing limit is64 total streams per file and16,384 per tree.
 The source/copy retention check now excludes every cluster beyond source VDL.
 Focused public release build passes, SHA
 2220164aaeef4c9db8bf11339fc4d11a365871d10a8665ce69c415288ed20710.
-This candidate has not yet completed native conversion qualification.
+Source3ba75be completed public conversion ecf76f8f/corea0706783: native0,
+ReFS3.14/4KiB,8 canonical objects,4 default and5 named stream hashes. All9
+hard-link names and15 independent ADS views matched. Tested streams include
+2MiB+19 bytes,65537-byte Unicode-name data,empty data and literal `$DATA`.
 Five ADS were independently added to disk6/H: and read back through all three
 hard-link names each; default data/IDs remained unchanged. This NTFS source is
-saved in145c0060-b98e-4857-963f-238e72199869. VM is Off/RAM0 with that parent;
-fifteen checkpoints remain preserved. Fixture:
+saved in145c0060-b98e-4857-963f-238e72199869. Pure converted state is preserved
+in45924882-3aab-4fec-82fd-3848461e0225. A cold boot retained all stream hashes,
+names and file IDs; mutation through the Unicode alias propagated correctly,
+and restoration through another alias recovered all original hashes without
+changing default streams. Evidence: evidence/ads-native-conversion-20261030.json.
+VM is Off/RAM0 with parentbb8a6475-7104-43cc-874b-1245b5171aab; seventeen
+checkpoints remain preserved. The ADS build's interrupted recovery is still
+unqualified, as are directory ADS, encodings and broader geometry. Fixture:
 .lab/hyperv/streaming-v2-20261027/ads-fixture-d951c1ed45c142f69d40efae28f260c8/fixture.json,
 SHAa17bafe1afbb796e7517b50ebd33aa784cd40a00a43e00f581e052cb7c6aaaf1.
 Use the new ADS launcher and fresh candidate pins; old hard-link expectations
@@ -63,12 +72,11 @@ rollback also matched original NTFS file IDs. See
 evidence/hardlink-native-recovery-20261030.json. This is not power-loss testing
 or blanket feature/geometry qualification.
 
-Later source2ca1c63 adds bounded named-stream range reads/hashes and makes the
+Intermediate source2ca1c63 added bounded named-stream range reads/hashes and made the
 cached source session key include the exact UTF-16 stream name. Focused cargo
-check passes; public ADS admission remains refused and no native result is
-assigned to this later source. Next integration requires named_streams on the
-canonical/native file, stream-keyed placement/routes/residuals and exact native
-stream-set verification. Keep file identities and hard-link names separate from
+check passed; ADS admission was still refused at that revision. Source3ba75be
+subsequently connected canonical/native named streams, stream-keyed placement,
+routes/residuals and exact native stream-set verification. Keep file identities and hard-link names separate from
 stream identities. Do not copy payload once per alias or use filename strings
 as a substitute for stream identity. No unit tests were added or run.
 

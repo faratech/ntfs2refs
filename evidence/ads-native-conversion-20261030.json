@@ -1,0 +1,334 @@
+{
+  "native_exit": 0,
+  "proofs": [
+    {
+      "bytes": 17422,
+      "sha256": "a17bafe1afbb796e7517b50ebd33aa784cd40a00a43e00f581e052cb7c6aaaf1",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\fixture.json"
+    },
+    {
+      "bytes": 244,
+      "sha256": "72c42a9b965fd5421dd64d8699d5fd182b3f5dd1aa5664a6685c74c6dbdab178",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\checkpoint.json"
+    },
+    {
+      "bytes": 154,
+      "sha256": "31d3b881ee227f33fc5bb6e30d34ff9a83acf0c507b5f3112c1febb92a9f4bd7",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\converted-checkpoint.json"
+    },
+    {
+      "bytes": 215,
+      "sha256": "edbf3f77bd477560463ae8031f36733765658f91d5946d13771d9156cea8bbc7",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\mutated-checkpoint.json"
+    },
+    {
+      "bytes": 16833,
+      "sha256": "640fb28c0409bb56b819cc7315020d8c795cc2b6a66146cdd06451399fa09571",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\closed-conversion\\archive.json"
+    },
+    {
+      "bytes": 2007,
+      "sha256": "ea70d9c1524bec6e847c3a6d49f24510f468af2992373bb72d3bc0c5c3b48226",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\closed-conversion\\stage\\wrapper-result.json"
+    },
+    {
+      "bytes": 14545,
+      "sha256": "d55a091723640d336d5008bc1a58d3e8e2bc6fbdaf4c18749caa3b1d08db8272",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\closed-conversion\\stage\\fixture-after.json"
+    },
+    {
+      "bytes": 28821,
+      "sha256": "33dcb8616d0b823209daabddcadb0f8df9e81e966fc2b1cd092a84a6f834f079",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\closed-conversion\\stage\\ads-after.json"
+    },
+    {
+      "bytes": 1041,
+      "sha256": "902c35cae15312f0331091c8b6dfdd4c9d0a44f0cf9a12d265a6924705cec80c",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\closed-conversion\\core\\result.json"
+    },
+    {
+      "bytes": 657692,
+      "sha256": "eb5c643c500c5c796da72bd4e3ee226bfe61ef84e3da8e3ace40b1887a392bec",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\closed-conversion\\core\\finalization.json"
+    },
+    {
+      "bytes": 34729,
+      "sha256": "108c415d8e50ce07d97f9fe16583c2be786c41b94d1fd26daad30f2002baec55",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\closed-conversion\\core\\expectation.json"
+    },
+    {
+      "bytes": 660531,
+      "sha256": "bd44894fa0716d58e523998282e75542c9803f2b42bf60056b58013da2b0121a",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-fixture-d951c1ed45c142f69d40efae28f260c8\\closed-conversion\\core\\qualification\\target-preservation.json"
+    },
+    {
+      "bytes": 1605,
+      "sha256": "87180e6d7dc9ee661f87ad54f02c4b743fc35522d1c8b8238e37eb5d96f07997",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-mutation-4f13dfbf9d63480d8754c4027f96db82\\result.json"
+    }
+  ],
+  "run_id": "ecf76f8f72db458c92163d9f3be19550",
+  "expected_total_logical_bytes": 3231812,
+  "native_named_hashes": 5,
+  "user_file_identities": 3,
+  "utc": "2026-10-30T12:40:30.6843902Z",
+  "independent_named_views": 15,
+  "handoff_closed": true,
+  "converter_source_commit": "3ba75be0a91dddd7009ab6b356158b7f728d2d53",
+  "schema_version": 1,
+  "sealed_toolset": {
+    "bytes": 852,
+    "sha256": "0165f773252ff59a053131327941fe590c338000f29ba7e6a1a366d241506e25",
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\ads-tools-3ba75be\\manifest.json"
+  },
+  "mutation": {
+    "restored_through_different_alias": true,
+    "other_named_streams_unchanged": true,
+    "visible_from_every_alias": true,
+    "default_streams_unchanged": true,
+    "through_unicode_hardlink": true,
+    "write_method": "PowerShell Set-Content rewrote the stream with one changed logical byte",
+    "all_original_hashes_restored": true,
+    "stream": "large-data"
+  },
+  "label_preserved": true,
+  "source_partition_bytes": 55834574848,
+  "canonical_objects": 8,
+  "runtime_scope": "This small mixed-stream fixture only; no large-volume throughput claim",
+  "named_streams": 5,
+  "checkpoints": {
+    "post_mutation": "bb8a6475-7104-43cc-874b-1245b5171aab",
+    "ntfs": "145c0060-b98e-4857-963f-238e72199869",
+    "all_preserved": 17,
+    "refs": "45924882-3aab-4fec-82fd-3848461e0225"
+  },
+  "main_overlay_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "core_run_id": "a07067835dfe2767116572772da6cb3c",
+  "target_cluster_bytes": 4096,
+  "unit_tests_added_or_run": false,
+  "post_reboot": {
+    "named_views": 15,
+    "persistent_refs_identities": 3,
+    "default_paths": 9,
+    "all_defaults_and_named_streams_matched": true
+  },
+  "mount_path_preserved": "H:\\",
+  "kind": "native-file-ads-conversion",
+  "runtime_seconds": 18.7025854,
+  "public_sha256": "2220164aaeef4c9db8bf11339fc4d11a365871d10a8665ce69c415288ed20710",
+  "limitations": [
+    "No interrupted recovery qualification on this ADS build yet",
+    "File ADS only; directory ADS and System Volume Information ADS remain refused",
+    "Existing per-file64-stream and total16,384-stream bounds remain",
+    "No sparse/compressed/encrypted stream, attribute-list, full security or boot expansion",
+    "This fixture relocated its data; no retained-payload performance claim"
+  ],
+  "public_argv": [
+    "--drive",
+    "H",
+    "--partition",
+    "2"
+  ],
+  "native_default_hashes": 4,
+  "named_logical_bytes": 2162747,
+  "streams": [
+    {
+      "sha256": "eacd09517ce90d34ba562171d15ac40d302f0e691b439f91be1b6406e25f5913",
+      "name_utf16": [
+        90,
+        111,
+        110,
+        101,
+        46,
+        73,
+        100,
+        101,
+        110,
+        116,
+        105,
+        102,
+        105,
+        101,
+        114
+      ],
+      "length": 26,
+      "name": "Zone.Identifier",
+      "aliases": [
+        {
+          "stream_name": "Zone.Identifier",
+          "sha256": "eacd09517ce90d34ba562171d15ac40d302f0e691b439f91be1b6406e25f5913",
+          "length": 26,
+          "path": "H:\\ordinary.bin"
+        },
+        {
+          "stream_name": "Zone.Identifier",
+          "sha256": "eacd09517ce90d34ba562171d15ac40d302f0e691b439f91be1b6406e25f5913",
+          "length": 26,
+          "path": "H:\\nested\\ordinary-link.bin"
+        },
+        {
+          "stream_name": "Zone.Identifier",
+          "sha256": "eacd09517ce90d34ba562171d15ac40d302f0e691b439f91be1b6406e25f5913",
+          "length": 26,
+          "path": "H:\\資料\\ordinary-link.bin"
+        }
+      ],
+      "file_id": "0x00000000000000000001000000000026",
+      "group": "ordinary"
+    },
+    {
+      "sha256": "ae2c9d360b1038e6ac9fee84bb6457e9814ef812e2c7118997ea74d013c428d8",
+      "name_utf16": [
+        108,
+        97,
+        114,
+        103,
+        101,
+        45,
+        100,
+        97,
+        116,
+        97
+      ],
+      "length": 2097171,
+      "name": "large-data",
+      "aliases": [
+        {
+          "stream_name": "large-data",
+          "sha256": "ae2c9d360b1038e6ac9fee84bb6457e9814ef812e2c7118997ea74d013c428d8",
+          "length": 2097171,
+          "path": "H:\\ordinary.bin"
+        },
+        {
+          "stream_name": "large-data",
+          "sha256": "ae2c9d360b1038e6ac9fee84bb6457e9814ef812e2c7118997ea74d013c428d8",
+          "length": 2097171,
+          "path": "H:\\nested\\ordinary-link.bin"
+        },
+        {
+          "stream_name": "large-data",
+          "sha256": "ae2c9d360b1038e6ac9fee84bb6457e9814ef812e2c7118997ea74d013c428d8",
+          "length": 2097171,
+          "path": "H:\\資料\\ordinary-link.bin"
+        }
+      ],
+      "file_id": "0x00000000000000000001000000000026",
+      "group": "ordinary"
+    },
+    {
+      "sha256": "eebaa26ec92a5c957b40950a6953a5b24cc3b25e89b7db501ef0d06766fcf3e1",
+      "name_utf16": [
+        36039,
+        26009
+      ],
+      "length": 65537,
+      "name": "資料",
+      "aliases": [
+        {
+          "stream_name": "資料",
+          "sha256": "eebaa26ec92a5c957b40950a6953a5b24cc3b25e89b7db501ef0d06766fcf3e1",
+          "length": 65537,
+          "path": "H:\\resident.txt"
+        },
+        {
+          "stream_name": "資料",
+          "sha256": "eebaa26ec92a5c957b40950a6953a5b24cc3b25e89b7db501ef0d06766fcf3e1",
+          "length": 65537,
+          "path": "H:\\nested\\resident-link.txt"
+        },
+        {
+          "stream_name": "資料",
+          "sha256": "eebaa26ec92a5c957b40950a6953a5b24cc3b25e89b7db501ef0d06766fcf3e1",
+          "length": 65537,
+          "path": "H:\\資料\\resident-link.txt"
+        }
+      ],
+      "file_id": "0x00000000000000000001000000000027",
+      "group": "resident"
+    },
+    {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "name_utf16": [
+        101,
+        109,
+        112,
+        116,
+        121,
+        45,
+        100,
+        97,
+        116,
+        97
+      ],
+      "length": 0,
+      "name": "empty-data",
+      "aliases": [
+        {
+          "stream_name": "empty-data",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "length": 0,
+          "path": "H:\\empty.dat"
+        },
+        {
+          "stream_name": "empty-data",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "length": 0,
+          "path": "H:\\nested\\empty-link.dat"
+        },
+        {
+          "stream_name": "empty-data",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "length": 0,
+          "path": "H:\\資料\\empty-link.dat"
+        }
+      ],
+      "file_id": "0x00000000000000000001000000000028",
+      "group": "empty"
+    },
+    {
+      "sha256": "8639321909f4d31c11b8027bb28731bba31b23c9b54c057840847b3be71061b6",
+      "name_utf16": [
+        36,
+        68,
+        65,
+        84,
+        65
+      ],
+      "length": 13,
+      "name": "$DATA",
+      "aliases": [
+        {
+          "stream_name": "$DATA",
+          "sha256": "8639321909f4d31c11b8027bb28731bba31b23c9b54c057840847b3be71061b6",
+          "length": 13,
+          "path": "H:\\empty.dat"
+        },
+        {
+          "stream_name": "$DATA",
+          "sha256": "8639321909f4d31c11b8027bb28731bba31b23c9b54c057840847b3be71061b6",
+          "length": 13,
+          "path": "H:\\nested\\empty-link.dat"
+        },
+        {
+          "stream_name": "$DATA",
+          "sha256": "8639321909f4d31c11b8027bb28731bba31b23c9b54c057840847b3be71061b6",
+          "length": 13,
+          "path": "H:\\資料\\empty-link.dat"
+        }
+      ],
+      "file_id": "0x00000000000000000001000000000028",
+      "group": "empty"
+    }
+  ],
+  "hardlink_names": 9,
+  "storage": {
+    "new_zero_bytes": 70680576,
+    "excludes": "managed shadow backing and VM checkpoints",
+    "selected_bytes": 76066816,
+    "retained_payload_bytes": 0,
+    "new_copy_bytes": 3231744,
+    "packed_bytes": 2154496,
+    "journal_bytes": 78244640
+  },
+  "source_cluster_bytes": 4096
+}

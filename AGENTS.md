@@ -83,7 +83,12 @@ and the public drive path are unchanged. Mixed harnesses accept explicit
 capacity/checkpoint sets,64MiB completion records and pinned expectations.
 Mutation verification now batches at most64 paths/20,000 UTF-16 units and
 requires explicit digest/result/completion pins. Focused builds and AST checks
-pass; this candidate has no native results yet. Do not transfer156241e results.
+pass. Revised source9099110 is now running the fresh mixed-fixture first-copy
+interruption case9163fda1b301434f9db51ade0af94770; it has no result yet.
+Controlled binary4b277d30c6ec0f8aed2f8d6192db97cff237900b6b0afbdcc8fc3d2c3ee5aefc,
+public binary121d7dbb9977618af7790f4fcd78e69fee3c4274e9e2980c1a3d0709dd322f0b.
+Task N2R-AllocInterrupt-9163fda1b301434f9db51ade0af94770 owns this run; no other
+native test may overlap it. Do not transfer156241e results to this candidate.
 
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is Running/4GiB. Its current parent is
 mixed NTFS checkpoint6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e, restored for the
@@ -99,8 +104,8 @@ completion/intent markers; the1,180,688,384-byte backing was exported and
 verified against its capture hash. See bulk-preservation.json in that archive.
 The742,391,808-byte original shadow VHDX could not be exported through an
 ordinary read; no bypass or detach was attempted. The whole original branch,
-including that image, is retained in1683b2be. No revised conversion worker has
-started yet. Do not remove preservation checkpoints without specific approval.
+including that image, is retained in1683b2be. The revised interruption worker
+above is active. Do not remove preservation checkpoints without specific approval.
 Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
@@ -117,7 +122,7 @@ Hyper-V after both recovery directions and rollback file readback passed.
 Do not reuse that deleted ID. Closed records are under
 .lab/hyperv/streaming-v2-20261027/zero-recovery-20261030.
 
-No native conversion/recovery job remains running. Root preserved both successful
+Earlier cleanup preserved both successful
 branches and removed obsolete632b630a/f06aa7fd/5125d335 through Hyper-V APIs.
 Do not restore/recreate those deleted IDs. Old harnesses pinning those baselines
 must not be blindly reused. Cleanup receipt:

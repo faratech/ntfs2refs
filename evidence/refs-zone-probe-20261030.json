@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "kind": "refs-reserved-zone-probe-results",
+  "decision": "user 2026-10-30: probe, then skip unreferenced zone zeros only if proven",
+  "probe_1_prefilled": {
+    "utc": "20261030T053948Z",
+    "archive": ".lab/hyperv/streaming-v2-20261027/refs-zone-probe-20261030T053948Z/result.json",
+    "disk": "200 GB dynamic VHDX hot-added to the lab VM (SCSI 0:7), removed and deleted afterwards",
+    "steps": "raw-fill first 30 GB with random bytes (254 s); GPT; Dev Drive ReFS format (2.7 s); metadata-inclusive bitmap; count 4 KiB zero granules in the zone; 20 GB stress (665 big files, 5,000 small, 30% deleted); guest reboot; verify",
+    "zone_bytes": 22011707392,
+    "zone_granules": 5373952,
+    "zone_granules_zero_after_format": 5373330,
+    "zone_granules_nonzero_after_format": 622,
+    "legacy_allocated_clusters": 508144,
+    "metadata_allocated_clusters": 5373960,
+    "after_reboot": {
+      "files_verified": 3952,
+      "files_failed": 0,
+      "health": "Healthy",
+      "refs_warning_or_error_events": 0,
+      "repair_volume_scan": "not supported on this volume"
+    },
+    "finding": "the format left 99.99% of the zone zero although it had held random data, in 2.7 s: a TRIM/unmap the dynamic VHDX honours, not 22 GB of zero writes. So on a thin device format does clear the zone and this run cannot show whether ReFS tolerates old data there; the direct test (randomize every zero granule after format) follows."
+  }
+}

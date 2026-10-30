@@ -193,6 +193,13 @@ function AttributeShape($Fixture){
  return @{base=$base;paths=$names;streams=$streams;file_id_info=$id}
 }
 function StreamSha256([string]$Path,[long]$Length){
+ $stream=[regex]::Match($Path,'\A([A-Za-z]:\\[^:]+):([^:]+):\$DATA\z')
+ if($stream.Success){
+  # The Windows PowerShell filesystem provider opens ADS through the native
+  # stream interface; .NET Framework File.Open rejects this path spelling.
+  $base=$stream.Groups[1].Value;$name=$stream.Groups[2].Value;$sha=[Security.Cryptography.SHA256]::Create();$count=0L
+  try{Need ((Get-Item -LiteralPath $base -Stream $name).Length-eq$Length) 'Attribute ADS length differs.';Get-Content -LiteralPath $base -Stream $name -Encoding Byte -ReadCount 65536 -ErrorAction Stop|ForEach-Object {$block=[byte[]]$_;$count+=$block.Length;Need ($count-le$Length) 'Attribute ADS exceeds expected EOF.';$null=$sha.TransformBlock($block,0,$block.Length,$block,0)};$null=$sha.TransformFinalBlock([byte[]]::new(0),0,0);Need ($count-eq$Length-and(Get-Item -LiteralPath $base -Stream $name).Length-eq$Length) 'Attribute ADS changed/ended early.';return ([BitConverter]::ToString($sha.Hash)).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
+ }
  $file=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$sha=[Security.Cryptography.SHA256]::Create();$buffer=[byte[]]::new(65536);$count=0L
  try{Need ($file.Length-eq$Length) 'Attribute stream length differs.';while(($n=$file.Read($buffer,0,$buffer.Length))-gt0){$count+=$n;Need ($count-le$Length) 'Attribute stream exceeds expected EOF.';$null=$sha.TransformBlock($buffer,0,$n,$buffer,0)};$null=$sha.TransformFinalBlock([byte[]]::new(0),0,0);Need ($count-eq$Length-and$file.Length-eq$Length) 'Attribute stream changed/ended early.';return ([BitConverter]::ToString($sha.Hash)).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose();$file.Dispose()}
 }

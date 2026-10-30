@@ -21,7 +21,7 @@ converter working. Do not add or run unit tests unless specifically requested.
 Use focused builds and necessary native checks. Do not repeat expensive scans
 when unchanged evidence already answers the question.
 
-## Current handoff snapshot — 2026-10-29
+## Current handoff snapshot — 2026-10-30
 
 Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
@@ -34,13 +34,20 @@ is still journaled and every required zero is still written. Legacy empty-zero
 plans retain byte-identical N2RSEL01 output. The owned-file integration passed
 short-write resume/rollback, closed replay and false-zero refusal; see
 evidence/zero-payload-journal-20261030.json. The public CLI and helpers build.
-Native conversion qualification of this change is pending; do not inherit the
-older fast build's results. This does not implement staged N2RSEL02-H or remove
-the 16 GiB actual journal limit. Exact encoded sizing precedes activation.
+Source662f4ae/main5187c16083b66923bfe7b17838e5deb8e3616e87d7278279ed2b819d6c4a7a89
+then passed one native public conversion (run78e69128139549f68b1c041366b13691),
+15 objects/10 full file hashes, label/mount, and N2RZERO1/HND. Its backing is
+2,887,680 B and journal73,559,152 B versus211,965,696 B combined for a dense
+representation of the same changes (about64% lower storage). Duration60.82s;
+no timing improvement is established. See evidence/zero-payload-native-20261030.json.
+This build has not run native interruption/recovery or mutation/reboot checks.
+An initial run refused before activation due to a volume-root spelling bug;
+that failure is archived and the fix is in662f4ae. This does not implement staged
+N2RSEL02-H or remove the16GiB actual journal limit. Exact sizing precedes activation.
 
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is the
-NTFS checkpoint5f30f4a1, but its disks now hold the mutated, restarted ReFS from
-the allocation-bounded run f8faadd6993541afa328798f2fe28e9f (not checkpointed;
+NTFS checkpoint5f30f4a1, but its disks now hold the ReFS from the zero-payload
+run78e69128139549f68b1c041366b13691 (not checkpointed;
 records archived on the host). Only 52d37819 and 5f30f4a1 remain. Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at

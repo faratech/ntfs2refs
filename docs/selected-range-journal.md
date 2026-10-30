@@ -101,3 +101,14 @@ bytes with the legacy format. It omitted 12 KiB of new zero payload and retained
 all old bytes. Short-write resume/rollback and false-zero rejection passed;
 the legacy output matched the preserved journals byte for byte. This result
 does not establish native-volume or physical power-loss qualification.
+
+The [native conversion observation](../evidence/zero-payload-native-20261030.json)
+then passed the public drive conversion on the 52 GiB fixture: 15 objects and
+10 full file hashes, label/mount preserved, N2RZERO1 and closed HND. It stored
+2,887,680 bytes of packed payload and 73,559,152 bytes of journal. Dense storage
+of the same selected changes would require 211,965,696 bytes combined; the
+encoded representation requires 76,446,832 bytes (about 64% less). The run took
+60.82 seconds, so this establishes storage reduction, not a timing improvement.
+Independent native recovery and mutation/reboot on this exact build remain
+unverified. The initial pre-activation capacity-query refusal is retained in
+the same evidence record.

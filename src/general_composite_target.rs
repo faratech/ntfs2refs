@@ -2,7 +2,9 @@
 //! frozen NTFS source. Complete address-space comparison, not bitmap inference,
 //! proves the compact backing. This module issues no source/write certificate.
 use crate::{
-    general_shadow::source_backed::{DifferenceCapture, SourceBackedShadow},
+    general_shadow::source_backed::{
+        ChangeClassSplit, ChangedClassCounters, DifferenceCapture, SourceBackedShadow,
+    },
     general_target_preservation::{self, CapturedDeltaAllocationDiagnostic, ProtectedTargetLayout},
     lab_reconstruct,
     ntfs_admission::ResourceProfile,
@@ -458,6 +460,10 @@ pub struct FrozenAllocationTargetPreservation {
     compared: Vec<crate::refs_write_set::ByteRange>,
     in_place_payload_bytes_not_compared: u64,
     capture: DifferenceCapture,
+    /// Non-gating destination split of the captured changed granules; it
+    /// binds and authorizes nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_classes: Option<ChangedClassCounters>,
     backing: PinnedBacking,
     source_before: GeneralDiskState,
     source_after: GeneralDiskState,
@@ -682,7 +688,7 @@ pub fn verify_and_select(
     events: &mut Vec<NativeEvent>,
 ) -> Result<FrozenAllocationTargetPreservation> {
     let ProtectedPrefix {
-        length: _,
+        length,
         source_before,
         target_before,
         inspection_sha256,
@@ -715,7 +721,11 @@ pub fn verify_and_select(
     let compared_bytes: u64 = compared.iter().map(|range| range.length).sum();
     let selection_bytes: u64 = selection.iter().map(|range| range.length).sum();
     let in_place_bytes = selection_bytes - compared_bytes;
-    let capture = SourceBackedShadow::new(
+    // Non-gating destination split of the changed granules. The bracket above
+    // already required this model; were it unavailable, the split would only
+    // mark its NTFS counters unavailable.
+    let ntfs_allocated = raw.allocated_byte_ranges(length).ok();
+    let mut capture = SourceBackedShadow::new(
         source,
         target,
         raw,
@@ -723,7 +733,17 @@ pub fn verify_and_select(
         protected.routes(),
         protected.routes().payload_bytes().max(1),
     )?
-    .capture_listed_differences_to_new_file(&compared, packed_path, max_changed_bytes)?;
+    .capture_listed_differences_to_new_file(
+        &compared,
+        packed_path,
+        max_changed_bytes,
+        Some(ChangeClassSplit {
+            ntfs_allocated: ntfs_allocated.as_deref(),
+        }),
+    )?;
+    // Record the split once, beside the capture, keeping the capture object
+    // in its earlier shape.
+    let changed_classes = capture.changed_classes.take();
     ensure!(
         capture.selected_bytes_compared == compared_bytes
             && capture
@@ -770,6 +790,7 @@ pub fn verify_and_select(
         compared,
         in_place_payload_bytes_not_compared: in_place_bytes,
         capture,
+        changed_classes,
         backing,
         source_before,
         source_after,

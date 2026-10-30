@@ -3,7 +3,10 @@
 //! destinations. No payload-sized image or raw source writer is constructed.
 //! Frozen metadata-graph reconciliation is still required before cutover.
 use anyhow::{Context, Result, ensure};
-use n2r_win32::{GeneralFrozenPartition, shadow_native::private_tree::SourceBackedRoutes};
+use n2r_win32::{
+    GeneralFrozenPartition,
+    shadow_native::private_tree::{PayloadRoute, SourceBackedRoutes},
+};
 use serde::Serialize;
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -170,6 +173,10 @@ pub struct DifferenceCapture {
     pub packed_sha256: String,
     pub input_plan_sha256: String,
     pub conversion_qualified: bool,
+    /// Non-gating destination split of the changed granules; present only
+    /// for a listed capture that asked for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_classes: Option<ChangedClassCounters>,
     // Only a fresh, complete source scan can issue this digest. Keep the
     // sidecar out of strict historical capture reports and recovery inputs.
     #[serde(skip)]
@@ -179,6 +186,191 @@ impl DifferenceCapture {
     pub(crate) fn source_raw_sha256(&self) -> Option<&str> {
         self.source_raw_sha256.as_deref()
     }
+}
+
+/// Non-gating measurement: every changed 4 KiB granule of a listed capture,
+/// split by its destination (NTFS-allocated or free at that offset; inside a
+/// relocated payload route or not; below the first route destination) and by
+/// whether either side's granule is all zero. It changes no output, digest,
+/// range, budget or refusal. `changed_ranges` counts maximal contiguous
+/// changed runs as the packed layout does. Without the NTFS allocation model
+/// the two NTFS counters stay zero and `ntfs_allocation_available` is false.
+/// With no routes, every byte counts as below the first route destination.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ChangedClassCounters {
+    pub changed_bytes_total: u64,
+    pub changed_bytes_ntfs_free_destination: u64,
+    pub changed_bytes_ntfs_allocated_destination: u64,
+    pub changed_bytes_in_payload_route: u64,
+    pub changed_bytes_outside_routes: u64,
+    pub changed_bytes_below_first_route_destination: u64,
+    pub changed_bytes_new_is_zero: u64,
+    pub changed_bytes_old_is_zero: u64,
+    pub changed_ranges: u64,
+    pub first_route_destination_offset: Option<u64>,
+    pub ntfs_allocation_available: bool,
+}
+
+/// Destination context for [`ChangedClassCounters`]. Payload routes come from
+/// the capturing view itself.
+#[derive(Clone, Copy)]
+pub struct ChangeClassSplit<'b> {
+    /// Sorted, merged NTFS-allocated `(offset, length)` ranges, or `None` when
+    /// the reconciled raw allocation model is unavailable.
+    pub ntfs_allocated: Option<&'b [(u64, u64)]>,
+}
+
+/// Accumulates [`ChangedClassCounters`]. Arithmetic saturates so the
+/// diagnostic can never fail or panic a capture.
+struct ChangeClassifier<'b> {
+    counters: ChangedClassCounters,
+    allocated: &'b [(u64, u64)],
+    routes: &'b [PayloadRoute],
+    last_end: Option<u64>,
+}
+
+impl<'b> ChangeClassifier<'b> {
+    fn new(split: ChangeClassSplit<'b>, routes: &'b [PayloadRoute]) -> Self {
+        Self {
+            counters: ChangedClassCounters {
+                first_route_destination_offset: routes.first().map(|r| r.target_physical_offset),
+                ntfs_allocation_available: split.ntfs_allocated.is_some(),
+                ..ChangedClassCounters::default()
+            },
+            allocated: split.ntfs_allocated.unwrap_or(&[]),
+            routes,
+            last_end: None,
+        }
+    }
+
+    /// Record one run of changed whole granules destined for `address`.
+    fn record(&mut self, address: u64, original: &[u8], candidate: &[u8]) {
+        let bytes = candidate.len() as u64;
+        let end = address.saturating_add(bytes);
+        let counters = &mut self.counters;
+        if self.last_end != Some(address) {
+            counters.changed_ranges = counters.changed_ranges.saturating_add(1);
+        }
+        self.last_end = Some(end);
+        counters.changed_bytes_total = counters.changed_bytes_total.saturating_add(bytes);
+        if counters.ntfs_allocation_available {
+            let allocated = covered_bytes(self.allocated, |&span| span, address, end);
+            counters.changed_bytes_ntfs_allocated_destination = counters
+                .changed_bytes_ntfs_allocated_destination
+                .saturating_add(allocated);
+            counters.changed_bytes_ntfs_free_destination = counters
+                .changed_bytes_ntfs_free_destination
+                .saturating_add(bytes.saturating_sub(allocated));
+        }
+        let routed = covered_bytes(
+            self.routes,
+            |r| (r.target_physical_offset, r.length),
+            address,
+            end,
+        );
+        counters.changed_bytes_in_payload_route = counters
+            .changed_bytes_in_payload_route
+            .saturating_add(routed);
+        counters.changed_bytes_outside_routes = counters
+            .changed_bytes_outside_routes
+            .saturating_add(bytes.saturating_sub(routed));
+        let below = counters
+            .first_route_destination_offset
+            .map_or(bytes, |first| first.min(end).saturating_sub(address));
+        counters.changed_bytes_below_first_route_destination = counters
+            .changed_bytes_below_first_route_destination
+            .saturating_add(below);
+        for granule in candidate.chunks_exact(4096) {
+            if granule.iter().all(|&b| b == 0) {
+                counters.changed_bytes_new_is_zero =
+                    counters.changed_bytes_new_is_zero.saturating_add(4096);
+            }
+        }
+        for granule in original.chunks_exact(4096) {
+            if granule.iter().all(|&b| b == 0) {
+                counters.changed_bytes_old_is_zero =
+                    counters.changed_bytes_old_is_zero.saturating_add(4096);
+            }
+        }
+    }
+}
+
+/// Bytes of `[start, end)` inside sorted, disjoint `(offset, length)` spans.
+fn covered_bytes<T>(items: &[T], span: impl Fn(&T) -> (u64, u64), start: u64, end: u64) -> u64 {
+    let first = items.partition_point(|item| {
+        let (offset, length) = span(item);
+        offset.saturating_add(length) <= start
+    });
+    let mut bytes = 0u64;
+    for item in &items[first..] {
+        let (offset, length) = span(item);
+        if offset >= end {
+            break;
+        }
+        bytes = bytes.saturating_add(
+            offset
+                .saturating_add(length)
+                .min(end)
+                .saturating_sub(offset.max(start)),
+        );
+    }
+    bytes
+}
+
+/// What the changed-byte budget met when a capture refused. The run stops
+/// at the current 4 MiB comparison chunk; `compared_bytes_through_refused_run`
+/// counts every selected byte compared up to the end of that run.
+#[derive(Serialize)]
+struct BudgetRefusal {
+    max_changed_bytes: u64,
+    changed_bytes_written: u64,
+    refused_run_bytes: u64,
+    compared_bytes_through_refused_run: u64,
+    selected_bytes: u64,
+}
+
+/// The unchanged budget refusal, stating the budget against the selection. A
+/// class split so far is appended and, when possible, left in a new
+/// `<output>.class-split.json` beside the partial artifact. Neither can turn
+/// the refusal into another error.
+fn budget_refusal(
+    output: &std::path::Path,
+    refusal: &BudgetRefusal,
+    classes: Option<&ChangedClassCounters>,
+) -> anyhow::Error {
+    use std::io::Write;
+    let mut message = format!(
+        "delta capture budget exhausted before next output write; preserve partial artifact \
+         (max_changed_bytes {}, changed_bytes_written {}, refused_run_bytes {}, \
+         compared_bytes_through_refused_run {}, selected_bytes {})",
+        refusal.max_changed_bytes,
+        refusal.changed_bytes_written,
+        refusal.refused_run_bytes,
+        refusal.compared_bytes_through_refused_run,
+        refusal.selected_bytes
+    );
+    if let Some(classes) = classes {
+        if let Ok(json) = serde_json::to_string(classes) {
+            message.push_str("; class split so far: ");
+            message.push_str(&json);
+        }
+        let mut path = output.as_os_str().to_owned();
+        path.push(".class-split.json");
+        if let Ok(bytes) = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version":1,"kind":"listed-capture-changed-class-split",
+            "complete":false,"budget_refusal":refusal,"changed_classes":classes}))
+        {
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(std::path::PathBuf::from(path))
+                .and_then(|mut file| {
+                    file.write_all(&bytes)?;
+                    file.sync_all()
+                });
+        }
+    }
+    anyhow::anyhow!(message)
 }
 
 pub struct SourceBackedShadow<'a> {
@@ -328,12 +520,14 @@ impl<'a> SourceBackedShadow<'a> {
 
     /// Compare only the listed sorted, disjoint ranges and store their differing
     /// clusters. The caller owns the claim that unlisted bytes need not match;
-    /// this capture records nothing about them.
+    /// this capture records nothing about them. `class_split` adds the
+    /// non-gating [`ChangedClassCounters`] and changes nothing else.
     pub fn capture_listed_differences_to_new_file(
         self,
         selection: &[crate::refs_write_set::ByteRange],
         output: &std::path::Path,
         max_changed_bytes: u64,
+        class_split: Option<ChangeClassSplit<'_>>,
     ) -> Result<DifferenceCapture> {
         use sha2::{Digest, Sha256};
         let mut selected_bytes = 0u64;
@@ -352,6 +546,7 @@ impl<'a> SourceBackedShadow<'a> {
             output,
             max_changed_bytes,
             true,
+            class_split,
         )
     }
 
@@ -412,12 +607,14 @@ impl<'a> SourceBackedShadow<'a> {
             output,
             max_changed_bytes,
             false,
+            None,
         )
     }
 
     /// `chunk_digests` selects the cheap selected-digest construction (see
     /// [`SelectedDigest`]); captures whose digests are recomputed later keep
     /// the framed SHA-256 stream.
+    #[allow(clippy::too_many_arguments)]
     fn capture_difference_ranges_with(
         mut self,
         selection: &[crate::refs_write_set::ByteRange],
@@ -426,6 +623,7 @@ impl<'a> SourceBackedShadow<'a> {
         output: &std::path::Path,
         max_changed_bytes: u64,
         chunk_digests: bool,
+        class_split: Option<ChangeClassSplit<'_>>,
     ) -> Result<DifferenceCapture> {
         use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
         use sha2::{Digest, Sha256};
@@ -472,6 +670,8 @@ impl<'a> SourceBackedShadow<'a> {
         let mut changed = 0u64;
         let mut compared = 0u64;
         let mut ranges: Vec<ChangedRange> = Vec::new();
+        let routes = self.routes;
+        let mut classes = class_split.map(|split| ChangeClassifier::new(split, routes.entries()));
         let mut prefetch = OriginalPrefetch::start(self.source, selection)?;
         for range in selection {
             let offset = range.offset.to_le_bytes();
@@ -515,10 +715,29 @@ impl<'a> SourceBackedShadow<'a> {
                         end += 4096;
                     }
                     let allowed = max_changed_bytes.saturating_sub(changed) / 4096;
-                    ensure!(
-                        allowed != 0,
-                        "delta capture budget exhausted before next output write; preserve partial artifact"
-                    );
+                    if allowed == 0 {
+                        // Same refusal; the refused run joins the class split
+                        // first so the split covers every granule examined.
+                        if let Some(classes) = &mut classes {
+                            classes.record(
+                                at + offset as u64,
+                                &original[offset..end],
+                                &candidate[offset..end],
+                            );
+                        }
+                        let refusal = BudgetRefusal {
+                            max_changed_bytes,
+                            changed_bytes_written: changed,
+                            refused_run_bytes: (end - offset) as u64,
+                            compared_bytes_through_refused_run: compared.saturating_add(end as u64),
+                            selected_bytes,
+                        };
+                        return Err(budget_refusal(
+                            output,
+                            &refusal,
+                            classes.as_ref().map(|c| &c.counters),
+                        ));
+                    }
                     let clusters =
                         usize::try_from(u64::try_from((end - offset) / 4096)?.min(allowed))?;
                     let bytes = clusters * 4096;
@@ -526,6 +745,13 @@ impl<'a> SourceBackedShadow<'a> {
                         .checked_add(bytes as u64)
                         .context("delta byte count overflow")?;
                     let address = at + offset as u64;
+                    if let Some(classes) = &mut classes {
+                        classes.record(
+                            address,
+                            &original[offset..offset + bytes],
+                            &candidate[offset..offset + bytes],
+                        );
+                    }
                     if let Some(last) = ranges.last_mut().filter(|r| r.offset + r.length == address)
                     {
                         last.length += bytes as u64;
@@ -583,6 +809,7 @@ impl<'a> SourceBackedShadow<'a> {
             packed_sha256: hex::encode(packed_digest.finalize()),
             input_plan_sha256,
             conversion_qualified: false,
+            changed_classes: classes.map(|c| c.counters),
             source_raw_sha256,
         })
     }

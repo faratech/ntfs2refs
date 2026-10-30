@@ -938,6 +938,9 @@ pub(super) fn run(
         };
         if proof["native_error"] != serde_json::Value::Null || proof["all_placements_match"] != true
         {
+            tree.placement_progress["failed_native_move"] = serde_json::json!({
+                "object_index":step.index,"phase":step.phase,"proof":proof
+            });
             return Err(invalid(
                 "deferred unwritten allocation refused; preserve without retry",
             ));
@@ -1131,6 +1134,9 @@ pub(super) fn run(
             if proof["native_error"] != serde_json::Value::Null
                 || proof["all_placements_match"] != true
             {
+                tree.placement_progress["failed_native_move"] = serde_json::json!({
+                    "object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof
+                });
                 return Err(invalid(
                     "selective unwritten evacuation refused; preserve without retry",
                 ));
@@ -1252,9 +1258,16 @@ pub(super) fn run(
                         if proof["native_error"] != serde_json::Value::Null
                             || proof["all_placements_match"] != true
                         {
-                            return Err(invalid(
-                                "original-coordinate reposition refused; preserve without retry",
-                            ));
+                            let message = format!(
+                                "original-coordinate reposition refused (native_error={}, mapping_matches={}, all_placements_match={}); preserve without retry",
+                                proof["native_error"],
+                                proof["mapping_matches"],
+                                proof["all_placements_match"]
+                            );
+                            tree.placement_progress["failed_native_move"] = serde_json::json!({
+                                "object_index":index,"phase":"original-coordinate","proof":proof
+                            });
+                            return Err(invalid(&message));
                         }
                         counters.final_submissions += 1;
                         let recorded = evidence.push_move(

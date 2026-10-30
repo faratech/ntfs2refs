@@ -27,8 +27,8 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is running at fragmented
-NTFS checkpoint637d286f-ecb3-46e0-8621-e7d89fe4862a; all35 checkpoints
+Current state supersedes all older VM states below: VM is Off at observed
+NTFS checkpoint1057eb82-d152-4572-881b-53ff9dbb82dd; all37 checkpoints
 remain. The clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Source5aeaf40/public61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b
 completed public H:/partition2 conversionba1480fc/coreb8d43b36 inside the VM:
@@ -75,8 +75,17 @@ on its update-sequence assumption. Its actual files remain intact at637d286f;
 do not repeat their creation/moves. Closed fixture report SHA
 44c863bf6c6688a7674d0527c43070330adea68846930ff18784f3819cc298cb
 is under attribute-fixture-c1f6b081dac24e158708c97ef3151934/closed.
-Next: read-only completion of that existing fixture, then the candidate public
-conversion through lab/Start-AttributeListConversion.ps1. No converter is active.
+Read-only completion3bf491a3 passed after flush (same strict USA check), fixture
+SHA df017eca451b3daeadfe49cd04bc8043205523e7a0253e6cadc7f03b254434ee.
+Public candidate run d4068724/coreb53879d6 accepted schema5 for record47 with
+7 owned extensions and7 canonical attributes, then refused shadow placement
+after511 final submissions. Failed branchb3f9ffae-1aa7-40c2-b59d-a6953416bbff
+and42 metadata files under attribute-list-convert-d4068724549f496f815718e997088958
+are preserved. A SYSTEM read-only query showed all512 default-stream target
+mappings already at the expected source LCNs. The prior error discarded the
+native status; current code now saves the full failed move proof before refusal.
+Focused release build passed; next run must inspect that exact native status,
+not assume a512-extent limit or silently accept it. No converter is active.
 Earlier helper-only refusals are preserved under attribute-fixture-68d14605
 (read-only discovery flag), -9d172c41 (resident allocation observation; checkpoint
 9d98ce2a) and -eed02ff5 (temporary preallocation tail; checkpointf96b8890).

@@ -57,7 +57,8 @@ $verify={param($Records,$Manifest,$Tool,$ToolPin,$ResultPin,$FinalPin,$ExpectedP
   $ticket=ReadPinned (Join-Path $Records 'selected-ticket.json') $r.ticket_sha256
  }
  $e=ReadPinned $ExpectedPath $ExpectedPin
- $hfile=Get-Item -LiteralPath (Join-Path $Records 'handoff.json') -Force
+ $handoffName=if($resumed-and$r.action-eq'verify_handoff'){'verified-handoff.json'}else{'handoff.json'}
+ $hfile=Get-Item -LiteralPath (Join-Path $Records $handoffName) -Force
  if($hfile.PSIsContainer-or($hfile.Attributes-band[IO.FileAttributes]::ReparsePoint)-or$hfile.Length-gt65536){throw 'Bounded ordinary handoff record required.'}
  $h=[IO.File]::ReadAllText($hfile.FullName)|ConvertFrom-Json
  $sameDigest=@($h.selected_sha256).Count-eq32-and@($ticket.new_selected_sha256).Count-eq32

@@ -166,27 +166,43 @@ above, not a "stable" or "maximum performance" 0.0.1.
 
 The comparison below distinguishes a converter's output from a driver's ability
 to read source metadata. None of these projects establishes full NTFS-to-ReFS
-compatibility. Our mixed-tree success covers the admitted ordinary-file profile;
-it does not qualify ADS, reparse points, compressed/encrypted files,
-SACLs, short-name aliases or boot volumes.
+compatibility. Refreshed against upstream sources and our source `491e891` on
+2026-10-30: our native results cover bounded ordinary files, hard links and file
+ADS, including their recorded recovery cases. Sparse construction is connected
+but has no successful end-to-end conversion result yet; the uncommitted EOF-tail
+fix is not qualification. Reparse points, compressed/encrypted files, arbitrary
+security descriptors, short-name aliases and boot conversion remain outside
+that evidence. This research refresh did not run builds, tests or the VM.
 
 | Project and pinned source | Actual role and preservation boundary |
 |---|---|
 | [ntfs2btrfs `433523ab`](https://github.com/maharmstone/ntfs2btrfs/blob/433523abaff4015db0f473e4f256f9d5671c9cd5/README.md) | NTFS-to-Btrfs converter. Documents files/directories, security descriptors, reparse points, bounded ADS, DOS attributes and WSL metadata; compression/sparse handling appears in its changelog. Also documents unsupported EFS, old Windows EAs, case-sensitivity flags, ADS above its xattr capacity and clusters above 1 MiB. Its Windows command cannot convert the running boot/pagefile volume; Quibble boot is a separate project. |
-| [btrfs-convert manual](https://btrfs.readthedocs.io/en/latest/btrfs-convert.html), [source `2229e1d7`](https://github.com/kdave/btrfs-progs/blob/2229e1d7cbd6ce4c3085fd440e9c3275bc9a97c7/convert/source-ext2.c) | Converts ext2/3/4 and optional ReiserFS; NTFS is delegated to ntfs2btrfs. Preserves supported POSIX metadata/xattrs/ACLs, inode links and symlinks, subject to source/target limits; `--no-xattr` explicitly discards xattrs/ACLs. Requires a clean source and supported block size. This is not Windows security or ADS conversion support. |
-| [fstransform `efc51973`](https://github.com/cosmos72/fstransform/blob/efc519736069b6808f1c0fe74e810626732d5799/README.md) | Massimiliano Ghilardi's Linux sparse-image/remapping converter; tested ext2/3/4, JFS, ReiserFS and XFS. Explicitly excludes NTFS/FAT/exFAT. Requires sparse files, extent queries and mount/mkfs/fsck support. Useful storage-planning reference, not a full-NTFS precedent. |
+| [btrfs-convert manual](https://btrfs.readthedocs.io/en/latest/btrfs-convert.html), [source `afdc3a65`](https://github.com/kdave/btrfs-progs/blob/afdc3a65e33f4d42f768ad50dca20c32e5ee1496/convert/source-ext2.c) | Converts ext2/3/4 and optional ReiserFS; NTFS is delegated to ntfs2btrfs. Reuses original extents and source free space. Preserves supported POSIX metadata/xattrs/ACLs, inode links and symlinks, subject to limits; oversized xattrs can be skipped and `--no-xattr` explicitly discards xattrs/ACLs. Requires a clean source and supported block size. This is not Windows security or ADS conversion support. |
+| [fstransform `efc51973`](https://github.com/cosmos72/fstransform/blob/efc519736069b6808f1c0fe74e810626732d5799/README.md) | Linux file-copy/move into a sparse loop filesystem followed by physical remapping; tested ext2/3/4, JFS, ReiserFS and XFS. README excludes NTFS/FAT/exFAT. Its [launcher](https://github.com/cosmos72/fstransform/blob/efc519736069b6808f1c0fe74e810626732d5799/fstransform/fstransform-sh#L50-L54) contains experimental NTFS plumbing but records I/O errors and poor FUSE performance. This is not supported full-NTFS conversion. |
 | [NTFS-3G manual](https://github.com/tuxera/ntfs-3g/wiki/Manual), [attribute reader `7f0f841f`](https://github.com/tuxera/ntfs-3g/blob/7f0f841fc52cf719106c5c93bafe465004e36816/libntfs-3g/attrib.c) | NTFS driver/reader oracle, not an NTFS-to-another-filesystem converter. Supports named streams, sparse/compressed logical reads and hard links; follows attribute lists into extension MFT records. These abilities do not prove that another target preserves their semantics. |
 
 ntfs2btrfs is deliberately less strict than the preservation contract we should
 claim. Its [pinned converter source](https://github.com/maharmstone/ntfs2btrfs/blob/433523abaff4015db0f473e4f256f9d5671c9cd5/src/ntfs2btrfs.cpp)
 can skip encrypted files, encrypted/compressed ADS and ADS that exceed name or
-item limits; it omits DOS-only names and warns when truncating long UTF-8 names.
-Oversized security descriptors also have a skip path. Its hard-link output uses
-one inode and multiple namespace links; its
+item limits. ADS occupy xattrs: their actual size ceiling is below 16 KiB after
+leaf/name overhead, and the complete `user.<name>` must fit 255 bytes. It omits
+DOS-only names and truncates filenames exceeding 255 UTF-8 bytes, with a collision
+FIXME. Oversized legacy security descriptors have a skip path. Its hard-link
+output uses one inode and multiple namespace links. Relative Windows/LX symlinks
+are translated; other file reparse buffers become file contents, while directory
+reparse buffers become `user.reparse`. Keeping those bytes is not universal
+native reparse behavior. NTFS compression/WOF decoding and sparse/VDL handling
+exist. Its
 [attribute iterator](https://github.com/maharmstone/ntfs2btrfs/blob/433523abaff4015db0f473e4f256f9d5671c9cd5/src/ntfs2.cpp)
 follows attribute-list records. Reuse the identity/extent design, not its
 warning-and-skip policy: a conversion reporting success must preserve every
 admitted user object or refuse before source writes.
+
+The [ntfs2btrfs manual](https://github.com/maharmstone/ntfs2btrfs/blob/433523abaff4015db0f473e4f256f9d5671c9cd5/ntfs2btrfs.8.in)
+also qualifies rollback: it restores conversion-time NTFS state, discards later
+changes, and requires the preserved image and unchanged extent layout. The
+btrfs-convert manual likewise warns that balance can prevent rollback. Neither
+is a precedent for unlimited rollback after target filesystem use.
 
 NTFS-3G's [internal metadata interfaces](https://github.com/tuxera/ntfs-3g/wiki/Using-Extended-Attributes)
 are useful inventory references: raw owner/group/DACL/SACL, reparse data, EAs,
@@ -203,12 +219,14 @@ Current Rust conversion boundaries, confirmed in source:
 | Ordinary unnamed data | Resident/empty files, fragmented plain extents and partial/uninitialized tails have semantic materialization/retention paths; mixed-fixture conversion is recorded separately above. |
 | Hard links and DOS-only aliases | Ordinary hard links now share one canonical payload object plus additional names. The bounded native result below verifies three names per file; hard-link files requiring unsupported attribute-list assembly remain refused. DOS-only aliases remain refused. |
 | ADS and directory streams | Ordinary file ADS now use one canonical file plus per-stream names, mappings, lengths and hashes. Native tests cover five ADS through hard links, including empty, Unicode and 2 MiB data. Directory and System Volume Information ADS remain refused; the existing limit is64 streams per file. |
-| Sparse, NTFS compression, EFS | Nonzero stream flags/encoding are refused. Plain uninitialized tails are distinct from sparse-hole support. |
+| Sparse files and sparse file ADS | Source island/hole/VDL modeling and native dense-carrier construction are connected. Ordinary sparse flag `0x8000` is admitted by the candidate. End-to-end conversion remains unqualified; the pending fix handles ReFS relocating a partial EOF cluster during truncation. A successful primitive is not full conversion support. |
+| NTFS compression, WOF, EFS | Compression/encryption flags and WOF reparse semantics remain refused. Compressed content needs logical decoding and rewritten extents. EFS needs a separate encryption-preservation path. |
 | Reparse points and Windows EAs | Outside the admitted attribute whitelist; no target preservation claim. |
-| ACLs | Owner/group/present DACL plus observed API/kernel views are represented. Construction requires absent SACL; even a present empty SACL is outside this profile. |
+| ACLs | Owner/group/present DACL plus observed API/kernel views are represented. Construction requires absent SACL; even a present empty SACL is outside this profile. Missing/null DACL is also outside the construction profile. |
 | Attribute lists | Reader/assembly machinery exists, but user admission still refuses extension/unassembled attribute forms and `$ATTRIBUTE_LIST`; fragmented base-record extents do not establish extension-record support. |
 | Object IDs, quotas, transaction state | User Object IDs/nondefault quotas remain refused. Recognized filesystem-internal state has narrowly bound replacement policies, not user-semantic preservation. |
-| Times, names and geometry | Four stored times are represented. Depth is capped at 16, streaming profile at 1,024 files/256 directories, and source geometry requires 512-byte sectors, 1,024-byte file records, 4 KiB indexes and supported allocation units; target is 4 KiB ReFS. Parser geometry support is not a tested conversion matrix. |
+| Times and names | Four stored times are represented. Names preserve supported UTF-16 spelling, but reserved Win32 names, trailing dot/space, invalid characters and conservative case collisions are refused. Case-sensitive NT namespaces are not fully supported. |
+| Geometry and resource limits | Depth is capped at 16, streaming profile at 1,024 files/256 directories, with 64 streams/file and 16,384 streams/tree. Source geometry requires 512-byte sectors, 1,024-byte file records and 4 KiB indexes; experimental cluster admission extends from 4 KiB to 2 MiB. Target is 4 KiB ReFS 3.14. The 16 GiB journal limit remains. Parser/address bounds are not capacity qualification. |
 | Boot | Public drive selection rejects the running Windows partition. Boot conversion is unqualified. |
 
 Relevant implementations are [admission](../src/ntfs_admission.rs),
@@ -256,13 +274,15 @@ samples after carrier deletion. Payload writes were64 bytes; metadata and
 scratch-volume overhead are separate. This is a primitive proof, not yet
 sparse NTFS conversion. See [the native sparse-carrier evidence](../evidence/sparse-carrier-native-20261030.json).
 
-Continue in concrete slices: (1) connect sparse island/hole layout to the
-native carrier/clone primitive; (2) preserve sparse/VDL semantics through construction and semantic
-verification; (3) add SACL/null/empty
-security distinctions, opaque reparse/EAs and complete extension-record admission;
-(4) materialize compressed logical content with exact space forecasts; (5) expand
-geometry and remove coupled fixed caps with bounded working memory. Each slice
-needs a small native feature fixture and resume/rollback coverage on its exact
+Continue in concrete slices: (1) finish sparse EOF handling and its native
+conversion/recovery case; (2) admit complete extension-record/attribute-list
+files, which also expands practical fragmentation, link and stream coverage;
+(3) preserve SACL/null/empty security distinctions and native reparse/EAs;
+(4) materialize compressed/WOF logical content with exact space forecasts;
+(5) expand geometry and remove coupled fixed caps with bounded working memory.
+File ADS already exceed ntfs2btrfs's documented size limit in our 2 MiB native
+fixture, but directory ADS and broader combinations still need implementation.
+Each slice needs a small native feature fixture and resume/rollback coverage on its exact
 binary, without restarting the writer or adding another broad unit-test campaign.
 Short names, Object IDs, quotas, EFS and boot require an explicit target-version
 capability/preservation policy before admission changes; a sidecar is not native

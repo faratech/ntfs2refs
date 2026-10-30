@@ -9,6 +9,7 @@ mod evacuation;
 pub mod private_tree;
 mod unwritten;
 pub mod valid_data_probe;
+pub mod sparse_carrier_probe;
 use crate::{
     attestation::{PrivilegeState, Snapshot},
     attestation_native::{Privileges, snapshot},

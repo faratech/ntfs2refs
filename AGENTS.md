@@ -59,6 +59,14 @@ The existing assembler already handles a narrow single-link/unnamed stream
 case; do not delete the admission refusal. Extend a versioned assembly profile,
 match exact stream names and local instances, replay the physical-record ledger
 in ntfs_assembled_io/ntfs_inspect, and keep unsupported spill forms refused.
+The new candidate implements schemas5/6 with per-stream DATA assembly, resident
+metadata in owned extension records, canonical-to-physical attribute origins,
+and exact rereads before resident/stream access. Legacy profiles remain separate.
+Focused library check and release builds of ntfs2refs plus the new
+lab-create-attribute-list-fixture helper passed; no native qualification yet.
+The helper uses only NTFS file creation and FSCTL_MOVE_FILE on enrolled H: to
+force fragmented streams, confirms a real ATTRIBUTE_LIST and preserves failures.
+Next: create that fresh fixture in the VM, then run the candidate converter.
 Keep current binaries/evidence/checkpoints. No unit tests were added or run.
 The earlier EOF, dense-prefix and directory-aggregate sparse flag refusals are
 preserved in0bf53231/f4bf5238/289cf0f3 and their matching sparse-*-refusal folders.

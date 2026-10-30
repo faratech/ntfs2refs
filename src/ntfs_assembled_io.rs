@@ -37,6 +37,32 @@ fn candidate(number: u64, record: &Record) -> bool {
         })
 }
 
+// Broader ordinary-file profile. Actual list/record ownership and complete
+// stream coverage are established by assemble_streams, never by this filter.
+fn stream_candidate(number: u64, record: &Record) -> bool {
+    number >= 16
+        && record.base == 0
+        && record.flags == 1
+        && record.links > 0
+        && record.attributes.iter().all(|attribute| {
+            let a = &attribute.report;
+            a.flags == 0
+                && a.compression_unit == 0
+                && match a.type_code {
+                    0x10 | 0x30 | 0x50 => a.resident && a.name_utf16.is_empty(),
+                    0x20 => a.name_utf16.is_empty() && a.lowest_vcn == 0,
+                    0x80 => true,
+                    _ => false,
+                }
+        })
+        && record
+            .attributes
+            .iter()
+            .filter(|a| a.report.type_code == 0x20)
+            .count()
+            == 1
+}
+
 pub(super) fn evidence(number: u64, raw: &[u8], record: &Record) -> RecordEvidence {
     RecordEvidence {
         record_number: number,
@@ -60,7 +86,8 @@ impl MftContext<'_> {
         raw: &[u8],
         record: &mut Record,
     ) -> Result<Option<Assembly>> {
-        if !candidate(number, record) {
+        let legacy_base = candidate(number, record);
+        if !legacy_base && !stream_candidate(number, record) {
             return Ok(None);
         }
         ensure!(
@@ -75,7 +102,10 @@ impl MftContext<'_> {
         lists::validate_list_storage(&list.report, self.geometry)?;
         let value =
             read_small_attribute(reader, list, self.geometry, lists::MAX_LIST_BYTES as u64)?;
-        let entries = lists::parse(&value)?;
+        // A legacy-looking base can own named streams or resident metadata in
+        // extension records. Discover the complete set before choosing the
+        // assembly profile; the base record alone cannot decide that.
+        let entries = lists::parse_stream_entries(&value)?;
         let references: BTreeSet<_> = entries
             .iter()
             .filter(|e| e.record_number != number)
@@ -86,6 +116,15 @@ impl MftContext<'_> {
             "attribute-list extension budget exceeded"
         );
         let mut extensions = Vec::new();
+        let mut resident_values = BTreeMap::new();
+        for attribute in &record.attributes {
+            if let Some(bytes) = &attribute.resident_value {
+                resident_values.insert(
+                    (number, record.sequence, attribute.report.instance),
+                    bytes.clone(),
+                );
+            }
+        }
         let mut runs = record
             .attributes
             .iter()
@@ -124,14 +163,82 @@ impl MftContext<'_> {
                 .try_fold(runs, |n, a| n.checked_add(a.report.extents.len()))
                 .context("assembled DATA run count overflow")?;
             ensure!(runs <= 1024, "assembled DATA run budget exceeded");
+            for attribute in &parsed.attributes {
+                if let Some(bytes) = &attribute.resident_value {
+                    ensure!(
+                        resident_values
+                            .insert(
+                                (extension, parsed.sequence, attribute.report.instance),
+                                bytes.clone(),
+                            )
+                            .is_none(),
+                        "duplicate resident attribute origin"
+                    );
+                }
+            }
             extensions.push(evidence(extension, &bytes, &parsed));
         }
-        let (canonical, assembly) = lists::assemble(
-            evidence(number, raw, record),
-            extensions,
-            &value,
-            self.geometry,
-        )?;
+        let legacy = legacy_base
+            && entries.iter().all(|entry| entry.name_utf16.is_empty())
+            && !extensions.is_empty()
+            && extensions.iter().all(|record| {
+                record.attributes.len() == 1
+                    && record.attributes[0].type_code == 0x80
+                    && record.attributes[0].name_utf16.is_empty()
+                    && !record.attributes[0].resident
+                    && record.attributes[0].lowest_vcn > 0
+            });
+        let (canonical, assembly) = if legacy {
+            lists::assemble(
+                evidence(number, raw, record),
+                extensions,
+                &value,
+                self.geometry,
+            )?
+        } else {
+            lists::assemble_streams(
+                evidence(number, raw, record),
+                extensions,
+                &value,
+                self.geometry,
+            )?
+        };
+        if let Some(origins) = &assembly.canonical_origins {
+            ensure!(
+                origins.len() == canonical.len(),
+                "canonical attribute origins are incomplete"
+            );
+            record.attributes = canonical
+                .into_iter()
+                .zip(origins)
+                .map(|(report, origin)| -> Result<Attribute> {
+                    let resident_value = if report.resident {
+                        let bytes = resident_values
+                            .get(&(
+                                origin.record_number,
+                                origin.sequence_number,
+                                origin.instance,
+                            ))
+                            .context("canonical resident attribute has no physical bytes")?;
+                        ensure!(
+                            bytes.len() as u64 == report.logical_size
+                                && report.resident_sha256.as_deref().is_some_and(|hash| {
+                                    lists::resident_digest_matches(hash, bytes)
+                                }),
+                            "canonical resident bytes differ from their raw origin"
+                        );
+                        Some(bytes.clone())
+                    } else {
+                        None
+                    };
+                    Ok(Attribute {
+                        report,
+                        resident_value,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            return Ok(Some(assembly));
+        }
         let old = std::mem::take(&mut record.attributes);
         record.attributes = canonical
             .into_iter()
@@ -228,7 +335,18 @@ pub fn validate_record_coverage(raw: &NtfsInspection) -> Result<()> {
                 &bitmap,
                 &raw.geometry,
             )?
+        } else if matches!(assembly.schema_version, 5 | 6) {
+            lists::assemble_streams(
+                base.clone(),
+                assembly.extensions.clone(),
+                &value,
+                &raw.geometry,
+            )?
         } else {
+            ensure!(
+                matches!(assembly.schema_version, 1 | 2),
+                "unknown ordinary assembly schema"
+            );
             lists::assemble(
                 base.clone(),
                 assembly.extensions.clone(),
@@ -237,7 +355,7 @@ pub fn validate_record_coverage(raw: &NtfsInspection) -> Result<()> {
             )?
         };
         ensure!(
-            matches!(assembly.schema_version, 1..=4)
+            matches!(assembly.schema_version, 1..=6)
                 && serde_json::to_vec(&replay)? == serde_json::to_vec(assembly)?
                 && serde_json::to_vec(&canonical)? == serde_json::to_vec(&file.attributes)?,
             "assembly evidence does not reproduce the canonical attributes"
@@ -294,6 +412,16 @@ fn attributes_heap_bytes(attributes: &[AttributeInventory], capacity: usize) -> 
 }
 pub(super) fn heap_bytes(assembly: &Assembly) -> Result<u64> {
     let mut total = assembly.list_value_hex.capacity() as u64;
+    if let Some(origins) = &assembly.canonical_origins {
+        total = total
+            .checked_add(
+                origins
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<lists::CanonicalOrigin>())
+                    .context("canonical origin memory overflow")? as u64,
+            )
+            .context("canonical origin accounting overflow")?;
+    }
     if let Some(bitmap) = &assembly.mft_bitmap_hex {
         total = total
             .checked_add(bitmap.capacity() as u64)

@@ -1089,8 +1089,9 @@ pub(crate) fn inactive_mirror_template(
     Ok(true)
 }
 
-/// Reread a bounded resident attribute from its actual MFT record. Inventory
-/// hashes alone are not a substitute for the bytes being interpreted.
+/// Reread a bounded resident attribute from its actual MFT record, including
+/// its extension-record origin when assembled. Inventory hashes alone are not
+/// a substitute for the bytes being interpreted.
 pub(crate) fn read_resident_inventory_attribute<R: Read + Seek>(
     reader: &mut R,
     raw: &NtfsInspection,
@@ -1115,7 +1116,7 @@ pub(crate) fn read_resident_inventory_attribute<R: Read + Seek>(
         &mut bytes,
         &raw.geometry,
     )?;
-    let record = parse_record(bytes, &raw.geometry)?;
+    let mut record = parse_record(bytes.clone(), &raw.geometry)?;
     ensure!(
         record.sequence == file.sequence_number
             && record.base == file.base_file_reference
@@ -1123,6 +1124,25 @@ pub(crate) fn read_resident_inventory_attribute<R: Read + Seek>(
             && (record.flags & 2 != 0) == file.is_directory,
         "reread MFT record identity differs"
     );
+    if let Some(expected) = raw.attribute_assemblies.iter().find(|assembly| {
+        assembly.base.record_number == file.record_number
+            && matches!(assembly.schema_version, 1 | 2 | 5 | 6)
+    }) {
+        validate_record_coverage(raw)?;
+        let context = assembled_io::MftContext {
+            data: &bootstrap.data,
+            bitmap: &bootstrap.bitmap,
+            geometry: &raw.geometry,
+            record_count: bootstrap.record_count,
+        };
+        let actual = context
+            .resolve(reader, file.record_number, &bytes, &mut record)?
+            .context("resident attribute assembly is no longer present")?;
+        ensure!(
+            serde_json::to_vec(&actual)? == serde_json::to_vec(expected)?,
+            "resident attribute physical assembly changed"
+        );
+    }
     let found: Vec<_> = record
         .attributes
         .iter()
@@ -2399,11 +2419,9 @@ fn checked_data_attribute<R: Read + Seek>(
         );
         record.attributes = bootstrap.record.attributes.clone();
     }
-    if let Some(expected) = raw
-        .attribute_assemblies
-        .iter()
-        .find(|a| a.base.record_number == record_number && matches!(a.schema_version, 1 | 2))
-    {
+    if let Some(expected) = raw.attribute_assemblies.iter().find(|a| {
+        a.base.record_number == record_number && matches!(a.schema_version, 1 | 2 | 5 | 6)
+    }) {
         let context = assembled_io::MftContext {
             data: mft,
             bitmap: &bootstrap.bitmap,

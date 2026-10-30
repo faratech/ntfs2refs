@@ -8,7 +8,26 @@ It has synthetic source/test evidence, not a new native conversion qualification
 The separate [MFT bootstrap profile](ntfs-mft-bootstrap.md) extends the same
 physical-record ledger to record zero without relaxing ordinary-file identities.
 
-The initial profile requires:
+Schemas 5/6 add an ordinary multi-stream profile. Hard-link FILE_NAME records,
+resident standard information/security and resident DATA may come from owned
+extension records. Nonresident DATA is assembled separately for each exact
+UTF-16 stream name. Every stream needs one VCN-zero leader and complete,
+nonoverlapping segments; source bytes are not duplicated for hard-link names.
+The attribute list must still be a single completely readable base attribute.
+Directory assembly, encoded/sparse DATA assembly and segmented lists remain
+outside this profile.
+
+Canonical attributes retain a `canonical_origins` map to the raw record,
+sequence and local attribute instance. Deterministic synthetic instances resolve
+record-local collisions without losing those origins. Resident rereads and DATA
+rereads reconstruct the same complete physical ledger before returning bytes.
+The broader profile is selected after inspecting the list and extensions, since
+an ordinary-looking base record can own ADS or metadata in another record.
+Current resident observations use the content digest; legacy SHA-256 evidence
+is still checked using its original algorithm. This implementation has focused
+build coverage; new native conversion qualification is pending.
+
+The original schema-1/2 profile requires:
 
 - A nondirectory base record numbered at least 16, one link, one resident unnamed
   STANDARD_INFORMATION and FILE_NAME, and one complete unnamed ATTRIBUTE_LIST.
@@ -83,6 +102,8 @@ The pure assembler tests additionally cover malformed list entries, missing/extr
 origins, duplicate identities, unsupported forms, physical overlaps and limits.
 
 Unimplemented filesystem-internal lists, directory-index assembly,
-lists whose own mappings require further assembly, named streams, multiple links and encoded/sparse segments
-remain outside this profile. No original VM/checkpoint, device, source image or
-writer experiment was changed to establish these source results.
+lists whose own mappings require further assembly and encoded/sparse segments
+remain outside these profiles. The original schema-1/2 profile remains separate
+from the schema-5/6 named-stream/hard-link implementation; old evidence is not
+new-profile qualification. No original VM/checkpoint, device, source image or
+writer experiment was changed to establish the historical source results above.

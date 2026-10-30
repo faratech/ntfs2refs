@@ -22,6 +22,8 @@ pub mod general_layout;
 #[cfg(windows)]
 pub mod journal_file;
 pub mod layout;
+#[cfg(windows)]
+pub mod lab_ntfs_fragmentation;
 pub mod logical_hash;
 pub mod namespace_layout;
 #[cfg(windows)]

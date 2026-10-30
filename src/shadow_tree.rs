@@ -651,7 +651,10 @@ fn derive_profile(
             additional_names: names,
             directory: f.is_directory,
             stored_times: times,
-            attributes: si.file_attributes | if f.is_directory { 16 } else { 0 },
+            attributes: crate::ntfs_attestation::default_stream_attributes(
+                f,
+                si.file_attributes | if f.is_directory { 16 } else { 0 },
+            )?,
             security: hex::decode(&descriptor.relative_hex)?,
             api_security: None,
             source_offset,

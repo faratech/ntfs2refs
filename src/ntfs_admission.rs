@@ -1338,25 +1338,41 @@ pub(crate) fn bind_large_native_profile(
         true,
         resources,
     );
+    let objects_match =
+        serde_json::to_vec(&fresh.objects)? == serde_json::to_vec(&assessment.objects)?;
+    let failed_gates: Vec<_> = [
+        "native_identity_coverage",
+        "native_volume_allocation",
+        "objects",
+        "resource_limits",
+    ]
+    .iter()
+    .filter_map(
+        |code| match fresh.gates.iter().find(|gate| gate.code == *code) {
+            Some(gate) if gate.satisfied => None,
+            Some(gate) => Some((*code, gate.detail.as_str())),
+            None => Some((*code, "gate absent")),
+        },
+    )
+    .collect();
+    let rejected_objects: Vec<_> = fresh
+        .objects
+        .iter()
+        .filter(|object| object.disposition == Disposition::Reject || !object.issues.is_empty())
+        .collect();
+    let logical_audit = comparison
+        .native_logical_data
+        .as_ref()
+        .map(|data| &data.audit);
     ensure!(
-        serde_json::to_vec(&fresh.objects)? == serde_json::to_vec(&assessment.objects)?
-            && [
-                "native_identity_coverage",
-                "native_volume_allocation",
-                "objects",
-                "resource_limits"
-            ]
-            .iter()
-            .all(|code| fresh
-                .gates
-                .iter()
-                .any(|gate| gate.code == *code && gate.satisfied))
+        objects_match
+            && failed_gates.is_empty()
             && comparison.native_namespace.is_some()
-            && comparison
-                .native_logical_data
-                .as_ref()
-                .is_some_and(|data| data.audit.matched),
-        "large native resource evidence does not completely reconcile with source objects"
+            && logical_audit.is_some_and(|audit| audit.matched),
+        "large native resource evidence does not completely reconcile with source objects: objects_match={objects_match}; failed_gates={failed_gates:?}; namespace_present={}; logical_audit={logical_audit:?}; rejected_objects_total={}; first_rejected_objects={:?}",
+        comparison.native_namespace.is_some(),
+        rejected_objects.len(),
+        &rejected_objects[..rejected_objects.len().min(24)]
     );
     ensure!(
         ["native_profile", "native_resource_profile_support"]

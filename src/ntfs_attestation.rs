@@ -248,6 +248,33 @@ pub(crate) fn check_non_time_snapshot(
 
 /// The frozen-source policy checks both descriptor views separately. Keep
 /// identity/type/size/attribute validation independent of API SD projection.
+/// Project only FILE_ATTRIBUTE_SPARSE_FILE onto the opened default stream.
+/// NTFS STANDARD_INFORMATION can retain this bit when a named stream is
+/// sparse while the default stream is not. Every other attribute bit is kept
+/// as supplied; callers retain their existing directory/normal-bit handling.
+pub(crate) fn default_stream_attributes(file: &FileInventory, attributes: u32) -> Result<u32> {
+    if file.is_directory {
+        return Ok(attributes);
+    }
+    let mut streams = file
+        .streams
+        .iter()
+        .filter(|stream| stream.name_utf16.is_empty());
+    let Some(default) = streams.next() else {
+        return Ok(attributes);
+    };
+    ensure!(
+        streams.next().is_none(),
+        "default stream attribute projection is ambiguous"
+    );
+    Ok((attributes & !0x200)
+        | if default.flags & 0x8000 != 0 {
+            0x200
+        } else {
+            0
+        })
+}
+
 pub(crate) fn check_non_security_snapshot(
     file: &FileInventory,
     serial: u64,
@@ -268,7 +295,10 @@ pub(crate) fn check_non_security_snapshot(
         .context("missing raw standard information")?;
     // NTFS $STANDARD_INFORMATION omits the directory bit and carries internal
     // index/view flags in the high nibble, outside Win32 FILE_ATTRIBUTE_*.
-    let mut attrs = (si.file_attributes & 0x0fff_ffff) | if file.is_directory { 16 } else { 0 };
+    let mut attrs = default_stream_attributes(
+        file,
+        (si.file_attributes & 0x0fff_ffff) | if file.is_directory { 16 } else { 0 },
+    )?;
     if attrs == 0 {
         attrs = 128;
     }

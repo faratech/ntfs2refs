@@ -40,6 +40,17 @@ The Rust sparse fixture helper builds (98ea44c36ed5132c377ec1b2fb23322b5f81d0345
 it creates only new H: sparse files/ADS and preserves old data. No unit tests.
 VM is currently running the preserved NTFS baseline7f926b79 for that fixture;
 all21 checkpoints remain. Do not use the old ADS qualification for this build.
+The first sparse public attempt48579f7c/source307173a stopped before source
+writes during source-view reconciliation. Raw NTFS SI marks ordinary.bin
+0x220 because its ADS is sparse, but the default handle correctly reports0x20.
+The source projection and canonical default attributes now derive only bit0x200
+from the unnamed stream's flags; raw SI is retained unchanged. Saved replay
+now matches all user views, with unchanged stream/data/namespace comparisons.
+Failure metadata is in .lab/hyperv/streaming-v2-20261027/sparse-first-refusal-48579f7c,
+and failed VM checkpointddf5e717 is preserved. Sparse NTFS fixture9c42e1fd
+has been restored for the corrected attempt; all23 checkpoints remain.
+Corrected public hashd03b72dac69f09ef7f3021dbaf9c45dc161e2051c992ef451632bd8e6867064f
+is built; native retry remains pending. No unit tests were added or run.
 
 Latest state: VM is Off/RAM0, parent7f926b79-465f-4945-a00b-bdaae2607cd4;
 all21 checkpoints remain. Disk6/H: is verified NTFS after ADS rollback. The

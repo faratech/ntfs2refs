@@ -13,6 +13,8 @@ pub mod content_digest;
 pub mod discovery;
 pub mod drive_inventory;
 #[cfg(windows)]
+pub mod extent_observation;
+#[cfg(windows)]
 pub mod managed_shadow;
 #[cfg(windows)]
 pub mod file_storage;

@@ -27,6 +27,34 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
+Latest follow-up: evidence/public-build-provenance-9099110-20261030.json binds
+the tested public121d7dbb binary to9099110 plus the exact saved main.rs overlay
+(SHA c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b).
+The effective source is reconstructible, but a later byte-identical relink is
+not claimed: historical PE/debug timestamps and CodeView identity were not
+sealed reproducible build inputs. The original EXE/PDB/source bundle remains
+preserved. No public converter rebuild was used for the following observation.
+
+Saved native metadata now independently reconciles both156241e and9099110
+file mappings against their protected routes and live retained-byte totals.
+A fresh read-only query then matched all654 eligible user-file identities,
+lengths and normalized retrieval mappings on the saved9099110 mutation/reboot
+branch20068b68. Query native/task0; zero payload bytes read and zero source
+write requests by the observer. This is not a full allocator or new-feature
+qualification. See evidence/native-extent-preservation-20261030.json.
+The new lab helpers and controller have focused release-build/AST coverage;
+no unit tests were added or run. The first controller preflight refusal is
+preserved alongside its corrected fresh run. VM is stopped/RAM0; all seven
+checkpoints remain, including the verified NTFS rollback in ec034c81.
+Preserve every existing checkpoint/evidence item for this active follow-up.
+
+The requested GitHub compatibility review is recorded in
+docs/release-0.0.1-readiness.md. ntfs2btrfs has broader conversion coverage but
+also warning/skip/truncation paths; do not copy that data-loss policy. Our next
+feature slices are identity/named-stream modeling, hard links/sparse/VDL,
+security/reparse/EAs/extension records and compressed logical content. ReFS
+capability and target-version limits remain explicit pre-write refusals.
+
 Storage update (2026-10-30): the allocation-bounded path now captures explicit
 zero ranges without storing their new bytes in the packed backing, and issues
 `N2RZERO1` selected journals when the plan has `new_zero_ranges`. Every old byte
@@ -101,8 +129,9 @@ is in evidence/revised-copy-validation-20261030.json. No validation worker is
 active. Do not transfer these results to a different executable or profile.
 
 VM2401593c-4b30-472e-9b6d-c9534cbaa599 is Off/RAM0. Its current parent is
-interrupted-copy checkpoint9f32dee4-0691-4b2a-9ec2-e7834b6d11db, but its current
-disks contain the verified NTFS rollback. Restore an intended checkpoint before
+mutation/reboot checkpoint20068b68-ffc2-4443-bea8-179a797c1495 after the closed
+read-only extent observation. The verified NTFS rollback is preserved in
+ec034c81-e39b-46bd-a8d1-cfc3481da8dd. Restore an intended checkpoint before
 starting another native case. The mixed baseline is6fe2d6b6, with808 files/120 directories,
 9,885,781,381 bytes; manifest is under mixed-fixture-20261029-3dccf8e8fa38487db6731284a12bceb9.
 The completed156241e ReFS branch and its attached shadow were preserved before
@@ -115,8 +144,9 @@ completion/intent markers; the1,180,688,384-byte backing was exported and
 verified against its capture hash. See bulk-preservation.json in that archive.
 The742,391,808-byte original shadow VHDX could not be exported through an
 ordinary read; no bypass or detach was attempted. The whole original branch,
-including that image, is retained in1683b2be. Six checkpoints remain, including
-the revised successful ReFS mutation/reboot branch in20068b68. Do not remove
+including that image, is retained in1683b2be. Seven checkpoints remain, including
+the revised successful ReFS mutation/reboot branch in20068b68 and the independent
+NTFS rollback branch inec034c81. Do not remove
 preservation checkpoints without specific approval.
 Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the

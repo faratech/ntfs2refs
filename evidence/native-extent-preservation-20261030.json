@@ -1,0 +1,238 @@
+{
+  "preserved_preflight_failure": {
+    "native_query_dispatched": false,
+    "reason": "raw DirectoryInfo.Parent objects do not expose the PowerShell PSIsContainer provider property",
+    "fix": "check DirectoryInfo type for stage ancestry; rerun in a fresh case, preserve the original failure",
+    "artifact": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-observe-20261030-58bfb07041a84dfe85f7048bf15bb1ba\\dispatch-failed.json",
+      "bytes": 299,
+      "sha256": "9677746944427d1f5da9f44fda7170170218fd0a35e5f8b0e7f8ed912ff5eb6f"
+    }
+  },
+  "public_converter_rebuilt": false,
+  "sealed_helpers": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\sealed-helpers\\lab-compare-extent-preservation.exe",
+      "bytes": 1330688,
+      "sha256": "87ea48a07fdcbfb6ab1e430cdda8aefefa4ecea6aaf08ccbdfa77ac0aea3914f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\sealed-helpers\\lab-query-refs-extents.exe",
+      "bytes": 1081344,
+      "sha256": "6722a00cbc4947902eb167086bd62d94d823cc544119f632657d7f188fcc653f"
+    }
+  ],
+  "schema_version": 1,
+  "limitations": [
+    "654 user files cover initialized whole-cluster eligible data; source-resident and subcluster-only files are excluded from this physical extent check",
+    "existing saved logical hash evidence is not a fresh payload reread",
+    "no new NTFS feature, geometry, storage-size or boot qualification",
+    "no full allocator ownership or physical power-loss claim",
+    "no new performance measurement"
+  ],
+  "kind": "native-extent-preservation-observation",
+  "fresh_observation": {
+    "files_requested": 654,
+    "task_result": 0,
+    "payload_bytes_read_by_query": 0,
+    "run_id": "ef07f1342d0545c48fc619488b9de67a",
+    "conversion_qualified": false,
+    "filesystem_background_write_absence_claimed": false,
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "closed_receipt": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-observe-20261030-ef07f1342d0545c48fc619488b9de67a\\closed-receipt.json",
+      "bytes": 4791,
+      "sha256": "7a51c72c0996cc6367d9f727fff82d7f1c158e796250668953eab37f52893f98"
+    },
+    "files_matching": 654,
+    "atomic_volume_snapshot_claimed": false,
+    "preserved_rollback_snapshot": "ec034c81-e39b-46bd-a8d1-cfc3481da8dd",
+    "native_exit": 0,
+    "report": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-observe-20261030-ef07f1342d0545c48fc619488b9de67a\\closed\\report.json",
+      "bytes": 1478552,
+      "sha256": "17433d00d3b55dbcef36c47723aef9eccf167f83f32a59a2a239a355f5913696"
+    },
+    "workers_absent": true,
+    "request": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\909-query.json",
+      "bytes": 1014294,
+      "sha256": "f041c458ba962e75042f955ca93fe8c5fb1487afe1af19f25238f563ab67ccde"
+    },
+    "parent_snapshot": "20068b68-ffc2-4443-bea8-179a797c1495",
+    "raw_write_authority": false,
+    "metadata_checks": [
+      "exact GPT/data partition/Windows disk exclusion and geometry before and after",
+      "held non-reparse file/ancestor paths",
+      "before/after file ID, volume serial and EOF",
+      "complete native retrieval maps with native paging proofs",
+      "normalized physical mapping equal to original protected ReFS witness after native mutation and cold reboot"
+    ],
+    "source_write_requests_by_query": 0
+  },
+  "historical_converter_sha256": "121d7dbb9977618af7790f4fcd78e69fee3c4274e9e2980c1a3d0709dd322f0b",
+  "helper_source_pins": [
+    {
+      "path": "D:\\code\\ntfs2refs\\src\\bin\\lab-compare-extent-preservation.rs",
+      "bytes": 37284,
+      "sha256": "1f49a15e37d53e2e6e9f96019982c01be50233c91b86bc699bb28a488e370534"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\src\\bin\\lab-query-refs-extents.rs",
+      "bytes": 6347,
+      "sha256": "7d18df13780cfb97b8d9bb18c8315b743e150110cea7b91bd1d14170f5827b7a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\crates\\n2r-win32\\src\\extent_observation.rs",
+      "bytes": 15650,
+      "sha256": "3c6ee40ef24b073307ea0f90e8d0b7e77ad4bc5def73aab74be5e7579b547ba2"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\crates\\n2r-win32\\src\\lib.rs",
+      "bytes": 2147,
+      "sha256": "2ba5a8c352e3960f23ef995e683beefe60eeb1a7a01b3d4a432178b490a93423"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\lab\\Invoke-ReadOnlyExtentObservation.ps1",
+      "bytes": 17487,
+      "sha256": "83300e5c2a94f6133cf526bc76f5d77a50697b12aaf335e6fb06d4dc9a93fad3"
+    }
+  ],
+  "historical_converter_source": "909911062106dbde6cf35fbcdccf4a45b2998671",
+  "source_commit_before_helpers": "e2934d7",
+  "checks": {
+    "focused_release_builds": true,
+    "security_or_credential_changes": false,
+    "controller_ast": true,
+    "checkpoint_deletions": 0,
+    "wsl_shutdown": false,
+    "unit_tests_added_or_run": false,
+    "real_user_data_touched": false
+  },
+  "utc": "2026-10-30T12:02:33.4812227Z",
+  "historical_source_overlay_evidence": "evidence/public-build-provenance-9099110-20261030.json",
+  "saved_metadata_analysis": {
+    "new_source_admission": false,
+    "does_not_validate_live_contents": true,
+    "analysis_of_saved_native_metadata": true,
+    "cases": [
+      {
+        "case": "156",
+        "manifest": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\156-inputs.json",
+          "bytes": 1374,
+          "sha256": "9ffd150d9cf04e499121c86e6c5c7944bdc6be3aac12905423ff4a27300df652"
+        },
+        "report": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\156-report.json",
+          "bytes": 1900402,
+          "sha256": "2348e5d2c5abca387b0e43c5dbec69f63c40ba6a3cd274c92e6ebebd99a2275c"
+        },
+        "query_request": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\156-query.json",
+          "bytes": 1035675,
+          "sha256": "694e89b6f3bf6b8eb32746c64e50d2d0eff2f7ef61b194d360354dfa9ccb7b1a"
+        },
+        "original_request": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\copy-reference-20261030\\closed-run-2586aba6\\run\\conversion\\request.json",
+          "bytes": 1821,
+          "sha256": "eebe8db2b1db645e11f00ff2f8cd5a986ef63c9d7023ca55a386408ff36fad4c"
+        },
+        "summary": {
+          "eligible_bytes": 9884332032,
+          "eligible_files": 655,
+          "excluded_files_by_reason": {
+            "no_initialized_whole_cluster": 22,
+            "source_resident": 134
+          },
+          "expected_objects": 933,
+          "files": 811,
+          "files_with_both": 23,
+          "files_with_relocated": 539,
+          "files_with_retained": 139,
+          "independently_matched_single_page_responses": 670,
+          "live_proof_retained_bytes": 3084886016,
+          "native_objects": 933,
+          "nonempty_native_maps": 670,
+          "protected_route_bytes": 9884332032,
+          "protected_routes": 2356,
+          "protected_routes_matched": 2356,
+          "relocated_bytes": 6799446016,
+          "retained_bytes": 3084886016,
+          "saved_logical_hashes_matched": 811,
+          "structurally_checked_multi_page_maps": 0,
+          "user_eligible_bytes": 9884311552,
+          "user_eligible_files": 654,
+          "user_files": 808,
+          "user_relocated_bytes": 6799425536,
+          "user_retained_bytes": 3084886016
+        },
+        "analyzer_exit_code": 0,
+        "native_query_executed": false
+      },
+      {
+        "case": "909",
+        "manifest": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\909-inputs.json",
+          "bytes": 1469,
+          "sha256": "dfa9dfc71b78b3de685e67c55cee129c2754714160e52aa48dea35ea084be978"
+        },
+        "report": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\909-report.json",
+          "bytes": 1856812,
+          "sha256": "c1f98b1eeda6d57e80738b78044a2de8f99fbd2c1985e0c667462e6a0fde1389"
+        },
+        "query_request": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\909-query.json",
+          "bytes": 1014294,
+          "sha256": "f041c458ba962e75042f955ca93fe8c5fb1487afe1af19f25238f563ab67ccde"
+        },
+        "original_request": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\copy-reference-revised-validation-20261030\\closed-interruption-refreshed\\stage\\conversion\\request.json",
+          "bytes": 1821,
+          "sha256": "cb9596d5be50cd20850f0741276c735dbdf366be245254afaa62f9c333f8e3de"
+        },
+        "summary": {
+          "eligible_bytes": 9884332032,
+          "eligible_files": 655,
+          "excluded_files_by_reason": {
+            "no_initialized_whole_cluster": 22,
+            "source_resident": 134
+          },
+          "expected_objects": 933,
+          "files": 811,
+          "files_with_both": 23,
+          "files_with_relocated": 539,
+          "files_with_retained": 139,
+          "independently_matched_single_page_responses": 670,
+          "live_proof_retained_bytes": 2888302592,
+          "native_objects": 933,
+          "nonempty_native_maps": 670,
+          "protected_route_bytes": 9884332032,
+          "protected_routes": 2250,
+          "protected_routes_matched": 2250,
+          "relocated_bytes": 6996029440,
+          "retained_bytes": 2888302592,
+          "saved_logical_hashes_matched": 811,
+          "structurally_checked_multi_page_maps": 0,
+          "user_eligible_bytes": 9884311552,
+          "user_eligible_files": 654,
+          "user_files": 808,
+          "user_relocated_bytes": 6996008960,
+          "user_retained_bytes": 2888302592
+        },
+        "analyzer_exit_code": 0,
+        "native_query_executed": false
+      }
+    ],
+    "execution": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-preservation-20261030\\execution.json",
+      "bytes": 5773,
+      "sha256": "7ff6cb4a92e3bef5d4bd7cff56667ee6bf0751da2f7183949ec7ef04c1fda49d"
+    },
+    "earlier_analyzer_refusals": [
+      "raw inspector inventory_complete was a diagnostic rather than an admission certificate; helper now records it without reassessing source admission",
+      "resident ReFS inline allocation can be nonzero below one cluster; helper now matches the existing native resident predicate"
+    ]
+  }
+}

@@ -55,13 +55,12 @@ feature slices are identity/named-stream modeling, hard links/sparse/VDL,
 security/reparse/EAs/extension records and compressed logical content. ReFS
 capability and target-version limits remain explicit pre-write refusals.
 
-Hard-link candidate (next native qualification): canonical Object and native
+Hard-link implementation: canonical Object and native
 Input now carry additional_names while retaining one payload per file identity.
 Source names resolve by exact parent record/sequence using binary search;
 native construction uses held file/directory handles to create no-overwrite
 links, then verifies alias IDs, link counts and complete directory membership.
-The public executable and digest helper build. This is not yet a native
-hard-link conversion result. The new standalone disk6/H: fixture has three
+The public executable and digest helper build. The new standalone disk6/H: fixture has three
 file identities/nine names (ordinary, resident-sized and empty data, nested
 Unicode aliases), NTFS4KiB,52GiB. It is saved in checkpoint914bb77d; eight
 checkpoints now remain. Host VHDX/provision records are in
@@ -79,8 +78,22 @@ was restored to914bb77d for a new attempt. Absence of the optional indexer
 cache is now recorded without manufacturing one; existing caches still receive
 their full checks. ACL restoration now processes directory parents before
 canonical files, then restores timestamps bottom-up. The corrected public
-build is65776bd4127ca911ec2698cde1fe660c43d879eb895233b66f2838c5f6ec29fb;
-its native qualification is pending. No unit tests were added or run.
+build is65776bd4127ca911ec2698cde1fe660c43d879eb895233b66f2838c5f6ec29fb.
+Source7b1c8df then passed public run5823093b/core052c23a1 on that independent
+NTFS4KiB fixture: native0, HND, ReFS4KiB,8 objects/4 complete hashes, all three
+user-file identities and nine names preserved. Six alias snapshot proofs match
+canonical IDs and link counts. Native duration16.658s applies only to this tiny
+payload fixture. Journal73,536,704 B plus packed backing1,966,080 B; this fixture
+relocated its payload, so it establishes no retained-data performance result.
+A cold boot preserved all nine IDs/hashes, then a one-byte write through the
+Unicode alias propagated across the ordinary file's three names. Restoring via
+the other alias recovered every original hash. See
+evidence/hardlink-native-conversion-20261030.json. No unit tests were added or run.
+Hard-link ATTRIBUTE_LIST, ADS, sparse/encoded streams and this build's native
+interrupted-recovery cases remain unqualified. The broad goal is unfinished.
+VM is now Off/RAM0 with parentd2c6ff09-2e26-4e25-be53-831a916f5489; eleven
+checkpoints remain. The pre-mutation ReFS result is1c23ca96-dd72-4846-b7bf-39fb13389639;
+the clean NTFS hard-link source remains914bb77d-d924-4ed6-ab14-9a40288c3bc9.
 
 Storage update (2026-10-30): the allocation-bounded path now captures explicit
 zero ranges without storing their new bytes in the packed backing, and issues
@@ -155,7 +168,7 @@ all120 user directory names match the frozen expectation. The scoped matrix
 is in evidence/revised-copy-validation-20261030.json. No validation worker is
 active. Do not transfer these results to a different executable or profile.
 
-VM2401593c-4b30-472e-9b6d-c9534cbaa599 is Off/RAM0. Its current parent is
+Before the hard-link follow-up, VM2401593c-4b30-472e-9b6d-c9534cbaa599 was Off/RAM0 with parent
 mutation/reboot checkpoint20068b68-ffc2-4443-bea8-179a797c1495 after the closed
 read-only extent observation. The verified NTFS rollback is preserved in
 ec034c81-e39b-46bd-a8d1-cfc3481da8dd. Restore an intended checkpoint before

@@ -167,7 +167,7 @@ above, not a "stable" or "maximum performance" 0.0.1.
 The comparison below distinguishes a converter's output from a driver's ability
 to read source metadata. None of these projects establishes full NTFS-to-ReFS
 compatibility. Our mixed-tree success covers the admitted ordinary-file profile;
-it does not qualify ADS, hard links, reparse points, compressed/encrypted files,
+it does not qualify ADS, reparse points, compressed/encrypted files,
 SACLs, short-name aliases or boot volumes.
 
 | Project and pinned source | Actual role and preservation boundary |
@@ -201,7 +201,7 @@ Current Rust conversion boundaries, confirmed in source:
 | Source feature | Current admission/construction behavior |
 |---|---|
 | Ordinary unnamed data | Resident/empty files, fragmented plain extents and partial/uninitialized tails have semantic materialization/retention paths; mixed-fixture conversion is recorded separately above. |
-| Hard links and DOS-only aliases | Refused: exactly one name/link is required. A combined Win32/DOS namespace name is not an independently preserved DOS alias. |
+| Hard links and DOS-only aliases | Ordinary hard links now share one canonical payload object plus additional names. The bounded native result below verifies three names per file; hard-link files requiring unsupported attribute-list assembly remain refused. DOS-only aliases remain refused. |
 | ADS and directory streams | Refused: one unnamed file stream; no directory streams. Read-only stream inspection is not conversion support. |
 | Sparse, NTFS compression, EFS | Nonzero stream flags/encoding are refused. Plain uninitialized tails are distinct from sparse-hole support. |
 | Reparse points and Windows EAs | Outside the admitted attribute whitelist; no target preservation claim. |
@@ -216,8 +216,21 @@ Relevant implementations are [admission](../src/ntfs_admission.rs),
 and [internal replacement](../src/ntfs_internal.rs). Fixed resource caps remain
 implementation restrictions, despite the intended resource-bounded scale design.
 
-Continue in concrete slices: (1) represent file identity separately from its
-names and streams; (2) preserve named streams, hard links and sparse/VDL semantics
+The hard-link follow-up on source `7b1c8df` converted an independently created
+NTFS4KiB partition through the public CLI, preserving three user-file identities
+and nine names (ordinary, resident-sized and empty files; nested Unicode aliases).
+Native ReFS verified six alias identity/link-count snapshots. After a cold boot,
+all nine hashes and IDs remained correct; a write through one alias was visible
+through the other names, and restoring the byte through another name recovered
+the original hashes. The run took16.658s for this small fixture and relocated its
+payload; it is not a large-volume performance measurement. This build's native
+interrupted recovery remains unqualified. See
+[the recorded native result](../evidence/hardlink-native-conversion-20261030.json).
+The first attempt exposed and led to removal of an unnecessary requirement for
+the source to contain `IndexerVolumeGuid`; absence is now preserved explicitly.
+
+Continue in concrete slices: (1) extend the identity/name model to named
+streams; (2) preserve named streams and sparse/VDL semantics
 through native construction and semantic verification; (3) add SACL/null/empty
 security distinctions, opaque reparse/EAs and complete extension-record admission;
 (4) materialize compressed logical content with exact space forecasts; (5) expand

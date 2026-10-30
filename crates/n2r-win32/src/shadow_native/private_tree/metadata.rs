@@ -108,7 +108,10 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
         for item in input {
             hash.update([u8::from(item.extended_attributes.is_some())]);
             if let Some(set) = item.extended_attributes {
-                bytes(&mut hash, &serde_json::to_vec(set).expect("EA set serialization"));
+                bytes(
+                    &mut hash,
+                    &serde_json::to_vec(set).expect("EA set serialization"),
+                );
             }
         }
     }

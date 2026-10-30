@@ -285,10 +285,19 @@ pub(crate) fn check_non_security_snapshot(
         || s.extended_attributes_error.is_some()
     {
         let expected = crate::ntfs_extended_attributes::file_set(file)?;
-        ensure!(s.extended_attributes_error.is_none(), "native EA query failed");
-        let observed = s.extended_attributes.as_ref().context("native EA set missing")?;
+        ensure!(
+            s.extended_attributes_error.is_none(),
+            "native EA query failed"
+        );
+        let observed = s
+            .extended_attributes
+            .as_ref()
+            .context("native EA set missing")?;
         observed.validate()?;
-        ensure!(expected.equivalent(observed), "raw/native EA semantics differ");
+        ensure!(
+            expected.equivalent(observed),
+            "raw/native EA semantics differ"
+        );
     }
     ensure!(s.queries.len() == 4, "unexpected native query count");
     let id = buffer(s, 18, 24)?;

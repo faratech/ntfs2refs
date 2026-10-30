@@ -15,6 +15,8 @@ const SUCCESS: i32 = 0;
 const BUFFER_OVERFLOW: i32 = 0x8000_0005u32 as i32;
 const NO_MORE_EAS: i32 = 0x8000_0012u32 as i32;
 const NO_EAS_ON_FILE: i32 = 0xc000_0052u32 as i32;
+// Distinguish an untouched output block from a genuine successful completion.
+const QUERY_STATUS_SENTINEL: i32 = 0x5a5a_5a5a;
 
 #[link(name = "ntdll")]
 unsafe extern "system" {
@@ -129,7 +131,7 @@ fn synchronous(file: &File) -> Result<(), Error> {
 
 /// Enumerate a complete set on the exact supplied FILE/DIR handle. Requires
 /// FILE_READ_EA and FILE_READ_ATTRIBUTES; no path reopen, payload read or setter.
-/// A positive terminal status is required after nonempty enumeration. Returned
+/// An explicit terminal response is required after nonempty enumeration. Returned
 /// names are byte-preserved; Set's ordering/uniqueness is ASCII case-insensitive.
 pub fn capture(file: &File) -> Result<Set, Error> {
     synchronous(file)?;
@@ -143,6 +145,7 @@ pub fn capture(file: &File) -> Result<Set, Error> {
     for call in 0..=extended_attributes::MAX_ENTRIES {
         storage.fill(0);
         let mut status_block = IO_STATUS_BLOCK::default();
+        status_block.Anonymous.Status = QUERY_STATUS_SENTINEL;
         // SAFETY: synchronous handle checked above; buffers are live, aligned,
         // initialized and bounded. No filter/index requests partial named data.
         let status = unsafe {
@@ -161,16 +164,24 @@ pub fn capture(file: &File) -> Result<Set, Error> {
         // SAFETY: the checked synchronous native call has completed.
         let completion = unsafe { status_block.Anonymous.Status };
         let used = status_block.Information;
-        if completion != status || used > extended_attributes::MAX_EA_BYTES {
-            return Err(native_error("NtQueryEaFile", status, completion, used));
-        }
-        if (status == NO_EAS_ON_FILE && call == 0 || status == NO_MORE_EAS && !entries.is_empty())
-            && used == 0
-        {
+        let terminal =
+            status == NO_EAS_ON_FILE && call == 0 || status == NO_MORE_EAS && !entries.is_empty();
+        if terminal {
+            // Microsoft IO_STATUS_BLOCK's contract makes a non-pending direct
+            // return authoritative. These two known empty terminal responses
+            // can return before writing IOSB; accept only an unchanged sentinel
+            // or that exact terminal code, with no claimed output bytes.
+            if used != 0 || (completion != status && completion != QUERY_STATUS_SENTINEL) {
+                return Err(native_error("NtQueryEaFile", status, completion, used));
+            }
             complete = true;
             break;
         }
-        if !matches!(status, SUCCESS | BUFFER_OVERFLOW) || used == 0 {
+        if !matches!(status, SUCCESS | BUFFER_OVERFLOW)
+            || completion != status
+            || used == 0
+            || used > extended_attributes::MAX_EA_BYTES
+        {
             return Err(native_error("NtQueryEaFile", status, completion, used));
         }
         // SAFETY: Information was bounded by the initialized storage length.

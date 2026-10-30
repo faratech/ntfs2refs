@@ -665,7 +665,10 @@ pub(crate) fn user_paths(
 pub fn internal_role(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<String> {
     // Recognized NTFS internals are replaced, not recreated as user objects.
     // Their names/roles cannot authorize dropping otherwise valid EA metadata.
-    if !crate::ntfs_extended_attributes::file_set(f).ok()?.is_empty() {
+    if !crate::ntfs_extended_attributes::file_set(f)
+        .ok()?
+        .is_empty()
+    {
         return None;
     }
     if f.base_file_reference != 0 || f.metadata_role_issue.is_some() {
@@ -779,8 +782,7 @@ fn user_issues_profile(
                 && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                 && ntfs_namespace::is_i30(&a.name_utf16);
             let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
-            let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0)
-                && a.name_utf16.is_empty();
+            let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0) && a.name_utf16.is_empty();
             let sparse_data = ordinary
                 && data
                 && !a.resident

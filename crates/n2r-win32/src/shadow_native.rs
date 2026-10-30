@@ -1062,7 +1062,9 @@ fn extended_attributes_match(input: &Input<'_>, actual: &Snapshot) -> io::Result
     if actual.extended_attributes_error.is_some() {
         return Err(invalid("native extended-attribute query failed"));
     }
-    let observed = actual.extended_attributes.as_ref()
+    let observed = actual
+        .extended_attributes
+        .as_ref()
         .ok_or_else(|| invalid("native extended-attribute observation missing"))?;
     observed.validate().map_err(io::Error::other)?;
     Ok(expected.equivalent(observed))
@@ -1161,8 +1163,9 @@ fn validate_existing_profile(
     let mut identities = BTreeMap::new();
     let mut unique = BTreeSet::new();
     for (i, o) in input.iter().zip(&report.objects) {
-        if !before_restore && (!extended_attributes_match(i, &o.before)?
-            || !extended_attributes_match(i, &o.after)?)
+        if !before_restore
+            && (!extended_attributes_match(i, &o.before)?
+                || !extended_attributes_match(i, &o.after)?)
         {
             return Err(invalid("existing shadow extended attributes differ"));
         }
@@ -1685,7 +1688,9 @@ fn observe_post_mount_indexer_cache(
         return Err(invalid("post-mount indexer cache GUID contents differ"));
     }
     let after = snapshot(&file);
-    if before != after || repeat_snapshot(&parent, &parent_observation.after) != parent_observation.after {
+    if before != after
+        || repeat_snapshot(&parent, &parent_observation.after) != parent_observation.after
+    {
         return Err(invalid(
             "post-mount indexer cache or parent changed during observation",
         ));

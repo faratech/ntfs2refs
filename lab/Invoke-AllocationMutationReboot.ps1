@@ -90,7 +90,7 @@ $verify={param($Records,$Manifest,$Tool,$ToolPin,$ResultPin,$FinalPin,$ExpectedP
  }
  $ok=0;$bad=@();for($i=0;$i-lt$files.Count;$i++){$o=$files[$i];$p=$paths[$i];if(-not(Test-Path -LiteralPath $p)){$bad+="missing $p";continue};if($digests.Count-eq$files.Count-and$digests[$i]-ceq$o.sha256-and(Get-Item -LiteralPath $p).Length-eq$o.length){$ok++}else{$bad+="differs $p"}}
  $mut=$null;if($Manifest){$m=$Manifest|ConvertFrom-Json;$mok=0;foreach($f in $m.files){$p=$f.path;if((Test-Path -LiteralPath $p)-and(Get-FileHash -LiteralPath $p).Hash.ToLowerInvariant()-ceq$f.sha256){$mok++}else{$bad+="mutation differs $p"}};$deletedAbsent=-not(Test-Path -LiteralPath $m.deleted);$entries=@(Get-ChildItem -LiteralPath $m.entries_dir -File).Count;$mut=@{files_expected=@($m.files).Count;files_matching=$mok;deleted_absent=$deletedAbsent;entries_expected=$m.entries;entries_present=$entries}}
- if($disk.Guid-ne'1b191872-c372-41ee-a416-e18863996f54'-or$disk.IsBoot-or$disk.IsSystem){throw 'Converted source identity differs.'}
+ if([guid]$disk.Guid-ne[guid]'1b191872-c372-41ee-a416-e18863996f54'-or$disk.IsBoot-or$disk.IsSystem){throw 'Converted source identity differs.'}
  @{filesystem=$vol.FileSystem;cluster=$vol.AllocationUnitSize;label=$vol.FileSystemLabel;disk1_online=(-not $disk.IsOffline);original_user_files=$files.Count;original_user_files_matching=$ok;expected_tree_sha256=$ExpectedPin;resumed_conversion=$resumed;digest_batches=$batches;digest_batch_max_files=64;digest_command_max_utf16=20000;mutation=$mut;problems=$bad;utc=[DateTime]::UtcNow.ToString('o')}}
 try{
  # Stage the read-only content-digest tool; its pin is saved with the results.

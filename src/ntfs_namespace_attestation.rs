@@ -226,7 +226,7 @@ fn check_directory_view(
 }
 pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation> {
     ensure!(
-        matches!(native.schema_version, 5..=9),
+        matches!(native.schema_version, 5..=10),
         "native namespace evidence profile absent"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;

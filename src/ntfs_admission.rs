@@ -663,6 +663,11 @@ pub(crate) fn user_paths(
 /// Recognition only identifies the replacement obligation; it does not prove
 /// clean state, permit dropping allocations, or authorize replacement.
 pub fn internal_role(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<String> {
+    // Recognized NTFS internals are replaced, not recreated as user objects.
+    // Their names/roles cannot authorize dropping otherwise valid EA metadata.
+    if !crate::ntfs_extended_attributes::file_set(f).ok()?.is_empty() {
+        return None;
+    }
     if f.base_file_reference != 0 || f.metadata_role_issue.is_some() {
         return None;
     }
@@ -757,6 +762,7 @@ fn user_issues_profile(
     } else {
         path(raw, f).is_some() && f.hard_link_count == 1
     };
+    let ea_supported = ordinary && crate::ntfs_extended_attributes::file_set(f).is_ok();
     if !names_supported || f.names.iter().any(|n| n.namespace == 2) {
         issues
             .push("names, depth, short-name aliases or directory links exceed the profile".into());
@@ -773,12 +779,14 @@ fn user_issues_profile(
                 && matches!(a.type_code, 0x90 | 0xa0 | 0xb0)
                 && ntfs_namespace::is_i30(&a.name_utf16);
             let root_txf = f.record_number == 5 && f.is_directory && recognized_root_txf(a);
+            let ea = ea_supported && matches!(a.type_code, 0xd0 | 0xe0)
+                && a.name_utf16.is_empty();
             let sparse_data = ordinary
                 && data
                 && !a.resident
                 && a.flags == 0x8000
                 && matches!(a.compression_unit, 0 | 4);
-            !(plain || data || index || root_txf)
+            !(plain || data || index || root_txf || ea)
                 || ((a.flags != 0 || a.compression_unit != 0) && !sparse_data)
                 || a.lowest_vcn != 0
         })
@@ -1303,7 +1311,7 @@ pub(crate) fn bind_large_native_profile(
     ensure!(
         assessment.profile == resources.ordinary_admission_profile()
             && assessment.source_inspection_sha256 == inspection
-            && matches!(native.schema_version, 8 | 9)
+            && native.schema_version == 10
             && native.request.schema_version == 3
             && native.request.resource_profile == resources.native_profile()
             && native.request.source_inspection_sha256 == inspection

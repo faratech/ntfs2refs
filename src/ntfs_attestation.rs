@@ -280,6 +280,16 @@ pub(crate) fn check_non_security_snapshot(
     serial: u64,
     s: &Snapshot,
 ) -> Result<[u64; 4]> {
+    if file.extended_attributes.is_some()
+        || s.extended_attributes.is_some()
+        || s.extended_attributes_error.is_some()
+    {
+        let expected = crate::ntfs_extended_attributes::file_set(file)?;
+        ensure!(s.extended_attributes_error.is_none(), "native EA query failed");
+        let observed = s.extended_attributes.as_ref().context("native EA set missing")?;
+        observed.validate()?;
+        ensure!(expected.equivalent(observed), "raw/native EA semantics differ");
+    }
     ensure!(s.queries.len() == 4, "unexpected native query count");
     let id = buffer(s, 18, 24)?;
     ensure!(
@@ -342,7 +352,7 @@ pub fn compare(
     }
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2..=9) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=10) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;

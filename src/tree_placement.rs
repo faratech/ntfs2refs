@@ -646,6 +646,7 @@ mod tests {
                     attributes: 32,
                     security: vec![],
                     api_security: None,
+                    extended_attributes: None,
                     source_offset: Some(4096),
                     source_extents: vec![],
                     named_streams: vec![],

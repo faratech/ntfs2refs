@@ -49,6 +49,7 @@ pub mod lab_tree_expectation;
 #[cfg(windows)]
 pub mod lab_tree_reconstruct;
 pub mod ntfs_admission;
+pub mod ntfs_extended_attributes;
 pub mod ntfs_allocation;
 pub mod ntfs_attestation;
 pub mod ntfs_attribute_list;

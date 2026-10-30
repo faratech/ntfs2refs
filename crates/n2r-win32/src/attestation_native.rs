@@ -219,7 +219,20 @@ pub(crate) fn snapshot(file: &File) -> Snapshot {
         security,
         security_error,
         kernel_security: Some(kernel_security),
+        extended_attributes: None,
+        extended_attributes_error: None,
     }
+}
+
+/// File/directory metadata handles only. EA enumeration belongs to the file
+/// identity and must not be repeated on named stream payload handles.
+pub(crate) fn snapshot_with_ea(file: &File) -> Snapshot {
+    let mut observation = snapshot(file);
+    match crate::extended_attributes_native::capture(file) {
+        Ok(set) => observation.extended_attributes = Some(set),
+        Err(error) => observation.extended_attributes_error = Some(error.to_string()),
+    }
+    observation
 }
 
 pub(crate) struct Privileges {
@@ -421,13 +434,13 @@ fn collect_file_metadata_with_passes(
             },
         };
         // SAFETY: descriptor is initialized, valid volume hint remains open.
-        // READ_CONTROL | FILE_READ_ATTRIBUTES | ACCESS_SYSTEM_SECURITY;
+        // READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_EA | ACCESS_SYSTEM_SECURITY;
         // BACKUP_SEMANTICS | OPEN_REPARSE_POINT avoids following reparse targets.
         let handle = unsafe {
             OpenFileById(
                 raw(&volume),
                 &descriptor,
-                0x01020080,
+                0x01020088,
                 7,
                 ptr::null(),
                 0x02200000,
@@ -446,7 +459,7 @@ fn collect_file_metadata_with_passes(
         } else {
             // SAFETY: transfer the newly acquired unique file-handle ownership.
             let file = unsafe { File::from_raw_handle(handle) };
-            obs.before = Some(snapshot(&file));
+            obs.before = Some(snapshot_with_ea(&file));
             let (capture, hashes) = crate::stream_native::capture(
                 &file,
                 request,
@@ -478,10 +491,13 @@ fn collect_file_metadata_with_passes(
                 obs.streams_after = Some(capture);
                 logical.after = hashes;
             }
-            obs.after = Some(snapshot(&file));
+            obs.after = Some(snapshot_with_ea(&file));
             for s in [&obs.before, &obs.after].into_iter().flatten() {
                 security_bytes +=
                     s.security.len() + s.kernel_security.as_ref().map_or(0, |q| q.bytes.len());
+                stream_bytes = stream_bytes
+                    .checked_add(s.extended_attribute_bytes()?)
+                    .ok_or_else(|| invalid("native EA evidence budget overflow"))?;
             }
             if security_bytes > limits.security_bytes {
                 return Err(invalid("native descriptor budget exhausted"));
@@ -525,7 +541,7 @@ fn collect_file_metadata_with_passes(
     let after = route(&volume, &disk, request)?;
     let mut report = Report {
         schema_version: if request.resource_profile.is_some() {
-            9
+            10
         } else {
             7
         },

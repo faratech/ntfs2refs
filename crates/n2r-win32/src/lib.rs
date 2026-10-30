@@ -15,6 +15,9 @@ pub mod bitmap_window_native;
 pub mod content_digest;
 pub mod discovery;
 pub mod drive_inventory;
+pub mod extended_attributes;
+#[cfg(windows)]
+pub mod extended_attributes_native;
 #[cfg(windows)]
 pub mod extent_observation;
 #[cfg(windows)]

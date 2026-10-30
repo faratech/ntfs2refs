@@ -103,6 +103,15 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             }
         }
     }
+    if input.iter().any(|item| item.extended_attributes.is_some()) {
+        hash.update(b"n2r-private-extended-attributes-v1");
+        for item in input {
+            hash.update([u8::from(item.extended_attributes.is_some())]);
+            if let Some(set) = item.extended_attributes {
+                bytes(&mut hash, &serde_json::to_vec(set).expect("EA set serialization"));
+            }
+        }
+    }
     hash.finalize().into()
 }
 

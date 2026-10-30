@@ -1514,6 +1514,7 @@ fn verify_converted_tree_scoped(
             attributes: object.attributes,
             security: &object.security,
             expected_api_security: object.api_security.as_deref(),
+            extended_attributes: object.extended_attributes.as_ref(),
             payload: &[],
             expected_length: if object.directory {
                 None

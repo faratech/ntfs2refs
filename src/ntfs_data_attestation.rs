@@ -135,7 +135,7 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         crate::ntfs_inspect::validate_record_coverage(raw)?;
     }
     ensure!(
-        matches!(native.schema_version, 4..=9),
+        matches!(native.schema_version, 4..=10),
         "native logical-data profile absent"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;

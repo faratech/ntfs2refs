@@ -368,6 +368,10 @@ pub struct FileInventory {
     pub standard_information: Option<StandardInformation>,
     pub streams: Vec<StreamInventory>,
     pub attributes: Vec<AttributeInventory>,
+    /// Raw paired EA bytes and their validated semantic set. Legacy reports
+    /// without this field can establish absence only when no EA attrs exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extended_attributes: Option<crate::ntfs_extended_attributes::Inventory>,
 }
 
 /// MFT ancestry evidence only. Directory indexes, allocation ownership and
@@ -1020,6 +1024,46 @@ fn read_small_attribute<R: Read + Seek>(
     Ok(value)
 }
 
+fn capture_extended_attributes<R: Read + Seek>(
+    reader: &mut R,
+    record: &Record,
+    geometry: &NtfsGeometry,
+) -> Result<crate::ntfs_extended_attributes::Inventory> {
+    use crate::ntfs_extended_attributes::{Inventory, MAX_DATA_BYTES, storage_attributes};
+    let Some((information, data)) =
+        storage_attributes(record.attributes.iter().map(|attribute| &attribute.report))?
+    else {
+        return Ok(Inventory::empty());
+    };
+    ensure!(
+        record.base == 0
+            && !record
+                .attributes
+                .iter()
+                .any(|attribute| attribute.report.type_code == 0x20),
+        "EA attribute-list assembly is unsupported"
+    );
+    // The generic replay validator has no geometry. Validate every original
+    // physical run here as well, including allocation beyond the logical EOF.
+    if !data.resident {
+        validate_stream_mapping(data, geometry)
+            .context("validating complete EA storage mapping")?;
+    }
+    let information_attribute = record
+        .attributes
+        .iter()
+        .find(|attribute| attribute.report.type_code == 0xd0)
+        .context("EA_INFORMATION disappeared during capture")?;
+    let data_attribute = record
+        .attributes
+        .iter()
+        .find(|attribute| attribute.report.type_code == 0xe0)
+        .context("EA disappeared during capture")?;
+    let information_bytes = read_small_attribute(reader, information_attribute, geometry, 8)?;
+    let data_bytes = read_small_attribute(reader, data_attribute, geometry, MAX_DATA_BYTES)?;
+    Inventory::capture(information, data, &information_bytes, &data_bytes)
+}
+
 /// Reuse the checked parser for additional read-only source-state checks.
 pub(crate) fn validate_file_record(bytes: &[u8], geometry: &NtfsGeometry) -> Result<()> {
     parse_record(bytes.to_vec(), geometry)?;
@@ -1434,6 +1478,9 @@ fn file_heap_bytes(file: &FileInventory) -> Result<u64> {
         if let Some(data) = &attribute.resident_metadata_hex {
             counter.charge(data.capacity() as u64)?;
         }
+    }
+    if let Some(attributes) = &file.extended_attributes {
+        counter.charge(attributes.heap_bytes()?)?;
     }
     Ok(counter.used)
 }
@@ -3386,6 +3433,10 @@ pub fn inspect_with_limits<R: Read + Seek>(
             standard_information: None,
             streams: Vec::new(),
             attributes: Vec::new(),
+            extended_attributes: Some(
+                capture_extended_attributes(reader, &record, &geometry)
+                    .with_context(|| format!("capturing EAs for MFT record {number}"))?,
+            ),
         };
         if record.base != 0 {
             blocker(
@@ -3577,13 +3628,10 @@ pub fn inspect_with_limits<R: Read + Seek>(
                     "Raw reparse metadata is inventoried but tag-specific preservation is unvalidated",
                     Some(number),
                 )?,
-                0xd0 | 0xe0 => blocker(
-                    &mut report,
-                    &mut budget,
-                    "extended_attributes_unverified",
-                    "Extended attributes are inventoried but target preservation is unvalidated",
-                    Some(number),
-                )?,
+                // The unique paired EA attrs were fully read and validated
+                // before consuming this record. Keep both original attrs and
+                // their complete allocations in the ownership inventory.
+                0xd0 | 0xe0 => {}
                 0x10..=0xb0 if a.type_code % 0x10 == 0 => {}
                 _ => blocker(
                     &mut report,

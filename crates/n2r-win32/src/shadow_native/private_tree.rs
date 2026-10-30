@@ -1102,6 +1102,7 @@ fn allocate_checked(
                 attributes: 16,
                 security: &sd,
                 expected_api_security: None,
+                extended_attributes: None,
                 payload: &[],
                 expected_length: None,
                 expected_sha256: None,

@@ -13,7 +13,7 @@ mod unwritten;
 pub mod valid_data_probe;
 use crate::{
     attestation::{PrivilegeState, Snapshot},
-    attestation_native::{Privileges, snapshot},
+    attestation_native::{Privileges, snapshot, snapshot_with_ea},
     general_layout::{GeneralDiskBinding, GeneralSourceShadowBinding},
     layout::{self, DiskBinding, invalid},
     namespace_layout,
@@ -68,6 +68,7 @@ pub struct Input<'a> {
     pub attributes: u32,
     pub security: &'a [u8],
     pub expected_api_security: Option<&'a [u8]>,
+    pub extended_attributes: Option<&'a crate::extended_attributes::Set>,
     pub payload: &'a [u8],
     /// Hash-only expectations are accepted for ordinary shadow streaming and
     /// verification. The source reader supplies bytes during construction.
@@ -1052,6 +1053,34 @@ fn security_matches(
         &actual.security,
     )? && same(input.security, &kernel.bytes)?)
 }
+fn extended_attributes_match(input: &Input<'_>, actual: &Snapshot) -> io::Result<bool> {
+    let Some(expected) = input.extended_attributes else {
+        // Replay of a historical request conveys no EA preservation claim.
+        return Ok(true);
+    };
+    expected.validate().map_err(io::Error::other)?;
+    if actual.extended_attributes_error.is_some() {
+        return Err(invalid("native extended-attribute query failed"));
+    }
+    let observed = actual.extended_attributes.as_ref()
+        .ok_or_else(|| invalid("native extended-attribute observation missing"))?;
+    observed.validate().map_err(io::Error::other)?;
+    Ok(expected.equivalent(observed))
+}
+fn metadata_snapshot(file: &File, input: &Input<'_>) -> Snapshot {
+    if input.extended_attributes.is_some() {
+        snapshot_with_ea(file)
+    } else {
+        snapshot(file)
+    }
+}
+fn repeat_snapshot(file: &File, previous: &Snapshot) -> Snapshot {
+    if previous.extended_attributes.is_some() || previous.extended_attributes_error.is_some() {
+        snapshot_with_ea(file)
+    } else {
+        snapshot(file)
+    }
+}
 fn query_bytes(s: &Snapshot, class: i32, length: usize) -> io::Result<&[u8]> {
     let q = s
         .queries
@@ -1132,6 +1161,11 @@ fn validate_existing_profile(
     let mut identities = BTreeMap::new();
     let mut unique = BTreeSet::new();
     for (i, o) in input.iter().zip(&report.objects) {
+        if !before_restore && (!extended_attributes_match(i, &o.before)?
+            || !extended_attributes_match(i, &o.after)?)
+        {
+            return Err(invalid("existing shadow extended attributes differ"));
+        }
         let expected_owned = basic_bytes(i);
         if i.components.is_empty()
             && root_basic_after_mutation.is_some_and(|after| {
@@ -1377,13 +1411,13 @@ fn repair_security_profile(
             i.directory,
             true,
         )?;
-        let before = snapshot(&h);
+        let before = metadata_snapshot(&h, i);
         if before != o.before {
             return Err(invalid("existing shadow changed after repair preflight"));
         }
         if !security_matches(i, &before, &same)? {
             let backup = backup_security(&h, i.security)?;
-            let after = snapshot(&h);
+            let after = metadata_snapshot(&h, i);
             if !security_matches(i, &after, &same)? {
                 return Err(invalid("restored shadow descriptor does not exactly match"));
             }
@@ -1493,7 +1527,7 @@ fn open(path: &str, directory: bool, write: bool) -> io::Result<File> {
     let f = File::options()
         // Metadata handles need WRITE_DAC/WRITE_OWNER, never DELETE. Retaining
         // the root handle must not prevent its later finalization/observation.
-        .access_mode(if write { 0x011e01ff } else { 0x01020181 })
+        .access_mode(if write { 0x011e01ff } else { 0x01020189 })
         .share_mode(3)
         .custom_flags(0x02200000)
         .open(path)?;
@@ -1515,8 +1549,8 @@ fn open_protected_readonly(path: &str, directory: bool) -> io::Result<File> {
     Ok(f)
 }
 
-// ACCESS_SYSTEM_SECURITY | READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_DATA.
-const PROTECTED_READ_ACCESS: u32 = 0x01020081;
+// ACCESS_SYSTEM_SECURITY | READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_READ_EA | FILE_READ_DATA.
+const PROTECTED_READ_ACCESS: u32 = 0x01020089;
 
 fn validate_open_type(f: &File, directory: bool) -> io::Result<()> {
     let attrs = info(&f, 0, 40)?;
@@ -1596,7 +1630,7 @@ fn observe_post_mount_indexer_cache(
     }
     let entry = names[0];
     let parent = open(&format!("{root}{system}"), true, false)?;
-    if snapshot(&parent) != parent_observation.after {
+    if repeat_snapshot(&parent, &parent_observation.after) != parent_observation.after {
         return Err(invalid(
             "system directory changed before post-mount cache observation",
         ));
@@ -1651,7 +1685,7 @@ fn observe_post_mount_indexer_cache(
         return Err(invalid("post-mount indexer cache GUID contents differ"));
     }
     let after = snapshot(&file);
-    if before != after || snapshot(&parent) != parent_observation.after {
+    if before != after || repeat_snapshot(&parent, &parent_observation.after) != parent_observation.after {
         return Err(invalid(
             "post-mount indexer cache or parent changed during observation",
         ));
@@ -2322,7 +2356,7 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
             (&stream.before, &stream.after)
         };
         let mut file = open_protected_readonly(&path, false)?;
-        if snapshot(&file) != *before_stream {
+        if repeat_snapshot(&file, before_stream) != *before_stream {
             return Err(invalid(
                 "composite residual identity or metadata changed before read",
             ));
@@ -2332,7 +2366,7 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
         file.read_exact(&mut buffer[..count])?;
         if file.read(&mut buffer[..1])? != 0
             || hex::encode(Sha256::digest(&buffer[..count])) != expected.sha256
-            || snapshot(&file) != *after_stream
+            || repeat_snapshot(&file, after_stream) != *after_stream
         {
             return Err(invalid(
                 "composite initialized suffix contents, EOF or metadata differ",
@@ -3502,7 +3536,7 @@ fn run_role_profile(
         } else {
             open(&path, i.directory, false)?
         };
-        let before = snapshot(&h);
+        let before = metadata_snapshot(&h, i);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
         let mut retrieval_page_proof = None;
@@ -3633,7 +3667,7 @@ fn run_role_profile(
                     vec![],
                 )
             };
-        let after = snapshot(&h);
+        let after = metadata_snapshot(&h, i);
         if before != after {
             return Err(invalid("shadow metadata changed during observation"));
         }
@@ -3849,6 +3883,7 @@ mod tests {
             attributes: 0x26,
             security: &[],
             expected_api_security: None,
+            extended_attributes: None,
             payload: &[],
             expected_length: Some(20480),
             expected_sha256: Some(digest),
@@ -3882,6 +3917,7 @@ mod tests {
                 attributes: 0x20,
                 security: &[],
                 expected_api_security: None,
+                extended_attributes: None,
                 payload: &[],
                 expected_length: Some(length),
                 expected_sha256: None,
@@ -3995,6 +4031,7 @@ mod tests {
             attributes: 32,
             security: &[1],
             expected_api_security: Some(&[2]),
+            extended_attributes: None,
             payload: &[],
             expected_length: None,
             expected_sha256: None,
@@ -4004,6 +4041,8 @@ mod tests {
             sparse: None,
         };
         let mut actual = Snapshot {
+            extended_attributes: None,
+            extended_attributes_error: None,
             queries: vec![],
             security: vec![2],
             security_error: None,

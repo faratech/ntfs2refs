@@ -117,8 +117,8 @@ pub(super) fn observe(
         } else {
             open(&name, false, false)?
         };
-        let before = snapshot(&file);
-        let after = snapshot(&file);
+        let before = metadata_snapshot(&file, item);
+        let after = metadata_snapshot(&file, item);
         let same_file_id = query_bytes(&before, 18, 24)? == canonical_id
             && query_bytes(&after, 18, 24)? == canonical_id;
         let link_count_matches = layout::u32_at(query_bytes(&before, 1, 24)?, 16)? == expected

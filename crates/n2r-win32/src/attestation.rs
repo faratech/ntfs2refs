@@ -229,6 +229,50 @@ pub struct Snapshot {
     pub security_error: Option<i32>,
     #[serde(default)]
     pub kernel_security: Option<SecurityQuery>,
+    /// Complete file-level EA set. Some(empty) is an observed absence; None
+    /// means the caller did not query EAs or the query failed. Named stream
+    /// snapshots deliberately omit this file-level observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extended_attributes: Option<crate::extended_attributes::Set>,
+    /// Native status or structural failure is explicit and never an empty set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extended_attributes_error: Option<String>,
+}
+
+impl Snapshot {
+    /// Diagnostic consistency only; this does not authenticate saved reports
+    /// or turn missing legacy evidence into a successful EA observation.
+    pub fn validate_extended_attributes(&self, required: bool) -> io::Result<()> {
+        match (&self.extended_attributes, &self.extended_attributes_error) {
+            (Some(set), None) => set.validate(),
+            (None, Some(error)) if !error.is_empty() && error.len() <= 4096 => Ok(()),
+            (None, None) if !required => Ok(()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native EA observation is missing, contradictory or exceeds its error bound",
+            )),
+        }
+    }
+
+    /// Stable payload accounting; allocation capacities are not reproducible
+    /// after JSON replay and therefore cannot be part of ResourceAudit.
+    pub(crate) fn extended_attribute_bytes(&self) -> io::Result<usize> {
+        self.validate_extended_attributes(false)?;
+        let mut bytes = self
+            .extended_attributes_error
+            .as_ref()
+            .map_or(0, String::len);
+        if let Some(set) = &self.extended_attributes {
+            for entry in &set.entries {
+                bytes = bytes
+                    .checked_add(1)
+                    .and_then(|n| n.checked_add(entry.name.len()))
+                    .and_then(|n| n.checked_add(entry.value.len()))
+                    .ok_or_else(|| io::Error::other("native EA evidence accounting overflow"))?;
+            }
+        }
+        Ok(bytes)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SecurityQuery {
@@ -497,6 +541,10 @@ impl Report {
                 for q in &snapshot.queries {
                     query(&mut out.stream_evidence_bytes, q)?;
                 }
+                add(
+                    &mut out.stream_evidence_bytes,
+                    snapshot.extended_attribute_bytes()?,
+                )?;
             }
             for capture in file.streams_before.iter().chain(file.streams_after.iter()) {
                 query(&mut out.stream_evidence_bytes, &capture.enumeration)?;
@@ -645,6 +693,11 @@ impl Report {
                 "native report resource profile or accounting differs",
             )
         };
+        for file in &self.files {
+            for snapshot in file.before.iter().chain(file.after.iter()) {
+                snapshot.validate_extended_attributes(self.schema_version == 10)?;
+            }
+        }
         let Some(profile) = self.request.resource_profile else {
             return if (2..=7).contains(&self.schema_version)
                 && self.resources.is_none()
@@ -665,7 +718,7 @@ impl Report {
         let data = self.logical_data.as_ref().ok_or_else(invalid)?;
         let namespace = self.namespace.as_ref().ok_or_else(invalid)?;
         let allocation = self.allocation.as_ref().ok_or_else(invalid)?;
-        if self.schema_version == 9 {
+        if matches!(self.schema_version, 9 | 10) {
             allocation
                 .streamed_before
                 .as_ref()
@@ -745,7 +798,7 @@ impl Report {
         }
         let streaming_shape = match self.schema_version {
             8 => allocation.streamed_before.is_none() && allocation.streamed_after.is_none(),
-            9 => {
+            9 | 10 => {
                 allocation.streamed_before.is_some()
                     && allocation.streamed_after.is_some()
                     && allocation.bitmap_before_continuation.is_empty()

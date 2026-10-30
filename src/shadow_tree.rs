@@ -67,6 +67,10 @@ pub struct Object {
     /// descriptor. Never written over the stored/kernel descriptor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_security: Option<Vec<u8>>,
+    /// Complete file-level EAs, independently bound to native source queries.
+    /// Missing in historical requests; never confused with an observed empty set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extended_attributes: Option<n2r_win32::extended_attributes::Set>,
     pub source_offset: Option<u64>,
     /// Fragmented, aligned NTFS payload runs. Mutually exclusive with the
     /// single-run source_offset; absent in older frozen tree requests.
@@ -218,6 +222,9 @@ impl ExpectedTree {
             if let Some(api) = &object.api_security {
                 ensure!(api.len() <= 65536, "API descriptor exceeds bound");
                 ntfs_security::parse_descriptor(api)?;
+            }
+            if let Some(eas) = &object.extended_attributes {
+                eas.validate()?;
             }
             let path_key = destination_key(&object.path, resources);
             ensure!(
@@ -657,6 +664,7 @@ fn derive_profile(
             )?,
             security: hex::decode(&descriptor.relative_hex)?,
             api_security: None,
+            extended_attributes: Some(crate::ntfs_extended_attributes::file_set(f)?),
             source_offset,
             source_extents,
             length,

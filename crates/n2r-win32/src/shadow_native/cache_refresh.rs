@@ -225,6 +225,23 @@ pub(super) fn complete_owned_metadata(
             }
         }
     }
+    // Only actual constructor-owned canonical handles reach this operation.
+    // EAs belong to the file identity and are set once, not per DATA stream or
+    // hard-link name. Native mutation precedes final timestamp restoration.
+    let mut ea_objects = 0usize;
+    let mut ea_entries = 0usize;
+    for &(index, item) in &ordered {
+        if let Some(expected) = item.extended_attributes {
+            let handle = &handles[&index];
+            if info(handle, 18, 24)? != identities[&index] {
+                return Err(invalid("owned identity changed before EA restoration"));
+            }
+            crate::extended_attributes_native::restore_fresh_owned(handle, expected)
+                .map_err(io::Error::other)?;
+            ea_objects += 1;
+            ea_entries += expected.entries.len();
+        }
+    }
     // Security propagation and all children finish before basic metadata.
     // Reverse depth order finalizes root last, using the same held handles.
     for &(index, item) in ordered.iter().rev() {
@@ -241,10 +258,11 @@ pub(super) fn complete_owned_metadata(
     namespace()?;
     for (index, item) in input.iter().enumerate() {
         let handle = &handles[&index];
-        let actual = snapshot(handle);
+        let actual = metadata_snapshot(handle, item);
         if query_bytes(&actual, 18, 24)? != identities[&index]
             || !basic_matches(item, query_bytes(&actual, 0, 40)?)
             || !security_matches(item, &actual, &same_security)?
+            || !extended_attributes_match(item, &actual)?
         {
             return Err(invalid("final owned source metadata readback differs"));
         }
@@ -300,6 +318,7 @@ pub(super) fn complete_owned_metadata(
         serde_json::json!({"schema_version":1,"kind":"owning-private-tree-metadata-completion",
         "metadata_objects_updated":input.len(),"metadata_objects_verified":input.len(),
         "metadata_readback_verified":true,"dacl_protection_states_restored":protection_updates,
+        "ea_objects_verified":ea_objects,"ea_entries_restored":ea_entries,
         "source_payload_writes":0,"user_payload_bytes_read":0,"user_payload_bytes_written":0,
         "source_before":source_before,"events":events,"owner_consumed":true,
         "disposable_maintenance_scope":true,"source_prefix_contents_verified":false,
@@ -612,11 +631,12 @@ pub fn run(
             item.directory,
             false,
         )?;
-        let actual = snapshot(&handle);
+        let actual = metadata_snapshot(&handle, item);
         if Some(query_bytes(&actual, 18, 24)?[8..24].to_vec()).as_ref()
             != identities.get(item.components)
             || !basic_matches(item, query_bytes(&actual, 0, 40)?)
             || !security_matches(item, &actual, &same_security)?
+            || !extended_attributes_match(item, &actual)?
         {
             return Err(invalid(
                 "final shadow metadata readback differs from source",

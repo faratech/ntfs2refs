@@ -230,6 +230,7 @@ impl Expectation {
                 attributes: o.attributes,
                 security: &security[i],
                 expected_api_security: None,
+                extended_attributes: None,
                 payload: &payload[i],
                 expected_length: if hash_only && !o.directory {
                     o.logical_length

@@ -87,6 +87,12 @@ fn control(volume: &File, code: u32, input: &[u8], capacity: usize) -> io::Resul
     }
     Ok(query.bytes)
 }
+
+/// Bounded read-only geometry for fixture clients. Native FFI stays inside
+/// this Windows I/O crate; this query neither locks nor changes the volume.
+pub fn read_ntfs_volume_data(volume: &File) -> io::Result<Vec<u8>> {
+    control(volume, 0x0009_0064, &[], 128)
+}
 fn verify_volume(volume: &File, expected: Option<(u64, u64)>) -> io::Result<(u64, u64)> {
     let extents = control(volume, 0x0056_0000, &[], 32)?;
     let ntfs = control(volume, 0x0009_0064, &[], 128)?;

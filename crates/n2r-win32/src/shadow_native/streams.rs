@@ -114,6 +114,7 @@ pub(super) fn view<'a>(input: &'a [Input<'_>], key: &StreamKey) -> io::Result<In
         attributes: object.attributes,
         security: object.security,
         expected_api_security: object.expected_api_security,
+        extended_attributes: None,
         payload: if named.is_some() { &[] } else { object.payload },
         expected_length: named.map(|s| s.expected_length).or(object.expected_length),
         expected_sha256: named.map(|s| s.expected_sha256).or(object.expected_sha256),

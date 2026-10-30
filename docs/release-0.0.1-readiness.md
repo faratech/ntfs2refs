@@ -1,5 +1,27 @@
 # 0.0.1 release readiness — 2026-10-29
 
+## Update — 2026-10-30
+
+The reference-aware native-shadow build at `156241e` has now converted the
+independently populated mixed fixture: 808 user files, 120 directories and
+9.9 GB of data. Native exit was zero, final handoff closed, and native
+verification accepted 933 objects and 811 complete file hashes. The outer
+wrapper failed afterward on its obsolete 4 MiB JSON limit; the complete
+22.9 MB report was preserved and accepted by the bounded archive observer.
+See [the recorded result](../evidence/payload-reference-native-mixed-20261030.json).
+
+The journal used 13.71 GB and the packed backing 1.18 GB. This clears the
+previous mixed-tree storage refusal, but the run took about 25 minutes, so
+it does not establish superior runtime performance. Exact-build mutation,
+reboot, and independent recovery remain outstanding. Existing recovery
+harnesses need mixed-fixture counts and capacity settings. A copied-payload
+interruption would begin at write 6,135, beyond this build's 4,096-write fault
+hook limit; that stronger test requires a new pinned build. A completed HND
+journal must never be used to roll back the operational ReFS volume.
+
+The sections below preserve earlier milestone observations and their original
+qualification scope; their old "not wired" statements are historical.
+
 Status: **not ready as "stable" or "maximum performance".** No 0.0.1 tag, version
 bump or release was created. `Cargo.toml` is `0.1.0`; the existing tags are
 `alpha-native-shadow-20261026` and `alpha-native-shadow-20261029-fb5548`.

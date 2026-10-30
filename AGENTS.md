@@ -63,14 +63,30 @@ journal. Capture verifies the physical origin and admits only preceding
 changed ranges; all old bytes and required zero writes remain preserved.
 The three-format ordinary-file integration passes, including references across
 old records, overwritten origins, resume/rollback and false-copy refusal.
-See evidence/payload-reference-integration-20261030.json. This candidate has
-no native qualification yet; it is not the staged N2RSEL02-H design.
+See evidence/payload-reference-integration-20261030.json. It is not the staged
+N2RSEL02-H design. Source156241e/mainfe69c5a1b2dc728e6ee63e19599a56590c984232b37fd62461913a717ba64dba
+completed mixed run2586aba6ade144559d7e24d86c4792ea: native0, HND,933 objects/
+811 complete hashes,808 user files/9,885,781,381 B, label/F preserved. Runtime
+1511.149s; no speed improvement is claimed. Journal13,713,024,832 B plus backing
+1,180,688,384 B fits the16GiB journal cap. Copy references save5,659,435,008 B
+of new payload; in-place payload from the live proof is3,084,886,016 B.
+The outer wrapper exited1 only afterward because its old4MiB JSON limit
+rejected the22,904,392-byte finalization record. All56 metadata artifacts were
+copied and hash-checked; a bounded archived observer independently accepts
+933/811. See evidence/payload-reference-native-mixed-20261030.json.
+No mutation/reboot or independent recovery of this build has run yet.
 
-VM2401593c-4b30-472e-9b6d-c9534cbaa599 is OFF/RAM0. Its current parent is
+VM2401593c-4b30-472e-9b6d-c9534cbaa599 is Running/4GiB. Its current parent is
 mixed NTFS checkpoint6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e, created for the
-source-reference run. Its independently seeded tree has808 files/120 directories,
+source-reference run; the current branch now holds the completed ReFS. Its independently seeded tree has808 files/120 directories,
 9,885,781,381 bytes; manifest is under mixed-fixture-20261029-3dccf8e8fa38487db6731284a12bceb9.
-The two older52d37819 and5f30f4a1 checkpoints also remain. Any new native run needs a fresh restore of the intended
+The two older52d37819 and5f30f4a1 checkpoints also remain. Do not restore this
+branch while original run artifacts are still being preserved. The complete
+metadata archive is under copy-reference-20261030/closed-run-2586aba6; its
+inventory records retained original bulk paths. The shadow VHDX is still
+attached and cannot be exported through an ordinary read; no bypass or detach
+has been attempted. No new test/conversion worker is active.
+Any new native run needs a fresh restore of the intended
 checkpoint, verified from a new PowerShell process. HEAD da13331 converted the
 52GiB fixture in 2,813.3s vs the frozen alpha's 3,351.7s, still reading at
 least 816.6GB; see evidence/head-drive-measurement-20261029.json and

@@ -14,10 +14,17 @@ after a controlled one-write interruption and reboot. See the
 [rollback](evidence/optimized-drive-alpha-rollback-20261029.json) observations.
 Other interruption points and physical power loss remain unqualified.
 
-The current converter still performs repeated whole-volume scans. Work toward
-metadata-proportional conversion now includes a bounded authenticated ReFS
-[metadata and extent footprint reader](docs/refs-metadata-footprint.md); it
-does not yet enable selective conversion or establish large-volume performance.
+The current default uses allocation-bounded capture and payload retention;
+`--whole-image-verification` selects the earlier whole-image path. Repeated
+allocated-range reads, fixed resource limits and relocation costs remain, so
+this is not yet a metadata-proportional, arbitrary-volume release. See the
+[current performance and compatibility limits](docs/release-0.0.1-readiness.md).
+
+A later build also passed a same-partition sparse-file/ADS conversion and cold
+boot: 12 objects, 8 default-stream hashes, 6 named-stream hashes and 3 sparse
+layouts. The all-hole file remained unallocated. This bounded result has not
+yet passed sparse interruption/recovery or mutation tests; see the
+[pinned evidence](evidence/sparse-native-conversion-20261030.json).
 
 The drive-oriented Windows entry point is now available:
 

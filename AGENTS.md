@@ -27,29 +27,32 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current sparse follow-up supersedes the older VM states below: VM is Off at
-the clean NTFS sparse fixture9c42e1fd, with all27 checkpoints preserved. The
-third attemptd78c2df3 stopped before cutover because ReFS relocated only the
-final partial EOF cluster during truncation. Complete failed state is preserved
-in checkpoint0bf53231-6b6d-4427-b6dd-3c1936c70b06 and metadata in
-.lab/hyperv/streaming-v2-20261027/sparse-clone-refusal-d78c2df3.
-Source2287d82 now verifies that cluster's actual visible bytes before/after EOF,
-requires every full cluster to keep its exact mapping, and still verifies the
-whole sparse allocation/storage-validity layout. Padding I/O outside EOF is
-counted separately. Its native attempt66400017 passed that check, recording
-123 equal visible bytes and3973 bytes of padding I/O, then stopped before
-cutover at the old dense-prefix source-placement rule. Checkpointf4bf5238
-preserves the attempt;42 closed metadata files are in sparse-placement-refusal-66400017.
-The source verifier now permits gaps only inside declared initialized sparse
-islands; alignment, bounds, ordering and full-cluster checks remain. Its focused
-public release build passed. Native1bcee66 then passed placement and stopped at
-the directory-entry attribute comparison. The candidate now expects the exact
-aggregate sparse flag for directory entries when any named/default stream is
-sparse; per-stream flags and all other attributes/identities remain exact.
-Failure8b25611f is preserved in checkpoint289cf0f3 and42 closed metadata files
-under sparse-namespace-refusal-8b25611f. Focused release build passed. No unit
-tests were added or run. Native retry is next; sparse conversion is unqualified.
-The GitHub comparison refresh is committed in0ef8652; it adds no runtime change.
+Current state supersedes all older VM states below: VM is Off/RAM0 at sparse
+ReFS cold-boot checkpointacb5449f-7b5d-461d-ba93-a4ca6320ce99; all29 checkpoints
+remain. The clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
+Source5aeaf40/public61d4cd998a19e8ae825e67fd515c3f4316f6dccc2936fdec97e6d7c3f28fb01b
+completed public H:/partition2 conversionba1480fc/coreb8d43b36 inside the VM:
+native0/HND,12 objects,8 default hashes,6 ADS hashes,3 exact sparse layouts.
+The all-hole16MiB file has zero data allocation; sparse ADS and the default
+islands file have131072 and135168 allocated bytes respectively. The123-byte
+EOF tail may relocate; its contents match and3973 padding bytes are explicitly
+accounted. Full clusters keep strict mappings. See evidence/sparse-native-conversion-20261030.json.
+The original wrapper expected10/6 objects/default hashes and failed AFTER native
+success because two admitted SVI files were also preserved. A separately pinned
+read-only observer6dea523b verified all12/8, all9 old link names/15 ADS views and
+4 sparse paths. Never rerun or replay the completed conversion to fix a wrapper.
+Converted checkpoint496bcf38-53ac-49ab-9551-2d4e24651f32 is preserved separately.
+Cold boot65dff08d passed live hashes, sparse flags/extents/file IDs and old link
+IDs unchanged; it does not claim a new storage-validity query after boot.
+Archive64 closed files: .lab/hyperv/streaming-v2-20261027/sparse-success-ba1480fc.
+Next: same-build sparse interrupted Apply, public Resume and independent
+Rollback, then mutation. lab/Invoke-SparseRecovery.ps1 exists and parses but has
+not run. Its canonical counts derive from the pinned original expectation.
+Keep current binaries/evidence/checkpoints. No unit tests were added or run.
+The earlier EOF, dense-prefix and directory-aggregate sparse flag refusals are
+preserved in0bf53231/f4bf5238/289cf0f3 and their matching sparse-*-refusal folders.
+
+### Earlier development observations (not current VM state)
 
 Sparse integration candidate: SparseLayout now binds allocated islands, exact
 logical holes and source VDL per default/named stream. Native construction uses

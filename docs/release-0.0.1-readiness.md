@@ -166,13 +166,13 @@ above, not a "stable" or "maximum performance" 0.0.1.
 
 The comparison below distinguishes a converter's output from a driver's ability
 to read source metadata. None of these projects establishes full NTFS-to-ReFS
-compatibility. Refreshed against upstream sources and our source `491e891` on
-2026-10-30: our native results cover bounded ordinary files, hard links and file
-ADS, including their recorded recovery cases. Sparse construction is connected
-but has no successful end-to-end conversion result yet; the uncommitted EOF-tail
-fix is not qualification. Reparse points, compressed/encrypted files, arbitrary
+compatibility. Upstream comparison was refreshed on 2026-10-30. Our native
+results cover bounded ordinary files, hard links and file ADS, including their
+recorded recovery cases. Source `5aeaf40` subsequently passed a sparse-file/ADS
+conversion and cold boot; sparse interruption/recovery and mutation remain
+pending. Reparse points, compressed/encrypted files, arbitrary
 security descriptors, short-name aliases and boot conversion remain outside
-that evidence. This research refresh did not run builds, tests or the VM.
+that evidence. The research-only refresh is separate from the later native run.
 
 | Project and pinned source | Actual role and preservation boundary |
 |---|---|
@@ -219,7 +219,7 @@ Current Rust conversion boundaries, confirmed in source:
 | Ordinary unnamed data | Resident/empty files, fragmented plain extents and partial/uninitialized tails have semantic materialization/retention paths; mixed-fixture conversion is recorded separately above. |
 | Hard links and DOS-only aliases | Ordinary hard links now share one canonical payload object plus additional names. The bounded native result below verifies three names per file; hard-link files requiring unsupported attribute-list assembly remain refused. DOS-only aliases remain refused. |
 | ADS and directory streams | Ordinary file ADS now use one canonical file plus per-stream names, mappings, lengths and hashes. Native tests cover five ADS through hard links, including empty, Unicode and 2 MiB data. Directory and System Volume Information ADS remain refused; the existing limit is64 streams per file. |
-| Sparse files and sparse file ADS | Source island/hole/VDL modeling and native dense-carrier construction are connected. Ordinary sparse flag `0x8000` is admitted by the candidate. End-to-end conversion remains unqualified; the pending fix handles ReFS relocating a partial EOF cluster during truncation. A successful primitive is not full conversion support. |
+| Sparse files and sparse file ADS | Source island/hole/VDL modeling and native dense-carrier construction passed bounded conversion and cold boot on `5aeaf40`. This includes an all-hole file, sparse ADS, hard-link alias and partial EOF. Sparse interruption/recovery and mutation are pending; arbitrary sparse layouts are not qualified. |
 | NTFS compression, WOF, EFS | Compression/encryption flags and WOF reparse semantics remain refused. Compressed content needs logical decoding and rewritten extents. EFS needs a separate encryption-preservation path. |
 | Reparse points and Windows EAs | Outside the admitted attribute whitelist; no target preservation claim. |
 | ACLs | Owner/group/present DACL plus observed API/kernel views are represented. Construction requires absent SACL; even a present empty SACL is outside this profile. Missing/null DACL is also outside the construction profile. |
@@ -274,8 +274,18 @@ samples after carrier deletion. Payload writes were64 bytes; metadata and
 scratch-volume overhead are separate. This is a primitive proof, not yet
 sparse NTFS conversion. See [the native sparse-carrier evidence](../evidence/sparse-carrier-native-20261030.json).
 
-Continue in concrete slices: (1) finish sparse EOF handling and its native
-conversion/recovery case; (2) admit complete extension-record/attribute-list
+Source `5aeaf40` then completed public conversion of the sparse fixture with
+12 canonical objects, 8 default and 6 named stream hashes, and 3 exact sparse
+allocation/storage-validity observations. Independent mounted reads matched
+all 4 sparse paths plus the old hard-link/ADS fixture. Cold boot preserved
+contents, sparse flags, extent listings and file IDs. The original wrapper's
+10-object assumption rejected two additional admitted SVI files after native
+success; a corrected read-only observation verified the complete expectation.
+The 16.651-second runtime is only this small fixture. Journal plus packed backing
+used81,408,000 bytes. See [the scoped result](../evidence/sparse-native-conversion-20261030.json).
+
+Continue in concrete slices: (1) complete sparse interruption/recovery and
+mutation; (2) admit complete extension-record/attribute-list
 files, which also expands practical fragmentation, link and stream coverage;
 (3) preserve SACL/null/empty security distinctions and native reparse/EAs;
 (4) materialize compressed/WOF logical content with exact space forecasts;

@@ -40,16 +40,42 @@ current IO. Preparation scratch drops before readback; replay scratch drops
 before the final full target check, preserving phase working-set bounds. No
 read/check/digest/order/flush/marker change. Library/CLI checks, independentreview
 and release builds pass; native qualification pending. No unit tests. See
-docs/journal-buffer-reuse.md. This is NOT in the sealed18bdea8 F run in progress.
+docs/journal-buffer-reuse.md. This is NOT in the sealed18bdea8 F case below.
 
-Current F case alloc-drive-20261029-5b30c30e38374664bfe3b4dfdfd91f5a runs18bdea8/
-publice2e2132 on exactsource6fe,4GiB/4CPU/noNIC, singleinvocation. PID5296/
-creation1793476577793 confirmedlive during journalpreparation. Prepared actual
-artifacts:933objects/811streams,654unhashedextentstreams/9,885,682,940B and650
-partialtails/1,371,388B with650constructorreceipts. Rawhash94,077,273B versusold
-9,979,760,213B; this is phaseevidence ONLY, notfinalsuccess orphysicalIO/speedproof.
-Source/candidate checks and native recovery evidence below remain separate.
-RootdelegatedexclusiveVMcontroltofast_native_finish; do not restart on timeout.
+F normal case5b30c30e/core12f76424 PASSED sealed18bdea8/publice2e2132 on exact
+source6fe,4GiB/4CPU/noNIC: actualPID5296/creation1793476577793 native0/HND,
+observer0,933objects/811streams and all811 independent complete hashes. Actual
+654unhashedextentstreams/9,885,682,940B include650partials/1,371,388B with650
+constructor/source/readback/protected-residual bindings. Rawinitialhashing
+94,077,273B versusold9,979,760,213B; othernative logicalsource reads22,204,741B
+remain. Target0contenthashes/0payloadreads,933complete mapbindings andmetadata/
+storage-validity gates passed. Actualexclusive_preparation_readback_used=true.
+
+Nativecreation→terminal632.8646961s; observerfinished329.6227202s later in3hash
+batches. NativeprocessCPU426.359375s user/48.859375s kernel; logicaltransfer
+reads185,082,120,225B/writes23,003,814,097B. These are NOTphysicalIO; no general
+speedclaim. Journalphase used39,955,150,496B reads/238.75sCPU; prepared→applied
+used102,573,946,528B reads/200.796875sCPU. Source-backedmapped bytes:4,225,028,096
+original-coordinate (42.745%),5,659,303,936selected-copy (57.255%); these ratios
+are oftheircombinedmapping, notalllogicalstreambytes. Placement2424submissions/
+13,580,988,416B caninclude repeatedmovement. Lpacked38,625,280B; J11,430,839,968B;
+selected11,391,897,600B/3216ranges includes5,693,968,384B newzero ranges.
+
+Closed71metadatafiles/155,615,575B allSHAverified; normalstop then savedReFS
+ecd548f8-3237-44f5-b874-6de79c140997. VMOff/RAM0/50snapshots, allworkers/tasks
+terminal beforestop. Actual lab285,593,776,923B/free59,539,214,336B stayinside
+fixed329,374,052,988B/17,179,869,184B epoch. RemovedONLYobsoleteoldNTFSb809 via
+HyperV after73archive/index/derivedreceipt files rehashed; ALLhostevidence/
+baselinesstay. Preserve newmixedecd,6fe/371sources,3cbc/119/643/fcctailmatrix,
+oldint9ce/resume9bb,large785,D1cold d939,f4bf. Evidence:
+evidence/mixed-fast-journal-native-20261031.json; docs/mixed-fast-journal-verification.md.
+Runtime18b differsfromlab05f511f; later05bbuffers/cc6exact-target builds remain
+BUILT/UNQUALIFIED and were NOTused. No18b recovery/powerloss/mutation qualification
+transfersfromoldercases. One recordedlabaccess-time reconciliation only; product
+expectations/timestampsuntouched. No units. Broader scale/compatibility/D2 remain.
+
+The following completed matrices and former current VM/checkpoint labels are
+historical; the retained checkpoints and cleanup changes above are authoritative.
 
 Exact sealed3ce15c7 partial-tail recovery matrix now passes one controlled
 first-flushed-write case. Producer1798b541 actualPID5516/creation1793474877619

@@ -2,13 +2,13 @@
 //! crossed journal handoff. No journal replay or raw partition write exists.
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    use anyhow::{Result, ensure};
+    use anyhow::{Context, Result, ensure};
     use clap::Parser;
     use n2r_win32::{
         capture_mount_paths_general, mounted_filesystem_general, rediscover_general_volume_wait,
         shadow_native,
     };
-    use ntfs2refs::{general_reconstruct, ntfs_attestation, shadow_tree};
+    use ntfs2refs::{general_conversion, general_reconstruct, ntfs_attestation, shadow_tree};
     use serde::Serialize;
     use sha2::{Digest, Sha256};
     use std::{
@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
         fs::{self, OpenOptions},
         io::{Read, Write},
         os::windows::fs::{MetadataExt, OpenOptionsExt},
-        path::PathBuf,
+        path::{Component, Path, PathBuf, Prefix},
     };
 
     #[derive(Parser)]
@@ -29,6 +29,12 @@ fn main() -> anyhow::Result<()> {
         expectation: PathBuf,
         #[arg(long)]
         expectation_sha256: String,
+        /// Read-only locator for an actual public allocation-bounded conversion.
+        /// This does not open its journal/ticket or grant recovery authority.
+        #[arg(long, requires = "allocation_bundle_sha256")]
+        allocation_bundle: Option<PathBuf>,
+        #[arg(long, requires = "allocation_bundle")]
+        allocation_bundle_sha256: Option<String>,
         #[arg(long)]
         output: PathBuf,
         /// Save bounded native observations without treating them as a passed
@@ -68,6 +74,69 @@ fn main() -> anyhow::Result<()> {
         #[serde(default)]
         source_resource_profile: Option<ntfs2refs::ntfs_admission::ResourceProfile>,
     }
+    #[derive(serde::Deserialize)]
+    struct InputPin {
+        path: PathBuf,
+        sha256: String,
+    }
+    // Only read-only verification inputs are consumed. Other pinned bundle
+    // entries (journal/plan/ticket) are deliberately not loaded or replayed.
+    #[derive(serde::Deserialize)]
+    struct AllocationBundle {
+        schema_version: u32,
+        kind: String,
+        request: InputPin,
+        expectation: InputPin,
+        verification: InputPin,
+        source: n2r_win32::general_layout::GeneralDiskBinding,
+        serialized_bundle_grants_recovery_authority: bool,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AllocationVerification {
+        expected_mount_paths: Vec<String>,
+        expected_source_label: n2r_win32::volume_label::VolumeLabel,
+    }
+    struct VerificationInput {
+        pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+        source_resource_profile: Option<ntfs2refs::ntfs_admission::ResourceProfile>,
+        expected_tree_sha256: String,
+        expected_source_label: Option<n2r_win32::volume_label::VolumeLabel>,
+        expected_mount_paths: Option<Vec<String>>,
+        comparison: Option<ntfs2refs::retained_compare::RetainedCompareRequest>,
+    }
+    fn ordinary_c_input(path: &Path) -> Result<()> {
+        ensure!(
+            path.is_absolute(),
+            "allocation verification inputs need absolute C: paths"
+        );
+        for component in path.components() {
+            ensure!(
+                match component {
+                    Component::Prefix(prefix) => matches!(prefix.kind(), Prefix::Disk(b'C' | b'c')),
+                    Component::RootDir | Component::Normal(_) => true,
+                    _ => false,
+                },
+                "allocation verification input is not a traversal-free C: path"
+            );
+        }
+        for ancestor in path.ancestors() {
+            let metadata = fs::symlink_metadata(ancestor)?;
+            ensure!(
+                metadata.file_attributes() & 0x400 == 0,
+                "reparse allocation verification ancestry refused"
+            );
+            ensure!(
+                if ancestor == path {
+                    metadata.is_file()
+                } else {
+                    metadata.is_dir()
+                },
+                "ordinary allocation verification file/ancestry required"
+            );
+        }
+        Ok(())
+    }
     fn pinned(path: &PathBuf, expected: &str, max: u64) -> Result<Vec<u8>> {
         let metadata = fs::symlink_metadata(path)?;
         ensure!(
@@ -102,9 +171,63 @@ fn main() -> anyhow::Result<()> {
     }
     let args = Args::parse();
     ensure!(!args.output.exists(), "fresh verification output required");
-    let request: general_reconstruct::Request =
-        serde_json::from_slice(&pinned(&args.request, &args.request_sha256, 131072)?)?;
-    request.validate()?;
+    let request_bytes = pinned(&args.request, &args.request_sha256, 131072)?;
+    let request = if let (Some(path), Some(pin)) =
+        (&args.allocation_bundle, &args.allocation_bundle_sha256)
+    {
+        ordinary_c_input(path)?;
+        ordinary_c_input(&args.request)?;
+        ordinary_c_input(&args.expectation)?;
+        let bundle: AllocationBundle = serde_json::from_slice(&pinned(path, pin, 65536)?)?;
+        ensure!(
+            bundle.schema_version == 1
+                && bundle.kind == "allocation-bounded-recovery-bundle"
+                && !bundle.serialized_bundle_grants_recovery_authority
+                && bundle.request.path == args.request
+                && bundle.request.sha256 == args.request_sha256
+                && bundle.expectation.path == args.expectation
+                && bundle.expectation.sha256 == args.expectation_sha256,
+            "allocation bundle request/expectation pins differ from the explicit inputs"
+        );
+        let public: general_conversion::Request = serde_json::from_slice(&request_bytes)?;
+        public.validate()?;
+        ensure!(
+            bundle.source == public.pair.source,
+            "allocation bundle source differs from request"
+        );
+        ordinary_c_input(&bundle.verification.path)?;
+        let verification: AllocationVerification = serde_json::from_slice(&pinned(
+            &bundle.verification.path,
+            &bundle.verification.sha256,
+            65536,
+        )?)?;
+        verification.expected_source_label.validate()?;
+        let mount_paths = Some(verification.expected_mount_paths);
+        ntfs2refs::general_shadow::validate_mount_paths(&mount_paths)?;
+        VerificationInput {
+            pair: public.pair,
+            source_resource_profile: public.source_resource_profile,
+            expected_tree_sha256: bundle.expectation.sha256,
+            expected_source_label: Some(verification.expected_source_label),
+            expected_mount_paths: mount_paths,
+            comparison: None,
+        }
+    } else {
+        let legacy: general_reconstruct::Request = serde_json::from_slice(&request_bytes)?;
+        legacy.validate()?;
+        VerificationInput {
+            pair: legacy.pair,
+            source_resource_profile: legacy.source_resource_profile,
+            expected_tree_sha256: legacy.expected_tree_sha256,
+            expected_source_label: legacy.expected_source_label,
+            expected_mount_paths: legacy.expected_mount_paths,
+            comparison: Some(legacy.comparison),
+        }
+    };
+    ensure!(
+        !args.verify_retained_positions || request.comparison.is_some(),
+        "--verify-retained-positions requires the legacy admitted comparison; allocation bundle mode has none"
+    );
     let resources = request.source_resource_profile.unwrap_or_default();
     let expected_bytes = pinned(
         &args.expectation,
@@ -263,7 +386,10 @@ fn main() -> anyhow::Result<()> {
                         ntfs2refs::tree_placement::verify_native_retained_positions(
                             &tree,
                             &mappings,
-                            &request.comparison,
+                            request
+                                .comparison
+                                .as_ref()
+                                .context("retained comparison is absent")?,
                         )
                     })
                     .map(Some)
@@ -304,6 +430,8 @@ fn main() -> anyhow::Result<()> {
         &args.output,
         &serde_json::json!({"schema_version":1,"kind":if args.diagnose_only {"general-post-handoff-refs-diagnostic"} else {"general-post-handoff-refs-verification"},
             "request_sha256":args.request_sha256,"expected_tree_sha256":args.expectation_sha256,
+            "verification_input_mode":if args.allocation_bundle.is_some() {"allocation_bundle"} else {"general_reconstruction"},
+            "allocation_bundle_sha256":args.allocation_bundle_sha256,
             "filesystem":filesystem,"mount_paths":mount_paths,
             "mount_paths_error":mount_paths_error,"mount_paths_preserved":mount_paths_preserved,
             "native":attempted.ok(),"error":error,

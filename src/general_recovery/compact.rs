@@ -293,7 +293,7 @@ fn recover_compact_impl(
         let observed = observe_general_journal_file_with_profile(
             &journal,
             &request.journal,
-            JournalProfile::from_schema(request.schema_version)?,
+            request.journal_profile()?,
         )?;
         ensure!(
             observed.file_bytes == ticket.journal_length,

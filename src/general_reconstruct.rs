@@ -35,7 +35,7 @@ fn observe_journal(file: &File, request: &Request) -> Result<JournalFileSnapshot
     Ok(observe_general_journal_file_with_profile(
         file,
         &request.journal,
-        JournalProfile::from_schema(request.schema_version)?,
+        request.journal_profile()?,
     )?)
 }
 
@@ -43,6 +43,7 @@ fn binding(request: &Request, journal: &JournalFileIdentity) -> Result<JournalBi
     Ok(JournalBinding {
         experiment_id: request.experiment_id.clone(),
         source_resource_profile: request.source_resource_profile,
+        journal_capacity_bytes: (request.schema_version == 3).then_some(request.max_journal_bytes),
         target_identity_sha256: partition_hash(&request.pair.source.identity)?,
         shadow_identity_sha256: partition_hash(&request.pair.shadow.identity)?,
         journal_identity_sha256: identity_hash(
@@ -165,8 +166,14 @@ pub struct Request {
 }
 
 impl Request {
+    pub fn journal_profile(&self) -> Result<JournalProfile> {
+        Ok(JournalProfile::from_schema_and_capacity(
+            self.schema_version,
+            (self.schema_version == 3).then_some(self.max_journal_bytes),
+        )?)
+    }
     pub fn validate(&self) -> Result<()> {
-        let profile = JournalProfile::from_schema(self.schema_version)?;
+        let profile = self.journal_profile()?;
         lab_reconstruct::validate_source_profile_binding(
             self.schema_version,
             self.source_resource_profile,
@@ -300,7 +307,7 @@ pub fn measure_journal_requirements(
         .checked_mul(2)
         .and_then(|v| v.checked_add(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE))
         .ok_or_else(|| anyhow::anyhow!("journal sizing overflow"))?;
-    let profile = JournalProfile::from_schema(request.schema_version)?;
+    let profile = request.journal_profile()?;
     Ok(serde_json::json!({
         "schema_version":1,"kind":"frozen-general-journal-sizing",
         "source_sha256":compared.request.source_sha256,
@@ -587,7 +594,7 @@ fn prepare_image_content<S: lab_reconstruct::ReadSeek>(
         &request.comparison,
         &observed_binding,
         request.max_journal_bytes,
-        JournalProfile::from_schema(request.schema_version)?,
+        request.journal_profile()?,
         progress,
     )?;
     Ok((ntfs, refs, retained_allocation, observed_binding, summary))
@@ -734,9 +741,7 @@ pub fn rollback_without_shadow(
                     .map(|r| (r.offset, r.length))
                     .collect(),
                 maximum_bytes: descriptor.changed_bytes,
-                journal_profile: n2r_win32::journal_file::JournalProfile::from_schema(
-                    request.schema_version,
-                )?,
+                journal_profile: request.journal_profile()?,
             },
             events,
         )?;
@@ -985,9 +990,7 @@ fn execute_with_interruption(
                     .map(|r| (r.offset, r.length))
                     .collect(),
                 maximum_bytes: descriptor.changed_bytes,
-                journal_profile: n2r_win32::journal_file::JournalProfile::from_schema(
-                    request.schema_version,
-                )?,
+                journal_profile: request.journal_profile()?,
             },
             events,
         )?;

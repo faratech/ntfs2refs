@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, GeneralJournaledPartition, NativeEvent,
-    journal_file::{JournalProfile, observe_general_journal_file_with_profile},
+    journal_file::observe_general_journal_file_with_profile,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -202,7 +202,7 @@ fn run(
         let identity = observe_general_journal_file_with_profile(
             &journal,
             &request.journal,
-            JournalProfile::from_schema(request.schema_version)?,
+            request.journal_profile()?,
         )?;
         artifacts::save(output, "journal-identity.json", &identity)?;
         phase = "reopen-excluded-disks";

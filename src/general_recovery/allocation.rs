@@ -122,6 +122,7 @@ pub fn recover_allocation(
         ticket.selected_bytes == selected_bytes
             && ticket.journal_length == journal_bytes
             && journal_bytes <= request.max_journal_bytes
+            && plan.max_journal_bytes == request.max_journal_bytes
             && plan.image_length == request.pair.source.identity.partition_bytes
             && !ticket.whole_image_verified,
         "allocation recovery ticket, plan and request differ"
@@ -192,7 +193,7 @@ pub fn recover_allocation(
             .share_mode(0)
             .custom_flags(0x0020_0000)
             .open(&bundle.journal)?;
-        let profile = JournalProfile::from_schema(request.schema_version)?;
+        let profile = request.journal_profile()?;
         let observed =
             observe_general_journal_file_with_profile(&journal, &request.journal, profile)?;
         ensure!(

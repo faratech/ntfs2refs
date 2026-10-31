@@ -3,6 +3,7 @@
 //! it never reads an old qualification report or initializes duplicate payload.
 use super::*;
 use crate::general_composite_target::{self, FrozenCompositeTargetPreservation};
+use crate::general_shadow::source_backed::{CaptureBudget, CaptureProgress};
 
 /// These are live owning capabilities. Keeping the proof also keeps its exact
 /// compact backing open read-only with write/delete sharing excluded.
@@ -272,6 +273,8 @@ pub(crate) fn prepare_allocation_fresh_selected(
     profile: JournalProfile,
     resources: crate::ntfs_admission::ResourceProfile,
     budget: CompactConstructionBudget,
+    capture_budget: Option<CaptureBudget>,
+    capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
 ) -> Result<QualifiedAllocationTree> {
     budget.validate(pair.source.identity.partition_bytes)?;
     pair.validate_with_resource_profile(resources.native_profile())?;
@@ -283,19 +286,31 @@ pub(crate) fn prepare_allocation_fresh_selected(
             && max_change_bytes <= pair.source.identity.partition_bytes,
         "allocation-bounded qualification changed-byte budget differs"
     );
+    ensure!(
+        capture_budget.is_some() == capture_guard.is_some(),
+        "capture capacity budget and live guard must be supplied together"
+    );
+    if let Some(capture_budget) = capture_budget {
+        capture_budget.validate(pair.source.identity.partition_bytes)?;
+        ensure!(
+            capture_budget.max_changed_bytes == max_change_bytes
+                && capture_budget.max_journal_bytes <= profile.max_journal_bytes(),
+            "allocation capture capacity differs from its journal profile"
+        );
+    }
     create_output(output)?;
-    save(
-        output,
-        "intent.json",
-        &serde_json::json!({
-            "schema_version":1,"kind":"live-allocation-bounded-qualification-intent",
-            "pair":pair,"source_resource_profile":resources,
-            "packed_path":packed_path,"max_change_bytes":max_change_bytes,
-            "construction_budget":budget,"free_space_contents_compared":false,
-            "source_payload_writes_authorized":false,
-            "source_admitted":false,"execution_authorized":false,
-        }),
-    )?;
+    let mut intent = serde_json::json!({
+        "schema_version":1,"kind":"live-allocation-bounded-qualification-intent",
+        "pair":pair,"source_resource_profile":resources,
+        "packed_path":packed_path,"max_change_bytes":max_change_bytes,
+        "construction_budget":budget,"free_space_contents_compared":false,
+        "source_payload_writes_authorized":false,
+        "source_admitted":false,"execution_authorized":false,
+    });
+    if let Some(capture_budget) = capture_budget {
+        intent["capture_budget"] = serde_json::to_value(capture_budget)?;
+    }
+    save(output, "intent.json", &intent)?;
     let mut phase = "source-freeze";
     let attempted = (|| -> Result<QualifiedAllocationTree> {
         let mut events = Vec::<NativeEvent>::new();
@@ -337,18 +352,36 @@ pub(crate) fn prepare_allocation_fresh_selected(
             .source_view
             .as_ref()
             .context("live allocation-bounded source views absent")?;
-        let proof = general_composite_target::verify_and_select(
-            &mut source,
-            &mut native_target,
-            pair.clone(),
-            &raw,
-            views,
-            &source_hash,
-            resources,
-            packed_path,
-            max_change_bytes,
-            &mut events,
-        )?;
+        let proof = match (capture_budget, capture_guard) {
+            (Some(capture_budget), Some(capture_guard)) => {
+                general_composite_target::verify_and_select_with_budget(
+                    &mut source,
+                    &mut native_target,
+                    pair.clone(),
+                    &raw,
+                    views,
+                    &source_hash,
+                    resources,
+                    packed_path,
+                    capture_budget,
+                    &mut events,
+                    capture_guard,
+                )?
+            }
+            (None, None) => general_composite_target::verify_and_select(
+                &mut source,
+                &mut native_target,
+                pair.clone(),
+                &raw,
+                views,
+                &source_hash,
+                resources,
+                packed_path,
+                max_change_bytes,
+                &mut events,
+            )?,
+            _ => anyhow::bail!("capture capacity budget and live guard differ"),
+        };
         ensure!(
             proof.expected_tree_sha256() == expected_sha256,
             "allocation-bounded proof differs from the fresh saved source expectation"

@@ -481,7 +481,7 @@ pub enum LogicalHashStatus {
     UnsupportedBadClusterMetadata,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AttributeInventory {
     pub type_code: u32,
     pub instance: u16,
@@ -1285,22 +1285,23 @@ pub(crate) fn read_resident_inventory_attribute<R: Read + Seek>(
             .resolve(reader, file.record_number, &bytes, &mut record)?
             .context("resident attribute assembly is no longer present")?;
         ensure!(
-            serde_json::to_vec(&actual)? == serde_json::to_vec(expected)?,
+            &actual == expected,
             "resident attribute physical assembly changed"
         );
     }
-    let found: Vec<_> = record
+    let mut found = record
         .attributes
-        .iter()
-        .filter(|a| a.report.instance == attribute.instance)
-        .collect();
+        .into_iter()
+        .filter(|a| a.report.instance == attribute.instance);
+    let found_attribute = found
+        .next()
+        .context("reread resident attribute differs from inventory")?;
     ensure!(
-        found.len() == 1 && serde_json::to_vec(&found[0].report)? == serde_json::to_vec(attribute)?,
+        found.next().is_none() && found_attribute.report == *attribute,
         "reread resident attribute differs from inventory"
     );
-    found[0]
+    found_attribute
         .resident_value
-        .clone()
         .context("resident attribute bytes absent")
 }
 
@@ -2611,8 +2612,7 @@ fn checked_data_attribute<R: Read + Seek>(
     let mut boot = [0; 512];
     read_at(reader, 0, &mut boot, geometry.volume_size)?;
     ensure!(
-        serde_json::to_vec(&inspect_boot_sector(&boot, geometry.volume_size)?)?
-            == serde_json::to_vec(geometry)?,
+        inspect_boot_sector(&boot, geometry.volume_size)? == *geometry,
         "source geometry changed"
     );
     let bootstrap = mft_bootstrap::read(reader, geometry)?;
@@ -2651,7 +2651,7 @@ fn checked_data_attribute<R: Read + Seek>(
             .resolve(reader, record_number, &bytes, &mut record)?
             .context("inspected DATA assembly is no longer present")?;
         ensure!(
-            serde_json::to_vec(&actual)? == serde_json::to_vec(expected)?,
+            &actual == expected,
             "source attribute list or physical extension evidence changed"
         );
     }
@@ -2666,7 +2666,7 @@ fn checked_data_attribute<R: Read + Seek>(
     );
     let mut candidates = record
         .attributes
-        .iter()
+        .into_iter()
         .filter(|a| a.report.type_code == 0x80 && a.report.name_utf16 == stream_name_utf16);
     let data = candidates
         .next()
@@ -2676,7 +2676,7 @@ fn checked_data_attribute<R: Read + Seek>(
         "duplicate requested DATA attribute"
     );
     ensure!(
-        serde_json::to_vec(&data.report)? == serde_json::to_vec(expected)?
+        data.report == *expected
             && ((data.report.flags == 0 && data.report.compression_unit == 0)
                 || (allow_sparse
                     && data.report.flags == 0x8000
@@ -2708,7 +2708,7 @@ fn checked_data_attribute<R: Read + Seek>(
         n2r_win32::content_digest::is_hex(digest),
         "invalid inspected logical stream hash"
     );
-    Ok((data.clone(), digest.into()))
+    Ok((data, digest.into()))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3266,8 +3266,7 @@ impl PlainStreamRangeSession {
         )?;
         ensure!(
             expected == self.expected
-                && serde_json::to_vec(&after.report)?
-                    == serde_json::to_vec(&self.attribute.report)?
+                && after.report == self.attribute.report
                 && after.resident_value == self.attribute.resident_value,
             "plain stream mapping changed around session"
         );

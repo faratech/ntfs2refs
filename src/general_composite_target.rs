@@ -3,7 +3,8 @@
 //! proves the compact backing. This module issues no source/write certificate.
 use crate::{
     general_shadow::source_backed::{
-        ChangeClassSplit, ChangedClassCounters, DifferenceCapture, SourceBackedShadow,
+        CaptureBudget, CaptureProgress, ChangeClassSplit, ChangedClassCounters, DifferenceCapture,
+        SourceBackedShadow,
     },
     general_target_preservation::{self, CapturedDeltaAllocationDiagnostic, ProtectedTargetLayout},
     lab_reconstruct,
@@ -343,6 +344,7 @@ pub fn verify_and_capture(
         max_changed_bytes,
         events,
         false,
+        None,
     )?;
     let capture = SourceBackedShadow::new(
         source,
@@ -509,6 +511,8 @@ pub struct FrozenAllocationTargetPreservation {
     compared: Vec<crate::refs_write_set::ByteRange>,
     in_place_payload_bytes_not_compared: u64,
     capture: DifferenceCapture,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_budget: Option<CaptureBudget>,
     /// Non-gating destination split of the captured changed granules; it
     /// binds and authorizes nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -569,6 +573,9 @@ impl FrozenAllocationTargetPreservation {
     }
     /// The differing ranges as a selected-range journal plan.
     pub fn plan(&self, max_journal_bytes: u64) -> Result<crate::selected_journal::SelectedPlan> {
+        let max_journal_bytes = self.capture_budget.map_or(max_journal_bytes, |budget| {
+            max_journal_bytes.min(budget.max_journal_bytes)
+        });
         let plan = crate::selected_journal::SelectedPlan {
             image_length: self.capture.layout.partition_bytes(),
             ranges: self
@@ -925,6 +932,70 @@ pub fn verify_and_select(
     max_changed_bytes: u64,
     events: &mut Vec<NativeEvent>,
 ) -> Result<FrozenAllocationTargetPreservation> {
+    verify_and_select_inner(
+        source,
+        target,
+        pair,
+        raw,
+        source_views,
+        source_sha256,
+        resources,
+        packed_path,
+        max_changed_bytes,
+        events,
+        None,
+        None,
+    )
+}
+
+/// Capacity-pinned encoded selection. The callback must observe the actual
+/// independent backing volume; numeric ceilings alone reserve no storage.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_and_select_with_budget(
+    source: &mut GeneralFrozenPartition,
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    raw: &ntfs_inspect::NtfsInspection,
+    source_views: &ntfs_source_view::Analysis,
+    source_sha256: &str,
+    resources: ResourceProfile,
+    packed_path: &Path,
+    budget: CaptureBudget,
+    events: &mut Vec<NativeEvent>,
+    guard: &mut dyn FnMut(CaptureProgress) -> Result<()>,
+) -> Result<FrozenAllocationTargetPreservation> {
+    budget.validate(pair.source.identity.partition_bytes)?;
+    verify_and_select_inner(
+        source,
+        target,
+        pair,
+        raw,
+        source_views,
+        source_sha256,
+        resources,
+        packed_path,
+        budget.max_changed_bytes,
+        events,
+        Some(budget),
+        Some(guard),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_and_select_inner(
+    source: &mut GeneralFrozenPartition,
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    raw: &ntfs_inspect::NtfsInspection,
+    source_views: &ntfs_source_view::Analysis,
+    source_sha256: &str,
+    resources: ResourceProfile,
+    packed_path: &Path,
+    max_changed_bytes: u64,
+    events: &mut Vec<NativeEvent>,
+    capture_budget: Option<CaptureBudget>,
+    capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
+) -> Result<FrozenAllocationTargetPreservation> {
     let ProtectedPrefix {
         length,
         source_before,
@@ -947,6 +1018,7 @@ pub fn verify_and_select(
         max_changed_bytes,
         events,
         true,
+        capture_budget.map(|budget| budget.max_literal_backing_bytes),
     )?;
     let selection = protected
         .allocation_coverage()
@@ -966,23 +1038,36 @@ pub fn verify_and_select(
     let ntfs_allocated = raw.allocated_byte_ranges(length).ok();
     let copy_candidates =
         payload_copy_candidates(length, &source_index, &tree, protected.routes())?;
-    let mut capture = SourceBackedShadow::new(
+    let view = SourceBackedShadow::new(
         source,
         target,
         raw,
         &tree,
         protected.routes(),
         protected.routes().payload_bytes().max(1),
-    )?
-    .capture_listed_source_references_to_new_file(
-        &compared,
-        packed_path,
-        max_changed_bytes,
-        Some(ChangeClassSplit {
-            ntfs_allocated: ntfs_allocated.as_deref(),
-        }),
-        &copy_candidates,
     )?;
+    let split = Some(ChangeClassSplit {
+        ntfs_allocated: ntfs_allocated.as_deref(),
+    });
+    let mut capture = match (capture_budget, capture_guard) {
+        (Some(budget), Some(guard)) => view
+            .capture_listed_source_references_to_new_file_with_budget(
+                &compared,
+                packed_path,
+                budget,
+                split,
+                &copy_candidates,
+                guard,
+            )?,
+        (None, None) => view.capture_listed_source_references_to_new_file(
+            &compared,
+            packed_path,
+            max_changed_bytes,
+            split,
+            &copy_candidates,
+        )?,
+        _ => anyhow::bail!("capture capacity budget and live guard must be supplied together"),
+    };
     // Record the split once, beside the capture, keeping the capture object
     // in its earlier shape.
     let changed_classes = capture.changed_classes.take();
@@ -1032,6 +1117,7 @@ pub fn verify_and_select(
         compared,
         in_place_payload_bytes_not_compared: in_place_bytes,
         capture,
+        capture_budget,
         changed_classes,
         backing,
         source_before,
@@ -1077,6 +1163,7 @@ fn protected_prefix(
     max_changed_bytes: u64,
     events: &mut Vec<NativeEvent>,
     allocation_closed_bracket: bool,
+    max_literal_backing_bytes: Option<u64>,
 ) -> Result<ProtectedPrefix> {
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
@@ -1088,7 +1175,8 @@ fn protected_prefix(
     let length = source.byte_len();
     ensure!(
         max_changed_bytes <= length
-            && max_changed_bytes <= reference_file::MAX_REFERENCE_FILE_BYTES,
+            && max_literal_backing_bytes.unwrap_or(max_changed_bytes)
+                <= reference_file::MAX_REFERENCE_FILE_BYTES,
         "composite backing exceeds explicit byte or held-file profile bound"
     );
     fresh_ordinary_path(packed_path)?;

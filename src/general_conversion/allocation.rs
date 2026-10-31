@@ -49,7 +49,7 @@ pub(super) fn convert_allocation_selected(
     )?;
     let mut phase = "allocation-bounded-qualification";
     let attempted = (|| -> Result<()> {
-        let profile = JournalProfile::from_schema(request.schema_version)?;
+        let profile = request.journal_profile()?;
         // Every old byte remains in the encoded journal. New zero bytes need
         // no stored copy; the exact D + literal-new + metadata size is checked
         // by the live plan before preparing the journal or activating source.
@@ -62,9 +62,118 @@ pub(super) fn convert_allocation_selected(
             * 4096;
         let qualification_root = output.join("qualification");
         let packed_path = qualification_root.join("changed-clusters.bin");
+        let capture_budget = request.max_literal_backing_bytes.map(|literal| {
+            crate::general_shadow::source_backed::CaptureBudget {
+                max_changed_bytes: maximum,
+                max_journal_bytes: request.max_journal_bytes,
+                max_literal_backing_bytes: literal,
+                max_combined_backing_and_journal_bytes: request.max_combined_scratch_bytes.unwrap(),
+                minimum_free_bytes: 1024 * 1024 * 1024,
+            }
+        });
+        let journal_root = request.journal.disk.volume_path()? + "\\";
+        let mut capacity_observations = Vec::new();
+        let mut observed_capacity: Option<(u64, u64, u64)> = None;
+        let mut guard =
+            |progress: crate::general_shadow::source_backed::CaptureProgress| -> Result<()> {
+                let required = progress.required_available_bytes()?;
+                let cached_available = observed_capacity.and_then(|(_, literal, available)| {
+                    progress
+                        .literal_backing_bytes
+                        .checked_sub(literal)
+                        .and_then(|written| available.checked_sub(written))
+                });
+                let refresh = observed_capacity.is_none_or(|(changed, _, _)| {
+                    progress.changed_bytes.saturating_sub(changed) >= 4 * 1024 * 1024
+                }) || cached_available.is_none_or(|available| available < required);
+                if refresh {
+                    if observed_capacity.is_none() {
+                        // The combined budget belongs to one real storage pool.
+                        // Public runs put both files on the selected OS volume.
+                        let capture_root = match output.components().next() {
+                            Some(std::path::Component::Prefix(prefix)) => match prefix.kind() {
+                                std::path::Prefix::Disk(letter) => {
+                                    format!("{}:\\", char::from(letter))
+                                }
+                                _ => anyhow::bail!(
+                                    "capacity capture requires an ordinary drive path"
+                                ),
+                            },
+                            _ => anyhow::bail!("capacity capture requires an absolute drive path"),
+                        };
+                        let actual = n2r_win32::discovery::discover(
+                            &capture_root,
+                            n2r_win32::discovery::Role::Journal {
+                                allow_additional_partitions: request
+                                    .journal
+                                    .allow_additional_partitions,
+                            },
+                        )?;
+                        ensure!(
+                            actual.binding == request.journal.disk,
+                            "literal backing and journal do not share the pinned storage volume"
+                        );
+                    }
+                    let space = n2r_win32::discovery::observe_volume_space(&journal_root)?;
+                    observed_capacity = Some((
+                        progress.changed_bytes,
+                        progress.literal_backing_bytes,
+                        space.available_bytes_to_caller,
+                    ));
+                    capacity_observations
+                        .try_reserve(1)
+                        .context("capture capacity observation allocation failed")?;
+                    capacity_observations.push(serde_json::json!({
+                        "changed_bytes":progress.changed_bytes,
+                        "literal_backing_bytes":progress.literal_backing_bytes,
+                        "next_append_bytes":progress.next_append_bytes,
+                        "required_available_bytes":required,"space":space,
+                    }));
+                }
+                let (_, literal, available) =
+                    observed_capacity.context("capture capacity not observed")?;
+                let remaining = available
+                    .checked_sub(
+                        progress
+                            .literal_backing_bytes
+                            .checked_sub(literal)
+                            .context("literal backing progress moved backwards")?,
+                    )
+                    .context("literal backing consumed the observed storage capacity")?;
+                ensure!(
+                    remaining >= required,
+                    "capture storage cannot cover the projected journal, next append and reserve"
+                );
+                Ok(())
+            };
         announce_conversion_phase(
             "inspecting NTFS, building the ReFS shadow and comparing its allocated ranges",
         );
+        let qualified = qualification::prepare_allocation_fresh_selected(
+            request.pair.clone(),
+            &qualification_root,
+            &packed_path,
+            maximum,
+            profile,
+            request.source_resource_profile.unwrap_or_default(),
+            construction,
+            capture_budget,
+            request
+                .max_literal_backing_bytes
+                .map(|_| &mut guard as &mut dyn FnMut(_) -> Result<()>),
+        );
+        drop(guard);
+        if capture_budget.is_some() {
+            qualification::save(
+                output,
+                "capture-capacity.json",
+                &serde_json::json!({
+                    "schema_version":1,"budget":capture_budget,"observations":capacity_observations,
+                    "refresh_changed_bytes":4 * 1024 * 1024,"source_writes_started":false,
+                    "capacity_is_advisory":true,"execution_authorized":false,
+                }),
+            )?;
+        }
         let qualification::QualifiedAllocationTree {
             mut source,
             native_target,
@@ -73,15 +182,7 @@ pub(super) fn convert_allocation_selected(
             expected,
             mount_paths,
             source_label,
-        } = qualification::prepare_allocation_fresh_selected(
-            request.pair.clone(),
-            &qualification_root,
-            &packed_path,
-            maximum,
-            profile,
-            request.source_resource_profile.unwrap_or_default(),
-            construction,
-        )?;
+        } = qualified?;
         let expected_tree_sha256 = hex::encode(Sha256::digest(&expected));
         ensure!(
             certificate.binds(&proof) && certificate.expected_tree_sha256() == expected_tree_sha256,
@@ -239,6 +340,23 @@ pub(super) fn convert_allocation_selected(
         println!("Recovery checksum: {recovery_pin}");
 
         phase = "selected-activation";
+        if capture_budget.is_some() {
+            // Existing journal/backing allocations have already reduced free
+            // space. Require the remaining reserve without charging them twice.
+            let remaining = n2r_win32::discovery::observe_volume_space(&journal_root)?;
+            ensure!(
+                remaining.available_bytes_to_caller >= 1024 * 1024 * 1024,
+                "working-space reserve was consumed before source activation"
+            );
+            qualification::save(
+                output,
+                "activation-capacity.json",
+                &serde_json::json!({
+                    "schema_version":1,"space":remaining,"minimum_free_bytes":1024_u64 * 1024 * 1024,
+                    "journal_already_allocated":true,"source_writes_started":false,
+                }),
+            )?;
+        }
         announce_conversion_phase("activating the frozen source for selected writes");
         ensure!(
             certificate.binds(&proof),

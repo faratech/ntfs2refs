@@ -30,6 +30,125 @@ fn is_zero(bytes: &u64) -> bool {
     *bytes == 0
 }
 
+/// Independent upper bounds for encoded selected capture. These resource
+/// ceilings do not reserve filesystem space or authorize source writes.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct CaptureBudget {
+    pub max_changed_bytes: u64,
+    pub max_journal_bytes: u64,
+    pub max_literal_backing_bytes: u64,
+    pub max_combined_backing_and_journal_bytes: u64,
+    pub minimum_free_bytes: u64,
+}
+
+/// State immediately before accepting a changed run. `changed_bytes` and
+/// `range_count` include that run; `literal_backing_bytes` is already written,
+/// and `next_append_bytes` is the additional literal allocation about to occur.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct CaptureProgress {
+    pub changed_bytes: u64,
+    pub literal_backing_bytes: u64,
+    pub next_append_bytes: u64,
+    pub range_count: usize,
+    pub projected_journal_bytes: u64,
+    pub projected_combined_bytes: u64,
+    pub minimum_free_bytes: u64,
+}
+impl CaptureProgress {
+    /// Already written backing is reflected in current filesystem free space;
+    /// charge only the pending append, future journal and working reserve.
+    pub fn required_available_bytes(&self) -> Result<u64> {
+        self.projected_journal_bytes
+            .checked_add(self.next_append_bytes)
+            .and_then(|n| n.checked_add(self.minimum_free_bytes))
+            .context("capture free-space requirement overflow")
+    }
+}
+impl CaptureBudget {
+    pub fn validate(&self, image_bytes: u64) -> Result<()> {
+        let overhead = n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE;
+        ensure!(
+            self.max_changed_bytes != 0
+                && self.max_changed_bytes.is_multiple_of(4096)
+                && self.max_changed_bytes <= image_bytes
+                && self
+                    .max_journal_bytes
+                    .checked_sub(overhead)
+                    .is_some_and(|n| self.max_changed_bytes <= n)
+                && self.max_literal_backing_bytes
+                    <= n2r_win32::reference_file::MAX_REFERENCE_FILE_BYTES
+                && self.max_combined_backing_and_journal_bytes >= overhead + 4096,
+            "encoded capture capacity bounds differ"
+        );
+        Ok(())
+    }
+
+    fn assess(
+        &self,
+        changed: u64,
+        literal: u64,
+        append: u64,
+        ranges: usize,
+    ) -> Result<CaptureProgress> {
+        // The widest selected encoding has 96-byte records. The established
+        // 16 MiB reserve also covers headers, footer and bounded metadata; the
+        // exact plan is independently validated after the capture completes.
+        let metadata = 8192u64
+            .checked_add(80 + 80)
+            .and_then(|n| {
+                (ranges as u64)
+                    .checked_mul(96)
+                    .and_then(|r| n.checked_add(r))
+            })
+            .context("capture journal metadata overflow")?;
+        let overhead = n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE;
+        ensure!(
+            metadata <= overhead,
+            "capture journal metadata exceeds its reserve"
+        );
+        let projected_literal = literal
+            .checked_add(append)
+            .context("capture literal backing overflow")?;
+        let journal = changed
+            .checked_add(projected_literal)
+            .and_then(|n| n.checked_add(overhead))
+            .context("capture journal capacity overflow")?;
+        let combined = journal
+            .checked_add(projected_literal)
+            .context("capture combined capacity overflow")?;
+        ensure!(
+            changed <= self.max_changed_bytes,
+            "capture changed bytes exceed their capacity bound"
+        );
+        ensure!(
+            projected_literal <= self.max_literal_backing_bytes,
+            "capture literal backing exceeds its capacity bound"
+        );
+        ensure!(
+            journal <= self.max_journal_bytes,
+            "capture encoded journal exceeds its capacity bound"
+        );
+        ensure!(
+            combined <= self.max_combined_backing_and_journal_bytes,
+            "capture backing plus journal exceeds its capacity bound"
+        );
+        Ok(CaptureProgress {
+            changed_bytes: changed,
+            literal_backing_bytes: literal,
+            next_append_bytes: append,
+            range_count: ranges,
+            projected_journal_bytes: journal,
+            projected_combined_bytes: combined,
+            minimum_free_bytes: self.minimum_free_bytes,
+        })
+    }
+}
+
+struct CaptureCapacity<'g> {
+    budget: CaptureBudget,
+    guard: &'g mut dyn FnMut(CaptureProgress) -> Result<()>,
+}
+
 const SELECTED_CHUNK_DIGEST: &str = "sha256-over-frames-and-xxh3-128-per-compared-chunk";
 
 /// Reads a capture's original (source) chunks through a second frozen-source
@@ -606,6 +725,7 @@ impl<'a> SourceBackedShadow<'a> {
             false,
             class_split,
             None,
+            None,
         )
     }
 
@@ -638,6 +758,7 @@ impl<'a> SourceBackedShadow<'a> {
             true,
             class_split,
             None,
+            None,
         )
     }
 
@@ -653,6 +774,48 @@ impl<'a> SourceBackedShadow<'a> {
         max_changed_bytes: u64,
         class_split: Option<ChangeClassSplit<'_>>,
         copies: &[crate::payload_copy_plan::CopySpan],
+    ) -> Result<DifferenceCapture> {
+        self.capture_listed_source_references(
+            selection,
+            output,
+            max_changed_bytes,
+            class_split,
+            copies,
+            None,
+        )
+    }
+
+    /// Capacity-pinned selected capture. The caller's live guard rechecks the
+    /// exact backing volume's available space before every changed run,
+    /// including zero/copy runs that enlarge only the future journal.
+    pub fn capture_listed_source_references_to_new_file_with_budget(
+        self,
+        selection: &[crate::refs_write_set::ByteRange],
+        output: &std::path::Path,
+        budget: CaptureBudget,
+        class_split: Option<ChangeClassSplit<'_>>,
+        copies: &[crate::payload_copy_plan::CopySpan],
+        guard: &mut dyn FnMut(CaptureProgress) -> Result<()>,
+    ) -> Result<DifferenceCapture> {
+        budget.validate(self.length)?;
+        self.capture_listed_source_references(
+            selection,
+            output,
+            budget.max_changed_bytes,
+            class_split,
+            copies,
+            Some(CaptureCapacity { budget, guard }),
+        )
+    }
+
+    fn capture_listed_source_references(
+        self,
+        selection: &[crate::refs_write_set::ByteRange],
+        output: &std::path::Path,
+        max_changed_bytes: u64,
+        class_split: Option<ChangeClassSplit<'_>>,
+        copies: &[crate::payload_copy_plan::CopySpan],
+        capacity: Option<CaptureCapacity<'_>>,
     ) -> Result<DifferenceCapture> {
         use sha2::{Digest, Sha256};
         let mut selected_bytes = 0u64;
@@ -712,6 +875,7 @@ impl<'a> SourceBackedShadow<'a> {
             true,
             class_split,
             Some(copies),
+            capacity,
         )
     }
 
@@ -775,6 +939,7 @@ impl<'a> SourceBackedShadow<'a> {
             false,
             None,
             None,
+            None,
         )
     }
 
@@ -793,10 +958,15 @@ impl<'a> SourceBackedShadow<'a> {
         zero_payloads: bool,
         class_split: Option<ChangeClassSplit<'_>>,
         copies: Option<&[crate::payload_copy_plan::CopySpan]>,
+        mut capacity: Option<CaptureCapacity<'_>>,
     ) -> Result<DifferenceCapture> {
         use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
         use sha2::{Digest, Sha256};
         use std::io::Write;
+        if let Some(capacity) = &mut capacity {
+            (capacity.guard)(capacity.budget.assess(0, 0, 0, 0)?)
+                .context("capture capacity guard refused before backing creation")?;
+        }
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -939,6 +1109,30 @@ impl<'a> SourceBackedShadow<'a> {
                         .checked_add(bytes as u64)
                         .context("delta byte count overflow")?;
                     let address = at + offset as u64;
+                    let extends_previous = ranges.last().is_some_and(|r| {
+                        r.offset + r.length == address
+                            && r.new_is_zero == new_is_zero
+                            && match (r.copy_source_offset, copy_source_offset) {
+                                (None, None) => true,
+                                (Some(previous), Some(current)) => previous + r.length == current,
+                                _ => false,
+                            }
+                    });
+                    if let Some(capacity) = &mut capacity {
+                        let range_count = ranges
+                            .len()
+                            .checked_add(usize::from(!extends_previous))
+                            .context("capture range count overflow")?;
+                        let append = if !new_is_zero && copy_source_offset.is_none() {
+                            bytes as u64
+                        } else {
+                            0
+                        };
+                        let progress = capacity.budget.assess(next, packed, append, range_count)?;
+                        (capacity.guard)(progress).context(
+                            "capture capacity guard refused before accepting changed bytes",
+                        )?;
+                    }
                     if let Some(source_offset) = copy_source_offset {
                         let check = copy_check
                             .as_mut()
@@ -962,16 +1156,11 @@ impl<'a> SourceBackedShadow<'a> {
                             &candidate[offset..offset + bytes],
                         );
                     }
-                    if let Some(last) = ranges.last_mut().filter(|r| {
-                        r.offset + r.length == address
-                            && r.new_is_zero == new_is_zero
-                            && match (r.copy_source_offset, copy_source_offset) {
-                                (None, None) => true,
-                                (Some(previous), Some(current)) => previous + r.length == current,
-                                _ => false,
-                            }
-                    }) {
-                        last.length += bytes as u64;
+                    if extends_previous {
+                        ranges
+                            .last_mut()
+                            .context("extended capture range absent")?
+                            .length += bytes as u64;
                     } else {
                         ensure!(
                             ranges.len() < 65536,

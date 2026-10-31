@@ -277,6 +277,7 @@ fn observed_binding(
         "observed partitions differ from enrollment"
     );
     Ok(JournalBinding {
+        journal_capacity_bytes: None,
         experiment_id: request.experiment_id.clone(),
         source_resource_profile: None,
         target_identity_sha256,

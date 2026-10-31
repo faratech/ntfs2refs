@@ -191,6 +191,7 @@ impl Fixture {
             max_ranges: 2,
         };
         let binding = JournalBinding {
+            journal_capacity_bytes: None,
             experiment_id: "a".repeat(32),
             source_resource_profile: None,
             target_identity_sha256: "1".repeat(64),

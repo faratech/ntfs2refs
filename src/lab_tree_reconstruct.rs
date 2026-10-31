@@ -226,6 +226,7 @@ fn binding(
         "actual data identities or persistent exclusion differ"
     );
     Ok(JournalBinding {
+        journal_capacity_bytes: None,
         experiment_id: request.experiment_id.clone(),
         source_resource_profile: None,
         target_identity_sha256: partition_hash(&target.binding.identity)?,

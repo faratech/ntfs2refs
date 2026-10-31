@@ -247,6 +247,8 @@ fn main() -> anyhow::Result<()> {
         .as_deref()
         .unwrap_or(&derived_label);
     let request = ntfs2refs::general_conversion::Request {
+        max_literal_backing_bytes: None,
+        max_combined_scratch_bytes: None,
         schema_version: profile.version(),
         source_resource_profile: args.experimental_large_tree.then_some(resources),
         experiment_id: args.experiment_id,

@@ -459,13 +459,20 @@ mod windows {
         // Retain the legacy thirds budget for the whole-image route.
         let usable = space.available_bytes_to_caller - reserve;
         let journal_share = if allocation_bounded {
-            usable / 3 * 2
+            // Journal and literal backing share one measured pool. Encoded
+            // zeros/copies must not strand an unused fixed backing fraction.
+            usable
         } else {
             usable / 3
         };
-        let journal_bytes =
-            journal_share.min(n2r_win32::journal_file::MAX_EXPERIMENTAL_JOURNAL_BYTES) / 4096
-                * 4096;
+        let journal_bytes = if allocation_bounded {
+            journal_share / 4096 * 4096
+        } else {
+            journal_share.min(n2r_win32::journal_file::MAX_EXPERIMENTAL_JOURNAL_BYTES) / 4096 * 4096
+        };
+        let literal_backing_bytes = allocation_bounded.then(|| {
+            (usable / 3).min(n2r_win32::reference_file::MAX_REFERENCE_FILE_BYTES) / 4096 * 4096
+        });
         let mut hash = Sha256::new();
         hash.update(
             SystemTime::now()
@@ -521,7 +528,7 @@ mod windows {
             }),
         )?;
         let request = crate::general_conversion::Request {
-            schema_version: 2,
+            schema_version: if allocation_bounded { 3 } else { 2 },
             source_resource_profile: Some(resources),
             experiment_id: id,
             pair: n2r_win32::general_layout::GeneralSourceShadowBinding {
@@ -537,6 +544,8 @@ mod windows {
                 allow_additional_partitions: true,
             },
             max_journal_bytes: journal_bytes,
+            max_literal_backing_bytes: literal_backing_bytes,
+            max_combined_scratch_bytes: allocation_bounded.then_some(usable),
             verify_existing_shadow: false,
         };
         request.validate()?;

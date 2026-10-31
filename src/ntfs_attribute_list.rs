@@ -46,7 +46,7 @@ pub struct CanonicalOrigin {
     pub instance: u16,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RecordEvidence {
     pub record_number: u64,
@@ -58,7 +58,7 @@ pub struct RecordEvidence {
     pub attributes: Vec<AttributeInventory>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Assembly {
     pub schema_version: u32,

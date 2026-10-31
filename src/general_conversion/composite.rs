@@ -126,6 +126,10 @@ fn convert_composite(
     selected_devices: bool,
 ) -> Result<()> {
     request.validate()?;
+    ensure!(
+        request.schema_version != 3,
+        "capacity-pinned capture requires the allocation-bounded backend"
+    );
     announce_conversion_phase("checking request and device identities");
     ensure!(
         request.verify_existing_shadow == construction.is_none(),
@@ -159,7 +163,7 @@ fn convert_composite(
     )?;
     let mut phase = "composite-qualification";
     let attempted = (|| -> Result<()> {
-        let profile = JournalProfile::from_schema(request.schema_version)?;
+        let profile = request.journal_profile()?;
         let maximum = crate::lab_reconstruct::changed_byte_budget_for_profile(
             profile,
             request.max_journal_bytes,

@@ -8,9 +8,7 @@ use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralDiskState, MountPathObservation, NativeEvent,
     general_layout::GeneralDiskBinding,
-    journal_file::{
-        JournalFileSnapshot, JournalProfile, observe_general_journal_file_with_profile,
-    },
+    journal_file::{JournalFileSnapshot, observe_general_journal_file_with_profile},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -407,7 +405,7 @@ pub(crate) fn open_journal(run: &RunArtifacts) -> Result<JournalLease> {
     let identity = observe_general_journal_file_with_profile(
         &f,
         &run.intent.journal,
-        JournalProfile::from_schema(run.intent.schema_version)?,
+        run.intent.journal_profile()?,
     )?;
     let len = identity.file_bytes;
     observation.file_bytes = Some(len);
@@ -419,6 +417,11 @@ pub(crate) fn open_journal(run: &RunArtifacts) -> Result<JournalLease> {
         let binding = lab_reconstruct::JournalBinding {
             experiment_id: plan.experiment_id.clone(),
             source_resource_profile: plan.source_resource_profile,
+            journal_capacity_bytes: if plan.schema_version == 3 {
+                Some(plan.max_journal_bytes)
+            } else {
+                None
+            },
             target_identity_sha256: partition_hash(&plan.pair.source.identity)?,
             shadow_identity_sha256: partition_hash(&plan.pair.shadow.identity)?,
             journal_identity_sha256: identity_hash(
@@ -516,7 +519,7 @@ pub(crate) fn recheck_journal(run: &RunArtifacts, journal: &mut JournalLease) ->
             let observed = observe_general_journal_file_with_profile(
                 file,
                 &run.intent.journal,
-                JournalProfile::from_schema(run.intent.schema_version)?,
+                run.intent.journal_profile()?,
             )?;
             let before = journal
                 .observation

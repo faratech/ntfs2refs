@@ -46,12 +46,43 @@ pub struct Request {
     pub pair: GeneralSourceShadowBinding,
     pub journal: GeneralJournalStorageBinding,
     pub max_journal_bytes: u64,
+    /// Fresh capture ceiling, pinned independently of encoded journal capacity.
+    /// Historical requests omit it and retain their original behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_literal_backing_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_combined_scratch_bytes: Option<u64>,
     #[serde(default)]
     pub verify_existing_shadow: bool,
 }
 impl Request {
+    pub fn journal_profile(&self) -> Result<JournalProfile> {
+        Ok(JournalProfile::from_schema_and_capacity(
+            self.schema_version,
+            (self.schema_version == 3).then_some(self.max_journal_bytes),
+        )?)
+    }
     pub fn validate(&self) -> Result<()> {
-        let profile = JournalProfile::from_schema(self.schema_version)?;
+        let profile = self.journal_profile()?;
+        ensure!(
+            if self.schema_version == 3 {
+                self.max_literal_backing_bytes.is_some_and(|bytes| {
+                    bytes > 0
+                        && bytes.is_multiple_of(4096)
+                        && bytes <= n2r_win32::reference_file::MAX_REFERENCE_FILE_BYTES
+                        && bytes.checked_add(self.max_journal_bytes).is_some()
+                }) && self.max_combined_scratch_bytes.is_some_and(|bytes| {
+                    bytes >= self.max_journal_bytes
+                        && self
+                            .max_literal_backing_bytes
+                            .is_some_and(|literal| literal <= bytes)
+                }) && !self.verify_existing_shadow
+            } else {
+                self.max_literal_backing_bytes.is_none()
+                    && self.max_combined_scratch_bytes.is_none()
+            },
+            "conversion capture capacity profile differs"
+        );
         crate::lab_reconstruct::validate_source_profile_binding(
             self.schema_version,
             self.source_resource_profile,
@@ -286,6 +317,10 @@ fn convert_profile(
         Interruption::None | Interruption::AfterSourceFreeze => None,
     };
     request.validate()?;
+    ensure!(
+        request.schema_version != 3,
+        "capacity-pinned conversion requires the allocation-bounded backend"
+    );
     if request.source_resource_profile.is_some() {
         eprintln!(
             "Using experimental larger-source profile; native conversion and recovery have not been qualified for this profile."
@@ -310,7 +345,7 @@ fn convert_profile(
     }
     let mut phase = "qualification";
     let attempted = (|| -> Result<()> {
-        let profile = JournalProfile::from_schema(request.schema_version)?;
+        let profile = request.journal_profile()?;
         let max_change_bytes = crate::lab_reconstruct::changed_byte_budget_for_profile(
             profile,
             request.max_journal_bytes,
@@ -561,6 +596,8 @@ mod tests {
                 allow_additional_partitions: false,
             },
             max_journal_bytes: MAX_JOURNAL_BYTES,
+            max_literal_backing_bytes: None,
+            max_combined_scratch_bytes: None,
             verify_existing_shadow: false,
         }
     }

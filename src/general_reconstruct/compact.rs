@@ -133,7 +133,7 @@ pub(crate) fn execute(
                     .map(|r| (r.offset, r.length))
                     .collect(),
                 maximum_bytes: descriptor.changed_bytes,
-                journal_profile: JournalProfile::from_schema(request.schema_version)?,
+                journal_profile: request.journal_profile()?,
             },
             events,
         )?;

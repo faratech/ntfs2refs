@@ -124,29 +124,43 @@ pub struct JournalBinding {
     /// source/tree profile is pinned inside the immutable manifest and ticket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
+    /// Present only for schema 3. Immutable manifest and trusted ticket both
+    /// bind this original capacity; recovery never measures a replacement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_capacity_bytes: Option<u64>,
+}
+impl JournalBinding {
+    pub fn journal_profile(&self, schema: u32) -> Result<JournalProfile> {
+        let profile =
+            JournalProfile::from_schema_and_capacity(schema, self.journal_capacity_bytes)?;
+        validate_source_profile_binding(schema, self.source_resource_profile)?;
+        Ok(profile)
+    }
 }
 
 /// Source-resource admission and journal sizing are distinct profiles. Only
 /// the large source profile is serializable here; absent means the legacy
-/// alpha profile and preserves old request/ticket bytes exactly.
+/// alpha profile for schemas 1/2 and preserves their old bytes exactly.
+/// Capacity-pinned schema 3 requires an explicit large/streaming source profile.
 pub fn validate_source_profile_binding(
     journal_schema: u32,
     source: Option<crate::ntfs_admission::ResourceProfile>,
 ) -> Result<()> {
-    let journal = JournalProfile::from_schema(journal_schema)?;
+    let large = matches!(
+        source,
+        Some(
+            crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
+                | crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
+        )
+    );
     ensure!(
-        source.is_none()
-            || matches!(
-                (journal, source),
-                (
-                    JournalProfile::ExperimentalLargeV2,
-                    Some(
-                        crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
-                            | crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
-                    )
-                )
-            ),
-        "source resource profile requires the explicit v2 journal profile"
+        match journal_schema {
+            1 => source.is_none(),
+            2 => source.is_none() || large,
+            3 => large,
+            _ => false,
+        },
+        "source resource profile requires its explicit supported journal profile"
     );
     Ok(())
 }
@@ -158,6 +172,11 @@ pub struct JournalTicket {
     pub immutable_sha256: String,
     pub immutable_length: u64,
     pub journal_length: u64,
+}
+impl JournalTicket {
+    pub fn journal_profile(&self) -> Result<JournalProfile> {
+        self.binding.journal_profile(self.schema_version)
+    }
 }
 #[derive(Debug, Serialize)]
 pub struct JournalSummary {
@@ -623,7 +642,16 @@ fn prepare_journal_using_comparison<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut progress = Reporter::new(request.expected_length, progress);
     validate_profile(request, profile)?;
     validate_binding(binding)?;
-    validate_source_profile_binding(profile.version(), binding.source_resource_profile)?;
+    ensure!(
+        binding.journal_profile(profile.version())? == profile,
+        "journal binding capacity differs from explicit preparation profile"
+    );
+    if matches!(profile, JournalProfile::CapacityPinnedV3 { .. }) {
+        ensure!(
+            max_journal_bytes == profile.max_journal_bytes(),
+            "schema-3 preparation budget differs from pinned journal capacity"
+        );
+    }
     ensure!(
         max_journal_bytes <= profile.max_journal_bytes(),
         "journal budget exceeds hard cap"
@@ -798,7 +826,7 @@ fn load_journal_state<J: ReadSeek>(
     ticket: &JournalTicket,
     require_zero_handoff: bool,
 ) -> Result<Loaded> {
-    let profile = JournalProfile::from_schema(ticket.schema_version)?;
+    let profile = ticket.journal_profile()?;
     validate_binding(&ticket.binding)?;
     validate_source_profile_binding(
         ticket.schema_version,
@@ -1342,6 +1370,7 @@ mod handoff_receipt_tests {
         JournalBinding {
             experiment_id: "a".repeat(32),
             source_resource_profile: None,
+            journal_capacity_bytes: None,
             target_identity_sha256: "1".repeat(64),
             shadow_identity_sha256: "2".repeat(64),
             journal_identity_sha256: "3".repeat(64),
@@ -1754,7 +1783,7 @@ pub fn verify_completed_marker<T: ReadSeek, S: ReadSeek, J: ReadSeek>(
     expected_shadow_sha256: &str,
 ) -> Result<CompletedMarkerProof> {
     validate_binding(observed_binding)?;
-    let profile = JournalProfile::from_schema(ticket.schema_version)?;
+    let profile = ticket.journal_profile()?;
     ensure!(
         ticket.binding == *observed_binding
             && ticket.immutable_length.checked_add(BODY_START) == Some(ticket.journal_length)
@@ -1856,7 +1885,7 @@ pub fn verify_completed_rollback_marker_without_shadow<T: ReadSeek, J: ReadSeek>
     expected_source_sha256: &str,
 ) -> Result<CompletedMarkerProof> {
     validate_binding(observed_binding)?;
-    let profile = JournalProfile::from_schema(ticket.schema_version)?;
+    let profile = ticket.journal_profile()?;
     ensure!(
         ticket.binding == *observed_binding
             && ticket.immutable_length.checked_add(BODY_START) == Some(ticket.journal_length)
@@ -2534,6 +2563,7 @@ mod capacity_budget_tests {
         JournalBinding {
             experiment_id: "a".repeat(32),
             source_resource_profile: None,
+            journal_capacity_bytes: None,
             target_identity_sha256: "1".repeat(64),
             shadow_identity_sha256: "2".repeat(64),
             journal_identity_sha256: "3".repeat(64),

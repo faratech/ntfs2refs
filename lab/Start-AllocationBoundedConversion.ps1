@@ -13,6 +13,8 @@
     [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$MainSha256,
     [Parameter(Mandatory)][ValidateRange(1,67108864)][int]$MainBytes,
     [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{40}\z')][string]$SourceCommit,
+    [string]$SourceFixturePath,
+    [ValidatePattern('\A[0-9a-f]{64}\z')][string]$SourceFixtureSha256,
     [ValidateRange(0,50000000000)][long]$ForecastAdditionalBytes=7GB
 )
 Set-StrictMode -Version Latest
@@ -53,8 +55,10 @@ function Host-Guard{
 }
 
 try{
+    Need ((-not[string]::IsNullOrEmpty($SourceFixturePath))-eq(-not[string]::IsNullOrEmpty($SourceFixtureSha256))) 'Source fixture path and checksum must be supplied together.'
+    if(-not[string]::IsNullOrEmpty($SourceFixturePath)){$null=Json $SourceFixturePath $SourceFixtureSha256}
     $ids=@($ExpectedCheckpointIds|ForEach-Object {$_.ToString('D')})
-    Need ($ExpectedParent -ne [guid]::Empty -and $ids.Count -ge 2 -and $ids.Count -le 16 -and @($ids|Sort-Object -Unique).Count -eq $ids.Count -and $ExpectedParent.ToString('D') -in $ids -and [guid]::Empty.ToString('D') -notin $ids) 'Explicit distinct current checkpoint IDs including the actual parent required.'
+    Need ($ExpectedParent -ne [guid]::Empty -and $ids.Count -ge 2 -and $ids.Count -le 50 -and @($ids|Sort-Object -Unique).Count -eq $ids.Count -and $ExpectedParent.ToString('D') -in $ids -and [guid]::Empty.ToString('D') -notin $ids) 'Explicit distinct current checkpoint IDs including the actual parent required (Hyper-V maximum50).'
     $receiptPath=[IO.Path]::GetFullPath($NtfsReceiptPath)
     Need ($receiptPath -ceq $NtfsReceiptPath -and $receiptPath.StartsWith(($base+'\'),[StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($receiptPath) -ceq 'receipt.json' -and [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($receiptPath)) -ceq 'closed-recovery') 'Actual closed public rollback receipt path required.'
     $ntfs=Json $receiptPath $NtfsReceiptSha256
@@ -80,7 +84,7 @@ try{
     Host-Guard; Need (-not (Test-Path -LiteralPath $root)) 'Fresh host case required.'
     New-Item -ItemType Directory -Path $root -ErrorAction Stop|Out-Null; $created=$true
     $c=@{run_id=$run;stage=$stage;task=$task;main_sha256=$mainPin;main_bytes=$tool.bytes}
-    Save 'intent.json' @{schema_version=1;kind='optimized-drive-alpha-intent';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;tool=$tool;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;ntfs_receipt_grants_source_admission=$false;capacity=$capacity;forecast_bytes=$ForecastAdditionalBytes;forecast_is_not_reservation=$true;public_argv=@('--drive','F','--partition','2');stdin='yes CRLF';manual_shadow_journal_binding=$false;source_admission_recreated=$false;power_checkpoint_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
+    Save 'intent.json' @{schema_version=1;kind='optimized-drive-alpha-intent';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;tool=$tool;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;ntfs_receipt_grants_source_admission=$false;source_fixture_path=$SourceFixturePath;source_fixture_sha256=$SourceFixtureSha256;source_fixture_grants_source_admission=$false;capacity=$capacity;forecast_bytes=$ForecastAdditionalBytes;forecast_is_not_reservation=$true;public_argv=@('--drive','F','--partition','2');stdin='yes CRLF';manual_shadow_journal_binding=$false;source_admission_recreated=$false;power_checkpoint_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o')}
     $body=@'
 Set-StrictMode -Version Latest; $ErrorActionPreference='Stop'
 $c=[Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__CONFIG__'))|ConvertFrom-Json
@@ -141,7 +145,7 @@ finally{if($null -ne $process){$process.Dispose()}}
     Copy-Item -LiteralPath $tool.path -ToSession $session -Destination (Join-Path $stage 'ntfs2refs.exe')
     Copy-Item -LiteralPath $wrapperPath -ToSession $session -Destination (Join-Path $stage 'wrapper.ps1')
     Host-Guard
-    Save 'dispatch.json' @{schema_version=1;kind='allocation-bounded-public-drive-dispatch';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;task_name=$task;guest_stage=$stage;binary_sha256=$mainPin;binary_bytes=$tool.bytes;wrapper_sha256=$wrapperPin;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;argv=@('--drive','F','--partition','2');stdin='yes CRLF';expected_exit=0;manual_shadow_journal_binding=$false;source_admission_recreated=$false;utc=[DateTime]::UtcNow.ToString('o')}
+    Save 'dispatch.json' @{schema_version=1;kind='allocation-bounded-public-drive-dispatch';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;task_name=$task;guest_stage=$stage;binary_sha256=$mainPin;binary_bytes=$tool.bytes;wrapper_sha256=$wrapperPin;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;argv=@('--drive','F','--partition','2');stdin='yes CRLF';expected_exit=0;manual_shadow_journal_binding=$false;source_admission_recreated=$false;source_fixture_path=$SourceFixturePath;source_fixture_sha256=$SourceFixtureSha256;source_fixture_grants_source_admission=$false;utc=[DateTime]::UtcNow.ToString('o')}
     Invoke-Command -Session $session -ArgumentList $stage,$task,$wrapperPin,$mainPin,$MainBytes -ScriptBlock {param($Stage,$Task,$WrapperPin,$MainPin,$Bytes)
         Set-StrictMode -Version Latest;$ErrorActionPreference='Stop';$path=Join-Path $Stage 'wrapper.ps1';$binary=Join-Path $Stage 'ntfs2refs.exe'
         if((Get-FileHash -LiteralPath $path).Hash.ToLowerInvariant() -cne $WrapperPin -or (Get-Item -LiteralPath $binary).Length -ne $Bytes -or (Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant() -cne $MainPin -or @(Get-ScheduledTask -ErrorAction Stop|Where-Object TaskName -CEQ $Task).Count){throw 'Fresh pinned public main/wrapper/task required.'}

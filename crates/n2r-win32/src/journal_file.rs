@@ -23,32 +23,77 @@ pub const MAX_CHANGED_BYTES: u64 = (MAX_JOURNAL_BYTES - JOURNAL_OVERHEAD_RESERVE
 pub const MAX_EXPERIMENTAL_JOURNAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 /// Selected explicitly by request/ticket schema, never inferred from a file's
-/// size. Legacy and experimental bounds remain distinct throughout recovery.
+/// size or current free space. CapacityV3 is bound into the trusted request and
+/// ticket; legacy and experimental bounds stay distinct throughout recovery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JournalProfile {
     LegacyV1,
     ExperimentalLargeV2,
+    CapacityPinnedV3 { max_journal_bytes: u64 },
 }
 impl JournalProfile {
     pub const fn version(self) -> u32 {
         match self {
             Self::LegacyV1 => 1,
             Self::ExperimentalLargeV2 => 2,
+            Self::CapacityPinnedV3 { .. } => 3,
         }
     }
     pub const fn max_journal_bytes(self) -> u64 {
         match self {
             Self::LegacyV1 => MAX_JOURNAL_BYTES,
             Self::ExperimentalLargeV2 => MAX_EXPERIMENTAL_JOURNAL_BYTES,
+            Self::CapacityPinnedV3 { max_journal_bytes } => max_journal_bytes,
         }
     }
     pub const fn max_changed_bytes(self) -> u64 {
-        (self.max_journal_bytes() - JOURNAL_OVERHEAD_RESERVE) / 2 / 4096 * 4096
+        self.max_journal_bytes()
+            .saturating_sub(JOURNAL_OVERHEAD_RESERVE)
+            / 2
+            / 4096
+            * 4096
+    }
+    /// Encoded selection retains every old byte but can synthesize new bytes.
+    /// The exact old + literal-new + metadata size must still be checked.
+    pub const fn max_encoded_changed_bytes(self) -> u64 {
+        self.max_journal_bytes()
+            .saturating_sub(JOURNAL_OVERHEAD_RESERVE)
+            / 4096
+            * 4096
     }
     pub fn from_schema(version: u32) -> io::Result<Self> {
         match version {
             1 => Ok(Self::LegacyV1),
             2 => Ok(Self::ExperimentalLargeV2),
+            3 => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "journal profile 3 requires pinned capacity",
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported journal profile",
+            )),
+        }
+    }
+    /// Recover the explicit profile without inferring it from a device or file.
+    /// Historical profiles must not acquire a capacity field during replay.
+    pub fn from_schema_and_capacity(version: u32, capacity: Option<u64>) -> io::Result<Self> {
+        match (version, capacity) {
+            (1 | 2, None) => Self::from_schema(version),
+            (1 | 2, Some(_)) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "historical journal profile cannot carry pinned capacity",
+            )),
+            (3, Some(max_journal_bytes))
+                if (JOURNAL_OVERHEAD_RESERVE + 2 * 4096..=i64::MAX as u64 - 4095)
+                    .contains(&max_journal_bytes) =>
+            {
+                Ok(Self::CapacityPinnedV3 { max_journal_bytes })
+            }
+            (3, _) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "journal profile 3 requires bounded explicit pinned capacity",
+            )),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unsupported journal profile",
@@ -253,6 +298,13 @@ fn validate_file_fields_for_profile(
     e: &JournalFileEvidence,
     profile: JournalProfile,
 ) -> io::Result<(u64, u64, u32)> {
+    // Reject invalid hand-constructed CapacityPinnedV3 values before the
+    // allocation-rounding addition below or any native evidence is accepted.
+    let capacity = match profile {
+        JournalProfile::CapacityPinnedV3 { max_journal_bytes } => Some(max_journal_bytes),
+        _ => None,
+    };
+    JournalProfile::from_schema_and_capacity(profile.version(), capacity)?;
     let standard = &e.file_standard_info;
     let allocation = u64_at(standard, 0)?;
     let length = u64_at(standard, 8)?;

@@ -23,6 +23,28 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Capacity candidate: schema3 pins journal capacity in requests/bindings/tickets/
+immutable manifests, removes the public allocation route's16GiB ceiling and
+shares one measured scratch pool with independently capped literal backing.
+Per-append D/L/combined checks plus advisory live storage checks run before
+capture writes; exact journal sizing/free checks precede source activation.
+Recovery uses pinned original ceilings, never remaining free space. Legacy1/2
+serialization and dense bounds remain. Checked-reader typed comparisons remove
+temporary JSON allocation/cloning but preserve every boot/MFT/record reread.
+Focused library/public/verifier/bind release builds pass; native schema3 pending.
+See docs/capacity-pinned-journals.md. No unit tests added/run.
+Large sealed d974efe run98153ebb/core51e20d11 on original808-file/120-directory
+9,885,781,381B NTFS64K source6fe2d6b6 reached qualification, then refused before
+activation: selected journal exceeds16GiB caller budget. D15,139,008,512B,
+literal3,784,351,744B; both disk1 and target stayed protected. Closed metadata43
+files/94,647,385B under mixed-window-budget-refusal-98153ebb; failure checkpoint
+ce9b92c2-85c5-4754-82e3-62d877ab5726. Current VM Off/RAM0 there;50checkpoints.
+No active worker/task. Original F: source6fe2d6b6 and H: source371ae756 remain.
+Obsolete read-only probebd7e1ec6 removed after rehashing its closed archive;
+all evidence retained, cleanup receipt under mixed-scale-obsolete-checkpoint-cleanup.
+Next: seal the capacity build and rerun the exact mixed source, then qualify
+the new capacity recovery path. Never change/stage the user-owned main.rs hunk.
+
 D1 decision (2026-10-31): the user chose "Use destination windows
 (Recommended)" after the preserved14-case probe. Per-move bitmap queries may
 cover the exact destination window under both selectors. Keep complete phase

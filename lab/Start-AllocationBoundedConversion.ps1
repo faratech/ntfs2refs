@@ -167,7 +167,16 @@ Set-StrictMode -Version Latest; $ErrorActionPreference='Stop'
 $c=[Text.UTF8Encoding]::new($false).GetString([Convert]::FromBase64String('__CONFIG__'))|ConvertFrom-Json
 $phase='preflight'; $process=$null; $nativeExit=$null
 function Need([bool]$Ok,[string]$Message){if(-not $Ok){throw $Message}}
-function Save([string]$Name,$Value){$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 14));Need ($bytes.Length -le 1MB) 'Wrapper receipt exceeds1MiB.';$f=[IO.File]::Open((Join-Path $c.stage $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}}
+function Save([string]$Name,$Value){
+ $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 14))
+ # Complete per-stream observations can exceed the small control-receipt
+ # budget. Keep every row under the existing native metadata/archive bound.
+ $maximum=1MB
+ if($Name-in@('lab-baseline-binding.json','independent-target-hashes.json','wrapper-result.json')){$maximum=64MB}
+ Need ($bytes.Length-le$maximum) 'Wrapper receipt exceeds its explicit metadata budget.'
+ $f=[IO.File]::Open((Join-Path $c.stage $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+ try{$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}
+}
 function SameArray($Left,$Right){$a=@($Left);$b=@($Right);if($a.Count-ne$b.Count){return $false};for($i=0;$i-lt$a.Count;$i++){if($a[$i]-cne$b[$i]){return $false}};return $true}
 function Json([string]$Path){Need ($Path.StartsWith('C:\',[StringComparison]::OrdinalIgnoreCase) -and $Path.EndsWith('.json',[StringComparison]::Ordinal)) 'Closed C JSON only.';$m=Get-Item -LiteralPath $Path -Force;Need (-not $m.PSIsContainer -and -not ($m.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $m.Length -gt 0 -and $m.Length -le 64MB) 'Bounded ordinary closed C JSON required.';$a=$m.Directory;while($null -ne $a){Need (-not ($a.Attributes -band [IO.FileAttributes]::ReparsePoint)) 'Reparse C metadata ancestry.';$a=$a.Parent};Get-Content -LiteralPath $Path -Raw -Encoding UTF8|ConvertFrom-Json}
 function Idle{$tasks=@(Get-ScheduledTask -ErrorAction Stop);$processes=@(Get-CimInstance Win32_Process -ErrorAction Stop);Need (@($tasks|Where-Object {$_.TaskName -like 'N2R-*' -and $_.TaskName -cne $c.task -and $_.State.ToString() -notin @('Ready','Disabled')}).Count -eq 0 -and @($processes|Where-Object {$_.Name -match '\A(?:ntfs2refs(?:-.+)?|lab-.+)\.exe\z'}).Count -eq 0) 'Another project task/process is active or unknown.'}

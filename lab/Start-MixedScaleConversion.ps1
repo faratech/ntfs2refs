@@ -15,6 +15,10 @@ param(
  [ValidatePattern('\A[0-9a-f]{64}\z')][string]$DigestToolSha256='e2b344333faa7830ba08507c9cf4960b7388e70f0ae3608b5217030ad292b371',
  [string]$BaselinePath,
  [ValidatePattern('\A[0-9a-f]{64}\z')][string]$BaselineSha256,
+ [string]$FreshBaselineManifestPath,
+ [ValidatePattern('\A[0-9a-f]{64}\z')][string]$FreshBaselineManifestSha256,
+ [string]$DirectoryGrowthReceiptPath,
+ [ValidatePattern('\A[0-9a-f]{64}\z')][string]$DirectoryGrowthReceiptSha256,
  [ValidateRange(0,16384)][int]$MinimumExtentOnlyStreams=0,
  [ValidateRange(0,16384)][int]$MinimumTailExtentOnlyStreams=0,
  [ValidateRange(1,50000000000)][long]$ForecastAdditionalBytes=40GB
@@ -30,7 +34,11 @@ function Ordinary([string]$Path,[long]$Maximum){
  while($null-ne$a){Need (-not($a.Attributes-band[IO.FileAttributes]::ReparsePoint)) 'Reparse host ancestry refused.';$a=$a.Parent}
  return $m
 }
-Need ($ExpectedParent-eq[guid]'6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e') 'Exact preserved mixed NTFS parent required.'
+$freshMode=-not[string]::IsNullOrEmpty($FreshBaselineManifestPath)
+Need ($freshMode-eq(-not[string]::IsNullOrEmpty($FreshBaselineManifestSha256))) 'Fresh manifest path and SHA must be supplied together.'
+Need ($freshMode-eq(-not[string]::IsNullOrEmpty($DirectoryGrowthReceiptPath))-and$freshMode-eq(-not[string]::IsNullOrEmpty($DirectoryGrowthReceiptSha256))) 'Fresh mode requires the exact directory growth path and SHA together.'
+if($freshMode){Need ([string]::IsNullOrEmpty($BaselinePath)-and[string]::IsNullOrEmpty($BaselineSha256)) 'Fresh and historical canonical baselines cannot be combined.'}
+if(-not$freshMode){Need ($ExpectedParent-eq[guid]'6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e') 'Exact preserved mixed NTFS parent required.'}else{Need ($ExpectedParent-ne[guid]::Empty-and$ExpectedParent-ne[guid]'6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e') 'Fresh grown source snapshot required; the dispatcher checks the complete fresh baseline.'}
 $fixturePath=Join-Path $base 'mixed-fixture-20261029-3dccf8e8fa38487db6731284a12bceb9\fixture.json'
 $fixturePin='7810754f1853490d399f87bf1b24f509a8c32716cee84d38babc7c385a487f66'
 $null=Ordinary $fixturePath 1MB
@@ -71,6 +79,7 @@ $parameters=@{
 if(-not[string]::IsNullOrEmpty($BaselinePath)-or-not[string]::IsNullOrEmpty($BaselineSha256)){
  $parameters.BaselinePath=$BaselinePath;$parameters.BaselineSha256=$BaselineSha256
 }
+if($freshMode){$parameters.FreshBaselineManifestPath=$FreshBaselineManifestPath;$parameters.FreshBaselineManifestSha256=$FreshBaselineManifestSha256;$parameters.DirectoryGrowthReceiptPath=$DirectoryGrowthReceiptPath;$parameters.DirectoryGrowthReceiptSha256=$DirectoryGrowthReceiptSha256}
 # The dispatcher keeps exact current checkpoint equality, 4GiB/4CPU/noNIC,
 # source F:/GPT/NTFS64K, Windows C:, G: and protected old shadow5 checks.
 # Its observer derives every count from the new expectation and accepts the

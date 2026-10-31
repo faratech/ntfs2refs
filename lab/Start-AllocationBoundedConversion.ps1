@@ -17,6 +17,10 @@
  [ValidateRange(0,16384)][int]$MinimumTailExtentOnlyStreams=0,
  [string]$BaselinePath,
  [ValidatePattern('\A[0-9a-f]{64}\z')][string]$BaselineSha256,
+ [string]$FreshBaselineManifestPath,
+ [ValidatePattern('\A[0-9a-f]{64}\z')][string]$FreshBaselineManifestSha256,
+ [string]$DirectoryGrowthReceiptPath,
+ [ValidatePattern('\A[0-9a-f]{64}\z')][string]$DirectoryGrowthReceiptSha256,
     [string]$SourceFixturePath,
     [ValidatePattern('\A[0-9a-f]{64}\z')][string]$SourceFixtureSha256,
     [ValidateRange(0,50000000000)][long]$ForecastAdditionalBytes=7GB
@@ -31,7 +35,9 @@ $run=[guid]::NewGuid().ToString('N')
 $root=Join-Path $base ('alloc-drive-20261029-'+$run)
 $stage='C:\ntfs2refs\alloc-drive-'+$run
 $task='N2R-AllocDrive-'+$run
-$session=$null; $created=$false
+$session=$null; $created=$false;$baseline=$null
+$freshMode=-not[string]::IsNullOrEmpty($FreshBaselineManifestPath)
+. (Join-Path $PSScriptRoot 'SourceBaselineSupport.ps1')
 
 function Need([bool]$Ok,[string]$Message){if(-not $Ok){throw $Message}}
 function Ordinary([string]$Path){
@@ -80,7 +86,7 @@ function Host-Guard{
 }
 
 try{
- $baseline=ReadLabBaselineHost $BaselinePath $BaselineSha256 ([guid]'6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e')
+ if($freshMode){Need ([string]::IsNullOrEmpty($BaselinePath)-and[string]::IsNullOrEmpty($BaselineSha256)) 'Choose one full lab baseline source.';$baseline=ReadFreshLabSourceBaselineHost $FreshBaselineManifestPath $FreshBaselineManifestSha256 $DirectoryGrowthReceiptPath $DirectoryGrowthReceiptSha256 $ExpectedParent $base}else{Need ([string]::IsNullOrEmpty($FreshBaselineManifestSha256)-and[string]::IsNullOrEmpty($DirectoryGrowthReceiptPath)-and[string]::IsNullOrEmpty($DirectoryGrowthReceiptSha256)) 'Fresh baseline arguments require a manifest path.';$baseline=ReadLabBaselineHost $BaselinePath $BaselineSha256 ([guid]'6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e')}
  Need ($MinimumExtentOnlyStreams-eq0-or$baseline.enabled) 'A positive minimum extent-only stream count requires a separately pinned lab baseline.'
  Need ($MinimumTailExtentOnlyStreams-eq0-or$baseline.enabled) 'A positive tail coverage minimum requires the separately pinned full-content lab baseline.'
     Need ((-not[string]::IsNullOrEmpty($SourceFixturePath))-eq(-not[string]::IsNullOrEmpty($SourceFixtureSha256))) 'Source fixture path and checksum must be supplied together.'
@@ -114,6 +120,7 @@ try{
     Host-Guard; Need (-not (Test-Path -LiteralPath $root)) 'Fresh host case required.'
     New-Item -ItemType Directory -Path $root -ErrorAction Stop|Out-Null; $created=$true
     $c=@{run_id=$run;stage=$stage;task=$task;main_sha256=$mainPin;main_bytes=$tool.bytes;digest_sha256=$(if($null-ne$digestTool){$digestTool.sha256}else{''});digest_bytes=$(if($null-ne$digestTool){$digestTool.bytes}else{0});minimum_extent_only_streams=$MinimumExtentOnlyStreams;baseline_enabled=$baseline.enabled;baseline_sha256=$baseline.sha256;baseline_request_sha256=$baseline.request_sha256;baseline_result_sha256=$baseline.result_sha256;baseline_basis_sha256=$baseline.basis_sha256;minimum_tail_extent_only_streams=$MinimumTailExtentOnlyStreams}
+    if($freshMode){$c.fresh_baseline_enabled=$true;$c.fresh_baseline_files=$baseline.files;$c.fresh_manifest_sha256=$FreshBaselineManifestSha256;$c.fresh_source_checkpoint=$ExpectedParent.ToString('D');$c.fresh_source_binding=$baseline.provenance.source_binding}
     Save 'intent.json' @{schema_version=1;kind='optimized-drive-alpha-intent';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;tool=$tool;independent_digest_tool=$digestTool;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;ntfs_receipt_grants_source_admission=$false;source_fixture_path=$SourceFixturePath;source_fixture_sha256=$SourceFixtureSha256;source_fixture_grants_source_admission=$false;capacity=$capacity;forecast_bytes=$ForecastAdditionalBytes;forecast_is_not_reservation=$true;public_argv=@('--drive','F','--partition','2');stdin='yes CRLF';manual_shadow_journal_binding=$false;source_admission_recreated=$false;power_checkpoint_cleanup_authorized=$false;utc=[DateTime]::UtcNow.ToString('o');minimum_extent_only_streams=$MinimumExtentOnlyStreams;baseline_provenance=$baseline.provenance;baseline_grants_product_authority=$false;minimum_tail_extent_only_streams=$MinimumTailExtentOnlyStreams}
     $body=@'
 function LabExtentEvidenceShape($Stream){
@@ -273,6 +280,7 @@ function ReconcileLabAccessTime($Current,$Old,$Context){
  return @{record_number=$Current.record_number;sequence_number=$Current.sequence_number;path=$Current.path;old_baseline_access_time=$Old.stored_times[1];current_raw_source_times=$stored;current_canonical_times=@($Current.stored_times);current_native_source_before=$sb;current_native_source_after=$sa;current_native_source_cached_access_differs=$cached;current_source_metadata_matched=$view[0].metadata.matched;current_source_metadata_policy=$view[0].metadata.detail;current_native_target_before=$tb;current_native_target_after=$ta;current_source_file_id_hex=([BitConverter]::ToString($sourceId)).Replace('-','').ToLowerInvariant();current_target_file_id_hex=([BitConverter]::ToString($targetId)).Replace('-','').ToLowerInvariant();target_timestamp_exception=$exception;comparison_only_old_access_alignment=$true;product_expectation_changed=$false;filesystem_times_changed=$false}
 }
 function ResolveLabContentBaseline($Expected,$Request,[string]$Records){
+ if($null-ne$c.PSObject.Properties['fresh_baseline_enabled']-and$c.fresh_baseline_enabled){return ResolveFreshLabContentBaseline $Expected $Request $Records}
  $hashless=0;foreach($object in $Expected.objects){if(-not$object.directory-and$null-eq$object.sha256){$hashless++};$property=$object.PSObject.Properties['named_streams'];if($null-ne$property){foreach($stream in $property.Value){if($null-eq$stream.sha256){$hashless++}}}}
  if(-not$c.baseline_enabled){Need ($hashless-eq0) 'Hashless expectations require a separately pinned historical full-content lab baseline.';return @{enabled=$false;observer_expectation=$Expected;product_expectation=$Expected;receipt=@{scope='lab-content-baseline-v1';baseline_used=$false;hashless_product_streams=0;product_expectation_written=$false;grants_product_authority=$false}}}
  $paths=@(@{name='lab-full-content-baseline.json';pin=$c.baseline_sha256},@{name='lab-baseline-request.json';pin=$c.baseline_request_sha256},@{name='lab-baseline-result.json';pin=$c.baseline_result_sha256},@{name='lab-baseline-source-basis.json';pin=$c.baseline_basis_sha256})
@@ -343,6 +351,8 @@ try{
     Idle; Source 'NTFS'; Protected
     $disks=@(Get-Disk -ErrorAction Stop); Need ($env:COMPUTERNAME -ceq 'N2R-WIN11' -and $disks.Count -eq 6 -and @($disks|Where-Object Number -ge 6).Count -eq 0) 'Owning guest with old managed6 absent required.'
     $binary=Join-Path $c.stage 'ntfs2refs.exe';Need ((Get-Item -LiteralPath $binary).Length -eq $c.main_bytes -and (Get-FileHash -LiteralPath $binary).Hash.ToLowerInvariant() -ceq $c.main_sha256) 'Frozen public main differs.'
+    $script:labFreshBaseline=$null
+    if($null-ne$c.PSObject.Properties['fresh_baseline_enabled']-and$c.fresh_baseline_enabled){$preflight=ReadFreshLabSourceBaselineGuest $c.fresh_source_binding;Save 'fresh-baseline-preflight.json' @{success=$true;manifest_sha256=$c.fresh_manifest_sha256;source_checkpoint=$c.fresh_source_checkpoint;descriptor=$preflight.descriptor;actual_full_source_streams_verified=811;copied_artifact_bindings=$preflight.copied_artifact_bindings;conversion_started=$false;grants_product_authority=$false}}
     Save 'wrapper-worker.json' @{run_id=$c.run_id;pid=$PID;creation_ms=([DateTimeOffset](Get-Process -Id $PID).StartTime).ToUnixTimeMilliseconds();utc=[DateTime]::UtcNow.ToString('o')}
     $cli=@('--drive','F','--partition','2');$stdin=Join-Path $c.stage 'stdin-yes.txt';$f=[IO.File]::Open($stdin,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$bytes=[Text.Encoding]::ASCII.GetBytes("yes`r`n");$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}
     $stdout=Join-Path $c.stage 'stdout.log';$stderr=Join-Path $c.stage 'stderr.log';$phase='public-drive-conversion'
@@ -360,7 +370,8 @@ try{
     $records=$success[0].Groups[1].Value;$runRoot=[IO.Path]::GetDirectoryName($records);$engine=[IO.Path]::GetFileName($runRoot)
     $result=Json (Join-Path $records 'result.json');$final=Json (Join-Path $records 'finalization.json');$expected=Json (Join-Path $records 'expectation.json');$devices=Json (Join-Path $runRoot 'devices.json');$managed=Json (Join-Path $runRoot 'managed-shadow.json');$plan=Json (Join-Path $records 'selected-plan.json')
     $expectationSha=(Get-FileHash -LiteralPath (Join-Path $records 'expectation.json')).Hash.ToLowerInvariant()
-    Need (-not (Test-Path -LiteralPath (Join-Path $records 'failed.json')) -and $result.kind -ceq 'experimental-allocation-bounded-conversion' -and $result.success -eq $true -and $result.source_admitted -eq $true -and $result.rollback_closed -eq $true -and $result.free_space_contents_compared -eq $false -and $result.recovery_bundle_sha256 -cmatch '\A[0-9a-f]{64}\z' -and $result.expected_tree_sha256 -ceq $expectationSha -and $devices.experiment_id -ceq $engine -and $devices.source_resource_profile -ceq 'experimental_streaming_tree_v2' -and $devices.pair.source.disk_number -eq 1 -and [guid]$devices.pair.source.identity.disk_guid -eq [guid]'1b191872-c372-41ee-a416-e18863996f54' -and [guid]$devices.pair.source.identity.partition_guid -eq [guid]'f06075a8-67a2-46b9-8fac-4af4da809617' -and $devices.pair.source.identity.partition_bytes -eq 52GB -and @($plan.ranges).Count -eq $result.selected_ranges) 'Actual allocation-bounded result/devices/expected tree differs.'
+    $resourceProfileAccepted=($devices.source_resource_profile -ceq 'experimental_streaming_tree_v2');if($null-ne$c.PSObject.Properties['fresh_baseline_enabled']-and$c.fresh_baseline_enabled){$resourceProfileAccepted=AssertLabV3CurrentDevices $devices $expected $records}
+    Need (-not (Test-Path -LiteralPath (Join-Path $records 'failed.json')) -and $result.kind -ceq 'experimental-allocation-bounded-conversion' -and $result.success -eq $true -and $result.source_admitted -eq $true -and $result.rollback_closed -eq $true -and $result.free_space_contents_compared -eq $false -and $result.recovery_bundle_sha256 -cmatch '\A[0-9a-f]{64}\z' -and $result.expected_tree_sha256 -ceq $expectationSha -and $devices.experiment_id -ceq $engine -and $resourceProfileAccepted -and $devices.pair.source.disk_number -eq 1 -and [guid]$devices.pair.source.identity.disk_guid -eq [guid]'1b191872-c372-41ee-a416-e18863996f54' -and [guid]$devices.pair.source.identity.partition_guid -eq [guid]'f06075a8-67a2-46b9-8fac-4af4da809617' -and $devices.pair.source.identity.partition_bytes -eq 52GB -and @($plan.ranges).Count -eq $result.selected_ranges) 'Actual allocation-bounded result/devices/expected tree differs.'
     Need ($final.success -eq $true -and $null -eq $final.error -and $final.rollback_closed -eq $true -and $final.mount_paths_preserved -eq $true -and 'F:\' -in @($final.mount_paths_after.paths) -and $final.label_restoration.success -eq $true -and $final.label_restoration.readback_matches -eq $true) 'Actual native label/mount completion required.'
     $policyProperty=$result.PSObject.Properties['actual_target_verification_policy'];$targetPolicy='full_content';if($null-ne$policyProperty){$targetPolicy=[string]$policyProperty.Value};Need ($targetPolicy-in@('full_content','extent_identity_v1')) 'Unknown actual native target verification policy.';$fastTarget=$targetPolicy-ceq'extent_identity_v1';$extentReceipt=$null;$extentReceiptPin=$null
     if($fastTarget){
@@ -388,6 +399,7 @@ try{
 }catch{Save 'wrapper-failed.json' @{success=$false;run_id=$c.run_id;phase=$phase;native_exit_observed=($null -ne $nativeExit);native_exit=$nativeExit;error=$_.Exception.ToString();automatic_retry_recovery_restore_cleanup=$false;worker_termination_inferred=$false;utc=[DateTime]::UtcNow.ToString('o')};throw}
 finally{if($null-ne$process){$process.Dispose()};foreach($entry in $script:closedJsonCache.Values){$entry.stream.Dispose()};$script:closedJsonCache.Clear();$script:labIndexes.Clear()}
 '@
+    if($freshMode){$body=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'SourceBaselineSupport.ps1'))+"`r`n"+$body}
     $body=$body.Replace('__CONFIG__',[Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes(($c|ConvertTo-Json -Depth 6 -Compress))))
     $wrapperPath=Join-Path $root 'guest-wrapper.ps1';$bytes=[Text.UTF8Encoding]::new($false).GetBytes($body);$file=[IO.File]::Open($wrapperPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()};$wrapperPin=(Get-FileHash -LiteralPath $wrapperPath).Hash.ToLowerInvariant()
     $session=New-PSSession -VMId $id -Credential (Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml')) -ErrorAction Stop
@@ -405,7 +417,7 @@ finally{if($null-ne$process){$process.Dispose()};foreach($entry in $script:close
     Save 'ready.json' $ready
     Copy-Item -LiteralPath $tool.path -ToSession $session -Destination (Join-Path $stage 'ntfs2refs.exe')
     if($null-ne$digestTool){Copy-Item -LiteralPath $digestTool.path -ToSession $session -Destination (Join-Path $stage 'lab-content-digest.exe')}
- if($baseline.enabled){foreach($spec in @(@{key='expectation';name='lab-full-content-baseline.json'},@{key='request';name='lab-baseline-request.json'},@{key='result';name='lab-baseline-result.json'},@{key='basis';name='lab-baseline-source-basis.json'})){Copy-Item -LiteralPath $baseline.files[$spec.key].path -ToSession $session -Destination (Join-Path $stage $spec.name)}}
+ if($freshMode){foreach($key in $baseline.files.Keys){$entry=$baseline.files[$key];Copy-Item -LiteralPath $entry.path -ToSession $session -Destination (Join-Path $stage $entry.name)}}elseif($baseline.enabled){foreach($spec in @(@{key='expectation';name='lab-full-content-baseline.json'},@{key='request';name='lab-baseline-request.json'},@{key='result';name='lab-baseline-result.json'},@{key='basis';name='lab-baseline-source-basis.json'})){Copy-Item -LiteralPath $baseline.files[$spec.key].path -ToSession $session -Destination (Join-Path $stage $spec.name)}}
     Copy-Item -LiteralPath $wrapperPath -ToSession $session -Destination (Join-Path $stage 'wrapper.ps1')
     Host-Guard
     Save 'dispatch.json' @{schema_version=1;kind='allocation-bounded-public-drive-dispatch';run_id=$run;vm_id=$id.ToString();parent_id=$ExpectedParent.ToString();checkpoint_ids=$ids;task_name=$task;guest_stage=$stage;binary_sha256=$mainPin;binary_bytes=$tool.bytes;digest_tool_sha256=$c.digest_sha256;digest_tool_bytes=$c.digest_bytes;wrapper_sha256=$wrapperPin;toolset_manifest=$manifestPath;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$manifest.source_commit;ntfs_receipt_path=$receiptPath;ntfs_receipt_sha256=$NtfsReceiptSha256;argv=@('--drive','F','--partition','2');stdin='yes CRLF';expected_exit=0;manual_shadow_journal_binding=$false;source_admission_recreated=$false;source_fixture_path=$SourceFixturePath;source_fixture_sha256=$SourceFixtureSha256;source_fixture_grants_source_admission=$false;utc=[DateTime]::UtcNow.ToString('o');minimum_extent_only_streams=$MinimumExtentOnlyStreams;baseline_provenance=$baseline.provenance;baseline_grants_product_authority=$false;minimum_tail_extent_only_streams=$MinimumTailExtentOnlyStreams}
@@ -424,4 +436,4 @@ finally{if($null-ne$process){$process.Dispose()};foreach($entry in $script:close
     Save 'start.json' @{start_issued_once=$true;expected_exit=0;completion_inferred=$false;utc=[DateTime]::UtcNow.ToString('o')}
     Get-Content -LiteralPath (Join-Path $root 'dispatch.json') -Raw
 }catch{if($created -and -not (Test-Path -LiteralPath (Join-Path $root 'dispatch-failed.json'))){Save 'dispatch-failed.json' @{success=$false;run_id=$run;error=$_.Exception.ToString();automatic_retry_recovery_restore_cleanup=$false;utc=[DateTime]::UtcNow.ToString('o')}};throw}
-finally{if($null -ne $session){Remove-PSSession $session -ErrorAction SilentlyContinue}}
+finally{if($null -ne $session){Remove-PSSession $session -ErrorAction SilentlyContinue};if($null-ne$baseline-and$baseline.ContainsKey('held_streams')){foreach($stream in $baseline.held_streams){$stream.Dispose()}}}

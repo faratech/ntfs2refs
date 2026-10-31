@@ -1,0 +1,466 @@
+{
+  "schema_version": 1,
+  "kind": "destination-window-native-conversion",
+  "recorded_utc": "2026-10-31T12:41:42.380887+00:00",
+  "source_commit": "d974efe8f5ce569326c8fcb66006ef1bc87ed8c2",
+  "public_binary_sha256": "a9552ccf7402e5341a1104e5fc20a268896c295372b03f8c68e9c4fb2d022fd7",
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "run_id": "fea0a1ec7b9f49b99775bf0a9f92c03e",
+  "core_run_id": "eb9a82050afd1ef5d47f062d0223562e",
+  "native_exit": 0,
+  "source_checkpoint": "371ae756-faf2-40ac-bf86-5e8e1d744e30",
+  "converted_checkpoint": "8a53c8cc-91ed-40b8-a85f-ac744585a991",
+  "native_objects": 44,
+  "native_default_stream_hashes": 30,
+  "native_named_stream_hashes": 9,
+  "sparse_layouts_verified": 3,
+  "ea_entries_verified": 7,
+  "security_fixture_identities_verified": 8,
+  "reparse_point_buffers_verified": 6,
+  "functional_existing_reparse_routes_verified": 4,
+  "compression": {
+    "compression_padding_exposed_as_sparse_holes": false,
+    "resident_policy_bytes_materialized": 64,
+    "source_basis_sha256": "f9b80daf96a6046b790387ad32b587a25b7a143ea67b04c1de7c04da7d7ad516",
+    "encoded_stream_logical_bytes_rewritten": 2687224,
+    "normalization_identities": 7,
+    "resident_compression_policy_streams": 2,
+    "logical_streams": 7,
+    "rows": [
+      {
+        "ntfs_compression_normalized": false,
+        "target_logical_hashes_match": true,
+        "path": "H:\\CompressionFixture-8c4644bb03b847c8ac45ca0fd2d78fad",
+        "raw_logical_hashes_match": true,
+        "source_record_number": 78,
+        "source_sequence_number": 1
+      },
+      {
+        "ntfs_compression_normalized": true,
+        "target_logical_hashes_match": true,
+        "path": "H:\\CompressionFixture-8c4644bb03b847c8ac45ca0fd2d78fad\\compressed-directory",
+        "raw_logical_hashes_match": true,
+        "source_record_number": 79,
+        "source_sequence_number": 1
+      },
+      {
+        "ntfs_compression_normalized": true,
+        "target_logical_hashes_match": true,
+        "path": "H:\\CompressionFixture-8c4644bb03b847c8ac45ca0fd2d78fad\\mixed.bin",
+        "raw_logical_hashes_match": true,
+        "source_record_number": 80,
+        "source_sequence_number": 1
+      },
+      {
+        "ntfs_compression_normalized": true,
+        "target_logical_hashes_match": true,
+        "path": "H:\\CompressionFixture-8c4644bb03b847c8ac45ca0fd2d78fad\\incompressible.bin",
+        "raw_logical_hashes_match": true,
+        "source_record_number": 81,
+        "source_sequence_number": 1
+      },
+      {
+        "ntfs_compression_normalized": true,
+        "target_logical_hashes_match": true,
+        "path": "H:\\CompressionFixture-8c4644bb03b847c8ac45ca0fd2d78fad\\resident.bin",
+        "raw_logical_hashes_match": true,
+        "source_record_number": 82,
+        "source_sequence_number": 1
+      },
+      {
+        "ntfs_compression_normalized": true,
+        "target_logical_hashes_match": true,
+        "path": "H:\\CompressionFixture-8c4644bb03b847c8ac45ca0fd2d78fad\\empty.bin",
+        "raw_logical_hashes_match": true,
+        "source_record_number": 83,
+        "source_sequence_number": 1
+      },
+      {
+        "ntfs_compression_normalized": true,
+        "target_logical_hashes_match": true,
+        "path": "H:\\CompressionFixture-8c4644bb03b847c8ac45ca0fd2d78fad\\compressed-directory\\inherited.bin",
+        "raw_logical_hashes_match": true,
+        "source_record_number": 84,
+        "source_sequence_number": 1
+      },
+      {
+        "ntfs_compression_normalized": true,
+        "target_logical_hashes_match": true,
+        "path": "H:\\CompressionFixture-8c4644bb03b847c8ac45ca0fd2d78fad\\named.bin",
+        "raw_logical_hashes_match": true,
+        "source_record_number": 85,
+        "source_sequence_number": 1
+      }
+    ],
+    "compressed_physical_payload_adopted": false,
+    "objects": 8,
+    "encoded_nonresident_streams": 4,
+    "wrapper_repairs_metadata": false,
+    "independent_sha256_hashes": 7,
+    "independent_xxh3_hashes": 7,
+    "target_ntfs_compression_normalized": true,
+    "fixture_sha256": "37207be87d8a1941478b39d9c301a781c31b41edc52f59262d92fa76408863f5",
+    "observer_tool_sha256": "9c9e64b0aa2cd7cf18d177a7e7d81d8573538e577b68ca626246f485cc49711d"
+  },
+  "placement": {
+    "schema_version": 2,
+    "occupancy_evidence_scope": "destination-window-v1",
+    "phase_bitmap_scope": "full-volume",
+    "per_move_retrieval_scope": "complete-file-mapping",
+    "counters": {
+      "all_hole_sparse_streams": 1,
+      "deferred_drift_replans": 0,
+      "deferred_holes": 22,
+      "deferred_original_submissions": 2,
+      "deferred_scratch_submissions": 20,
+      "desired_runs": 1042,
+      "desired_runs_limit": 4096,
+      "direct_pieces": 2,
+      "drift_replans_limit_per_phase": 8,
+      "eligible_runs": 1042,
+      "evacuation_planned_moves": 0,
+      "evacuation_planned_submissions": 0,
+      "evacuation_remaining_blocked_bytes": 0,
+      "evacuation_submissions": 0,
+      "files": 25,
+      "final_drift_replans": 0,
+      "final_submissions": 1022,
+      "initial_tracked_extents": 14,
+      "move_evidence_bytes": 12917833,
+      "move_evidence_reservation_bytes": 233995,
+      "move_submissions_limit": 32768,
+      "named_carrier_bytes": 4534272,
+      "named_carrier_streams": 4,
+      "named_streams": 9,
+      "owned_intersecting_desired": 2,
+      "owned_intersecting_desired_limit": 32768,
+      "phase_bitmap_snapshots": 3,
+      "placement_artifact_bytes": 62142867,
+      "placement_artifact_bytes_limit": 67043328,
+      "planned_deferred_submissions": 22,
+      "scratch_free_intervals": 1026,
+      "sparse_carrier_bytes": 266240,
+      "sparse_streams": 3,
+      "tracked_extents": 36,
+      "tracked_extents_limit": 65536
+    },
+    "move_count": 1044,
+    "move_bytes_submitted": 4276224,
+    "windows": 2088,
+    "native_window_queries": 2088,
+    "native_returned_bytes": 8552448,
+    "returned_bytes_per_window_min": 4096,
+    "returned_bytes_per_window_max": 4096,
+    "requested_clusters_each_window": 1,
+    "declared_clusters_each_window": 13631488,
+    "all_destinations_free_in_both_selectors": true,
+    "full_mapping_proof_pages": 1044,
+    "D1_enabled_with_user_approval": true,
+    "D2_incremental_retrieval_enabled": false
+  },
+  "window_replay": {
+    "helper_sha256": "1a1548badd8012664e26d65502099b777f2154680c58a3df55bb555b6332cc18",
+    "native_exit": 0,
+    "summary": {
+      "all_destination_bits_free": true,
+      "all_window_transcripts_replayed": true,
+      "conversion_authorized": false,
+      "conversion_qualified": false,
+      "declared_volume_clusters": 13631488,
+      "full_retrieval_evidence_replayed": false,
+      "input": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\qualification\\construction-placement.json",
+      "input_bytes": 62144751,
+      "input_sha256": "e1bed372bc31d9bd5a0b2d75b613ec7f4c608d27848a479ea4e6f642964fdeb2",
+      "kind": "closed-placement-window-replay",
+      "move_count": 1044,
+      "moved_clusters": 1044,
+      "moves_by_phase": {
+        "allocate-deferred-original": 2,
+        "allocate-deferred-scratch": 20,
+        "original-coordinate": 1022
+      },
+      "native_moves_submitted": 0,
+      "native_query_count": 2088,
+      "native_returned_bytes": 8552448,
+      "native_volume_queries": 0,
+      "new_volume_verification": false,
+      "occupancy_evidence_scope": "destination-window-v1",
+      "original_coordinate_bytes": 4194304,
+      "original_coordinate_range_count": 1024,
+      "per_move_retrieval_scope": "complete-file-mapping",
+      "phase_bitmap_scope": "full-volume",
+      "phase_bitmap_snapshots": 3,
+      "placement_schema_version": 2,
+      "schema_version": 1,
+      "source_admission_authorized": false,
+      "source_write_requests": 0,
+      "success": true,
+      "volume_clusters": 13631488,
+      "window_count": 2088
+    },
+    "scope": "Lossless bitmap-window transcript replay only; no native volume queries, moves, source-write authority or full retrieval-proof replay"
+  },
+  "baseline_comparison": {
+    "source_commit": "08dd747dccd6f10e7d1f5bafc3ad39d5407f54be",
+    "run_id": "9f58c4cd24ca4d98bf8e01ddda9f7cfd",
+    "same_saved_ntfs_source_checkpoint": true,
+    "ordered_move_intents_and_complete_after_mapping_buffers_identical": true,
+    "move_projection_encoding": "sha256 of compact sort-key JSON array of object_index,phase,clusters,destination_lcn,starting_vcn,reposition,before_valid_data_advance,all_placements_match,mapping_matches,submitted_once,native_error,mapping_after",
+    "move_projection_sha256": "7894df2346521ddaacd6f5b275a4a943484454bc8ae288dfb6295ac40d804fbe",
+    "original_coordinate_rows_identical": true,
+    "original_coordinate_rows_sha256": "5675d5b7cec76406fb90b8632826c8e67b19585e55b909e45b2e9d5a39daa555",
+    "sparse_carrier_and_named_stream_slot_maps_identical": true,
+    "only_counter_differences": {
+      "move_evidence_bytes": {
+        "baseline": 10640505,
+        "destination_window": 12917833
+      },
+      "move_evidence_reservation_bytes": {
+        "baseline": 230594,
+        "destination_window": 233995
+      },
+      "placement_artifact_bytes": {
+        "baseline": 58463447,
+        "destination_window": 62142867
+      }
+    },
+    "full_phase_bitmap_hashes_assumed_identical": false,
+    "selective_user_blocker_plan_difference": "legacy phase bitmap SHA256 only; fresh formatter epoch",
+    "per_move_full_bitmap_candidate_hashes_reused": false,
+    "baseline_per_move_native_returned_bytes_available": false
+  },
+  "retention": {
+    "original_uncompressed_ranges": 1024,
+    "original_uncompressed_bytes": 4194304,
+    "changed_physical_coordinates": 0,
+    "source_payload_writes": 0
+  },
+  "storage": {
+    "journal_bytes": 88751616,
+    "packed_backing_bytes": 6541312,
+    "journal_plus_backing_bytes": 95292928,
+    "selected_bytes": 82178048,
+    "selected_ranges": 249,
+    "placement_report_bytes": 62144751,
+    "baseline_placement_report_bytes": 58465159,
+    "storage_change_attributed_to_D1": false
+  },
+  "timing": {
+    "native_start_utc": "2026-10-31T12:33:18.1196856Z",
+    "native_terminal_utc": "2026-10-31T12:33:50.9717643Z",
+    "wall_seconds": 32.8520787,
+    "baseline_wall_seconds": 114.7351736,
+    "wall_seconds_shorter": 81.8830949,
+    "observed_duration_reduction_percent": 71.36703796297739,
+    "observed_wall_throughput_ratio": 3.4924783496272336,
+    "scoped_wall_time_improvement_observed": true,
+    "controlled_benchmark": false,
+    "physical_io_reduction_measured": false,
+    "scope": "One combined VM conversion per build from the same saved source; host/cache/formatter conditions uncontrolled; not an arbitrary-volume guarantee or physical HDD estimate"
+  },
+  "source_admitted": true,
+  "rollback_closed": true,
+  "free_space_contents_compared": false,
+  "general_conversion_qualified": false,
+  "normal_archive": {
+    "files": 117,
+    "bytes": 83198975
+  },
+  "cold_boot": {
+    "status": "native verifier and independent compression observer passed",
+    "qualified": true,
+    "scope": "same-build clean reboot readback only",
+    "run_id": "c7fd15969b0c4653ba1b78f3b106edfd",
+    "checkpoint": "d939f576-4868-43d0-bde8-2a6f742dd489",
+    "verifier_sha256": "f82376a4dd9fe6b155475594cdbe208c891f242d5d62ce4e4312b05295c5dc21",
+    "verification_sha256": "6122235cef06593f71ad1da293001ad6030b99f75f48e8d0331bcc75bfd553e0",
+    "native_exit": 0,
+    "independent_compression_observer_exit": 0,
+    "objects": 44,
+    "default_hashes": 30,
+    "named_hashes": 9,
+    "unchanged_canonical_ids": 44,
+    "unchanged_retrieval_maps": 44,
+    "unchanged_alias_ids": 10,
+    "ea_objects": 4,
+    "ea_entries": 7,
+    "independent_compression_sha256_hashes": 7,
+    "independent_compression_xxh3_hashes": 7,
+    "target_ntfs_compression_normalized": true,
+    "source_payload_writes": 0,
+    "new_retained_source_comparison_claim": false,
+    "inherited_normal_retention_bytes": 4194304,
+    "archive_files": 17,
+    "archive_bytes": 3743919
+  },
+  "not_qualified": [
+    "exact-build interruption/resume/rollback and mutation",
+    "physical power loss",
+    "arbitrary volume sizes and resource scale",
+    "larger per-move windows in an actual conversion",
+    "maximum NTFS compatibility and boot conversion"
+  ],
+  "unit_tests_added_or_run": false,
+  "proofs": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-tools-d974efe\\build.json",
+      "bytes": 732,
+      "sha256": "99d6d191de39be5c0550e32422dd2d551e6e7260387b680ca20a8dcb9150f5b4"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\archive.json",
+      "bytes": 35335,
+      "sha256": "22bd9f0bcf880c51bd602714efa461843b627958fb56d69ef3194556a0340180"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\checkpoint.json",
+      "bytes": 141,
+      "sha256": "19cfeaeb49718c21fc9d8ba8e14e9e72cd161ef4ceeee0fbe96b41f72d86e078"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\window-replay.json",
+      "bytes": 1364,
+      "sha256": "f40cf5ad3b676bfd2d96ebcc051c3f4144435d2342ba5d2a778be0b5803a58d2"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\wrapper\\wrapper-result.json",
+      "bytes": 65685,
+      "sha256": "4b83cbfa50a42092459b4875015b93ea5609686dca19445f7b1c1bc7d06bd353"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\wrapper\\native-process.json",
+      "bytes": 516,
+      "sha256": "f09c20fc9eae823dd22061536c53e72ec4db5fdd20bcbe1341220ce926fec2b1"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\wrapper\\native-terminal.json",
+      "bytes": 2301,
+      "sha256": "a75eb12c6dfbf30ef4830446784e77c7b9be2650cf33bd6d66c6282e1102f495"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\wrapper\\compression-after.json",
+      "bytes": 10671,
+      "sha256": "29b66942d7f96361fa27c65468abd99c50a163578106bf39ee2abc4ac1046beb"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\request.json",
+      "bytes": 1821,
+      "sha256": "c8729ddb49111a9913c5579e7d8a2ee36f0c4f1596a67e93ee128ac5be60a747"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\expectation.json",
+      "bytes": 442872,
+      "sha256": "1b674b07cdbddb2949c7d17d88cbeb167ff4be1abb06d977e5e7eb2a58a5f80e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\result.json",
+      "bytes": 1041,
+      "sha256": "a39b189a8d28e3c76f73588905c868a4879fa66c86e3de19a2d93ecc5a59331c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\finalization.json",
+      "bytes": 3228335,
+      "sha256": "c90a3f1f37be91a50d6f5d2bb1b1663edfea5ab209494e3cbc98b6b5ede3f12e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\handoff.json",
+      "bytes": 445,
+      "sha256": "7fc0c012c2cf57d187e41e1c0ea9a4e4981901f851f61f8299f8f0c67d169d38"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\allocation-recovery-bundle.json",
+      "bytes": 1794,
+      "sha256": "94e36bc9963e24ec24c5596ee94b41cf65761e28875268e7e98882c28328b6d7"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\qualification\\source-basis.json",
+      "bytes": 1196927,
+      "sha256": "f9b80daf96a6046b790387ad32b587a25b7a143ea67b04c1de7c04da7d7ad516"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\qualification\\native-source.json",
+      "bytes": 6472583,
+      "sha256": "b240bbe31dba842740042f0a1fb2c819ed6b8ba013684c13e9b3482b4513c61f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\qualification\\target-preservation.json",
+      "bytes": 4680160,
+      "sha256": "a09b35f1dba4e40befd8d74738c742cfd61565e7199042cced9566643b4d670f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-success-fea0a1ec\\closed\\core\\conversion\\qualification\\construction-placement.json",
+      "bytes": 62144751,
+      "sha256": "e1bed372bc31d9bd5a0b2d75b613ec7f4c608d27848a479ea4e6f642964fdeb2"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\planning-success-9f58c4cd\\closed\\core\\conversion\\qualification\\construction-placement.json",
+      "bytes": 58465159,
+      "sha256": "263d52729d15157fdc957a8345579da9964058b0dced033f804eaca59cbb4406"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\planning-success-9f58c4cd\\closed\\wrapper\\native-process.json",
+      "bytes": 516,
+      "sha256": "b69d5c8152ab057268f69f13b2a002a9cf248959c34cb43bad63b812562667b5"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\planning-success-9f58c4cd\\closed\\wrapper\\native-terminal.json",
+      "bytes": 2304,
+      "sha256": "8ebb575b9788df4702bfe911f34a5f84b1643fd3620145a636c02d07f95ce3ec"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-obsolete-checkpoint-cleanup-20261031.json",
+      "bytes": 990,
+      "sha256": "709aba79a0b0f5bf56ba7c08e1617efb4924d35eff268829b055c4d19271567e"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\dispatch.json",
+      "bytes": 1437,
+      "sha256": "ef6c5709d173fc7bedec40db97b8f3df0ae99835eae65bc2cb792ae0f8107493"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\archive.json",
+      "bytes": 2536,
+      "sha256": "6fa18040021d6b9af2473456729dd9ed62309bb8deac082375d6071114ea474a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\comparison.json",
+      "bytes": 771,
+      "sha256": "1a4dbed530f75ae94842e23591316c35d73a231445cbb676ad2bdbdf3668b660"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\checkpoint.json",
+      "bytes": 140,
+      "sha256": "7afae981d431e7361bbb55f209829376fa655ba758bdc77d6f58834de9286b52"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\closed\\boot.json",
+      "bytes": 145,
+      "sha256": "2dcd3159c13872a189f9fa1896c8be30224fc88d03701bd8a6e702f2ac7a54ec"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\closed\\verification.json",
+      "bytes": 3131727,
+      "sha256": "6122235cef06593f71ad1da293001ad6030b99f75f48e8d0331bcc75bfd553e0"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\closed\\native-terminal.json",
+      "bytes": 101,
+      "sha256": "c192f00afddedb0a3d37116e3e2e2e0744470664214abc0dc5ab5d2c24343a11"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\closed\\compression-terminal.json",
+      "bytes": 101,
+      "sha256": "7c522644849f614a3db2278d9f67ae66b106a9f05e0e8d2bd6a3aa154ab01851"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\closed\\compression-verification.json",
+      "bytes": 295686,
+      "sha256": "51c98b7cb73fc8a8cb9b83efc20db631e97fc10a9728053bb9725e662d7f8f76"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\window-coldboot-c7fd15969b0c4653ba1b78f3b106edfd\\closed\\wrapper-result.json",
+      "bytes": 234,
+      "sha256": "c1d43ea23b23bb167df6a54b0b113c8efd8f1e81440abbb6a7272cf6c8591f4e"
+    }
+  ]
+}

@@ -40,4 +40,62 @@ The read-only `lab-replay-placement-windows` helper can verify a pinned closed
 placement report. It replays both selectors for every move and reports their
 actual native query/returned-byte totals; it does not access a volume or create
 source-write authority. No unit tests were added or run. Native D1 conversion
-and its end-to-end performance remain pending for this candidate.
+passed on runtime `d974efe` through public conversion `fea0a1ec` / core
+`eb9a8205`. See [the pinned native evidence](../evidence/destination-window-native-20261031.json).
+
+The same saved NTFS source checkpoint used for the preceding full-map run
+contained the combined compression, fragmentation, ADS, hard-link, sparse, EA,
+security and reparse fixtures. Native verification passed all 44 objects,
+30 default and nine named stream hashes, three sparse layouts, seven EAs,
+eight security-fixture identities and six reparse buffers. The independent
+compression observer again verified seven SHA256/XXH3 stream hashes and target
+compression normalization.
+
+All 1,044 ordered move intents and complete post-move retrieval buffers match
+the preceding `08dd747` run exactly. This includes two deferred moves to original
+coordinates, 20 to scratch and 1,022 final moves, totaling 4,276,224 bytes. Both
+runs captured three complete phase snapshots, with no drift replan or
+evacuation. All 1,024 final retained-coordinate rows match: 4 MiB of the original
+uncompressed payload remains at its source positions. The sparse-carrier and
+named-stream slot maps also match. A legacy phase-bitmap hash differs between
+the independent formatter epochs; the new run uses its own live evidence.
+
+The new per-move records contain 2,088 destination windows, each requesting one
+cluster. Their 2,088 actual native queries returned 4,096 bytes each, totaling
+8,552,448 bytes. Both selectors reported the exact 13,631,488-cluster volume
+domain and zero allocated destination bits. Every response carried
+`ERROR_MORE_DATA`, because more of the volume existed beyond the returned page;
+each requested destination window was nevertheless complete. All transcripts
+passed the separately sealed read-only replay helper. That helper performs no
+native volume query or movement and does not replay the full retrieval proofs;
+native move verification and the separate exact-buffer comparison establish
+the recorded retrieval result.
+
+Native process-to-terminal time was 32.852 seconds, compared with 114.735 seconds
+for the preceding full-map build on this source: about 71.4% shorter, or
+3.49 times the observed throughput. This is one run per build, with uncontrolled
+host/cache/formatter conditions. It establishes a scoped wall-time improvement,
+not a physical I/O measurement, a guaranteed speedup or a 1 TB HDD estimate.
+The old Candidate records do not retain per-move native returned-byte totals,
+so they are not used to manufacture a matching native-byte baseline.
+
+Retaining every window transcript increased the closed placement report from
+58,465,159 to 62,144,751 bytes. Operational counters remain identical; the three
+evidence-size/reservation counters change with the new proof representation.
+The actual pre-I/O reservation and the unchanged 64 MiB artifact ceiling passed.
+The recovery journal was 88,751,616 bytes and packed backing was 6,541,312 bytes;
+82,178,048 target bytes were selected in 249 ranges. Fresh ReFS metadata differs
+between runs, so these storage changes are not attributed to D1.
+
+Exact-build cold boot `c7fd1596` passed the native verifier and independent
+compression observer. All 44 canonical IDs and retrieval maps, ten alias IDs,
+30 default and nine named stream hashes, and seven EAs on four identities match
+the completed conversion. The seven independent compression hashes and ordinary
+target compression state also pass. Checkpoint `d939f576` preserves this branch.
+This readback inherits the normal conversion's retention proof; it adds no new
+comparison with the original NTFS source extents.
+
+Interruption/recovery, mutation, physical power loss and larger per-move windows
+remain separate qualification work. The existing fixed
+resource and geometry limits remain; this result does not establish unrestricted
+volume size or maximum NTFS compatibility.

@@ -32,6 +32,29 @@ and replayable; never put a window hash in a full-map Candidate. D2 incremental
 retrieval remains deferred. Update the move-proof schema and pre-I/O evidence
 budget together; lossless transcript compression is allowed, truncation is not.
 
+D1 runtime d974efe/publica9552ccf7402e5341a1104e5fc20a268896c295372b03f8c68e9c4fb2d022fd7
+passed conversionfea0a1ec/coreeb9a8205 in32.852s versus08dd747's114.735s on the
+same saved source fixture (71.37% shorter; single-run scope, no HDD/physical-I/O
+guarantee). All44objects/30default+9named hashes, previous EA/security/reparse/
+sparse/attribute-list fixtures and4MiB/1,024 original extents pass. All1,044
+move intents and complete after-mapping buffers match08dd747. Sealed replay
+passed2,088 destination windows/queries,8,552,448 returned bytes,3 complete
+phase-map snapshots; full pre/post retrieval remains. Placement schema2,
+destination-window-v1, lossless compact transcripts; no Candidate hash spoofing.
+Report62,144,751B remains under64MiB. Journal+backing95,292,928B.
+Normal ReFS checkpoint8a53c8cc; coldc7fd1596 passed all44IDs/maps,10aliasIDs,
+39hashes,7EAs and7 independent compression hashes. Current VM Off/RAM0 at
+d939f576-4868-43d0-bde8-2a6f742dd489;50 checkpoints, no active workers/tasks.
+See evidence/destination-window-native-20261031.json and docs/destination-bitmap-windows.md.
+Source371ae756 remains. Obsolete697fb084/95e64fda branches were removed only
+after archive rehash; all closed evidence remains. Legacyf4bf5238 was left
+intact after archive mismatch, never force its deletion to bypass that guard.
+Latest actual lab233,753,210,132B; D free111,579,803,648B, unchanged storage epoch.
+No unit tests added/run. No exact-build recovery/mutation/power-loss claim.
+Next: scale the retained native workload and replace remaining coupled fixed
+resource ceilings with pinned capacity; D2/full-hash changes need their own
+decision. VSS/case flags and broader compatibility/boot work remain unfinished.
+
 Performance runtime08dd747/public550ac571641cbb13beb5e6716e1212c2c3bd20782c4f259a01e1775a6a319b51
 passed conversion9f58c4cd/core09a6b41a and cold boot3b76ebb8:44objects/39stream
 hashes, all prior fixture checks and original4MiB/1,024 extents preserved.

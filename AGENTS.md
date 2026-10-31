@@ -23,6 +23,28 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Latest native D3 stage runtime19569cb/public2e014b6be32710d19f6beacd7ab8d97ab57c7f887ae6df702de0310933431c6c
+passed wrapper59939273/core12c9a91c: native0/HND,44objects/30default+9named hashes,
+all prior sparse/EA/security/reparse/compression checks, label/mount preserved.
+Source/targetfilehashesremainFULL(actual_full_file_hashes=true); the hash-free
+retained-extent/source-certificate path is unfinished. Exact primary raw gate
+opened SHARE_READ only; secondRW open refused native32 whileattrs3; the same
+held gate transitionedattrs3->1 andflushed persistence. No global administrative/
+volume-alias exclusion claim. V2raw bracket reads everycoveredbyte twice:
+6,174,121,984B/5,897chunks each;5,815 actualzero digestcachehits leave76,652,544B
+innerSHA256 work each. Nativewall36.731s vsfirstD3stage89.042s(processcreation
+to terminal); priorD1baseline32.852s remains faster. Single-run/cache scope only.
+Closed125metadatafiles/83,275,284B SHAverified underfast-v2-success-59939273.
+CurrentVMOff/RAM0 at904cbd98-f87c-4a30-91c0-dedda106062f,50checkpoints, all
+workers/tasks terminal/idle before normalshutdown. Source371ae756, F:source6fe2d6b6,
+largeReFS78513f35 andD1cold d939f576 remain. Obsoletecompressioncold8e9562df
+removed only viaHyperV after17closedfiles/3,744,688B rehashed; f4bf5238 untouched.
+Actual lab264,124,875,345B/hostfree81,210,093,568B within unchanged epoch.
+Evidence:evidence/fast-v2-native-20261031.json. No unit tests added/run.
+No exact-build recovery/mutation/coldboot/powerloss claim. Next: complete the
+authorized hash-free retained-extent certificate and source read-pass work;
+D2 remains unapproved. The following prior-milestone VM states are historical.
+
 Large fd577f2 run17c1dd7f/core9a59ede9 completed insideVM:933objects/811 complete
 stream hashes,808userfiles/120directories/9,885,781,381B, label/mount correct.
 SourceNTFS64K F: source6fe2d6b6 became nativeReFS4K samepartition. Retained
@@ -31,8 +53,8 @@ asactuallyfree (desiredfree75,542,528->3,822,333,952). Literalbacking38,400,000B
 journal11,430,978,272B. ActualJ<16GiB; schema3requestedcapacity29,697,802,240B
 doesNOTproveactual>16GiBjournaloperation. Full-content run1387.317s (23min);
 latephaseincludeshandoffchecks, notjustnativefileverification. D3fastnotpartofit.
-Closed57metadatafiles/136,316,706B under mixed-capacity-success-17c1dd7f; current
-VM Off/RAM0 at78513f35-5309-41ce-806f-c2358b4e2f7d,50checkpoints,no activeworker.
+Closed57metadatafiles/136,316,706B under mixed-capacity-success-17c1dd7f; saved
+ReFS checkpoint78513f35-5309-41ce-806f-c2358b4e2f7d remains separately preserved.
 See evidence/mixed-capacity-native-20261031.json. Cold/recovery/mutationpending.
 
 D3candidatefirststage: defaultExtentIdentityV1requestpolicy/full-contentflag,
@@ -42,7 +64,7 @@ old/newmemcmpfastpathwithsamebytefallback, advisoryphaseprocesscounters.
 ACTUALsource/targetfilehashesstillFULLandexplicitlyreported—doNOTclaimthe
 hash-free retainedcertificatepathisfinished. No fakecontentdigests.Fullmode,
 faultentriesandfreshrecoveryretainlegacycompletechecks. See docs/fast-verification.md.
-Librarycheckandfocusedpublic/verifier/bindreleasebuildspass; nativeD3qualificationnext.
+Librarycheckandfocusedpublic/verifier/bindreleasebuildspass; nativeD3stage above passes.
 
 D3 decision (2026-10-31): the user chose "Use extent-based fast verification
 (Recommended)" as the default, with full-content verification retained as an

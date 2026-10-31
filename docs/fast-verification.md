@@ -53,6 +53,24 @@ Advisory current-process I/O and CPU counters are recorded at phase boundaries
 to identify remaining bulk work. These logical transfer counters are not
 physical disk-traffic measurements and do not reserve storage or authorize I/O.
 
+Native runtime `19569cb` passed wrapper `59939273` / core `12c9a91c` with exit 0,
+44 objects, 30 default and 9 named stream hashes, the prior sparse/EA/security/
+reparse/compression fixture checks, label/mount preservation and closed HND.
+The activation transcript proves the primary gate opened, the second writable
+open failed with error 32 while attributes were 3, then the held handle changed
+attributes to 1 and flushed persistence. Source and target full-file hashes
+remain explicitly true.
+
+Each V2 bracket read 6,174,121,984 bytes across 5,897 chunks. After actual zero
+checks, 5,815 cache hits left 76,652,544 bytes processed by inner SHA-256 in each
+bracket. Native wall time was 36.731 seconds versus 89.042 for the first D3 run
+and 32.852 for the earlier D1 baseline, using process creation to terminal
+receipt. These are single runs with uncontrolled cache/host conditions; the
+result does not establish an improvement over D1 or reduced physical I/O.
+The 125 closed metadata files (83,275,284 bytes) were copied and SHA-256 checked.
+The VM is stopped at checkpoint `904cbd98-f87c-4a30-91c0-dedda106062f`.
+See [the native evidence](../evidence/fast-v2-native-20261031.json).
+
 Pending work includes the complete hash-free retained-extent certificate path,
-further source fingerprint/read-pass reduction, and native conversion/recovery
-qualification of this new path. No unit tests added or run.
+further source fingerprint/read-pass reduction, and exact-build recovery,
+mutation, cold-boot and power-loss qualification. No unit tests added or run.

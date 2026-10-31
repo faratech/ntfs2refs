@@ -23,19 +23,32 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-New built candidate extends fast source evidence to ordinary initialized,
-nonresident streams with partial EOF>=4KiB. Canonical newtag
-extent_identity_with_materialized_tail_v1 requires a complete floor-EOF prefix;
-old extent_identity_v1 remains whole-cluster. All source allocation and exact
-EOF/VDL/native identity checks stay. Native metadata completion requires a
-constructor-owned exact tail SHA/readback/final-file-ID receipt, including plain
-ADS carriers; protected residual verification separately binds actual source tails.
-Fresh/result and recovery receipts count tail scope explicitly. Source/semantic/
-native checks and public/bind/digest/fault release builds pass; VM qualification
-pending. Lab validators are being updated to force positive tail coverage and
-all39 independent hashes. No unit tests added/run. See
-docs/partial-tail-extent-verification.md. Current VM remains Off/RAM0 atb809,
-50 snapshots; the qualified whole-cluster recovery matrix below is preserved.
+Partial-tail normal runtime3ce15c7/public831b073d38ec0bd62350e97f01ed1b51cc5a29ced46cd3b69d37372864d08b53
+passed wrapperc42d891b/coree28bab21: native0/HND and wrapper0,44 objects/53 bindings,
+0 target content hashes/reads, all30 default+9 named independent hashes and prior
+fixtures. Actual14 extent-only streams/4,489,673 logical bytes include the old2
+whole-aligned streams/4MiB and12 new partial-tail streams. All457 visible tail
+bytes have actual source/write-flush/readback/identity receipts and protected
+residual SHA matches. Initial raw hashing159,222,314B remains for full fallbacks;
+remaining native source reads86,659,954B. Nativewall24.630s is one uncontrolled run.
+The newtag remains distinct from whole extent_identity_v1. Record85 named.bin
+default65,553B is independently proven plain while sibling Encoded flags1 keeps
+its real full digest/decoder/materialization. No compressed protection was removed.
+
+Initial3d3d009 case d2652438 refused at source-observation on the old file-wide
+compression guard, before any source payload write. Its71 metadata files/12,328,464B
+and checkpoint0cf18d65 remain. Corrected success has133 closed metadata files/
+86,221,996B SHA verified under partial-tail-success-c42d891b. Current VM Off/RAM0
+at ReFS checkpoint3cbc9ae0-c7da-49ab-bd08-ca0c48275f03,50 snapshots; tasks/workers
+were terminal/idle before normal stop. Actual lab264,253,771,757B/free80,898,650,112B
+remain within the unchanged epoch. Obsolete228c7aa3/e9bc8adf were removed only via
+Hyper-V after archive rehash; all host metadata/baselines remain. Keep old normal44c,
+int9ce/resume9bb/NTFSb809, sources371/6fe,large785,D1cold d939,f4bf and current/refusal.
+Evidence: evidence/partial-tail-extent-native-20261031.json; docs/partial-tail-extent-verification.md.
+Runtime3ce15c7 and harness eac8b83 are distinct. No tail recovery, F-scale,
+mutation/cold-boot/power-loss qualification transfers from this normal case.
+The exact7ced whole-cluster recovery matrix below remains separately preserved.
+Focused builds pass; no unit tests added/run. D2 and broader objectives remain.
 
 Exact7ced recovery matrix now passes one controlled first-flushed-write case.
 Interruption07247cfa actualPID5484/creation1793470826071 exited86, source6 stayed

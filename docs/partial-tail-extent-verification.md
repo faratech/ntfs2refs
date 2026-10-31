@@ -1,6 +1,6 @@
 # Extent verification for partial final clusters
 
-The fast candidate extends initial/native source read elision to ordinary,
+The fast implementation extends initial/native source read elision to ordinary,
 initialized, nonresident streams whose EOF is at least 4 KiB but is not a
 multiple of 4 KiB. Complete source allocation maps, exact EOF, VDL=EOF, identity,
 namespace and ownership checks remain mandatory. Physical source runs remain
@@ -32,5 +32,26 @@ and protected-residual receipts, and compare every target stream with its
 independently pinned full-content baseline. A successful fallback with no tail
 elisions is not evidence that this extension ran.
 
-Focused source/semantic/native checks and public, bind, digest and fault-helper
-release builds pass. VM qualification is pending. No unit tests were added or run.
+Runtime `3ce15c7` passed H normal conversion `c42d891b` / core `e28bab21` with
+exit 0/HND: 44 objects, 53 matching bindings, zero target content hashes/reads,
+and all 39 independent stream hashes plus the prior fixture suite. Actual coverage
+was 14 extent-only streams (4,489,673 logical bytes), comprising the unchanged two
+whole-aligned streams and 12 partial-tail streams. All 457 visible tail bytes have
+matching actual source, constructor write/readback, final identity and protected
+residual evidence. Initial raw hashing remains 159,222,314 bytes; other native
+source reads total 86,659,954 bytes. This is not zero initial payload work.
+
+The corpus includes a plain 65,553-byte default stream beside an encoded ADS.
+Its per-stream proof permits the plain tail path while the encoded sibling retains
+a real digest and full decoder/materialization checks. The initial `3d3d009`
+refusal on the file-wide guard is preserved separately with zero source writes.
+
+The 133 closed metadata files (86,221,996 bytes) are SHA verified. The VM is
+normally stopped at ReFS checkpoint `3cbc9ae0-c7da-49ab-bd08-ca0c48275f03`.
+Native wall time was 24.630 seconds in one run with uncontrolled cache/host
+conditions; no general or physical-I/O speed claim follows. See
+[the native evidence](../evidence/partial-tail-extent-native-20261031.json).
+
+Focused builds pass. Tail-specific recovery, F-scale, mutation and power-loss
+qualification remain pending; the earlier `7ced37b` whole-cluster recovery matrix
+does not qualify this new runtime. No unit tests were added or run.

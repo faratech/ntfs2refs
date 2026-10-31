@@ -23,18 +23,39 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-Current built candidate eliminates initial raw hashes for eligible whole-aligned,
-plain initialized nonresident user streams. Explicit RawNotRead/shaNone and
-canonical source_evidence flow through optional native expectations/routes;
-unknown bytes never become empty-placeholder hashes. Full fallbacks remain for
-resident/compressed/sparse/VDL/tails. A preactivation map-facts artifact is pinned
-in the recovery bundle only for hash-free expectations; actual SJ lifecycle and
-checksums still authorize recovery. Recovery reads/checks every known-digest
-stream and uses pinned maps for unread streams, with no historical-content claim.
-Focused library/CLI/helper checks and public/bind/digest release builds pass;
-new native conversion/recovery qualification pending. No unit tests added/run.
-See docs/raw-extent-verification.md. VM remains Off/RAM0 at26607589 with50 checkpoints;
-the previous runtime evidence below remains authoritative until the next run.
+Runtime7ced37b/public97990e9ecd5ead33511e18ef7ca8d79f2ed302546344f89efec058dc24b40af7
+passed normal H conversion aac022f8/core19ebb0e6: native0/HND and wrapper0,
+44 objects/53 bindings,0 observed target hashes/0 target payload reads. Record47
+default and Segments(2MiB each) are explicitly RawNotRead/shaNone/source_evidence;
+initial raw hashing159,517,683B is4,194,304B below the full163,711,987B baseline.
+Native source request4/report12 omits those2 reads, while full fallbacks read
+86,955,323B. SVI tracking.log20KiB stays full. No all-payload/zero-initial-read claim.
+The preactivation recovery map-facts manifest is pinned by the bundle and binds
+expected tree/plan/ticket/source/selected data with53 maps; no write authority.
+Normal run26.646s is a single observation, not a controlled/general I/O speed claim.
+
+Independent lab reads passed30 default+9 named hashes and all prior fixtures.
+The separately pinned old full-content baseline is lab-only.22 historical access
+time differences are recorded against CURRENT raw/native-source/target metadata;
+all other canonical fields remain exact. Only the existing source-absent indexer
+SVI-directory interval is an explicit target-time exception; product JSON and
+filesystem times are untouched. Closed133 metadata files/86,066,547B are SHA
+verified under raw-extent-success-aac022f8. Current VM Off/RAM0 at44c48db9-c9ad-452f-8811-ce32a170c979,
+50 checkpoints; all workers/tasks terminal/idle before normal stop. Lab actual
+265,872,180,636B/free79,310,647,296B remain in the unchanged storage epoch.
+
+Keep this qualified normal result and source371/F:source6fe/large785/D1cold d939/f4bf.
+Earlier12ca824 refusal a77acce3 (SVI copy needed a digest) wrote0 source payload;
+74 closed files/74,894,901B and checkpoint764b57bf remain.6901003 native21ea533c
+used full raw fallback (0 elisions), then its observer failed on empty-property
+enumeration;103 closed files/84,376,938B and checkpoint058f1ca5 remain. Neither is
+a successful initial-scan-elision result. Obsolete904cbd98/30b37828/863e9372 were
+removed only through Hyper-V after their retained archives rehashed. No replay.
+Evidence: evidence/raw-extent-verification-native-20261031.json; docs/raw-extent-verification.md.
+Focused builds pass; no unit tests added/run. Next: exact7ced controlled
+interruption/resume/rollback with pinned manifest; those recovery paths remain
+unqualified by this normal run. Broader scale/compatibility/power-loss work remains.
+The following results and VM states predate this normal qualification.
 
 Runtime e606c53/public d0033a8b2dd1dd20e0c92ea62eb6040ded8a615b78de8ecc11b972954491accf
 passed native wrapper95833c80/corec2e31ace: exit0/HND,44 objects,53 complete

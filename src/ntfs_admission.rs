@@ -74,6 +74,7 @@ pub enum ResourceProfile {
     AlphaV1,
     ExperimentalLargeTreeV1,
     ExperimentalStreamingTreeV2,
+    ExperimentalObjectEnvelopeV3(Option<n2r_win32::tree_resources::CountAdmission>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,7 +96,9 @@ impl ResourceProfile {
             && geometry.index_record_size == 4096
             && match self {
                 Self::AlphaV1 => geometry.cluster_size == 4096,
-                Self::ExperimentalLargeTreeV1 | Self::ExperimentalStreamingTreeV2 => {
+                Self::ExperimentalLargeTreeV1
+                | Self::ExperimentalStreamingTreeV2
+                | Self::ExperimentalObjectEnvelopeV3(_) => {
                     geometry.cluster_size >= 4096
                         && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
                 }
@@ -111,6 +114,9 @@ impl ResourceProfile {
             Self::ExperimentalStreamingTreeV2 => {
                 Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
             }
+            Self::ExperimentalObjectEnvelopeV3(admission) => Some(
+                n2r_win32::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(admission),
+            ),
         }
     }
 
@@ -134,6 +140,18 @@ impl ResourceProfile {
                 maximum_logical_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
                 maximum_stream_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
             },
+            Self::ExperimentalObjectEnvelopeV3(admission) => ResourceLimits {
+                maximum_files: match admission {
+                    Some(a) => a.files as usize,
+                    None => n2r_win32::tree_resources::OBJECT_SLOTS,
+                },
+                maximum_directories: match admission {
+                    Some(a) => a.directories as usize,
+                    None => n2r_win32::tree_resources::OBJECT_SLOTS,
+                },
+                maximum_logical_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
+                maximum_stream_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
+            },
         }
     }
 
@@ -142,6 +160,7 @@ impl ResourceProfile {
             Self::AlphaV1 => ORDINARY_PROFILE,
             Self::ExperimentalLargeTreeV1 => "ordinary-data-tree-large-v1",
             Self::ExperimentalStreamingTreeV2 => "ordinary-data-tree-streaming-v2",
+            Self::ExperimentalObjectEnvelopeV3(_) => "ordinary-data-tree-object-envelope-v3",
         }
     }
 
@@ -150,7 +169,108 @@ impl ResourceProfile {
             Self::AlphaV1 => "native-ordinary-tree-shadow-v2",
             Self::ExperimentalLargeTreeV1 => "native-ordinary-tree-shadow-large-v1",
             Self::ExperimentalStreamingTreeV2 => "native-ordinary-tree-shadow-streaming-v2",
+            Self::ExperimentalObjectEnvelopeV3(_) => {
+                "native-ordinary-tree-shadow-object-envelope-v3"
+            }
         }
+    }
+
+    pub const fn is_streaming(self) -> bool {
+        matches!(
+            self,
+            Self::ExperimentalStreamingTreeV2 | Self::ExperimentalObjectEnvelopeV3(_)
+        )
+    }
+    pub const fn is_envelope(self) -> bool {
+        matches!(self, Self::ExperimentalObjectEnvelopeV3(_))
+    }
+    pub fn maximum_objects(self) -> usize {
+        match self {
+            Self::ExperimentalObjectEnvelopeV3(_) => n2r_win32::tree_resources::OBJECT_SLOTS,
+            _ => self.limits().maximum_files + self.limits().maximum_directories,
+        }
+    }
+    pub fn count_admission(
+        self,
+    ) -> anyhow::Result<Option<n2r_win32::tree_resources::CountAdmission>> {
+        Ok(self
+            .native_profile()
+            .map(n2r_win32::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten())
+    }
+    /// Only complete reconciled frozen-source facts select the file/directory
+    /// allocation of the existing object envelope. The descriptor is not authority.
+    pub(crate) fn admit_inspection(
+        self,
+        raw: &ntfs::NtfsInspection,
+        pin: &str,
+    ) -> anyhow::Result<Self> {
+        if !self.is_envelope() {
+            return Ok(self);
+        }
+        ntfs::validate_record_coverage(raw)?;
+        anyhow::ensure!(
+            has_unique_sorted_records(raw)
+                && matches!(
+                    raw.allocation_reconciliation.as_ref().map(|r| &r.status),
+                    Some(ntfs::AllocationReconciliationStatus::ConsistentRawModel)
+                )
+                && matches!(
+                    raw.namespace_reconciliation.as_ref().map(|r| &r.status),
+                    Some(ntfs_namespace::Status::ConsistentRawModel)
+                ),
+            "tree counts require complete reconciled source facts"
+        );
+        anyhow::ensure!(
+            raw.schema_version == 1
+                && matches!(
+                    raw.security_reconciliation.as_ref().map(|r| &r.status),
+                    Some(ntfs_security::Status::ConsistentRawModel)
+                ),
+            "tree counts require complete source security reconciliation"
+        );
+        let mut files = 0usize;
+        let mut dirs = 0usize;
+        let mut streams = 0usize;
+        for f in &raw.files {
+            if internal_role(raw, f).is_some() {
+                continue;
+            }
+            anyhow::ensure!(
+                user_paths(raw, f).is_some(),
+                "tree count source namespace is unresolved"
+            );
+            if f.is_directory {
+                dirs += 1;
+            } else {
+                files += 1;
+                streams = streams
+                    .checked_add(f.streams.len())
+                    .ok_or_else(|| anyhow::anyhow!("stream count overflow"))?;
+            }
+        }
+        let bytes: [u8; 32] = hex::decode(pin)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("source inspection pin length differs"))?;
+        let mut admitted = n2r_win32::tree_resources::CountAdmission::new(
+            bytes,
+            raw.files.len(),
+            files,
+            dirs,
+            streams,
+        )?;
+        if let Self::ExperimentalObjectEnvelopeV3(Some(previous)) = self {
+            previous.validate_tree(files, dirs, streams)?;
+            anyhow::ensure!(
+                previous.source_inspection_sha256 == bytes
+                    && previous.raw_identities as usize == raw.files.len(),
+                "supplied count admission differs from current complete source"
+            );
+            admitted = previous;
+        }
+        admitted.validate_inspection_bytes(raw)?;
+        Ok(Self::ExperimentalObjectEnvelopeV3(Some(admitted)))
     }
 }
 
@@ -1288,6 +1408,9 @@ fn assess_source_view_profile(
         files > 0
             && files <= limits.maximum_files
             && directories <= limits.maximum_directories
+            && files
+                .checked_add(directories)
+                .is_some_and(|n| n <= resources.maximum_objects())
             && data_streams <= MAX_DATA_STREAMS
             && bytes <= limits.maximum_logical_bytes,
         "limit ordinary files/directories, 16,384 total DATA streams and logical bytes; no automatic budget widening",
@@ -1387,6 +1510,9 @@ pub(crate) fn bind_large_native_profile(
         Some(NativeProfile::ExperimentalLargeTreeV1) => ResourceProfile::ExperimentalLargeTreeV1,
         Some(NativeProfile::ExperimentalStreamingTreeV2) => {
             ResourceProfile::ExperimentalStreamingTreeV2
+        }
+        Some(NativeProfile::ExperimentalObjectEnvelopeV3(admission)) => {
+            ResourceProfile::ExperimentalObjectEnvelopeV3(admission)
         }
         None => anyhow::bail!("expanded source profile requires native resource evidence"),
     };

@@ -285,7 +285,7 @@ pub fn request_for_general_inspection_with_policy(
         request_for_general_inspection_with_profile(raw, inspection_sha256, binding, profile)?;
     if policy.is_fast() {
         ensure!(
-            profile == n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
+            profile.is_streaming(),
             "extent-identity native reads require the streaming source profile"
         );
         for file in &raw.files {

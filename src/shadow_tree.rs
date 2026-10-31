@@ -216,10 +216,7 @@ impl ExpectedTree {
         resources: ntfs_admission::ResourceProfile,
     ) -> Result<()> {
         let limits = resources.limits();
-        let object_limit = limits
-            .maximum_files
-            .checked_add(limits.maximum_directories)
-            .context("tree object budget overflow")?;
+        let object_limit = resources.maximum_objects();
         ensure!(
             self.profile == resources.ordinary_shadow_profile()
                 && !self.objects.is_empty()
@@ -248,9 +245,7 @@ impl ExpectedTree {
                     .any(|s| s.source_evidence.is_some())
             {
                 ensure!(
-                    resources == ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
-                        && !object.directory
-                        && object.reparse.is_none(),
+                    resources.is_streaming() && !object.directory && object.reparse.is_none(),
                     "extent-only evidence requires the ordinary streaming source profile (record {})",
                     object.record_number
                 );
@@ -481,6 +476,14 @@ impl ExpectedTree {
                     && self.objects.len() - directories <= limits.maximum_files,
                 "expected file/directory counts exceed selected resource profile"
             );
+            if let Some(admission) = resources.count_admission()? {
+                admission.validate_tree(
+                    self.objects.len() - directories,
+                    directories,
+                    stream_count,
+                )?;
+                admission.validate_expected_bytes(self)?;
+            }
         }
         Ok(())
     }
@@ -794,6 +797,7 @@ fn derive_profile(
     let directories = tree.objects.iter().filter(|o| o.directory).count();
     ensure!(
         directories > 0
+            && tree.objects.len() <= resources.maximum_objects()
             && directories <= limits.maximum_directories
             && tree.objects.len() - directories <= limits.maximum_files
             && tree.logical_bytes <= limits.maximum_logical_bytes
@@ -1064,7 +1068,7 @@ pub(crate) fn valid_component(s: &str) -> bool {
 }
 
 fn valid_component_with_resources(s: &str, resources: ntfs_admission::ResourceProfile) -> bool {
-    if resources == ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2 {
+    if resources.is_streaming() {
         n2r_win32::shadow_names::valid_unicode_component(s)
     } else {
         valid_component(s)
@@ -1072,7 +1076,7 @@ fn valid_component_with_resources(s: &str, resources: ntfs_admission::ResourcePr
 }
 
 fn destination_key(path: &[String], resources: ntfs_admission::ResourceProfile) -> String {
-    if resources == ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2 {
+    if resources.is_streaming() {
         n2r_win32::shadow_names::conservative_path_key(path)
     } else {
         path.join("\\").to_ascii_uppercase()

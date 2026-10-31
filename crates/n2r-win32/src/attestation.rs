@@ -17,6 +17,7 @@ pub const MAX_SERIALIZED_REPORT_BYTES: usize = 64 * 1024 * 1024;
 pub enum ResourceProfile {
     ExperimentalLargeTreeV1,
     ExperimentalStreamingTreeV2,
+    ExperimentalObjectEnvelopeV3(Option<crate::tree_resources::CountAdmission>),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceLimits {
@@ -31,7 +32,9 @@ pub struct ResourceLimits {
 impl ResourceProfile {
     pub const fn maximum_partition_bytes(self) -> u64 {
         match self {
-            Self::ExperimentalLargeTreeV1 | Self::ExperimentalStreamingTreeV2 => {
+            Self::ExperimentalLargeTreeV1
+            | Self::ExperimentalStreamingTreeV2
+            | Self::ExperimentalObjectEnvelopeV3(_) => {
                 crate::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES
             }
         }
@@ -47,15 +50,38 @@ impl ResourceProfile {
                 stream_evidence_bytes: 64 << 20,
                 namespace_evidence_bytes: 16 << 20,
             },
-            Self::ExperimentalStreamingTreeV2 => ResourceLimits {
-                maximum_identities: 2048,
-                maximum_stream_bytes: self.maximum_partition_bytes(),
-                logical_read_bytes: self.maximum_partition_bytes() * 4,
-                logical_read_calls: self.maximum_partition_bytes() * 4 / 65536 + 4096,
-                security_bytes: 32 << 20,
-                stream_evidence_bytes: 64 << 20,
-                namespace_evidence_bytes: 16 << 20,
-            },
+            Self::ExperimentalStreamingTreeV2 | Self::ExperimentalObjectEnvelopeV3(_) => {
+                ResourceLimits {
+                    maximum_identities: 2048,
+                    maximum_stream_bytes: self.maximum_partition_bytes(),
+                    logical_read_bytes: self.maximum_partition_bytes() * 4,
+                    logical_read_calls: self.maximum_partition_bytes() * 4 / 65536 + 4096,
+                    security_bytes: 32 << 20,
+                    stream_evidence_bytes: 64 << 20,
+                    namespace_evidence_bytes: 16 << 20,
+                }
+            }
+        }
+    }
+
+    pub const fn is_streaming(self) -> bool {
+        matches!(
+            self,
+            Self::ExperimentalStreamingTreeV2 | Self::ExperimentalObjectEnvelopeV3(_)
+        )
+    }
+
+    pub fn count_admission(self) -> io::Result<Option<crate::tree_resources::CountAdmission>> {
+        match self {
+            Self::ExperimentalObjectEnvelopeV3(Some(admission)) => {
+                admission.validate()?;
+                Ok(Some(admission))
+            }
+            Self::ExperimentalObjectEnvelopeV3(None) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tree envelope has no complete-source count admission",
+            )),
+            _ => Ok(None),
         }
     }
 }
@@ -235,6 +261,7 @@ impl Request {
                         Some(
                             ResourceProfile::ExperimentalLargeTreeV1
                                 | ResourceProfile::ExperimentalStreamingTreeV2
+                                | ResourceProfile::ExperimentalObjectEnvelopeV3(_)
                         )
                     )
             )
@@ -264,9 +291,26 @@ impl Request {
                 "invalid bounded native-attestation request",
             ));
         }
+        if let Some(admission) = self
+            .resource_profile
+            .map(ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+        {
+            if self.files.len() != admission.raw_identities as usize
+                || self.source_inspection_sha256 != hex::encode(admission.source_inspection_sha256)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "native identities or inspection pin differ from admitted source counts",
+                ));
+            }
+        }
         if self.schema_version != 4 && !self.extent_identity_streams.is_empty()
             || self.schema_version == 4
-                && self.resource_profile != Some(ResourceProfile::ExperimentalStreamingTreeV2)
+                && !self
+                    .resource_profile
+                    .is_some_and(ResourceProfile::is_streaming)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -1093,7 +1137,16 @@ impl Report {
         {
             return Err(invalid());
         }
-        self.serialized_size_bounded(MAX_SERIALIZED_REPORT_BYTES)?;
+        let maximum = self
+            .request
+            .resource_profile
+            .map(ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .map_or(MAX_SERIALIZED_REPORT_BYTES, |a| {
+                a.maximum_native_report_bytes as usize
+            });
+        self.serialized_size_bounded(maximum)?;
         Ok(())
     }
 }

@@ -335,14 +335,18 @@ impl RecoveryPayloadProof {
         expected: &shadow_tree::ExpectedTree,
         plan: &selected_journal::SelectedPlan,
         ticket: &selected_journal::SelectedTicket,
+        resources: crate::ntfs_admission::ResourceProfile,
     ) -> Result<Self> {
         ensure!(
             bytes.len() <= 64 * 1024 * 1024,
             "recovery map artifact exceeds bound"
         );
-        expected.validate_with_resource_profile(
-            crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
-        )?;
+        resources.count_admission()?;
+        ensure!(
+            resources.is_streaming(),
+            "recovery map facts require the pinned streaming resource profile"
+        );
+        expected.validate_with_resource_profile(resources)?;
         let facts: RecoveryPayloadManifest = serde_json::from_slice(bytes)?;
         let (selected_bytes, journal_bytes) = plan.validate()?;
         ensure!(

@@ -122,14 +122,31 @@ pub fn allocate_private_tree_enrolled(
     pair: &GeneralSourceShadowBinding,
     tree: &crate::shadow_tree::Tree,
 ) -> Result<n2r_win32::shadow_native::private_tree::PrivateTree> {
-    crate::shadow_tree::ExpectedTree::from(tree).validate_with_resource_profile(
+    allocate_private_tree_enrolled_with_resource_profile(
+        source,
+        pair,
+        tree,
         crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
-    )?;
+    )
+}
+
+pub fn allocate_private_tree_enrolled_with_resource_profile(
+    source: &n2r_win32::GeneralFrozenPartition,
+    pair: &GeneralSourceShadowBinding,
+    tree: &crate::shadow_tree::Tree,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<n2r_win32::shadow_native::private_tree::PrivateTree> {
+    crate::shadow_tree::ExpectedTree::from(tree).validate_with_resource_profile(resources)?;
     let enrollment = n2r_win32::shadow_native::private_tree::enroll(source, pair)?;
-    Ok(n2r_win32::shadow_native::private_tree::allocate_enrolled(
-        enrollment,
-        &native_inputs(tree),
-    )?)
+    Ok(
+        n2r_win32::shadow_native::private_tree::allocate_enrolled_with_resource_profile(
+            enrollment,
+            &native_inputs(tree),
+            resources
+                .native_profile()
+                .context("enrolled construction requires a native resource profile")?,
+        )?,
+    )
 }
 
 /// Copy only bounded recognized system streams; large user streams remain

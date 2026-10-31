@@ -200,6 +200,7 @@ pub(super) fn convert_allocation_selected(
             )?;
         }
         let qualification::QualifiedAllocationTree {
+            resources,
             mut source,
             native_target,
             mut proof,
@@ -208,6 +209,14 @@ pub(super) fn convert_allocation_selected(
             mount_paths,
             source_label,
         } = qualified?;
+        // Only the complete frozen-source admission is persisted for recovery.
+        // Planning an envelope did not issue a certificate or widen any budget.
+        let mut admitted_request = request.clone();
+        if resources.is_envelope() {
+            resources.count_admission()?;
+            admitted_request.source_resource_profile = Some(resources);
+        }
+        let request = &admitted_request;
         record_process_io(output, "qualified")?;
         let expected_tree_sha256 = hex::encode(Sha256::digest(&expected));
         ensure!(

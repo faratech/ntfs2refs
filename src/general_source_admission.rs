@@ -396,6 +396,10 @@ pub fn assess_with_source_digest(
         (3 | 4, Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2)) => {
             ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
         }
+        (
+            3 | 4,
+            Some(n2r_win32::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(admission)),
+        ) => ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(admission),
         _ => anyhow::bail!("unsupported or mismatched native source resource profile"),
     };
     // The collector's schema-4 request explicitly selects the extent policy,

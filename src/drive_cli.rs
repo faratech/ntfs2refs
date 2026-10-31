@@ -370,7 +370,11 @@ mod windows {
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
         );
-        let resources = crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2;
+        let resources = if !args.whole_image_verification && !args.verify_full_content {
+            crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(None)
+        } else {
+            crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
+        };
         let mut events = Vec::new();
         let mut reader =
             n2r_win32::GeneralPartitionReader::open(before.binding.clone(), &mut events)?;

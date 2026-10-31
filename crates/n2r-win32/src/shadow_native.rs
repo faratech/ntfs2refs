@@ -60,6 +60,7 @@ pub(crate) fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) ->
     Ok(layout::u64_at(&data, 32)?)
 }
 
+#[derive(Serialize)]
 pub struct Input<'a> {
     pub components: &'a [String],
     pub additional_names: &'a [Vec<String>],
@@ -70,6 +71,7 @@ pub struct Input<'a> {
     pub expected_api_security: Option<&'a [u8]>,
     pub extended_attributes: Option<&'a crate::extended_attributes::Set>,
     pub reparse: Option<&'a crate::reparse_layout::Point>,
+    #[serde(skip)]
     pub payload: &'a [u8],
     /// Source-backed expectations carry EOF separately from supplied payload.
     /// None is an explicitly absent content digest, accepted only for the
@@ -82,6 +84,7 @@ pub struct Input<'a> {
     pub named_streams: Vec<NamedStreamInput<'a>>,
     pub sparse: Option<&'a crate::sparse_layout::SparseLayout>,
 }
+#[derive(Serialize)]
 pub struct NamedStreamInput<'a> {
     pub name_utf16: &'a [u16],
     pub expected_length: u64,
@@ -90,7 +93,7 @@ pub struct NamedStreamInput<'a> {
     pub source_runs: Vec<SourceRun>,
     pub sparse: Option<&'a crate::sparse_layout::SparseLayout>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct SourceRun {
     pub logical_offset: u64,
     pub physical_offset: Option<u64>,
@@ -3200,16 +3203,25 @@ fn run_role_content_profile(
         None => (160usize, 256u64 * 1024 * 1024),
         Some(
             profile @ (crate::attestation::ResourceProfile::ExperimentalLargeTreeV1
-            | crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2),
+            | crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2
+            | crate::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(_)),
         ) => {
             if !ordinary || general_shadow.is_none() {
                 return Err(invalid(
                     "large-tree shadow profile requires an ordinary general volume",
                 ));
             }
-            if input.iter().filter(|item| item.directory).count() > 256
-                || input.iter().filter(|item| !item.directory).count() > 1024
-            {
+            let directories = input.iter().filter(|item| item.directory).count();
+            let admission = profile.count_admission()?;
+            if let Some(admission) = admission {
+                let streams = input.iter().try_fold(0usize, |n, i| {
+                    n.checked_add(usize::from(!i.directory))
+                        .and_then(|n| n.checked_add(i.named_streams.len()))
+                        .ok_or_else(|| invalid("native stream count overflow"))
+                })?;
+                admission.validate_tree(input.len() - directories, directories, streams)?;
+                admission.validate_constructor_metadata(&input)?;
+            } else if directories > 256 || input.len() - directories > 1024 {
                 return Err(invalid("large-tree shadow object budget exceeded"));
             }
             (1280usize, profile.limits().maximum_stream_bytes)
@@ -3278,9 +3290,7 @@ fn run_role_content_profile(
         ));
     }
     hard_links::validate(input, hard_links::MAX_NAMES, |part| {
-        if resource_profile
-            == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
-        {
+        if resource_profile.is_some_and(|p| p.is_streaming()) {
             crate::shadow_names::valid_unicode_component(part)
         } else {
             valid_shadow_component(part)
@@ -3399,9 +3409,7 @@ fn run_role_content_profile(
         }
         if i.components.len() > 16
             || i.components.iter().any(|s| {
-                if resource_profile
-                    == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
-                {
+                if resource_profile.is_some_and(|p| p.is_streaming()) {
                     !crate::shadow_names::valid_unicode_component(s)
                 } else {
                     !valid_shadow_component(s)
@@ -3623,8 +3631,7 @@ fn run_role_content_profile(
                 &root,
                 &initial,
                 input,
-                resource_profile
-                    == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2),
+                resource_profile.is_some_and(|p| p.is_streaming()),
                 &mut events,
             )?
         } else {
@@ -3707,9 +3714,7 @@ fn run_role_content_profile(
                 let first_retention_attempt = retention_attempts.len();
                 let mut more_evacuation = false;
                 let mut evacuated_bytes = 0;
-                if resource_profile
-                    == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
-                {
+                if resource_profile.is_some_and(|p| p.is_streaming()) {
                     let used = shadow_user_evacuation.iter().fold(
                         0usize,
                         |bytes, report: &evacuation::Report| {
@@ -3756,41 +3761,35 @@ fn run_role_content_profile(
                         && i.logical_length().is_multiple_of(4096)
                     {
                         retain_source_run_on_shadow(
-                        &volume,
-                        &root,
-                        i,
-                        binding.identity.partition_bytes,
-                        &SourceRun {
-                            logical_offset: 0,
-                            physical_offset: Some(offset),
-                            length: i.logical_length(),
-                        },
-                        &mut retention_attempts,
-                        resource_profile.is_some(),
-                        resource_profile
-                            == Some(
-                                crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
-                            ),
-                        &mut planning_cache,
-                        !more_evacuation,
-                    )?;
+                            &volume,
+                            &root,
+                            i,
+                            binding.identity.partition_bytes,
+                            &SourceRun {
+                                logical_offset: 0,
+                                physical_offset: Some(offset),
+                                length: i.logical_length(),
+                            },
+                            &mut retention_attempts,
+                            resource_profile.is_some(),
+                            resource_profile.is_some_and(|p| p.is_streaming()),
+                            &mut planning_cache,
+                            !more_evacuation,
+                        )?;
                     }
                     for run in &i.source_runs {
                         retain_source_run_on_shadow(
-                        &volume,
-                        &root,
-                        i,
-                        binding.identity.partition_bytes,
-                        run,
-                        &mut retention_attempts,
-                        resource_profile.is_some(),
-                        resource_profile
-                            == Some(
-                                crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
-                            ),
-                        &mut planning_cache,
-                        !more_evacuation,
-                    )?;
+                            &volume,
+                            &root,
+                            i,
+                            binding.identity.partition_bytes,
+                            run,
+                            &mut retention_attempts,
+                            resource_profile.is_some(),
+                            resource_profile.is_some_and(|p| p.is_streaming()),
+                            &mut planning_cache,
+                            !more_evacuation,
+                        )?;
                     }
                 }
                 let retained_progress = retention_attempts[first_retention_attempt..]
@@ -4164,14 +4163,12 @@ fn run_role_content_profile(
         })
     };
     let objects = observe_in_parallel(input, observe)?;
-    let post_mount_indexer_cache = if converted
-        && resource_profile
-            == Some(crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2)
-    {
-        observe_post_mount_indexer_cache(&root, input, &objects)?
-    } else {
-        None
-    };
+    let post_mount_indexer_cache =
+        if converted && resource_profile.is_some_and(|p| p.is_streaming()) {
+            observe_post_mount_indexer_cache(&root, input, &objects)?
+        } else {
+            None
+        };
     let after = observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
     validate_observation_access(after.disk_attributes, flags, protected.is_some())?;
     privileges.restore()?;

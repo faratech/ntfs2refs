@@ -61,6 +61,19 @@ pub fn limits_for_resource_profile(
             max_report_bytes: 64 * 1024 * 1024,
             max_stream_hash_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES * 4,
         },
+        crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(admission) => {
+            InspectionLimits {
+                max_report_bytes: admission.map_or(
+                    n2r_win32::tree_resources::INSPECTION_BYTES as u64,
+                    |a| {
+                        u64::from(a.maximum_inspection_bytes)
+                            .min(n2r_win32::tree_resources::INSPECTION_BYTES as u64)
+                    },
+                ),
+                max_stream_hash_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES
+                    * 4,
+            }
+        }
     }
 }
 

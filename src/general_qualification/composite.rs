@@ -108,6 +108,10 @@ fn prepare_composite(
     selected_devices: bool,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
 ) -> Result<QualifiedCompositeTree> {
+    ensure!(
+        !resources.is_envelope(),
+        "object envelope is supported only by fresh allocation qualification"
+    );
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
         (1..=profile.max_changed_bytes()).contains(&max_change_bytes)
@@ -131,6 +135,7 @@ fn prepare_composite(
     let attempted = (|| -> Result<QualifiedCompositeTree> {
         let mut events = Vec::<NativeEvent>::new();
         let PreparedSourceContext {
+            resources,
             mut source,
             raw,
             mut assessment,
@@ -254,6 +259,7 @@ fn prepare_composite(
 /// Live owning capabilities for an allocation-bounded target. Keeping the proof
 /// keeps its packed backing open read-only with write/delete sharing excluded.
 pub(crate) struct QualifiedAllocationTree {
+    pub resources: crate::ntfs_admission::ResourceProfile,
     pub source: GeneralFrozenPartition,
     pub native_target: GeneralFrozenPartition,
     pub proof: general_composite_target::FrozenAllocationTargetPreservation,
@@ -320,6 +326,7 @@ pub(crate) fn prepare_allocation_fresh_selected(
     let attempted = (|| -> Result<QualifiedAllocationTree> {
         let mut events = Vec::<NativeEvent>::new();
         let PreparedSourceContext {
+            resources,
             mut source,
             raw,
             mut assessment,
@@ -400,6 +407,7 @@ pub(crate) fn prepare_allocation_fresh_selected(
             }),
         )?;
         Ok(QualifiedAllocationTree {
+            resources,
             source,
             native_target,
             proof,

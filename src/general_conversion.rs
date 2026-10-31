@@ -69,13 +69,28 @@ impl Request {
     }
     pub fn validate(&self) -> Result<()> {
         let profile = self.journal_profile()?;
+        if let Some(
+            resources @ crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(
+                admission,
+            ),
+        ) = self.source_resource_profile
+        {
+            ensure!(
+                self.schema_version == 3
+                    && self.verification_policy.is_fast()
+                    && !self.verify_existing_shadow,
+                "object envelope requires fresh fast allocation"
+            );
+            if admission.is_some() {
+                resources.count_admission()?;
+            }
+        }
         ensure!(
             self.verification_policy.is_full_content()
                 || (self.schema_version == 3
-                    && self.source_resource_profile
-                        == Some(
-                            crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
-                        )
+                    && self
+                        .source_resource_profile
+                        .is_some_and(|p| p.is_streaming())
                     && !self.verify_existing_shadow),
             "extent-identity verification requires schema3 streaming fresh allocation"
         );
@@ -98,10 +113,15 @@ impl Request {
             },
             "conversion capture capacity profile differs"
         );
-        crate::lab_reconstruct::validate_source_profile_binding(
-            self.schema_version,
-            self.source_resource_profile,
-        )?;
+        if !self
+            .source_resource_profile
+            .is_some_and(|p| p.is_envelope())
+        {
+            crate::lab_reconstruct::validate_source_profile_binding(
+                self.schema_version,
+                self.source_resource_profile,
+            )?;
+        }
         self.pair.validate_with_resource_profile(
             self.source_resource_profile
                 .unwrap_or_default()
@@ -174,8 +194,9 @@ pub fn convert_allocation_experimental(
     request.validate()?;
     budget.validate(request.pair.source.identity.partition_bytes)?;
     ensure!(
-        request.source_resource_profile
-            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+        request
+            .source_resource_profile
+            .is_some_and(|p| p.is_streaming())
             && !request.verify_existing_shadow,
         "allocation-bounded conversion requires the explicit streaming profile and a fresh shadow"
     );
@@ -193,8 +214,9 @@ pub(crate) fn convert_allocation_selected_for_lab(
     request.validate()?;
     budget.validate(request.pair.source.identity.partition_bytes)?;
     ensure!(
-        request.source_resource_profile
-            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+        request
+            .source_resource_profile
+            .is_some_and(|p| p.is_streaming())
             && !request.verify_existing_shadow,
         "allocation-bounded lab exercise requires the explicit streaming profile and a fresh shadow"
     );
@@ -211,8 +233,9 @@ pub(crate) fn convert_allocation_first_copy_interrupted_for_lab(
     request.validate()?;
     budget.validate(request.pair.source.identity.partition_bytes)?;
     ensure!(
-        request.source_resource_profile
-            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+        request
+            .source_resource_profile
+            .is_some_and(|p| p.is_streaming())
             && !request.verify_existing_shadow,
         "copy-write lab exercise requires the explicit streaming profile and a fresh shadow"
     );
@@ -332,6 +355,12 @@ fn convert_profile(
         Interruption::None | Interruption::AfterSourceFreeze => None,
     };
     request.validate()?;
+    ensure!(
+        !request
+            .source_resource_profile
+            .is_some_and(|p| p.is_envelope()),
+        "object envelope is supported only by fresh allocation conversion"
+    );
     ensure!(
         request.schema_version != 3,
         "capacity-pinned conversion requires the allocation-bounded backend"

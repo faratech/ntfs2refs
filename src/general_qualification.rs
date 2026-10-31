@@ -177,6 +177,7 @@ pub(crate) fn prepare_with_budget(
 /// One original online-to-frozen source assessment, retained in memory. No
 /// reopening or deserialized report can manufacture its transaction context.
 struct PreparedSourceContext {
+    resources: crate::ntfs_admission::ResourceProfile,
     source: GeneralFrozenPartition,
     raw: ntfs_inspect::NtfsInspection,
     assessment: general_source_admission::LiveAssessment,
@@ -308,6 +309,14 @@ fn prepare_source_context(
         crate::source_volume_label::verify(&mut source, &raw, source_label.label())?;
     save(output, "source-label-frozen.json", &source_label_frozen)?;
     let pin = hex::encode(Sha256::digest(serde_json::to_vec(&raw)?));
+    let resources = resources.admit_inspection(&raw, &pin)?;
+    if let Some(admission) = resources.count_admission()? {
+        save(
+            output,
+            "tree-resource-admission.json",
+            &serde_json::json!({"admission":admission,"source_admitted":false,"execution_authorized":false}),
+        )?;
+    }
     let backups = ntfs_backup::verify(&mut source, length, &raw)?;
     let log = ntfs_log::verify(&mut source, &raw)?;
     save(
@@ -391,6 +400,7 @@ fn prepare_source_context(
     expected.validate_with_resource_profile(resources)?;
     let expected_sha256 = save(output, "expectation.json", &expected)?;
     Ok(PreparedSourceContext {
+        resources,
         source,
         raw,
         assessment,
@@ -416,6 +426,10 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
     cache_sync: bool,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
 ) -> Result<QualifiedTree> {
+    ensure!(
+        !resources.is_envelope(),
+        "object envelope is supported only by fresh allocation qualification"
+    );
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
         (1..=profile.max_changed_bytes()).contains(&max_change_bytes)
@@ -436,6 +450,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
     let attempted = (|| -> Result<QualifiedTree> {
         let mut events = Vec::<NativeEvent>::new();
         let PreparedSourceContext {
+            resources,
             mut source,
             raw,
             mut assessment,

@@ -66,7 +66,7 @@ pub(super) fn collect(
     events: &mut Vec<NativeEvent>,
 ) -> Result<BoundObservation> {
     ensure!(
-        resources == ResourceProfile::ExperimentalStreamingTreeV2,
+        resources.is_streaming(),
         "required ownership observation needs the explicit streaming-v2 profile"
     );
     target.validate_readonly_allocation_witness(witness, events)?;

@@ -24,13 +24,16 @@ impl Request {
     pub fn validate(&self) -> Result<()> {
         self.binding.validate()?;
         self.expected_label.validate()?;
+        if let Some(resources) = self.resource_profile {
+            resources.count_admission()?;
+        }
         ensure!(
             matches!(
                 (self.schema_version, self.resource_profile),
                 (1, None)
                     | (
                         2,
-                        Some(crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1 | crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+                        Some(crate::ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1 | crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2 | crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(_))
                     )
             ),
             "allocation capture schema differs"
@@ -135,8 +138,7 @@ fn capture_profile(request: &Request, output: &Path) -> Result<()> {
 fn capture_readonly_profile(request: &Request, output: &Path) -> Result<()> {
     request.validate()?;
     ensure!(
-        request.resource_profile
-            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2),
+        request.resource_profile.is_some_and(|p| p.is_streaming()),
         "protected allocation ownership needs the explicit streaming-v2 profile"
     );
     artifacts::create_output(output)?;

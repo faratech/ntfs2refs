@@ -23,6 +23,21 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Built object-envelope candidate: fresh fast allocation uses V3 planning None,
+then derives an admitted Some descriptor from complete reconciled frozen raw
+facts. It reallocates the existing1280 object slots across files/directories;
+it does NOT add unbounded counts. Counts/pin, raw/native64MiB ceilings, expected/
+constructor16MiB ceilings and conservative owning-handle projection are checked
+through native construction and the pinned recovery request/map parser. Native
+execution/recovery reject planning None; other conversion routes reject V3.
+Old V1/V2 serialization and limits stay. Focused library/CLI check, independent
+review and public release build pass; no units. Public9849344B SHA
+648cf28363b854ac5b960bb22ccd45855e5d81b468d29d6ac8d4f7342f4b1803
+includes this V3 and the aggregate CPU candidate. It is UNQUALIFIED natively,
+distinct from sealed cc6. Next teach lab observers the exact pinned V3 contract
+and qualify above the former split; do not mask profile differences. See
+docs/object-resource-envelope.md. Paged manifests/scale/compatibility stay open.
+
 Built next CPU candidate: selected-side and immutable journal aggregate SHA-256
 updates use the existing bounded digest pipeline on machines with at least three
 cores. Per-record SHA, every read/comparison, byte ordering, digests and barriers

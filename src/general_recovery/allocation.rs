@@ -114,6 +114,10 @@ pub fn recover_allocation(
     let mut request_input = HeldInput::open(&bundle.request.path, &bundle.request.sha256, 131072)?;
     let request: crate::general_conversion::Request = serde_json::from_slice(&request_input.bytes)?;
     request.validate()?;
+    request
+        .source_resource_profile
+        .unwrap_or_default()
+        .count_admission()?;
     ensure!(
         request.pair.source == bundle.source,
         "bundle source differs from its pinned request"
@@ -165,6 +169,7 @@ pub fn recover_allocation(
                 &expectation,
                 &plan,
                 &ticket,
+                request.source_resource_profile.unwrap_or_default(),
             )
         })
         .transpose()?;

@@ -36,10 +36,8 @@ pub(super) fn construct(
     resources: crate::ntfs_admission::ResourceProfile,
     selected_devices: bool,
 ) -> Result<GeneralFrozenPartition> {
-    use crate::ntfs_admission::ResourceProfile;
     ensure!(
-        resources == ResourceProfile::ExperimentalStreamingTreeV2
-            && source.binding() == &pair.source,
+        resources.is_streaming() && source.binding() == &pair.source,
         "fresh compact construction requires the explicit streaming source profile"
     );
     limits.validate(pair.source.identity.partition_bytes)?;
@@ -160,7 +158,9 @@ pub(super) fn construct(
     }
     let input = general_shadow::native_inputs(tree);
     let mut private = if selected_devices {
-        general_shadow::allocate_private_tree_enrolled(source, pair, tree)?
+        general_shadow::allocate_private_tree_enrolled_with_resource_profile(
+            source, pair, tree, resources,
+        )?
     } else {
         general_shadow::allocate_private_tree(pair, tree)?
     };

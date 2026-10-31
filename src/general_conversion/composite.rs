@@ -127,6 +127,12 @@ fn convert_composite(
 ) -> Result<()> {
     request.validate()?;
     ensure!(
+        !request
+            .source_resource_profile
+            .is_some_and(|p| p.is_envelope()),
+        "object envelope is supported only by fresh allocation conversion"
+    );
+    ensure!(
         request.schema_version != 3,
         "capacity-pinned capture requires the allocation-bounded backend"
     );

@@ -1017,7 +1017,7 @@ pub fn allocate(pair: &GeneralSourceShadowBinding, input: &[Input<'_>]) -> io::R
     {
         return Err(invalid("enrolled private tree scope differs"));
     }
-    allocate_checked(pair, input, None)
+    allocate_checked(pair, input, None, None)
 }
 
 /// Consume actual selected-device enrollment into the same owned constructor.
@@ -1028,13 +1028,27 @@ pub fn allocate_enrolled(
 ) -> io::Result<PrivateTree> {
     enrollment.revalidate()?;
     let pair = enrollment.pair.clone();
-    allocate_checked(&pair, input, Some(enrollment))
+    allocate_checked(&pair, input, Some(enrollment), None)
+}
+
+/// Count/metadata admission supplements actual selected-device enrollment. It
+/// cannot replace enrollment, source isolation or a later source certificate.
+pub fn allocate_enrolled_with_resource_profile(
+    mut enrollment: ConstructionEnrollment<'_>,
+    input: &[Input<'_>],
+    profile: crate::attestation::ResourceProfile,
+) -> io::Result<PrivateTree> {
+    enrollment.revalidate()?;
+    let pair = enrollment.pair.clone();
+    profile.count_admission()?;
+    allocate_checked(&pair, input, Some(enrollment), Some(profile))
 }
 
 fn allocate_checked(
     pair: &GeneralSourceShadowBinding,
     input: &[Input<'_>],
     enrollment: Option<ConstructionEnrollment<'_>>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<PrivateTree> {
     super::hard_links::validate(
         input,
@@ -1086,9 +1100,22 @@ fn allocate_checked(
             }
         }
     }
+    let admission = resource_profile
+        .map(crate::attestation::ResourceProfile::count_admission)
+        .transpose()?
+        .flatten();
+    if let Some(admission) = admission {
+        let streams = input.iter().try_fold(0usize, |n, i| {
+            n.checked_add(usize::from(!i.directory))
+                .and_then(|n| n.checked_add(i.named_streams.len()))
+                .ok_or_else(|| invalid("constructor stream count overflow"))
+        })?;
+        admission.validate_tree(input.len() - directories.len(), directories.len(), streams)?;
+        admission.validate_constructor_metadata(&input)?;
+    }
     if total > pair.shadow.identity.partition_bytes
-        || directories.len() > 256
-        || input.len() - directories.len() > 1024
+        || (admission.is_none()
+            && (directories.len() > 256 || input.len() - directories.len() > 1024))
     {
         return Err(invalid("private tree geometry or object budget exceeded"));
     }

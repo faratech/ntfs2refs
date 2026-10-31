@@ -250,10 +250,14 @@ impl ExpectedTree {
                 ensure!(
                     resources == ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
                         && !object.directory
-                        && object.reparse.is_none()
-                        && !object.ntfs_compression_normalized,
-                    "extent-only evidence requires the ordinary streaming source profile"
+                        && object.reparse.is_none(),
+                    "extent-only evidence requires the ordinary streaming source profile (record {})",
+                    object.record_number
                 );
+                // Compression normalization is recorded per file when any
+                // sibling stream is compressed. Each extent-only stream has
+                // its own plain-DATA proof; encoded siblings retain digests
+                // and are materialized through their existing decoder path.
             }
             name_count = name_count
                 .checked_add(1)

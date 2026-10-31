@@ -4,7 +4,7 @@ Journal preparation and validating readback calculate independent per-record,
 selected-side and immutable-body SHA-256 digests. Updating all of them on the
 reader thread serializes CPU work even when spare cores are available.
 
-The next candidate sends only aggregate digest updates through the existing
+The implementation sends only aggregate digest updates through the existing
 bounded, recycling digest pipeline. Per-record hashes, all reads, equality
 checks and write ordering stay on the caller. Each aggregate receives exactly
 the original ordered framing and bytes. The serial CNG or Rust backend is
@@ -23,6 +23,12 @@ when a worker is returning a buffer. No records, ticket or replay authority are
 issued on an incomplete or failed aggregate. No filesystem or journal format,
 checksum algorithm, selected range, content verification scope or barrier changes.
 
-Focused library/CLI checks and independent code review pass. This candidate is
-separate from the sealed `cc6cd28` read-reduction run. Native qualification and
-elapsed-time evidence are pending. No unit tests added or run.
+Focused library/CLI checks and independent code review pass. Sealed `f32c0f6`,
+including these aggregates and the V3 envelope, passed one normal F: case:
+1,084 objects, 273 directories and all 811 independent hashes, native0/HND.
+Native elapsed time was 384.724 seconds, with the observer passing 163.489
+seconds later. This is not a controlled timing comparison; process transfer
+counters are not physical disk I/O. Recovery and arbitrary-fault qualification
+remain pending. The later zero-digest cache was not used.
+[Native evidence](../evidence/object-envelope-native-20261031.json).
+No unit tests were added or run.

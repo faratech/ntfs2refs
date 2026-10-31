@@ -23,7 +23,50 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-Built object-envelope candidate: fresh fast allocation uses V3 planning None,
+Current qualified V3 case1cb0adcbd89d470cafc6ff53829ac8c5/coreb68cb9b3 passed
+sealedf32c0f6/public648cf28363b854ac5b960bb22ccd45855e5d81b468d29d6ac8d4f7342f4b1803
+(9,849,344B): actualPID568/creation1793483535328 native0/HND384.7244694s,
+observer0/all811 hashes163.4887101s later. Actual1084objects/811files/273dirs
+exceedstheold256directorysplit ONLY; no above1024file/unboundedclaim. ExactSome
+resource descriptor binds1111rawIDs/811streams,2714projectedhandles (notmeasured
+OS/RAM),1280object/2048raw/16384streamslots,64MiBraw/native and16MiBexpected/
+constructor metadata. PlanningNone stayedin devices; admittedSome ispinnedin
+request. Full/fast rawpins staydistinct. Target0contenthashes/0payloadreads,
+1084complete maps/metadata/storagevalidity andall811independent hashes passed.
+
+Growth32cbcf9d createdN2RV3+D000..D149 (151emptydirs);808oldfile IDs/maps stayed
+unchanged,0payloadreads/writes/moves, no freshhashclaim. Clean grownNTFSsnapshot
+83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b precedes baseline74ea49c9 manifestf5de156f:
+onefullRaw+oneactualNativepass matched811hashes and808historical actualXXH3
+path/length/contentrefs30bd09 (nooldmetadata/profile/rootmtime mask; nofresh
+SHA256fixtureclaim). BaselineissuednoSourceCert/journal/replay/protectionclear;
+rootrestoredsavedgrown8329 beforepublicconversion. Float `.0` parserfix was
+caughtbeforehelperexecution; preservedPS5stagingrefusalmade0helpercalls, not a
+failednativebaseline. Helpers91f8b3/nativegrowth5fe1f75/harnessc85 areseparate.
+
+Actual654missingdigests/9,885,682,940B include650tails/1,371,388B with650actual
+constructor/source/readback/protected-residual bindings. Rawhash94,339,669B and
+nativeotherlogicalreads22,204,741B remain. FreshcompletebaselineRootprofile,
+modified/MFTtimes/newobjects compareexact; only3provenaccess-timereconciliations.
+Productexpectations/timesuntouched. Nativeprocessreads150,985,869,025B/writes
+23,034,445,120B,userCPU415.796875s/kernel35.734375s;6guest-timestampedphasepins.
+These arelogicalaccounting, notphysicalIO/controlledspeed/HDD/1TBforecasts.
+SelectedD11,393,273,856B/3577ranges,copy5,659,303,936B,zero5,689,360,384B,
+L44,609,536B/J11,438,235,136B. Originalcoordinate4,225,028,096B;2424move
+submissions13,580,988,416B are notrealphysicalIOmeasurements.
+
+Closed77metadatafiles217,457,040B allcopy/sourceSHAverified (index45d528e6).
+Normalstopafteridle thenONEcheckpoint: currentOff/RAM0/50 at
+eaa87f30-0ca1-4a4a-8ae7-0e45cb1481f9 parentgrown8329. Actual280,017,813,937B/
+free65,217,228,800B staysinsidefixed329,374,052,988B/17,179,869,184B epoch.
+RemovedONLYobsoleteecd548f8+ce9b92c2 viaHyperV after71+43archives/depsrehashed;
+ALLhostevidence/baselinesstay. Preserveeaa/8329/42d,6fe/371,tail3cbc/119/643/fcc,
+oldint9ce/resume9bb,D1cold d939,f4bf. Evidence: evidence/object-envelope-native-20261031.json;
+docs/object-envelope-native.md. No V3/aggregateCPU recovery/mutation/powerloss/
+arbitraryfault orlargerscalequalification. Zero-cachee6d78a7 was NOTused and
+remainsfocused-check/review-only, nativelyunqualified. No units. Broadgoalactive.
+
+Object-envelope implementation: fresh fast allocation uses V3 planning None,
 then derives an admitted Some descriptor from complete reconciled frozen raw
 facts. It reallocates the existing1280 object slots across files/directories;
 it does NOT add unbounded counts. Counts/pin, raw/native64MiB ceilings, expected/
@@ -33,19 +76,23 @@ execution/recovery reject planning None; other conversion routes reject V3.
 Old V1/V2 serialization and limits stay. Focused library/CLI check, independent
 review and public release build pass; no units. Public9849344B SHA
 648cf28363b854ac5b960bb22ccd45855e5d81b468d29d6ac8d4f7342f4b1803
-includes this V3 and the aggregate CPU candidate. It is UNQUALIFIED natively,
-distinct from sealed cc6. Next teach lab observers the exact pinned V3 contract
-and qualify above the former split; do not mask profile differences. See
+includes this V3 and aggregate CPU scheduling. The scoped normal case above
+qualified273directories/811files, not recovery or arbitrary counts. Freshlab
+observers validate exactV3 descriptors withoutmasking profile differences. See
 docs/object-resource-envelope.md. Paged manifests/scale/compatibility stay open.
 
-Built next CPU candidate: selected-side and immutable journal aggregate SHA-256
+Aggregate SHA scheduling: selected-side and immutable journal aggregate SHA-256
 updates use the existing bounded digest pipeline on machines with at least three
 cores. Per-record SHA, every read/comparison, byte ordering, digests and barriers
 remain. Each worker owns one recycled 1MiB buffer; all required finishes/errors
 are joined before ticket/record publication. Serial fallback stays on smaller
-machines. Focused library/CLI check and independent review pass; native timing
-and qualification pending. It is NOT in sealed cc6cd28. See
+machines. Focused library/CLI check and independent review pass; the scoped
+f32 normal qualification above passed. Recovery/faultqualification remainsopen.
+It was NOT in sealed cc6cd28. See
 docs/journal-parallel-aggregates.md. No unit tests.
+
+The following older native milestones and former current VM labels are history;
+the current preservation/cleanup state above is authoritative.
 
 Qualified sealedcc6 normal F caseb11fb80f47f74ec8819977f047ec478d/core77fd3136:
 actualPID5144/creation1793478787506 native0/HND600.7880323s, observer0/all811

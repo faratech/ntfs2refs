@@ -3,8 +3,11 @@
 Subsequent implementation `f32c0f6` adds a pinned count envelope for fresh fast
 allocation conversion: files and directories share the existing 1,280 object
 slots. Full-content and legacy profiles keep their original split. This removes
-one coupled limit, with native qualification still pending; the other collection,
-metadata, namespace, placement and recovery ceilings below remain. See
+one coupled limit. A sealed f32 normal case now passed with 1,084 objects,
+273 directories and all 811 independent hashes, exceeding the old directory
+split only. More than 1,024 files and broader scale remain unqualified; the
+other collection, metadata, namespace, placement and recovery ceilings below
+remain. See [the native scope](object-envelope-native.md) and
 [the implemented bounded envelope](object-resource-envelope.md).
 
 Read-only code audit of `cce4a6e`. These are current enforcement points, not new
@@ -12,11 +15,11 @@ native qualification results. A refusal's order depends on file count, directory
 shape, fragmentation, names and descriptor sizes. At that revision the public
 profile supported at most **1,024 files and 256 directories**, including the root.
 
-## Current code-enforced limits
+## Historical cce audit and remaining ceilings
 
 | Area | Binding guards and retained structures |
 |---|---|
-| Public profile and file counts | `--drive` selects `ExperimentalStreamingTreeV2` in [drive_cli.rs](../src/drive_cli.rs#L373). Its [resource limits](../src/ntfs_admission.rs#L131) are 1,024 files / 256 directories. [ExpectedTree](../src/shadow_tree.rs#L220), the [native observer](../crates/n2r-win32/src/shadow_native.rs#L3211) and [private constructor](../crates/n2r-win32/src/shadow_native/private_tree.rs#L1046) repeat these limits, including the 1,280-object ceiling. |
+| Public profile and file counts | At cce, the public streaming V2 profile used 1,024 files / 256 directories. Current fresh fast conversion selects V3 planning/count admission in [drive_cli.rs](../src/drive_cli.rs), with a shared 1,280-object ceiling enforced through raw/native/semantic/constructor checks and pinned recovery. Full-content and legacy profiles retain their prior split. The qualified case covers 811 files / 273 directories only. |
 | Source native request | [ntfs_attestation.rs:106](../src/ntfs_attestation.rs#L106) refuses more than 2,048 entries in `raw.files` before source admission. These are canonical allocated MFT records, including internal records, rather than just user files. The matching native [request guard](../crates/n2r-win32/src/attestation.rs#L249) uses the [2,048-identity profile](../crates/n2r-win32/src/attestation.rs#L51). Thus a source with more than 2,048 raw objects stops here even before the smaller semantic tree limit is assessed. |
 | Raw inventory and ownership | [NtfsInspection](../src/ntfs_inspect.rs#L163) retains files and attribute assemblies in vectors. Its heap budget remains [64 MiB](../src/ntfs_inspect.rs#L60). The [MFT domain](../src/ntfs_inspect.rs#L21) is capped at 1,000,000 records; [bootstrap validation](../src/ntfs_mft_bootstrap.rs#L175) applies this to the MFT's record domain, including unused slots. [Raw ownership reconciliation](../src/ntfs_inspect.rs#L1892) streams the bitmap but inherits [4,096 intervals, 16 KiB of attribute-name units and a 4,096-index sort budget](../src/ntfs_allocation.rs#L36). Fragmentation can therefore refuse before file-count admission. |
 | Namespace, streams and paths | Raw [namespace limits](../src/ntfs_namespace.rs#L12) include 16 MiB of index data, 16,384 entries, 131,072 UTF-16 name units and 4,096 directories. Native [directory collection](../crates/n2r-win32/src/namespace_layout.rs#L5) has 4,096 entries / 64 calls / 2 MiB of evidence. The canonical/native stream total is 16,384; the [native stream list](../crates/n2r-win32/src/stream_layout.rs#L3) allows 64 streams per file. The [semantic path-depth guard](../src/shadow_tree.rs#L306) is 16 components. These are separate gates from total file count. |

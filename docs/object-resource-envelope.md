@@ -49,12 +49,14 @@ Unchanged ceilings include 2,048 raw identities, 16,384 DATA streams, namespace
 and path rules, per-file stream/extent bounds, allocation ownership, placement
 routes/transcripts and all current recovery readers. This change does not add
 paged manifests, handle batching, arbitrary file counts or larger-volume
-qualification. Native qualification above the old file/directory split remains
-pending; focused compiler/build checks are not native evidence. No unit tests
-were added or run.
+qualification. One sealed `f32c0f6` normal F: case now passed above the former
+directory split: 1,084 objects, 273 directories and all 811 independent stream
+hashes. More than 1,024 files, recovery and broader scale remain unqualified.
+No unit tests were added or run. [Native scope](object-envelope-native.md).
 
-Before a lab case uses V3, its observer must explicitly validate the new pinned
-descriptor and exact raw/native/canonical counts. Current lab comparisons pin
-V2 resource/tree profiles. They must be taught the new contract, rather than
-masking profile differences or changing product expectations. Sealed older
-native cases remain attributed to their original runtime/profile.
+The V3 lab observer now explicitly validates the admitted descriptor and exact
+raw/native/canonical counts against a fresh full-source baseline. Its full and
+fast raw pins remain distinct; profile, root modified times and newly created
+directories are preserved in exact comparisons. The old V2 observer branch is
+unchanged. This is a lab observation contract, not source/write authority.
+Sealed older cases remain attributed to their original runtime/profile.

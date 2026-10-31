@@ -1,0 +1,869 @@
+{
+  "schema_version": 1,
+  "kind": "object-envelope-v3-normal-native-qualification",
+  "recorded_utc": "2026-10-31T22:12:37.2879166Z",
+  "runtime_source_commit": "f32c0f6bf49e9c46b3aeba9f152f1632c45683a2",
+  "runtime_tools": [
+    {
+      "sha256": "648cf28363b854ac5b960bb22ccd45855e5d81b468d29d6ac8d4f7342f4b1803",
+      "name": "ntfs2refs.exe",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\head-drive-tools-f32c0f6-envelope\\ntfs2refs.exe",
+      "bytes": 9849344
+    },
+    {
+      "sha256": "eb56af0116b90e9e4bb0462e8cd5145d3181a4e341974a02d7b54e2586cdfbae",
+      "name": "lab-content-digest.exe",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\head-drive-tools-f32c0f6-envelope\\lab-content-digest.exe",
+      "bytes": 323072
+    },
+    {
+      "sha256": "6722a00cbc4947902eb167086bd62d94d823cc544119f632657d7f188fcc653f",
+      "name": "lab-query-refs-extents.exe",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\head-drive-tools-f32c0f6-envelope\\lab-query-refs-extents.exe",
+      "bytes": 1081344
+    }
+  ],
+  "toolset_manifest": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\head-drive-tools-f32c0f6-envelope\\manifest.json",
+    "bytes": 1164,
+    "sha256": "9abf46fab8893965d23afa406b9ac8f579c4c54b7bcc0caacec5408e753b2bda"
+  },
+  "aggregate_sha_commit": "60d2f9ccf60630705531f22fc6bd0be3eff6cf97",
+  "metadata_growth_helper_commit": "5fe1f75",
+  "fresh_capture_helper_commit": "91f8b3e",
+  "harness_commit": "c85aaff3b60966fe5febc7d13662e9b05b41bcda",
+  "zero_digest_cache_e6d78a7_not_used": true,
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "run_id": "1cb0adcbd89d470cafc6ff53829ac8c5",
+  "core_run_id": "b68cb9b3480c4f19bb75f50538b21b42",
+  "native_pid": 568,
+  "native_creation_ms": 1793483535328,
+  "native_exit": 0,
+  "native_exit_observed": true,
+  "native_identity_bound_by_retained_process_handle": true,
+  "native_terminal_publication_utc": "2026-10-31T21:58:40.0524694Z",
+  "native_elapsed_seconds_creation_to_terminal_publication": 384.7244694,
+  "observer_exit": 0,
+  "observer_completed_utc": "2026-10-31T22:01:23.5411795Z",
+  "observer_seconds_after_native_terminal_publication": 163.4887101,
+  "conversion_executed_once": true,
+  "raw_replay_after_handoff": false,
+  "grown_source": {
+    "original_user_files": 808,
+    "created_directories": 151,
+    "original_user_files_ids_and_complete_maps_unchanged": true,
+    "growth_extent_moves": 0,
+    "normal_stop_before_source_checkpoint": true,
+    "growth_fresh_content_hashes_claimed": false,
+    "growth_payload_reads": 0,
+    "original_user_bytes": 9885781381,
+    "grown_checkpoint": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+    "original_checkpoint": "6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e",
+    "growth_payload_writes": 0,
+    "fixture_run_id": "32cbcf9db7f44278afb60bba0a2db59f",
+    "growth_receipt_sha256": "835b1196b038b2aac01bc1bd4efdf5e9837531d5e1d69dd7b9486272f37ba37c",
+    "created_directory_paths": "N2RV3 plus D000 through D149",
+    "created_payload_files": 0
+  },
+  "full_fresh_baseline": {
+    "source_left_offline_readonly": true,
+    "capture_run_id": "74ea49c9440246b999e6871ee61aaf4a",
+    "source_admitted": false,
+    "actual_full_stream_digests_matched": 811,
+    "full_image_sha_computed": false,
+    "journal_or_replay_authorized": false,
+    "objects": 1084,
+    "data_streams": 811,
+    "historical_fixture_sha256": "7810754f1853490d399f87bf1b24f509a8c32716cee84d38babc7c385a487f66",
+    "manifest_sha256": "f5de156f9d2140b0f77bae80ba336b80fe543d22428ecbbf6b0eb3251dd290b7",
+    "historical_full_expectation_sha256": "30bd09d24bd43ba42029db003e5ab357f50eaa8d554b8bfd750acc39fcd0d629",
+    "protection_clear_api_used": false,
+    "native_report_schema": 11,
+    "source_certificate_issued": false,
+    "native_request_schema": 3,
+    "actual_raw_logical_passes": 1,
+    "directories": 273,
+    "native_after_digest_capture_is_mirror_not_second_pass": true,
+    "baseline_branch_had_no_conversion": true,
+    "native_logical_read_audit": {
+      "bytes_read": 9907887681,
+      "eof_probes": 816,
+      "limit_bytes": 9007199254740992,
+      "read_calls": 3851,
+      "reserved_bytes": 9907888497
+    },
+    "files": 811,
+    "source_checkpoint": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+    "actual_native_content_passes": 1,
+    "original808_contents_match_historical_actual_xxh3": true,
+    "historical_fixture_sha256_rehashed": false,
+    "saved_grown_source_restored_before_public_conversion": true,
+    "raw_logical_hash_bytes": 9980022609,
+    "old_canonical_metadata_used_as_new_baseline": false
+  },
+  "baseline_staging_and_parser": {
+    "guest_preflight_verified_before_public_start": true,
+    "fixture_total_bytes_float_number_parsing_fixed_before_execution": true,
+    "helper_calls_in_staging_refusal": 0,
+    "old_capture_732_not_executed": true,
+    "copied_artifact_path_bindings_recorded": 9,
+    "host_manifest_and_artifact_read_guards_held_through_copy": true,
+    "no_failed_native_baseline_run_invented": true,
+    "separate_ps5_staging_refusal_preserved": true,
+    "original_manifest_guest_paths_not_rewritten": true,
+    "preflight_file": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\fresh-baseline-preflight.json",
+      "bytes": 9051,
+      "sha256": "706a6eb7c623c0c667c58aa2269de26f2e938b5da9f06e3061e7639869aed4cf",
+      "source_last_write_utc": "2026-10-31T21:52:14.523062Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    "staging_refusal_phase": "guest-staged-pin-enumeration-before-task-registration"
+  },
+  "object_envelope": {
+    "descriptor": {
+      "schema_version": 1,
+      "source_inspection_sha256": [
+        37,
+        127,
+        78,
+        51,
+        252,
+        230,
+        17,
+        163,
+        208,
+        220,
+        248,
+        201,
+        117,
+        160,
+        18,
+        111,
+        212,
+        220,
+        69,
+        149,
+        90,
+        40,
+        106,
+        39,
+        111,
+        148,
+        79,
+        168,
+        9,
+        220,
+        146,
+        56
+      ],
+      "raw_identities": 1111,
+      "files": 811,
+      "directories": 273,
+      "data_streams": 811,
+      "object_slots": 1280,
+      "raw_identity_slots": 2048,
+      "data_stream_slots": 16384,
+      "maximum_expected_tree_bytes": 16777216,
+      "maximum_inspection_bytes": 67108864,
+      "maximum_native_report_bytes": 67108864,
+      "projected_owned_handle_slots": 2714,
+      "maximum_owned_handle_slots": 34056,
+      "maximum_constructor_input_metadata_bytes": 16777216
+    },
+    "recorded_access_time_reconciliations": 3,
+    "historical_directory_ceiling_exceeded": true,
+    "all_other_canonical_metadata_exact": true,
+    "actual_objects": 1084,
+    "root_modified_or_mft_change_times_masked": false,
+    "profile": "experimental_object_envelope_v3",
+    "exact_current_grown_profile_root_modified_times_and_new_objects_compared": true,
+    "actual_files": 811,
+    "actual_data_streams": 811,
+    "actual_directories": 273,
+    "full_raw_inspection_sha256": "049f7bd794f2c294e3c4f56cb1e3ead49299fc1dd8adc10f33115c38520bc5d6",
+    "actual_raw_identities": 1111,
+    "different_evidence_pins_equated": false,
+    "constructor_actual_handle_count_claimed": false,
+    "exact_raw_native_semantic_constructor_count_checks_passed": true,
+    "fast_raw_inspection_sha256": "257f4e33fce611a3d0dcf8c975a0126fd4dc45955a286a276f944fa809dc9238",
+    "product_expectation_or_filesystem_times_rewritten": false,
+    "above1024files_qualified": false,
+    "admitted_some_in_pinned_request": true,
+    "planning_none_in_devices": true,
+    "constructor_metadata_measurement_claimed": false
+  },
+  "content_scope": {
+    "constructor_tail_receipts": 650,
+    "handoff_replay_closed": true,
+    "target_default_content_hashes": 0,
+    "independent_target_named_stream_hashes": 0,
+    "independent_target_default_stream_hashes": 811,
+    "fast_native_request_schema": 4,
+    "partial_extent_streams": 650,
+    "all_complete_maps_identical": true,
+    "fast_native_report_schema": 12,
+    "logical_content_hash_algorithm": "xxh3-128",
+    "remaining_native_logical_content_bytes_read": 22204741,
+    "all_independent_target_hashes_match": true,
+    "whole_aligned_extent_streams": 4,
+    "full_raw_hash_bytes_same_grown_source": 9980022609,
+    "target_metadata_namespace_complete_maps_and_storage_validity_checked": true,
+    "actual_materialized_tail_bytes": 1371388,
+    "complete_stream_and_directory_bindings": 1084,
+    "target_named_content_hashes": 0,
+    "independent_hash_batches": 3,
+    "raw_initial_hash_bytes": 94339669,
+    "target_admitted_payload_read_bytes": 0,
+    "extent_only_streams": 654,
+    "extent_only_logical_bytes": 9885682940,
+    "source_destination_protected_residual_bindings": 650,
+    "zero_payload_io_overall_claimed": false,
+    "initial_missing_content_digests_reconstructed": false
+  },
+  "selected_metrics": {
+    "move_submission_bytes_not_physical_io": true,
+    "original_coordinate_bytes": 4225028096,
+    "recovery_payload_manifest_pin": {
+      "path": "C:\\ProgramData\\ntfs2refs\\runs\\b68cb9b3480c4f19bb75f50538b21b42\\conversion\\recovery-payload-manifest.json",
+      "sha256": "0fb29ea831c4dfb63da3eaabc36abc723c67bdcabcdf9ace6a913e7d78e43e73"
+    },
+    "placement_move_bytes_submitted": 13580988416,
+    "selected_ranges": 3577,
+    "literal_backing_packed_bytes": 44609536,
+    "new_zero_bytes": 5689360384,
+    "recovery_bundle_sha256": "bf6db3bf43f1a3067380da96574ea8b33471aa00190d7d3e8f0f778dc6d6c61b",
+    "exclusive_apply_handoff_used": true,
+    "original_coordinate_ranges": 903,
+    "placement_move_submissions": 2424,
+    "recovery_executed": false,
+    "exclusive_preparation_readback_used": true,
+    "selected_bytes": 11393273856,
+    "journal_bytes": 11438235136,
+    "new_copy_bytes": 5659303936,
+    "free_space_contents_compared": false
+  },
+  "native_process_accounting": {
+    "scope": "Windows process transfer counters and CPU times; not physical disk I/O",
+    "user_cpu_seconds": 415.796875,
+    "write_transfer_bytes": 23034445120,
+    "original_guest_artifact_publication_timestamps_retained": true,
+    "controlled_wall_speed_comparison": false,
+    "phases": [
+      {
+        "phase": "start",
+        "counters": {
+          "kernel_time_100ns": 312500,
+          "other_operation_count": 1553,
+          "other_transfer_bytes": 203102,
+          "read_operation_count": 3,
+          "read_transfer_bytes": 8197,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 156250,
+          "write_operation_count": 22,
+          "write_transfer_bytes": 80802
+        },
+        "delta_from_previous_snapshot": null,
+        "pin": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\process-io-start.json",
+          "bytes": 487,
+          "sha256": "094c17c291b392be696751f6743b6e132945380f471537d3cd2e632d07eabab1",
+          "source_last_write_utc": "2026-10-31T21:52:15.9096632Z",
+          "pin_source": "just-verified closed archive index",
+          "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+        }
+      },
+      {
+        "phase": "qualified",
+        "counters": {
+          "kernel_time_100ns": 135312500,
+          "other_operation_count": 697032,
+          "other_transfer_bytes": 137236400,
+          "read_operation_count": 63471,
+          "read_transfer_bytes": 42534234849,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 193593750,
+          "write_operation_count": 1903,
+          "write_transfer_bytes": 167832517
+        },
+        "delta_from_previous_snapshot": {
+          "read_transfer_bytes": 42534226652,
+          "write_transfer_bytes": 167751715,
+          "user_cpu_seconds": 19.34375,
+          "kernel_cpu_seconds": 13.5,
+          "artifact_publication_interval_seconds": 56.3476074
+        },
+        "pin": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\process-io-qualified.json",
+          "bytes": 519,
+          "sha256": "52a235929aa4fae340a338458d2fe58d097d014909f33d604c6c8c054349bedb",
+          "source_last_write_utc": "2026-10-31T21:53:12.2572706Z",
+          "pin_source": "just-verified closed archive index",
+          "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+        }
+      },
+      {
+        "phase": "journal-prepared",
+        "counters": {
+          "kernel_time_100ns": 241250000,
+          "other_operation_count": 713947,
+          "other_transfer_bytes": 141392712,
+          "read_operation_count": 120270,
+          "read_transfer_bytes": 82522093793,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 2365312500,
+          "write_operation_count": 24190,
+          "write_transfer_bytes": 11614018535
+        },
+        "delta_from_previous_snapshot": {
+          "read_transfer_bytes": 39987858944,
+          "write_transfer_bytes": 11446186018,
+          "user_cpu_seconds": 217.171875,
+          "kernel_cpu_seconds": 10.59375,
+          "artifact_publication_interval_seconds": 145.0023637
+        },
+        "pin": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\process-io-journal-prepared.json",
+          "bytes": 531,
+          "sha256": "8dafa5fba3c9a42aad8e5bcaab0a972d33fc13e140c7c293b1822a29a9886658",
+          "source_last_write_utc": "2026-10-31T21:55:37.2596343Z",
+          "pin_source": "just-verified closed archive index",
+          "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+        }
+      },
+      {
+        "phase": "applied",
+        "counters": {
+          "kernel_time_100ns": 354375000,
+          "other_operation_count": 723478,
+          "other_transfer_bytes": 144211412,
+          "read_operation_count": 212217,
+          "read_transfer_bytes": 150941255393,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 4152343750,
+          "write_operation_count": 38242,
+          "write_transfer_bytes": 23007356442
+        },
+        "delta_from_previous_snapshot": {
+          "read_transfer_bytes": 68419161600,
+          "write_transfer_bytes": 11393337907,
+          "user_cpu_seconds": 178.703125,
+          "kernel_cpu_seconds": 11.3125,
+          "artifact_publication_interval_seconds": 180.0348716
+        },
+        "pin": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\process-io-applied.json",
+          "bytes": 523,
+          "sha256": "a229d798b29e06b865c238c4bd2e76421128559114c008381961f959036eee2b",
+          "source_last_write_utc": "2026-10-31T21:58:37.2945059Z",
+          "pin_source": "just-verified closed archive index",
+          "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+        }
+      },
+      {
+        "phase": "handoff",
+        "counters": {
+          "kernel_time_100ns": 354375000,
+          "other_operation_count": 723503,
+          "other_transfer_bytes": 144211428,
+          "read_operation_count": 212218,
+          "read_transfer_bytes": 150941259489,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 4152343750,
+          "write_operation_count": 38248,
+          "write_transfer_bytes": 23007361581
+        },
+        "delta_from_previous_snapshot": {
+          "read_transfer_bytes": 4096,
+          "write_transfer_bytes": 5139,
+          "user_cpu_seconds": 0,
+          "kernel_cpu_seconds": 0,
+          "artifact_publication_interval_seconds": 0.0317134
+        },
+        "pin": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\process-io-handoff.json",
+          "bytes": 523,
+          "sha256": "26546094f0008120acf850f2005e79b3dfd281a87c6b9d6e11dee53a52a6ae46",
+          "source_last_write_utc": "2026-10-31T21:58:37.3262193Z",
+          "pin_source": "just-verified closed archive index",
+          "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+        }
+      },
+      {
+        "phase": "native-verified",
+        "counters": {
+          "kernel_time_100ns": 357343750,
+          "other_operation_count": 769182,
+          "other_transfer_bytes": 150772956,
+          "read_operation_count": 212229,
+          "read_transfer_bytes": 150985869025,
+          "static_scope": "process_io_transfer_counters_not_physical_disk_io",
+          "user_time_100ns": 4157968750,
+          "write_operation_count": 38253,
+          "write_transfer_bytes": 23034445120
+        },
+        "delta_from_previous_snapshot": {
+          "read_transfer_bytes": 44609536,
+          "write_transfer_bytes": 27083539,
+          "user_cpu_seconds": 0.5625,
+          "kernel_cpu_seconds": 0.296875,
+          "artifact_publication_interval_seconds": 0.822267
+        },
+        "pin": {
+          "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\process-io-native-verified.json",
+          "bytes": 531,
+          "sha256": "4c350648d654212eb97427d37b2eac2a9bcdc8797fca208d505c3a1e5c7b3b78",
+          "source_last_write_utc": "2026-10-31T21:58:38.1484863Z",
+          "pin_source": "just-verified closed archive index",
+          "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+        }
+      }
+    ],
+    "hdd_or1tb_timing_forecast": false,
+    "read_transfer_bytes": 150985869025,
+    "last_snapshot_phase": "native-verified",
+    "final_serialization_after_last_snapshot_excluded": true,
+    "kernel_cpu_seconds": 35.734375
+  },
+  "archive": {
+    "bytes": 217457040,
+    "maximum_combined_bytes": 268435456,
+    "index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889",
+    "maximum_file_bytes": 67108864,
+    "files": 77,
+    "binary_journal_backing_payloads_copied": false,
+    "all_copied_lengths_and_sha_verified": true,
+    "all_sources_reverified_under_read_guards": true,
+    "receipt_sha256": "4e54b2176786db0c889190a1ba2c791f6e63edcce11cebea0cc7a7de76684dc9",
+    "root": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb"
+  },
+  "final_checkpoint": {
+    "id": "eaa87f30-0ca1-4a4a-8ae7-0e45cb1481f9",
+    "issued_once": true,
+    "state": "Off",
+    "all_tasks_and_workers_terminal_before_normal_stop": true,
+    "capacity_at_checkpoint": {
+      "ActualBytes": 280017813937,
+      "FreeBytes": 65217228800,
+      "MaximumActualBytes": 329374052988,
+      "MinimumFreeBytes": 17179869184
+    },
+    "normal_shutdown": true,
+    "ram": 0,
+    "fresh_process_confirmed": true,
+    "source_parent": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+    "name": "refs-object-envelope-1cb0adcb",
+    "checkpoint_count": 50
+  },
+  "cleanup": {
+    "archive_files_reverified_ecd": 71,
+    "preserved": [
+      "42d684f8-1a63-4f7b-98ac-286d88289a63",
+      "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+      "6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e",
+      "371ae756-faf2-40ac-bf86-5e8e1d744e30",
+      "3cbc9ae0-c7da-49ab-bd08-ca0c48275f03",
+      "119445de-8c2d-4186-b54c-6b5cda644e4d",
+      "64304900-25ef-4797-8d01-f58d229dedc3",
+      "fcc42f45-2101-441d-8751-b625cc7d0051",
+      "f4bf5238-14c0-4b15-bda6-7859abd4d1c9"
+    ],
+    "all_host_archives_and_baselines_retained": true,
+    "hyperv_api_only": true,
+    "direct_avhdx_deletion": false,
+    "removed_only": [
+      "ecd548f8-3237-44f5-b874-6de79c140997",
+      "ce9b92c2-85c5-4754-82e3-62d877ab5726"
+    ],
+    "dependency_pins_reverified": true,
+    "archive_files_reverified_ce9": 43
+  },
+  "limitations": [
+    "One normal V3/aggregate-SHA case above the former directory split; not above1024files.",
+    "Existing1280object/2048raw/16384stream and byte/path/namespace/placement/recovery ceilings remain.",
+    "No V3 or aggregate-SHA recovery, arbitrary interruption, power-loss, mutation or broad cold-boot qualification.",
+    "No controlled speed comparison, physical-I/O claim or HDD/1TB time forecast.",
+    "e6d78a7 zero-digest cache was not used and remains natively unqualified."
+  ],
+  "unit_tests_added_or_run": false,
+  "general_conversion_qualified": false,
+  "broader_goal_complete": false,
+  "pins": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\result.json",
+      "bytes": 1474,
+      "sha256": "6afcf8ebd4f87ee5a954a2ea25b362de44b2c87949430effb3a2968320839fe0",
+      "source_last_write_utc": "2026-10-31T21:58:38.1484863Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\request.json",
+      "bytes": 2933,
+      "sha256": "65cc60cb03678c30f831b2f88cb4629f6ddb8a5b44ded06c1ac3e2f15accae74",
+      "source_last_write_utc": "2026-10-31T21:55:37.243984Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\expectation.json",
+      "bytes": 5139891,
+      "sha256": "9b4c81bedee040eb3859d3f98eb048eeee55cc17504473a8b28f03ec145fea1d",
+      "source_last_write_utc": "2026-10-31T21:53:12.3043753Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\extent-verification.json",
+      "bytes": 761,
+      "sha256": "bccaa363f012f0d8d2111d28cf3d2bf54e78fe643e278b7e4aca5d5f8a01c605",
+      "source_last_write_utc": "2026-10-31T21:58:37.9270101Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\allocation-recovery-bundle.json",
+      "bytes": 2039,
+      "sha256": "bf6db3bf43f1a3067380da96574ea8b33471aa00190d7d3e8f0f778dc6d6c61b",
+      "source_last_write_utc": "2026-10-31T21:55:37.2596343Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\recovery-payload-manifest.json",
+      "bytes": 1987811,
+      "sha256": "0fb29ea831c4dfb63da3eaabc36abc723c67bdcabcdf9ace6a913e7d78e43e73",
+      "source_last_write_utc": "2026-10-31T21:55:37.243984Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\selected-plan.json",
+      "bytes": 446848,
+      "sha256": "610d05ba2026981b90e59dcb2f265f4d5540348d375b1ed00c4ae8c6b53a2c10",
+      "source_last_write_utc": "2026-10-31T21:53:12.3364877Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\selected-ticket.json",
+      "bytes": 1071,
+      "sha256": "91a1089b288956b5cae0d6597dbea5c7715ca4a5ce23247a414bfeda07c9ae7d",
+      "source_last_write_utc": "2026-10-31T21:55:37.1803451Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\preparation-events.json",
+      "bytes": 24351,
+      "sha256": "2219e81e34abdde0cd3c200fc80fea47e21853c654644678ea5c3ed327b35214",
+      "source_last_write_utc": "2026-10-31T21:55:37.1803451Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\activation-events.json",
+      "bytes": 37978,
+      "sha256": "ea8517798b27b91907d63023ee0c6bc14fb94c048fbd282585d5af764b0c5d70",
+      "source_last_write_utc": "2026-10-31T21:55:37.2755254Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\apply.json",
+      "bytes": 449,
+      "sha256": "3fc95d40e362f6d444e84a7bdfa8d82422684d49ec765cc635be2a3db3788376",
+      "source_last_write_utc": "2026-10-31T21:58:37.2945059Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\handoff.json",
+      "bytes": 448,
+      "sha256": "2169b983ff86325bcd048fdd3a548f5e96e9484496a64232f76a2e2c283f75af",
+      "source_last_write_utc": "2026-10-31T21:58:37.3104363Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\finalization.json",
+      "bytes": 27069936,
+      "sha256": "42f19624c2d67071a00b8b9f123db0e975f4a9cc462bf15f4754ea24f4416039",
+      "source_last_write_utc": "2026-10-31T21:58:38.0382911Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\qualification\\tree-resource-admission.json",
+      "bytes": 946,
+      "sha256": "5b90ecf5fb800ca5c59e4158f86cedcc0d51df96c5aa1ffea2a00598da31eb1f",
+      "source_last_write_utc": "2026-10-31T21:52:16.7034183Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\qualification\\source-basis.json",
+      "bytes": 4373878,
+      "sha256": "e71c460454e47504269f6f67c21a80fa3f11a9af70d7d757498cc6cc28ed3518",
+      "source_last_write_utc": "2026-10-31T21:52:17.22188Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\qualification\\native-source.json",
+      "bytes": 35710149,
+      "sha256": "7310efbd1a1f8068b29b19e6ca9e6f6990fe2b98b49dfcbdeecf296744856d54",
+      "source_last_write_utc": "2026-10-31T21:52:18.2826375Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\qualification\\source-assessment.json",
+      "bytes": 3376491,
+      "sha256": "903a8c5b4ee9ad58882ca58dd7bb59c6b2b244397d08d41f9250389993f291bd",
+      "source_last_write_utc": "2026-10-31T21:52:20.5538671Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\qualification\\construction-placement.json",
+      "bytes": 26342825,
+      "sha256": "9731d024c761467a9fcbc6209ac829a1ccf98ed43035e2e9a9cb5071d3cbe651",
+      "source_last_write_utc": "2026-10-31T21:52:31.4782069Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\qualification\\construction-metadata.json",
+      "bytes": 539253,
+      "sha256": "edc7d78fb8bc34cd4f7953032f662ff845a89de11d42321321c0d6619bbe4af5",
+      "source_last_write_utc": "2026-10-31T21:52:44.0972915Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\qualification\\construction-exceptions.json",
+      "bytes": 609311,
+      "sha256": "cae57e3baf4c7b23e5f7e44c490960a3fddf4dd15ef51b649cff813c243ced23",
+      "source_last_write_utc": "2026-10-31T21:52:40.3792046Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\core\\conversion\\qualification\\target-preservation.json",
+      "bytes": 35515207,
+      "sha256": "be9cfb99cf84fe74b63342dbaa0f0ed37e53e1ef10727ff7fc4a65f39cb81727",
+      "source_last_write_utc": "2026-10-31T21:53:12.0042686Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\native-process.json",
+      "bytes": 627,
+      "sha256": "ad5da674fdad5463c5f2b0dd5be321041b025242bafcbf5e02cd9475d77216f5",
+      "source_last_write_utc": "2026-10-31T21:52:15.3355548Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\native-terminal.json",
+      "bytes": 2282,
+      "sha256": "cbad2180bb70c2d8bc797b5b4d42f727849d13c21ebe4d4bd95e0f7b9b648ce9",
+      "source_last_write_utc": "2026-10-31T21:58:40.0544735Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\wrapper-result.json",
+      "bytes": 6297562,
+      "sha256": "5274c983cfabca244238be0e39e537ffbfb1430c5edb6924384c448d1b650446",
+      "source_last_write_utc": "2026-10-31T22:01:23.6872691Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\fresh-baseline-preflight.json",
+      "bytes": 9051,
+      "sha256": "706a6eb7c623c0c667c58aa2269de26f2e938b5da9f06e3061e7639869aed4cf",
+      "source_last_write_utc": "2026-10-31T21:52:14.523062Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\object-envelope-verification.json",
+      "bytes": 4271,
+      "sha256": "e04975ab645dc7d6eb01d7e6d712a4574b91562ffa1a6c7daba55460dbaf7c5a",
+      "source_last_write_utc": "2026-10-31T21:58:47.8369385Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\lab-baseline-binding.json",
+      "bytes": 708368,
+      "sha256": "fa7c768e992cfadb2b422973091bed8b7bf4abdfca0addff252390e853d50c98",
+      "source_last_write_utc": "2026-10-31T22:01:06.5547389Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\independent-target-hashes.json",
+      "bytes": 1441924,
+      "sha256": "68d28071591180b02f8792f4b551f890d92a13551c5e16fbede97babbbe8ed73",
+      "source_last_write_utc": "2026-10-31T22:01:21.8102174Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\lab-fresh-baseline-manifest.json",
+      "bytes": 12811,
+      "sha256": "f5de156f9d2140b0f77bae80ba336b80fe543d22428ecbbf6b0eb3251dd290b7",
+      "source_last_write_utc": "2026-10-31T21:52:01.106784Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\lab-full-content-baseline.json",
+      "bytes": 5113823,
+      "sha256": "4daeb3537310a105a1a5d5d621d2f389be949af059ed6aef391065e74db1f1ff",
+      "source_last_write_utc": "2026-10-31T21:51:57.8029778Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\lab-baseline-source-basis.json",
+      "bytes": 4326875,
+      "sha256": "f2e954c845a85718d5e27d50a3b421855de37ca9fa07195f7a3bb5f000ce9b3d",
+      "source_last_write_utc": "2026-10-31T21:52:01.0753673Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\lab-fresh-native-source.json",
+      "bytes": 35450137,
+      "sha256": "7142a9ad9caa8ccb8ab9d96fc38ffd250ec1dc98a167d44a46d84525e1813b99",
+      "source_last_write_utc": "2026-10-31T21:52:00.5911908Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\lab-fresh-source-views.json",
+      "bytes": 1806224,
+      "sha256": "55c41de0b3307593b006d18ae899e145308726310ec98aaa96f68f49730b5839",
+      "source_last_write_utc": "2026-10-31T21:51:57.4145952Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\lab-fresh-independent-content.json",
+      "bytes": 704768,
+      "sha256": "5697f2fbcae544ddbc13e1479601c9a07ef3e9ee8fab9b542139b5ad6fa50ecf",
+      "source_last_write_utc": "2026-10-31T21:52:00.760131Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\closed\\wrapper\\lab-directory-growth.json",
+      "bytes": 4888155,
+      "sha256": "835b1196b038b2aac01bc1bd4efdf5e9837531d5e1d69dd7b9486272f37ba37c",
+      "source_last_write_utc": "2026-10-31T21:51:58.1662329Z",
+      "pin_source": "just-verified closed archive index",
+      "archive_index_sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\archive.json",
+      "bytes": 28620,
+      "sha256": "45d528e6f2acc14d2bf819516ff5f431264b05cc8209c8942c6c7f2c8bffb889"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\archive-receipt.json",
+      "bytes": 32934,
+      "sha256": "4e54b2176786db0c889190a1ba2c791f6e63edcce11cebea0cc7a7de76684dc9"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\checkpoint.json",
+      "bytes": 768,
+      "sha256": "d83144d39abae330d64e139c02b2e4eb24991502524af6625c2f055e498a90da"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\checkpoint-intent.json",
+      "bytes": 347,
+      "sha256": "3cd0f581888c6987079c722e3ed132870c43bacd2176b66abccfd59399dcd0d4"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-success-1cb0adcb\\normal-stop-intent.json",
+      "bytes": 610,
+      "sha256": "2bff5cac3b53bdddfd4b7f0b8e71439edc9b51d42940c8b9cf9ee36a3aef032b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\head-drive-tools-f32c0f6-envelope\\manifest.json",
+      "bytes": 1164,
+      "sha256": "9abf46fab8893965d23afa406b9ac8f579c4c54b7bcc0caacec5408e753b2bda"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-fixture-32cbcf9db7f44278afb60bba0a2db59f\\source-checkpoint.json",
+      "bytes": 758,
+      "sha256": "842d9a5e3d2a657783b4f348a4ebcb5aa79f916ea59c65788b86df7765ee0b09"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-fixture-32cbcf9db7f44278afb60bba0a2db59f\\archive.json",
+      "bytes": 3084,
+      "sha256": "438adfa8b4d4939179d3a084f8e0d04eabf50db7fc9563e660e1c3ec87f30740"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-fixture-32cbcf9db7f44278afb60bba0a2db59f\\archive-receipt.json",
+      "bytes": 5404,
+      "sha256": "53f72585f5ec327aa40155e9b19b260520d0df54d8ea17a2206fb3ec971e721f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-baseline-74ea49c9440246b999e6871ee61aaf4a\\seal.json",
+      "bytes": 6495,
+      "sha256": "31d56e763f39d894eea2e50adb66f4f1b3e73904012bece938e6c18bd3e39f4c"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-baseline-74ea49c9440246b999e6871ee61aaf4a\\closed-archive-index.json",
+      "bytes": 9972,
+      "sha256": "78a1e487c7b255fa304d500ed0fd6e8dde87560cbc840c7f526ca89ffc77cfd1"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-baseline-74ea49c9440246b999e6871ee61aaf4a\\restore-grown-source-intent.json",
+      "bytes": 353,
+      "sha256": "4c8609d0362d46d0509ea236a66a71ac550f781f836b1b186788aaaa966163f0"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-baseline-74ea49c9440246b999e6871ee61aaf4a\\staging-refusal.json",
+      "bytes": 1400,
+      "sha256": "7990a2b69c6098880b6c991df0eafa3ac12fb41ef402a753fef53b39d74a842b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-setup-2a7163a88a61470bb057cb1bad27251f\\cleanup-intent.json",
+      "bytes": 10305,
+      "sha256": "5db8bf35f70bc33a4d915ad3a5088ebe0f7c3653baa69b2db65abbcd64a50510"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-setup-2a7163a88a61470bb057cb1bad27251f\\cleanup-result.json",
+      "bytes": 9667,
+      "sha256": "cc70158d31edefd6b69c217a741610af14dd424263935091516d23397d60a233"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-setup-2a7163a88a61470bb057cb1bad27251f\\archive-inventory.json",
+      "bytes": 38972,
+      "sha256": "8f3b31848bf97c7f699ae552b779bbca1e3f9644ce97d8f4c26da87dc5323e2b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-setup-2a7163a88a61470bb057cb1bad27251f\\setup-result.json",
+      "bytes": 3731,
+      "sha256": "857db6eb46870994ad2a06aee9ef308929af3720d2233881a3ba7bcf9f16e3cc"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-setup-2a7163a88a61470bb057cb1bad27251f\\removed-ecd548f8-3237-44f5-b874-6de79c140997.json",
+      "bytes": 695,
+      "sha256": "55b5d0da098cef4e89b939706aa541fc7f531904af32a3343f7dcc5902a7c855"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\object-envelope-setup-2a7163a88a61470bb057cb1bad27251f\\removed-ce9b92c2-85c5-4754-82e3-62d877ab5726.json",
+      "bytes": 707,
+      "sha256": "31ca230fa5f3b885b9b325b625f01828f02e3a25ea96bf71da336c118b0a581d"
+    }
+  ]
+}

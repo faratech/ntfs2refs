@@ -1,9 +1,16 @@
 # Scaling budget gaps
 
+Subsequent implementation `f32c0f6` adds a pinned count envelope for fresh fast
+allocation conversion: files and directories share the existing 1,280 object
+slots. Full-content and legacy profiles keep their original split. This removes
+one coupled limit, with native qualification still pending; the other collection,
+metadata, namespace, placement and recovery ceilings below remain. See
+[the implemented bounded envelope](object-resource-envelope.md).
+
 Read-only code audit of `cce4a6e`. These are current enforcement points, not new
 native qualification results. A refusal's order depends on file count, directory
-shape, fragmentation, names and descriptor sizes. The current public release
-profile supports at most **1,024 files and 256 directories**, including the root.
+shape, fragmentation, names and descriptor sizes. At that revision the public
+profile supported at most **1,024 files and 256 directories**, including the root.
 
 ## Current code-enforced limits
 

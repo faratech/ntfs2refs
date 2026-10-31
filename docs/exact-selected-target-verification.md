@@ -26,6 +26,11 @@ new payload to read; copy references still resolve stored old bytes. This is
 logical API accounting, not a physical-disk or elapsed-time measurement.
 
 Focused checks, independent code review and public, bind, digest and fault-helper
-release builds pass. Native qualification is pending. The active 18bdea8 F
-conversion uses an earlier sealed binary and does not qualify this change.
-No unit tests added or run.
+release builds pass. Sealed `cc6cd28` now passed one normal F: case: native0/HND,
+933 objects and all 811 independent hashes. Native process read accounting was
+150,896,889,633 bytes, versus 185,082,120,225 in the earlier `18bdea8` case.
+Plans/formatter metadata differ slightly; this is logical accounting, not a
+controlled speed or physical-I/O result. Mixed-state recovery, arbitrary faults
+and power loss remain outside this qualification. Later aggregate-SHA and V3
+builds were not used. [Native evidence](../evidence/mixed-exact-journal-native-20261031.json).
+No unit tests were added or run.

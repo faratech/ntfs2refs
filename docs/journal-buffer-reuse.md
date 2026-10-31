@@ -19,9 +19,14 @@ validation, hashes, write order, markers and flushes retain their checks.
 
 This is a CPU/allocation change. It does not remove any data read, digest,
 comparison, capacity guard or recovery check. Journal formats and content remain
-unchanged. The running 18bdea8 larger-tree case uses the earlier sealed binary
-and does not qualify this later buffer implementation.
+unchanged. The earlier `18bdea8` case used the preceding implementation.
 
 Focused library/CLI checks, independent code review and public, bind, digest and
-fault-helper release builds pass. Native qualification is pending. No unit tests
-were added or run.
+fault-helper release builds pass. Sealed `cc6cd28`, including this buffer reuse
+and exact selected-target checks, passed one normal F: case: native0/HND,
+933 objects and all 811 independent hashes. Native elapsed time was 600.788
+seconds; the independent observer finished 141.877 seconds later. This single
+case does not measure allocation counts or establish a controlled speed gain,
+and it does not qualify rollback/recovery or arbitrary faults. Later CPU/V3
+builds were not used. [Native evidence](../evidence/mixed-exact-journal-native-20261031.json).
+No unit tests were added or run.

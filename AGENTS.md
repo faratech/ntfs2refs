@@ -47,13 +47,48 @@ machines. Focused library/CLI check and independent review pass; native timing
 and qualification pending. It is NOT in sealed cc6cd28. See
 docs/journal-parallel-aggregates.md. No unit tests.
 
-Built next read-reduction candidate: check_target with an authenticated exact
+Qualified sealedcc6 normal F caseb11fb80f47f74ec8819977f047ec478d/core77fd3136:
+actualPID5144/creation1793478787506 native0/HND600.7880323s, observer0/all811
+independenthashes141.8771831s later,933objects. Source654missingdigests/
+9,885,682,940B and650tails/1,371,388B keep actualsource/write-flush/readback/
+identity/protected-residual proofs. Rawinitialhash94,077,273B andothernative
+logicalsource reads22,204,741B remain. Target0contenthashes/0payloadreads,
+933complete mapbindings/metadata/storagevalidity passed. Exclusivepreparation
+readback=true. Runtimecc6cd282d93445fd12de82cb66ae174662249a6d/public
+3a45791c88e7fd1902920553bdd3e343f11ff9fb7abd3e721e5565c59766bba5 includes05b
+bufferreuse+exact-state checks; harness9bbd1c4 isseparate. Later60d2aggregateSHA
+andf32V3code above remain BUILT/UNQUALIFIED, notinthiscase.
+
+Nativeverified processlogicalreads150,896,889,633B/writes23,002,013,682B;
+CPU434.3125s user/34.296875s kernel. Relative18breads185,082,120,225B gives
+34,185,230,592B fewerlogicalreadbytes; plans/formattermetadata differslightly,
+so no controlledwall/physicalIO/1TB-HDDtimeclaim. Originalguestphase timestamps
+and6IO/CPUsnapshots retained. Prepared→applied reads68,393,054,752B/188.5625sCPU.
+D11,391,942,656B/3204ranges,copy5,659,303,936B,zero5,694,500,864B;
+L38,137,856B/J11,430,396,448B. Originalcoordinate4,225,028,096B remains42.745%
+oforiginal+copymapping;2424moves/13,580,988,416B submissionsarenotphysicalIO.
+
+Closed69JSON/logfiles155,572,595B allSHAverified (indexf1593687), within64MiB/file
+and256MiBcombined. Alltasks/nativeworkers terminal before normalstop. Rootissued
+ONEcheckpoint; a freshprocess settledinitialstalecachedparent toactual
+42d684f8-1a63-4f7b-98ac-286d88289a63. CurrentVMOff/RAM0/50snapshots; labactual
+285,720,877,776B/free59,607,769,088B insideunchanged329,374,052,988B/17,179,869,184B
+epoch. RemovedONLYobsoletefull78513f35 after57closedfiles+31index/dependencypins
+rehashed; ALLhostbaseline/evidencefilesstay. Keepcurrent42d,mixedecd,6fe/371sources,
+tail3cbc/119/643/fcc,oldint9ce/resume9bb,D1cold d939,f4bf. Evidence:
+evidence/mixed-exact-journal-native-20261031.json; docs/mixed-exact-journal-verification.md.
+Three recordedlabaccess-time reconciliations; allothercanonicalmetadataexact,
+productexpectations/timestampsuntouched. No cc6 recovery/mutation/powerloss or
+newCPU/V3qualification transfers. No units; broadergoal remainsunfinished.
+
+Exact selected target verification: check_target with an authenticated exact
 old/new selected digest now hashes EVERYselected actualtargetbyte with identical
 framing, without rereading both journal sides for redundant old-or-new membership.
 Mixed pre-resume/rollback (expectedNone) keeps all old/new reads and byte checks.
 Loader/ticket/plan/payload/footer/immutable checks, bounds, SHAfailures and every
-barrier stay. Library/CLI/release checks+independentreviewpass; nativequalification
-pending, no unit tests. It is NOT in the sealed18b F run. See
+barrier stay. Library/CLI/release checks+independentreviewpass; the scopedcc6 F
+normal qualification above passed. Recovery/faultqualification remains pending.
+No unit tests. It was NOT in the earlier sealed18b F run. See
 docs/exact-selected-target-verification.md. Current publicprofile scaling guards
 and required next manifest work are documented in docs/scaling-budget-gaps.md;
 no arbitrary volume/file-count support is claimed.
@@ -63,8 +98,12 @@ three1MiB replay buffers across ranges; every usedslice is freshly filled by
 current IO. Preparation scratch drops before readback; replay scratch drops
 before the final full target check, preserving phase working-set bounds. No
 read/check/digest/order/flush/marker change. Library/CLI checks, independentreview
-and release builds pass; native qualification pending. No unit tests. See
-docs/journal-buffer-reuse.md. This is NOT in the sealed18bdea8 F case below.
+and release builds pass; the scopedcc6 normal Fcaseabove qualifiedthispath.
+Recovery/faultqualification remains pending. No unit tests. See
+docs/journal-buffer-reuse.md. This was NOT in the sealed18bdea8 F case below.
+
+The following earlier native results and former current VM labels are historical;
+the current checkpoint/preservation/cleanup state above is authoritative.
 
 F normal case5b30c30e/core12f76424 PASSED sealed18bdea8/publice2e2132 on exact
 source6fe,4GiB/4CPU/noNIC: actualPID5296/creation1793476577793 native0/HND,

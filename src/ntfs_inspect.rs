@@ -982,7 +982,7 @@ fn compression_reader(
     attribute: &Attribute,
     geometry: &NtfsGeometry,
 ) -> Result<Option<crate::ntfs_compression::Reader>> {
-    if attribute.report.flags & 0x00ff != 0 {
+    if !attribute.report.resident && attribute.report.flags & 0x00ff != 0 {
         Ok(Some(crate::ntfs_compression::Reader::new(
             &attribute.report,
             geometry,
@@ -1012,14 +1012,22 @@ fn read_logical_range<R: Read + Seek>(
     if let Some(compression) = compression {
         return compression.read_range(reader, offset, output);
     }
+    if let Some(data) = &attribute.resident_value {
+        ensure!(
+            (attribute.report.flags == 0 && attribute.report.compression_unit == 0)
+                || crate::ntfs_compression::supported(&attribute.report, geometry).is_ok(),
+            "unsupported resident attribute encoding"
+        );
+        output.copy_from_slice(
+            data.get(offset as usize..end as usize)
+                .context("resident logical read exceeds value")?,
+        );
+        return Ok(());
+    }
     ensure!(
         attribute.report.flags & 0x40ff == 0,
         "cannot interpret compressed or encrypted metadata"
     );
-    if let Some(data) = &attribute.resident_value {
-        output.copy_from_slice(&data[offset as usize..end as usize]);
-        return Ok(());
-    }
     let mut position = offset;
     let mut done = 0usize;
     while done < output.len() {
@@ -1452,7 +1460,9 @@ fn hash_stream<R: Read + Seek>(
         Some(LogicalHashStatus::UnsupportedCompression)
     } else if a.flags & 0x4000 != 0 {
         Some(LogicalHashStatus::UnsupportedEncryption)
-    } else if a.flags & !0xc0ff != 0 || (a.resident && a.flags != 0) {
+    } else if a.flags & !0xc0ff != 0
+        || (a.resident && a.flags != 0 && crate::ntfs_compression::supported(a, geometry).is_err())
+    {
         Some(LogicalHashStatus::UnsupportedFlags)
     } else if a.compression_unit != 0
         && !((a.flags & 0x8000 != 0 || a.flags == 1) && a.compression_unit == 4)
@@ -2034,6 +2044,45 @@ fn require_bitmap_bytes(attribute: &AttributeInventory, needed: u64) -> Result<(
     Ok(())
 }
 
+/// NTFS stores the directory compression policy on its resident $I30 root.
+/// These bytes are still an ordinary index, never compressed payload. Bind the
+/// marker to the directory's stored SI policy before parsing the full index.
+fn directory_compression_root_policy(record: &Record, attribute: &Attribute) -> bool {
+    let a = &attribute.report;
+    if record.flags & 2 == 0
+        || a.type_code != 0x90
+        || !crate::ntfs_namespace::is_i30(&a.name_utf16)
+        || !a.resident
+        || a.flags != 1
+        || a.compression_unit != 0
+        || a.lowest_vcn != 0
+        || a.total_allocated_size.is_some()
+        || !a.extents.is_empty()
+        || a.initialized_size != a.logical_size
+        || a.allocated_size != a.logical_size
+        || attribute
+            .resident_value
+            .as_ref()
+            .is_none_or(|v| v.len() as u64 != a.logical_size)
+    {
+        return false;
+    }
+    let mut standard = record
+        .attributes
+        .iter()
+        .filter(|a| a.report.type_code == 0x10);
+    let Some(si) = standard.next() else {
+        return false;
+    };
+    standard.next().is_none()
+        && si.report.resident
+        && si.report.flags == 0
+        && si.report.name_utf16.is_empty()
+        && si.resident_value.as_deref().is_some_and(|v| {
+            v.len() >= 48 && u32le(v, 32).is_ok_and(|flags| flags & 0x4800 == 0x800)
+        })
+}
+
 #[derive(Default)]
 struct NamespaceCapture {
     directories: Vec<crate::ntfs_namespace::Directory>,
@@ -2104,7 +2153,8 @@ impl NamespaceCapture {
             .get(&0x90)
             .context("directory lacks $I30 INDEX_ROOT")?;
         ensure!(
-            root.report.resident && root.report.flags == 0,
+            root.report.resident
+                && (root.report.flags == 0 || directory_compression_root_policy(record, root)),
             "unsupported directory INDEX_ROOT encoding"
         );
         self.reserve(root.report.logical_size)?;
@@ -3615,9 +3665,23 @@ pub fn inspect_with_limits<R: Read + Seek>(
                 (a.report.flags == 0 && a.report.compression_unit == 0)
                     || crate::ntfs_compression::supported(&a.report, &geometry).is_ok()
             });
+        let policy_root_instances: Vec<_> = record
+            .attributes
+            .iter()
+            .filter(|a| directory_compression_root_policy(&record, a))
+            .map(|a| a.report.instance)
+            .collect();
         for attribute in record.attributes {
             let a = &attribute.report;
-            if a.flags & 0x00ff != 0 && crate::ntfs_compression::supported(a, &geometry).is_err() {
+            if a.flags & 0x00ff != 0
+                && crate::ntfs_compression::supported(a, &geometry).is_err()
+                && !(a.type_code == 0x90
+                    && a.resident
+                    && a.flags == 1
+                    && a.compression_unit == 0
+                    && crate::ntfs_namespace::is_i30(&a.name_utf16)
+                    && policy_root_instances.contains(&a.instance))
+            {
                 blocker(
                     &mut report,
                     &mut budget,

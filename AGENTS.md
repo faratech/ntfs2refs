@@ -23,6 +23,20 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Compression follow-up: fixture8c4644bb passed8 objects/7 independent logical
+stream hashes on NTFS and is saved in371ae756-faf2-40ac-bf86-5e8e1d744e30.
+Its manifest SHA is37207be87d8a1941478b39d9c301a781c31b41edc52f59262d92fa76408863f5.
+First public eec8ca5 rund7a673a8/core33bc5f7e refused BEFORE activation because
+native resident compression policy is flags1 on DATA and directory I30 roots.
+The nonresident decoder already matched all4 independent compressed-stream
+digests. The resident/index policy fix keeps full raw namespace parsing and
+unknown encoding refusals; focused release builds pass. Failure metadata63
+files is under compression-admission-refusal-d7a673a8, checkpoint8c1e5d14.
+VM is now Off/RAM0 at the restored NTFS compression source371ae756,49 checkpoints.
+No active converter. Next: seal the fixed candidate and rerun public conversion.
+No unit tests were added or run; existing fixture literals only gained the new
+optional field. Never edit/stage the user-owned main.rs overlay.
+
 Compression candidate continuation: pure Rust LZNT1 logical reads, physical
 allocation reconciliation, explicit target compression normalization and a
 seven-stream native fixture are implemented. Focused release builds of the

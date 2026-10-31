@@ -837,8 +837,23 @@ fn user_issues_profile(
                 && data
                 && a.flags == 1
                 && crate::ntfs_compression::supported(a, &raw.geometry).is_ok();
+            // Resident I30 compression is an inheritance policy marker; the
+            // index value still passes the complete raw namespace parser.
+            let compressed_directory_policy = ordinary
+                && index
+                && a.type_code == 0x90
+                && a.resident
+                && a.flags == 1
+                && a.compression_unit == 0
+                && a.extents.is_empty()
+                && f.standard_information
+                    .as_ref()
+                    .is_some_and(|si| si.file_attributes & 0x800 != 0);
             !(plain || data || index || root_txf || ea || point)
-                || ((a.flags != 0 || a.compression_unit != 0) && !sparse_data && !compressed_data)
+                || ((a.flags != 0 || a.compression_unit != 0)
+                    && !sparse_data
+                    && !compressed_data
+                    && !compressed_directory_policy)
                 || a.lowest_vcn != 0
         })
     {

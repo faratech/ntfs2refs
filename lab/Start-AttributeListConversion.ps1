@@ -455,7 +455,7 @@ function ObserveCompressionFixture($Fixture,[string]$Filesystem){
  return @{native_exit=0;filesystem=$Filesystem;objects=$shape.objects;default_streams=$shape.default_streams;named_streams=$shape.named_streams;independent_sha256_hashes=$hashes;independent_xxh3_hashes=$hashes;source_payload_writes=0;raw_volume_writes=0;compression_setters=0;target_ntfs_compression_normalized=($Filesystem-ceq'ReFS');report_path=$reportPath;report_sha256=(Get-FileHash -LiteralPath $reportPath).Hash.ToLowerInvariant();tool_sha256=$c.compression_tool_sha256;rows=$rows.ToArray()}
 }
 function BindCompressionFixtureToCore([string]$Records,$Fixture,$Expected,$Final){
- $shape=CompressionFixtureShape $Fixture;$basisPath=Join-Path $Records 'qualification\source-basis.json';$basis=Json $basisPath;$rows=[Collections.Generic.List[object]]::new();$encoded=0;$streamsChecked=0;$normalized=0;$logicalBytes=0L
+ $shape=CompressionFixtureShape $Fixture;$basisPath=Join-Path $Records 'qualification\source-basis.json';$basis=Json $basisPath;$rows=[Collections.Generic.List[object]]::new();$encoded=0;$residentPolicies=0;$streamsChecked=0;$normalized=0;$logicalBytes=0L;$residentBytes=0L
  foreach($object in $Fixture.objects){
   $id=[byte[]]::new(24);for($i=0;$i-lt24;$i++){$id[$i]=[Convert]::ToByte($object.file_id_info.Substring(2*$i,2),16)};$reference=[BitConverter]::ToUInt64($id,8);$number=$reference-band[uint64]281474976710655;$sequence=[uint16]($reference-shr48)
   $raw=@($basis.ntfs.files|Where-Object {$_.record_number-eq$number-and$_.sequence_number-eq$sequence});$relative=$object.path.Substring(3);$targets=@($Expected.objects|Where-Object {($_.path-join'\')-ceq$relative-and$_.record_number-eq$number-and$_.sequence_number-eq$sequence});$native=@($Final.native.native.objects|Where-Object {($_.components-join'\')-ceq$relative})
@@ -467,16 +467,22 @@ function BindCompressionFixtureToCore([string]$Records,$Fixture,$Expected,$Final
    $targetStream=$targets[0];if($name.Length){$targetStream=@($targets[0].named_streams|Where-Object {SameArray $_.name_utf16 $units});Need ($targetStream.Count-eq1) 'Compressed target ADS missing.';$targetStream=$targetStream[0]}
    Need ($targetStream.length-eq$stream.payload.length-and$targetStream.sha256-ceq$stream.payload.content_digest) 'Compression canonical logical target differs.'
    if(($attributes[0].flags-band255)-ne0){
-    Need ($attributes[0].flags-eq1-and-not$attributes[0].resident-and$attributes[0].compression_unit-eq4-and$isNormalized) 'Source encoding/normalization binding differs.'
+    Need ($attributes[0].flags-eq1-and$isNormalized) 'Source compression-policy/normalization binding differs.'
+    if($attributes[0].resident){
+     $total=$attributes[0].PSObject.Properties['total_allocated_size'];Need ($attributes[0].compression_unit-eq0-and$attributes[0].lowest_vcn-eq0-and@($attributes[0].extents|Where-Object {$null-ne$_}).Count-eq0-and$attributes[0].logical_size-eq$attributes[0].initialized_size-and$attributes[0].logical_size-eq$attributes[0].allocated_size-and($null-eq$total-or$null-eq$total.Value)) 'Resident compression policy has invalid resident DATA storage.'
+     $residentPolicies++;$residentBytes+=$stream.payload.length
+    }else{
+     Need ($attributes[0].compression_unit-eq4) 'Encoded nonresident DATA requires the admitted compression unit.'
+     $encoded++;$logicalBytes+=$stream.payload.length
+    }
     $offset=$targetStream.PSObject.Properties['source_offset'];$extents=$targetStream.PSObject.Properties['source_extents'];$sparse=$targetStream.PSObject.Properties['sparse'];Need (($null-eq$offset-or$null-eq$offset.Value)-and($null-eq$extents-or@($extents.Value|Where-Object {$null-ne$_}).Count-eq0)-and($null-eq$sparse-or$null-eq$sparse.Value)) 'Encoded physical bytes must not be adopted or exposed as logical sparse holes.'
-    $encoded++;$logicalBytes+=$stream.payload.length
    }
    $streamsChecked++
   }
   $rows.Add(@{path=$object.path;source_record_number=$number;source_sequence_number=$sequence;ntfs_compression_normalized=$isNormalized;raw_logical_hashes_match=$true;target_logical_hashes_match=$true})
  }
  Need ($rows.Count-eq$shape.objects-and$streamsChecked-eq$shape.logical_streams-and$encoded-gt0-and$normalized-gt0) 'Compression core coverage/encoding evidence missing.'
- return @{objects=$rows.Count;logical_streams=$streamsChecked;encoded_nonresident_streams=$encoded;encoded_stream_logical_bytes_rewritten=$logicalBytes;normalization_identities=$normalized;compressed_physical_payload_adopted=$false;compression_padding_exposed_as_sparse_holes=$false;source_basis_sha256=(Get-FileHash -LiteralPath $basisPath).Hash.ToLowerInvariant();rows=$rows.ToArray();wrapper_repairs_metadata=$false}
+ return @{objects=$rows.Count;logical_streams=$streamsChecked;encoded_nonresident_streams=$encoded;encoded_stream_logical_bytes_rewritten=$logicalBytes;resident_compression_policy_streams=$residentPolicies;resident_policy_bytes_materialized=$residentBytes;normalization_identities=$normalized;compressed_physical_payload_adopted=$false;compression_padding_exposed_as_sparse_holes=$false;source_basis_sha256=(Get-FileHash -LiteralPath $basisPath).Hash.ToLowerInvariant();rows=$rows.ToArray();wrapper_repairs_metadata=$false}
 }
 function ObserveSecurityFixture($Fixture,[string]$Filesystem){
  $shape=SecurityFixtureShape $Fixture;$tool=Join-Path $c.stage 'lab-create-security-fixture.exe';$metadata=Get-Item -LiteralPath $tool -Force

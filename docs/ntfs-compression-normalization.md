@@ -8,9 +8,11 @@ retain the original flags. This does not enable ReFS compression.
 
 The initial encoded profile is nonresident DATA with method flag 1, compression
 unit 4 and 4 KiB source clusters. Other methods, encryption and encoded metadata
-remain refused. Ordinary resident data on a compression-policy file needs no
-LZNT1 decoding. Directory compression policy is normalized after admission of
-its contents, without following reparse points.
+remain refused. Resident DATA can carry method flag 1 with unit zero; its value
+is ordinary resident bytes and needs no LZNT1 decoding. A resident directory
+`$I30` root can carry an inheritance marker with matching stored directory
+policy. Its complete index is still parsed and reconciled. Directory policy is
+normalized after admission of its contents, without following reparse points.
 
 `src/ntfs_compression.rs` implements Microsoft's public
 [MS-XCA LZNT1 description](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-xca/124d9696-a69c-409a-a055-2562fbe255f9).
@@ -40,3 +42,11 @@ incompressible data, partial EOF tails, resident and empty policy, inherited
 directory policy and a compressed ADS. Its independent SHA-256 and XXH3
 observations are distinct from the converter's decoder. Native conversion and
 reboot qualification are pending for this implementation.
+
+The first native attempt, d7a673a8/core33bc5f7e on eec8ca5, stopped before
+source activation at the directory namespace check. Its four nonresident
+compression streams already had complete raw logical hashes matching the
+independent fixture. The source also demonstrated resident flags1 DATA and a
+resident flags1 directory index root. These policy forms are now handled
+explicitly; unknown metadata encodings remain refused. All63 closed metadata
+files and the failure checkpoint8c1e5d14 remain separately preserved.

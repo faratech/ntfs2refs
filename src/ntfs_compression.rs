@@ -12,6 +12,9 @@
 //! The complete physical allocation is checked against ATTRIBUTE_RECORD_HEADER
 //! TotalAllocated; it is deliberately distinct from logical mapped coverage.
 //! https://learn.microsoft.com/en-us/windows/win32/devnotes/attribute-record-header
+//! A resident DATA value can carry compression policy without encoded bytes.
+//! Directory policy is handled separately, never by the DATA decoder.
+//! https://learn.microsoft.com/en-us/windows/win32/fileio/compression-state
 
 use crate::ntfs_inspect::{AttributeInventory, Extent, NtfsGeometry};
 use anyhow::{Context, Result, ensure};
@@ -24,19 +27,28 @@ const CHUNK: usize = 4096;
 /// Check encoding, geometry, complete mapping and physical allocation before
 /// any logical byte is accepted. This is not source-volume admission.
 pub fn supported(a: &AttributeInventory, g: &NtfsGeometry) -> Result<()> {
-    ensure!(
-        a.type_code == 0x80 && !a.resident,
-        "LZNT1 requires nonresident DATA"
-    );
-    ensure!(
-        a.flags == 1 && a.compression_unit == 4,
-        "unsupported NTFS compression encoding"
-    );
+    ensure!(a.type_code == 0x80, "compression reader supports DATA only");
+    ensure!(a.flags == 1, "unsupported NTFS compression encoding");
     ensure!(
         g.cluster_size == CLUSTER as u32,
         "LZNT1 profile requires 4 KiB source clusters"
     );
     ensure!(a.lowest_vcn == 0, "LZNT1 mapping must start at VCN zero");
+    if a.resident {
+        ensure!(
+            a.compression_unit == 0
+                && a.total_allocated_size.is_none()
+                && a.extents.is_empty()
+                && a.logical_size == a.initialized_size
+                && a.logical_size == a.allocated_size,
+            "invalid resident compression-policy DATA"
+        );
+        return Ok(());
+    }
+    ensure!(
+        a.compression_unit == 4,
+        "unsupported nonresident NTFS compression unit"
+    );
     ensure!(
         a.initialized_size <= a.logical_size,
         "compressed DATA initialized size exceeds EOF"
@@ -139,6 +151,10 @@ pub struct Reader {
 impl Reader {
     pub fn new(a: &AttributeInventory, g: &NtfsGeometry) -> Result<Self> {
         supported(a, g)?;
+        ensure!(
+            !a.resident,
+            "resident compression-policy DATA requires checked resident bytes"
+        );
         let mut extents = Vec::new();
         extents
             .try_reserve_exact(a.extents.len())

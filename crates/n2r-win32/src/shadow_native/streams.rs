@@ -114,9 +114,10 @@ pub(super) fn validate(input: &[Input<'_>], partition: u64) -> io::Result<()> {
     Ok(())
 }
 
-/// An absent content expectation is representable only for a complete plain
-/// initialized source route. Full-content entry points independently require
-/// a digest before reading; this mapping check never grants content authority.
+/// An absent content expectation requires the complete whole-cluster prefix
+/// of a plain initialized source stream. A partial final cluster is supplied
+/// separately and must gain actual materialization/residual evidence before
+/// completion. This mapping check never grants content authority.
 pub(super) fn validate_extent_only(
     length: u64,
     source_offset: Option<u64>,
@@ -124,9 +125,10 @@ pub(super) fn validate_extent_only(
     sparse: bool,
     partition: u64,
 ) -> io::Result<()> {
-    if length == 0 || !length.is_multiple_of(4096) || sparse {
+    let prefix = length / 4096 * 4096;
+    if prefix == 0 || sparse {
         return Err(invalid(
-            "digest-free input requires nonempty aligned plain source data",
+            "digest-free input requires a nonempty whole-cluster plain source prefix",
         ));
     }
     let bound = |offset: u64, bytes: u64| {
@@ -138,7 +140,7 @@ pub(super) fn validate_extent_only(
                 .is_some_and(|end| end <= partition)
     };
     if let Some(offset) = source_offset {
-        if !source_runs.is_empty() || !bound(offset, length) {
+        if !source_runs.is_empty() || !bound(offset, prefix) {
             return Err(invalid("digest-free single source route differs"));
         }
         return Ok(());
@@ -156,7 +158,7 @@ pub(super) fn validate_extent_only(
             .checked_add(run.length)
             .ok_or_else(|| invalid("digest-free source mapping overflow"))?;
     }
-    if end != length {
+    if end != prefix {
         return Err(invalid("digest-free source mapping is incomplete"));
     }
     Ok(())

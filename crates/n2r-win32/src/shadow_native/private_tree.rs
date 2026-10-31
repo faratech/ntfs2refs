@@ -41,6 +41,7 @@ pub struct PrivateTree {
     privileges: Privileges,
     reparse_privileges: Option<Privileges>,
     original_coordinates: BTreeMap<StreamKey, Vec<(u64, u64, u64)>>,
+    materialized_tails: BTreeMap<StreamKey, MaterializedTail>,
     placement_started: bool,
     placement_complete: bool,
     placement_progress: serde_json::Value,
@@ -52,6 +53,20 @@ pub struct PrivateTree {
     metadata_targets: BTreeMap<usize, File>,
     metadata_input_sha256: [u8; 32],
     construction_enrollment: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Serialize)]
+struct MaterializedTail {
+    scope: &'static str,
+    object_index: usize,
+    stream_name_utf16: Vec<u16>,
+    logical_length: u64,
+    offset: u64,
+    bytes: u64,
+    sha256: String,
+    readback_verified: bool,
+    native_file_id: Vec<u8>,
+    source_prefix_contents_verified: bool,
 }
 
 fn register_sparse(
@@ -89,6 +104,85 @@ fn register_sparse(
 }
 
 impl PrivateTree {
+    fn record_materialized_tail(
+        &mut self,
+        key: &StreamKey,
+        logical_length: u64,
+        offset: u64,
+        bytes: &[u8],
+        native_file_id: Vec<u8>,
+    ) {
+        let prefix = logical_length / 4096 * 4096;
+        if prefix == 0 || prefix == logical_length || offset > prefix {
+            return;
+        }
+        let Some(end) = offset.checked_add(bytes.len() as u64) else {
+            return;
+        };
+        if end < logical_length {
+            return;
+        }
+        let start = (prefix - offset) as usize;
+        let stop = (logical_length - offset) as usize;
+        self.materialized_tails.insert(
+            key.clone(),
+            MaterializedTail {
+                scope: "constructor-owned-plain-tail-materialization-v1",
+                object_index: key.object_index,
+                stream_name_utf16: key.name_utf16.clone(),
+                logical_length,
+                offset: prefix,
+                bytes: logical_length - prefix,
+                sha256: hex::encode(Sha256::digest(&bytes[start..stop])),
+                readback_verified: true,
+                native_file_id,
+                source_prefix_contents_verified: false,
+            },
+        );
+    }
+
+    fn require_materialized_tail(
+        &self,
+        key: &StreamKey,
+        item: &Input<'_>,
+    ) -> io::Result<Option<MaterializedTail>> {
+        let length = item.logical_length();
+        let prefix = length / 4096 * 4096;
+        if item.expected_sha256.is_some() || length == prefix {
+            return Ok(None);
+        }
+        if prefix == 0 || item.sparse.is_some() {
+            return Err(invalid(
+                "digest-free partial stream has no plain source prefix",
+            ));
+        }
+        let proof = self
+            .materialized_tails
+            .get(key)
+            .ok_or_else(|| invalid("digest-free partial stream tail was not materialized"))?;
+        let handle = if let Some(target) = self.sparse_targets.get(key) {
+            if target.sparse_mode {
+                return Err(invalid("digest-free sparse tail is outside this profile"));
+            }
+            &target.file
+        } else {
+            self.files
+                .get(key)
+                .ok_or_else(|| invalid("materialized tail file absent"))?
+                .metadata_handle()
+        };
+        if proof.logical_length != length
+            || proof.offset != prefix
+            || proof.bytes != length - prefix
+            || proof.native_file_id != info(handle, 18, 24)?
+        {
+            return Err(invalid(
+                "digest-free materialized tail identity/range differs",
+            ));
+        }
+        Ok(Some(proof.clone()))
+    }
+
     fn placement_view<'a>(&self, input: &'a [Input<'_>], key: &StreamKey) -> io::Result<Input<'a>> {
         let item = streams::view(input, key)?;
         if let Some(target) = self.sparse_targets.get(key) {
@@ -542,6 +636,16 @@ impl PrivateTree {
     ) -> io::Result<serde_json::Value> {
         let key = StreamKey::named(object_index, name);
         self.require_source_excluded()?;
+        let write_end = offset
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| invalid("materialization range overflow"))?;
+        if self
+            .materialized_tails
+            .get(&key)
+            .is_some_and(|proof| offset < proof.offset + proof.bytes && proof.offset < write_end)
+        {
+            self.materialized_tails.remove(&key);
+        }
         if let Some(target) = self.sparse_targets.get(&key) {
             let end = offset
                 .checked_add(bytes.len() as u64)
@@ -615,7 +719,12 @@ impl PrivateTree {
             }
             let sha256 = hex::encode(Sha256::digest(&readback));
             let hole_bytes = allocated.iter().filter(|&&value| !value).count();
+            let native_file_id = info(&target.file, 18, 24)?;
+            let plain = !target.sparse_mode;
             self.require_source_excluded()?;
+            if plain {
+                self.record_materialized_tail(&key, logical_length, offset, bytes, native_file_id);
+            }
             return Ok(
                 serde_json::json!({"object_index":object_index,"stream_name_utf16":name,
                     "offset":offset,"bytes":bytes.len(),"sha256":sha256,"readback_verified":true,
@@ -646,7 +755,9 @@ impl PrivateTree {
             return Err(invalid("private materialization object binding differs"));
         }
         let proof = file.initialize_at(offset, bytes)?;
+        let native_file_id = info(file.metadata_handle(), 18, 24)?;
         self.require_source_excluded()?;
+        self.record_materialized_tail(&key, logical_length, offset, bytes, native_file_id);
         Ok(proof)
     }
 
@@ -1284,6 +1395,7 @@ fn allocate_checked(
         privileges,
         reparse_privileges,
         original_coordinates: BTreeMap::new(),
+        materialized_tails: BTreeMap::new(),
         placement_started: false,
         placement_complete: false,
         placement_progress: serde_json::Value::Null,

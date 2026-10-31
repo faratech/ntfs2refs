@@ -171,6 +171,7 @@ pub(super) fn complete(
     tree.pair.validate_with_resource_profile(Some(
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
     ))?;
+    let mut extent_only_tails = Vec::new();
     for (key, file) in &tree.files {
         let item = streams::view(input, key)?;
         let expected = tree
@@ -186,8 +187,30 @@ pub(super) fn complete(
             item.components,
             item.logical_length(),
         )?;
+        if let Some(proof) = tree.require_materialized_tail(key, &item)? {
+            extent_only_tails.push(proof);
+        }
     }
     let (sparse_files, sparse_tails) = tree.finish_sparse_streams()?;
+    for proof in &extent_only_tails {
+        let key = StreamKey::named(proof.object_index, &proof.stream_name_utf16);
+        if let Some(file) = sparse_files.get(&key) {
+            let (_, tail) = sparse_tails
+                .iter()
+                .find(|(candidate, _)| candidate == &key)
+                .ok_or_else(|| invalid("digest-free final carrier tail proof absent"))?;
+            if tail.logical_offset != proof.offset
+                || tail.visible_bytes != proof.bytes
+                || tail.target_sha256 != proof.sha256
+                || !tail.actual_bytes_equal
+                || proof.native_file_id != info(file, 18, 24)?
+            {
+                return Err(invalid(
+                    "digest-free carrier tail changed during final stream transfer",
+                ));
+            }
+        }
+    }
     let mut guards = BTreeMap::new();
     for (key, file) in &tree.files {
         // Exclusive placeholders cannot be reopened for metadata rights while
@@ -243,6 +266,10 @@ pub(super) fn complete(
     }
     tree.privileges.restore()?;
     report["source_input_sha256"] = hex::encode(tree.metadata_input_sha256).into();
+    if !extent_only_tails.is_empty() {
+        report["extent_only_tail_materialization"] =
+            serde_json::to_value(&extent_only_tails).map_err(io::Error::other)?;
+    }
     if !sparse_tails.is_empty() {
         let tail_bytes = sparse_tails.iter().try_fold(0u64, |sum, (_, proof)| {
             sum.checked_add(proof.payload_bytes_read)

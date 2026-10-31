@@ -585,6 +585,8 @@ pub(super) fn convert_allocation_selected(
                 "raw_source_logical_hashes":!expectation.has_extent_only_streams(),
                 "raw_source_extent_only_streams":expectation.objects.iter()
                     .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence.is_some()).count(),
+                "raw_source_extent_only_partial_streams":expectation.objects.iter()
+                    .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence==Some(crate::shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)).count(),
                 "actual_target_verification_policy":request.verification_policy,
                 "actual_full_file_hashes":request.verification_policy.is_full_content(),
                 "exclusive_apply_handoff_used":request.verification_policy.is_fast(),

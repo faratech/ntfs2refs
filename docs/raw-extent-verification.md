@@ -1,5 +1,9 @@
 # Initial payload scan elimination
 
+The next built candidate extends extent evidence to partial final clusters, with
+actual tail materialization and separate receipt guards. Its native qualification
+is pending; see [partial-tail extent verification](partial-tail-extent-verification.md).
+
 The fast implementation represents eligible source streams with
 `NotReadExtentIdentityV1`, no content digest, and explicit canonical
 `source_evidence: "extent_identity_v1"`. Plain initialized nonresident streams

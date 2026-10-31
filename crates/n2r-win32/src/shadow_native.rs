@@ -3314,17 +3314,22 @@ fn run_role_content_profile(
             return Err(invalid("mixed single and fragmented source placement"));
         }
         if let Some(offset) = i.source_offset {
+            let route_length = if !verify_file_contents && i.expected_sha256.is_none() {
+                i.logical_length() / 4096 * 4096
+            } else {
+                i.logical_length()
+            };
             if i.directory
-                || i.logical_length() == 0
-                || !i.logical_length().is_multiple_of(4096)
+                || route_length == 0
+                || !route_length.is_multiple_of(4096)
                 || !offset.is_multiple_of(4096)
                 || !offset
-                    .checked_add(i.logical_length())
+                    .checked_add(route_length)
                     .is_some_and(|end| end <= binding.identity.partition_bytes)
             {
                 return Err(invalid("single source placement differs"));
             }
-            source_allocations.push((offset, i.logical_length()));
+            source_allocations.push((offset, route_length));
         }
         if !i.source_runs.is_empty() {
             let mut covered = 0u64;
@@ -4132,14 +4137,17 @@ fn run_role_content_profile(
                 .source_offset
                 .filter(|_| mode != Mode::ObserveLayout)
                 .map(|offset| -> io::Result<_> {
+                    let candidate_bytes = if i.expected_sha256.is_none() {
+                        i.logical_length() / 4096 * 4096
+                    } else {
+                        i.logical_length().next_multiple_of(4096)
+                    };
                     let (legacy_view, metadata_view) = candidate_views
                         .as_ref()
                         .ok_or_else(|| invalid("candidate bitmap views missing"))?;
                     Ok(CandidateReport {
-                        legacy: legacy_view
-                            .candidate(offset, i.logical_length().next_multiple_of(4096))?,
-                        metadata_inclusive: metadata_view
-                            .candidate(offset, i.logical_length().next_multiple_of(4096))?,
+                        legacy: legacy_view.candidate(offset, candidate_bytes)?,
+                        metadata_inclusive: metadata_view.candidate(offset, candidate_bytes)?,
                         legacy_page_proof: bitmaps
                             .as_ref()
                             .ok_or_else(|| invalid("candidate legacy bitmap missing"))?

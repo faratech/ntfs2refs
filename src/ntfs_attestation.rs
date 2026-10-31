@@ -153,8 +153,10 @@ pub fn extent_identity_stream_request(
             .is_none_or(|s| s.file_attributes & 0x4e00 != 0)
         || stream.resident
         || stream.flags != 0
-        || stream.logical_size == 0
-        || !stream.logical_size.is_multiple_of(4096)
+        // Source evidence binds the complete initialized stream/allocation,
+        // including a partial final target cluster. Target preservation uses
+        // a distinct materialized-tail contract; this is no content digest.
+        || stream.logical_size < 4096
         || stream.initialized_size != stream.logical_size
         || stream.extents.is_empty()
         || stream.extents.iter().any(|e| e.physical_offset.is_none())

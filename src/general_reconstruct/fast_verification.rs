@@ -20,6 +20,8 @@ pub(crate) struct FreshPayloadProof {
     range_count: u32,
     plan_sha256: String,
     ticket_sha256: String,
+    tail_extent_streams: usize,
+    tail_payload_bytes_verified: u64,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +194,35 @@ impl FreshPayloadProof {
             "fresh payload ticket differs from its prepared plan"
         );
         let native = proof.protected_layout().native().report().native();
+        let protected = proof.protected_layout().native().report();
+        let mut tail_extent_streams = 0usize;
+        let mut tail_payload_bytes_verified = 0u64;
+        for (object_index, object) in expected.objects.iter().enumerate() {
+            for stream in object.data_streams().filter(|s| {
+                s.source_evidence
+                    == Some(shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
+            }) {
+                let matches: Vec<_> = protected
+                    .residuals()
+                    .iter()
+                    .filter(|r| {
+                        r.object_index == object_index && r.stream_name_utf16 == stream.name_utf16
+                    })
+                    .collect();
+                ensure!(
+                    protected.residual_contents_verified()
+                        && matches.len() == 1
+                        && matches[0].logical_offset == stream.length / 4096 * 4096
+                        && matches[0].length == stream.length % 4096
+                        && matches[0].sha256.len() == 64,
+                    "extent-only partial tail lacks exact protected source-to-target residual verification"
+                );
+                tail_extent_streams += 1;
+                tail_payload_bytes_verified = tail_payload_bytes_verified
+                    .checked_add(matches[0].length)
+                    .context("verified extent-tail byte count overflow")?;
+            }
+        }
         Ok(Self {
             expected_tree_sha256,
             source: proof.pair().source.clone(),
@@ -202,6 +233,8 @@ impl FreshPayloadProof {
             range_count: ticket.range_count,
             plan_sha256: hex::encode(Sha256::digest(serde_json::to_vec(plan)?)),
             ticket_sha256: hex::encode(Sha256::digest(serde_json::to_vec(ticket)?)),
+            tail_extent_streams,
+            tail_payload_bytes_verified,
         })
     }
 
@@ -285,6 +318,8 @@ impl FreshPayloadProof {
             "retained_bytes_proven_by_same_physical_mapping":true,
             "resident_and_residual_bytes_bound_by_selected_image":true,
             "all_complete_maps_identical":true,"handoff_replay_closed":true,
+            "extent_only_partial_streams":self.tail_extent_streams,
+            "materialized_extent_tail_bytes_verified":self.tail_payload_bytes_verified,
             "target_full_file_hashes":false,"target_admitted_payload_bytes_read":0,
             "saved_receipt_grants_execution_authority":false}),
         )
@@ -395,6 +430,8 @@ pub(crate) fn verify_native_recovery_extents_scoped(
     let mut known_streams = 0usize;
     let mut unknown_streams = 0usize;
     let mut known_bytes = 0u64;
+    let mut unknown_partial_streams = 0usize;
+    let mut unknown_partial_tail_bytes = 0u64;
     for object in &expected.objects {
         for stream in object.data_streams() {
             if stream.sha256.is_some() {
@@ -404,6 +441,14 @@ pub(crate) fn verify_native_recovery_extents_scoped(
                     .context("recovery known stream total overflow")?;
             } else {
                 unknown_streams += 1;
+                if stream.source_evidence
+                    == Some(shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
+                {
+                    unknown_partial_streams += 1;
+                    unknown_partial_tail_bytes = unknown_partial_tail_bytes
+                        .checked_add(stream.length % 4096)
+                        .context("recovery extent-tail byte total overflow")?;
+                }
             }
         }
     }
@@ -434,6 +479,8 @@ pub(crate) fn verify_native_recovery_extents_scoped(
         "handoff_replay_closed":true,"full_file_hashes":false,"initial_retained_content_digests_available":false,
         "known_content_streams_hashed":known_streams,"known_content_payload_bytes_read":known_bytes,
         "extent_only_streams":unknown_streams,
+        "extent_only_partial_streams":unknown_partial_streams,
+        "extent_only_partial_tail_bytes":unknown_partial_tail_bytes,
         "post_operational_source_equality_claimed":false,"grants_fresh_source_or_write_authority":false}),
     )
 }

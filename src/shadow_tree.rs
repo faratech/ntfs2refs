@@ -13,6 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(rename_all = "snake_case")]
 pub enum SourceStreamEvidence {
     ExtentIdentityV1,
+    /// The complete source stream is byte-mapped and initialized. Only its
+    /// full-cluster prefix may be retained; construction must materialize and
+    /// verify the final partial cluster through the checked range reader.
+    ExtentIdentityWithMaterializedTailV1,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -943,7 +947,11 @@ fn source_stream_evidence(
                         .is_some(),
                 "source extent-only stream is not eligible"
             );
-            Ok(Some(SourceStreamEvidence::ExtentIdentityV1))
+            Ok(Some(if stream.logical_size.is_multiple_of(4096) {
+                SourceStreamEvidence::ExtentIdentityV1
+            } else {
+                SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1
+            }))
         }
         _ => anyhow::bail!("source stream evidence is incomplete"),
     }
@@ -955,15 +963,25 @@ fn validate_stream_evidence(stream: StreamRef<'_>) -> Result<()> {
             n2r_win32::content_digest::is_hex(digest),
             "invalid content digest"
         ),
-        (None, Some(SourceStreamEvidence::ExtentIdentityV1)) => {
+        (None, Some(evidence)) => {
+            let prefix = stream.length / 4096 * 4096;
+            let partial_tail =
+                evidence == SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1;
+            let shape_matches = match evidence {
+                SourceStreamEvidence::ExtentIdentityV1 => stream.length.is_multiple_of(4096),
+                SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1 => {
+                    !stream.length.is_multiple_of(4096) && stream.tail_requires_materialization()
+                }
+            };
             ensure!(
-                stream.length != 0 && stream.length.is_multiple_of(4096) && stream.sparse.is_none(),
-                "extent-only stream requires a nonempty initialized aligned plain mapping"
+                prefix != 0 && stream.sparse.is_none() && shape_matches,
+                "extent-only stream prefix or explicit tail evidence differs"
             );
             let mut covered = 0u64;
             if let Some(offset) = stream.source_offset {
                 ensure!(
-                    stream.source_extents.is_empty()
+                    !partial_tail
+                        && stream.source_extents.is_empty()
                         && offset.is_multiple_of(4096)
                         && offset.checked_add(stream.length).is_some(),
                     "invalid extent-only single mapping"
@@ -987,8 +1005,8 @@ fn validate_stream_evidence(stream: StreamRef<'_>) -> Result<()> {
                 }
             }
             ensure!(
-                covered == stream.length,
-                "extent-only mapping does not cover the complete stream"
+                covered == prefix,
+                "extent-only mapping does not cover the complete initialized cluster prefix"
             );
         }
         _ => anyhow::bail!("missing or ambiguous source stream evidence"),

@@ -23,6 +23,20 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+New built candidate extends fast source evidence to ordinary initialized,
+nonresident streams with partial EOF>=4KiB. Canonical newtag
+extent_identity_with_materialized_tail_v1 requires a complete floor-EOF prefix;
+old extent_identity_v1 remains whole-cluster. All source allocation and exact
+EOF/VDL/native identity checks stay. Native metadata completion requires a
+constructor-owned exact tail SHA/readback/final-file-ID receipt, including plain
+ADS carriers; protected residual verification separately binds actual source tails.
+Fresh/result and recovery receipts count tail scope explicitly. Source/semantic/
+native checks and public/bind/digest/fault release builds pass; VM qualification
+pending. Lab validators are being updated to force positive tail coverage and
+all39 independent hashes. No unit tests added/run. See
+docs/partial-tail-extent-verification.md. Current VM remains Off/RAM0 atb809,
+50 snapshots; the qualified whole-cluster recovery matrix below is preserved.
+
 Exact7ced recovery matrix now passes one controlled first-flushed-write case.
 Interruption07247cfa actualPID5484/creation1793470826071 exited86, source6 stayed
 offline writable/managed shadow offline read-only,2 unread streams/4MiB and the

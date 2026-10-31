@@ -3848,8 +3848,10 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
                 )?,
                 0x80 => {
                     // Ancestry is not known until all metadata is captured.
-                    // Defer only potential whole aligned plain DATA; every
-                    // other form retains the existing content read/fallback.
+                    // Defer fully initialized plain DATA with a complete
+                    // target-cluster prefix. Partial final-cluster bytes stay
+                    // covered by fingerprint IO and actual tail materialization;
+                    // every other form keeps the existing full-read fallback.
                     let deferred = policy.is_fast()
                         && number >= 16
                         && record.base == 0
@@ -3859,8 +3861,7 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
                         && a.flags == 0
                         && a.compression_unit == 0
                         && a.lowest_vcn == 0
-                        && a.logical_size > 0
-                        && a.logical_size.is_multiple_of(4096)
+                        && a.logical_size >= 4096
                         && a.initialized_size == a.logical_size
                         && a.extents.iter().all(|e| e.physical_offset.is_some());
                     let (logical_hash_status, logical_sha256) = if deferred {

@@ -21,6 +21,37 @@ fn one_link(count: &u32) -> bool {
     *count == 1
 }
 
+fn require_digest_free_residual(
+    observed: &GeneralLayoutReport,
+    object_index: usize,
+    name: &[u16],
+    length: u64,
+) -> io::Result<()> {
+    let prefix = length / 4096 * 4096;
+    if length == prefix {
+        return Ok(());
+    }
+    let mut tails = observed
+        .residuals()
+        .iter()
+        .filter(|tail| tail.object_index == object_index && tail.stream_name_utf16 == name);
+    let tail = tails
+        .next()
+        .ok_or_else(|| invalid("digest-free protected tail residual is absent"))?;
+    if !observed.residual_contents_verified()
+        || tails.next().is_some()
+        || tail.logical_offset != prefix
+        || tail.length != length - prefix
+        || tail.sha256.len() != 64
+        || !tail.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(invalid(
+            "digest-free protected route requires the exact verified initialized tail residual",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub struct SourceBackedRoutes {
     pair: GeneralSourceShadowBinding,
@@ -60,11 +91,14 @@ impl SourceBackedRoutes {
                 let prefix = length / 4096 * 4096;
                 let sparse = named.sparse.as_ref();
                 if named.expected_sha256.is_none()
-                    && (!length.is_multiple_of(4096) || sparse.is_some() || named.resident_data)
+                    && (prefix == 0 || sparse.is_some() || named.resident_data)
                 {
                     return Err(invalid(
-                        "digest-free named route requires complete plain initialized clusters",
+                        "digest-free named route requires a complete plain initialized prefix",
                     ));
+                }
+                if named.expected_sha256.is_none() {
+                    require_digest_free_residual(observed, index, &named.name_utf16, length)?;
                 }
                 if prefix == 0 || (sparse.is_some() && named.retrieval.is_empty()) {
                     continue;
@@ -143,12 +177,13 @@ impl SourceBackedRoutes {
                     .sum()
             });
             let expected = &observed.expected_stream_sha256[index];
-            if expected.is_none()
-                && (!length.is_multiple_of(4096) || sparse.is_some() || object.resident_data)
-            {
+            if expected.is_none() && (prefix == 0 || sparse.is_some() || object.resident_data) {
                 return Err(invalid(
-                    "digest-free route requires complete plain initialized clusters",
+                    "digest-free route requires a complete plain initialized prefix",
                 ));
+            }
+            if expected.is_none() {
+                require_digest_free_residual(observed, index, &[], length)?;
             }
             if object.resident_data || object.retrieval_page_proof.is_none() {
                 return Err(invalid(

@@ -3962,6 +3962,13 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
     let allocation = reconcile_allocation(&report, &mut bitmap_reader, &bitmap_summary)?;
     budget.charge((allocation.bitmap_sha256.capacity() + allocation.detail.capacity()) as u64)?;
     report.allocation_reconciliation = Some(allocation);
+    // The shared eligibility predicate resolves all file names through this
+    // reconciled namespace. Establish it before deciding any deferred hash;
+    // an absent namespace must never silently turn every fast stream into a
+    // full-content fallback.
+    let namespace = namespace.finish(&report.files);
+    budget.charge((namespace.evidence_sha256.capacity() + namespace.detail.capacity()) as u64)?;
+    report.namespace_reconciliation = Some(namespace);
     if policy.is_fast() {
         // Reborrow the reader held by the completed bitmap pass; no bitmap
         // reads remain while deferred DATA hashes are decided below.
@@ -4025,9 +4032,6 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
             }
         }
     }
-    let namespace = namespace.finish(&report.files);
-    budget.charge((namespace.evidence_sha256.capacity() + namespace.detail.capacity()) as u64)?;
-    report.namespace_reconciliation = Some(namespace);
     let security = security.finish(&report.files);
     budget.charge(crate::ntfs_security::heap_bytes(&security) as u64)?;
     report.security_reconciliation = Some(security);

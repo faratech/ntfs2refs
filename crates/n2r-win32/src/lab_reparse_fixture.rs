@@ -127,22 +127,23 @@ fn ancestors(path: &Path) -> io::Result<Vec<File>> {
 }
 
 fn private_descriptor() -> Vec<u8> {
-    // Self-relative O:SY G:SY D:P(A;;FA;;;SY), with the owner/group sharing
-    // the same bounded LocalSystem SID. Native descriptor() validates it again.
+    // Self-relative O:SY G:SY D:P(A;;FA;;;SY). Keep distinct owner/group SID
+    // storage so the native length includes both complete associated SIDs.
     let sid = [1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0];
-    let mut bytes = vec![0; 60];
+    let mut bytes = vec![0; 72];
     bytes[0] = 1;
     bytes[2..4].copy_from_slice(&0x9004u16.to_le_bytes());
     bytes[4..8].copy_from_slice(&20u32.to_le_bytes());
-    bytes[8..12].copy_from_slice(&20u32.to_le_bytes());
-    bytes[16..20].copy_from_slice(&32u32.to_le_bytes());
+    bytes[8..12].copy_from_slice(&32u32.to_le_bytes());
+    bytes[16..20].copy_from_slice(&44u32.to_le_bytes());
     bytes[20..32].copy_from_slice(&sid);
-    bytes[32] = 2;
-    bytes[34..36].copy_from_slice(&28u16.to_le_bytes());
-    bytes[36..38].copy_from_slice(&1u16.to_le_bytes());
-    bytes[42..44].copy_from_slice(&20u16.to_le_bytes());
-    bytes[44..48].copy_from_slice(&0x001f_01ffu32.to_le_bytes());
-    bytes[48..60].copy_from_slice(&sid);
+    bytes[32..44].copy_from_slice(&sid);
+    bytes[44] = 2;
+    bytes[46..48].copy_from_slice(&28u16.to_le_bytes());
+    bytes[48..50].copy_from_slice(&1u16.to_le_bytes());
+    bytes[54..56].copy_from_slice(&20u16.to_le_bytes());
+    bytes[56..60].copy_from_slice(&0x001f_01ffu32.to_le_bytes());
+    bytes[60..72].copy_from_slice(&sid);
     bytes
 }
 

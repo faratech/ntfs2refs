@@ -315,7 +315,24 @@ try{
     $interruption=Json $normalObservation
     Need ($interruption.controlled_interruption_observed-eq$true-and$interruption.native_exit-eq86-and$interruption.bundle_sha256-ceq$c.recovery_sha256-and$originalProcess.pid-gt0-and$originalProcess.creation_ms-gt0-and$originalTerminal.pid-eq$originalProcess.pid-and$originalTerminal.creation_ms-eq$originalProcess.creation_ms-and$originalTerminal.native_exit-eq86-and$originalTerminal.native_exit_observed-eq$true) 'Actual original native process/exit86 publication missing.'
     Need ($interruption.source_disk-eq1-and$interruption.source_offline-eq$true-and$interruption.source_readonly-eq$false-and$interruption.shadow_offline-eq$true-and$interruption.shadow_readonly-eq$true) 'Actual86 source/shadow exclusion receipt differs.'
-    $shadow=Get-Disk -Number $request.pair.shadow.disk_number;Need ($shadow.IsOffline-and$shadow.IsReadOnly-and[guid]$shadow.Guid-eq[guid]$request.pair.shadow.identity.disk_guid) 'Saved managed shadow must remain offline/read-only.'
+    # The actual86 producer needed its shadow, but allocation recovery is
+    # self-contained in the pinned metadata and journal. A cold boot may detach
+    # the dynamic VHDX; never reattach it or rewrite the historical request.
+    Need ((SameJsonValue $interruption.managed_binding $request.pair.shadow)-and$interruption.managed_shadow_path-ceq(Join-Path $origin 'managed-shadow\shadow.vhdx')) 'Historical86 managed-shadow identity/path differs from the pinned request.'
+    $diskInventory=@(Get-Disk -ErrorAction Stop);Need ($diskInventory.Count-gt0) 'Complete current disk inventory required; provider errors are not absence.'
+    $shadowMatches=@(foreach($disk in $diskInventory){$guid=[guid]::Empty;if([guid]::TryParse([string]$disk.Guid,[ref]$guid)-and$guid-eq[guid]$request.pair.shadow.identity.disk_guid){$disk}})
+    Need ($shadowMatches.Count-le1) 'Duplicate current shadow GPT identity refused.'
+    $shadowObservation=@{scope='lab-allocation-recovery-optional-current-shadow-v1';historical_native86_shadow_offline=$interruption.shadow_offline;historical_native86_shadow_readonly=$interruption.shadow_readonly;pinned_binding=$request.pair.shadow;shadow_present=($shadowMatches.Count-eq1);current_disk_number=$null;current_provider=$null;reattachment_performed=$false;request_rebound=$false;public_recovery_requires_shadow=$false;grants_replay_authority=$false}
+    if($shadowMatches.Count-eq1){
+        $shadow=$shadowMatches[0];$identity=$request.pair.shadow.identity
+        Need ($shadow.PartitionStyle.ToString()-ceq'GPT'-and$shadow.Size-eq$identity.disk_bytes-and$shadow.LogicalSectorSize-eq$identity.logical_sector_bytes-and$shadow.PhysicalSectorSize-eq$identity.physical_sector_bytes-and-not$shadow.IsBoot-and-not$shadow.IsSystem-and$shadow.IsOffline-and$shadow.IsReadOnly) 'Present managed shadow GPT/geometry/protection differs.'
+        $partitions=@(Get-Partition -DiskNumber $shadow.Number -ErrorAction Stop);$shadowPartitions=@($partitions|Where-Object {$_.PartitionNumber-eq$identity.partition_number-and[guid]$_.Guid-eq[guid]$identity.partition_guid})
+        Need ($shadowPartitions.Count-eq1-and$shadowPartitions[0].Offset-eq$identity.partition_offset-and$shadowPartitions[0].Size-eq$identity.partition_bytes) 'Present managed shadow partition identity/range differs.'
+        $image=Get-DiskImage -ImagePath $interruption.managed_shadow_path -ErrorAction Stop
+        Need ($image.Attached-eq$true-and[string]::Equals([string]$image.ImagePath,[string]$interruption.managed_shadow_path,[StringComparison]::OrdinalIgnoreCase)-and[string]::Equals([string]$image.DevicePath,('\\.\PhysicalDrive'+$shadow.Number),[StringComparison]::OrdinalIgnoreCase)) 'Present managed shadow image provider is not the original VHDX route.'
+        $shadowObservation.current_disk_number=[int]$shadow.Number;$shadowObservation.current_provider=@{image_path=$image.ImagePath;device_path=$image.DevicePath;attached=$image.Attached;storage_type=$image.StorageType;disk_guid=[string]$shadow.Guid;offline=$shadow.IsOffline;readonly=$shadow.IsReadOnly;partition_guid=[string]$shadowPartitions[0].Guid}
+    }
+    Save 'current-shadow-observation.json' $shadowObservation
     $plan=Json (Join-Path $c.recovery_directory 'selected-plan.json') 16MB;$ticket=Json (Join-Path $c.recovery_directory 'selected-ticket.json') 65536
     Need ($plan.max_journal_bytes-eq$request.max_journal_bytes-and$request.max_journal_bytes-eq16GB-and$ticket.journal_length-le$request.max_journal_bytes-and$ticket.journal_length-gt0-and$ticket.selected_bytes-gt0-and$ticket.whole_image_verified-eq$false) 'Pinned capacity and selected ticket disagree; recovery never resizes from free space.'
     $expectationPath=Join-Path $c.recovery_directory 'expectation.json'

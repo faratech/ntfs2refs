@@ -41,6 +41,11 @@ fn main() -> anyhow::Result<()> {
         /// Use the allocation-bounded backend (requires --selected-devices).
         #[arg(long, requires = "selected_devices")]
         allocation_bounded: bool,
+        /// V3 planning-only schema3 fast allocation: prepare and enter the
+        /// private fresh writer, then flush its first payload write and exit86.
+        /// Capture/J capacities must already be explicit in the pinned request.
+        #[arg(long, requires = "allocation_bounded", conflicts_with_all = ["interrupt_after_writes", "interrupt_after_first_copy_write"])]
+        fresh_exclusive_v3_first_write: bool,
     }
     let args = Args::parse();
     ensure!(
@@ -66,12 +71,37 @@ fn main() -> anyhow::Result<()> {
         "conversion request pin or identity differs"
     );
     let request: Request = serde_json::from_slice(&bytes)?;
+    if args.fresh_exclusive_v3_first_write {
+        ensure!(
+            request.source_resource_profile
+                == Some(
+                    ntfs2refs::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(None)
+                )
+                && request.schema_version == 3
+                && request.verification_policy.is_fast()
+                && !request.verify_existing_shadow,
+            "fresh-exclusive V3 fault requires the pinned schema3 fast fresh planning-None request"
+        );
+    } else {
+        ensure!(
+            !request
+                .source_resource_profile
+                .is_some_and(|profile| profile.is_envelope()),
+            "V3 fault production requires --fresh-exclusive-v3-first-write; admitted Some cannot be restored as a fresh input"
+        );
+    }
     let budget = CompactConstructionBudget {
         maximum_placement_bytes: args.maximum_placement_bytes,
         maximum_placement_submissions: args.maximum_placement_submissions,
         maximum_exception_bytes: args.maximum_exception_bytes,
     };
-    if args.allocation_bounded {
+    if args.fresh_exclusive_v3_first_write {
+        ntfs2refs::general_lab::convert_fresh_allocation_exclusive_v3_first_write(
+            &request,
+            budget,
+            &args.output,
+        )
+    } else if args.allocation_bounded {
         if args.interrupt_after_first_copy_write {
             ntfs2refs::general_lab::convert_fresh_allocation_selected_after_first_copy(
                 &request,

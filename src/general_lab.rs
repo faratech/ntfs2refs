@@ -127,6 +127,18 @@ pub fn convert_fresh_allocation_selected(
     )
 }
 
+/// Exercise the private fresh writer on a newly admitted V3 source. No saved
+/// Some descriptor or prior source certificate enters this lab route.
+pub fn convert_fresh_allocation_exclusive_v3_first_write(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+) -> Result<()> {
+    crate::general_conversion::convert_allocation_exclusive_v3_first_write_for_lab(
+        request, budget, output,
+    )
+}
+
 /// Stop after the first actual native target write into the first qualified
 /// old-payload-copy destination. The selected plan determines the destination.
 pub fn convert_fresh_allocation_selected_after_first_copy(

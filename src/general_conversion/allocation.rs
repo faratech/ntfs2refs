@@ -36,8 +36,22 @@ pub(super) fn convert_allocation_selected(
     output: &Path,
     interrupt_after_writes: Option<u32>,
     interrupt_after_first_copy_write: bool,
+    fresh_exclusive_v3_first_write_fault: bool,
 ) -> Result<()> {
     request.validate()?;
+    ensure!(
+        !fresh_exclusive_v3_first_write_fault
+            || (interrupt_after_writes == Some(1)
+                && !interrupt_after_first_copy_write
+                && request.schema_version == 3
+                && request.verification_policy.is_fast()
+                && request.source_resource_profile
+                    == Some(
+                        crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(None)
+                    )
+                && !request.verify_existing_shadow),
+        "exclusive first-write fault requires the explicit fresh V3 planning input"
+    );
     ensure!(
         interrupt_after_writes.is_none_or(|writes| (1..=4096).contains(&writes)),
         "allocation-bounded interruption count must be 1..=4096"
@@ -330,8 +344,8 @@ pub(super) fn convert_allocation_selected(
         let ticket = {
             let mut image = proof.image(&mut complement)?;
             if request.verification_policy.is_fast()
-                && interrupt_after_writes.is_none()
-                && !interrupt_after_first_copy_write
+                && ((interrupt_after_writes.is_none() && !interrupt_after_first_copy_write)
+                    || fresh_exclusive_v3_first_write_fault)
             {
                 sj::prepare_exclusive(&mut source, &mut image, &mut journal, &plan)?
             } else {
@@ -403,6 +417,26 @@ pub(super) fn convert_allocation_selected(
         }
         let recovery_pin =
             qualification::save(output, "allocation-recovery-bundle.json", &recovery_bundle)?;
+        if fresh_exclusive_v3_first_write_fault {
+            request
+                .source_resource_profile
+                .unwrap_or_default()
+                .count_admission()?;
+            qualification::save(
+                output,
+                "fresh-exclusive-fault-path.json",
+                &serde_json::json!({
+                    "schema_version":1,"kind":"lab-fresh-exclusive-v3-first-write-path",
+                    "source_resource_profile":request.source_resource_profile,
+                    "preparation_completed":"prepare_exclusive",
+                    "apply_entrypoint_requested":"apply_and_handoff_exclusive",
+                    "requested_flushed_payload_writes":1,"controlled_exit_code":86,
+                    "hnd_allowed_if_interruption_not_reached":false,"source_writes_started":false,
+                    "diagnostic_only":true,"execution_authorized":false,"replay_authorized":false,
+                    "recovery_bundle_sha256":recovery_pin,
+                }),
+            )?;
+        }
         println!("Recovery directory: {}", output.display());
         println!("Recovery checksum: {recovery_pin}");
 
@@ -469,6 +503,22 @@ pub(super) fn convert_allocation_selected(
             interrupt_after_writes,
             copy_interruption_target.as_ref(),
         ) {
+            (Some(remaining), _) if fresh_exclusive_v3_first_write_fault => {
+                let mut interrupted =
+                    reconstruct::InterruptingGeneralTarget::new(&mut target, remaining);
+                let _ = sj::apply_and_handoff_exclusive(
+                    &mut interrupted,
+                    &mut journal,
+                    &plan,
+                    &ticket,
+                    |_| {
+                        anyhow::bail!(
+                            "exclusive first-write interruption was not reached; refusing HND"
+                        )
+                    },
+                )?;
+                anyhow::bail!("exclusive first-write interruption unexpectedly returned; no retry")
+            }
             (Some(remaining), _) => {
                 // Lab fault: the wrapper flushes then exits the process with 86.
                 let mut interrupted =

@@ -13,6 +13,23 @@ fn announce_conversion_phase(message: &str) {
     let _ = writeln!(std::io::stderr(), "Conversion: {message}");
 }
 
+/// Advisory phase counters; these do not describe physical storage traffic or
+/// provide any source, target or recovery authority.
+fn record_process_io(output: &Path, phase: &str) -> Result<()> {
+    let counters = n2r_win32::process_io::snapshot();
+    qualification::save(
+        output,
+        &format!("process-io-{phase}.json"),
+        &serde_json::json!({
+            "schema_version":1,"phase":phase,
+            "counters":counters.as_ref().ok(),
+            "native_error":counters.as_ref().err().map(ToString::to_string),
+            "advisory_only":true,"execution_authorized":false,
+        }),
+    )?;
+    Ok(())
+}
+
 pub(super) fn convert_allocation_selected(
     request: &Request,
     construction: qualification::CompactConstructionBudget,
@@ -39,6 +56,10 @@ pub(super) fn convert_allocation_selected(
         &serde_json::json!({
             "schema_version":1,"kind":"experimental-allocation-bounded-conversion-intent",
             "request":request,"construction_budget":construction,
+            "verification_policy":request.verification_policy,
+            "planned_source_verification_policy":crate::verification_policy::VerificationPolicy::FullContent,
+            "planned_target_verification_policy":crate::verification_policy::VerificationPolicy::FullContent,
+            "full_file_hashes_requested":true,
             "interrupt_after_writes":interrupt_after_writes,
             "interrupt_after_first_copy_write":interrupt_after_first_copy_write,
             "requires_original_live_source_certificate":true,
@@ -49,6 +70,7 @@ pub(super) fn convert_allocation_selected(
     )?;
     let mut phase = "allocation-bounded-qualification";
     let attempted = (|| -> Result<()> {
+        record_process_io(output, "start")?;
         let profile = request.journal_profile()?;
         // Every old byte remains in the encoded journal. New zero bytes need
         // no stored copy; the exact D + literal-new + metadata size is checked
@@ -161,6 +183,7 @@ pub(super) fn convert_allocation_selected(
             request
                 .max_literal_backing_bytes
                 .map(|_| &mut guard as &mut dyn FnMut(_) -> Result<()>),
+            request.verification_policy,
         );
         drop(guard);
         if capture_budget.is_some() {
@@ -183,6 +206,7 @@ pub(super) fn convert_allocation_selected(
             mount_paths,
             source_label,
         } = qualified?;
+        record_process_io(output, "qualified")?;
         let expected_tree_sha256 = hex::encode(Sha256::digest(&expected));
         ensure!(
             certificate.binds(&proof) && certificate.expected_tree_sha256() == expected_tree_sha256,
@@ -340,6 +364,7 @@ pub(super) fn convert_allocation_selected(
         println!("Recovery checksum: {recovery_pin}");
 
         phase = "selected-activation";
+        record_process_io(output, "journal-prepared")?;
         if capture_budget.is_some() {
             // Existing journal/backing allocations have already reduced free
             // space. Require the remaining reserve without charging them twice.
@@ -386,7 +411,10 @@ pub(super) fn convert_allocation_selected(
 
         phase = "selected-apply";
         announce_conversion_phase("applying the selected ranges");
-        let applied = match (interrupt_after_writes, copy_interruption_target.as_ref()) {
+        let (applied, exclusive_handoff) = match (
+            interrupt_after_writes,
+            copy_interruption_target.as_ref(),
+        ) {
             (Some(remaining), _) => {
                 // Lab fault: the wrapper flushes then exits the process with 86.
                 let mut interrupted =
@@ -411,14 +439,44 @@ pub(super) fn convert_allocation_selected(
                     result.range_count
                 )
             }
-            (None, None) => sj::apply(&mut target, &mut journal, &plan, &ticket)?,
+            (None, None) if request.verification_policy.is_fast() => {
+                // This stage retains complete source/target file hashing. It
+                // only avoids reloading and rehashing the durable journal body
+                // between a verified Apply and HND while the same owning
+                // process exclusively borrows both handles. The callback gets
+                // no handles and cannot alter either stream.
+                let (applied, handoff) = sj::apply_and_handoff_exclusive(
+                    &mut target,
+                    &mut journal,
+                    &plan,
+                    &ticket,
+                    |applied| {
+                        qualification::save(output, "apply.json", applied)?;
+                        record_process_io(output, "applied")?;
+                        phase = "selected-handoff";
+                        announce_conversion_phase(
+                            "completing ReFS handoff and verifying mounted file contents",
+                        );
+                        Ok(())
+                    },
+                )?;
+                (applied, Some(handoff))
+            }
+            (None, None) => (sj::apply(&mut target, &mut journal, &plan, &ticket)?, None),
         };
-        qualification::save(output, "apply.json", &applied)?;
-
-        phase = "selected-handoff";
-        announce_conversion_phase("completing ReFS handoff and verifying mounted file contents");
-        let handoff = sj::handoff(&mut target, &mut journal, &plan, &ticket)?;
+        let handoff = if let Some(handoff) = exclusive_handoff {
+            handoff
+        } else {
+            qualification::save(output, "apply.json", &applied)?;
+            record_process_io(output, "applied")?;
+            phase = "selected-handoff";
+            announce_conversion_phase(
+                "completing ReFS handoff and verifying mounted file contents",
+            );
+            sj::handoff(&mut target, &mut journal, &plan, &ticket)?
+        };
         qualification::save(output, "handoff.json", &handoff)?;
+        record_process_io(output, "handoff")?;
         proof.revalidate_backing()?;
         ensure!(
             native_target.state(&mut events)? == shadow_before,
@@ -451,6 +509,7 @@ pub(super) fn convert_allocation_selected(
             Err(error) => finalization.error = Some(error.to_string()),
         }
         qualification::save(output, "finalization.json", &finalization)?;
+        record_process_io(output, "native-verified")?;
         ensure!(
             finalization.success,
             "allocation-bounded native handoff failed: {:?}",
@@ -462,6 +521,11 @@ pub(super) fn convert_allocation_selected(
             &serde_json::json!({
                 "schema_version":1,"kind":"experimental-allocation-bounded-conversion",
                 "success":true,"source_admitted":true,"rollback_closed":true,
+                "verification_policy":request.verification_policy,
+                "actual_source_verification_policy":crate::verification_policy::VerificationPolicy::FullContent,
+                "actual_target_verification_policy":crate::verification_policy::VerificationPolicy::FullContent,
+                "actual_full_file_hashes":true,
+                "exclusive_apply_handoff_used":request.verification_policy.is_fast(),
                 "journal_path":journal_path,"ticket_sha256":ticket_pin,"plan_sha256":plan_pin,
                 "expected_tree_sha256":expected_tree_sha256,
                 "selected_ranges":plan.ranges.len(),"selected_bytes":selected_bytes,

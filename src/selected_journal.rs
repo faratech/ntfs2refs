@@ -954,6 +954,20 @@ fn read_after<J: Read + Seek>(
     }
 }
 
+/// Whole old/new buffers use slice equality; interrupted mixed buffers retain
+/// the exact per-byte rule. Equal lengths are required before zipped fallback.
+fn bytes_are_old_or_new(current: &[u8], before: &[u8], after: &[u8]) -> bool {
+    current.len() == before.len()
+        && current.len() == after.len()
+        && (current == before
+            || current == after
+            || current
+                .iter()
+                .zip(before)
+                .zip(after)
+                .all(|((&actual, &old), &new)| actual == old || actual == new))
+}
+
 /// Verify every selected actual byte is either its recorded old or new byte;
 /// optionally require the complete framed selected target digest to match.
 fn check_target<T: ReadSeek, J: Read + Seek>(
@@ -980,11 +994,7 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
             at(journal, record.before_at + done, &mut before[..count])?;
             read_after(journal, records, record, done, &mut after[..count])?;
             ensure!(
-                current[..count]
-                    .iter()
-                    .zip(&before[..count])
-                    .zip(&after[..count])
-                    .all(|((&actual, &old), &new)| actual == old || actual == new),
+                bytes_are_old_or_new(&current[..count], &before[..count], &after[..count]),
                 "selected target contains a foreign byte"
             );
             digest.update(&current[..count])?;
@@ -1020,11 +1030,7 @@ fn write_span<T: DurableIo, J: Read + Seek>(
         at(journal, record.before_at + within, &mut before[..count])?;
         read_after(journal, records, record, within, &mut after[..count])?;
         ensure!(
-            current[..count]
-                .iter()
-                .zip(&before[..count])
-                .zip(&after[..count])
-                .all(|((&actual, &old), &new)| actual == old || actual == new),
+            bytes_are_old_or_new(&current[..count], &before[..count], &after[..count]),
             "selected target changed before write"
         );
         let desired = if forward {
@@ -1058,6 +1064,25 @@ fn execute<T: DurableIo, J: DurableIo>(
     fresh: bool,
 ) -> Result<SelectedResult> {
     let records = load(journal, plan, ticket)?;
+    execute_loaded(
+        target, journal, plan, ticket, &records, forward, fresh, true,
+    )
+}
+
+/// Both callers obtained these records through a complete load in this call.
+/// Only the exclusive fresh path can retain that validation across its own
+/// writes; legacy/recovery execution rehashes the immutable body afterward.
+#[allow(clippy::too_many_arguments)]
+fn execute_loaded<T: DurableIo, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+    records: &[JournalRecord],
+    forward: bool,
+    fresh: bool,
+    recheck_immutable: bool,
+) -> Result<SelectedResult> {
     let (apply_intent, rollback_intent) = read_markers(journal, ticket)?;
     ensure!(
         !fresh || (!apply_intent && !rollback_intent),
@@ -1080,7 +1105,7 @@ fn execute<T: DurableIo, J: DurableIo>(
         target,
         journal,
         plan,
-        &records,
+        records,
         fresh.then_some(&ticket.old_selected_sha256),
     )?;
     let intent = if forward {
@@ -1089,12 +1114,12 @@ fn execute<T: DurableIo, J: DurableIo>(
         marker(b"N2RSRB01", ticket, &ticket.old_selected_sha256)
     };
     write_marker(journal, GRANULE, &intent)?;
-    for record in &records {
+    for record in records {
         let skip = if record.range.offset == 0 { GRANULE } else { 0 };
         write_span(
             target,
             journal,
-            &records,
+            records,
             record,
             skip,
             record.range.length - skip,
@@ -1103,7 +1128,7 @@ fn execute<T: DurableIo, J: DurableIo>(
     }
     target.sync_all()?;
     if let Some(first) = records.first().filter(|r| r.range.offset == 0) {
-        write_span(target, journal, &records, first, 0, GRANULE, forward)?;
+        write_span(target, journal, records, first, 0, GRANULE, forward)?;
     }
     target.sync_all()?;
     let expected = if forward {
@@ -1111,11 +1136,13 @@ fn execute<T: DurableIo, J: DurableIo>(
     } else {
         &ticket.old_selected_sha256
     };
-    let selected_sha256 = check_target(target, journal, plan, &records, Some(expected))?;
-    ensure!(
-        hash_range(journal, BODY, ticket.journal_length - BODY)? == ticket.immutable_sha256,
-        "selected journal changed during target writes"
-    );
+    let selected_sha256 = check_target(target, journal, plan, records, Some(expected))?;
+    if recheck_immutable {
+        ensure!(
+            hash_range(journal, BODY, ticket.journal_length - BODY)? == ticket.immutable_sha256,
+            "selected journal changed during target writes"
+        );
+    }
     if !forward {
         let completed = marker(b"N2RSAB01", ticket, expected);
         write_marker(journal, 0, &completed)?;
@@ -1137,6 +1164,52 @@ pub fn apply<T: DurableIo, J: DurableIo>(
     ticket: &SelectedTicket,
 ) -> Result<SelectedResult> {
     execute(target, journal, plan, ticket, true, true)
+}
+
+/// Fresh apply and durable handoff while one process retains exclusive owning
+/// access to both resources. This is not a recovery API or persisted authority.
+///
+/// The caller must keep target/journal exclusively held (Windows share mode
+/// zero where applicable), without clones, hidden mutable aliases, concurrent
+/// workers or callback access that could mutate either resource. The callback
+/// receives only the applied result and must durably save its receipt before
+/// returning success. Exclusive `&mut` borrows span that callback and HND.
+///
+/// Entry validates every immutable byte, payload, descriptor and footer once.
+/// Apply retains all pre/post target checks, original write order and flushes.
+/// Under that continuous exclusive ownership the already validated immutable
+/// body and post-target digest remain valid through the callback, so neither is
+/// scanned again before HND. A callback error leaves the durable apply intent
+/// open; all existing full-validation recovery entry points remain available.
+pub fn apply_and_handoff_exclusive<
+    T: DurableIo,
+    J: DurableIo,
+    F: FnOnce(&SelectedResult) -> Result<()>,
+>(
+    target: &mut T,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+    after_apply: F,
+) -> Result<(SelectedResult, SelectedResult)> {
+    let records = load(journal, plan, ticket)?;
+    let applied = execute_loaded(target, journal, plan, ticket, &records, true, true, false)?;
+    after_apply(&applied)?;
+    // Preserve the handoff flush; no caller has received mutable device access
+    // since the complete post-apply target verification above.
+    target.sync_all()?;
+    let completed = marker(b"N2RSHN01", ticket, &applied.selected_sha256);
+    write_marker(journal, 0, &completed)?;
+    let handed_off = SelectedResult {
+        selected_sha256: applied.selected_sha256,
+        selected_bytes: applied.selected_bytes,
+        range_count: applied.range_count,
+        replay_closed: true,
+        whole_image_verified: false,
+        conversion_qualified: false,
+    };
+    drop(records);
+    Ok((applied, handed_off))
 }
 pub fn resume<T: DurableIo, J: DurableIo>(
     target: &mut T,

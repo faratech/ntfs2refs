@@ -23,6 +23,37 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Large fd577f2 run17c1dd7f/core9a59ede9 completed insideVM:933objects/811 complete
+stream hashes,808userfiles/120directories/9,885,781,381B, label/mount correct.
+SourceNTFS64K F: source6fe2d6b6 became nativeReFS4K samepartition. Retained
+4,225,028,096B/903coordinates; barrier122187us exposedexactevacuated3,746,791,424B
+asactuallyfree (desiredfree75,542,528->3,822,333,952). Literalbacking38,400,000B,
+journal11,430,978,272B. ActualJ<16GiB; schema3requestedcapacity29,697,802,240B
+doesNOTproveactual>16GiBjournaloperation. Full-content run1387.317s (23min);
+latephaseincludeshandoffchecks, notjustnativefileverification. D3fastnotpartofit.
+Closed57metadatafiles/136,316,706B under mixed-capacity-success-17c1dd7f; current
+VM Off/RAM0 at78513f35-5309-41ce-806f-c2358b4e2f7d,50checkpoints,no activeworker.
+See evidence/mixed-capacity-native-20261031.json. Cold/recovery/mutationpending.
+
+D3candidatefirststage: defaultExtentIdentityV1requestpolicy/full-contentflag,
+exclusivefreshapply-throughHND(normalowningprocessonly), exactraw-shadow
+consumed-byteSHA256brackets excludingONLYauthenticatedoverlaidpayloadroutes,
+old/newmemcmpfastpathwithsamebytefallback, advisoryphaseprocesscounters.
+ACTUALsource/targetfilehashesstillFULLandexplicitlyreported—doNOTclaimthe
+hash-free retainedcertificatepathisfinished. No fakecontentdigests.Fullmode,
+faultentriesandfreshrecoveryretainlegacycompletechecks. See docs/fast-verification.md.
+Librarycheckandfocusedpublic/verifier/bindreleasebuildspass; nativeD3qualificationnext.
+
+D3 decision (2026-10-31): the user chose "Use extent-based fast verification
+(Recommended)" as the default, with full-content verification retained as an
+option. Prove unchanged retained payload by exact metadata and physical-extent
+identity; checksum moved/rewritten bytes during their read/write passes to avoid
+repeated full-payload scans. Namespace/ACL/allocation/full retrieval and fresh
+recovery checks stay. Represent hash-free evidence explicitly; never fabricate
+content digests or reinterpret a metadata fingerprint as a full-content hash.
+D2 incremental retrieval remains unapproved. Implement the fast path with
+explicit in-process ownership/immutability and keep legacy full mode available.
+
 Retention barrier candidate: the large source's960 raw DATA identities/maps and
 933 canonical objects match both old runs. All first1,561 moves (50direct,
 644scratch,867evacuation), complete post-move mappings and evacuation plan

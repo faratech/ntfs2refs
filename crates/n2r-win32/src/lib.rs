@@ -43,6 +43,8 @@ pub mod managed_shadow;
 pub mod namespace_layout;
 #[cfg(windows)]
 mod namespace_native;
+#[cfg(windows)]
+pub mod process_io;
 pub mod reference_file;
 #[cfg(windows)]
 pub mod reference_import;

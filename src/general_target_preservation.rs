@@ -238,6 +238,23 @@ pub struct AllocationBracketClosure {
     closing_chunks: usize,
     closing_bytes_reread: u64,
     free_space_rechecked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_consumption: Option<RoutedPayloadBracketScope>,
+}
+
+#[derive(Debug, Serialize)]
+struct RoutedPayloadBracketScope {
+    scope: &'static str,
+    framed_hash_domain: &'static str,
+    raw_metadata_hash_algorithm: &'static str,
+    protected_routes_sha256: String,
+    excluded_payload_map_sha256: String,
+    excluded_payload_ranges: Vec<crate::refs_write_set::ByteRange>,
+    excluded_payload_bytes: u64,
+    consumed_ranges_sha256: String,
+    preliminary_and_bracketed_native_routes_identical: bool,
+    preliminary_and_bracketed_allocation_maps_identical: bool,
+    raw_inspection_reads_covered: bool,
 }
 
 const BRACKET_CHUNK: u64 = 1024 * 1024;
@@ -440,6 +457,364 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
             closing_chunks,
             closing_bytes_reread,
             free_space_rechecked: false,
+            raw_consumption: None,
+        }),
+        logical_payload_verified: false,
+        complete_allocation_graph_verified: false,
+        source_admitted: false,
+        conversion_qualified: false,
+    })
+}
+
+/// The full-content path retains its historical bracket and serialized scope.
+/// Fast verification may exclude only exact physical prefixes that the opaque
+/// native route witness says the composite replaces with logical source bytes.
+pub fn verify_frozen_layout_residuals_allocation_closed_with_policy(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    resources: crate::ntfs_admission::ResourceProfile,
+    residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
+    events: &mut Vec<NativeEvent>,
+    policy: crate::verification_policy::VerificationPolicy,
+) -> Result<ProtectedTargetLayout> {
+    if policy.is_full_content() {
+        return verify_frozen_layout_residuals_allocation_closed(
+            target, pair, expected, resources, residuals, events,
+        );
+    }
+    verify_nonrouted_allocation_closed(target, pair, expected, resources, residuals, events)
+}
+
+fn recorded_anchors(
+    target: &mut GeneralFrozenPartition,
+    length: u64,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<(
+    std::result::Result<Vec<crate::refs_write_set::ByteRange>, String>,
+    Vec<crate::refs_write_set::ByteRange>,
+)> {
+    let mut recorded = ntfs_inspect::ReadRecorder::new(target)?;
+    let anchors = refs_inspect::inspect_with_resource_profile(&mut recorded, length, resources)
+        .and_then(|refs| crate::refs_write_set::observed_anchors(&refs))
+        .map_err(|error| format!("{error:#}"));
+    // Hash the containing 4 KiB granules, never a 1 MiB envelope crossing an
+    // excluded prefix. Actual reads remain recorded even if inspection fails.
+    let reads = recorded
+        .ranges()
+        .into_iter()
+        .map(|(offset, bytes)| {
+            let end = offset
+                .checked_add(bytes)
+                .context("raw inspection read overflow")?;
+            ensure!(end <= length, "raw inspection read escapes partition");
+            let start = offset / 4096 * 4096;
+            let end = end
+                .checked_next_multiple_of(4096)
+                .context("raw inspection alignment overflow")?;
+            ensure!(end <= length, "raw inspection granule escapes partition");
+            Ok(crate::refs_write_set::ByteRange {
+                offset: start,
+                length: end - start,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((anchors, allocation::union(reads, length)?))
+}
+
+fn consumed_chunks(
+    ranges: &[crate::refs_write_set::ByteRange],
+) -> Result<Vec<crate::parallel_digest::Chunk>> {
+    let mut chunks = Vec::new();
+    for range in ranges {
+        let mut done = 0;
+        while done < range.length {
+            let count = (range.length - done).min(BRACKET_CHUNK);
+            chunks
+                .try_reserve(1)
+                .context("raw consumption bracket allocation failed")?;
+            chunks.push(crate::parallel_digest::Chunk {
+                offset: range.offset + done,
+                length: count as usize,
+            });
+            done += count;
+        }
+    }
+    Ok(chunks)
+}
+
+fn hash_consumed_chunks(
+    target: &mut GeneralFrozenPartition,
+    length: u64,
+    exclusions_sha256: &str,
+    chunks: &[crate::parallel_digest::Chunk],
+) -> Result<String> {
+    let mut hash = n2r_win32::sha256_native::Sha256::new()?;
+    hash.update(b"n2r-refs-source-backed-raw-consumption-v1\0")?;
+    hash.update(&length.to_le_bytes())?;
+    hash.update(exclusions_sha256.as_bytes())?;
+    hash.update(&(chunks.len() as u64).to_le_bytes())?;
+    let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
+    for chunk in chunks {
+        ensure!(
+            chunk.length != 0 && chunk.length <= buffer.len(),
+            "raw metadata bracket chunk exceeds its read bound"
+        );
+        hash.update(&chunk.offset.to_le_bytes())?;
+        hash.update(&(chunk.length as u64).to_le_bytes())?;
+        target.seek(std::io::SeekFrom::Start(chunk.offset))?;
+        target.read_exact(&mut buffer[..chunk.length])?;
+        // Metadata, reservations and unknown allocated bytes retain direct
+        // cryptographic hashing. No file-content digest substitutes for them.
+        hash.update(&buffer[..chunk.length])?;
+    }
+    Ok(hex::encode(hash.finish()?))
+}
+
+/// Raw bytes inside a route cannot affect this composite: SourceBackedShadow
+/// supplies that entire physical interval from the admitted logical NTFS
+/// stream. This is a read-consumption proof, never a claim that the complement
+/// of file data is a complete ReFS metadata graph. Every other allocated byte,
+/// including reservations, zero regions and unknown owners, stays bracketed.
+fn verify_nonrouted_allocation_closed(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    resources: crate::ntfs_admission::ResourceProfile,
+    residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
+    events: &mut Vec<NativeEvent>,
+) -> Result<ProtectedTargetLayout> {
+    pair.validate_with_resource_profile(resources.native_profile())?;
+    expected.validate_with_resource_profile(resources)?;
+    ensure!(
+        target.binding() == &pair.shadow,
+        "protected layout target binding differs"
+    );
+    let before = target.state(events)?;
+    ensure!(
+        before.disk_attributes == 3,
+        "layout observation requires a frozen target"
+    );
+    let length = target.byte_len();
+    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?));
+    let tree = shadow_tree::Tree {
+        profile: resources.ordinary_shadow_profile(),
+        objects: expected.objects.clone(),
+        logical_bytes: expected.logical_bytes,
+        internal_replacement_pending: expected.internal_replacement_pending.clone(),
+    };
+    let input = general_shadow::native_inputs(&tree);
+    let same_security = |a: &[u8], b: &[u8]| {
+        ntfs_attestation::same_security(a, b)
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    };
+    // Routes must exist before exclusions are chosen. A preliminary full
+    // native metadata observation replaces no bracket; the second complete
+    // observation below is still enclosed by both raw consumed-byte passes.
+    let preliminary = target.observe_refs_layout_residuals_with_resource_profile(
+        pair.clone(),
+        &input,
+        residuals,
+        same_security,
+        resources.native_profile(),
+        events,
+    )?;
+    ensure!(
+        preliminary.before() == &before
+            && preliminary.after() == &before
+            && preliminary.observed_readonly().disk_attributes == 2
+            && preliminary.report().pair() == &pair
+            && target.state(events)? == before,
+        "preliminary protected layout changed identity or exclusion"
+    );
+    let preliminary_routes =
+        n2r_win32::shadow_native::private_tree::SourceBackedRoutes::from_protected_layout(
+            &preliminary,
+        )?;
+    let routes_encoding = serde_json::to_vec(&preliminary_routes)?;
+    let protected_routes_sha256 = hex::encode(Sha256::digest(&routes_encoding));
+    let exclusions = allocation::union(
+        preliminary_routes
+            .entries()
+            .iter()
+            .map(|route| crate::refs_write_set::ByteRange {
+                offset: route.target_physical_offset,
+                length: route.length,
+            })
+            .collect(),
+        length,
+    )?;
+    let excluded_payload_bytes = allocation::total(&exclusions)?;
+    ensure!(
+        excluded_payload_bytes == preliminary_routes.payload_bytes(),
+        "protected route exclusions lose ownership coverage"
+    );
+    let excluded_payload_map_sha256 =
+        hex::encode(Sha256::digest(serde_json::to_vec(&serde_json::json!({
+            "scope":"source-backed-route-exclusions-v1","partition_bytes":length,
+            "protected_routes_sha256":protected_routes_sha256,"ranges":exclusions,
+        }))?));
+    let premap = preliminary
+        .report()
+        .native()
+        .metadata_allocation
+        .as_ref()
+        .context("preliminary complete allocation missing")?;
+    let prepages = preliminary
+        .report()
+        .native()
+        .metadata_allocation_page_proof
+        .as_ref()
+        .context("preliminary complete allocation page proof missing")?;
+    let premap_encoding = serde_json::to_vec(premap)?;
+    ensure!(
+        premap.cluster_count.checked_mul(4096) == Some(length)
+            && prepages.cluster_count == premap.cluster_count
+            && prepages.canonical_bitmap_sha256 == premap.bitmap_sha256,
+        "preliminary allocation domain or page proof differs"
+    );
+    let allocated = allocation::union(
+        premap
+            .ranges
+            .iter()
+            .map(|range| crate::refs_write_set::ByteRange {
+                offset: range.offset,
+                length: range.length,
+            })
+            .collect(),
+        length,
+    )?;
+    ensure!(
+        premap.allocated_clusters.checked_mul(4096) == Some(allocation::total(&allocated)?),
+        "preliminary allocation interval totals differ"
+    );
+    ensure!(
+        allocation::subtract(&exclusions, &allocated)?.is_empty(),
+        "route ownership is not covered by the complete native allocation"
+    );
+    let (opening_anchors, opening_reads) = recorded_anchors(target, length, resources)?;
+    if let Ok(anchors) = &opening_anchors {
+        let anchors = allocation::union(anchors.clone(), length)?;
+        ensure!(
+            allocation::total(&allocation::subtract(&anchors, &exclusions)?)?
+                == allocation::total(&anchors)?,
+            "known metadata anchors overlap an excluded payload route"
+        );
+    }
+    ensure!(
+        allocation::total(&allocation::subtract(&opening_reads, &exclusions)?)?
+            == allocation::total(&opening_reads)?,
+        "raw metadata inspection overlaps an excluded payload route"
+    );
+    let opening_all = allocation::union(
+        allocated
+            .into_iter()
+            .chain(opening_anchors.as_ref().ok().into_iter().flatten().copied())
+            .chain(opening_reads.iter().copied())
+            .collect(),
+        length,
+    )?;
+    let consumed = allocation::subtract(&opening_all, &exclusions)?;
+    let consumed_ranges_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&consumed)?));
+    let chunks = consumed_chunks(&consumed)?;
+    let opening_bytes = chunks.iter().try_fold(0u64, |sum, chunk| {
+        sum.checked_add(chunk.length as u64)
+            .context("consumed byte total overflow")
+    })?;
+    let raw_sha256 = hash_consumed_chunks(target, length, &excluded_payload_map_sha256, &chunks)?;
+    let native = target.observe_refs_layout_residuals_with_resource_profile(
+        pair.clone(),
+        &input,
+        residuals,
+        same_security,
+        resources.native_profile(),
+        events,
+    )?;
+    let routes =
+        n2r_win32::shadow_native::private_tree::SourceBackedRoutes::from_protected_layout(&native)?;
+    ensure!(
+        serde_json::to_vec(&routes)? == routes_encoding,
+        "protected payload identities or mappings changed inside raw consumption bracket"
+    );
+    let map = native
+        .report()
+        .native()
+        .metadata_allocation
+        .as_ref()
+        .context("protected allocation missing")?;
+    ensure!(
+        serde_json::to_vec(map)? == premap_encoding,
+        "protected complete allocation changed inside raw consumption bracket"
+    );
+    let (anchors, closing_reads) = recorded_anchors(target, length, resources)?;
+    if let Ok(anchors) = &anchors {
+        let anchors = allocation::union(anchors.clone(), length)?;
+        ensure!(
+            allocation::total(&allocation::subtract(&anchors, &exclusions)?)?
+                == allocation::total(&anchors)?,
+            "closing metadata anchors overlap an excluded payload route"
+        );
+    }
+    ensure!(
+        allocation::total(&allocation::subtract(&closing_reads, &exclusions)?)?
+            == allocation::total(&closing_reads)?,
+        "closing raw metadata inspection overlaps an excluded payload route"
+    );
+    let mut allocation_coverage = allocation::reconcile(&native, anchors, &raw_sha256, length)?;
+    let selection = allocation_coverage.observed_ranges(&native)?;
+    let closing_all =
+        allocation::union(selection.into_iter().chain(closing_reads).collect(), length)?;
+    let closing_consumed = allocation::subtract(&closing_all, &exclusions)?;
+    ensure!(
+        allocation::subtract(&closing_consumed, &consumed)?.is_empty(),
+        "closing raw consumer requires bytes absent from the opening bracket"
+    );
+    let closing_sha256 =
+        hash_consumed_chunks(target, length, &excluded_payload_map_sha256, &chunks)?;
+    ensure!(
+        closing_sha256 == raw_sha256,
+        "protected observation changed consumed raw shadow bytes"
+    );
+    ensure!(
+        native.before() == &before
+            && native.after() == &before
+            && native.observed_readonly().disk_attributes == 2
+            && native.report().pair() == &pair
+            && target.state(events)? == before,
+        "protected layout observation changed identity or exclusion"
+    );
+    allocation_coverage.bind_routed_payload_bracket(&raw_sha256, &excluded_payload_map_sha256);
+    Ok(ProtectedTargetLayout {
+        native,
+        raw_sha256,
+        expected_tree_sha256,
+        frozen_state: before,
+        resources,
+        routes,
+        allocation_coverage,
+        raw_image_unchanged: false,
+        bracket_closure: Some(AllocationBracketClosure {
+            opening: "exact 4 KiB-aligned native allocation plus observed raw metadata reads, excluding only opaque source-backed payload routes",
+            raw_sha256_meaning: "direct SHA-256 over the separate raw-consumption domain, partition length, pinned exclusion-map digest and every consumed (offset,length,raw bytes) frame; not an allocation-wide or whole-image digest",
+            opening_chunks: chunks.len(),
+            opening_bytes,
+            closing_ranges: closing_consumed.len(),
+            closing_chunks: chunks.len(),
+            closing_bytes_reread: opening_bytes,
+            free_space_rechecked: false,
+            raw_consumption: Some(RoutedPayloadBracketScope {
+                scope: "source-backed-raw-consumption-v1",
+                framed_hash_domain: "n2r-refs-source-backed-raw-consumption-v1",
+                raw_metadata_hash_algorithm: "sha256-direct-bytes",
+                protected_routes_sha256,
+                excluded_payload_map_sha256,
+                excluded_payload_ranges: exclusions,
+                excluded_payload_bytes,
+                consumed_ranges_sha256,
+                preliminary_and_bracketed_native_routes_identical: true,
+                preliminary_and_bracketed_allocation_maps_identical: true,
+                raw_inspection_reads_covered: true,
+            }),
         }),
         logical_payload_verified: false,
         complete_allocation_graph_verified: false,

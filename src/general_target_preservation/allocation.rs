@@ -8,7 +8,14 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub struct ProtectedAllocationCoverage {
     phase: &'static str,
+    #[serde(skip_serializing_if = "String::is_empty")]
     raw_shadow_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_consumed_shadow_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_consumption_scope: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    excluded_payload_map_sha256: Option<String>,
     metadata_bitmap_sha256: String,
     partition_bytes: u64,
     allocated_bytes: u64,
@@ -40,6 +47,16 @@ pub struct CapturedDeltaAllocationDiagnostic {
 }
 
 impl ProtectedAllocationCoverage {
+    /// Explicitly distinguish the consumed-byte bracket from the historical
+    /// allocation-wide bracket. No ownership or write authority is added.
+    pub(super) fn bind_routed_payload_bracket(&mut self, digest: &str, exclusions: &str) {
+        self.phase = "protected-native-nonrouted-allocation-v1";
+        self.raw_shadow_sha256.clear();
+        self.raw_consumed_shadow_sha256 = Some(digest.into());
+        self.raw_consumption_scope = Some("source-backed-raw-consumption-v1");
+        self.excluded_payload_map_sha256 = Some(exclusions.into());
+    }
+
     /// Compare actual full-capture ranges with the bitmap and known anchor and
     /// stream ranges already held by the protected layout. This performs no disk
     /// I/O and does not assert that bitmap-free bytes are unused by ReFS.
@@ -120,7 +137,7 @@ impl ProtectedAllocationCoverage {
     }
 }
 
-fn union(mut ranges: Vec<ByteRange>, length: u64) -> Result<Vec<ByteRange>> {
+pub(super) fn union(mut ranges: Vec<ByteRange>, length: u64) -> Result<Vec<ByteRange>> {
     ensure!(
         ranges.len() <= 131072,
         "allocation coverage range budget exceeded"
@@ -150,7 +167,7 @@ fn union(mut ranges: Vec<ByteRange>, length: u64) -> Result<Vec<ByteRange>> {
     Ok(result)
 }
 
-fn subtract(ranges: &[ByteRange], covered: &[ByteRange]) -> Result<Vec<ByteRange>> {
+pub(super) fn subtract(ranges: &[ByteRange], covered: &[ByteRange]) -> Result<Vec<ByteRange>> {
     let mut result = Vec::new();
     for range in ranges {
         let end = range.offset + range.length;
@@ -179,7 +196,7 @@ fn subtract(ranges: &[ByteRange], covered: &[ByteRange]) -> Result<Vec<ByteRange
     Ok(result)
 }
 
-fn total(ranges: &[ByteRange]) -> Result<u64> {
+pub(super) fn total(ranges: &[ByteRange]) -> Result<u64> {
     ranges.iter().try_fold(0u64, |sum, range| {
         sum.checked_add(range.length)
             .context("coverage byte total overflow")
@@ -254,6 +271,9 @@ pub(super) fn reconcile(
     Ok(ProtectedAllocationCoverage {
         phase: "protected-post-freeze-readonly-native-bitmap",
         raw_shadow_sha256: raw_shadow_sha256.into(),
+        raw_consumed_shadow_sha256: None,
+        raw_consumption_scope: None,
+        excluded_payload_map_sha256: None,
         metadata_bitmap_sha256: map.bitmap_sha256.clone(),
         partition_bytes: length,
         allocated_bytes,

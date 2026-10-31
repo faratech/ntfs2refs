@@ -29,11 +29,13 @@ Exact encoded plan sizing and a fresh space check precede journal creation.
 After the verified durable journal exists, another check requires only the
 remaining working reserve, avoiding a second charge for existing allocations.
 
-Profile 3's capacity is persisted in the journal binding inside the trusted
-ticket and immutable manifest. Recovery derives it from pinned input, never
-from current free space or observed file size. Selected recovery also requires
-the plan's ceiling to equal the pinned request's ceiling. Source activation
-still requires the original live source certificate and verified journal.
+The selected path persists profile 3's ceilings in the request and selected
+plan. Its recovery bundle pins both alongside the ticket for the durable
+journal. Recovery derives the native journal-file profile from that pinned
+input, never from current free space or observed file size. Selected recovery
+also requires the plan's ceiling to equal the request's ceiling. Source
+activation still requires the original live source certificate and verified
+journal.
 
 Historical schemas 1/2 omit the new fields and retain their existing bounds and
 serialized form. Dense journal limits remain capacity/2; old-only bounds apply
@@ -80,9 +82,10 @@ is claimed. The 43 closed metadata files, their hashes and failure checkpoint
 `ce9b92c2` are preserved separately. See
 [the scoped refusal evidence](../evidence/mixed-capacity-refusal-20261031.json).
 
-Candidate `d33d8ec` implements profile 3 and has sealed focused release builds.
-This refusal and those build pins do not establish native profile-3 conversion,
-recovery, mutation or power-loss qualification. No unit tests were added or run.
+Candidate `d33d8ec` introduced profile 3. That refusal and its build pins alone
+did not establish native conversion. The subsequent `fd577f2` observation below
+records a completed conversion with the added retention barrier. No unit tests
+were added or run.
 
 ## Retention availability investigation
 
@@ -108,13 +111,74 @@ used live but their complete transcripts were not archived at that boundary.
 Other target allocator-state differences and differences in planner behavior on
 those unavailable final snapshots are not ruled out.
 
-The inspected placement path takes its final full bitmap snapshot immediately
-after evacuation without a volume flush at that boundary. A supported next
-experiment is to flush the held independent shadow volume, then obtain fresh
-complete observations under both selectors. Microsoft documents volume-handle
+At `d974efe`, placement took its final full bitmap snapshot immediately after
+evacuation without a volume flush at that boundary. The proposed experiment was
+to flush the held independent shadow volume, then obtain fresh complete
+observations under both selectors. Microsoft documents volume-handle
 flushing and ReFS support for
 [FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers).
 That API does not promise immediate ReFS block reclamation. The new observations
 must remain authoritative: no bitmap bits may be cleared, predicted free or
-replaced by a planned destination. A flush experiment is not established by
-this refusal evidence.
+replaced by a planned destination. The refusal evidence alone did not establish
+the experiment's result.
+
+## Completed native capacity run
+
+Runtime `fd577f2`, public run `17c1dd7f` / core `9a59ede9`, completed conversion
+of the same independently populated NTFS partition through `--drive F
+--partition 2`. Native ReFS verification passed 933 objects and all 811 default
+stream hashes. The original label and `F:\` mount path were restored. The saved
+converted checkpoint is `78513f35`. This is the full-content pipeline: the later
+D3 fast-verification changes are not part of this sealed executable.
+See [the native evidence](../evidence/mixed-capacity-native-20261031.json).
+
+The volume flush succeeded in 122,187 microseconds. Complete native bitmap
+observations measured 75,542,528 desired free bytes before it and 3,822,333,952
+after it. Their difference, 3,746,791,424 bytes, exactly equals the bytes
+evacuated earlier. The first 1,561 move intents and complete post-move mappings
+match the failed run. Source exclusion was checked on both sides of the barrier;
+no bitmap bits were predicted or cleared by the converter.
+
+Final placement then completed 863 moves, for 2,424 total. The resulting
+retained-coordinate map contains 903 ranges / 4,225,028,096 bytes, disjoint from
+all selected writes. Its gain over the failed run is exactly the measured free
+space increase. This supports the barrier for this workload; it does not
+establish a universal ReFS reclamation schedule.
+
+The sealed read-only replayer verified 4,848 destination windows with 4,920
+native queries / 20,152,320 returned bytes. Four complete phase-map snapshots
+were recorded, including the additional pre-barrier observation. Complete-file
+retrieval checks remain. Replay itself performs no native volume query, move
+or full retrieval-proof replay.
+
+The request pinned these independent ceilings:
+
+| Ceiling | Bytes |
+|---|---:|
+| Journal | 29,697,802,240 |
+| Literal backing | 9,899,266,048 |
+| Combined backing and journal | 29,697,804,288 |
+
+Capture recorded 2,599 advisory capacity observations on the pinned C: volume.
+Before activation, the already allocated journal was present and 27,307,425,792
+bytes remained available, exceeding the 1 GiB working reserve. Recovery does
+not derive new limits from that free-space observation.
+
+Actual literal backing fell to 38,400,000 bytes, compared with 3,784,351,744 in
+the failed run. The journal was 11,430,978,272 bytes; combined backing and journal
+used 11,469,378,272 bytes. Selected writes covered 11,392,262,144 bytes in 3,206
+ranges. The journal ceiling exceeds the old 16 GiB limit, but this actual journal
+is smaller than 16 GiB. This run therefore does not qualify journal I/O beyond
+16 GiB, nor attribute completion solely to raising the ceiling. The flush also
+changed retention and storage requirements materially.
+
+Process-to-terminal time was 1,387.317 seconds, about 23.1 minutes. Coarse log
+markers put journal preparation at 130–580 seconds and application at
+580–1,058 seconds. The remaining approximately 329 seconds include journal
+handoff and mounted verification; they are not an isolated file-hashing
+measurement. This observation establishes no overall speedup or HDD estimate.
+
+The closed archive contains 57 files / 136,316,706 bytes. General conversion
+qualification remains false. Exact-build cold boot, interruption/resume/rollback,
+mutation, physical power loss, larger journal I/O, unrestricted scale and the
+newer D3 fast path require their own evidence.

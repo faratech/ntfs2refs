@@ -10,7 +10,8 @@ param(
  [Parameter(Mandatory)][guid[]]$ExpectedCheckpointIds,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$MainSha256,
  [Parameter(Mandatory)][ValidateRange(1,67108864)][int]$MainBytes,
- [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{40}\z')][string]$SourceCommit
+ [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{40}\z')][string]$SourceCommit,
+ [ValidateRange(1,50000000000)][long]$ForecastAdditionalBytes=40GB
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -58,7 +59,7 @@ $parameters=@{
  ExpectedParent=$ExpectedParent;ExpectedCheckpointIds=$ExpectedCheckpointIds
  MainSha256=$MainSha256;MainBytes=$MainBytes;SourceCommit=$SourceCommit
  NtfsReceiptPath=$receipt;NtfsReceiptSha256='049aa2ee3f43b8ed10f34f2a0904204217a41fd992947a36becf4b1c9e656379'
- SourceFixturePath=$fixturePath;SourceFixtureSha256=$fixturePin;ForecastAdditionalBytes=40GB
+ SourceFixturePath=$fixturePath;SourceFixtureSha256=$fixturePin;ForecastAdditionalBytes=$ForecastAdditionalBytes
 }
 # The dispatcher keeps exact current checkpoint equality, 4GiB/4CPU/noNIC,
 # source F:/GPT/NTFS64K, Windows C:, G: and protected old shadow5 checks.

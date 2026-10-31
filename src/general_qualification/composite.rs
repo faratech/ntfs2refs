@@ -275,6 +275,7 @@ pub(crate) fn prepare_allocation_fresh_selected(
     budget: CompactConstructionBudget,
     capture_budget: Option<CaptureBudget>,
     capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
+    policy: crate::verification_policy::VerificationPolicy,
 ) -> Result<QualifiedAllocationTree> {
     budget.validate(pair.source.identity.partition_bytes)?;
     pair.validate_with_resource_profile(resources.native_profile())?;
@@ -309,6 +310,9 @@ pub(crate) fn prepare_allocation_fresh_selected(
     });
     if let Some(capture_budget) = capture_budget {
         intent["capture_budget"] = serde_json::to_value(capture_budget)?;
+    }
+    if policy.is_fast() {
+        intent["verification_policy"] = serde_json::to_value(policy)?;
     }
     save(output, "intent.json", &intent)?;
     let mut phase = "source-freeze";
@@ -352,36 +356,21 @@ pub(crate) fn prepare_allocation_fresh_selected(
             .source_view
             .as_ref()
             .context("live allocation-bounded source views absent")?;
-        let proof = match (capture_budget, capture_guard) {
-            (Some(capture_budget), Some(capture_guard)) => {
-                general_composite_target::verify_and_select_with_budget(
-                    &mut source,
-                    &mut native_target,
-                    pair.clone(),
-                    &raw,
-                    views,
-                    &source_hash,
-                    resources,
-                    packed_path,
-                    capture_budget,
-                    &mut events,
-                    capture_guard,
-                )?
-            }
-            (None, None) => general_composite_target::verify_and_select(
-                &mut source,
-                &mut native_target,
-                pair.clone(),
-                &raw,
-                views,
-                &source_hash,
-                resources,
-                packed_path,
-                max_change_bytes,
-                &mut events,
-            )?,
-            _ => anyhow::bail!("capture capacity budget and live guard differ"),
-        };
+        let proof = general_composite_target::verify_and_select_with_policy(
+            &mut source,
+            &mut native_target,
+            pair.clone(),
+            &raw,
+            views,
+            &source_hash,
+            resources,
+            packed_path,
+            max_change_bytes,
+            &mut events,
+            capture_budget,
+            capture_guard,
+            policy,
+        )?;
         ensure!(
             proof.expected_tree_sha256() == expected_sha256,
             "allocation-bounded proof differs from the fresh saved source expectation"

@@ -40,6 +40,11 @@ pub(crate) use composite::{
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub schema_version: u32,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::verification_policy::VerificationPolicy::is_full_content"
+    )]
+    pub verification_policy: crate::verification_policy::VerificationPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
     pub experiment_id: String,
@@ -64,6 +69,16 @@ impl Request {
     }
     pub fn validate(&self) -> Result<()> {
         let profile = self.journal_profile()?;
+        ensure!(
+            self.verification_policy.is_full_content()
+                || (self.schema_version == 3
+                    && self.source_resource_profile
+                        == Some(
+                            crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
+                        )
+                    && !self.verify_existing_shadow),
+            "extent-identity verification requires schema3 streaming fresh allocation"
+        );
         ensure!(
             if self.schema_version == 3 {
                 self.max_literal_backing_bytes.is_some_and(|bytes| {
@@ -569,6 +584,7 @@ mod tests {
     fn request() -> Request {
         Request {
             schema_version: 1,
+            verification_policy: crate::verification_policy::VerificationPolicy::FullContent,
             source_resource_profile: None,
             experiment_id: "a".repeat(32),
             pair: GeneralSourceShadowBinding {

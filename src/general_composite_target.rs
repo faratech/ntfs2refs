@@ -345,6 +345,7 @@ pub fn verify_and_capture(
         events,
         false,
         None,
+        crate::verification_policy::VerificationPolicy::FullContent,
     )?;
     let capture = SourceBackedShadow::new(
         source,
@@ -945,6 +946,7 @@ pub fn verify_and_select(
         events,
         None,
         None,
+        crate::verification_policy::VerificationPolicy::FullContent,
     )
 }
 
@@ -978,6 +980,53 @@ pub fn verify_and_select_with_budget(
         events,
         Some(budget),
         Some(guard),
+        crate::verification_policy::VerificationPolicy::FullContent,
+    )
+}
+
+/// Explicit raw-shadow consumption policy. Full-content callers continue to
+/// use their original APIs and byte-for-byte historical diagnostic shape.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_and_select_with_policy(
+    source: &mut GeneralFrozenPartition,
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    raw: &ntfs_inspect::NtfsInspection,
+    source_views: &ntfs_source_view::Analysis,
+    source_sha256: &str,
+    resources: ResourceProfile,
+    packed_path: &Path,
+    max_changed_bytes: u64,
+    events: &mut Vec<NativeEvent>,
+    capture_budget: Option<CaptureBudget>,
+    capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
+    policy: crate::verification_policy::VerificationPolicy,
+) -> Result<FrozenAllocationTargetPreservation> {
+    ensure!(
+        capture_budget.is_some() == capture_guard.is_some(),
+        "capture capacity budget and live guard must be supplied together"
+    );
+    if let Some(budget) = capture_budget {
+        budget.validate(pair.source.identity.partition_bytes)?;
+        ensure!(
+            budget.max_changed_bytes == max_changed_bytes,
+            "capture changed-byte capacity differs"
+        );
+    }
+    verify_and_select_inner(
+        source,
+        target,
+        pair,
+        raw,
+        source_views,
+        source_sha256,
+        resources,
+        packed_path,
+        max_changed_bytes,
+        events,
+        capture_budget,
+        capture_guard,
+        policy,
     )
 }
 
@@ -995,6 +1044,7 @@ fn verify_and_select_inner(
     events: &mut Vec<NativeEvent>,
     capture_budget: Option<CaptureBudget>,
     capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
+    policy: crate::verification_policy::VerificationPolicy,
 ) -> Result<FrozenAllocationTargetPreservation> {
     let ProtectedPrefix {
         length,
@@ -1019,6 +1069,7 @@ fn verify_and_select_inner(
         events,
         true,
         capture_budget.map(|budget| budget.max_literal_backing_bytes),
+        policy,
     )?;
     let selection = protected
         .allocation_coverage()
@@ -1164,6 +1215,7 @@ fn protected_prefix(
     events: &mut Vec<NativeEvent>,
     allocation_closed_bracket: bool,
     max_literal_backing_bytes: Option<u64>,
+    policy: crate::verification_policy::VerificationPolicy,
 ) -> Result<ProtectedPrefix> {
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
@@ -1273,13 +1325,14 @@ fn protected_prefix(
         }
     }
     let protected = if allocation_closed_bracket {
-        general_target_preservation::verify_frozen_layout_residuals_allocation_closed(
+        general_target_preservation::verify_frozen_layout_residuals_allocation_closed_with_policy(
             target,
             pair.clone(),
             &expected,
             resources,
             &residuals,
             events,
+            policy,
         )?
     } else {
         general_target_preservation::verify_frozen_layout_residuals_with_resource_profile(

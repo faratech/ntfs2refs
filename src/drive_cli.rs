@@ -38,6 +38,10 @@ pub struct DriveArgs {
         conflicts_with = "experimental_allocation_bounded"
     )]
     pub whole_image_verification: bool,
+    /// Verify complete logical contents of every stream. Extent-identity fast
+    /// verification is the allocation-bounded default; full mode stays available.
+    #[arg(long, requires = "drive")]
+    pub verify_full_content: bool,
 }
 impl DriveArgs {
     pub fn requested(&self) -> bool {
@@ -391,6 +395,11 @@ mod windows {
             clean(&before.label)
         );
         let allocation_bounded = !args.whole_image_verification;
+        let verification_policy = if allocation_bounded && !args.verify_full_content {
+            crate::verification_policy::VerificationPolicy::ExtentIdentityV1
+        } else {
+            crate::verification_policy::VerificationPolicy::FullContent
+        };
         println!(
             "Mode: {}",
             if allocation_bounded {
@@ -422,6 +431,7 @@ mod windows {
             selected,
             resources,
             allocation_bounded,
+            verification_policy,
         )
     }
     fn convert_selected(
@@ -430,6 +440,7 @@ mod windows {
         selected: drive_inventory::PartitionSelection,
         resources: crate::ntfs_admission::ResourceProfile,
         allocation_bounded: bool,
+        verification_policy: crate::verification_policy::VerificationPolicy,
     ) -> Result<u8> {
         let system = std::env::var("SystemRoot").context("Windows system path unavailable")?;
         let os_root = format!(
@@ -528,6 +539,7 @@ mod windows {
             }),
         )?;
         let request = crate::general_conversion::Request {
+            verification_policy,
             schema_version: if allocation_bounded { 3 } else { 2 },
             source_resource_profile: Some(resources),
             experiment_id: id,

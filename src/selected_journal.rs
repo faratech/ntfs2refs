@@ -130,6 +130,46 @@ fn aggregate_pin_hash() -> Result<PinHash> {
 fn finish(hash: PinHash) -> Result<[u8; 32]> {
     hash.finish()
 }
+
+/// Operation-local SHA256(0^length) values. Only actual fully checked zero
+/// candidates or freshly generated canonical zeros may populate this cache.
+/// Keep the largest lengths: they also recur across the descriptor/resolved
+/// readback passes, whereas a plain LRU would evict a large unique range.
+struct ZeroDigests {
+    entries: [(u64, [u8; 32]); 64],
+    used: usize,
+}
+impl ZeroDigests {
+    fn new() -> Self {
+        Self {
+            entries: [(0, [0; 32]); 64],
+            used: 0,
+        }
+    }
+    fn get(&self, length: u64) -> Option<[u8; 32]> {
+        self.entries[..self.used]
+            .iter()
+            .find(|entry| entry.0 == length)
+            .map(|entry| entry.1)
+    }
+    fn remember_verified(&mut self, length: u64, digest: [u8; 32]) {
+        if self.get(length).is_some() {
+            return;
+        }
+        if self.used < self.entries.len() {
+            self.entries[self.used] = (length, digest);
+            self.used += 1;
+        } else if let Some((index, entry)) = self
+            .entries
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, entry)| entry.0)
+            && length > entry.0
+        {
+            self.entries[index] = (length, digest);
+        }
+    }
+}
 fn frame(hash: &mut PinHash, range: &SelectedRange) -> Result<()> {
     hash.update(&range.offset.to_le_bytes())?;
     hash.update(&range.length.to_le_bytes())
@@ -489,10 +529,16 @@ fn verify_zero_selected<R: Read + Seek>(
     range: &SelectedRange,
     selected: &mut PinHash,
     buffer: &mut [u8],
+    zero_digests: &mut ZeroDigests,
 ) -> Result<[u8; 32]> {
     input.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
-    let mut hash = pin_hash()?;
+    let cached = zero_digests.get(range.length);
+    let mut hash = if cached.is_some() {
+        None
+    } else {
+        Some(pin_hash()?)
+    };
     let mut remaining = range.length;
     while remaining > 0 {
         let count = usize::try_from(remaining.min(BUFFER as u64))?;
@@ -502,10 +548,18 @@ fn verify_zero_selected<R: Read + Seek>(
             "selected zero range contains nonzero candidate bytes"
         );
         selected.update(&buffer[..count])?;
-        hash.update(&buffer[..count])?;
+        if let Some(hash) = hash.as_mut() {
+            hash.update(&buffer[..count])?;
+        }
         remaining -= count as u64;
     }
-    finish(hash)
+    let digest = match hash {
+        Some(hash) => finish(hash)?,
+        None => cached.context("verified zero digest absent")?,
+    };
+    // No hit can bypass even one candidate byte or its aggregate update.
+    zero_digests.remember_verified(range.length, digest);
+    Ok(digest)
 }
 
 fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
@@ -614,6 +668,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     // completely filled by its current read before hashing or comparison.
     let mut data_buffer = vec![0; BUFFER];
     let mut copy_buffer = vec![0; BUFFER];
+    let mut zero_digests = ZeroDigests::new();
     for range in &plan.ranges {
         let record_at = journal.stream_position()?;
         let mut record = [0u8; COPY_RECORD];
@@ -622,7 +677,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         let is_zero = plan.is_new_zero(range);
         let copy_source = plan.copy_source(range);
         let new_hash = if is_zero {
-            verify_zero_selected(candidate, range, &mut new_selected, &mut data_buffer)?
+            verify_zero_selected(
+                candidate,
+                range,
+                &mut new_selected,
+                &mut data_buffer,
+                &mut zero_digests,
+            )?
         } else if let Some(source_offset) = copy_source {
             verify_copy_selected(
                 source,
@@ -702,11 +763,17 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         whole_image_verified: false,
     };
     if exclusive_readback {
-        let (_, immutable_sha256) = validate_body(journal, plan, &ticket, None)?;
+        let (_, immutable_sha256) = validate_body(journal, plan, &ticket, None, &mut zero_digests)?;
         ticket.immutable_sha256 = immutable_sha256;
     } else {
         ticket.immutable_sha256 = hash_range(journal, BODY, journal_length - BODY)?;
-        load(journal, plan, &ticket)?;
+        validate_body(
+            journal,
+            plan,
+            &ticket,
+            Some(&ticket.immutable_sha256),
+            &mut zero_digests,
+        )?;
     }
     let mut markers = [0u8; BODY as usize];
     at(journal, 0, &mut markers)?;
@@ -727,7 +794,15 @@ fn load<J: ReadSeek>(
     plan: &SelectedPlan,
     ticket: &SelectedTicket,
 ) -> Result<Vec<JournalRecord>> {
-    Ok(validate_body(journal, plan, ticket, Some(&ticket.immutable_sha256))?.0)
+    let mut zero_digests = ZeroDigests::new();
+    Ok(validate_body(
+        journal,
+        plan,
+        ticket,
+        Some(&ticket.immutable_sha256),
+        &mut zero_digests,
+    )?
+    .0)
 }
 
 /// No pin is issued, nor record returned, until the whole independent readback
@@ -738,6 +813,7 @@ fn validate_body<J: ReadSeek>(
     plan: &SelectedPlan,
     ticket: &SelectedTicket,
     expected_immutable: Option<&[u8; 32]>,
+    zero_digests: &mut ZeroDigests,
 ) -> Result<(Vec<JournalRecord>, [u8; 32])> {
     let (changed, journal_length) = plan.validate()?;
     ensure!(
@@ -852,7 +928,18 @@ fn validate_body<J: ReadSeek>(
             if let Some(selected) = selected.as_deref_mut() {
                 frame(selected, range)?;
             }
-            let mut hash = pin_hash()?;
+            // None is exclusively a canonical generated new-zero side. Old
+            // payloads and literal/copy data always keep their actual hashes.
+            let cached = if offset.is_none() {
+                zero_digests.get(range.length)
+            } else {
+                None
+            };
+            let mut hash = if cached.is_some() {
+                None
+            } else {
+                Some(pin_hash()?)
+            };
             let mut remaining = range.length;
             while remaining > 0 {
                 let count = usize::try_from(remaining.min(BUFFER as u64))?;
@@ -865,13 +952,22 @@ fn validate_body<J: ReadSeek>(
                 if let Some(selected) = selected.as_deref_mut() {
                     selected.update(&buffer[..count])?;
                 }
-                hash.update(&buffer[..count])?;
+                if let Some(hash) = hash.as_mut() {
+                    hash.update(&buffer[..count])?;
+                }
                 remaining -= count as u64;
             }
+            let actual = match hash {
+                Some(hash) => finish(hash)?,
+                None => cached.context("canonical zero digest absent")?,
+            };
             ensure!(
-                finish(hash)?.as_slice() == expected,
+                actual.as_slice() == expected,
                 "selected journal payload hash differs"
             );
+            if offset.is_none() {
+                zero_digests.remember_verified(range.length, actual);
+            }
         }
         records.push(JournalRecord {
             range: range.clone(),
@@ -919,19 +1015,38 @@ fn validate_body<J: ReadSeek>(
         let mut new_selected = aggregate_pin_hash()?;
         for record in &records {
             frame(&mut new_selected, &record.range)?;
-            let mut hash = pin_hash()?;
+            let is_zero = matches!(record.after, NewBytes::Zero);
+            let cached = if is_zero {
+                zero_digests.get(record.range.length)
+            } else {
+                None
+            };
+            let mut hash = if cached.is_some() {
+                None
+            } else {
+                Some(pin_hash()?)
+            };
             let mut done = 0u64;
             while done < record.range.length {
                 let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
                 read_after(journal, &records, record, done, &mut buffer[..count])?;
-                hash.update(&buffer[..count])?;
+                if let Some(hash) = hash.as_mut() {
+                    hash.update(&buffer[..count])?;
+                }
                 new_selected.update(&buffer[..count])?;
                 done += count as u64;
             }
+            let actual = match hash {
+                Some(hash) => finish(hash)?,
+                None => cached.context("resolved zero digest absent")?,
+            };
             ensure!(
-                finish(hash)? == record.new_sha256,
+                actual == record.new_sha256,
                 "selected resolved copy hash differs"
             );
+            if is_zero {
+                zero_digests.remember_verified(record.range.length, actual);
+            }
         }
         ensure!(
             finish(new_selected)? == ticket.new_selected_sha256,

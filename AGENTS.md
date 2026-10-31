@@ -23,6 +23,20 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Retention barrier candidate: the large source's960 raw DATA identities/maps and
+933 canonical objects match both old runs. All first1,561 moves (50direct,
+644scratch,867evacuation), complete post-move mappings and evacuation plan
+match. Final placement diverged: old156 had557final/3,084,886,016B retained,
+909 had504/2,888,302,592B, d974 had10/478,236,672B. Availability timing is a
+hypothesis, not a proven cause. New code preserves the pre-barrier complete
+maps, flushes only the owned shadow volume after actual evacuation, checks
+source exclusion, and recaptures both full maps for final planning. It records
+actual before/after free bytes/hashes/counts; never assumes bits became free.
+Supported FlushFileBuffers only, no private checkpoint control/sleeps/retries.
+Focused release builds pass; barrier+capacity native run is next. See
+evidence/mixed-capacity-refusal-20261031.json. Current VM Off/RAM0 at restored
+mixed NTFS source6fe2d6b6,49checkpoints, no active worker. Keep failurece9b92c2.
+
 Capacity candidate: schema3 pins journal capacity in requests/bindings/tickets/
 immutable manifests, removes the public allocation route's16GiB ceiling and
 shares one measured scratch pool with independently capped literal backing.

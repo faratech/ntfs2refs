@@ -1,0 +1,435 @@
+{
+  "schema_version": 1,
+  "kind": "mixed-allocation-capacity-refusal",
+  "recorded_utc": "2026-10-31T13:55:36.594029+00:00",
+  "source_commit": "d974efe8f5ce569326c8fcb66006ef1bc87ed8c2",
+  "public_binary_sha256": "a9552ccf7402e5341a1104e5fc20a268896c295372b03f8c68e9c4fb2d022fd7",
+  "run_id": "98153ebbd2ba468aba9dff482b2b4531",
+  "core_run_id": "51e20d11fcb8a58647ee662ade9dea88",
+  "native_exit": 1,
+  "source_checkpoint": "6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e",
+  "failure_checkpoint": "ce9b92c2-85c5-4754-82e3-62d877ab5726",
+  "source": {
+    "drive": "F",
+    "disk_number": 1,
+    "partition_number": 2,
+    "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+    "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+    "disk_bytes": 68719476736,
+    "partition_offset": 16777216,
+    "partition_bytes": 55834574848,
+    "filesystem": "NTFS",
+    "cluster_bytes": 65536,
+    "label": "n2r-stream-source",
+    "fixture_files": 808,
+    "fixture_directories": 120,
+    "fixture_logical_bytes": 9885781381,
+    "fixture_sha256": "7810754f1853490d399f87bf1b24f509a8c32716cee84d38babc7c385a487f66",
+    "old_654_count_scope": "whole-cluster eligible extent-observation subset, not a different source tree"
+  },
+  "qualification": {
+    "success": true,
+    "source_admitted": true,
+    "expected_objects": 933,
+    "expected_default_streams": 811,
+    "execution_authorized": false,
+    "source_disk_attributes": 3,
+    "source_payload_writes": 0,
+    "frozen_source_inventory_verified": true,
+    "frozen_source_basis": "allocated-range digest recheck; admission proved the inspection read only those ranges",
+    "source_activation_reached": false,
+    "source_reformatted": false,
+    "native_refs_finalization_reached": false,
+    "whole_image_unchanged_hash_claim": false
+  },
+  "failure": {
+    "message": "selected journal exceeds caller budget",
+    "phase": "allocation-bounded-qualification",
+    "automatic_rollback_attempted": false,
+    "completed_conversion": false,
+    "journal_request_ceiling_bytes": 17179869184,
+    "journal_created_claimed": false,
+    "source_writable_handoff_claimed": false
+  },
+  "captured": {
+    "changed_bytes": 15139008512,
+    "literal_backing_bytes": 3784351744,
+    "copy_reference_bytes": 5659336704,
+    "encoded_ranges": 4126,
+    "raw_changed_class_ranges": 1391,
+    "selected_bytes_compared": 15582867456,
+    "equal_selected_bytes": 443858944,
+    "minimum_journal_payload_bytes": 18923360256,
+    "minimum_journal_payload_over_ceiling_bytes": 1743491072,
+    "minimum_combined_backing_plus_journal_bytes": 22707712000,
+    "minimum_excludes_record_metadata": true,
+    "changed_bytes_in_ntfs_free_destination": 9396568064,
+    "changed_bytes_in_ntfs_allocated_destination": 5742440448
+  },
+  "shadow_placement": {
+    "schema_version": 2,
+    "counters": {
+      "deferred_drift_replans": 0,
+      "deferred_holes": 654,
+      "deferred_original_submissions": 50,
+      "deferred_scratch_submissions": 644,
+      "desired_runs": 797,
+      "desired_runs_limit": 4096,
+      "direct_pieces": 50,
+      "drift_replans_limit_per_phase": 8,
+      "eligible_runs": 797,
+      "evacuation_planned_moves": 867,
+      "evacuation_planned_submissions": 867,
+      "evacuation_remaining_blocked_bytes": 0,
+      "evacuation_submissions": 867,
+      "files": 808,
+      "final_drift_replans": 0,
+      "final_submissions": 10,
+      "initial_tracked_extents": 620,
+      "move_evidence_bytes": 5562496,
+      "move_evidence_reservation_bytes": 111861,
+      "move_submissions_limit": 32768,
+      "owned_intersecting_desired": 665,
+      "owned_intersecting_desired_limit": 32768,
+      "phase_bitmap_snapshots": 3,
+      "placement_artifact_bytes": 11217904,
+      "placement_artifact_bytes_limit": 67043328,
+      "planned_deferred_submissions": 694,
+      "scratch_free_intervals": 15,
+      "tracked_extents": 1311,
+      "tracked_extents_limit": 65536
+    },
+    "native_moves": 1571,
+    "move_bytes_submitted": 9834196992,
+    "original_coordinate_candidate_ranges": 50,
+    "original_coordinate_candidate_bytes": 478236672,
+    "candidate_only_not_completed_source_conversion": true,
+    "occupancy_evidence_scope": "destination-window-v1",
+    "phase_bitmap_scope": "full-volume",
+    "per_move_retrieval_scope": "complete-file-mapping"
+  },
+  "closed_window_replay": {
+    "helper_sha256": "1a1548badd8012664e26d65502099b777f2154680c58a3df55bb555b6332cc18",
+    "native_exit": 0,
+    "summary": {
+      "all_destination_bits_free": true,
+      "all_window_transcripts_replayed": true,
+      "conversion_authorized": false,
+      "conversion_qualified": false,
+      "declared_volume_clusters": 13631488,
+      "full_retrieval_evidence_replayed": false,
+      "input": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\construction-placement.json",
+      "input_bytes": 11219615,
+      "input_sha256": "23be170651e87dca2b107f1553bf569387e5a4cf589cdfb180229379e0702be9",
+      "kind": "closed-placement-window-replay",
+      "move_count": 1571,
+      "moved_clusters": 2400927,
+      "moves_by_phase": {
+        "allocate-deferred-original": 50,
+        "allocate-deferred-scratch": 644,
+        "evacuate-blocker": 867,
+        "original-coordinate": 10
+      },
+      "native_moves_submitted": 0,
+      "native_query_count": 3214,
+      "native_returned_bytes": 13164544,
+      "native_volume_queries": 0,
+      "new_volume_verification": false,
+      "occupancy_evidence_scope": "destination-window-v1",
+      "original_coordinate_bytes": 478236672,
+      "original_coordinate_range_count": 50,
+      "per_move_retrieval_scope": "complete-file-mapping",
+      "phase_bitmap_scope": "full-volume",
+      "phase_bitmap_snapshots": 3,
+      "placement_schema_version": 2,
+      "schema_version": 1,
+      "source_admission_authorized": false,
+      "source_write_requests": 0,
+      "success": true,
+      "volume_clusters": 13631488,
+      "window_count": 3142
+    }
+  },
+  "archive": {
+    "files": 43,
+    "bytes": 94647385
+  },
+  "profile3_candidate": {
+    "source_commit": "d33d8ec88d171b8881ec1566f2a3f07bbf086e9f",
+    "public_binary_sha256": "8c2a716fed0f031310b2dd02422208769db2c5f5bd755b1cb2e68d12294fedaf",
+    "sealed_build": true,
+    "native_qualification_established_by_this_evidence": false,
+    "request_fields": [
+      "max_journal_bytes",
+      "max_literal_backing_bytes",
+      "max_combined_scratch_bytes"
+    ],
+    "legacy_schema_replay_bounds_unchanged": true,
+    "dense_generic_route_bounds_not_expanded": true
+  },
+  "general_conversion_qualified": false,
+  "not_qualified": [
+    "completed conversion or post-handoff native ReFS use from this failed run",
+    "profile-3 native conversion or recovery from build pins alone",
+    "arbitrary scale or volume geometry",
+    "physical power loss"
+  ],
+  "unit_tests_added_or_run": false,
+  "proofs": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\archive.json",
+      "bytes": 13373,
+      "sha256": "8e04b2258cc164a36278cacf28bd7e44ff49e17e2e6a0a7d28efd4445ff31fea"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\checkpoint.json",
+      "bytes": 147,
+      "sha256": "bbd17f3d2aa62c1dd025af0f2813bb0fb2e11fb36f41d499472b881e29cd7556"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\replay.json",
+      "bytes": 1410,
+      "sha256": "339c9212c0e7b35d96747e04851032603269a928c91e94d5b0e7e8885cca1301"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\wrapper\\wrapper-failed.json",
+      "bytes": 462,
+      "sha256": "870abe0b3a373f80d3c236ceeed1fcd62a0765b95827e015bf3bab5343094ca9"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\wrapper\\native-process.json",
+      "bytes": 629,
+      "sha256": "ac31fe8716c5fbcf15dad9c9f4ca16fc2ac62a1b2bbec8d524704dab8edbcca7"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\wrapper\\native-terminal.json",
+      "bytes": 1788,
+      "sha256": "fe96fa42052b23438fd702ed49f87dbdd62fa6110fb9daf3e0955d28eed11a26"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\failed.json",
+      "bytes": 371,
+      "sha256": "d649663029a5ef955b90ba78842604b1d22b2798ed0642fa8a1a97062b4d8002"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\conversion-intent.json",
+      "bytes": 2523,
+      "sha256": "5ca0ecd5236188c24a869d8e357b1fb6188a371e0cc323d128bfe83d7ae0995d"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\expectation.json",
+      "bytes": 4267359,
+      "sha256": "f00ab5d3aac685de6a6b038965d918ad9740c50544ec3ecf7e888a0732adc1fe"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\selected-device-preflight.json",
+      "bytes": 48143,
+      "sha256": "df00d40c7dbdcc3a4d4b8651d479a4f89829a7bab12e9c54c0bf7d3dbaad3504"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\source-basis.json",
+      "bytes": 3911794,
+      "sha256": "b6c8f3601e4631c2fc2174ddb74ee549e5a283d992da01afff43d56ede7c75e7"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\native-source.json",
+      "bytes": 30589836,
+      "sha256": "86b27e6bbdd6a186a3eef443ceb973e9466274f2ed4c5dbb6762ff66652b7d3f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\source-assessment.json",
+      "bytes": 2770050,
+      "sha256": "f73e96740d9764d57c67aceb6c1901f98112b6ef74a8b46d76c7e78c3ae6c6b8"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\admitted-assessment.json",
+      "bytes": 2770182,
+      "sha256": "70e0e18b1a1325edc037a050cc6f12d8a4b1ba64ee45b40605c8ed124e554859"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\source-frozen.json",
+      "bytes": 13709,
+      "sha256": "100df696db4079fa86c2c7b1fc701e8de82cb7b303805f9e008da0e417fafcef"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\result.json",
+      "bytes": 19589,
+      "sha256": "cac84481513be961d8e1e308457c9e96c92fe8a68c4b709616c89295b0b0d67d"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\target-preservation.json",
+      "bytes": 29540310,
+      "sha256": "716e4d15a8d9719caf9f81ba6e4fff8299abb3bbb93f048739515c4cfbe96952"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-window-budget-refusal-98153ebb\\closed\\core\\conversion\\qualification\\construction-placement.json",
+      "bytes": 11219615,
+      "sha256": "23be170651e87dca2b107f1553bf569387e5a4cf589cdfb180229379e0702be9"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\alloc-drive-20261029-98153ebbd2ba468aba9dff482b2b4531\\dispatch.json",
+      "bytes": 4004,
+      "sha256": "0a5eb5b60833d26a440819694e54f5412089449999c27f9058f4621d1cfa601d"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\head-drive-tools-d974efe-scale\\manifest.json",
+      "bytes": 1157,
+      "sha256": "1ca6393526aef09d516dd5a122e45c13dd260b3401385113ab552d5faeecf9de"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\mixed-fixture-20261029-3dccf8e8fa38487db6731284a12bceb9\\fixture.json",
+      "bytes": 165419,
+      "sha256": "7810754f1853490d399f87bf1b24f509a8c32716cee84d38babc7c385a487f66"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\head-drive-tools-d33d8ec-scale\\build.json",
+      "bytes": 294,
+      "sha256": "bd21992388b027a8d90677ffa9bfdcb16f23f804be40b58b313e0d5e3cfb5e60"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\head-drive-tools-d33d8ec-scale\\manifest.json",
+      "bytes": 1157,
+      "sha256": "d6fdb094dfa5638531e8936c28dd2a1a9ee1a21da4ea859fc956edd0320e47e7"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\copy-reference-20261030\\closed-run-2586aba6\\run\\conversion\\qualification\\construction-placement.json",
+      "bytes": 12606687,
+      "sha256": "42d9751e92d413de11c5f630423380a8a1e410519170224f048c9d16b62e4722"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\copy-reference-20261030\\closed-run-2586aba6\\run\\conversion\\qualification\\source-basis.json",
+      "bytes": 3789872,
+      "sha256": "696d781f8b010b6b912863f3273b9fcde1c365b4f6d45120b644db0646805555"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\copy-reference-20261030\\closed-run-2586aba6\\run\\conversion\\qualification\\expectation.json",
+      "bytes": 4236570,
+      "sha256": "53b9e53ef7a18a1e12fe6961f970ab6be5814b4fa3798a711487e8ceef61f308"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\copy-reference-revised-validation-20261030\\closed-interruption-refreshed\\stage\\conversion\\qualification\\construction-placement.json",
+      "bytes": 11531792,
+      "sha256": "8c39def5de4f47e73d77f35601624cc70f5176d9f604ae99765a56108e07d876"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\copy-reference-revised-validation-20261030\\closed-interruption-refreshed\\stage\\conversion\\qualification\\source-basis.json",
+      "bytes": 3789872,
+      "sha256": "07a23bc59ad6473ab928c7796517eeffca976b313ba74c39f72c490e5f3c37d5"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\copy-reference-revised-validation-20261030\\closed-interruption-refreshed\\stage\\conversion\\qualification\\expectation.json",
+      "bytes": 4236570,
+      "sha256": "cd7197779a6ce31e909d1e29109dd7fcae6b006e9281e31f39efe579080d430a"
+    }
+  ],
+  "retention_availability_investigation": {
+    "cause_proven": false,
+    "hypothesis": "Timing-sensitive ReFS delayed reuse/checkpoint or other target allocator state after evacuation",
+    "source_DATA_map_identity_count": 960,
+    "all_three_source_DATA_map_projections_identical": true,
+    "source_DATA_map_projection_sha256": "844e1c8d600b7618572898ea628a80fd1a3bae2e84a22e15f32a1f1ebb362631",
+    "legacy_909_expected_source_object_projection_identical": true,
+    "expected_source_object_projection_count": 933,
+    "expected_source_object_projection_sha256": "31c90a4399b3f7e826c3b966d8de639b70eda04abecd11234c3d06369fb9ff53",
+    "identical_pre_final_move_count": 1561,
+    "pre_final_move_projection_sha256": "9bf057252035a9e5502bea0ad0fd12a39a2437aa60d928c398a79e5ee630b30e",
+    "comparison": [
+      {
+        "source_commit": "156241e47be91473058b4eb3768e8d53501c9b7b",
+        "moves": 2118,
+        "retained_coordinate_bytes": 3084886016,
+        "retained_coordinate_ranges": 597,
+        "phases": {
+          "allocate-deferred-original": {
+            "moves": 50,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 50
+          },
+          "allocate-deferred-scratch": {
+            "moves": 644,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 644
+          },
+          "evacuate-blocker": {
+            "moves": 867,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 867
+          },
+          "original-coordinate": {
+            "moves": 557,
+            "ordered_intents_and_full_after_mapping_equal_to_current": false,
+            "current_move_projections_present_in_this_run": 10
+          }
+        }
+      },
+      {
+        "source_commit": "909911062106dbde6cf35fbcdccf4a45b2998671",
+        "moves": 2065,
+        "retained_coordinate_bytes": 2888302592,
+        "retained_coordinate_ranges": 544,
+        "phases": {
+          "allocate-deferred-original": {
+            "moves": 50,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 50
+          },
+          "allocate-deferred-scratch": {
+            "moves": 644,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 644
+          },
+          "evacuate-blocker": {
+            "moves": 867,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 867
+          },
+          "original-coordinate": {
+            "moves": 504,
+            "ordered_intents_and_full_after_mapping_equal_to_current": false,
+            "current_move_projections_present_in_this_run": 10
+          }
+        }
+      },
+      {
+        "source_commit": "d974efe8f5ce569326c8fcb66006ef1bc87ed8c2",
+        "moves": 1571,
+        "retained_coordinate_bytes": 478236672,
+        "retained_coordinate_ranges": 50,
+        "phases": {
+          "allocate-deferred-original": {
+            "moves": 50,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 50
+          },
+          "allocate-deferred-scratch": {
+            "moves": 644,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 644
+          },
+          "evacuate-blocker": {
+            "moves": 867,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 867
+          },
+          "original-coordinate": {
+            "moves": 10,
+            "ordered_intents_and_full_after_mapping_equal_to_current": true,
+            "current_move_projections_present_in_this_run": 10
+          }
+        }
+      }
+    ],
+    "current_final_phase_full_bitmap_transcripts_archived": false,
+    "inspected_code_flush_between_evacuation_and_final_snapshot": false,
+    "supported_next_experiment": "Checked flush of the held independent shadow volume, followed by fresh complete bitmap captures under both selectors",
+    "flush_is_guaranteed_to_release_quarantined_blocks": false,
+    "bitmap_free_state_must_be_observed_not_synthesized": true,
+    "primary_flush_api_documentation": "https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers",
+    "scope": "Read-only comparison of closed artifacts; no new native volume observation or barrier experiment",
+    "all_three_expected_source_object_projections_identical": true,
+    "alternative_causes_not_ruled_out": [
+      "Other target allocator state across independent formatter epochs",
+      "Planner behavior on the unarchived final-phase bitmap inputs"
+    ]
+  }
+}

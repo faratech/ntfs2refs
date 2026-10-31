@@ -111,6 +111,9 @@ struct Counters {
     deferred_drift_replans: usize,
     final_drift_replans: usize,
     drift_replans_limit_per_phase: usize,
+    // Kept at the progress/result top level, within the scalar-field reserve.
+    #[serde(skip)]
+    post_evacuation_barrier: Option<serde_json::Value>,
 }
 
 fn zero_count(value: &usize) -> bool {
@@ -247,6 +250,9 @@ fn progress(
         "recent_verified_phases_newest_first":phases,"pending":pending,"counters":counters,
         "placement_complete":false,"resume_authorized":false,"conversion_qualified":false
     });
+    if let Some(barrier) = &counters.post_evacuation_barrier {
+        tree.placement_progress["post_evacuation_barrier"] = barrier.clone();
+    }
 }
 
 /// Record the bounded quantity in the progress artifact and refuse.
@@ -473,6 +479,44 @@ fn views(tree: &PrivateTree) -> io::Result<(Observation, Observation)> {
     ex[8] = 1;
     let b = Observation::capture(&tree.volume, &ex, bytes, true)?;
     Ok((a, b))
+}
+
+/// Scalar diagnostics from actual complete views. No predicted free bit or
+/// metadata-only ownership inference participates in these measurements.
+fn barrier_snapshot(
+    legacy: &Observation,
+    metadata: &Observation,
+    desired: &BTreeMap<usize, Vec<SourceRun>>,
+    partition: u64,
+) -> io::Result<serde_json::Value> {
+    let a = legacy.view(partition)?.candidate(0, partition)?;
+    let b = metadata.view(partition)?.candidate(0, partition)?;
+    let planner = legacy.retention_planner(metadata, partition)?;
+    let mut free_bytes = 0u64;
+    for run in desired.values().flatten() {
+        let plan = planner.plan(
+            retention_layout::SourceRun {
+                logical_offset: run.logical_offset,
+                physical_offset: run.physical_offset.ok_or_else(|| {
+                    invalid("barrier measurement desired range lacks physical ownership")
+                })?,
+                length: run.length,
+            },
+            retention_layout::MAX_SUBRUNS,
+        )?;
+        free_bytes = free_bytes
+            .checked_add(plan.free_bytes)
+            .ok_or_else(|| invalid("barrier desired free-byte count overflow"))?;
+    }
+    Ok(serde_json::json!({
+        "legacy_full_map_sha256":a.bitmap_sha256,
+        "metadata_full_map_sha256":b.bitmap_sha256,
+        "legacy_allocated_clusters":a.allocated_clusters,
+        "metadata_allocated_clusters":b.allocated_clusters,
+        "desired_eligible_free_bytes":free_bytes,
+        "volume_clusters":partition / 4096,
+        "observation_scope":"full-volume"
+    }))
 }
 
 /// First-fit scratch over one phase snapshot: free in both native views,
@@ -1277,8 +1321,93 @@ pub(super) fn run(
     // from one fresh snapshot, a bounded number of times. Pieces already
     // placed are allocated in it and so are not planned again.
     let (mut legacy, mut metadata) = views(tree)?;
-    let mut planner = legacy.retention_planner(&metadata, partition)?;
     counters.phase_bitmap_snapshots += 1;
+    if counters.evacuation_submissions > 0 {
+        counters.post_evacuation_barrier = Some(serde_json::json!({
+            "schema_version":1,"kind":"post-evacuation-volume-flush",
+            "status":"observing-before","flush_succeeded":false,
+            "source_exclusion_checked_before":false,"source_exclusion_checked_after":false,
+            "diagnostic_only":true,"predicted_free_bits_used":false,
+            "source_writes_authorized":false
+        }));
+        progress(
+            tree,
+            "post-evacuation-barrier",
+            move_bytes,
+            &evidence.moves,
+            None,
+            &counters,
+        );
+        let observed = (|| -> io::Result<(Observation, Observation)> {
+            let trace = counters.post_evacuation_barrier.as_mut().unwrap();
+            trace["before"] = barrier_snapshot(&legacy, &metadata, &desired, partition)?;
+            trace["status"] = "checking-source-exclusion".into();
+            tree.require_source_excluded()?;
+            trace["source_exclusion_checked_before"] = true.into();
+            trace["status"] = "flushing-owned-shadow-volume".into();
+            let started = std::time::Instant::now();
+            let flushed = tree.volume.sync_all();
+            trace["flush_elapsed_microseconds"] = u64::try_from(started.elapsed().as_micros())
+                .map_err(|_| invalid("barrier flush timing overflow"))?
+                .into();
+            trace["flush_succeeded"] = flushed.is_ok().into();
+            if let Err(error) = flushed {
+                trace["flush_native_error"] = serde_json::json!(error.raw_os_error());
+                return Err(error);
+            }
+            trace["status"] = "rechecking-source-exclusion".into();
+            tree.require_source_excluded()?;
+            trace["source_exclusion_checked_after"] = true.into();
+            trace["status"] = "observing-after".into();
+            let (after_legacy, after_metadata) = views(tree)?;
+            counters.phase_bitmap_snapshots += 1;
+            trace["after"] = barrier_snapshot(&after_legacy, &after_metadata, &desired, partition)?;
+            trace["status"] = "complete".into();
+            // The existing evidence budget reserves 64 KiB for framing and
+            // scalars. This trace cannot consume unbounded move-proof space.
+            if serde_json::to_vec_pretty(trace)
+                .map_err(io::Error::other)?
+                .len()
+                > 4096
+            {
+                return Err(invalid("post-evacuation scalar trace exceeds reserve"));
+            }
+            Ok((after_legacy, after_metadata))
+        })();
+        match observed {
+            Ok(after) => (legacy, metadata) = after,
+            Err(error) => {
+                if let Some(trace) = &mut counters.post_evacuation_barrier {
+                    trace["error"] = error.to_string().into();
+                }
+                progress(
+                    tree,
+                    "post-evacuation-barrier",
+                    move_bytes,
+                    &evidence.moves,
+                    None,
+                    &counters,
+                );
+                return Err(refuse(
+                    tree,
+                    &counters,
+                    format!(
+                        "post-evacuation barrier failed before source writes: {error}; preserve shadow without retry"
+                    ),
+                ));
+            }
+        }
+        progress(
+            tree,
+            "post-evacuation-barrier",
+            move_bytes,
+            &evidence.moves,
+            None,
+            &counters,
+        );
+    }
+    // Only actual post-flush views can make a destination newly eligible.
+    let mut planner = legacy.retention_planner(&metadata, partition)?;
     for &index in &indexes {
         for run in &desired[&index] {
             loop {
@@ -1512,8 +1641,7 @@ pub(super) fn run(
         &counters,
     );
     tree.placement_progress["placement_complete"] = true.into();
-    Ok(
-        serde_json::json!({"schema_version":2,"kind":"private-unwritten-tree-placement",
+    let mut result = serde_json::json!({"schema_version":2,"kind":"private-unwritten-tree-placement",
         "occupancy_evidence_scope":"destination-window-v1","per_move_retrieval_scope":"complete-file-mapping",
         "phase_bitmap_scope":"full-volume","parked":parked,"moves":evidence.moves,
         "original_coordinate_ranges":retained,"original_coordinate_bytes":retained_bytes,
@@ -1521,6 +1649,9 @@ pub(super) fn run(
         "placement_artifact_bytes":evidence.saved_bytes,
         "max_placement_artifact_bytes":MAX_PLACEMENT_ARTIFACT_BYTES,"counters":counters,
         "move_bytes_submitted":move_bytes,"max_move_bytes":max_move_bytes,"max_move_submissions":max_moves,
-        "payload_contents_verified":false,"source_payload_writes":0,"conversion_qualified":false}),
-    )
+        "payload_contents_verified":false,"source_payload_writes":0,"conversion_qualified":false});
+    if let Some(barrier) = counters.post_evacuation_barrier {
+        result["post_evacuation_barrier"] = barrier;
+    }
+    Ok(result)
 }

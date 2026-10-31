@@ -240,7 +240,9 @@ fn progress(
         .map(|m| serde_json::json!({"object_index":m["object_index"],"phase":m["phase"]}))
         .collect();
     tree.placement_progress = serde_json::json!({
-        "kind":"private-placement-progress","phase":phase,
+        "schema_version":2,"kind":"private-placement-progress","phase":phase,
+        "occupancy_evidence_scope":"destination-window-v1",
+        "per_move_retrieval_scope":"complete-file-mapping","phase_bitmap_scope":"full-volume",
         "charged_move_bytes":charged_bytes,"verified_move_submissions":verified.len(),
         "recent_verified_phases_newest_first":phases,"pending":pending,"counters":counters,
         "placement_complete":false,"resume_authorized":false,"conversion_qualified":false
@@ -359,14 +361,14 @@ impl Evidence {
     }
 }
 
-/// Upper bound on one move record's saved bytes, known before native IO. It
-/// serializes the mover's own proof type with every number, flag and string
-/// at its widest form and all retrieval_paging::MAX_PAGES pages, so only the
-/// mapping_after extent count varies. Each 16-byte canonical extent adds the
-/// same pretty-printed bytes, so two samples give the bound for any count.
+/// Upper bound on a move record before native submission. Retrieval fields
+/// retain their widest representation and all paging allowances. The actual
+/// destination-window proof is charged after capture, before FSCTL_MOVE_FILE;
+/// its serialized size cannot be inferred from the requested cluster count.
 struct Reservation {
     base: usize,
     per_extent: usize,
+    empty_destination: usize,
 }
 
 impl Reservation {
@@ -375,7 +377,14 @@ impl Reservation {
         let per_extent = saved_size(&widest_move_record(1)?)?
             .checked_sub(base)
             .ok_or("placement evidence reservation differs")?;
-        Ok(Self { base, per_extent })
+        let empty_destination = saved_size(&serde_json::json!({
+            "proof":{"destination_bitmap":serde_json::Value::Null}
+        }))?;
+        Ok(Self {
+            base,
+            per_extent,
+            empty_destination,
+        })
     }
 
     /// The file's canonical extents after a verified move: its current count,
@@ -383,22 +392,36 @@ impl Reservation {
     /// per 64 MiB moved as allowance for ReFS describing other ranges (for
     /// example a completed delayed allocation) with more extents. A larger
     /// proof is still refused by the exact charge after the move.
-    fn bound(&self, current_extents: usize, length: u64) -> Option<usize> {
-        let allowance = usize::try_from(length.div_ceil(SPLIT_ALLOWANCE_BYTES)).ok()?;
-        let extents = current_extents.checked_add(2)?.checked_add(allowance)?;
-        self.per_extent.checked_mul(extents)?.checked_add(self.base)
+    fn bound(
+        &self,
+        current_extents: usize,
+        length: u64,
+        destination: &unwritten::DestinationWindows,
+    ) -> Result<usize, String> {
+        let allowance = usize::try_from(length.div_ceil(SPLIT_ALLOWANCE_BYTES))
+            .map_err(|_| "placement evidence reservation overflow")?;
+        let extents = current_extents
+            .checked_add(2)
+            .and_then(|n| n.checked_add(allowance))
+            .ok_or("placement evidence reservation overflow")?;
+        // Use the exact enclosing shape so the pretty-printed indentation and
+        // line count are charged at the proof's real nesting depth. Replacing
+        // null here adds exactly the same bytes as in widest_move_record.
+        let destination_bytes = saved_size(&serde_json::json!({
+            "proof":{"destination_bitmap":destination}
+        }))?
+        .checked_sub(self.empty_destination)
+        .ok_or("placement destination evidence accounting differs")?;
+        self.per_extent
+            .checked_mul(extents)
+            .and_then(|n| n.checked_add(self.base))
+            .and_then(|n| n.checked_add(destination_bytes))
+            .ok_or_else(|| "placement evidence reservation overflow".into())
     }
 }
 
 fn widest_move_record(extents: usize) -> Result<serde_json::Value, String> {
     let digest = "f".repeat(64);
-    let candidate = || crate::bitmap_layout::Candidate {
-        start_lcn: u64::MAX,
-        clusters: u64::MAX,
-        declared_clusters: u64::MAX,
-        allocated_clusters: u64::MAX,
-        bitmap_sha256: digest.clone(),
-    };
     let page = crate::retrieval_paging::PageProof {
         input: vec![u8::MAX; 8],
         response_header: [u8::MAX; 16],
@@ -406,50 +429,41 @@ fn widest_move_record(extents: usize) -> Result<serde_json::Value, String> {
         native_error: Some(i32::MIN),
         response_sha256: digest.clone(),
     };
-    let proof = unwritten::Placement {
-        destination_lcn: u64::MAX,
-        starting_vcn: u64::MAX,
-        clusters: u32::MAX,
-        submitted_once: false,
-        before_valid_data_advance: false,
-        native_error: Some(i32::MIN),
-        mapping_matches: false,
-        all_placements_match: false,
-        reposition: false,
-        mapping_after: vec![u8::MAX; 16 + 16 * extents],
-        mapping_page_proof: crate::retrieval_paging::Proof {
-            encoding: crate::retrieval_paging::ENCODING.into(),
-            canonical_sha256: digest.clone(),
-            extent_count: usize::MAX,
-            virtual_clusters: u64::MAX,
-            pages: vec![page; crate::retrieval_paging::MAX_PAGES],
-        },
-        legacy_candidate: candidate(),
-        metadata_candidate: candidate(),
+    let mapping_page_proof = crate::retrieval_paging::Proof {
+        encoding: crate::retrieval_paging::ENCODING.into(),
+        canonical_sha256: digest.clone(),
+        extent_count: usize::MAX,
+        virtual_clusters: u64::MAX,
+        pages: vec![page; crate::retrieval_paging::MAX_PAGES],
     };
-    let proof = serde_json::to_value(proof).map_err(|e| e.to_string())?;
+    // Keep the destination field a null placeholder: its actual complete
+    // transport is added by bound() immediately before the native submission.
+    let proof = serde_json::json!({
+        "destination_lcn":u64::MAX,"starting_vcn":u64::MAX,"clusters":u32::MAX,
+        "submitted_once":false,"before_valid_data_advance":false,
+        "native_error":i32::MIN,"mapping_matches":false,
+        "all_placements_match":false,"reposition":false,
+        "mapping_after":vec![u8::MAX;16+16*extents],
+        "mapping_page_proof":mapping_page_proof,"destination_bitmap":serde_json::Value::Null,
+    });
     // Wider than every object index and longer than every phase name.
     Ok(serde_json::json!({"object_index":u64::MAX,"phase":"x".repeat(64),"proof":proof}))
 }
 
 /// Check the next move's evidence bound before its native submission.
 fn reserve_move(
-    tree: &mut PrivateTree,
     counters: &mut Counters,
     evidence: &Evidence,
     reservation: &Reservation,
-    index: usize,
+    current_extents: usize,
     length: u64,
+    destination: &unwritten::DestinationWindows,
 ) -> io::Result<()> {
-    let extents = tree.file_by_slot(index)?.retrieval_extents();
     let bound = reservation
-        .bound(extents, length)
-        .ok_or_else(|| invalid("placement evidence reservation overflow"))?;
+        .bound(current_extents, length, destination)
+        .map_err(|message| invalid(&message))?;
     counters.move_evidence_reservation_bytes = bound;
-    if let Err(message) = evidence.reserve(bound) {
-        return Err(refuse(tree, counters, message));
-    }
-    Ok(())
+    evidence.reserve(bound).map_err(|message| invalid(&message))
 }
 
 fn views(tree: &PrivateTree) -> io::Result<(Observation, Observation)> {
@@ -966,23 +980,29 @@ pub(super) fn run(
             "length":step.length,"placement_result_recorded":false,"budget_charged":false})),
             &counters,
         );
-        reserve_move(
-            tree,
-            &mut counters,
-            &evidence,
-            &reservation,
-            step.index,
-            step.length,
-        )?;
+        let current_extents = tree.file_by_slot(step.index)?.retrieval_extents();
         charge_move(&mut move_bytes, step.length, max_move_bytes)?;
         tree.placement_progress["charged_move_bytes"] = move_bytes.into();
         tree.placement_progress["pending"]["budget_charged"] = true.into();
-        let proof = match tree.place_slot(
+        let attempt = tree.place_slot_with_evidence(
             step.index,
             step.logical / 4096,
             step.destination / 4096,
             (step.length / 4096) as u32,
-        ) {
+            |destination| {
+                reserve_move(
+                    &mut counters,
+                    &evidence,
+                    &reservation,
+                    current_extents,
+                    step.length,
+                    destination,
+                )
+            },
+        );
+        tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
+            counters.move_evidence_reservation_bytes.into();
+        let proof = match attempt {
             Err(error) if destination_drifted(&error) => {
                 uncharge_move(tree, &mut move_bytes, step.length);
                 if counters.deferred_drift_replans == MAX_DRIFT_REPLANS {
@@ -1194,23 +1214,31 @@ pub(super) fn run(
                 "placement_result_recorded":false,"budget_charged":false})),
                 &counters,
             );
-            reserve_move(
-                tree,
-                &mut counters,
-                &evidence,
-                &reservation,
-                movement.file_index as usize,
-                length,
-            )?;
+            let current_extents = tree
+                .file_by_slot(movement.file_index as usize)?
+                .retrieval_extents();
             charge_move(&mut move_bytes, length, max_move_bytes)?;
             tree.placement_progress["charged_move_bytes"] = move_bytes.into();
             tree.placement_progress["pending"]["budget_charged"] = true.into();
-            let proof = tree.reposition_slot(
+            let attempt = tree.reposition_slot_with_evidence(
                 movement.file_index as usize,
                 (movement.logical_offset + offset) / 4096,
                 (movement.destination_offset + offset) / 4096,
                 (length / 4096) as u32,
-            )?;
+                |destination| {
+                    reserve_move(
+                        &mut counters,
+                        &evidence,
+                        &reservation,
+                        current_extents,
+                        length,
+                        destination,
+                    )
+                },
+            );
+            tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
+                counters.move_evidence_reservation_bytes.into();
+            let proof = attempt?;
             if proof["native_error"] != serde_json::Value::Null
                 || proof["all_placements_match"] != true
             {
@@ -1306,16 +1334,29 @@ pub(super) fn run(
                             "placement_result_recorded":false,"budget_charged":false})),
                             &counters,
                         );
-                        reserve_move(tree, &mut counters, &evidence, &reservation, index, length)?;
+                        let current_extents = tree.file_by_slot(index)?.retrieval_extents();
                         charge_move(&mut move_bytes, length, max_move_bytes)?;
                         tree.placement_progress["charged_move_bytes"] = move_bytes.into();
                         tree.placement_progress["pending"]["budget_charged"] = true.into();
-                        let proof = match tree.reposition_slot(
+                        let attempt = tree.reposition_slot_with_evidence(
                             index,
                             logical / 4096,
                             physical / 4096,
                             (length / 4096) as u32,
-                        ) {
+                            |destination| {
+                                reserve_move(
+                                    &mut counters,
+                                    &evidence,
+                                    &reservation,
+                                    current_extents,
+                                    length,
+                                    destination,
+                                )
+                            },
+                        );
+                        tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
+                            counters.move_evidence_reservation_bytes.into();
+                        let proof = match attempt {
                             Err(error) if destination_drifted(&error) => {
                                 uncharge_move(tree, &mut move_bytes, length);
                                 drifted = Some(error);
@@ -1472,7 +1513,9 @@ pub(super) fn run(
     );
     tree.placement_progress["placement_complete"] = true.into();
     Ok(
-        serde_json::json!({"kind":"private-unwritten-tree-placement","parked":parked,"moves":evidence.moves,
+        serde_json::json!({"schema_version":2,"kind":"private-unwritten-tree-placement",
+        "occupancy_evidence_scope":"destination-window-v1","per_move_retrieval_scope":"complete-file-mapping",
+        "phase_bitmap_scope":"full-volume","parked":parked,"moves":evidence.moves,
         "original_coordinate_ranges":retained,"original_coordinate_bytes":retained_bytes,
         "move_evidence_bytes":evidence.compact_bytes,
         "placement_artifact_bytes":evidence.saved_bytes,

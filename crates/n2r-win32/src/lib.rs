@@ -12,6 +12,7 @@ pub mod bitmap_streaming;
 pub mod bitmap_window;
 #[cfg(windows)]
 pub mod bitmap_window_native;
+pub mod bitmap_window_transport;
 pub mod content_digest;
 pub mod discovery;
 pub mod drive_inventory;

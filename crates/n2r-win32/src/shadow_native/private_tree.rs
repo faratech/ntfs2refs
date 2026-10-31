@@ -133,33 +133,42 @@ impl PrivateTree {
             .get_mut(key)
             .ok_or_else(|| invalid("stream placement file absent"))
     }
-    fn place_slot(
+    fn place_slot_with_evidence(
         &mut self,
         slot: usize,
         vcn: u64,
         lcn: u64,
         clusters: u32,
+        guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
     ) -> io::Result<serde_json::Value> {
         let key = self
             .stream_slots
             .get(&slot)
             .cloned()
             .ok_or_else(|| invalid("stream placement slot absent"))?;
-        self.place_named(key.object_index, &key.name_utf16, vcn, lcn, clusters)
+        self.place_named_with_evidence(key.object_index, &key.name_utf16, vcn, lcn, clusters, guard)
     }
-    fn reposition_slot(
+    fn reposition_slot_with_evidence(
         &mut self,
         slot: usize,
         vcn: u64,
         lcn: u64,
         clusters: u32,
+        guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
     ) -> io::Result<serde_json::Value> {
         let key = self
             .stream_slots
             .get(&slot)
             .cloned()
             .ok_or_else(|| invalid("stream placement slot absent"))?;
-        self.reposition_named(key.object_index, &key.name_utf16, vcn, lcn, clusters)
+        self.reposition_named_with_evidence(
+            key.object_index,
+            &key.name_utf16,
+            vcn,
+            lcn,
+            clusters,
+            guard,
+        )
     }
     /// Complete metadata only on this owning disposable maintenance session.
     /// Consumes the owner even on partial failure: no retry/placement authority
@@ -366,6 +375,18 @@ impl PrivateTree {
         lcn: u64,
         clusters: u32,
     ) -> io::Result<serde_json::Value> {
+        self.place_named_with_evidence(object_index, name, vcn, lcn, clusters, |_| Ok(()))
+    }
+
+    fn place_named_with_evidence(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        vcn: u64,
+        lcn: u64,
+        clusters: u32,
+        guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
+    ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
         self.placement_complete = false;
         self.original_coordinates.clear();
@@ -373,10 +394,9 @@ impl PrivateTree {
             .files
             .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private user file absent"))?;
-        let result = serde_json::to_value(file.place(&self.volume, vcn, lcn, clusters)?)
-            .map_err(io::Error::other)?;
+        let proof = file.place_with_evidence(&self.volume, vcn, lcn, clusters, guard);
         self.require_source_excluded()?;
-        Ok(result)
+        serde_json::to_value(proof?).map_err(io::Error::other)
     }
 
     /// Relocate a previously tracked unwritten range to its final placement.
@@ -398,6 +418,18 @@ impl PrivateTree {
         lcn: u64,
         clusters: u32,
     ) -> io::Result<serde_json::Value> {
+        self.reposition_named_with_evidence(object_index, name, vcn, lcn, clusters, |_| Ok(()))
+    }
+
+    fn reposition_named_with_evidence(
+        &mut self,
+        object_index: usize,
+        name: &[u16],
+        vcn: u64,
+        lcn: u64,
+        clusters: u32,
+        guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
+    ) -> io::Result<serde_json::Value> {
         self.require_source_excluded()?;
         self.placement_complete = false;
         self.original_coordinates.clear();
@@ -405,10 +437,9 @@ impl PrivateTree {
             .files
             .get_mut(&StreamKey::named(object_index, name))
             .ok_or_else(|| invalid("private reposition file absent"))?;
-        let proof = serde_json::to_value(file.reposition(&self.volume, vcn, lcn, clusters)?)
-            .map_err(io::Error::other)?;
+        let proof = file.reposition_with_evidence(&self.volume, vcn, lcn, clusters, guard);
         self.require_source_excluded()?;
-        Ok(proof)
+        serde_json::to_value(proof?).map_err(io::Error::other)
     }
 
     /// All prefix clusters must already be placed. This never restores ACLs

@@ -2,7 +2,7 @@
 //! raw handle is exposed outside the native shadow module. Failed operations
 //! leave the private file for diagnosis; they never authorize target writes.
 use super::{ctl, invalid, wide};
-use crate::{bitmap_layout::Candidate, bitmap_observation::Observation};
+use crate::{bitmap_paging, bitmap_window, bitmap_window_native, bitmap_window_transport};
 use serde::Serialize;
 use std::{
     fs::File,
@@ -102,6 +102,50 @@ fn coalesce(entries: &mut Vec<(u64, u64, u32)>) {
     *entries = merged;
 }
 
+/// Destination-only native bitmap evidence. This deliberately cannot be used
+/// as a full-volume bitmap Candidate; both selectors retain lossless replayable
+/// request/response transcripts under a separately versioned transport.
+#[derive(Clone, Serialize)]
+pub(super) struct DestinationWindows {
+    pub schema_version: u32,
+    pub scope: String,
+    pub legacy: bitmap_window_transport::Proof,
+    pub metadata: bitmap_window_transport::Proof,
+}
+
+/// Window storage follows the requested cluster count, not volume capacity.
+/// Rounding may require larger native responses; allow two maximum-sized pages
+/// of overhead and a finite page-growth allowance, retaining every response.
+/// The collector observes actual rounding and refuses before movement if this
+/// independent budget cannot reach the complete requested window.
+fn destination_limits(clusters: u32) -> io::Result<bitmap_window::Limits> {
+    let window_bytes = usize::try_from(u64::from(clusters).div_ceil(8))
+        .map_err(|_| invalid("destination bitmap window exceeds address space"))?;
+    let max_pages = window_bytes
+        .div_ceil(4096 - 16)
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(16))
+        .ok_or_else(|| invalid("destination bitmap page budget overflow"))?;
+    let rounding_bytes = bitmap_paging::PAGE_BYTES
+        .checked_mul(2)
+        .ok_or_else(|| invalid("destination bitmap rounding budget overflow"))?;
+    let max_returned_bytes = window_bytes
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(rounding_bytes))
+        .and_then(|n| {
+            max_pages
+                .checked_mul(16)
+                .and_then(|headers| n.checked_add(headers))
+        })
+        .ok_or_else(|| invalid("destination bitmap transcript budget overflow"))?;
+    Ok(bitmap_window::Limits {
+        max_window_bytes: window_bytes,
+        max_pages,
+        max_returned_bytes,
+        page_bytes: bitmap_paging::PAGE_BYTES,
+    })
+}
+
 #[derive(Serialize)]
 pub(super) struct Placement {
     pub destination_lcn: u64,
@@ -115,8 +159,7 @@ pub(super) struct Placement {
     pub reposition: bool,
     pub mapping_after: Vec<u8>,
     pub mapping_page_proof: crate::retrieval_paging::Proof,
-    pub legacy_candidate: Candidate,
-    pub metadata_candidate: Candidate,
+    pub destination_bitmap: DestinationWindows,
 }
 
 pub(super) struct PrivatePlaceholder {
@@ -461,7 +504,27 @@ impl PrivatePlaceholder {
         destination_lcn: u64,
         clusters: u32,
     ) -> io::Result<Placement> {
-        self.move_unwritten(volume, starting_vcn, destination_lcn, clusters, false)
+        self.place_with_evidence(volume, starting_vcn, destination_lcn, clusters, |_| Ok(()))
+    }
+
+    /// Reserve the exact captured destination evidence before native movement.
+    /// The guard cannot replace the bitmap observation or bypass its checks.
+    pub(super) fn place_with_evidence(
+        &mut self,
+        volume: &File,
+        starting_vcn: u64,
+        destination_lcn: u64,
+        clusters: u32,
+        guard: impl FnMut(&DestinationWindows) -> io::Result<()>,
+    ) -> io::Result<Placement> {
+        self.move_unwritten(
+            volume,
+            starting_vcn,
+            destination_lcn,
+            clusters,
+            false,
+            guard,
+        )
     }
 
     /// Planned second-stage movement, never a retry after failure. Only a
@@ -473,7 +536,18 @@ impl PrivatePlaceholder {
         destination_lcn: u64,
         clusters: u32,
     ) -> io::Result<Placement> {
-        self.move_unwritten(volume, starting_vcn, destination_lcn, clusters, true)
+        self.reposition_with_evidence(volume, starting_vcn, destination_lcn, clusters, |_| Ok(()))
+    }
+
+    pub(super) fn reposition_with_evidence(
+        &mut self,
+        volume: &File,
+        starting_vcn: u64,
+        destination_lcn: u64,
+        clusters: u32,
+        guard: impl FnMut(&DestinationWindows) -> io::Result<()>,
+    ) -> io::Result<Placement> {
+        self.move_unwritten(volume, starting_vcn, destination_lcn, clusters, true, guard)
     }
 
     fn move_unwritten(
@@ -483,6 +557,7 @@ impl PrivatePlaceholder {
         destination_lcn: u64,
         clusters: u32,
         reposition: bool,
+        mut guard: impl FnMut(&DestinationWindows) -> io::Result<()>,
     ) -> io::Result<Placement> {
         let logical_end = starting_vcn.checked_add(u64::from(clusters));
         let physical_end = destination_lcn.checked_add(u64::from(clusters));
@@ -491,6 +566,7 @@ impl PrivatePlaceholder {
             || self.valid_prefix != 0
             || self.move_submissions >= MAX_FILE_SUBMISSIONS
             || clusters == 0
+            || !self.partition.is_multiple_of(4096)
             || destination_lcn < 256
             || logical_end.is_none_or(|v| v > self.bytes / 4096)
             || physical_end.is_none_or(|v| v > self.partition / 4096)
@@ -555,22 +631,26 @@ impl PrivatePlaceholder {
                 next.len()
             )));
         }
-        let legacy = Observation::capture(volume, &[0; 8], self.partition, true)?;
+        let request = bitmap_window::Request {
+            volume_clusters: self.partition / 4096,
+            starting_lcn: destination_lcn,
+            clusters: u64::from(clusters),
+        };
+        let limits = destination_limits(clusters)?;
+        let legacy = bitmap_window_native::capture(volume, request, &[0; 8], limits)?;
         let mut ex = [0u8; 16];
         ex[8] = 1;
-        let metadata = Observation::capture(volume, &ex, self.partition, true)?;
-        let length = u64::from(clusters) * 4096;
-        let old = legacy
-            .view(self.partition)?
-            .candidate(destination_lcn * 4096, length)?;
-        let all = metadata
-            .view(self.partition)?
-            .candidate(destination_lcn * 4096, length)?;
-        if old.declared_clusters != self.partition / 4096
-            || all.declared_clusters != self.partition / 4096
-            || old.allocated_clusters != 0
-            || all.allocated_clusters != 0
+        let metadata = bitmap_window_native::capture(volume, request, &ex, limits)?;
+        if legacy.request() != request
+            || metadata.request() != request
+            || legacy.proof().declared_volume_clusters != request.volume_clusters
+            || metadata.proof().declared_volume_clusters != request.volume_clusters
         {
+            return Err(invalid(
+                "destination bitmap window binding or declared domain differs",
+            ));
+        }
+        if legacy.allocated_clusters() != 0 || metadata.allocated_clusters() != 0 {
             // Distinct kind: nothing was submitted or poisoned, so the tree
             // planner may re-plan this step from a fresh snapshot.
             return Err(io::Error::new(
@@ -578,6 +658,15 @@ impl PrivatePlaceholder {
                 "private placement requires both current bitmap views free",
             ));
         }
+        let destination_bitmap = DestinationWindows {
+            schema_version: 1,
+            scope: "destination-window-v1".into(),
+            legacy: bitmap_window_transport::from_proof(legacy.into_proof())?,
+            metadata: bitmap_window_transport::from_proof(metadata.into_proof())?,
+        };
+        // This charge uses the actual lossless transcripts, including native
+        // rounding and every selector page, before FSCTL_MOVE_FILE can run.
+        guard(&destination_bitmap)?;
         let mut input = [0u8; 32];
         input[..8].copy_from_slice(&(self.file.as_raw_handle() as usize as u64).to_le_bytes());
         input[8..16].copy_from_slice(&starting_vcn.to_le_bytes());
@@ -611,8 +700,7 @@ impl PrivatePlaceholder {
             reposition,
             mapping_after: capture.canonical,
             mapping_page_proof: capture.proof,
-            legacy_candidate: old,
-            metadata_candidate: all,
+            destination_bitmap,
         })
     }
 

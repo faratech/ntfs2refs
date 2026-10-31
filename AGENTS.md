@@ -23,43 +23,41 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-Compression follow-up: fixture8c4644bb passed8 objects/7 independent logical
-stream hashes on NTFS and is saved in371ae756-faf2-40ac-bf86-5e8e1d744e30.
-Its manifest SHA is37207be87d8a1941478b39d9c301a781c31b41edc52f59262d92fa76408863f5.
-First public eec8ca5 rund7a673a8/core33bc5f7e refused BEFORE activation because
-native resident compression policy is flags1 on DATA and directory I30 roots.
-The nonresident decoder already matched all4 independent compressed-stream
-digests. The resident/index policy fix keeps full raw namespace parsing and
-unknown encoding refusals; focused release builds pass. Failure metadata63
-files is under compression-admission-refusal-d7a673a8, checkpoint8c1e5d14.
-VM is now Off/RAM0 at the restored NTFS compression source371ae756,49 checkpoints.
-No active converter. Next: seal the fixed candidate and rerun public conversion.
-No unit tests were added or run; existing fixture literals only gained the new
-optional field. Never edit/stage the user-owned main.rs overlay.
-
-Compression candidate continuation: pure Rust LZNT1 logical reads, physical
-allocation reconciliation, explicit target compression normalization and a
-seven-stream native fixture are implemented. Focused release builds of the
-public CLI, fixture helper and read-only converted-volume verifier pass. No
-unit tests were added or run. Native compression conversion is not yet qualified.
-See docs/ntfs-compression-normalization.md. Current VM state supersedes the
-older state below: running from NTFS source e4186f31, no active project task
-or worker at preflight. There are47 checkpoints after user-authorized removal
-of obsolete failed leaves44048279,9d98ce2a,f96b8890; their closed archives were
-rehashed and retained. Cleanup receipt is
-.lab/hyperv/streaming-v2-20261027/compression-obsolete-checkpoint-cleanup-20261031.json.
-Capacity admission for8GiB passed (actual228,745,987,040B; D free113,704,525,824B).
-Keep the fixed storage epoch, existing source/qualified branches and main.rs
-overlay unchanged. The next action is fixture creation and public conversion
-inside the guest; no previous native qualification transfers to this build.
+Compression milestone: runtimea126b18/public358d99f158e103625266c4c744f0230c8d4a1016fa129fa6bd106ae4e3c181e6
+passed public conversiona1cc190f/core69169b55 and cold bootccafd9f0:44 objects,
+30 default/9 named hashes,7 EAs,3 sparse layouts,8 security identities and6
+reparse points. All7 independent compression-fixture stream hashes match.
+Four nonresident LZNT1 streams (2,687,224 logical bytes) and2 resident-policy
+streams (64B) become ordinary ReFS data;7 identities record normalization.
+Compression padding is never exposed as logical holes or retained payload.
+Original uncompressed4MiB/1,024 extents remain in place. Cold boot preserves
+all44 canonical IDs/maps,10 alias IDs and all prior hashes/metadata. It adds
+no new source-retention comparison. Runtime94.686s is not a controlled speedup.
+Journal89,071,680B plus backing6,701,056B. See
+evidence/compression-native-conversion-20261031.json and docs/ntfs-compression-normalization.md.
+Source371ae756-faf2-40ac-bf86-5e8e1d744e30 and normal ReFS30b37828 remain.
+Current VM state is Off/RAM0 at cold ReFS8e9562df-3c32-428f-a981-a0a48bec5d08;
+50 checkpoints remain. All workers/tasks were terminal and idle before stop.
+No new-build recovery/mutation or physical-power-loss qualification is claimed.
+First eec8ca5 admission refusal d7a673a8/core33bc5f7e demonstrated resident
+DATA/index compression policy; its63 closed metadata files remain archived.
+Obsolete failure leaves44048279,9d98ce2a,f96b8890,8c1e5d14 were removed through
+Hyper-V after rehashing their retained archives; cleanup receipts are in .lab.
+Never recreate historical checkpoint IDs or replay a completed conversion.
+Latest actual lab232,342,078,205B; D free112,996,507,648B, within the unchanged
+storage epoch. No unit tests were added/run; only existing fixture literals
+gained the new optional field. The user-owned main.rs overlay stays untouched.
+Remaining priorities: performance/resource-bound scale, complete source
+admission (including VSS/case flags), and exact-build conversion/recovery
+qualification. The broad volume-size/compatibility/boot goal remains unfinished.
 
 Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
-reparse cold-boot checkpoint95e64fda-d3b1-4a3b-9bf5-c2ec161d2b18;50 checkpoints
-remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
+Prior reparse milestone was saved at cold-boot checkpoint
+95e64fda-d3b1-4a3b-9bf5-c2ec161d2b18. The latest compression state above is
+authoritative. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Prior performance runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
 passed same-source conversion610f3f55/core2cf74f00 in92.959s versus138.754s on

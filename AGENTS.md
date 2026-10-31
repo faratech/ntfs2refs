@@ -27,8 +27,8 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is running at NTFS
-security source checkpoint684b9c4c-4cb9-4b58-9669-028bd8b1c946;46 checkpoints
+Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
+reparse cold-boot checkpoint95e64fda-d3b1-4a3b-9bf5-c2ec161d2b18;50 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Prior performance runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
@@ -87,7 +87,7 @@ before queries on the public-request format; no conversion was replayed.
 See evidence/ea-native-conversion-20261031.json and docs/ntfs-extended-attributes.md.
 The NTFS EA source is1fc4b960 and initial converted ReFS is2c964314. No mutation,
 new-build interruption/resume/rollback or physical power-loss claim is made.
-No worker is active. Next: explicit VSS/case flags, reparse preservation,
+No worker is active. Next: explicit VSS/case flags, remaining reparse forms,
 resource-based scale and the recorded D1 decision; no unit tests.
 Fixture
 80607d54 passed7 EAs on4 identities (2dirs/2files), binary/8192-byte values,
@@ -126,18 +126,28 @@ remains and cleanup receipt is under security-coldboot-d85aca0e. Their old IDs
 are historical, never recreate them. The active sources and qualified results
 remain. No unit tests were added or run.
 
-Reparse continuation: candidate public097ce8827ed639eaadbaafbc3e9ea3eb303d146f83808bdb2e204d8f0e25748d
-and lab-create-reparse-fixture6912dbd7abde841fa5661f648881ced3edd92a0ab4daa24c6b9bd010a082dd91
-release builds pass. Raw C0 buffers and full $R index membership are reconciled;
-source schema11 binds exact native buffers/tags/attributes, with explicit absent
-versus missing/error evidence. Canonical points carry raw bytes. The private
-native shadow installs points after all ACL propagation/EAs, before final basic
-timestamps; no directory-link traversal is allowed in target verification.
-Fresh point setters use a separately restored symbolic-link privilege lease.
-Supported tags are Microsoft symlink and mount-point/junction only. File-link
-DATA/ADS/sparse combinations remain outside the initial preservation profile.
-Case-folded canonical/alias ancestry checks exclude descendants under points.
-Fixture d947e5ab5a9e4d0ea9ae168b496b672c is prepared; no native fixture result yet.
+Reparse continuation: runtime439a55c/publicc347053ff08aa2182d296680f2bdda0dcdca538abb4df999bc04526cdde0f96d
+passed conversion2ef04a07/core3c735fbe and cold boot7270a96c. All36objects,
+24default/8named hashes,7 EAs,3 sparse layouts,8 security identities and6 point
+buffers/tags match. Complete NTFS $R index binds all6 supported points. Four
+known routes resolve on ReFS; dangling/cycle routes are metadata-only, never
+followed during inventory. Cold boot preserves all buffers/IDs/data mappings.
+Normal runtime90.884s is not a controlled speedup. Journal83,164,544B plus
+backing4,374,528B; 4MiB/1,024 original payload extents remain in place.
+See evidence/reparse-native-conversion-20261031.json and docs/ntfs-reparse-preservation.md.
+The NTFS source ise4186f31, converted ReFS is9bfbe6f7 and cold ReFS is95e64fda.
+Source schema11 binds exact GET/tag/buffer data, distinct from missing/error.
+Points install after ACL propagation/EAs and before basic timestamps; symbolic
+privilege is separately restored. Supported tags are MS symlink/mount point.
+File-link nonempty DATA/ADS/sparse, root/provider/cloud/spill remain refused.
+Case-folded canonical/alias ancestry checks forbid point descendants.
+Fixture5dc696e6 succeeded; earlierd947 failed beforecreate on private SD packing
+and is archived. Native run31a5fece refused beforecutover on EOF-zero ReFS
+inline capacity1024B; the fix proves an actual empty retrieval map before SET,
+never ignores physical runs. Its branch/62 metadatafiles remain separately
+preserved. No new-build recovery/mutation/power-loss qualification is claimed.
+Hyper-V is at50 checkpoints: remove obsolete failure leaves with retained
+archives through Hyper-V APIs before another checkpoint; never delete AVHDX.
 The user-authorized obsolete ATTRLIST failure leavesb3f9ffae,865bf7b0,e92ade3b
 were removed through Hyper-V APIs with closed archives retained; cleanup receipt
 is .lab/hyperv/streaming-v2-20261027/reparse-obsolete-checkpoint-cleanup-20261031.json.
@@ -863,7 +873,8 @@ not already implemented refusals. Conversion preserves hard-link groups using
 new ReFS file IDs, not original numeric NTFS IDs. Bounded EA preservation has
 native conversion/cold-boot evidence at2aef493, and audit/null/empty DACL
 preservation atfa6396f. Actual absent-DACL/empty-SACL sources remain unqualified;
-reparse points remain outside the current preservation profile.
+MS symlink/junction preservation has scoped native evidence at439a55c; other
+reparse/provider forms remain outside the current preservation profile.
 
 ## Build tools
 

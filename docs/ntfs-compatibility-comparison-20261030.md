@@ -25,6 +25,14 @@ fixture, so those original source states are not qualified by this result.
 See [the security contract](ntfs-security-preservation.md) and
 [receipt](../evidence/security-native-conversion-20261031.json).
 
+Runtime `439a55c` subsequently passed conversion and reboot with relative and
+absolute symlinks, directory links and a junction. Six point buffers/tags and
+the complete NTFS `$R` index matched. Four known functional routes passed;
+dangling/cyclic routes were metadata-only checks. Generic provider/cloud tags
+remain refused. The original reparse refusal below is historical; see the
+[current contract](ntfs-reparse-preservation.md) and
+[receipt](../evidence/reparse-native-conversion-20261031.json).
+
 ## External implementations
 
 | Project and pinned revision | Relevant capability | Boundary |

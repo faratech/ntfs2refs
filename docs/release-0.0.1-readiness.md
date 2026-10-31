@@ -2,6 +2,16 @@
 
 ## Update — 2026-10-31
 
+Runtime `439a55c` then passed same-partition conversion and cold-boot verification
+of 36 objects and 32 stream hashes with six Microsoft symlink/junction points.
+All point buffers/tags and complete NTFS reparse-index membership matched;
+four bounded link routes resolved on ReFS. Metadata inventory never followed
+dangling or cyclic links. Existing EA, security, sparse and retention cases
+also passed. See [the receipt](../evidence/reparse-native-conversion-20261031.json).
+The 90.88-second observation does not qualify universal reparse support,
+unrestricted sizes or maximum performance. Exact-build recovery/mutation and
+physical power-loss work remain open.
+
 Runtime `fa6396f` subsequently passed the combined 25-object security fixture:
 18 default and eight named stream hashes, three sparse layouts, seven EAs and
 eight security identities matched. Audit SACLs, mandatory labels, inherited

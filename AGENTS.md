@@ -27,8 +27,8 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is running at NTFS
-EA source checkpoint1fc4b960-c252-41ce-9ad2-ef7ef0b030d3; all48 checkpoints
+Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
+security cold-boot checkpointc6345e1f-7cc9-43dd-8ebc-6c7b4546d06c;49 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Prior performance runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
@@ -87,7 +87,7 @@ before queries on the public-request format; no conversion was replayed.
 See evidence/ea-native-conversion-20261031.json and docs/ntfs-extended-attributes.md.
 The NTFS EA source is1fc4b960 and initial converted ReFS is2c964314. No mutation,
 new-build interruption/resume/rollback or physical power-loss claim is made.
-No worker is active. Next: SACL/null-DACL preservation, explicit VSS/case flags,
+No worker is active. Next: explicit VSS/case flags, reparse preservation,
 resource-based scale and the recorded D1 decision; no unit tests.
 Fixture
 80607d54 passed7 EAs on4 identities (2dirs/2files), binary/8192-byte values,
@@ -103,20 +103,28 @@ the backend now distinguishes untouched IOSB from actual completion using a
 sentinel and accepts only the two exact no-output terminal statuses. Unknown
 queries remain errors. No unit tests were added or run.
 
-Security continuation: the ordinary profile now accepts validated self-relative
-SACL and absent/null/present DACL layouts. Native validation preserves complete
-ACE/control bytes and restores DACL/SACL protection separately; exact stored,
-kernel and API comparisons remain mandatory. No ACL absence is replaced with a
-null ACL. Current source getters already use0x1f (SACL|LABEL included), so query
-scope and schema10 remain unchanged. Focused public/fixture release builds pass;
-public00899bf5e046d767f8548d3979ac8674769b8e25008b1638d36e24ab71ba4975
-has no native conversion result yet. New lab-create-security-fixture creates
-only fresh H: objects and records requested versus actual descriptor state;
-Windows normalization is not successful preservation. Its read-only manifest
-mode uses backup reads for restrictive ACLs without permission repair. Fixture
-d813f2f240624fe3943acf11646a2297 is prepared on the restored NTFS EA source;
-no native fixture worker has started yet. Keep the qualified EA ReFS branch
-becf6351 and its proof material separate. No unit tests were added or run.
+Security continuation: runtimefa6396f/public00899bf5e046d767f8548d3979ac8674769b8e25008b1638d36e24ab71ba4975
+passed conversiona8b54a6e/cored9ba5a9c and cold bootd85aca0e:25 objects,
+18 default hashes,8 named hashes,7 EAs,3 sparse layouts and8 security identities.
+Audit SACLs, mandatory labels, inherited auditing, null DACLs and empty DACLs
+match actual source semantics. Seven independent security-file SHA256 checks
+use read-only backup handles, never permission repair. All25 kernel/API SD
+buffers, file IDs and data mappings match after boot. Runtime80.593s is not a
+controlled performance comparison; 4MiB/1,024 payload extents remain in place.
+Journal82,299,808B plus backing4,014,080B. See
+evidence/security-native-conversion-20261031.json and docs/ntfs-security-preservation.md.
+The NTFS source is684b9c4c; normal ReFS isa18bf3a5; cold ReFS isc6345e1f.
+The fixture records requested versus actual descriptors. Windows normalized
+requested absent DACLs and empty SACLs to null on NTFS creation; do not claim
+those original source states were qualified. No converter normalization or
+control/presence masking is permitted. Native validation preserves complete
+ACE/control bytes and restores both protection bits; getters remain0x1f and
+source schema10. No mutation, new-build recovery or physical-power-loss claim.
+Hyper-V hit its50 checkpoint maximum. User-authorized deletion removed obsolete
+EA failure leaves286e2588 and2c8164d8 through Hyper-V APIs; all archived metadata
+remains and cleanup receipt is under security-coldboot-d85aca0e. Their old IDs
+are historical, never recreate them. The active sources and qualified results
+remain. No unit tests were added or run.
 
 ### Previous milestones and fixture setup
 
@@ -835,8 +843,9 @@ policies into a lossless claim. The audit found no explicit live VSS or
 directory case-sensitivity gate/preservation path; these are admission gaps,
 not already implemented refusals. Conversion preserves hard-link groups using
 new ReFS file IDs, not original numeric NTFS IDs. Bounded EA preservation has
-native conversion/cold-boot evidence at2aef493; SACLs, absent/null
-DACLs and reparse points remain outside the current preservation profile.
+native conversion/cold-boot evidence at2aef493, and audit/null/empty DACL
+preservation atfa6396f. Actual absent-DACL/empty-SACL sources remain unqualified;
+reparse points remain outside the current preservation profile.
 
 ## Build tools
 

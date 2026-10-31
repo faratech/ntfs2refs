@@ -17,6 +17,14 @@ matrix below describes the earlier audited revision. Current bounds and
 qualification are in [the EA contract](ntfs-extended-attributes.md) and
 [native receipt](../evidence/ea-native-conversion-20261031.json).
 
+The later `fa6396f` security expansion also passed conversion and reboot with
+audit SACLs, mandatory labels, inherited auditing, null DACLs and empty DACLs.
+The earlier security refusals in the matrix are historical. Requested absent
+DACLs and empty SACLs were normalized by Windows while creating the NTFS
+fixture, so those original source states are not qualified by this result.
+See [the security contract](ntfs-security-preservation.md) and
+[receipt](../evidence/security-native-conversion-20261031.json).
+
 ## External implementations
 
 | Project and pinned revision | Relevant capability | Boundary |

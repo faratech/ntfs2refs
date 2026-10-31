@@ -45,6 +45,12 @@ seven EAs across four file/directory identities, including binary data, an
 data mappings matched after boot. See the [EA contract](docs/ntfs-extended-attributes.md)
 and [native evidence](evidence/ea-native-conversion-20261031.json).
 
+Security preservation now includes audit SACLs, integrity labels, inherited
+auditing, null DACLs and empty DACLs. Conversion and reboot readback passed on
+the combined 25-object fixture, with 26 matching stream hashes and independent
+security-file hashes. See the [security contract](docs/ntfs-security-preservation.md)
+and [scoped evidence](evidence/security-native-conversion-20261031.json).
+
 Reusing bitmap evidence and phase planners reduced the same fragmented fixture
 from 138.75 s to 92.96 s (33% shorter), with matching checks and retained extents.
 This is one VM measurement; see [the performance evidence](evidence/bitmap-planning-performance-20261030.json).

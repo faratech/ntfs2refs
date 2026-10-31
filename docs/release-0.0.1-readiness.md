@@ -2,6 +2,17 @@
 
 ## Update — 2026-10-31
 
+Runtime `fa6396f` subsequently passed the combined 25-object security fixture:
+18 default and eight named stream hashes, three sparse layouts, seven EAs and
+eight security identities matched. Audit SACLs, mandatory labels, inherited
+auditing, null DACLs and empty DACLs survived conversion and cold boot. All seven
+security-file payload SHA-256 hashes matched through read-only backup handles.
+No permissions were repaired. Requested absent DACLs and empty SACLs normalized
+on NTFS creation; this does not qualify those original source states. See
+[the security receipt](../evidence/security-native-conversion-20261031.json).
+The 80.59-second run is one observation, not a controlled speed comparison.
+Exact-build mutation, interruption/recovery and physical power loss remain open.
+
 Runtime `2aef493` passed public same-partition conversion and cold-boot readback
 with Windows EAs: 17 objects, 11 default and eight named stream hashes, three
 sparse layouts, and seven EAs across four file/directory identities. The EAs

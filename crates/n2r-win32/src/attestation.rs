@@ -100,6 +100,83 @@ pub struct Request {
     pub partition_length: u64,
     pub ntfs_serial: u64,
     pub files: Vec<FileIdentity>,
+    /// Explicit schema4 read-elision requests. These are not content digests
+    /// or source-write authority. Every raw byte extent is reconciled with a
+    /// complete native retrieval map before eliding the logical read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extent_identity_streams: Vec<ExtentIdentityStream>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExtentIdentityExtent {
+    pub logical_offset: u64,
+    pub physical_offset: u64,
+    pub length: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExtentIdentityStream {
+    pub identity: FileIdentity,
+    pub name_utf16: Vec<u16>,
+    pub cluster_bytes: u32,
+    pub logical_size: u64,
+    pub allocated_size: u64,
+    pub extents: Vec<ExtentIdentityExtent>,
+}
+
+impl ExtentIdentityStream {
+    fn validate(&self, partition: u64) -> io::Result<()> {
+        let fail = || {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid extent-identity stream request",
+            )
+        };
+        let cluster = u64::from(self.cluster_bytes);
+        if self.identity.record_number < 16
+            || self.identity.record_number >= 1 << 48
+            || self.identity.sequence_number == 0
+            || !(4096..=65536).contains(&self.cluster_bytes)
+            || !self.cluster_bytes.is_power_of_two()
+            || self.logical_size == 0
+            || !self.logical_size.is_multiple_of(4096)
+            || self.logical_size > self.allocated_size
+            || !self.allocated_size.is_multiple_of(cluster)
+            || self.name_utf16.len() > 255
+            || String::from_utf16(&self.name_utf16).is_err()
+            || self
+                .name_utf16
+                .iter()
+                .any(|n| matches!(*n, 0 | 0x2f | 0x5c | 0x3a))
+            || self.extents.is_empty()
+            || self.extents.len() > crate::stream_layout::MAX_COMPLETE_EXTENTS
+        {
+            return Err(fail());
+        }
+        let mut covered = 0;
+        let mut physical = Vec::new();
+        for e in &self.extents {
+            if e.logical_offset != covered
+                || e.length == 0
+                || !e.length.is_multiple_of(cluster)
+                || !e.physical_offset.is_multiple_of(cluster)
+                || e.physical_offset
+                    .checked_add(e.length)
+                    .is_none_or(|end| end > partition)
+            {
+                return Err(fail());
+            }
+            covered = covered.checked_add(e.length).ok_or_else(fail)?;
+            physical.push((e.physical_offset, e.physical_offset + e.length));
+        }
+        physical.sort_unstable();
+        if covered != self.allocated_size || physical.windows(2).any(|p| p[0].1 > p[1].0) {
+            return Err(fail());
+        }
+        Ok(())
+    }
 }
 impl Request {
     pub fn validate(&self) -> io::Result<()> {
@@ -135,7 +212,7 @@ impl Request {
                         .checked_add(self.partition_length)
                         .is_some_and(|n| n <= 64 * 1024 * 1024 * 1024 * 1024)
             }
-            3 => {
+            3 | 4 => {
                 self.disk_number <= 4095
                     && self.resource_profile.is_some_and(|profile| {
                         self.partition_length <= profile.maximum_partition_bytes()
@@ -152,7 +229,7 @@ impl Request {
                 (self.schema_version, self.resource_profile),
                 (1 | 2, None)
                     | (
-                        3,
+                        3 | 4,
                         Some(
                             ResourceProfile::ExperimentalLargeTreeV1
                                 | ResourceProfile::ExperimentalStreamingTreeV2
@@ -177,13 +254,48 @@ impl Request {
                 f.record_number >= 1 << 48
                     || f.sequence_number == 0
                     || !ids.insert(f.reference())
-                    || (self.schema_version == 3 && !records.insert(f.record_number))
+                    || (self.schema_version >= 3 && !records.insert(f.record_number))
             })
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid bounded native-attestation request",
             ));
+        }
+        if self.schema_version != 4 && !self.extent_identity_streams.is_empty()
+            || self.schema_version == 4
+                && self.resource_profile != Some(ResourceProfile::ExperimentalStreamingTreeV2)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "extent read elision requires schema4 streaming evidence",
+            ));
+        }
+        let mut streams = BTreeSet::new();
+        let mut extent_bytes = 0usize;
+        for stream in &self.extent_identity_streams {
+            stream.validate(self.partition_length)?;
+            if !ids.contains(&stream.identity.reference())
+                || stream.logical_size > self.limits().maximum_stream_bytes
+                || !streams.insert((stream.identity.reference(), stream.name_utf16.clone()))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "ambiguous extent-identity stream request",
+                ));
+            }
+            extent_bytes = stream
+                .extents
+                .len()
+                .checked_mul(std::mem::size_of::<ExtentIdentityExtent>())
+                .and_then(|n| extent_bytes.checked_add(n))
+                .filter(|n| *n <= self.limits().stream_evidence_bytes)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "extent-identity request resource budget exceeded",
+                    )
+                })?;
         }
         Ok(())
     }
@@ -208,6 +320,7 @@ mod request_tests {
                 record_number: 5,
                 sequence_number: 1,
             }],
+            extent_identity_streams: Vec::new(),
         };
         assert!(request.validate().is_err());
         request.schema_version = 2;
@@ -747,8 +860,9 @@ impl Report {
         };
         for file in &self.files {
             for snapshot in file.before.iter().chain(file.after.iter()) {
-                snapshot.validate_extended_attributes(matches!(self.schema_version, 10 | 11))?;
-                snapshot.validate_reparse(self.schema_version == 11)?;
+                snapshot
+                    .validate_extended_attributes(matches!(self.schema_version, 10 | 11 | 12))?;
+                snapshot.validate_reparse(matches!(self.schema_version, 11 | 12))?;
             }
         }
         let Some(profile) = self.request.resource_profile else {
@@ -766,12 +880,15 @@ impl Report {
             };
         };
         self.request.validate()?;
+        if (self.request.schema_version == 4) != (self.schema_version == 12) {
+            return Err(invalid());
+        }
         let limits = profile.limits();
         let a = self.resources.as_ref().ok_or_else(invalid)?;
         let data = self.logical_data.as_ref().ok_or_else(invalid)?;
         let namespace = self.namespace.as_ref().ok_or_else(invalid)?;
         let allocation = self.allocation.as_ref().ok_or_else(invalid)?;
-        if matches!(self.schema_version, 9 | 10 | 11) {
+        if matches!(self.schema_version, 9 | 10 | 11 | 12) {
             allocation
                 .streamed_before
                 .as_ref()
@@ -813,6 +930,22 @@ impl Report {
                     return Err(invalid());
                 }
                 for h in pass {
+                    if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
+                        && (self.schema_version != 12
+                            || self.request.schema_version != 4
+                            || h.outcome.bytes_read != 0
+                            || h.outcome.eof_confirmed
+                            || h.outcome.sha256.is_some()
+                            || h.outcome.native_error.is_some()
+                            || h.outcome.detail.is_some()
+                            || !self.request.extent_identity_streams.iter().any(|wanted| {
+                                wanted.identity == file.identity
+                                    && wanted.name_utf16 == h.name_utf16
+                                    && wanted.logical_size == h.logical_size
+                            }))
+                    {
+                        return Err(invalid());
+                    }
                     observed = observed
                         .checked_add(h.outcome.bytes_read)
                         .ok_or_else(invalid)?;
@@ -851,7 +984,7 @@ impl Report {
         }
         let streaming_shape = match self.schema_version {
             8 => allocation.streamed_before.is_none() && allocation.streamed_after.is_none(),
-            9 | 10 | 11 => {
+            9 | 10 | 11 | 12 => {
                 allocation.streamed_before.is_some()
                     && allocation.streamed_after.is_some()
                     && allocation.bitmap_before_continuation.is_empty()

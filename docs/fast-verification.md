@@ -5,10 +5,38 @@ with full-content verification retained as an option. The policy is explicit in
 new requests. Historical requests omit the field and retain full verification.
 `--verify-full-content` and whole-image mode select the original full path.
 
-The first implementation stage reduces redundant journal and temporary-shadow
-reads. **Source and target file-content hashing remains enabled at this stage.**
-Results record the requested policy separately from the actual full-file checks;
-they must not claim retained payload was left unhashed.
+The current candidate also removes redundant native source reads for eligible
+ordinary initialized aligned streams and replaces final target stream scans with
+live extent verification. **The initial raw NTFS inspection still hashes every
+supported stream.** This stage reduces repeated reads; it does not yet eliminate
+the first payload pass. Historical requests and recovery keep full verification.
+
+Source report schema 12 explicitly distinguishes an unread extent-bound stream
+from a completed content hash. Native identity, EOF, geometry and complete
+retrieval evidence must agree with the raw model before a read is omitted.
+Resident, compressed, sparse, uninitialized and partial-tail streams retain
+native logical reads. No unread stream receives a digest or a successful EOF
+probe. The complete requested-evidence gate is separate from full-content equality.
+
+Repeated source fingerprints use a separate metadata-and-extents domain. Only
+Complete-hashed, independently ownership-checked ordinary user DATA interiors
+may be omitted. Bootstrap granules, metadata and tails remain covered; the exact
+omission map and canonical inspection pin are bound into the fingerprint. This
+is never labeled a full-content digest or accepted for whole-image admission.
+
+After the selected journal is prepared, an in-memory payload witness binds the
+original live certificate, exact selected plan, prepared ticket and protected
+shadow's complete file identities/maps. Following exclusive apply and durable
+HND, native metadata and storage-validity observation must reproduce every full
+map, file ID, EOF, allocation, link count, residency, sparse contract and integrity
+state. Changed bytes are bound by the selected-image checksums, including resident
+and residual bytes. The final native report contains no observed content hashes;
+`extent-verification.json` records the separate proof. It cannot be deserialized
+into execution authority. Separate observers and recovery still perform full reads.
+
+The lab independently hashes every target stream after the converter exits,
+using backup-intent handles for restrictive ACLs. Those lab-only reads and counts
+remain separate from engine performance and engine content observations.
 
 Normal fast conversion validates the complete journal before using it, then
 keeps exclusive mutable borrows of journal and target across apply and handoff.
@@ -71,6 +99,11 @@ The 125 closed metadata files (83,275,284 bytes) were copied and SHA-256 checked
 The VM is stopped at checkpoint `904cbd98-f87c-4a30-91c0-dedda106062f`.
 See [the native evidence](../evidence/fast-v2-native-20261031.json).
 
-Pending work includes the complete hash-free retained-extent certificate path,
-further source fingerprint/read-pass reduction, and exact-build recovery,
+The native results above describe runtime `19569cb`, before the new source and
+target extent-verification candidate. They are preserved evidence, not results
+for the new candidate. Focused library check and public/digest-helper/bind release
+builds pass; native qualification is pending. No unit tests were added or run.
+
+Pending work includes eliminating the initial retained-payload inspection pass,
+further read-pass reduction, and exact-build recovery,
 mutation, cold-boot and power-loss qualification. No unit tests added or run.

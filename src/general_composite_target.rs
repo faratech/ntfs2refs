@@ -525,6 +525,8 @@ pub struct FrozenAllocationTargetPreservation {
     target_after: GeneralDiskState,
     frozen_source_inventory_verified: bool,
     frozen_source_inventory_basis: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_fingerprint_kind: Option<&'static str>,
     source_views_bound: bool,
     logical_payload_tied_to_frozen_source: bool,
     allocation_bounded_selection_compared: bool,
@@ -534,6 +536,12 @@ pub struct FrozenAllocationTargetPreservation {
 }
 
 impl FrozenAllocationTargetPreservation {
+    pub fn source_fingerprint_kind(&self) -> Option<&'static str> {
+        self.source_fingerprint_kind
+    }
+    pub(crate) fn protected_layout(&self) -> &ProtectedTargetLayout {
+        &self.protected
+    }
     pub fn pair(&self) -> &GeneralSourceShadowBinding {
         &self.pair
     }
@@ -1176,7 +1184,14 @@ fn verify_and_select_inner(
         target_before,
         target_after,
         frozen_source_inventory_verified: true,
-        frozen_source_inventory_basis: "allocated-range digest recheck; admission proved the inspection read only those ranges",
+        frozen_source_inventory_basis: if policy.is_fast() {
+            "metadata-and-extents fingerprint recheck; only explicitly validated initialized ordinary DATA interiors omitted from fingerprint IO; raw content inspection preserved"
+        } else {
+            "allocated-range digest recheck; admission proved the inspection read only those ranges"
+        },
+        source_fingerprint_kind: policy
+            .is_fast()
+            .then_some(crate::source_fingerprint::EXTENT_KIND),
         source_views_bound: true,
         logical_payload_tied_to_frozen_source: true,
         allocation_bounded_selection_compared: true,
@@ -1240,14 +1255,14 @@ fn protected_prefix(
     );
     let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
     if allocation_closed_bracket {
-        // Admission digested the NTFS-allocated ranges and proved its
-        // deterministic inspection read only inside them, so unchanged ranges
-        // mean the same inspection; no second stream-hashing pass is needed.
-        let ranges = raw.allocated_byte_ranges(length)?;
+        // Reproduce the exact source basis selected before native collection.
+        // Extent mode has an explicitly different domain and omission set;
+        // it never relabels a metadata fingerprint as a full content digest.
+        let fingerprint =
+            crate::source_fingerprint::SourceFingerprint::for_inspection(raw, length, policy)?;
         ensure!(
-            hex::encode(crate::lab_reconstruct::hash_ranges_xxh3(source, &ranges)?)
-                == source_sha256,
-            "composite frozen source allocated bytes changed"
+            fingerprint.hash(source)? == source_sha256,
+            "composite frozen source fingerprint changed"
         );
     } else {
         let actual = ntfs_inspect::inspect_with_limits(

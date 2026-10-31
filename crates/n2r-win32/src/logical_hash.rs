@@ -11,6 +11,9 @@ const MAX_CALLS: u64 = 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Complete,
+    /// No content or EOF probe was read. Identity, EOF metadata and the full
+    /// physical map are separate evidence; this outcome contains no digest.
+    NotReadExtentIdentityV1,
     BudgetExceeded,
     ReadRefused,
     UnexpectedEof,

@@ -18,6 +18,8 @@ pub struct LiveAssessment {
     pub assessment: ntfs_admission::Assessment,
     pub source_sha256: String,
     pub canonical_inspection_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_fingerprint_kind: Option<&'static str>,
     pub txf_evidence_sha256: Option<String>,
     pub txf_observation: Option<serde_json::Value>,
     pub short_name_creation_disabled: Option<bool>,
@@ -42,6 +44,7 @@ struct AdmissionContext {
     inspection_sha256: String,
     source_gates_satisfied: bool,
     source_views_sha256: String,
+    source_fingerprint_kind: Option<&'static str>,
 }
 
 /// Issued only after live source admission and same-tree native target
@@ -86,6 +89,8 @@ pub struct AllocationCertificate {
     /// whole-source hash (the user's extended allocation guarantee).
     source_digest: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    source_fingerprint_kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     source_resource_profile: Option<ntfs_admission::ResourceProfile>,
 }
 impl AllocationCertificate {
@@ -94,6 +99,7 @@ impl AllocationCertificate {
         target: &crate::general_composite_target::FrozenAllocationTargetPreservation,
     ) -> bool {
         self.pair == *target.pair()
+            && self.source_fingerprint_kind == target.source_fingerprint_kind()
             && self.expected_tree_sha256 == target.expected_tree_sha256()
             && self.source_sha256 == target.source_sha256()
             && self.selection_sha256 == target.selection_sha256()
@@ -117,6 +123,7 @@ impl LiveAssessment {
     ) -> Result<AllocationCertificate> {
         ensure!(
             self.context.source_gates_satisfied
+                && target.source_fingerprint_kind() == self.context.source_fingerprint_kind
                 && target.pair().source == self.context.source_binding
                 && target.resource_profile() == self.context.resources
                 && target.native_resource_profile() == self.context.resources.native_profile()
@@ -175,7 +182,11 @@ impl LiveAssessment {
             changed_bytes: target.capture().layout.changed_bytes(),
             assessment_sha256: hex::encode(Sha256::digest(serde_json::to_vec(&self)?)),
             free_space_contents_proven_equal: false,
-            source_digest: "ntfs_allocated_ranges_xxh3_128_4mib_pieces",
+            source_digest: self
+                .context
+                .source_fingerprint_kind
+                .unwrap_or(crate::source_fingerprint::FULL_KIND),
+            source_fingerprint_kind: self.context.source_fingerprint_kind,
             source_resource_profile: match self.context.resources {
                 ntfs_admission::ResourceProfile::AlphaV1 => None,
                 resource => Some(resource),
@@ -191,6 +202,10 @@ impl LiveAssessment {
         raw: &ntfs_inspect::NtfsInspection,
         target: &crate::general_composite_target::FrozenCompositeTargetPreservation,
     ) -> Result<SourceCertificate> {
+        ensure!(
+            self.context.source_fingerprint_kind.is_none(),
+            "extent-scoped source fingerprint cannot certify a whole-image journal"
+        );
         ensure!(
             self.context.source_gates_satisfied
                 && target.pair().source == self.context.source_binding
@@ -259,6 +274,10 @@ impl LiveAssessment {
         raw: &ntfs_inspect::NtfsInspection,
         target: &crate::general_target_preservation::FrozenTargetPreservation,
     ) -> Result<SourceCertificate> {
+        ensure!(
+            self.context.source_fingerprint_kind.is_none(),
+            "extent-scoped source fingerprint cannot certify a whole-image journal"
+        );
         ensure!(
             self.context.source_gates_satisfied
                 && target.pair().source == self.context.source_binding
@@ -374,11 +393,15 @@ pub fn assess_with_source_digest(
         (3, Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)) => {
             ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
         }
-        (3, Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2)) => {
+        (3 | 4, Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2)) => {
             ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
         }
         _ => anyhow::bail!("unsupported or mismatched native source resource profile"),
     };
+    // The collector's schema-4 request explicitly selects the extent policy,
+    // even when the particular source has no eligible streams to omit.
+    let source_fingerprint_kind = (observed.report().request.schema_version == 4)
+        .then_some(crate::source_fingerprint::EXTENT_KIND);
     ensure!(
         canonical_inspection_sha256 == hex::encode(Sha256::digest(serde_json::to_vec(raw)?))
             && backups.binds(raw)
@@ -415,7 +438,11 @@ pub fn assess_with_source_digest(
     for gate in &mut assessment.gates {
         if gate.code == "frozen_device_basis" {
             gate.satisfied = true;
-            gate.detail = "actual dedicated disk remained offline/read-only and matched the complete pinned source hash after native collection".into();
+            gate.detail = if source_fingerprint_kind.is_some() {
+                "actual dedicated disk remained offline/read-only and matched the explicitly scoped metadata-and-extents fingerprint after native collection; omitted payload is not reported as rehashed"
+            } else {
+                "actual dedicated disk remained offline/read-only and matched the complete pinned source hash after native collection"
+            }.into();
         }
     }
     if resources.native_profile().is_some() {
@@ -493,6 +520,7 @@ pub fn assess_with_source_digest(
                     && g.code != "target_resource_profile_support"
             })
             .all(|g| g.satisfied),
+        source_fingerprint_kind,
     };
     Ok(LiveAssessment {
         context,
@@ -500,6 +528,7 @@ pub fn assess_with_source_digest(
         assessment,
         source_sha256,
         canonical_inspection_sha256: canonical_inspection_sha256.into(),
+        source_fingerprint_kind,
         txf_evidence_sha256,
         txf_observation: txf.map(serde_json::to_value).transpose()?,
         short_name_creation_disabled,

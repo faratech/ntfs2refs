@@ -4,8 +4,27 @@
 //! output holds no paths, so console code pages cannot alter it. Read only.
 fn main() {
     use std::io::Read;
-    let digests: Vec<serde_json::Value> = std::env::args_os()
+    let mut paths: Vec<_> = std::env::args_os()
         .skip(1)
+        .map(std::path::PathBuf::from)
+        .collect();
+    #[cfg(windows)]
+    if paths
+        .first()
+        .is_some_and(|path| path.as_os_str() == "--backup-read")
+    {
+        paths.remove(0);
+        match n2r_win32::shadow_native::lab_content_digests_backup(&paths) {
+            Ok(digests) => println!("{}", serde_json::to_string(&digests).expect("digest JSON")),
+            Err(error) => {
+                eprintln!("backup content observation refused: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    let digests: Vec<serde_json::Value> = paths
+        .into_iter()
         .map(|path| {
             let digest = (|| -> std::io::Result<String> {
                 let mut file = std::fs::File::open(&path)?;

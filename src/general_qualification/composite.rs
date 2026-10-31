@@ -148,6 +148,7 @@ fn prepare_composite(
             &mut phase,
             after_source_freeze,
             SourceDigest::WholeImage,
+            crate::verification_policy::VerificationPolicy::FullContent,
         )?;
         phase = "native-shadow-construction-or-freeze";
         let mut native_target = if let Some(budget) = construction {
@@ -336,6 +337,7 @@ pub(crate) fn prepare_allocation_fresh_selected(
             &mut phase,
             |_, _, _| Ok(()),
             SourceDigest::NtfsAllocated,
+            policy,
         )?;
         phase = "native-shadow-construction";
         let mut native_target = super::compact_construction::construct(

@@ -355,7 +355,60 @@ pub struct LayoutResidualExpectation {
 pub struct GeneralConvertedReport {
     pub pair: GeneralSourceShadowBinding,
     pub native: Report,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_observation: Option<ConvertedContentObservation>,
     pub conversion_qualified: bool,
+}
+
+/// Explicitly separates a mounted metadata observation from a file-content
+/// proof. Expected digests in the input remain expectations, never observations.
+#[derive(Debug, Serialize)]
+pub struct ConvertedContentObservation {
+    pub scope: &'static str,
+    pub default_streams_observed: usize,
+    pub named_streams_observed: usize,
+    pub admitted_payload_bytes_read: u64,
+    pub full_file_hashes: bool,
+    pub content_equality_verified: bool,
+    pub metadata_and_namespace_verified: bool,
+    pub complete_stream_mappings_observed: bool,
+    pub data_storage_validity_checked: bool,
+}
+
+/// Independent lab readback through backup-intent handles. Access-time updates
+/// are suppressed per handle; descriptors and stored timestamps are not reset.
+/// Invalid paths or unreadable streams remain explicit missing digests.
+pub fn lab_content_digests_backup(paths: &[std::path::PathBuf]) -> io::Result<Vec<Option<String>>> {
+    let mut privileges = Privileges::enable_for(&[
+        "SeBackupPrivilege",
+        "SeSecurityPrivilege",
+        "SeRestorePrivilege",
+    ])?;
+    let mut results = Vec::with_capacity(paths.len());
+    for path in paths {
+        let attempt = (|| -> io::Result<String> {
+            let text = path
+                .to_str()
+                .ok_or_else(|| invalid("lab content path is not Unicode"))?;
+            let bytes = text.as_bytes();
+            if bytes.len() < 4 || !bytes[0].is_ascii_alphabetic() || bytes[1..3] != *b":\\" {
+                return Err(invalid(
+                    "lab content read requires an absolute drive file path",
+                ));
+            }
+            let mut file = open(text, false, false)?;
+            let before = info(&file, 1, 24)?;
+            let length = layout::u64_at(&before, 8)?;
+            let digest = hash_exact_stream(&mut file, length)?;
+            if info(&file, 1, 24)? != before {
+                return Err(invalid("lab content EOF or file state changed"));
+            }
+            Ok(digest)
+        })();
+        results.push(attempt.ok());
+    }
+    privileges.restore()?;
+    Ok(results)
 }
 
 #[derive(Debug, Serialize)]
@@ -1200,6 +1253,26 @@ fn validate_existing_profile(
     root_basic_after_mutation: Option<&[u8; 40]>,
     verify_contents: bool,
 ) -> io::Result<()> {
+    validate_existing_content_profile(
+        report,
+        input,
+        same,
+        before_restore,
+        root_basic_after_mutation,
+        verify_contents,
+        verify_contents,
+    )
+}
+
+fn validate_existing_content_profile(
+    report: &Report,
+    input: &[Input<'_>],
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    before_restore: bool,
+    root_basic_after_mutation: Option<&[u8; 40]>,
+    verify_contents: bool,
+    allow_post_mount_svi: bool,
+) -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     if report.objects.len() != input.len() {
         return Err(invalid("existing shadow object coverage differs"));
@@ -1359,7 +1432,7 @@ fn validate_existing_profile(
                 continue;
             }
             if i.components.is_empty()
-                && verify_contents
+                && allow_post_mount_svi
                 && !expected.contains_key(&entry.name_utf16)
                 && entry.name_utf16
                     == "System Volume Information"
@@ -2549,6 +2622,81 @@ pub fn observe_general_converted_ordinary_with_resource_profile(
     )
 }
 
+/// Observe the converted source's complete mounted metadata and stream maps
+/// without reading admitted file contents. This does not prove payload equality
+/// or authorize a handoff: the owning caller must bind the live maps to its
+/// separate opaque fresh-conversion proof. No saved policy or report is that
+/// proof. Full-content, recovery and mutation entry points retain their reads.
+pub fn observe_general_converted_metadata_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
+    pair.validate_with_resource_profile(resource_profile)?;
+    if let Some(label) = expected_label {
+        label.validate()?;
+    }
+    let binding = DiskBinding {
+        disk_number: pair.source.disk_number,
+        volume_guid: pair.source.volume_guid.clone(),
+        identity: pair.source.identity.clone(),
+    };
+    let native = run_role_content_profile(
+        binding,
+        pair.source.disk_number,
+        input,
+        Mode::Verify,
+        &same_security,
+        true,
+        true,
+        None,
+        Some(&pair.source),
+        expected_label,
+        None,
+        resource_profile,
+        false,
+    )?;
+    // Keep the converted observer's existing namespace policy independently
+    // of whether admitted payload bytes were read. Protected shadow layout
+    // observation keeps its stricter original namespace policy.
+    validate_existing_content_profile(&native, input, &same_security, false, None, false, true)?;
+    if native.objects.iter().any(|object| {
+        object.logical_sha256.is_some()
+            || object
+                .named_streams
+                .iter()
+                .any(|stream| stream.logical_sha256.is_some())
+    }) {
+        return Err(invalid(
+            "metadata observation unexpectedly reports an admitted content hash",
+        ));
+    }
+    let default_streams_observed = input.iter().filter(|item| !item.directory).count();
+    let named_streams_observed = input.iter().try_fold(0usize, |count, item| {
+        count
+            .checked_add(item.named_streams.len())
+            .ok_or_else(|| invalid("metadata-observed stream count overflow"))
+    })?;
+    Ok(GeneralConvertedReport {
+        pair,
+        native,
+        content_observation: Some(ConvertedContentObservation {
+            scope: "converted-metadata-and-complete-stream-maps-v1",
+            default_streams_observed,
+            named_streams_observed,
+            admitted_payload_bytes_read: 0,
+            full_file_hashes: false,
+            content_equality_verified: false,
+            metadata_and_namespace_verified: true,
+            complete_stream_mappings_observed: true,
+            data_storage_validity_checked: true,
+        }),
+        conversion_qualified: false,
+    })
+}
+
 fn observe_general_converted_label_profile(
     pair: GeneralSourceShadowBinding,
     input: &[Input<'_>],
@@ -2579,6 +2727,7 @@ fn observe_general_converted_label_profile(
     Ok(GeneralConvertedReport {
         pair,
         native,
+        content_observation: None,
         conversion_qualified: false,
     })
 }
@@ -2850,12 +2999,57 @@ fn run_role_profile(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     converted: bool,
     ordinary: bool,
-    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
     protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<Report> {
+    run_role_content_profile(
+        binding,
+        source_disk,
+        input,
+        mode,
+        same_security,
+        converted,
+        ordinary,
+        payload_writer,
+        general_shadow,
+        expected_label,
+        protected,
+        resource_profile,
+        true,
+    )
+}
+
+fn run_role_content_profile(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &[Input<'_>],
+    mode: Mode,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    converted: bool,
+    ordinary: bool,
+    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    general_shadow: Option<&GeneralDiskBinding>,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    hash_file_contents: bool,
+) -> io::Result<Report> {
+    if !hash_file_contents
+        && (!converted
+            || !ordinary
+            || mode != Mode::Verify
+            || payload_writer.is_some()
+            || general_shadow.is_none()
+            || protected.is_some())
+    {
+        return Err(invalid(
+            "content-free observation requires the converted general metadata route",
+        ));
+    }
+    let verify_file_contents = hash_file_contents && mode != Mode::ObserveLayout;
     if mode == Mode::ObserveLayout && protected.is_none() {
         return Err(invalid(
             "ReFS layout observation requires a protected native lease",
@@ -3703,7 +3897,7 @@ fn run_role_profile(
                 {
                     return Err(invalid("shadow data integrity profile differs"));
                 }
-                let logical_hash = if mode == Mode::ObserveLayout {
+                let logical_hash = if !verify_file_contents {
                     None
                 } else if let Some(expected) = i.expected_sha256 {
                     let actual = hash_exact_stream(&mut h, i.logical_length())?;
@@ -3763,7 +3957,7 @@ fn run_role_profile(
                 i,
                 &before,
                 protected.is_some(),
-                mode != Mode::ObserveLayout,
+                verify_file_contents,
                 clusters,
             )?,
             sparse: i

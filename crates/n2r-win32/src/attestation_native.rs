@@ -400,6 +400,20 @@ fn collect_file_metadata_with_passes(
     let before = route(&volume, &disk, request)?;
     let mut privileges = Privileges::enable()?;
     let base_before = crate::stream_native::base(&volume);
+    let extent_context = if request.schema_version == 4 {
+        if base_before.native_error.is_some() || base_before.bytes.len() != 8 {
+            return Err(invalid("extent-identity retrieval base unavailable"));
+        }
+        let base_bytes = u64le(&base_before.bytes, 0)?
+            .checked_mul(u64::from(u32le(&before.1, 40)?))
+            .ok_or_else(|| invalid("extent-identity retrieval base overflow"))?;
+        Some(crate::stream_native::ExtentContext {
+            cluster_bytes: u32le(&before.1, 44)?,
+            retrieval_base_bytes: base_bytes,
+        })
+    } else {
+        None
+    };
     let clusters = u64le(&before.1, 16)?;
     let (bitmap_before, bitmap_before_continuation, streamed_before) =
         if request.resource_profile.is_some() {
@@ -475,6 +489,7 @@ fn collect_file_metadata_with_passes(
                 identity,
                 &mut read_budget,
                 limits.stream_evidence_bytes.saturating_sub(stream_bytes),
+                extent_context,
             );
             obs.streams_before = Some(capture);
             logical.before = hashes;
@@ -496,6 +511,7 @@ fn collect_file_metadata_with_passes(
                                 .map_or(0, StreamCapture::retained_bytes),
                         )
                         .saturating_sub(hash_retained_bytes(&logical.before)),
+                    extent_context,
                 );
                 obs.streams_after = Some(capture);
                 logical.after = hashes;
@@ -552,7 +568,9 @@ fn collect_file_metadata_with_passes(
     privileges.restore()?;
     let after = route(&volume, &disk, request)?;
     let mut report = Report {
-        schema_version: if request.resource_profile.is_some() {
+        schema_version: if request.schema_version == 4 {
+            12
+        } else if request.resource_profile.is_some() {
             11
         } else {
             7

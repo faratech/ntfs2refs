@@ -103,5 +103,7 @@ pub mod selected_journal;
 pub mod shadow_freeze;
 pub mod shadow_tree;
 pub mod source_volume_label;
+#[cfg(windows)]
+pub mod source_fingerprint;
 pub mod tree_placement;
 pub mod verification_policy;

@@ -289,6 +289,64 @@ fn read_handle(file: &File, id: &FileIdentity, named_stream: bool) -> io::Result
     // SAFETY: transfer the newly returned, uniquely owned native handle.
     Ok(unsafe { File::from_raw_handle(h) })
 }
+#[derive(Clone, Copy)]
+pub(crate) struct ExtentContext {
+    pub cluster_bytes: u32,
+    pub retrieval_base_bytes: u64,
+}
+
+fn extent_map_matches(
+    expected: &ExtentIdentityStream,
+    context: ExtentContext,
+    first: &IoctlQuery,
+    continuation: &[IoctlQuery],
+) -> io::Result<()> {
+    if expected.cluster_bytes != context.cluster_bytes {
+        return Err(io::Error::other(
+            "extent-identity native cluster geometry differs",
+        ));
+    }
+    let runs = crate::retrieval_paging::assemble_queries(first, continuation)?.runs;
+    let cluster = u64::from(context.cluster_bytes);
+    let mut extents: Vec<ExtentIdentityExtent> = Vec::new();
+    for run in runs {
+        let offset = run
+            .vcn
+            .checked_mul(cluster)
+            .ok_or_else(|| io::Error::other("native extent VCN overflow"))?;
+        let physical = run
+            .lcn
+            .and_then(|lcn| lcn.checked_mul(cluster))
+            .and_then(|n| n.checked_add(context.retrieval_base_bytes))
+            .ok_or_else(|| io::Error::other("extent-identity native hole or LCN overflow"))?;
+        let length = run
+            .clusters
+            .checked_mul(cluster)
+            .ok_or_else(|| io::Error::other("native extent size overflow"))?;
+        if let Some(last) = extents.last_mut()
+            && last.logical_offset.checked_add(last.length) == Some(offset)
+            && last.physical_offset.checked_add(last.length) == Some(physical)
+        {
+            last.length = last
+                .length
+                .checked_add(length)
+                .ok_or_else(|| io::Error::other("native extent merge overflow"))?;
+        } else {
+            extents.push(ExtentIdentityExtent {
+                logical_offset: offset,
+                physical_offset: physical,
+                length,
+            });
+        }
+    }
+    if extents != expected.extents {
+        return Err(io::Error::other(
+            "extent-identity complete native mapping differs",
+        ));
+    }
+    Ok(())
+}
+
 fn hash_stream(
     file: &File,
     r: &Request,
@@ -296,6 +354,12 @@ fn hash_stream(
     name: &[u16],
     expected: u64,
     budget: &mut crate::logical_hash::Budget,
+    extent_identity: Option<(
+        &ExtentIdentityStream,
+        ExtentContext,
+        &IoctlQuery,
+        &[IoctlQuery],
+    )>,
 ) -> StreamHash {
     let mut out = StreamHash {
         name_utf16: name.to_vec(),
@@ -333,7 +397,31 @@ fn hash_stream(
         ));
         return out;
     }
-    out.outcome = crate::logical_hash::read(&mut data, expected, budget);
+    out.outcome = if let Some((wanted, context, first, continuation)) = extent_identity {
+        let allocated = out
+            .standard_before
+            .as_ref()
+            .map(|q| u64::from_le_bytes(q.bytes[..8].try_into().unwrap()));
+        match (allocated == Some(wanted.allocated_size) && wanted.logical_size == expected)
+            .then(|| extent_map_matches(wanted, context, first, continuation))
+            .unwrap_or_else(|| {
+                Err(io::Error::other(
+                    "extent-identity stream allocation or EOF differs",
+                ))
+            }) {
+            Ok(()) => crate::logical_hash::Outcome {
+                status: crate::logical_hash::Status::NotReadExtentIdentityV1,
+                bytes_read: 0,
+                eof_confirmed: false,
+                sha256: None,
+                native_error: None,
+                detail: None,
+            },
+            Err(e) => crate::logical_hash::Outcome::refused(e),
+        }
+    } else {
+        crate::logical_hash::read(&mut data, expected, budget)
+    };
     let after = info(&data, 18, 24);
     let valid = binding(&after, r, id);
     out.identity_after = Some(after);
@@ -356,6 +444,7 @@ pub(crate) fn capture(
     id: &FileIdentity,
     budget: &mut crate::logical_hash::Budget,
     evidence_limit: usize,
+    extent_context: Option<ExtentContext>,
 ) -> (StreamCapture, Vec<StreamHash>) {
     let mut hashes = vec![];
     let mut enumeration = info(file, 7, layout::MAX_STREAM_BUFFER);
@@ -416,14 +505,36 @@ pub(crate) fn capture(
         let (first, continuation) = retrieval_queries(f);
         q.retrieval = Some(first);
         q.retrieval_continuation = continuation;
-        hashes.push(hash_stream(
-            f,
-            r,
-            id,
-            &entry.name,
-            entry.logical_size,
-            budget,
-        ));
+        let wanted = r
+            .extent_identity_streams
+            .iter()
+            .find(|wanted| wanted.identity == *id && wanted.name_utf16 == entry.name);
+        let omission = wanted.and_then(|wanted| {
+            extent_context.map(|context| {
+                (
+                    wanted,
+                    context,
+                    q.retrieval.as_ref().unwrap(),
+                    q.retrieval_continuation.as_slice(),
+                )
+            })
+        });
+        let hash = if wanted.is_some() && extent_context.is_none() {
+            StreamHash {
+                name_utf16: entry.name.clone(),
+                logical_size: entry.logical_size,
+                identity_before: None,
+                identity_after: None,
+                standard_before: None,
+                standard_after: None,
+                outcome: crate::logical_hash::Outcome::refused(io::Error::other(
+                    "extent-identity native volume context missing",
+                )),
+            }
+        } else {
+            hash_stream(f, r, id, &entry.name, entry.logical_size, budget, omission)
+        };
+        hashes.push(hash);
         let after = info(f, 18, 24);
         if let Err(e) = binding(&after, r, id) {
             q.binding_error = Some(e.to_string());

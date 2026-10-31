@@ -23,6 +23,23 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Current candidate adds source request4/report12 with explicit unread extent
+evidence, a separately scoped metadata/extent source fingerprint, and a fresh
+in-memory target witness matching complete mounted maps to the protected shadow
+and actual Apply/HND checksums. Initial raw NTFS content hashing remains FULL;
+do not claim zero initial payload reads. Resident/compressed/sparse/VDL/tail
+source streams retain native hashing. Final target metadata observation contains
+no observed file hashes; separate extent-verification.json records its proof.
+Full-content and recovery entry points keep their checks. Lab wrappers independently
+hash every target stream after engine exit with the newly pinned backup-read
+digest helper. Focused library check and public/digest-helper/bind release builds
+pass; native run pending. No unit tests added/run.
+VM remains Off/RAM0 at904cbd98; obsolete first-D3 leafdb10c68f was removed through
+Hyper-V only after revalidating125 archived files/83,267,193B.49 checkpoints
+remain, current/source/large/D1cold checkpoints preserved; closed evidence kept.
+The cleanup receipt is fast-extent-obsolete-checkpoint-cleanup-20261031.json.
+Never force deletion of f4bf5238. The following native result predates this candidate.
+
 Latest native D3 stage runtime19569cb/public2e014b6be32710d19f6beacd7ab8d97ab57c7f887ae6df702de0310933431c6c
 passed wrapper59939273/core12c9a91c: native0/HND,44objects/30default+9named hashes,
 all prior sparse/EA/security/reparse/compression checks, label/mount preserved.

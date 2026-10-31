@@ -2087,7 +2087,7 @@ impl GeneralFrozenPartition {
         single_content_pass: bool,
     ) -> io::Result<GeneralLiveNtfsObservation> {
         request.validate()?;
-        if !matches!(request.schema_version, 2 | 3)
+        if !matches!(request.schema_version, 2 | 3 | 4)
             || request.disk_number != self.binding.disk_number
             || request.volume != format!("{}\\", self.binding.volume_path()?)
             || request.partition_offset != self.binding.identity.partition_offset
@@ -2166,11 +2166,16 @@ impl GeneralFrozenPartition {
         let report = collected?;
         if report.request != *request
             || report.conversion_qualified
-            || report.schema_version != if request.schema_version == 3 { 11 } else { 7 }
+            || report.schema_version
+                != match request.schema_version {
+                    4 => 12,
+                    3 => 11,
+                    _ => 7,
+                }
         {
             return Err(invalid("general native source report profile differs"));
         }
-        if request.schema_version == 3 {
+        if request.schema_version >= 3 {
             report.validate_resources()?;
         }
         Ok(GeneralLiveNtfsObservation {

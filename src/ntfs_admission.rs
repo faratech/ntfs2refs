@@ -1150,6 +1150,7 @@ fn assess_source_view_profile(
                     && d.files.iter().any(|o| {
                         o.record_number == f.record_number
                             && o.sequence_number == f.sequence_number
+                            && o.all_requested_stream_evidence_matched
                             && o.check.matched
                     })
             }) {
@@ -1392,8 +1393,10 @@ pub(crate) fn bind_large_native_profile(
     ensure!(
         assessment.profile == resources.ordinary_admission_profile()
             && assessment.source_inspection_sha256 == inspection
-            && native.schema_version == 11
-            && native.request.schema_version == 3
+            && matches!(
+                (native.schema_version, native.request.schema_version),
+                (11, 3) | (12, 4)
+            )
             && native.request.resource_profile == resources.native_profile()
             && native.request.source_inspection_sha256 == inspection
             && expected_source_sha256.len() == 64

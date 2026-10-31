@@ -43,6 +43,7 @@ pub fn request_for_inspection(
                 sequence_number: f.sequence_number,
             })
             .collect(),
+        extent_identity_streams: Vec::new(),
     };
     request.validate()?;
     Ok(request)
@@ -79,6 +80,7 @@ pub fn request_for_general_inspection(
                 sequence_number: file.sequence_number,
             })
             .collect(),
+        extent_identity_streams: Vec::new(),
     };
     request.validate()?;
     Ok(request)
@@ -121,8 +123,127 @@ pub fn request_for_general_inspection_with_profile(
                 sequence_number: f.sequence_number,
             })
             .collect(),
+        extent_identity_streams: Vec::new(),
     };
     request.validate()?;
+    Ok(request)
+}
+
+/// Keep the raw logical hash; omit a second native content read only for an
+/// explicitly bound plain, initialized, aligned stream. The complete native
+/// retrieval map and stable identity/EOF remain independently required.
+pub fn extent_identity_stream_request(
+    raw: &NtfsInspection,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
+    use crate::ntfs_inspect::{LogicalHashStatus, MetadataRole};
+    if !(4096..=65536).contains(&raw.geometry.cluster_size)
+        || !raw.geometry.cluster_size.is_power_of_two()
+        || file.is_directory
+        || file.record_number < 16
+        || file.base_file_reference != 0
+        || file.metadata_role != MetadataRole::OutsideExtendCandidate
+        || file.reparse.is_some()
+        || file
+            .standard_information
+            .as_ref()
+            .is_none_or(|s| s.file_attributes & 0x4e00 != 0)
+        || stream.resident
+        || stream.flags != 0
+        || stream.logical_size == 0
+        || !stream.logical_size.is_multiple_of(4096)
+        || stream.initialized_size != stream.logical_size
+        || stream.extents.is_empty()
+        || stream.extents.iter().any(|e| e.physical_offset.is_none())
+    {
+        return Ok(None);
+    }
+    ensure!(
+        stream.logical_hash_status == LogicalHashStatus::Complete
+            && stream
+                .logical_sha256
+                .as_deref()
+                .is_some_and(n2r_win32::content_digest::is_hex),
+        "native read elision requires an actual complete raw logical digest"
+    );
+    let attributes: Vec<_> = file
+        .attributes
+        .iter()
+        .filter(|a| a.type_code == 0x80 && a.name_utf16 == stream.name_utf16)
+        .collect();
+    ensure!(
+        attributes.len() == 1,
+        "extent-identity DATA attribute is ambiguous"
+    );
+    let a = attributes[0];
+    ensure!(
+        !a.resident
+            && a.flags == 0
+            && a.compression_unit == 0
+            && a.lowest_vcn == 0
+            && a.logical_size == stream.logical_size
+            && a.initialized_size == stream.initialized_size
+            && a.allocated_size == stream.allocated_size
+            && a.extents == stream.extents,
+        "extent-identity DATA attribute differs from its stream"
+    );
+    let mut extents: Vec<n2r_win32::attestation::ExtentIdentityExtent> = Vec::new();
+    for e in &stream.extents {
+        let physical = e.physical_offset.context("extent-identity source hole")?;
+        if let Some(last) = extents.last_mut()
+            && last.logical_offset.checked_add(last.length) == Some(e.logical_offset)
+            && last.physical_offset.checked_add(last.length) == Some(physical)
+        {
+            last.length = last
+                .length
+                .checked_add(e.length)
+                .context("extent-identity run overflow")?;
+        } else {
+            extents.push(n2r_win32::attestation::ExtentIdentityExtent {
+                logical_offset: e.logical_offset,
+                physical_offset: physical,
+                length: e.length,
+            });
+        }
+    }
+    Ok(Some(n2r_win32::attestation::ExtentIdentityStream {
+        identity: n2r_win32::attestation::FileIdentity {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+        },
+        name_utf16: stream.name_utf16.clone(),
+        cluster_bytes: raw.geometry.cluster_size,
+        logical_size: stream.logical_size,
+        allocated_size: stream.allocated_size,
+        extents,
+    }))
+}
+
+pub fn request_for_general_inspection_with_policy(
+    raw: &NtfsInspection,
+    inspection_sha256: &str,
+    binding: &n2r_win32::general_layout::GeneralDiskBinding,
+    profile: n2r_win32::attestation::ResourceProfile,
+    policy: crate::verification_policy::VerificationPolicy,
+) -> Result<n2r_win32::attestation::Request> {
+    let mut request =
+        request_for_general_inspection_with_profile(raw, inspection_sha256, binding, profile)?;
+    if policy.is_fast() {
+        ensure!(
+            profile == n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
+            "extent-identity native reads require the streaming source profile"
+        );
+        for file in &raw.files {
+            for stream in &file.streams {
+                if let Some(candidate) = extent_identity_stream_request(raw, file, stream)? {
+                    request.extent_identity_streams.push(candidate);
+                }
+            }
+        }
+        request.schema_version = 4;
+        request.validate()?;
+    }
     Ok(request)
 }
 
@@ -411,7 +532,7 @@ pub fn compare(
     }
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2..=11) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=12) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;
@@ -630,7 +751,7 @@ pub fn compare(
                 .is_none_or(|s| s.all_mappings_matched)
             && native_logical_data
                 .as_ref()
-                .is_none_or(|d| d.all_logical_data_matched)
+                .is_none_or(|d| d.all_requested_stream_evidence_matched)
             && native_namespace
                 .as_ref()
                 .is_none_or(|n| n.all_visible_names_matched),

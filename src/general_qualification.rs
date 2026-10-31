@@ -209,6 +209,7 @@ fn prepare_source_context(
     phase: &mut &'static str,
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
     digest_kind: SourceDigest,
+    verification_policy: crate::verification_policy::VerificationPolicy,
 ) -> Result<PreparedSourceContext> {
     let mut online = n2r_win32::GeneralPartitionReader::open(pair.source.clone(), events)?;
     let mut boot = [0; 512];
@@ -245,40 +246,55 @@ fn prepare_source_context(
             (Some(raw), Some(recorder.ranges()))
         }
     };
-    let allocated = match &early_raw {
-        Some(raw) => Some(raw.allocated_byte_ranges(length)?),
+    let fingerprint = match &early_raw {
+        Some(raw) => Some(
+            crate::source_fingerprint::SourceFingerprint::for_inspection(
+                raw,
+                length,
+                verification_policy,
+            )?,
+        ),
         None => None,
     };
-    if let (Some(ranges), Some(reads)) = (&allocated, &inspection_reads) {
-        ensure!(
-            ntfs_inspect::ranges_cover(ranges, reads),
-            "the NTFS inspection read bytes outside the NTFS-allocated ranges; \
-             convert with --whole-image-verification"
-        );
+    if let (Some(fingerprint), Some(reads)) = (&fingerprint, &inspection_reads) {
+        fingerprint.validate_inspection_reads(reads)?;
     }
-    let source_hash = match &allocated {
+    let source_hash = match &fingerprint {
         None => hex::encode(lab_reconstruct::hash_range_with_resource_profile(
             &mut source,
             0,
             length,
             resources,
         )?),
-        Some(ranges) => hex::encode(lab_reconstruct::hash_ranges_xxh3(&mut source, ranges)?),
+        Some(fingerprint) => fingerprint.hash(&mut source)?,
     };
-    let digest_bytes: Option<u64> = allocated
+    let allocated = early_raw
         .as_ref()
-        .map(|ranges| ranges.iter().map(|range| range.1).sum());
-    save_source_frozen_then(
-        output,
-        &serde_json::json!({"schema_version":1,
+        .map(|raw| raw.allocated_byte_ranges(length))
+        .transpose()?;
+    let mut frozen_identity = serde_json::json!({"schema_version":1,
         "kind":"observed-frozen-source-identity","binding":source.binding(),"source_sha256":source_hash,
         "source_digest_kind":digest_kind,"source_digest_ranges":allocated.as_ref().map(Vec::len),
-        "source_digest_bytes":digest_bytes,
+        "source_digest_bytes":allocated.as_ref().map(|ranges| ranges.iter().map(|range| range.1).sum::<u64>()),
         "inspection_read_ranges":inspection_reads.as_ref().map(Vec::len),
         "inspection_reads_within_digest":inspection_reads.as_ref().map(|_| true),
-        "state":source.state(events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0}),
-        |artifact_sha256| after_source_freeze(&source, &source_hash, artifact_sha256),
-    )?;
+        "state":source.state(events)?,"freeze_observation":source.freeze_observation(),"source_payload_writes":0});
+    if verification_policy.is_fast() {
+        let basis = fingerprint
+            .as_ref()
+            .context("fast source fingerprint absent")?;
+        frozen_identity["source_digest_kind"] = serde_json::to_value(basis.kind())?;
+        frozen_identity["source_fingerprint"] = serde_json::to_value(basis.report())?;
+        frozen_identity["source_digest_ranges"] = serde_json::Value::Null;
+        frozen_identity["source_digest_bytes"] = serde_json::Value::Null;
+        frozen_identity["verification_policy"] = serde_json::to_value(verification_policy)?;
+        frozen_identity["inspection_reads_within_digest"] = serde_json::Value::Bool(false);
+        frozen_identity["inspection_reads_within_digest_or_explicit_payload"] =
+            serde_json::Value::Bool(true);
+    }
+    save_source_frozen_then(output, &frozen_identity, |artifact_sha256| {
+        after_source_freeze(&source, &source_hash, artifact_sha256)
+    })?;
     let raw = match early_raw {
         Some(raw) => raw,
         None => ntfs_inspect::inspect_with_limits(
@@ -302,11 +318,12 @@ fn prepare_source_context(
     )?;
     *phase = "source-observation";
     let request = if let Some(native_profile) = resources.native_profile() {
-        ntfs_attestation::request_for_general_inspection_with_profile(
+        ntfs_attestation::request_for_general_inspection_with_policy(
             &raw,
             &pin,
             source.binding(),
             native_profile,
+            verification_policy,
         )?
     } else {
         ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?
@@ -321,7 +338,7 @@ fn prepare_source_context(
         }
     };
     save(output, "native-source.json", observed.report())?;
-    let assessment = match &allocated {
+    let assessment = match &fingerprint {
         None => general_source_admission::assess(
             &mut source,
             &raw,
@@ -332,7 +349,7 @@ fn prepare_source_context(
             &observed,
             events,
         )?,
-        Some(ranges) => general_source_admission::assess_with_source_digest(
+        Some(fingerprint) => general_source_admission::assess_with_source_digest(
             &mut source,
             &raw,
             &pin,
@@ -341,11 +358,7 @@ fn prepare_source_context(
             Some(&log),
             &observed,
             events,
-            |source, _| {
-                Ok(hex::encode(lab_reconstruct::hash_ranges_xxh3(
-                    source, ranges,
-                )?))
-            },
+            |source, _| fingerprint.hash(source),
         )?,
     };
     save(output, "source-assessment.json", &assessment)?;
@@ -439,6 +452,7 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             &mut phase,
             after_source_freeze,
             SourceDigest::WholeImage,
+            crate::verification_policy::VerificationPolicy::FullContent,
         )?;
         let views = assessment
             .assessment

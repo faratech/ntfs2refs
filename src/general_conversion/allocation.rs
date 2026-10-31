@@ -57,9 +57,10 @@ pub(super) fn convert_allocation_selected(
             "schema_version":1,"kind":"experimental-allocation-bounded-conversion-intent",
             "request":request,"construction_budget":construction,
             "verification_policy":request.verification_policy,
-            "planned_source_verification_policy":crate::verification_policy::VerificationPolicy::FullContent,
-            "planned_target_verification_policy":crate::verification_policy::VerificationPolicy::FullContent,
-            "full_file_hashes_requested":true,
+            "planned_source_verification_policy":request.verification_policy,
+            "planned_target_verification_policy":request.verification_policy,
+            "full_file_hashes_requested":request.verification_policy.is_full_content(),
+            "raw_source_logical_hashes_requested":true,
             "interrupt_after_writes":interrupt_after_writes,
             "interrupt_after_first_copy_write":interrupt_after_first_copy_write,
             "requires_original_live_source_certificate":true,
@@ -335,6 +336,19 @@ pub(super) fn convert_allocation_selected(
         );
         qualification::save(output, "preparation-events.json", &preparation_events)?;
         let ticket_pin = qualification::save(output, "selected-ticket.json", &ticket)?;
+        let fresh_payload_proof = request
+            .verification_policy
+            .is_fast()
+            .then(|| {
+                reconstruct::fast_verification::FreshPayloadProof::new(
+                    &proof,
+                    &certificate,
+                    &expectation,
+                    &plan,
+                    &ticket,
+                )
+            })
+            .transpose()?;
         // Publish one checksummed locator before activation. It carries pins
         // only; the recovery engine rechecks the journal and device itself.
         let request_pin = qualification::save(output, "request.json", request)?;
@@ -451,11 +465,9 @@ pub(super) fn convert_allocation_selected(
                 )
             }
             (None, None) if request.verification_policy.is_fast() => {
-                // This stage retains complete source/target file hashing. It
-                // only avoids reloading and rehashing the durable journal body
-                // between a verified Apply and HND while the same owning
-                // process exclusively borrows both handles. The callback gets
-                // no handles and cannot alter either stream.
+                // Preserve exclusive ownership through the validated Apply
+                // and durable HND. Only this fresh path can later consume the
+                // live payload proof for mounted extent verification.
                 let (applied, handoff) = sj::apply_and_handoff_exclusive(
                     &mut target,
                     &mut journal,
@@ -515,7 +527,30 @@ pub(super) fn convert_allocation_selected(
                     expected_mount_paths: Some(mount_paths.paths.as_slice()),
                     expected_source_label: Some(source_label.label()),
                 };
-                reconstruct::verify_native_scoped(&scope, &expectation, &mut finalization, false);
+                if let Some(fresh) = &fresh_payload_proof {
+                    match reconstruct::fast_verification::verify_native_extents_scoped(
+                        &scope,
+                        &expectation,
+                        &mut finalization,
+                        fresh,
+                        &applied,
+                        &handoff,
+                    ) {
+                        Ok(receipt) => {
+                            qualification::save(output, "extent-verification.json", &receipt)?;
+                        }
+                        Err(error) => {
+                            finalization.error = Some(format!("{error:#}"));
+                        }
+                    }
+                } else {
+                    reconstruct::verify_native_scoped(
+                        &scope,
+                        &expectation,
+                        &mut finalization,
+                        false,
+                    );
+                }
             }
             Err(error) => finalization.error = Some(error.to_string()),
         }
@@ -533,9 +568,10 @@ pub(super) fn convert_allocation_selected(
                 "schema_version":1,"kind":"experimental-allocation-bounded-conversion",
                 "success":true,"source_admitted":true,"rollback_closed":true,
                 "verification_policy":request.verification_policy,
-                "actual_source_verification_policy":crate::verification_policy::VerificationPolicy::FullContent,
-                "actual_target_verification_policy":crate::verification_policy::VerificationPolicy::FullContent,
-                "actual_full_file_hashes":true,
+                "actual_source_verification_policy":request.verification_policy,
+                "raw_source_logical_hashes":true,
+                "actual_target_verification_policy":request.verification_policy,
+                "actual_full_file_hashes":request.verification_policy.is_full_content(),
                 "exclusive_apply_handoff_used":request.verification_policy.is_fast(),
                 "journal_path":journal_path,"ticket_sha256":ticket_pin,"plan_sha256":plan_pin,
                 "expected_tree_sha256":expected_tree_sha256,

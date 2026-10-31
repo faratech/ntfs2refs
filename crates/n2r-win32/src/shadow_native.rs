@@ -396,9 +396,33 @@ pub fn lab_content_digests_backup(paths: &[std::path::PathBuf]) -> io::Result<Ve
                     "lab content read requires an absolute drive file path",
                 ));
             }
-            let mut file = open(text, false, false)?;
+            // The ordinary `open` helper intentionally refuses reparse points.
+            // This observer opens the point itself and independently validates
+            // its tag/buffer; it never follows the target named by that buffer.
+            let mut file = File::options()
+                .access_mode(0x01020189)
+                .share_mode(3)
+                .custom_flags(0x02200000)
+                .open(path)?;
+            suppress_access(&file)?;
             let before = info(&file, 1, 24)?;
             let length = layout::u64_at(&before, 8)?;
+            if let Some(point) = crate::reparse_native::capture(&file)? {
+                let tag = info(&file, 9, 8)?;
+                point.validate()?;
+                if length != 0
+                    || before[21] != 0
+                    || point.tag() != 0xa000000c
+                    || layout::u32_at(&tag, 0)? & (0x800 | 0x4000) != 0
+                    || layout::u32_at(&tag, 4)? != point.tag()
+                {
+                    return Err(invalid(
+                        "lab content observer supports only an empty file symlink",
+                    ));
+                }
+            } else {
+                validate_open_type(&file, false)?;
+            }
             let digest = hash_exact_stream(&mut file, length)?;
             if info(&file, 1, 24)? != before {
                 return Err(invalid("lab content EOF or file state changed"));

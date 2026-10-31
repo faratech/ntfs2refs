@@ -23,6 +23,43 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Exact sealed3ce15c7 partial-tail recovery matrix now passes one controlled
+first-flushed-write case. Producer1798b541 actualPID5516/creation1793474877619
+exited86; source6 stayed offline writable/shadow offline read-only. Bundle
+59c0b9e0f7a59afa2e015544448d5fe7451fe7ef8296bc9872ce0e7fa0e61c22 pins14
+extent-only streams/53 maps, including12 partials/457 materialized tail bytes.
+The original post-native observer failed on a4MiB JSON bound and is preserved.
+Labelled function-only read-only completion4930c28e verifies actual12 tail
+construction/source/readback/protected-residual bindings with corrected64MiB
+reads. Normal wrapper-controlled receipt remains absent. Recoverycontroller23ac651
+explicitly binds this derived observation and the actual terminal86 PID/creation;
+no producer, bundle or missing content digest was synthesized or rerun.
+
+Public Resume40353946/core recovery-726698c9 passed native0/HND and observer0:
+25 known full stream hashes/64,574,222B plus14 pinned-map streams,44objects/53maps,
+12 partial-tail counters/457B, all30 default+9 named independent hashes. From the
+SAME saved86 branch, public Rollback1f5ae9e0/core recovery-f56dfab8 passed native0/
+ABT, old-selected checksum equality (82,034,688B/246ranges), NTFSH:/4KiB/original
+label and all39 independent hashes. Seven streams in compression-normalized
+NTFS files used ordinary logical reads,32 used backup reads. No HND/ABT replay. Current source/Resume
+target metadata checks remain; no independent post-rollback timestamp claim.
+
+Preserve tailnormal3cbc9ae0, tailInterrupted119445de-8c2d-4186-b54c-6b5cda644e4d,
+tailReFS64304900-25ef-4797-8d01-f58d229dedc3 and current tailNTFS
+fcc42f45-2101-441d-8751-b625cc7d0051. VMOff/RAM0/50 snapshots after normal shutdown;
+all tasks/native workers were terminal/idle. Closed firstwrite/Resume/Rollback
+archives71/77,484,848B,35/5,498,270B,37/2,295,130B are allSHAverified; original
+observer failure70/77,470,036B stays separate. Actual lab263,539,048,661B and host
+free81,655,656,448B remain inside the unchanged329,374,052,988B/17,179,869,184B
+epoch. Obsolete0cf18d65/44c48db9/9bfbe6f7 were removed only viaHyperV after
+fresh archive/index/SHA revalidation; ALL host baseline/metadata files stay.
+Keep oldrecovery9ce/9bb/b809, sources371/6fe,large785,D1cold d939 and f4bf.
+Evidence: evidence/partial-tail-recovery-matrix-20261031.json;
+docs/partial-tail-recovery.md. Runtime3ce is distinct from observer e96fb28/23ac651
+and newer18bdea8 journal-preparation optimization (not used here). No unit tests.
+Only one controlled exit86 plus clean restart is qualified; broader faults,
+power-loss, mutation, F-scale, D2 and broader objectives remain unfinished.
+
 Built next performance candidate: normal fast preparation computes its immutable
 journal pin during the same complete validating readback, removing only the
 preliminary hash-only body scan. Exact source/candidate selected digests, payload/
@@ -31,8 +68,10 @@ Issue mode is private to a fresh share-zero journal; full/fault/recovery paths
 still use their original trusted-pin checks. Binary format/ticket values unchanged
 for identical inputs. Focused library/CLI and release builds pass; native large
 qualification pending. No unit tests added/run. See docs/journal-preparation-readback.md.
-This candidate is separate from the sealed3ce15c7 tail recovery matrix currently
-being executed; do not rebuild or substitute its binaries during that matrix.
+This candidate is separate from the sealed3ce15c7 tail recovery matrix
+completed above; its native evidence does not qualify this newer candidate.
+
+The following results and former current VM/checkpoint labels are historical.
 
 Partial-tail normal runtime3ce15c7/public831b073d38ec0bd62350e97f01ed1b51cc5a29ced46cd3b69d37372864d08b53
 passed wrapperc42d891b/coree28bab21: native0/HND and wrapper0,44 objects/53 bindings,

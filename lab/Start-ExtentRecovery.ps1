@@ -86,7 +86,47 @@ function LabStream($Object,$Name){
  if(@($Name).Count-eq0){return $Object}
  $property=$Object.PSObject.Properties['named_streams'];Need ($null-ne$property) 'Independent baseline named stream collection missing.';$matches=@($property.Value|Where-Object {SameArray $_.name_utf16 $Name});Need ($matches.Count-eq1) 'Independent baseline stream missing/ambiguous.';return $matches[0]
 }
-function ResolveLabContentBaseline($Expected,$Request,[string]$Records){
+function LabSnapshotQuery($Snapshot,[int]$Class,[int]$Length){
+ $q=@($Snapshot.queries|Where-Object class -eq $Class)
+ Need ($q.Count-eq1-and$null-eq$q[0].native_error-and@($q[0].bytes).Count-eq$Length) 'Frozen-source timestamp query missing/refused.'
+ return ,[byte[]]$q[0].bytes
+}
+function LabSnapshotTimes($Snapshot){$b=LabSnapshotQuery $Snapshot 0 40;return ,@([BitConverter]::ToUInt64($b,0),[BitConverter]::ToUInt64($b,8),[BitConverter]::ToUInt64($b,16),[BitConverter]::ToUInt64($b,24))}
+function ReconcileRecoveryBaselineAccess($Current,$Old,$Context){
+ if($Current.stored_times[1]-eq$Old.stored_times[1]){return $null}
+ $raw=@($Context.raw.ntfs.files|Where-Object {$_.record_number-eq$Current.record_number-and$_.sequence_number-eq$Current.sequence_number})
+ $source=@($Context.native.files|Where-Object {$_.identity.record_number-eq$Current.record_number-and$_.identity.sequence_number-eq$Current.sequence_number})
+ $view=@($Context.views.assessment.source_view.objects|Where-Object {$_.record_number-eq$Current.record_number-and$_.sequence_number-eq$Current.sequence_number})
+ Need ($raw.Count-eq1-and$source.Count-eq1-and$null-eq$source[0].open_error-and$view.Count-eq1-and$view[0].metadata.matched-eq$true) 'Frozen-source timestamp provenance is incomplete.'
+ $si=$raw[0].standard_information;$stored=@($si.creation_time,$si.access_time,$si.modification_time,$si.mft_change_time)
+ Need (SameArray $stored $Current.stored_times) 'Recovery expectation times differ from the original frozen raw source.'
+ $sb=LabSnapshotTimes $source[0].before;$sa=LabSnapshotTimes $source[0].after;$sv=$view[0].timestamps
+ Need ($null-ne$sv-and(SameArray $sv.stored $stored)-and(SameArray $sv.native_before $sb)-and(SameArray $sv.native_after $sa)-and$sv.preservation_authority-ceq'persisted STANDARD_INFORMATION after freeze; requires actual unchanged read-only source') 'Frozen native timestamp views are not bound to the persisted source.'
+ foreach($at in @(0,2,3)){Need ($sb[$at]-eq$stored[$at]-and$sa[$at]-eq$stored[$at]) 'Frozen source differs outside the recorded cached-access policy.'}
+ $cached=$sb[1]-ne$stored[1]-or$sa[1]-ne$stored[1];Need ($sv.cached_access_differs-eq$cached) 'Frozen cached-access record differs.'
+ $sourceId=LabSnapshotQuery $source[0].before 18 24;$sourceAfter=LabSnapshotQuery $source[0].after 18 24
+ Need (SameArray $sourceId $sourceAfter) 'Frozen source identity changed.'
+ $reference=[BitConverter]::ToUInt64($sourceId,8)
+ Need (($reference-band[uint64]281474976710655)-eq$Current.record_number-and[uint16]($reference-shr48)-eq$Current.sequence_number) 'Frozen timestamp source identity differs from the canonical record.'
+ $targetBefore=$null;$targetAfter=$null;$targetId=$null;$exception=$null
+ if($Context.compare_target){
+  $targets=@($Context.completion.native.native.objects|Where-Object {SameArray $_.components $Current.path})
+  Need ($Context.completion.success-eq$true-and$targets.Count-eq1) 'Recovered target timestamp evidence is incomplete.'
+  $targetBefore=LabSnapshotTimes $targets[0].before;$targetAfter=LabSnapshotTimes $targets[0].after
+  $targetId=LabSnapshotQuery $targets[0].before 18 24;$targetAfterId=LabSnapshotQuery $targets[0].after 18 24
+  Need (SameArray $targetId $targetAfterId) 'Recovered target identity changed.'
+  if(-not((SameArray $targetBefore $stored)-and(SameArray $targetAfter $stored))){
+   $p=$Context.completion.native.native.PSObject.Properties['post_mount_indexer_cache'];$cache=$null;if($null-ne$p){$cache=$p.Value}
+   Need ($Current.directory-eq$true-and(SameArray $Current.path @('System Volume Information'))-and$null-ne$cache-and(SameArray $targetBefore $targetAfter)-and$targetBefore[0]-eq$stored[0]) 'Recovered target must preserve current frozen times.'
+   $cacheTimes=LabSnapshotTimes $cache.before
+   Need ($cacheTimes[0]-ge$stored[3]-and$cacheTimes[0]-le$cache.observed_filetime) 'Source-absent cache does not justify this directory time interval.'
+   foreach($at in @(1,2,3)){Need ($targetBefore[$at]-ge$stored[$at]-and$targetBefore[$at]-le$cache.observed_filetime) 'Recovered SVI time lies outside its observed cache interval.'}
+   $exception='existing-source-absent-indexer-cache-SVI-directory-times'
+  }
+ }
+ return @{record_number=$Current.record_number;sequence_number=$Current.sequence_number;path=$Current.path;old_baseline_access_time=$Old.stored_times[1];current_frozen_raw_times=$stored;current_canonical_times=@($Current.stored_times);frozen_native_before=$sb;frozen_native_after=$sa;frozen_cached_access_differs=$cached;frozen_source_metadata_matched=$true;frozen_source_file_id_hex=([BitConverter]::ToString($sourceId)).Replace('-','').ToLowerInvariant();recovered_target_before=$targetBefore;recovered_target_after=$targetAfter;recovered_target_file_id_hex=$(if($null-ne$targetId){([BitConverter]::ToString($targetId)).Replace('-','').ToLowerInvariant()}else{$null});recovered_target_times_compared=$Context.compare_target;target_timestamp_exception=$exception;rollback_timestamp_restoration_authority=$(if($Context.compare_target){$null}else{'complete closed old-selected-byte journal proof; independent post-rollback timestamp comparison not claimed'});comparison_only_old_access_alignment=$true;product_expectation_changed=$false;filesystem_times_changed=$false}
+}
+function ResolveLabContentBaseline($Expected,$Request,[string]$Records,$Completion,[string]$RecoveryRecords){
  $hashless=0;foreach($object in $Expected.objects){if(-not$object.directory-and$null-eq$object.sha256){$hashless++};$property=$object.PSObject.Properties['named_streams'];if($null-ne$property){foreach($stream in $property.Value){if($null-eq$stream.sha256){$hashless++}}}}
  if(-not$c.baseline_enabled){Need ($hashless-eq0) 'Hashless expectations require a separately pinned historical full-content lab baseline.';return @{enabled=$false;observer_expectation=$Expected;product_expectation=$Expected;receipt=@{scope='lab-content-baseline-v1';baseline_used=$false;hashless_product_streams=0;product_expectation_written=$false;grants_product_authority=$false}}}
  $paths=@(@{name='lab-full-content-baseline.json';pin=$c.baseline_sha256},@{name='lab-baseline-request.json';pin=$c.baseline_request_sha256},@{name='lab-baseline-result.json';pin=$c.baseline_result_sha256},@{name='lab-baseline-source-basis.json';pin=$c.baseline_basis_sha256})
@@ -96,9 +136,12 @@ function ResolveLabContentBaseline($Expected,$Request,[string]$Records){
  $rawFlag=$oldResult.PSObject.Properties['raw_source_logical_hashes'];Need ($null-eq$rawFlag-or$rawFlag.Value-eq$true) 'Historical baseline must retain initial raw logical hashes.'
  $oldRaw=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
  foreach($file in $oldBasis.ntfs.files){$key=([string]$file.record_number)+':'+([string]$file.sequence_number);Need (-not$oldRaw.ContainsKey($key)) 'Duplicate historical raw source identity.';$oldRaw.Add($key,$file)}
+ $timeContext=@{raw=(Json (Join-Path $Records 'qualification\source-basis.json') 64MB);native=(Json (Join-Path $Records 'qualification\native-source.json') 64MB);views=(Json (Join-Path $Records 'qualification\source-assessment.json') 64MB);completion=$Completion;compare_target=($c.operation-ceq'resume')}
+ $timeRows=[Collections.Generic.List[object]]::new()
  $copy=($Expected|ConvertTo-Json -Depth 64)|ConvertFrom-Json;$oldObjects=@($baseline.objects);Need (@($copy.objects).Count-eq$oldObjects.Count) 'Independent baseline canonical object coverage differs.';$elisions=[Collections.Generic.List[object]]::new()
  foreach($object in $copy.objects){
   $matches=@($oldObjects|Where-Object {$_.record_number-eq$object.record_number-and$_.sequence_number-eq$object.sequence_number-and(SameArray $_.path $object.path)});Need ($matches.Count-eq1) 'Independent baseline canonical identity/path differs.';$old=$matches[0]
+  $timeProof=ReconcileRecoveryBaselineAccess $object $old $timeContext;if($null-ne$timeProof){$timeRows.Add($timeProof);$object.stored_times[1]=$old.stored_times[1]}
   if($object.directory){continue}
   $rawKey=([string]$old.record_number)+':'+([string]$old.sequence_number);Need ($oldRaw.ContainsKey($rawKey)) 'Historical baseline raw source object missing.';$rawFile=$oldRaw[$rawKey]
   $names=[Collections.Generic.List[object]]::new();$names.Add(@());$property=$object.PSObject.Properties['named_streams'];if($null-ne$property){foreach($stream in $property.Value){$names.Add(@($stream.name_utf16))}}
@@ -111,9 +154,9 @@ function ResolveLabContentBaseline($Expected,$Request,[string]$Records){
    else{Need ($null-eq$evidence) 'A complete digest must not also claim extent-only source evidence.'}
   }
  }
- Need (SameJsonValue $copy $baseline) 'Canonical baseline differs beyond explicit extent evidence and absent content digests; every identity, path, stream, map and metadata field must match.'
+ Need (SameJsonValue $copy $baseline) 'Canonical baseline differs beyond explicit extent evidence, absent digests and separately recorded access times.'
  $newNative=$null # Recovery does not grant fresh source admission from a historical report.
- return @{enabled=$true;observer_expectation=$copy;product_expectation=$Expected;baseline=$baseline;baseline_basis=$oldBasis;baseline_raw_by_identity=$oldRaw;native_source=$newNative;receipt=@{scope='lab-content-baseline-v1';baseline_used=$true;baseline_sha256=$c.baseline_sha256;baseline_request_sha256=$c.baseline_request_sha256;baseline_result_sha256=$c.baseline_result_sha256;baseline_source_basis_sha256=$c.baseline_basis_sha256;canonical_metadata_exact_except_explicit_content_evidence=$true;historical_digests_bound_to_full_raw_inspection=$true;source_binding_identical=$true;hashless_product_streams=$hashless;comparison_streams_restored=$elisions.Count;comparison_only_clone=$true;product_expectation_written=$false;grants_product_authority=$false;elided_streams=$elisions.ToArray()}}
+ return @{enabled=$true;observer_expectation=$copy;product_expectation=$Expected;baseline=$baseline;baseline_basis=$oldBasis;baseline_raw_by_identity=$oldRaw;native_source=$newNative;receipt=@{scope='lab-content-baseline-v1';baseline_used=$true;baseline_sha256=$c.baseline_sha256;baseline_request_sha256=$c.baseline_request_sha256;baseline_result_sha256=$c.baseline_result_sha256;baseline_source_basis_sha256=$c.baseline_basis_sha256;canonical_metadata_exact_except_explicit_content_evidence=($timeRows.Count-eq0);canonical_metadata_exact_except_content_evidence_and_recorded_access_times=$true;current_access_time_reconciliations=$timeRows.ToArray();timestamp_provenance_pins=@{source_basis=(Get-FileHash -LiteralPath (Join-Path $Records 'qualification\source-basis.json')).Hash.ToLowerInvariant();native_source=(Get-FileHash -LiteralPath (Join-Path $Records 'qualification\native-source.json')).Hash.ToLowerInvariant();source_assessment=(Get-FileHash -LiteralPath (Join-Path $Records 'qualification\source-assessment.json')).Hash.ToLowerInvariant();expectation=(Get-FileHash -LiteralPath (Join-Path $Records 'expectation.json')).Hash.ToLowerInvariant();recovery_result=(Get-FileHash -LiteralPath (Join-Path $RecoveryRecords 'result.json')).Hash.ToLowerInvariant();recovery_completion=(Get-FileHash -LiteralPath (Join-Path $RecoveryRecords 'completion.json')).Hash.ToLowerInvariant()};post_rollback_native_timestamp_comparison_claimed=$false;historical_digests_bound_to_full_raw_inspection=$true;source_binding_identical=$true;hashless_product_streams=$hashless;comparison_streams_restored=$elisions.Count;comparison_only_clone=$true;product_expectation_written=$false;grants_product_authority=$false;elided_streams=$elisions.ToArray()}}
 }
 try{
     Idle;Protected;$d=Get-Disk -Number 6;Need ([guid]$d.Guid-eq[guid]'f95141cb-fe7e-439a-a82b-c2b3f55965d2'-and$d.IsOffline-and-not$d.IsReadOnly) 'Interrupted activated source6 (offline, writable attributes) required.'
@@ -163,7 +206,7 @@ try{
         $summary=@{mounted='ReFS';objects=$objects.Count;known_content_hashes=$known;known_content_bytes=$knownBytes;extent_only_streams=$unknown;all_complete_maps_identical=$true;full_content_hashes_compared=$false;closed_selected_journal_proof=(Get-FileHash -LiteralPath (Join-Path $records 'handoff.json')).Hash.ToLowerInvariant()}
     }
     Protected;Idle
-    $baselineContext=ResolveLabContentBaseline $expected $request $c.recovery_directory;$labExpected=$baselineContext.observer_expectation;Save 'lab-baseline-binding.json' $baselineContext.receipt
+    $baselineContext=ResolveLabContentBaseline $expected $request $c.recovery_directory $completion $records;$labExpected=$baselineContext.observer_expectation;Save 'lab-baseline-binding.json' $baselineContext.receipt
     $paths=[Collections.Generic.List[string]]::new();$wants=[Collections.Generic.List[string]]::new();$names=[Collections.Generic.List[object]]::new();$backup=[Collections.Generic.List[bool]]::new()
     foreach($object in $labExpected.objects){if($object.directory){continue};$compression=$object.PSObject.Properties['ntfs_compression_normalized'];$useBackup=-not($c.operation-ceq'rollback'-and$null-ne$compression-and$compression.Value-eq$true);$base='H:\'+($object.path-join'\');$paths.Add($base);$wants.Add($object.sha256);$backup.Add($useBackup);$names.Add(@{path=$object.path;name_utf16=@();length=$object.length});$property=$object.PSObject.Properties['named_streams'];if($null-ne$property){foreach($stream in $property.Value){$chars=[char[]]@($stream.name_utf16|ForEach-Object {[char]$_});$paths.Add($base+':'+[string]::new($chars)+':$DATA');$wants.Add($stream.sha256);$backup.Add($useBackup);$names.Add(@{path=$object.path;name_utf16=$stream.name_utf16;length=$stream.length})}}}
     Need ($paths.Count-gt0-and$paths.Count-le1024) 'Bounded independent all-stream baseline required.'

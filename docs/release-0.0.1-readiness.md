@@ -1,5 +1,22 @@
 # 0.0.1 release readiness — 2026-10-29
 
+## Update — 2026-10-31
+
+Runtime `2aef493` passed public same-partition conversion and cold-boot readback
+with Windows EAs: 17 objects, 11 default and eight named stream hashes, three
+sparse layouts, and seven EAs across four file/directory identities. The EAs
+include binary values, an 8 KiB value and `FILE_NEED_EA`. The 4 MiB fragmented
+payload retained its original locations, and all observed data mappings and
+new ReFS file IDs matched after reboot. See
+[the scoped receipt](../evidence/ea-native-conversion-20261031.json).
+
+The run took 88.73 seconds and used an 81,446,208-byte journal plus
+3,637,248-byte backing. This adds compatibility evidence, not a controlled
+performance comparison or unrestricted size/feature support. Exact-build EA
+mutation and interruption/recovery qualification remain open. Source geometry,
+dedicated-disk routing, fixed resource caps and other feature gaps still prevent
+a general stable or maximum-performance release.
+
 ## Update — 2026-10-30
 
 The reference-aware native-shadow build at `156241e` has now converted the

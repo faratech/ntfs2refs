@@ -10,6 +10,13 @@ Our inspected revision is `bbe161c2ed2ba6acbeaf5270e995445e5d30e843`, with the
 existing user-owned `src/main.rs` overlay left untouched. Native results belong
 to the exact binaries in their receipts, not automatically to this revision.
 
+Follow-up — 2026-10-31: runtime `2aef493` now has bounded Windows EA conversion
+and cold-boot evidence: seven EAs on four identities, including directories,
+binary data, an 8 KiB value and `FILE_NEED_EA`. The EA refusal in the original
+matrix below describes the earlier audited revision. Current bounds and
+qualification are in [the EA contract](ntfs-extended-attributes.md) and
+[native receipt](../evidence/ea-native-conversion-20261031.json).
+
 ## External implementations
 
 | Project and pinned revision | Relevant capability | Boundary |

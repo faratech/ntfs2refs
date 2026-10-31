@@ -27,11 +27,11 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off/RAM0 at NTFS
-EA source checkpoint1fc4b960-c252-41ce-9ad2-ef7ef0b030d3; all46 checkpoints
+Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
+EA cold-boot checkpointbecf6351-c611-48b9-b6f7-629e88716ac2; all48 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
-Latest runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
+Prior performance runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
 passed same-source conversion610f3f55/core2cf74f00 in92.959s versus138.754s on
 4c58d38 (33.0% shorter in this fixture). All13objects/9default/8named hashes,
 3sparse layouts and1024 original payload extents (4MiB) match. Movement counts
@@ -73,16 +73,29 @@ raw queries for replay; they cannot populate full-map Candidate hashes or
 authorize moves. Focused probe build passes. Production per-move checks remain
 full-volume pending the recorded D1 user decision. No converter is active.
 
-EA continuation (2026-10-31): sourceb0c626a/public58a07152b68488ff7c335b9d9fb54d01d34e0791147a43c18e830f377f326ba3
-builds with complete raw/native EA capture, schema10 streaming reports, canonical
-EA sets, constructor-owned restoration and target/alias verification. Fixture
+EA continuation (2026-10-31): runtime2aef493/public03c4f68d94a53c4d501b9d64a0fd899c3200985ce1b9a7f4d700adab31e7854b
+passed conversion1a715809/core5dc4f41a:17 objects,11 default hashes,8 named hashes,
+3 sparse layouts and7 EAs on4 identities. Complete raw/native EA capture uses
+schema10 streaming reports, constructor-owned restoration and exact native
+target/alias verification. Normal runtime88.731s is not a controlled speedup.
+Journal81,446,208B plus backing3,637,248B; 1,024 original payload extents/4MiB
+remain in place. Cold bootfb24a6f2 with read-only observer737f994/public2bbd40b56c11d6a45a67226bf64b9e0329b7803c0b350f37572b00e94c784c75
+passed17 objects/19 stream hashes, all7 EAs and unchanged data mappings/IDs.
+The observer uses the actual pinned allocation bundle; it never replays a
+journal or manufactures a source certificate. An older observer721aa4db failed
+before queries on the public-request format; no conversion was replayed.
+See evidence/ea-native-conversion-20261031.json and docs/ntfs-extended-attributes.md.
+The NTFS EA source is1fc4b960 and initial converted ReFS is2c964314. No mutation,
+new-build interruption/resume/rollback or physical power-loss claim is made.
+No worker is active. Next: SACL/null-DACL preservation, explicit VSS/case flags,
+resource-based scale and the recorded D1 decision; no unit tests.
+Fixture
 80607d54 passed7 EAs on4 identities (2dirs/2files), binary/8192-byte values,
 FILE_NEED_EA and a hard-link alias; its SHA is826aa04171efa8ae85ec4ca867bf743fdaaf16f5ae5cfbd2caa0dfe3a24af2c0.
 Public runfc890481/core00b08d0d stopped before activation at source admission:
 raw SI includes internal0x40000 on EA objects but Win32 omits it. The correction
 projects that bit only with validated nonempty EA storage and keeps raw SI,
-native EA equality and cached-access policy unchanged. Focused release build
-passes; conversion with the correction is next. Failure metadata39 files is
+native EA equality and cached-access policy unchanged. Failure metadata39 files is
 under .lab/hyperv/streaming-v2-20261027/ea-attribute-refusal-fc890481; checkpoint
 2c8164d8-a785-4640-ae78-236ed380cbf5 preserves it. Do not replay that failure.
 Earlier empty-EA immediate-status refusal3aff6405 is preserved in286e2588;
@@ -806,8 +819,8 @@ pins ntfs2btrfs and similar upstream tools. Do not copy their skip/truncate
 policies into a lossless claim. The audit found no explicit live VSS or
 directory case-sensitivity gate/preservation path; these are admission gaps,
 not already implemented refusals. Conversion preserves hard-link groups using
-new ReFS file IDs, not original numeric NTFS IDs. Bounded EA preservation is
-implemented with native conversion qualification pending; SACLs, absent/null
+new ReFS file IDs, not original numeric NTFS IDs. Bounded EA preservation has
+native conversion/cold-boot evidence at2aef493; SACLs, absent/null
 DACLs and reparse points remain outside the current preservation profile.
 
 ## Build tools

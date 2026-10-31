@@ -39,6 +39,12 @@ conversion and reboot. Both fragmented 2 MiB streams retained all 1,024 original
 physical extents. This adds a bounded compatibility result, not universal NTFS
 support; see the [pinned evidence](evidence/attribute-list-native-conversion-20261030.json).
 
+Bounded Windows extended attributes now survive conversion and reboot too:
+seven EAs across four file/directory identities, including binary data, an
+8 KiB value and `FILE_NEED_EA`. All 17 objects, 19 stream hashes and existing
+data mappings matched after boot. See the [EA contract](docs/ntfs-extended-attributes.md)
+and [native evidence](evidence/ea-native-conversion-20261031.json).
+
 Reusing bitmap evidence and phase planners reduced the same fragmented fixture
 from 138.75 s to 92.96 s (33% shorter), with matching checks and retained extents.
 This is one VM measurement; see [the performance evidence](evidence/bitmap-planning-performance-20261030.json).

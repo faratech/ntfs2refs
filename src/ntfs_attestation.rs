@@ -161,6 +161,19 @@ pub fn extent_identity_stream_request(
     {
         return Ok(None);
     }
+    let Some(paths) = crate::ntfs_admission::user_paths(raw, file) else {
+        return Ok(None);
+    };
+    // These streams use the bounded system-payload copier, whose complete
+    // content baseline is still required. Ordinary data keeps extent evidence.
+    if paths.is_empty()
+        || paths.iter().any(|path| {
+            path.first()
+                .is_some_and(|part| part.eq_ignore_ascii_case("System Volume Information"))
+        })
+    {
+        return Ok(None);
+    }
     ensure!(
         file.sequence_number != 0
             && file.record_number < 1 << 48

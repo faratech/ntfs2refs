@@ -23,12 +23,28 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-Performance candidate: scratch first-fit indexing, ordered interval sweeps,
-cached exact occupancy unions, immutable source identity/DATA indexes and lazy
-prefetch scheduling replace repeated scans/temporary collections. Full native
-bitmap/retrieval checks and all caps remain. Focused public/verifier release
-builds pass; same-source native follow-up is pending. See
-docs/planning-performance-20261031.md. No unit tests were added or run.
+D1 decision (2026-10-31): the user chose "Use destination windows
+(Recommended)" after the preserved14-case probe. Per-move bitmap queries may
+cover the exact destination window under both selectors. Keep complete phase
+snapshots, full file retrieval/all-placement checks and final allocation
+validation. Window evidence must remain explicitly scoped, separately typed
+and replayable; never put a window hash in a full-map Candidate. D2 incremental
+retrieval remains deferred. Update the move-proof schema and pre-I/O evidence
+budget together; lossless transcript compression is allowed, truncation is not.
+
+Performance runtime08dd747/public550ac571641cbb13beb5e6716e1212c2c3bd20782c4f259a01e1775a6a319b51
+passed conversion9f58c4cd/core09a6b41a and cold boot3b76ebb8:44objects/39stream
+hashes, all prior fixture checks and original4MiB/1,024 extents preserved.
+All1,044 ordered move intents/full after-mapping buffers, original-coordinate
+rows and counters match a126b18. New walltime114.735s versus94.686s provides
+NO speedup claim; host/cache conditions were not controlled. New CPU lookup,
+merge and prefetch memory complexity is lower; full bitmap query cost remains
+on this runtime. Evidence: evidence/planning-performance-native-20261031.json.
+Normalcheckpoint228c7aa3; current VM Off/RAM0 at coldcheckpoint
+863e9372-f81a-444a-a3d3-595ebc5d81f0,50checkpoints; workers/tasks terminal/idle.
+Obsolete failed leavesddf5e717/0bf53231 were removed via Hyper-V after archive
+rehash; receipts under .lab, all evidence retained. No unit tests added/run.
+The newly authorized D1 code is a separate candidate, not covered by08dd747.
 
 Compression milestone: runtimea126b18/public358d99f158e103625266c4c744f0230c8d4a1016fa129fa6bd106ae4e3c181e6
 passed public conversiona1cc190f/core69169b55 and cold bootccafd9f0:44 objects,
@@ -785,9 +801,10 @@ originals stay intact until handoff, so only those ranges need journaling),
 and fall back to the external old+new journal, sized from actual free space
 rather than a fixed cap, when there is not. Needs design and hard power-off
 qualification before use.
-PER-MOVE CHECKS (user, 2026-10-29): D-1 (window-scoped bitmap probes) and D-2
-(incremental retrieval proofs) are deferred: "Decide after measuring" the
-scaled fixture (design stage S10). Keep full per-move checks until then.
+PER-MOVE CHECKS: the 2026-10-29 "Decide after measuring" deferral was superseded
+for D1 on2026-10-31: the user selected destination windows under both selectors,
+retaining full phase maps, full retrieval and final allocation validation.
+D2 incremental retrieval remains deferred; do not infer its authorization.
 MEASURED (2026-10-29, evidence/mixed-fixture-class-split-20261029.json): on the
 808-file fixture 99.2% of the first 4.95 GB of changed bytes are shadow zeros
 written over NTFS file data inside the ReFS metadata-inclusive prefix

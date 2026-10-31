@@ -291,6 +291,7 @@ pub(crate) fn check_non_security_snapshot(
     serial: u64,
     s: &Snapshot,
 ) -> Result<[u64; 4]> {
+    check_reparse_snapshot(file, s)?;
     if file.extended_attributes.is_some()
         || s.extended_attributes.is_some()
         || s.extended_attributes_error.is_some()
@@ -362,6 +363,44 @@ pub(crate) fn check_non_security_snapshot(
     ])
 }
 
+/// Source-link evidence belongs to the opened link itself. Matching only its
+/// tag is insufficient: the full supported buffer must match the raw NTFS
+/// attribute, including path strings, offsets and relative-link flags.
+pub(crate) fn check_reparse_snapshot(file: &FileInventory, s: &Snapshot) -> Result<()> {
+    let expected = crate::ntfs_reparse::file_point(file)?;
+    let tag = buffer(s, 9, 8)?;
+    let native_tag = u32le(tag, 4);
+    let expected_tag = match &expected {
+        Some(point) => u32::from_le_bytes(
+            point
+                .buffer
+                .get(..4)
+                .context("validated raw reparse tag missing")?
+                .try_into()?,
+        ),
+        None => 0,
+    };
+    ensure!(
+        native_tag == expected_tag && (u32le(tag, 0) & 0x400 != 0) == expected.is_some(),
+        "native reparse tag/attribute differs from raw source"
+    );
+    s.validate_reparse(false)?;
+    match &s.reparse {
+        Some(observed) => {
+            ensure!(observed.error.is_none(), "native reparse query failed");
+            ensure!(
+                observed.point == expected,
+                "raw/native reparse buffers differ"
+            );
+        }
+        None => ensure!(
+            expected.is_none(),
+            "legacy native report lacks full reparse evidence"
+        ),
+    }
+    Ok(())
+}
+
 pub fn compare(
     raw: &NtfsInspection,
     inspection_sha256: &str,
@@ -372,7 +411,7 @@ pub fn compare(
     }
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2..=10) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=11) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;

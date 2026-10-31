@@ -71,6 +71,8 @@ pub struct Object {
     /// Missing in historical requests; never confused with an observed empty set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extended_attributes: Option<n2r_win32::extended_attributes::Set>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reparse: Option<n2r_win32::reparse_layout::Point>,
     pub source_offset: Option<u64>,
     /// Fragmented, aligned NTFS payload runs. Mutually exclusive with the
     /// single-run source_offset; absent in older frozen tree requests.
@@ -226,6 +228,31 @@ impl ExpectedTree {
             if let Some(eas) = &object.extended_attributes {
                 eas.validate()?;
             }
+            if let Some(point) = &object.reparse {
+                point.validate()?;
+                ensure!(
+                    !object.path.is_empty(),
+                    "volume root reparse point is unsupported"
+                );
+                ensure!(
+                    object
+                        .extended_attributes
+                        .as_ref()
+                        .is_none_or(|ea| ea.is_empty()),
+                    "reparse points and EAs are mutually exclusive"
+                );
+                ensure!(
+                    object.directory
+                        || (object.length == 0
+                            && object.named_streams.is_empty()
+                            && object.sparse.is_none()),
+                    "file-link DATA streams exceed the initial reparse profile"
+                );
+                ensure!(
+                    point.tag() != 0xa0000003 || object.directory,
+                    "junction must be a directory"
+                );
+            }
             ntfs_security::parse_descriptor(&object.security)?;
             n2r_win32::security_descriptor::validate(&object.security)?;
             let path_key = destination_key(&object.path, resources);
@@ -241,6 +268,7 @@ impl ExpectedTree {
                         .all(|time| *time > 0 && *time < i64::MAX as u64)
                     && object.attributes
                         & !(0x2037
+                            | if object.reparse.is_some() { 0x400 } else { 0 }
                             | if object.sparse.is_some()
                                 || object.named_streams.iter().any(|s| s.sparse.is_some())
                             {
@@ -250,11 +278,19 @@ impl ExpectedTree {
                             })
                         == 0
                     && (object.attributes & 16 != 0) == object.directory
+                    && (object.attributes & 0x400 != 0) == object.reparse.is_some()
                     && identities.insert((object.record_number, object.sequence_number))
                     && !paths.contains_key(&path_key),
                 "expected general tree object is invalid or duplicated"
             );
             if !object.path.is_empty() {
+                ensure!(
+                    !self.objects.iter().any(|parent| parent.reparse.is_some()
+                        && object.path.len() > parent.path.len()
+                        && destination_key(&object.path[..parent.path.len()], resources)
+                            == destination_key(&parent.path, resources)),
+                    "namespace descends through a reparse object"
+                );
                 let parent = destination_key(&object.path[..object.path.len() - 1], resources);
                 ensure!(
                     paths.get(&parent) == Some(&true),
@@ -285,6 +321,13 @@ impl ExpectedTree {
                 );
             }
             for alias in &object.additional_names {
+                ensure!(
+                    !self.objects.iter().any(|parent| parent.reparse.is_some()
+                        && alias.len() > parent.path.len()
+                        && destination_key(&alias[..parent.path.len()], resources)
+                            == destination_key(&parent.path, resources)),
+                    "additional name descends through a reparse object"
+                );
                 ensure!(
                     !alias.is_empty()
                         && alias.len() <= 16
@@ -588,10 +631,12 @@ fn derive_profile(
             si.mft_change_time,
         ];
         let has_verified_eas = crate::ntfs_attestation::has_verified_nonempty_eas(f);
+        let reparse = crate::ntfs_reparse::file_point(f)?;
         ensure!(
             times.iter().all(|t| *t > 0 && *t < i64::MAX as u64)
                 && si.file_attributes
                     & !(0x2027
+                        | if reparse.is_some() { 0x400 } else { 0 }
                         | if f.streams.iter().any(|s| s.flags == 0x8000) {
                             0x200
                         } else {
@@ -673,6 +718,7 @@ fn derive_profile(
             security: hex::decode(&descriptor.relative_hex)?,
             api_security: None,
             extended_attributes: Some(crate::ntfs_extended_attributes::file_set(f)?),
+            reparse,
             source_offset,
             source_extents,
             length,

@@ -372,6 +372,10 @@ pub struct FileInventory {
     /// without this field can establish absence only when no EA attrs exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extended_attributes: Option<crate::ntfs_extended_attributes::Inventory>,
+    /// Exact checked Microsoft symlink/mount-point bytes. Missing legacy data
+    /// proves absence only when the attribute inventory has no REPARSE_POINT.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reparse: Option<n2r_win32::reparse_layout::Point>,
 }
 
 /// MFT ancestry evidence only. Directory indexes, allocation ownership and
@@ -1064,6 +1068,49 @@ fn capture_extended_attributes<R: Read + Seek>(
     Inventory::capture(information, data, &information_bytes, &data_bytes)
 }
 
+fn capture_reparse<R: Read + Seek>(
+    reader: &mut R,
+    record: &Record,
+    geometry: &NtfsGeometry,
+) -> Result<Option<n2r_win32::reparse_layout::Point>> {
+    let Some(attribute) = crate::ntfs_reparse::storage_attribute(
+        record.attributes.iter().map(|attribute| &attribute.report),
+    )?
+    else {
+        return Ok(None);
+    };
+    ensure!(
+        record.base == 0
+            && !record
+                .attributes
+                .iter()
+                .any(|attribute| attribute.report.type_code == 0x20),
+        "reparse attribute-list assembly is unsupported"
+    );
+    if !attribute.resident {
+        validate_stream_mapping(attribute, geometry)
+            .context("validating complete reparse storage mapping")?;
+    }
+    let actual = record
+        .attributes
+        .iter()
+        .find(|attribute| attribute.report.type_code == 0xc0)
+        .context("reparse attribute disappeared during capture")?;
+    let buffer = read_small_attribute(
+        reader,
+        actual,
+        geometry,
+        crate::ntfs_reparse::MAX_REPARSE_BYTES,
+    )?;
+    let point = n2r_win32::reparse_layout::Point { buffer };
+    point.validate()?;
+    ensure!(
+        point.tag() != 0xa000_0003 || record.flags & 2 != 0,
+        "a mount-point reparse attribute requires a directory"
+    );
+    Ok(Some(point))
+}
+
 /// Reuse the checked parser for additional read-only source-state checks.
 pub(crate) fn validate_file_record(bytes: &[u8], geometry: &NtfsGeometry) -> Result<()> {
     parse_record(bytes.to_vec(), geometry)?;
@@ -1481,6 +1528,9 @@ fn file_heap_bytes(file: &FileInventory) -> Result<u64> {
     }
     if let Some(attributes) = &file.extended_attributes {
         counter.charge(attributes.heap_bytes()?)?;
+    }
+    if let Some(point) = &file.reparse {
+        counter.charge(point.buffer.capacity() as u64)?;
     }
     Ok(counter.used)
 }
@@ -3437,6 +3487,8 @@ pub fn inspect_with_limits<R: Read + Seek>(
                 capture_extended_attributes(reader, &record, &geometry)
                     .with_context(|| format!("capturing EAs for MFT record {number}"))?,
             ),
+            reparse: capture_reparse(reader, &record, &geometry)
+                .with_context(|| format!("capturing reparse point for MFT record {number}"))?,
         };
         if record.base != 0 {
             blocker(
@@ -3621,13 +3673,10 @@ pub fn inspect_with_limits<R: Read + Seek>(
                         logical_hash_status,
                     });
                 }
-                0xc0 => blocker(
-                    &mut report,
-                    &mut budget,
-                    "reparse_semantics_unverified",
-                    "Raw reparse metadata is inventoried but tag-specific preservation is unvalidated",
-                    Some(number),
-                )?,
+                // capture_reparse validated and retained the actual bytes
+                // before attributes were consumed. Unsupported tags/layouts
+                // return an error instead of losing their semantics.
+                0xc0 => ensure!(inventory.reparse.is_some(), "reparse capture missing"),
                 // The unique paired EA attrs were fully read and validated
                 // before consuming this record. Keep both original attrs and
                 // their complete allocations in the ownership inventory.

@@ -27,8 +27,8 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
-security cold-boot checkpointc6345e1f-7cc9-43dd-8ebc-6c7b4546d06c;49 checkpoints
+Current state supersedes all older VM states below: VM is running at NTFS
+security source checkpoint684b9c4c-4cb9-4b58-9669-028bd8b1c946;46 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Prior performance runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
@@ -125,6 +125,24 @@ EA failure leaves286e2588 and2c8164d8 through Hyper-V APIs; all archived metadat
 remains and cleanup receipt is under security-coldboot-d85aca0e. Their old IDs
 are historical, never recreate them. The active sources and qualified results
 remain. No unit tests were added or run.
+
+Reparse continuation: candidate public097ce8827ed639eaadbaafbc3e9ea3eb303d146f83808bdb2e204d8f0e25748d
+and lab-create-reparse-fixture6912dbd7abde841fa5661f648881ced3edd92a0ab4daa24c6b9bd010a082dd91
+release builds pass. Raw C0 buffers and full $R index membership are reconciled;
+source schema11 binds exact native buffers/tags/attributes, with explicit absent
+versus missing/error evidence. Canonical points carry raw bytes. The private
+native shadow installs points after all ACL propagation/EAs, before final basic
+timestamps; no directory-link traversal is allowed in target verification.
+Fresh point setters use a separately restored symbolic-link privilege lease.
+Supported tags are Microsoft symlink and mount-point/junction only. File-link
+DATA/ADS/sparse combinations remain outside the initial preservation profile.
+Case-folded canonical/alias ancestry checks exclude descendants under points.
+Fixture d947e5ab5a9e4d0ea9ae168b496b672c is prepared; no native fixture result yet.
+The user-authorized obsolete ATTRLIST failure leavesb3f9ffae,865bf7b0,e92ade3b
+were removed through Hyper-V APIs with closed archives retained; cleanup receipt
+is .lab/hyperv/streaming-v2-20261027/reparse-obsolete-checkpoint-cleanup-20261031.json.
+Those old checkpoint IDs are historical, never recreate them. Current NTFS
+sources and qualified ReFS/security/EA branches remain. No unit tests.
 
 ### Previous milestones and fixture setup
 

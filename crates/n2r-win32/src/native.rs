@@ -2166,7 +2166,7 @@ impl GeneralFrozenPartition {
         let report = collected?;
         if report.request != *request
             || report.conversion_qualified
-            || report.schema_version != if request.schema_version == 3 { 10 } else { 7 }
+            || report.schema_version != if request.schema_version == 3 { 11 } else { 7 }
         {
             return Err(invalid("general native source report profile differs"));
         }

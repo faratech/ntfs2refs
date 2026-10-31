@@ -372,7 +372,7 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         crate::ntfs_inspect::validate_record_coverage(raw)?;
     }
     ensure!(
-        matches!(native.schema_version, 3..=10),
+        matches!(native.schema_version, 3..=11),
         "native stream profile missing"
     );
     validate_paging_schema(native)?;
@@ -381,7 +381,7 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         .as_ref()
         .context("missing native volume allocation observations")?;
     let bitmap = Check::from((|| {
-        if matches!(native.schema_version, 9 | 10) {
+        if matches!(native.schema_version, 9 | 10 | 11) {
             let before = volume
                 .streamed_before
                 .as_ref()

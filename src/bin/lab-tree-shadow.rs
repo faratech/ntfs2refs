@@ -194,6 +194,7 @@ fn main() -> anyhow::Result<()> {
                 security: &o.security,
                 expected_api_security: o.api_security.as_deref(),
                 extended_attributes: None,
+                reparse: None,
                 payload: p,
                 expected_length: if args.stream_payload && !o.directory {
                     Some(o.length)

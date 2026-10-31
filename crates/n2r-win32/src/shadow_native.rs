@@ -69,6 +69,7 @@ pub struct Input<'a> {
     pub security: &'a [u8],
     pub expected_api_security: Option<&'a [u8]>,
     pub extended_attributes: Option<&'a crate::extended_attributes::Set>,
+    pub reparse: Option<&'a crate::reparse_layout::Point>,
     pub payload: &'a [u8],
     /// Hash-only expectations are accepted for ordinary shadow streaming and
     /// verification. The source reader supplies bytes during construction.
@@ -1069,19 +1070,48 @@ fn extended_attributes_match(input: &Input<'_>, actual: &Snapshot) -> io::Result
     observed.validate().map_err(io::Error::other)?;
     Ok(expected.equivalent(observed))
 }
+fn reparse_matches(input: &Input<'_>, actual: &Snapshot) -> io::Result<bool> {
+    let Some(observed) = &actual.reparse else {
+        return Ok(input.reparse.is_none());
+    };
+    if observed.error.is_some() {
+        return Err(invalid("native reparse query failed"));
+    }
+    if let Some(expected) = input.reparse {
+        expected.validate()?;
+    }
+    if let Some(point) = &observed.point {
+        point.validate()?;
+    }
+    Ok(observed.point.as_ref() == input.reparse)
+}
 fn metadata_snapshot(file: &File, input: &Input<'_>) -> Snapshot {
-    if input.extended_attributes.is_some() {
+    if input.extended_attributes.is_some() || input.reparse.is_some() {
         snapshot_with_ea(file)
     } else {
         snapshot(file)
     }
 }
 fn repeat_snapshot(file: &File, previous: &Snapshot) -> Snapshot {
-    if previous.extended_attributes.is_some() || previous.extended_attributes_error.is_some() {
+    let mut observation = if previous.extended_attributes.is_some()
+        || previous.extended_attributes_error.is_some()
+        || previous.reparse.is_some()
+    {
         snapshot_with_ea(file)
     } else {
         snapshot(file)
+    };
+    // Preserve the explicit feature scope of historical readback evidence.
+    // Basic/tag/identity fields remain present; new schema-11 admission requires
+    // actual reparse observations and cannot obtain them through this replay.
+    if previous.reparse.is_none() {
+        observation.reparse = None;
     }
+    if previous.extended_attributes.is_none() && previous.extended_attributes_error.is_none() {
+        observation.extended_attributes = None;
+        observation.extended_attributes_error = None;
+    }
+    observation
 }
 fn query_bytes(s: &Snapshot, class: i32, length: usize) -> io::Result<&[u8]> {
     let q = s
@@ -1104,7 +1134,21 @@ fn has_sparse(i: &Input<'_>) -> bool {
     i.sparse.is_some() || i.named_streams.iter().any(|s| s.sparse.is_some())
 }
 fn attributes_allowed(i: &Input<'_>) -> bool {
-    i.attributes & !if has_sparse(i) { 0x2237 } else { 0x2037 } == 0
+    i.attributes
+        & !((if has_sparse(i) { 0x2237 } else { 0x2037 })
+            | if i.reparse.is_some() { 0x400 } else { 0 })
+        == 0
+        && (i.attributes & 0x400 != 0) == i.reparse.is_some()
+        && i.reparse.is_none_or(|point| {
+            point.validate().is_ok()
+                && !i.components.is_empty()
+                && (point.tag() != 0xa0000003 || i.directory)
+                && (i.directory
+                    || (i.logical_length() == 0
+                        && i.named_streams.is_empty()
+                        && i.sparse.is_none()))
+                && i.extended_attributes.is_none_or(|ea| ea.is_empty())
+        })
 }
 fn basic_matches(i: &Input<'_>, actual: &[u8]) -> bool {
     actual == basic_bytes(i)
@@ -1165,7 +1209,9 @@ fn validate_existing_profile(
     for (i, o) in input.iter().zip(&report.objects) {
         if !before_restore
             && (!extended_attributes_match(i, &o.before)?
-                || !extended_attributes_match(i, &o.after)?)
+                || !extended_attributes_match(i, &o.after)?
+                || !reparse_matches(i, &o.before)?
+                || !reparse_matches(i, &o.after)?)
         {
             return Err(invalid("existing shadow extended attributes differ"));
         }
@@ -1279,7 +1325,7 @@ fn validate_existing_profile(
     for (i, o) in input
         .iter()
         .zip(&report.objects)
-        .filter(|(i, _)| i.directory)
+        .filter(|(i, _)| i.directory && i.reparse.is_none())
     {
         let expected: BTreeMap<_, _> = input
             .iter()
@@ -1562,6 +1608,46 @@ fn validate_open_type(f: &File, directory: bool) -> io::Result<()> {
         return Err(invalid("shadow path type or encoding differs"));
     }
     Ok(())
+}
+fn validate_bound_type(file: &File, item: &Input<'_>) -> io::Result<()> {
+    let Some(expected) = item.reparse else {
+        return validate_open_type(file, item.directory);
+    };
+    expected.validate()?;
+    let tag = info(file, 9, 8)?;
+    let flags = layout::u32_at(&tag, 0)?;
+    if flags & (0x800 | 0x4000) != 0
+        || (flags & 16 != 0) != item.directory
+        || flags & 0x400 == 0
+        || layout::u32_at(&tag, 4)? != expected.tag()
+        || crate::reparse_native::capture(file)?.as_ref() != Some(expected)
+    {
+        return Err(invalid("bound reparse object type/tag/data differs"));
+    }
+    Ok(())
+}
+fn open_input(path: &str, item: &Input<'_>, protected: bool) -> io::Result<File> {
+    if item.reparse.is_none() {
+        return if protected {
+            open_protected_readonly(path, item.directory)
+        } else {
+            open(path, item.directory, false)
+        };
+    }
+    let file = File::options()
+        .access_mode(if protected {
+            PROTECTED_READ_ACCESS
+        } else {
+            0x01020189
+        })
+        .share_mode(3)
+        .custom_flags(0x02200000)
+        .open(path)?;
+    if !protected {
+        suppress_access(&file)?;
+    }
+    validate_bound_type(&file, item)?;
+    Ok(file)
 }
 fn enumerate(file: &File) -> io::Result<Vec<namespace_layout::Entry>> {
     let mut calls = vec![];
@@ -1937,11 +2023,22 @@ fn basic(file: &File, i: &Input<'_>) -> io::Result<()> {
     if sparse_before.is_some() {
         b[4] &= !0x200;
     }
+    if let Some(point) = i.reparse {
+        if crate::reparse_native::capture(file)?.as_ref() != Some(point) {
+            return Err(invalid("reparse data differs before basic metadata"));
+        }
+        b[4] &= !0x400;
+    }
     // SAFETY: FILE_BASIC_INFO layout, aligned initialized forty-byte buffer.
     check(unsafe { SetFileInformationByHandle(file.as_raw_handle(), 0, b.as_ptr().cast(), 40) })?;
     if let Some(expected) = sparse_before {
         if layout::u32_at(&info(file, 9, 8)?, 0)? & 0x200 != expected {
             return Err(invalid("basic metadata changed managed sparse state"));
+        }
+    }
+    if let Some(point) = i.reparse {
+        if crate::reparse_native::capture(file)?.as_ref() != Some(point) {
+            return Err(invalid("basic metadata changed reparse data"));
         }
     }
     Ok(())
@@ -3490,18 +3587,25 @@ fn run_role_profile(
     // cores in input order; the first failure in input order is returned.
     let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
         let path = format!("{}{}", root, i.components.join("\\"));
-        let mut h = if protected.is_some() {
-            open_protected_readonly(&path, i.directory)?
-        } else {
-            open(&path, i.directory, false)?
-        };
+        let mut h = open_input(&path, i, protected.is_some())?;
         let before = metadata_snapshot(&h, i);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
         let mut retrieval_page_proof = None;
         let (logical_sha256, retrieval, cached_validity, storage_validity, integrity, namespace) =
             if i.directory {
-                (None, vec![], vec![], vec![], vec![], enumerate(&h)?)
+                (
+                    None,
+                    vec![],
+                    vec![],
+                    vec![],
+                    vec![],
+                    if i.reparse.is_some() {
+                        Vec::new()
+                    } else {
+                        enumerate(&h)?
+                    },
+                )
             } else {
                 let (first, continuation) = crate::stream_native::retrieval_queries(&h);
                 let retrieval = if first.native_error.is_none()
@@ -3843,6 +3947,7 @@ mod tests {
             security: &[],
             expected_api_security: None,
             extended_attributes: None,
+            reparse: None,
             payload: &[],
             expected_length: Some(20480),
             expected_sha256: Some(digest),
@@ -3877,6 +3982,7 @@ mod tests {
                 security: &[],
                 expected_api_security: None,
                 extended_attributes: None,
+                reparse: None,
                 payload: &[],
                 expected_length: Some(length),
                 expected_sha256: None,
@@ -3991,6 +4097,7 @@ mod tests {
             security: &[1],
             expected_api_security: Some(&[2]),
             extended_attributes: None,
+            reparse: None,
             payload: &[],
             expected_length: None,
             expected_sha256: None,
@@ -4001,6 +4108,7 @@ mod tests {
         };
         let mut actual = Snapshot {
             extended_attributes: None,
+            reparse: None,
             extended_attributes_error: None,
             queries: vec![],
             security: vec![2],

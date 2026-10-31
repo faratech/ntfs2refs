@@ -112,13 +112,9 @@ pub(super) fn observe(
     let mut result = Vec::with_capacity(item.additional_names.len());
     for path in item.additional_names {
         let name = format!("{root}{}", path.join("\\"));
-        let file = if protected {
-            open_protected_readonly(&name, false)?
-        } else {
-            open(&name, false, false)?
-        };
-        let before = metadata_snapshot(&file, item);
-        let after = metadata_snapshot(&file, item);
+        let file = open_input(&name, item, protected)?;
+        let before = repeat_snapshot(&file, canonical);
+        let after = repeat_snapshot(&file, canonical);
         let same_file_id = query_bytes(&before, 18, 24)? == canonical_id
             && query_bytes(&after, 18, 24)? == canonical_id;
         let link_count_matches = layout::u32_at(query_bytes(&before, 1, 24)?, 16)? == expected

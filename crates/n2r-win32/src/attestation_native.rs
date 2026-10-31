@@ -221,17 +221,26 @@ pub(crate) fn snapshot(file: &File) -> Snapshot {
         kernel_security: Some(kernel_security),
         extended_attributes: None,
         extended_attributes_error: None,
+        reparse: None,
     }
 }
 
-/// File/directory metadata handles only. EA enumeration belongs to the file
-/// identity and must not be repeated on named stream payload handles.
+/// Canonical file/directory metadata handles only. EA and reparse enumeration
+/// belong to the file identity, never named stream payload handles. The handle
+/// was opened with OPEN_REPARSE_POINT, so this never resolves a link target.
 pub(crate) fn snapshot_with_ea(file: &File) -> Snapshot {
     let mut observation = snapshot(file);
     match crate::extended_attributes_native::capture(file) {
         Ok(set) => observation.extended_attributes = Some(set),
         Err(error) => observation.extended_attributes_error = Some(error.to_string()),
     }
+    observation.reparse = Some(match crate::reparse_native::capture(file) {
+        Ok(point) => crate::attestation::ReparseObservation { point, error: None },
+        Err(error) => crate::attestation::ReparseObservation {
+            point: None,
+            error: Some(error.to_string()),
+        },
+    });
     observation
 }
 
@@ -498,6 +507,9 @@ fn collect_file_metadata_with_passes(
                 stream_bytes = stream_bytes
                     .checked_add(s.extended_attribute_bytes()?)
                     .ok_or_else(|| invalid("native EA evidence budget overflow"))?;
+                stream_bytes = stream_bytes
+                    .checked_add(s.reparse_bytes()?)
+                    .ok_or_else(|| invalid("native reparse evidence budget overflow"))?;
             }
             if security_bytes > limits.security_bytes {
                 return Err(invalid("native descriptor budget exhausted"));
@@ -541,7 +553,7 @@ fn collect_file_metadata_with_passes(
     let after = route(&volume, &disk, request)?;
     let mut report = Report {
         schema_version: if request.resource_profile.is_some() {
-            10
+            11
         } else {
             7
         },

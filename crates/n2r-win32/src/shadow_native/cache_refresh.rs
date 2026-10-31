@@ -219,8 +219,11 @@ pub(super) fn complete_owned_metadata(
             }
         }
     }
-    let namespace = || -> io::Result<()> {
+    let namespace = |points_installed: bool| -> io::Result<()> {
         for (index, directory) in input.iter().enumerate().filter(|(_, i)| i.directory) {
+            if points_installed && directory.reparse.is_some() {
+                continue;
+            }
             let handle = &handles[&index];
             let mut seen = BTreeSet::new();
             for entry in enumerate(handle)? {
@@ -235,7 +238,8 @@ pub(super) fn complete_owned_metadata(
                     .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
                 if !seen.insert(path.clone())
                     || (entry.attributes & 16 != 0) != child.directory
-                    || entry.attributes & 0x400 != 0
+                    || (entry.attributes & 0x400 != 0)
+                        != (points_installed && child.reparse.is_some())
                     || entry.file_id.as_slice() != &identities[&child_index][8..24]
                 {
                     return Err(invalid("owned metadata namespace identity or type differs"));
@@ -255,7 +259,7 @@ pub(super) fn complete_owned_metadata(
         }
         Ok(())
     };
-    namespace()?;
+    namespace(false)?;
     let mut ordered: Vec<_> = input.iter().enumerate().collect();
     ordered.sort_by_key(|(_, i)| i.components.len());
     let mut dacl_protection_updates = 0usize;
@@ -303,6 +307,21 @@ pub(super) fn complete_owned_metadata(
         }
     }
     // Security propagation and all children finish before basic metadata.
+    // Install points only after all parent-first ACL propagation has finished;
+    // no security operation may traverse a newly installed junction target.
+    let mut reparse_objects = 0usize;
+    for &(index, item) in &ordered {
+        if let Some(point) = item.reparse {
+            let handle = &handles[&index];
+            if info(handle, 18, 24)? != identities[&index] {
+                return Err(invalid(
+                    "owned identity changed before reparse installation",
+                ));
+            }
+            crate::reparse_native::restore_fresh_owned(handle, point)?;
+            reparse_objects += 1;
+        }
+    }
     // Reverse depth order finalizes root last, using the same held handles.
     for &(index, item) in ordered.iter().rev() {
         let handle = &handles[&index];
@@ -315,7 +334,7 @@ pub(super) fn complete_owned_metadata(
         }
     }
     volume.sync_all()?;
-    namespace()?;
+    namespace(true)?;
     for (index, item) in input.iter().enumerate() {
         let handle = &handles[&index];
         let actual = metadata_snapshot(handle, item);
@@ -323,6 +342,7 @@ pub(super) fn complete_owned_metadata(
             || !basic_matches(item, query_bytes(&actual, 0, 40)?)
             || !security_matches(item, &actual, &same_security)?
             || !extended_attributes_match(item, &actual)?
+            || !reparse_matches(item, &actual)?
         {
             return Err(invalid("final owned source metadata readback differs"));
         }
@@ -380,6 +400,7 @@ pub(super) fn complete_owned_metadata(
         "metadata_readback_verified":true,"dacl_protection_states_restored":dacl_protection_updates,
         "sacl_protection_states_restored":sacl_protection_updates,
         "ea_objects_verified":ea_objects,"ea_entries_restored":ea_entries,
+        "reparse_objects_verified":reparse_objects,
         "source_payload_writes":0,"user_payload_bytes_read":0,"user_payload_bytes_written":0,
         "source_before":source_before,"events":events,"owner_consumed":true,
         "disposable_maintenance_scope":true,"source_prefix_contents_verified":false,
@@ -690,9 +711,9 @@ pub fn run(
     // catches late inheritance or timestamp changes without reading payload.
     let mut metadata_verified = 0;
     for item in input {
-        let handle = open(
+        let handle = open_input(
             &format!("{}{}", root, item.components.join("\\")),
-            item.directory,
+            item,
             false,
         )?;
         let actual = metadata_snapshot(&handle, item);
@@ -701,6 +722,7 @@ pub fn run(
             || !basic_matches(item, query_bytes(&actual, 0, 40)?)
             || !security_matches(item, &actual, &same_security)?
             || !extended_attributes_match(item, &actual)?
+            || !reparse_matches(item, &actual)?
         {
             return Err(invalid(
                 "final shadow metadata readback differs from source",

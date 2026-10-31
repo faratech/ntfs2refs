@@ -223,6 +223,13 @@ pub struct Query {
     pub native_error: Option<i32>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReparseObservation {
+    /// Complete supported reparse data from this same held object. None with
+    /// no error is an observed absence, not a failed query.
+    pub point: Option<crate::reparse_layout::Point>,
+    pub error: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Snapshot {
     pub queries: Vec<Query>,
     pub security: Vec<u8>,
@@ -237,9 +244,53 @@ pub struct Snapshot {
     /// Native status or structural failure is explicit and never an empty set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extended_attributes_error: Option<String>,
+    /// Canonical file/directory observation only. Missing in legacy reports
+    /// and deliberately absent on named DATA-stream payload snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reparse: Option<ReparseObservation>,
 }
 
 impl Snapshot {
+    pub fn validate_reparse(&self, required: bool) -> io::Result<()> {
+        match &self.reparse {
+            Some(ReparseObservation {
+                point: Some(point),
+                error: None,
+            }) => point.validate(),
+            Some(ReparseObservation {
+                point: None,
+                error: None,
+            }) => Ok(()),
+            Some(ReparseObservation {
+                point: None,
+                error: Some(error),
+            }) if !error.is_empty() && error.len() <= 4096 => Ok(()),
+            None if !required => Ok(()),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native reparse observation is missing, contradictory or oversized",
+            )),
+        }
+    }
+
+    /// Stable retained payload accounting across JSON replay; no capacities
+    /// or transient native allocation sizes become part of ResourceAudit.
+    pub(crate) fn reparse_bytes(&self) -> io::Result<usize> {
+        self.validate_reparse(false)?;
+        let Some(observed) = &self.reparse else {
+            return Ok(0);
+        };
+        let error_bytes = observed.error.as_ref().map_or(0, String::len);
+        match &observed.point {
+            Some(point) => point
+                .buffer
+                .len()
+                .checked_add(error_bytes)
+                .ok_or_else(|| io::Error::other("native reparse evidence accounting overflow")),
+            None => Ok(error_bytes),
+        }
+    }
+
     /// Diagnostic consistency only; this does not authenticate saved reports
     /// or turn missing legacy evidence into a successful EA observation.
     pub fn validate_extended_attributes(&self, required: bool) -> io::Result<()> {
@@ -545,6 +596,7 @@ impl Report {
                     &mut out.stream_evidence_bytes,
                     snapshot.extended_attribute_bytes()?,
                 )?;
+                add(&mut out.stream_evidence_bytes, snapshot.reparse_bytes()?)?;
             }
             for capture in file.streams_before.iter().chain(file.streams_after.iter()) {
                 query(&mut out.stream_evidence_bytes, &capture.enumeration)?;
@@ -695,7 +747,8 @@ impl Report {
         };
         for file in &self.files {
             for snapshot in file.before.iter().chain(file.after.iter()) {
-                snapshot.validate_extended_attributes(self.schema_version == 10)?;
+                snapshot.validate_extended_attributes(matches!(self.schema_version, 10 | 11))?;
+                snapshot.validate_reparse(self.schema_version == 11)?;
             }
         }
         let Some(profile) = self.request.resource_profile else {
@@ -718,7 +771,7 @@ impl Report {
         let data = self.logical_data.as_ref().ok_or_else(invalid)?;
         let namespace = self.namespace.as_ref().ok_or_else(invalid)?;
         let allocation = self.allocation.as_ref().ok_or_else(invalid)?;
-        if matches!(self.schema_version, 9 | 10) {
+        if matches!(self.schema_version, 9 | 10 | 11) {
             allocation
                 .streamed_before
                 .as_ref()
@@ -798,7 +851,7 @@ impl Report {
         }
         let streaming_shape = match self.schema_version {
             8 => allocation.streamed_before.is_none() && allocation.streamed_after.is_none(),
-            9 | 10 => {
+            9 | 10 | 11 => {
                 allocation.streamed_before.is_some()
                     && allocation.streamed_after.is_some()
                     && allocation.bitmap_before_continuation.is_empty()

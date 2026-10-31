@@ -147,6 +147,7 @@ fn parse_index(root: &[u8], kind: IndexKind) -> anyhow::Result<SecurityIndex> {
 fn file(id: Option<u32>) -> FileInventory {
     FileInventory {
         extended_attributes: None,
+        reparse: None,
         record_number: 16,
         sequence_number: 1,
         hard_link_count: 1,

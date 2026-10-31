@@ -1,6 +1,7 @@
 //! Narrow frozen-source checks for indexes that role recognition cannot
-//! authorize dropping. User object/reparse entries and nondefault quota state
-//! stay refused; the sole cross-bound $Volume identity has an explicit audit
+//! authorize dropping. User object IDs and nondefault quota state stay refused;
+//! supported reparse entries must cross-match every actual point, while the
+//! sole cross-bound $Volume identity has an explicit audit
 //! and replacement disposition, and default quotas require a live witness.
 use crate::{
     ntfs_admission,
@@ -18,6 +19,11 @@ pub struct IndexState {
     pub name: String,
     pub record_number: u64,
     pub root_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initialized_allocation_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitmap_sha256: Option<String>,
+    pub index_blocks: usize,
     pub entries: usize,
     pub entry_evidence: Vec<IndexEntry>,
     pub replacement_supported: bool,
@@ -271,6 +277,157 @@ fn quota_indexes_match(owners: &[(Vec<u8>, Vec<u8>)], quotas: &[(Vec<u8>, Vec<u8
             == owners.len()
 }
 
+fn reparse_index_matches(raw: &NtfsInspection, entries: &[(Vec<u8>, Vec<u8>)]) -> Result<bool> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut expected = BTreeMap::new();
+    for file in &raw.files {
+        let point = match crate::ntfs_reparse::file_point(file) {
+            Ok(point) => point,
+            Err(_) => return Ok(false),
+        };
+        let Some(point) = point else { continue };
+        if file.sequence_number == 0 || file.record_number > 0x0000_ffff_ffff_ffff {
+            return Ok(false);
+        }
+        let reference = file.record_number | (u64::from(file.sequence_number) << 48);
+        if expected.insert(reference, point.tag()).is_some() {
+            return Ok(false);
+        }
+    }
+    let mut seen = BTreeSet::new();
+    let mut previous = None;
+    for (key, value) in entries {
+        if key.len() != 12 || !value.is_empty() {
+            return Ok(false);
+        }
+        let tag = u32::from_le_bytes(key[..4].try_into()?);
+        let low = u32::from_le_bytes(key[4..8].try_into()?);
+        let high = u32::from_le_bytes(key[8..12].try_into()?);
+        // COLLATION_NTOFS_ULONGS compares successive little-endian ULONGs,
+        // rather than UTF-8 bytes or an ordinary 64-bit file-reference order.
+        let ordering = (tag, low, high);
+        if previous.is_some_and(|prior| prior >= ordering) {
+            return Ok(false);
+        }
+        previous = Some(ordering);
+        let reference = u64::from(low) | (u64::from(high) << 32);
+        if reference >> 48 == 0 || expected.get(&reference) != Some(&tag) || !seen.insert(reference)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(seen.len() == expected.len())
+}
+
+struct ReparseIndexStorage {
+    root: Vec<u8>,
+    allocation: Vec<u8>,
+    initialized: u64,
+    bitmap: Vec<u8>,
+}
+
+fn reparse_index_storage<R: Read + Seek>(
+    reader: &mut R,
+    raw: &NtfsInspection,
+    file: &ntfs_inspect::FileInventory,
+    name: &[u16],
+) -> Result<ReparseIndexStorage> {
+    let mut root = None;
+    let mut allocation = None;
+    let mut bitmap = None;
+    ensure!(
+        file.base_file_reference == 0 && file.sequence_number != 0,
+        "reparse index file identity is invalid"
+    );
+    for attribute in &file.attributes {
+        if matches!(attribute.type_code, 0x90 | 0xa0 | 0xb0) {
+            ensure!(
+                attribute.name_utf16 == name
+                    && attribute.flags == 0
+                    && attribute.lowest_vcn == 0
+                    && attribute.compression_unit == 0,
+                "reparse index contains an unknown, encoded or continued index"
+            );
+            let target = match attribute.type_code {
+                0x90 => &mut root,
+                0xa0 => &mut allocation,
+                0xb0 => &mut bitmap,
+                _ => unreachable!(),
+            };
+            ensure!(
+                target.replace(attribute).is_none(),
+                "duplicate reparse index stream"
+            );
+        } else {
+            let metadata = matches!(attribute.type_code, 0x10 | 0x30 | 0x50)
+                && attribute.resident
+                && attribute.name_utf16.is_empty()
+                && attribute.flags == 0;
+            let empty_data = attribute.type_code == 0x80
+                && attribute.name_utf16.is_empty()
+                && attribute.flags == 0
+                && attribute.logical_size == 0
+                && attribute.initialized_size == 0
+                && attribute.allocated_size == 0
+                && attribute.extents.is_empty();
+            ensure!(
+                metadata || empty_data,
+                "unexplained reparse-index file metadata"
+            );
+        }
+    }
+    let root = root.context("reparse index root absent")?;
+    ensure!(root.resident, "reparse index root must be resident");
+    let root = ntfs_inspect::read_resident_inventory_attribute(reader, raw, file, root)?;
+    let (allocation, initialized, bitmap) = match (allocation, bitmap) {
+        (None, None) => (Vec::new(), 0, Vec::new()),
+        (Some(allocation), Some(bitmap)) => {
+            ensure!(
+                !allocation.resident
+                    && allocation.logical_size > 0
+                    && allocation.logical_size <= ntfs_index::MAX_INDEX_BYTES as u64
+                    && allocation.logical_size.is_multiple_of(4096)
+                    && allocation.initialized_size <= allocation.logical_size
+                    && bitmap.logical_size <= 4096
+                    && bitmap.initialized_size == bitmap.logical_size,
+                "reparse index allocation/bitmap exceeds the complete walker profile"
+            );
+            // Every initialized byte is reread. Uninitialized free slots stay
+            // zero in this temporary input and can never be followed by the
+            // bitmap-complete index walker.
+            let mut bytes = vec![0; allocation.logical_size as usize];
+            ntfs_inspect::read_nonresident_inventory_range(
+                reader,
+                allocation,
+                0,
+                &mut bytes[..allocation.initialized_size as usize],
+                &raw.geometry,
+            )?;
+            let bitmap_bytes = if bitmap.resident {
+                ntfs_inspect::read_resident_inventory_attribute(reader, raw, file, bitmap)?
+            } else {
+                let mut bytes = vec![0; bitmap.logical_size as usize];
+                ntfs_inspect::read_nonresident_inventory_range(
+                    reader,
+                    bitmap,
+                    0,
+                    &mut bytes,
+                    &raw.geometry,
+                )?;
+                bytes
+            };
+            (bytes, allocation.initialized_size, bitmap_bytes)
+        }
+        _ => anyhow::bail!("reparse index allocation/bitmap pair is incomplete"),
+    };
+    Ok(ReparseIndexStorage {
+        root,
+        allocation,
+        initialized,
+        bitmap,
+    })
+}
+
 pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<VerifiedIndexes> {
     crate::ntfs_inspect::revalidate_mft_mapping(reader, raw)?;
     crate::ntfs_inspect::validate_record_coverage(raw)?;
@@ -304,21 +461,31 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
             .iter()
             .filter(|a| a.name_utf16 == name_utf16)
             .collect();
-        ensure!(
-            attrs.len() == 1
-                && attrs[0].type_code == 0x90
-                && attrs[0].flags == 0
-                && attrs[0].lowest_vcn == 0
-                && attrs[0].compression_unit == 0,
-            "internal index {role}/{name} exceeds resident-only replacement profile"
-        );
-        let root = ntfs_inspect::read_resident_inventory_attribute(reader, raw, file, attrs[0])?;
+        let storage = if role == "$Extend\\$Reparse" {
+            reparse_index_storage(reader, raw, file, &name_utf16)?
+        } else {
+            ensure!(
+                attrs.len() == 1
+                    && attrs[0].type_code == 0x90
+                    && attrs[0].flags == 0
+                    && attrs[0].lowest_vcn == 0
+                    && attrs[0].compression_unit == 0,
+                "internal index {role}/{name} exceeds resident-only replacement profile"
+            );
+            ReparseIndexStorage {
+                root: ntfs_inspect::read_resident_inventory_attribute(reader, raw, file, attrs[0])?,
+                allocation: Vec::new(),
+                initialized: 0,
+                bitmap: Vec::new(),
+            }
+        };
+        let root = &storage.root;
         let parsed = ntfs_index::parse_with_cluster_size(
             Input {
-                root: &root,
-                allocation: &[],
-                initialized: 0,
-                bitmap: &[],
+                root,
+                allocation: &storage.allocation,
+                initialized: storage.initialized,
+                bitmap: &storage.bitmap,
             },
             profile,
             raw.geometry.cluster_size,
@@ -326,8 +493,7 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
         )
         .with_context(|| format!("internal index {role}/{name}"))?;
         let supported = if role == "$Extend\\$ObjId" {
-            volume_object_id =
-                internal_volume_object_id(reader, raw, file, &root, &parsed.entries)?;
+            volume_object_id = internal_volume_object_id(reader, raw, file, root, &parsed.entries)?;
             volume_object_id.is_some()
                 || (parsed.entries.is_empty()
                     && raw.files.iter().all(|file| {
@@ -335,6 +501,8 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
                             .iter()
                             .all(|attribute| attribute.type_code != 0x40)
                     }))
+        } else if role == "$Extend\\$Reparse" {
+            reparse_index_matches(raw, &parsed.entries)?
         } else {
             role != "$Extend\\$Quota" && parsed.entries.is_empty()
         };
@@ -349,7 +517,13 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
             role: role.into(),
             name: name.into(),
             record_number: file.record_number,
-            root_sha256: hex::encode(Sha256::digest(&root)),
+            root_sha256: hex::encode(Sha256::digest(root)),
+            initialized_allocation_sha256: (!storage.allocation.is_empty()).then(|| {
+                hex::encode(Sha256::digest(&storage.allocation[..storage.initialized as usize]))
+            }),
+            bitmap_sha256: (!storage.bitmap.is_empty())
+                .then(|| hex::encode(Sha256::digest(&storage.bitmap))),
+            index_blocks: parsed.index_blocks,
             entries: parsed.entries.len(),
             entry_evidence: parsed
                 .entries
@@ -362,6 +536,8 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
             replacement_supported: supported,
             detail: if role == "$Extend\\$ObjId" && volume_object_id.is_some() {
                 "sole $Volume identity cross-matches its current file reference; recorded for explicit filesystem-internal replacement, not same-ID preservation"
+            } else if supported && role == "$Extend\\$Reparse" {
+                "complete reparse index cross-matches every supported file reference, sequence and tag; target reconstruction still required"
             } else if supported {
                 "empty index or unlimited format defaults"
             } else {

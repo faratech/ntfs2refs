@@ -75,6 +75,7 @@ pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_n
             security: &object.security,
             expected_api_security: object.api_security.as_deref(),
             extended_attributes: object.extended_attributes.as_ref(),
+            reparse: object.reparse.as_ref(),
             payload: &[],
             expected_length: (!object.directory).then_some(object.length),
             expected_sha256: if object.directory {

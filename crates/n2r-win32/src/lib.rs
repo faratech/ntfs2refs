@@ -31,6 +31,8 @@ pub mod journal_file;
 pub mod lab_ntfs_fragmentation;
 #[cfg(windows)]
 pub mod lab_security_fixture;
+#[cfg(windows)]
+pub mod lab_reparse_fixture;
 pub mod layout;
 pub mod logical_hash;
 #[cfg(windows)]
@@ -42,6 +44,9 @@ pub mod reference_file;
 #[cfg(windows)]
 pub mod reference_import;
 pub mod region_layout;
+pub mod reparse_layout;
+#[cfg(windows)]
+pub mod reparse_native;
 pub mod retention_layout;
 pub mod retrieval_paging;
 pub mod security_descriptor;

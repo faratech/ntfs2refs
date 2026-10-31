@@ -39,6 +39,7 @@ pub struct PrivateTree {
     initial_objects: Vec<serde_json::Value>,
     events: Vec<NativeEvent>,
     privileges: Privileges,
+    reparse_privileges: Option<Privileges>,
     original_coordinates: BTreeMap<StreamKey, Vec<(u64, u64, u64)>>,
     placement_started: bool,
     placement_complete: bool,
@@ -1003,6 +1004,14 @@ fn allocate_checked(
             ])?;
             (privileges, open(&root, true, true)?, None, None)
         };
+    let reparse_privileges = if input
+        .iter()
+        .any(|item| item.reparse.is_some_and(|point| point.tag() == 0xa000000c))
+    {
+        Some(Privileges::enable_for(&["SeCreateSymbolicLinkPrivilege"])?)
+    } else {
+        None
+    };
     let initial = enumerate(&root_handle)?;
     if initial.iter().any(|entry| {
         entry.name_utf16 != [46]
@@ -1103,6 +1112,7 @@ fn allocate_checked(
                 security: &sd,
                 expected_api_security: None,
                 extended_attributes: None,
+                reparse: None,
                 payload: &[],
                 expected_length: None,
                 expected_sha256: None,
@@ -1241,6 +1251,7 @@ fn allocate_checked(
         initial_objects: objects,
         events,
         privileges,
+        reparse_privileges,
         original_coordinates: BTreeMap::new(),
         placement_started: false,
         placement_complete: false,

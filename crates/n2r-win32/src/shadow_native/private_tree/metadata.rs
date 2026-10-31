@@ -115,6 +115,15 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             }
         }
     }
+    if input.iter().any(|item| item.reparse.is_some()) {
+        hash.update(b"n2r-private-reparse-v1");
+        for item in input {
+            hash.update([u8::from(item.reparse.is_some())]);
+            if let Some(point) = item.reparse {
+                bytes(&mut hash, &point.buffer);
+            }
+        }
+    }
     hash.finalize().into()
 }
 
@@ -212,6 +221,11 @@ pub(super) fn complete(
         same_security,
     )?;
     tree.require_source_excluded()?;
+    if let Some(privileges) = tree.reparse_privileges.as_mut() {
+        privileges.restore()?;
+        report["reparse_privilege_states"] =
+            serde_json::to_value(privileges.audit()).map_err(io::Error::other)?;
+    }
     tree.privileges.restore()?;
     report["source_input_sha256"] = hex::encode(tree.metadata_input_sha256).into();
     if !sparse_tails.is_empty() {

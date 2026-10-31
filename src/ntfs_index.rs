@@ -9,6 +9,7 @@ const MAX_DEPTH: usize = 64;
 pub enum Encoding {
     FileReference,
     DataOffset,
+    ReparseKeyOnly,
 }
 #[derive(Clone, Copy)]
 pub struct Profile {
@@ -25,7 +26,7 @@ impl Profile {
     pub const REPARSE: Self = Self {
         indexed_type: 0,
         collation: 0x13,
-        encoding: Encoding::DataOffset,
+        encoding: Encoding::ReparseKeyOnly,
     };
     pub const QUOTA_OWNER: Self = Self {
         indexed_type: 0,
@@ -156,6 +157,27 @@ where
         );
         let (value_at, value_length, expected) = match encoding {
             Encoding::FileReference => (0, 0, (16 + key_length + 7) & !7),
+            Encoding::ReparseKeyOnly => {
+                let offset = usize::from(u16le(b, at)?);
+                let size = usize::from(u16le(b, at + 2)?);
+                ensure!(
+                    u32le(b, at + 4)? == 0,
+                    "nonzero reparse index reserved field"
+                );
+                if last {
+                    ensure!(
+                        offset == 0 && size == 0,
+                        "reparse index terminator has data"
+                    );
+                    (0, 0, 16)
+                } else {
+                    ensure!(
+                        key_length == 12 && offset == 28 && size == 0,
+                        "reparse index must contain one exact key and no data"
+                    );
+                    (offset, 0, 32)
+                }
+            }
             Encoding::DataOffset => {
                 let offset = usize::from(u16le(b, at)?);
                 let size = usize::from(u16le(b, at + 2)?);

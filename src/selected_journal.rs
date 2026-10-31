@@ -557,6 +557,34 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
+    prepare_inner(source, candidate, journal, plan, false)
+}
+
+/// Prepare under continuous exclusive ownership of the new journal. The
+/// caller must exclude writer/delete aliases, including hidden handles in the
+/// source/candidate readers. Windows callers use a newly created share-zero
+/// file and retain that owner throughout this call.
+///
+/// The complete post-flush validating readback computes the immutable pin
+/// while checking descriptors, all payloads and source/candidate selected
+/// digests. No preliminary hash-only scan is needed to issue the same pin.
+/// Legacy preparation and every fresh recovery entry retain their checks.
+pub(crate) fn prepare_exclusive<R: ReadSeek, S: ReadSeek, J: DurableIo>(
+    source: &mut R,
+    candidate: &mut S,
+    journal: &mut J,
+    plan: &SelectedPlan,
+) -> Result<SelectedTicket> {
+    prepare_inner(source, candidate, journal, plan, true)
+}
+
+fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
+    source: &mut R,
+    candidate: &mut S,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    exclusive_readback: bool,
+) -> Result<SelectedTicket> {
     let (changed, journal_length) = plan.validate()?;
     ensure!(
         source.byte_len()? == plan.image_length
@@ -643,17 +671,25 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         "selected preparation input or journal length changed"
     );
     journal.sync_all()?;
-    let ticket = SelectedTicket {
+    let mut ticket = SelectedTicket {
         image_length: plan.image_length,
         selected_bytes: changed,
         range_count: u32::try_from(plan.ranges.len())?,
         journal_length,
-        immutable_sha256: hash_range(journal, BODY, journal_length - BODY)?,
+        // This internal value is never returned or persisted before the
+        // validating readback supplies the actual digest below.
+        immutable_sha256: [0; 32],
         old_selected_sha256,
         new_selected_sha256,
         whole_image_verified: false,
     };
-    load(journal, plan, &ticket)?;
+    if exclusive_readback {
+        let (_, immutable_sha256) = validate_body(journal, plan, &ticket, None)?;
+        ticket.immutable_sha256 = immutable_sha256;
+    } else {
+        ticket.immutable_sha256 = hash_range(journal, BODY, journal_length - BODY)?;
+        load(journal, plan, &ticket)?;
+    }
     let mut markers = [0u8; BODY as usize];
     at(journal, 0, &mut markers)?;
     ensure!(
@@ -673,6 +709,18 @@ fn load<J: ReadSeek>(
     plan: &SelectedPlan,
     ticket: &SelectedTicket,
 ) -> Result<Vec<JournalRecord>> {
+    Ok(validate_body(journal, plan, ticket, Some(&ticket.immutable_sha256))?.0)
+}
+
+/// No pin is issued, nor record returned, until the whole independent readback
+/// and every selected/payload check succeeds. Only new-journal preparation may
+/// create a pin; all journal consumers require the independently trusted pin.
+fn validate_body<J: ReadSeek>(
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+    expected_immutable: Option<&[u8; 32]>,
+) -> Result<(Vec<JournalRecord>, [u8; 32])> {
     let (changed, journal_length) = plan.validate()?;
     ensure!(
         !ticket.whole_image_verified
@@ -833,10 +881,13 @@ fn load<J: ReadSeek>(
             && journal.stream_position()? == journal_length,
         "selected journal footer or selected digest differs"
     );
-    ensure!(
-        finish(immutable)? == ticket.immutable_sha256,
-        "selected immutable journal differs from trusted ticket"
-    );
+    let immutable_sha256 = finish(immutable)?;
+    if let Some(expected) = expected_immutable {
+        ensure!(
+            &immutable_sha256 == expected,
+            "selected immutable journal differs from trusted ticket"
+        );
+    }
     if copy_encoded {
         // All old payloads and descriptors are authenticated before any
         // reference is followed. References resolve only to those old bytes,
@@ -863,7 +914,7 @@ fn load<J: ReadSeek>(
             "selected resolved new digest differs"
         );
     }
-    Ok(records)
+    Ok((records, immutable_sha256))
 }
 
 fn marker(kind: &[u8; 8], ticket: &SelectedTicket, digest: &[u8; 32]) -> [u8; GRANULE as usize] {

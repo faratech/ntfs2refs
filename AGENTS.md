@@ -23,6 +23,17 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Built next performance candidate: normal fast preparation computes its immutable
+journal pin during the same complete validating readback, removing only the
+preliminary hash-only body scan. Exact source/candidate selected digests, payload/
+descriptor/footer checks, resolved copies, marker-clear checks and flushes stay.
+Issue mode is private to a fresh share-zero journal; full/fault/recovery paths
+still use their original trusted-pin checks. Binary format/ticket values unchanged
+for identical inputs. Focused library/CLI and release builds pass; native large
+qualification pending. No unit tests added/run. See docs/journal-preparation-readback.md.
+This candidate is separate from the sealed3ce15c7 tail recovery matrix currently
+being executed; do not rebuild or substitute its binaries during that matrix.
+
 Partial-tail normal runtime3ce15c7/public831b073d38ec0bd62350e97f01ed1b51cc5a29ced46cd3b69d37372864d08b53
 passed wrapperc42d891b/coree28bab21: native0/HND and wrapper0,44 objects/53 bindings,
 0 target content hashes/reads, all30 default+9 named independent hashes and prior

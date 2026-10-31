@@ -320,7 +320,14 @@ pub(super) fn convert_allocation_selected(
         );
         let ticket = {
             let mut image = proof.image(&mut complement)?;
-            sj::prepare(&mut source, &mut image, &mut journal, &plan)?
+            if request.verification_policy.is_fast()
+                && interrupt_after_writes.is_none()
+                && !interrupt_after_first_copy_write
+            {
+                sj::prepare_exclusive(&mut source, &mut image, &mut journal, &plan)?
+            } else {
+                sj::prepare(&mut source, &mut image, &mut journal, &plan)?
+            }
         };
         ensure!(
             complement.state(&mut preparation_events)? == complement_before
@@ -590,6 +597,8 @@ pub(super) fn convert_allocation_selected(
                 "actual_target_verification_policy":request.verification_policy,
                 "actual_full_file_hashes":request.verification_policy.is_full_content(),
                 "exclusive_apply_handoff_used":request.verification_policy.is_fast(),
+                "exclusive_preparation_readback_used":request.verification_policy.is_fast()
+                    && interrupt_after_writes.is_none() && !interrupt_after_first_copy_write,
                 "journal_path":journal_path,"ticket_sha256":ticket_pin,"plan_sha256":plan_pin,
                 "expected_tree_sha256":expected_tree_sha256,
                 "selected_ranges":plan.ranges.len(),"selected_bytes":selected_bytes,

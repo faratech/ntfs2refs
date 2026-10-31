@@ -64,6 +64,9 @@ pub struct StreamedPlanner<'a> {
     legacy: &'a crate::bitmap_streaming::Summary,
     metadata: &'a crate::bitmap_streaming::Summary,
     partition: u64,
+    // Immutable union of both fully validated views, in cluster coordinates.
+    // Compute overlaps once per phase rather than for every source extent.
+    occupied: Vec<(u64, u64)>,
 }
 
 impl<'a> StreamedPlanner<'a> {
@@ -82,10 +85,39 @@ impl<'a> StreamedPlanner<'a> {
                 return Err(invalid("streamed retention bitmap domain differs"));
             }
         }
+        let mut left = legacy.allocated_ranges.iter().peekable();
+        let mut right = metadata.allocated_ranges.iter().peekable();
+        let mut occupied: Vec<(u64, u64)> = Vec::new();
+        loop {
+            let next = match (left.peek(), right.peek()) {
+                (Some(a), Some(b)) if a.starting_lcn <= b.starting_lcn => left.next(),
+                (Some(_), Some(_)) => right.next(),
+                (Some(_), None) => left.next(),
+                (None, Some(_)) => right.next(),
+                (None, None) => break,
+            }
+            .unwrap();
+            let start = next.starting_lcn;
+            let end = start + next.clusters;
+            if let Some(last) = occupied.last_mut()
+                && start <= last.1
+            {
+                last.1 = last.1.max(end);
+            } else {
+                occupied.try_reserve(1).map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::OutOfMemory,
+                        "retention union allocation failed",
+                    )
+                })?;
+                occupied.push((start, end));
+            }
+        }
         Ok(Self {
             legacy,
             metadata,
             partition,
+            occupied,
         })
     }
 
@@ -108,14 +140,7 @@ impl<'a> StreamedPlanner<'a> {
         }
         let start = run.physical_offset / CLUSTER;
         let end = start + run.length / CLUSTER;
-        let left_start = legacy
-            .allocated_ranges
-            .partition_point(|range| range.starting_lcn + range.clusters <= start);
-        let right_start = metadata
-            .allocated_ranges
-            .partition_point(|range| range.starting_lcn + range.clusters <= start);
-        let mut left = legacy.allocated_ranges[left_start..].iter().peekable();
-        let mut right = metadata.allocated_ranges[right_start..].iter().peekable();
+        let first = self.occupied.partition_point(|range| range.1 <= start);
         let mut cursor = start;
         let mut free_clusters = 0u64;
         let mut subruns = Vec::new();
@@ -140,23 +165,15 @@ impl<'a> StreamedPlanner<'a> {
             }
             Ok(())
         };
-        loop {
-            let next = match (left.peek(), right.peek()) {
-                (Some(a), Some(b)) if a.starting_lcn <= b.starting_lcn => left.next(),
-                (Some(_), Some(_)) => right.next(),
-                (Some(_), None) => left.next(),
-                (None, Some(_)) => right.next(),
-                (None, None) => break,
-            }
-            .unwrap();
-            if next.starting_lcn >= end {
-                break;
-            }
-            let occupied_end = (next.starting_lcn + next.clusters).min(end);
+        for &(occupied_start, occupied_end) in self.occupied[first..]
+            .iter()
+            .take_while(|range| range.0 < end)
+        {
+            let occupied_end = occupied_end.min(end);
             if occupied_end <= cursor {
                 continue;
             }
-            let occupied_start = next.starting_lcn.max(start);
+            let occupied_start = occupied_start.max(start);
             if occupied_start > cursor {
                 push_free(cursor, occupied_start)?;
             }

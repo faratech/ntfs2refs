@@ -23,6 +23,13 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Performance candidate: scratch first-fit indexing, ordered interval sweeps,
+cached exact occupancy unions, immutable source identity/DATA indexes and lazy
+prefetch scheduling replace repeated scans/temporary collections. Full native
+bitmap/retrieval checks and all caps remain. Focused public/verifier release
+builds pass; same-source native follow-up is pending. See
+docs/planning-performance-20261031.md. No unit tests were added or run.
+
 Compression milestone: runtimea126b18/public358d99f158e103625266c4c744f0230c8d4a1016fa129fa6bd106ae4e3c181e6
 passed public conversiona1cc190f/core69169b55 and cold bootccafd9f0:44 objects,
 30 default/9 named hashes,7 EAs,3 sparse layouts,8 security identities and6

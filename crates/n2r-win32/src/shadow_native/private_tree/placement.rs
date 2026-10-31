@@ -466,7 +466,11 @@ fn views(tree: &PrivateTree) -> io::Result<(Observation, Observation)> {
 /// this phase. Each grant is still rechecked by the mover's live capture.
 struct Scratch {
     free: Vec<(u64, u64)>,
-    first: usize,
+    /// Maximum remaining span length in each subtree. Leaves retain physical
+    /// free-span order, so descending left first preserves exact first-fit
+    /// choices without rescanning earlier too-small spans for every request.
+    longest: Vec<u64>,
+    leaves: usize,
 }
 
 impl Scratch {
@@ -508,24 +512,54 @@ impl Scratch {
         if cursor < partition {
             free.push((cursor, partition));
         }
-        Ok(Self { free, first: 0 })
+        let leaves = free
+            .len()
+            .checked_next_power_of_two()
+            .ok_or("scratch span index size overflow")?;
+        let entries = leaves
+            .checked_mul(2)
+            .ok_or("scratch span index size overflow")?;
+        let mut longest = Vec::new();
+        longest
+            .try_reserve_exact(entries)
+            .map_err(|e| format!("scratch span index allocation failed: {e}"))?;
+        longest.resize(entries, 0);
+        for (i, &(start, end)) in free.iter().enumerate() {
+            longest[leaves + i] = end - start;
+        }
+        for parent in (1..leaves).rev() {
+            longest[parent] = longest[parent * 2].max(longest[parent * 2 + 1]);
+        }
+        Ok(Self {
+            free,
+            longest,
+            leaves,
+        })
     }
 
     /// One contiguous span of at least `length`, lowest offset first. Spans
     /// too small for this request stay available to later, smaller ones.
     fn take(&mut self, length: u64) -> Option<u64> {
-        while self
-            .free
-            .get(self.first)
-            .is_some_and(|&(start, end)| start >= end)
-        {
-            self.first += 1;
+        if length == 0 || self.longest[1] < length {
+            return None;
         }
-        let span = self.free[self.first..]
-            .iter_mut()
-            .find(|(start, end)| *end - *start >= length)?;
+        let mut node = 1;
+        while node < self.leaves {
+            let left = node * 2;
+            node = if self.longest[left] >= length {
+                left
+            } else {
+                left + 1
+            };
+        }
+        let span = self.free.get_mut(node - self.leaves)?;
         let at = span.0;
         span.0 += length;
+        self.longest[node] = span.1 - span.0;
+        while node > 1 {
+            node /= 2;
+            self.longest[node] = self.longest[node * 2].max(self.longest[node * 2 + 1]);
+        }
         Some(at)
     }
 }
@@ -645,7 +679,15 @@ fn plan_deferred(
         // views agree they are free, rather than parking the entire range
         // and submitting the same bytes a second time during final placement.
         let mut direct = Vec::new();
-        for run in &desired[&index] {
+        // Desired runs were validated once as a disjoint logical prefix.
+        // Skip runs ending before this hole, then visit only its intersections.
+        // The old full scan emitted these same pieces in this same order.
+        let runs = &desired[&index];
+        let first = runs.partition_point(|run| run.logical_offset + run.length <= start);
+        for run in &runs[first..] {
+            if run.logical_offset >= end {
+                break;
+            }
             let from = start.max(run.logical_offset);
             let to = end.min(run.logical_offset + run.length);
             if from >= to {
@@ -1199,9 +1241,6 @@ pub(super) fn run(
             offset += length;
         }
     }
-    let mut retained = Vec::new();
-    let mut original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>> = BTreeMap::new();
-    let mut retained_bytes = 0u64;
     // One snapshot after evacuation plans every desired run. Final moves land
     // only in their own disjoint desired runs, so no earlier move in this
     // phase allocates inside a later run; each move rechecks both live views.
@@ -1315,16 +1354,6 @@ pub(super) fn run(
                         if let Err(message) = recorded {
                             return Err(refuse(tree, &counters, message));
                         }
-                        retained.push(serde_json::json!({"object_index":index,"logical_offset":logical,
-                            "source_physical_offset":physical,"target_physical_offset":physical,"length":length,
-                            "source_contents_verified":false}));
-                        original_coordinates
-                            .entry(index)
-                            .or_default()
-                            .push((logical, physical, length));
-                        retained_bytes = retained_bytes
-                            .checked_add(length)
-                            .ok_or_else(|| invalid("retained byte overflow"))?;
                         offset += length;
                     }
                 }
@@ -1352,17 +1381,45 @@ pub(super) fn run(
     // Derive every final original-coordinate reference from live tracked
     // mappings, including data already correctly placed before this operation.
     // Planned destinations and bitmap bits alone never count as ownership.
-    retained.clear();
-    original_coordinates.clear();
-    retained_bytes = 0;
+    // Do not build tentative coordinate rows per submitted move: they were
+    // discarded here. The complete final live mappings below are the sole
+    // source of these unchanged evidence rows, including already-placed data.
+    let mut retained = Vec::new();
+    let mut original_coordinates: BTreeMap<usize, Vec<(u64, u64, u64)>> = BTreeMap::new();
+    let mut retained_bytes = 0u64;
     for &index in &indexes {
         let file = tree.file_by_slot(index)?;
         file.check_placements()?;
+        let tracked = file.tracked_mappings();
+        // The owning file records native tracking in VCN order and sorts and
+        // coalesces each successful move. Check the entire in-memory ordering
+        // once before using a monotonic intersection cursor. This does not
+        // replace or narrow the complete live retrieval check above.
+        let mut previous_end = 0;
+        for &(v, _, n) in tracked {
+            let end = v
+                .checked_add(u64::from(n))
+                .ok_or_else(|| invalid("tracked placement logical end overflow"))?;
+            if n == 0 || v < previous_end {
+                return Err(invalid("tracked placement logical order differs"));
+            }
+            previous_end = end;
+        }
+        let mut first_tracked = 0;
         for source in &desired[&index] {
             let wanted_vcn = source.logical_offset / 4096;
             let wanted_lcn = source.physical_offset.unwrap() / 4096;
             let wanted_end = wanted_vcn + source.length / 4096;
-            for &(v, l, n) in file.tracked_mappings() {
+            while tracked
+                .get(first_tracked)
+                .is_some_and(|&(v, _, n)| v + u64::from(n) <= wanted_vcn)
+            {
+                first_tracked += 1;
+            }
+            for &(v, l, n) in &tracked[first_tracked..] {
+                if v >= wanted_end {
+                    break;
+                }
                 let start = v.max(wanted_vcn);
                 let end = (v + u64::from(n)).min(wanted_end);
                 if start >= end || l + start - v != wanted_lcn + start - wanted_vcn {

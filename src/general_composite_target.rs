@@ -23,11 +23,60 @@ use n2r_win32::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Component, Path, Prefix},
     time::SystemTime,
 };
+
+/// Immutable inventory lookup shared by both payload planners. Ambiguous
+/// identities/stream names stay ambiguous; the index grants no live authority.
+struct PayloadSourceIndex<'a> {
+    files: BTreeMap<(u64, u16), Option<&'a ntfs_inspect::FileInventory>>,
+    data: BTreeMap<(u64, u16, &'a [u16]), Option<&'a ntfs_inspect::AttributeInventory>>,
+}
+impl<'a> PayloadSourceIndex<'a> {
+    fn new(raw: &'a ntfs_inspect::NtfsInspection) -> Self {
+        let mut files = BTreeMap::new();
+        let mut data = BTreeMap::new();
+        for file in &raw.files {
+            let identity = (file.record_number, file.sequence_number);
+            files
+                .entry(identity)
+                .and_modify(|slot| *slot = None)
+                .or_insert(Some(file));
+            for attribute in file.attributes.iter().filter(|a| a.type_code == 0x80) {
+                data.entry((identity.0, identity.1, attribute.name_utf16.as_slice()))
+                    .and_modify(|slot| *slot = None)
+                    .or_insert(Some(attribute));
+            }
+        }
+        Self { files, data }
+    }
+    fn get(
+        &self,
+        object: &shadow_tree::Object,
+        name: &[u16],
+    ) -> Result<(
+        &'a ntfs_inspect::FileInventory,
+        Option<&'a ntfs_inspect::AttributeInventory>,
+    )> {
+        let identity = (object.record_number, object.sequence_number);
+        let file = self
+            .files
+            .get(&identity)
+            .context("payload route source file absent")?
+            .context("payload route source file ambiguous")?;
+        Ok((
+            file,
+            self.data
+                .get(&(identity.0, identity.1, name))
+                .copied()
+                .flatten(),
+        ))
+    }
+}
 
 #[derive(Debug, Serialize)]
 struct PinnedBacking {
@@ -581,11 +630,12 @@ impl FrozenAllocationTargetPreservation {
 /// comparing them with the source is redundant. Only whole granules below the
 /// stream's EOF qualify; relocated pieces and EOF tails stay compared.
 fn in_place_payload_ranges(
-    raw: &ntfs_inspect::NtfsInspection,
+    source_index: &PayloadSourceIndex<'_>,
     tree: &shadow_tree::Tree,
     routes: &n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
 ) -> Result<Vec<crate::refs_write_set::ByteRange>> {
     let mut found = Vec::new();
+    let mut checked_maps = BTreeSet::new();
     for route in routes.entries() {
         let object = tree
             .objects
@@ -598,21 +648,8 @@ fn in_place_payload_ranges(
             stream.length == route.stream_length && stream.sha256 == route.expected_sha256,
             "in-place route stream differs from canonical source"
         );
-        let files: Vec<_> = raw
-            .files
-            .iter()
-            .filter(|file| {
-                file.record_number == object.record_number
-                    && file.sequence_number == object.sequence_number
-            })
-            .collect();
-        ensure!(files.len() == 1, "in-place route source file is ambiguous");
-        let data: Vec<_> = files[0]
-            .attributes
-            .iter()
-            .filter(|a| a.type_code == 0x80 && a.name_utf16 == route.stream_name_utf16)
-            .collect();
-        let [data] = data.as_slice() else {
+        let (_, data) = source_index.get(object, &route.stream_name_utf16)?;
+        let Some(data) = data else {
             continue; // Ambiguous or absent DATA: keep it compared.
         };
         ensure!(
@@ -640,7 +677,32 @@ fn in_place_payload_ranges(
             .checked_add(route.length)
             .context("route overflow")?
             .min(whole_end);
-        for extent in &data.extents {
+        if checked_maps.insert((
+            object.record_number,
+            object.sequence_number,
+            data.name_utf16.as_slice(),
+        )) {
+            let mut previous_end = 0;
+            for extent in &data.extents {
+                let end = extent
+                    .logical_offset
+                    .checked_add(extent.length)
+                    .context("NTFS extent overflow")?;
+                ensure!(
+                    extent.logical_offset >= previous_end,
+                    "NTFS logical extents overlap or are unordered"
+                );
+                previous_end = end;
+            }
+        }
+        let first = data.extents.partition_point(|extent| {
+            // Every logical end was checked once above on this immutable map.
+            extent.logical_offset + extent.length <= route.logical_offset
+        });
+        for extent in data.extents[first..]
+            .iter()
+            .take_while(|extent| extent.logical_offset < route_end)
+        {
             let Some(physical) = extent.physical_offset else {
                 continue;
             };
@@ -685,14 +747,13 @@ fn in_place_payload_ranges(
 /// actual bytes and admits only origins covered by preceding changed ranges.
 fn payload_copy_candidates(
     volume_bytes: u64,
-    raw: &ntfs_inspect::NtfsInspection,
+    source_index: &PayloadSourceIndex<'_>,
     tree: &shadow_tree::Tree,
     routes: &n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
 ) -> Result<Vec<crate::payload_copy_plan::CopySpan>> {
     use crate::payload_copy_plan::{
         self as cp, ByteRange, FileIdentity, SourceExtent, SourceStream, TargetRoute,
     };
-    use std::collections::BTreeMap;
     let mut attributes = BTreeMap::new();
     let mut requested = Vec::new();
     let mut target_routes = Vec::new();
@@ -708,20 +769,8 @@ fn payload_copy_candidates(
             stream.length == route.stream_length && stream.sha256 == route.expected_sha256,
             "copy route differs from canonical stream"
         );
-        let mut matches = raw.files.iter().filter(|file| {
-            file.record_number == object.record_number
-                && file.sequence_number == object.sequence_number
-        });
-        let file = matches.next().context("copy route source absent")?;
-        ensure!(matches.next().is_none(), "copy route source ambiguous");
-        let data: Vec<_> = file
-            .attributes
-            .iter()
-            .filter(|attribute| {
-                attribute.type_code == 0x80 && attribute.name_utf16 == route.stream_name_utf16
-            })
-            .collect();
-        let [attribute] = data.as_slice() else {
+        let (file, attribute) = source_index.get(object, &route.stream_name_utf16)?;
+        let Some(attribute) = attribute else {
             continue;
         };
         ensure!(
@@ -777,7 +826,7 @@ fn payload_copy_candidates(
         };
         attributes
             .entry((identity, route.stream_name_utf16.clone()))
-            .or_insert(*attribute);
+            .or_insert(attribute);
         requested.push(ByteRange {
             offset: destination_offset,
             length: end - start,
@@ -905,7 +954,8 @@ pub fn verify_and_select(
     let selection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&selection)?));
     // Payload that stayed at its NTFS location is the same physical bytes in
     // both images; compare everything else in the selection.
-    let in_place = in_place_payload_ranges(raw, &tree, protected.routes())?;
+    let source_index = PayloadSourceIndex::new(raw);
+    let in_place = in_place_payload_ranges(&source_index, &tree, protected.routes())?;
     let compared = subtract_ranges(&selection, &in_place);
     let compared_bytes: u64 = compared.iter().map(|range| range.length).sum();
     let selection_bytes: u64 = selection.iter().map(|range| range.length).sum();
@@ -914,7 +964,8 @@ pub fn verify_and_select(
     // already required this model; were it unavailable, the split would only
     // mark its NTFS counters unavailable.
     let ntfs_allocated = raw.allocated_byte_ranges(length).ok();
-    let copy_candidates = payload_copy_candidates(length, raw, &tree, protected.routes())?;
+    let copy_candidates =
+        payload_copy_candidates(length, &source_index, &tree, protected.routes())?;
     let mut capture = SourceBackedShadow::new(
         source,
         target,

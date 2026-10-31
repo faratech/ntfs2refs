@@ -221,26 +221,38 @@ pub(crate) fn plan_ranges(
             }
         }
     }
-    let mut excluded: Vec<_> = legacy
-        .ranges
-        .iter()
-        .chain(&metadata.ranges)
-        .map(|r| (r.offset, r.offset + r.length))
-        .chain(
-            source
-                .iter()
-                .map(|r| (r.physical_offset, r.physical_offset + r.length)),
-        )
-        .collect();
-    // Bootstrap margins are excluded here so the first-fit sweep never
-    // chooses a destination the native mover's caller would refuse.
-    if limits.margin > 0 {
-        excluded.push((0, limits.margin));
-        excluded.push((partition - limits.margin, partition));
-    }
-    excluded.sort_unstable();
+    // All three complete inputs are already physically ordered. Merge them
+    // with the bootstrap margins directly: the union and first-fit order are
+    // identical to sorting their concatenation, without its extra allocation
+    // or O(N log N) sort. No occupancy or source-exclusion range is omitted.
+    let margins = [(0, limits.margin), (partition - limits.margin, partition)];
+    let margins: &[(u64, u64)] = if limits.margin > 0 { &margins } else { &[] };
+    let mut indices = [0usize; 4];
     let mut occupied: Vec<(u64, u64)> = Vec::new();
-    for (start, end) in excluded {
+    loop {
+        let candidates = [
+            legacy
+                .ranges
+                .get(indices[0])
+                .map(|r| (r.offset, r.offset + r.length)),
+            metadata
+                .ranges
+                .get(indices[1])
+                .map(|r| (r.offset, r.offset + r.length)),
+            source
+                .get(indices[2])
+                .map(|r| (r.physical_offset, r.physical_offset + r.length)),
+            margins.get(indices[3]).copied(),
+        ];
+        let Some((input, (start, end))) = candidates
+            .into_iter()
+            .enumerate()
+            .filter_map(|(input, range)| range.map(|range| (input, range)))
+            .min_by_key(|(_, range)| *range)
+        else {
+            break;
+        };
+        indices[input] += 1;
         if let Some(last) = occupied.last_mut()
             && start <= last.1
         {
@@ -351,7 +363,9 @@ fn validated_extents_streamed(
             .or_default()
             .push((extent.logical_offset, logical_end));
     }
-    physical.sort_by_key(|extent| extent.physical_offset);
+    // Valid ownership has distinct physical starts. An unstable sort therefore
+    // has the same validated output and avoids a stable sort's scratch buffer.
+    physical.sort_unstable_by_key(|extent| extent.physical_offset);
     if physical
         .windows(2)
         .any(|pair| pair[0].physical_offset + pair[0].length > pair[1].physical_offset)

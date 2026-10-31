@@ -52,15 +52,11 @@ impl OriginalPrefetch {
         let Some(mut lane) = source.read_lanes(1, &mut Vec::new())?.pop() else {
             return Ok(None);
         };
-        let mut chunks = Vec::new();
-        for range in selection {
-            let mut done = 0;
-            while done < range.length {
-                let count = (range.length - done).min(NATIVE_CAPTURE_BYTES as u64);
-                chunks.push((range.offset + done, count as usize));
-                done += count;
-            }
-        }
+        // Retain the selection, not one descriptor for every 4 MiB on the
+        // volume. The worker expands each range in exactly the comparison's
+        // order, keeping schedule memory proportional to range count even for
+        // a complete-address-space capture on a very large volume.
+        let selection = selection.to_vec();
         let (filled_tx, filled) = std::sync::mpsc::sync_channel(2);
         let (free, free_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(3);
         for _ in 0..3 {
@@ -69,18 +65,23 @@ impl OriginalPrefetch {
         let worker = std::thread::Builder::new()
             .name("n2r-original-prefetch".into())
             .spawn(move || {
-                for (at, count) in chunks {
-                    let Ok(mut buffer) = free_rx.recv() else {
-                        return;
-                    };
-                    buffer.resize(count, 0);
-                    let result = lane
-                        .seek(SeekFrom::Start(at))
-                        .and_then(|_| lane.read_exact(&mut buffer))
-                        .map(|_| buffer);
-                    let stop = result.is_err();
-                    if filled_tx.send(result).is_err() || stop {
-                        return;
+                for range in selection {
+                    let mut done = 0;
+                    while done < range.length {
+                        let count = (range.length - done).min(NATIVE_CAPTURE_BYTES as u64);
+                        let Ok(mut buffer) = free_rx.recv() else {
+                            return;
+                        };
+                        buffer.resize(count as usize, 0);
+                        let result = lane
+                            .seek(SeekFrom::Start(range.offset + done))
+                            .and_then(|_| lane.read_exact(&mut buffer))
+                            .map(|_| buffer);
+                        let stop = result.is_err();
+                        if filled_tx.send(result).is_err() || stop {
+                            return;
+                        }
+                        done += count;
                     }
                 }
             })?;
@@ -465,6 +466,19 @@ impl<'a> SourceBackedShadow<'a> {
             .max()
             .unwrap_or(1)
             .max(1);
+        // A stream may have many destination routes. Resolve raw record
+        // uniqueness once instead of rescanning the complete MFT inventory
+        // and allocating a matches vector for every fragment of that stream.
+        // Duplicates remain explicit, including duplicate records with the
+        // same sequence number; only referenced records are gated below, as
+        // in the original per-route reconciliation.
+        let mut identities = std::collections::BTreeMap::new();
+        for file in &raw.files {
+            identities
+                .entry(file.record_number)
+                .and_modify(|identity: &mut Option<u16>| *identity = None)
+                .or_insert(Some(file.sequence_number));
+        }
         for route in routes.entries() {
             let object = tree
                 .objects
@@ -473,18 +487,12 @@ impl<'a> SourceBackedShadow<'a> {
             let stream = object
                 .stream(&route.stream_name_utf16)
                 .context("payload stream absent from canonical object")?;
-            let identities: Vec<_> = raw
-                .files
-                .iter()
-                .filter(|f| f.record_number == object.record_number)
-                .collect();
             ensure!(
                 !object.directory
                     && object.path == route.components
                     && stream.length == route.stream_length
                     && stream.sha256 == route.expected_sha256
-                    && identities.len() == 1
-                    && identities[0].sequence_number == object.sequence_number,
+                    && identities.get(&object.record_number) == Some(&Some(object.sequence_number)),
                 "source-backed canonical stream identity differs"
             );
         }

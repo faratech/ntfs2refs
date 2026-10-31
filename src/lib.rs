@@ -45,6 +45,8 @@ pub mod lab_native;
 pub mod lab_native_reconstruct;
 pub mod lab_reconstruct;
 #[cfg(windows)]
+pub mod lab_source_baseline;
+#[cfg(windows)]
 pub mod lab_tree_expectation;
 #[cfg(windows)]
 pub mod lab_tree_reconstruct;

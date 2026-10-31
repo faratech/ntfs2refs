@@ -34,6 +34,9 @@ input bytes** for that plan. This is a metadata-derived work estimate, not an
 I/O reduction or measured CPU/time result; all aggregate hash input remains.
 
 Focused library/public-CLI compiler checks and independent correctness review
-passed. No unit tests were added or run. Native qualification is pending.
-This cache was **not used** in the completed sealed f32 V3 case with 273
-directories and all 811 independent hashes.
+passed. Sealed `f2e5f73` now passed one normal grown V3 case with 273
+directories and all 811 independent hashes, native0/HND. It exercised zero
+preparation/readback/load paths; cache hits and isolated CPU savings were not
+instrumented. Recovery/fault qualification remains pending. The cache was not
+used in the earlier f32 case. [Native scope](fresh-exclusive-native.md).
+No unit tests were added or run.

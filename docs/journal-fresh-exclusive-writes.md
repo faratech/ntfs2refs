@@ -35,7 +35,11 @@ bounded by one write of each selected byte. The normal changed-granule planner
 already excludes equal granules.
 
 Avoided reads are `2 * selected_bytes`: one target and one old-journal pass.
-For the completed V3 plan this is 22,786,547,712 logical bytes. This is code-path
-accounting, not a physical-I/O or elapsed-time measurement. Focused compilation
-and independent code review passed. Native qualification is pending; this code
-was not in the sealed f32 V3 case. No unit tests added or run.
+For the qualified f2 V3 plan this is 22,786,007,040 logical bytes. Focused
+compilation and independent review passed, followed by one sealed `f2e5f73`
+normal case: native0/HND, 273 directories and all 811 independent hashes.
+Observed process reads were 22,810,169,088 bytes below prior f32; slightly
+different plans/formatter metadata prevent a controlled attribution or speed
+claim. This is logical accounting, not physical I/O. Recovery/fault qualification
+remains pending; this code was not in the earlier sealed f32 case.
+[Native scope](fresh-exclusive-native.md). No unit tests were added or run.

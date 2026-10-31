@@ -23,7 +23,49 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-Built next fresh-apply candidate: private nonserializable FreshExclusiveApply
+Current qualified normal f2casee27c6a4675ef4cf682552b53b393af02/core89207dbd:
+runtimef2e5f73/public02e5e009d0805c8e3c35eafaa2c3f0632e77974d1b25dcea0a194b0f1eac816a
+(9,894,400B) native1652/creation1793485612084 exited0/HND358.795446s;
+observer0/all811 hashes166.8139984s later,1084objects/273dirs. Same grown8329/
+freshbaselinef5de/growth835/harnessc85;654NoDigest/650tails1,371,388B source/
+readback/protected-residual proofs passed. Source/targetextent_identity_v1;
+0targetcontenthashes/reads.154provenaccess-time reconciliations; othermodelled
+metadata/rootmodified/MFTtimes exact, productJSONuntouched, full/fastrawpins
+distinct. No above1024files/unlimited/recovery/mutation/fault/powerloss claim.
+
+Nativeprocessreads128,175,699,937B/writes23,030,251,403B,userCPU383.390625s/
+kernel33.28125s. Prepared→appliedreads45,626,234,496B/writes11,393,137,219B,
+CPU161.6875user/8.734375kernel;6actualguest-timestamped snapshots. Priorf32
+reads150,985,869,025B give22,810,169,088B fewerlogicalreads; thisplan2D is
+22,786,007,040B, metadata/plan differences precludecontrolledattribution/speed
+orphysicalIO/HDD/1TB forecasts. D11,393,003,520B/3557ranges,L42,754,048B/
+J11,436,107,392B,copy5,659,303,936B,zero5,690,945,536B; originalcoordinate
+payload4,225,028,096B. Move submissions are notphysicalIO.
+
+Includes e6dzero cache+privatefreshwriter: allactualcandidatezero checks and
+aggregate/storedhash/auth barriers remain. Hits were NOTinstrumented; this
+qualifiesexecutednormalzeropaths, notmeasuredcachehit/CPU gains. Freshwriter
+requirescontinuousno-mutable-alias ownership; primaryrawgate isNOTglobal
+admin/volume-alias exclusion. Exactold/new fullchecks andordering/flush/HND
+remain, mixedrecovery checksunchanged; already-equal chunksmaywrite≤D.
+
+Closed77files221,702,510B copy/sourceSHAverified,index341c47f0. Normalstopafter
+allidle,ONEcheckpointfreshconfirmed currentOff/RAM0/50 at
+1c75c73f-3465-4ebe-9b99-aa9897c17a1a parentgrown8329. Actual279,106,062,708B/
+free66,124,685,312B insidefixed329,374,052,988B/17,179,869,184B epoch.
+RemovedONLYobsolete42d viaHyperV after69archive+46dependencypins verified;
+ALLhostevidence/baselinesstay. Preservecurrent1c75/eaa/8329,6fe/371,tailmatrix,
+oldint9ce/resume9bb,D1cold d939,f4bf. Evidence: evidence/fresh-exclusive-native-20261031.json;
+docs/fresh-exclusive-native.md. No units. Broadercompatibility/scale/bootgoalactive.
+
+NEXT (proposal, NOTimplemented): source directory case-flag refusal on actual
+handles before/after, newlive native reports13/14 and gatebeforecertificate;
+legacy missingflags remainunknown, neverretrofalse. VSSsnapshot/allcontexts and
+source-as-diff-area observations mustbindactualfreeze/livecertificate context;
+emptycompletedcatalogs cannotproveinflightabsence, errors/unknownfailclosed.
+No misleadingglobalVSSabsencecheckbox, snapshotdeletion or namespace/ACLdrop.
+
+Fresh-apply implementation: private nonserializable FreshExclusiveApply
 owns both mutable IO borrows, plan/ticket and fully authenticated journal records.
 Constructor requires clear markers, target flush and complete exact-old selected
 SHA. Under the existing no-mutable-alias contract, disjoint destinations remain
@@ -32,10 +74,14 @@ use one1MiB desired buffer. Exact-new complete readback, discovery granule last,
 flushes/callback/HND remain. Legacy/fault/resume/rollback mixed checks unchanged.
 No global admin/volume-alias exclusion or immediate foreign-write detection is
 claimed; up toD bytes may be written including already-equal chunks. Expected
-read reduction2D=22,786,547,712B for the last V3 plan is code-path accounting,
-not a measured gain. Focused check/release and two reviews pass; native pending.
-Includes previously unqualified e6d zero cache; NOT used in qualified f32 below.
+read reduction2D is code-path accounting, notphysicalIO. Focused check/release
+and two reviews pass; the scoped f2normal qualification above passed.
+Recovery/faultqualification remainsopen. Includes e6dzerocache; neither was
+used in the earlier qualified f32 below.
 See docs/journal-fresh-exclusive-writes.md. No unit tests.
+
+The following older milestones/current VM labels are historical; preservation
+and cleanup state above is authoritative.
 
 Current qualified V3 case1cb0adcbd89d470cafc6ff53829ac8c5/coreb68cb9b3 passed
 sealedf32c0f6/public648cf28363b854ac5b960bb22ccd45855e5d81b468d29d6ac8d4f7342f4b1803

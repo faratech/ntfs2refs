@@ -247,6 +247,8 @@ struct RoutedPayloadBracketScope {
     scope: &'static str,
     framed_hash_domain: &'static str,
     raw_metadata_hash_algorithm: &'static str,
+    opening_hash_counts: RawBracketHashCounts,
+    closing_hash_counts: RawBracketHashCounts,
     protected_routes_sha256: String,
     excluded_payload_map_sha256: String,
     excluded_payload_ranges: Vec<crate::refs_write_set::ByteRange>,
@@ -255,6 +257,17 @@ struct RoutedPayloadBracketScope {
     preliminary_and_bracketed_native_routes_identical: bool,
     preliminary_and_bracketed_allocation_maps_identical: bool,
     raw_inspection_reads_covered: bool,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct RawBracketHashCounts {
+    raw_bytes_read: u64,
+    chunks_read: usize,
+    zero_chunks_observed: usize,
+    zero_bytes_observed: u64,
+    zero_digest_cache_hits: usize,
+    zero_lengths_hashed: usize,
+    bytes_processed_by_inner_sha256: u64,
 }
 
 const BRACKET_CHUNK: u64 = 1024 * 1024;
@@ -548,27 +561,79 @@ fn hash_consumed_chunks(
     length: u64,
     exclusions_sha256: &str,
     chunks: &[crate::parallel_digest::Chunk],
-) -> Result<String> {
+) -> Result<(String, RawBracketHashCounts)> {
     let mut hash = n2r_win32::sha256_native::Sha256::new()?;
-    hash.update(b"n2r-refs-source-backed-raw-consumption-v1\0")?;
+    hash.update(b"n2r-refs-source-backed-raw-consumption-v2\0")?;
     hash.update(&length.to_le_bytes())?;
     hash.update(exclusions_sha256.as_bytes())?;
     hash.update(&(chunks.len() as u64).to_le_bytes())?;
     let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
+    // Exact-length SHA-256 values, never inferred bitmap contents. Chunk
+    // lengths are 4 KiB multiples, so this cache has at most 256 live entries
+    // with the current 1 MiB bound and never grows with the volume's size.
+    let cache_slots = BRACKET_CHUNK as usize / 4096 + 1;
+    let mut zero_digests: Vec<Option<[u8; 32]>> = Vec::new();
+    zero_digests
+        .try_reserve_exact(cache_slots)
+        .context("raw metadata zero-digest cache allocation failed")?;
+    zero_digests.resize(cache_slots, None);
+    let mut counts = RawBracketHashCounts::default();
     for chunk in chunks {
         ensure!(
-            chunk.length != 0 && chunk.length <= buffer.len(),
+            chunk.length != 0
+                && chunk.length <= buffer.len()
+                && chunk.length.is_multiple_of(4096)
+                && chunk.offset.is_multiple_of(4096),
             "raw metadata bracket chunk exceeds its read bound"
         );
         hash.update(&chunk.offset.to_le_bytes())?;
         hash.update(&(chunk.length as u64).to_le_bytes())?;
         target.seek(std::io::SeekFrom::Start(chunk.offset))?;
         target.read_exact(&mut buffer[..chunk.length])?;
-        // Metadata, reservations and unknown allocated bytes retain direct
-        // cryptographic hashing. No file-content digest substitutes for them.
-        hash.update(&buffer[..chunk.length])?;
+        counts.raw_bytes_read = counts
+            .raw_bytes_read
+            .checked_add(chunk.length as u64)
+            .context("raw metadata read accounting overflow")?;
+        counts.chunks_read += 1;
+        let bytes = &buffer[..chunk.length];
+        let zero = bytes.iter().all(|&byte| byte == 0);
+        let cached = if zero {
+            zero_digests[chunk.length / 4096]
+        } else {
+            None
+        };
+        let digest = if let Some(digest) = cached {
+            counts.zero_digest_cache_hits += 1;
+            digest
+        } else {
+            // Every nonzero chunk, and the first actually observed zero chunk
+            // of each exact length, is hashed over all of its actual bytes.
+            let mut chunk_hash = n2r_win32::sha256_native::Sha256::new()?;
+            chunk_hash.update(bytes)?;
+            let digest = chunk_hash.finish()?;
+            counts.bytes_processed_by_inner_sha256 = counts
+                .bytes_processed_by_inner_sha256
+                .checked_add(chunk.length as u64)
+                .context("raw metadata hash accounting overflow")?;
+            if zero {
+                zero_digests[chunk.length / 4096] = Some(digest);
+                counts.zero_lengths_hashed += 1;
+            }
+            digest
+        };
+        if zero {
+            counts.zero_chunks_observed += 1;
+            counts.zero_bytes_observed = counts
+                .zero_bytes_observed
+                .checked_add(chunk.length as u64)
+                .context("raw metadata zero-byte accounting overflow")?;
+        }
+        // Frame boundaries and the exact length are authenticated outside the
+        // inner SHA-256. Reuse is allowed only after reading and checking every
+        // actual byte for zero, never from allocation or sparsity assumptions.
+        hash.update(&digest)?;
     }
-    Ok(hex::encode(hash.finish()?))
+    Ok((hex::encode(hash.finish()?), counts))
 }
 
 /// Raw bytes inside a route cannot affect this composite: SourceBackedShadow
@@ -721,7 +786,8 @@ fn verify_nonrouted_allocation_closed(
         sum.checked_add(chunk.length as u64)
             .context("consumed byte total overflow")
     })?;
-    let raw_sha256 = hash_consumed_chunks(target, length, &excluded_payload_map_sha256, &chunks)?;
+    let (raw_sha256, opening_hash_counts) =
+        hash_consumed_chunks(target, length, &excluded_payload_map_sha256, &chunks)?;
     let native = target.observe_refs_layout_residuals_with_resource_profile(
         pair.clone(),
         &input,
@@ -769,7 +835,7 @@ fn verify_nonrouted_allocation_closed(
         allocation::subtract(&closing_consumed, &consumed)?.is_empty(),
         "closing raw consumer requires bytes absent from the opening bracket"
     );
-    let closing_sha256 =
+    let (closing_sha256, closing_hash_counts) =
         hash_consumed_chunks(target, length, &excluded_payload_map_sha256, &chunks)?;
     ensure!(
         closing_sha256 == raw_sha256,
@@ -795,7 +861,7 @@ fn verify_nonrouted_allocation_closed(
         raw_image_unchanged: false,
         bracket_closure: Some(AllocationBracketClosure {
             opening: "exact 4 KiB-aligned native allocation plus observed raw metadata reads, excluding only opaque source-backed payload routes",
-            raw_sha256_meaning: "direct SHA-256 over the separate raw-consumption domain, partition length, pinned exclusion-map digest and every consumed (offset,length,raw bytes) frame; not an allocation-wide or whole-image digest",
+            raw_sha256_meaning: "SHA-256 over the v2 raw-consumption domain, partition length, pinned exclusion-map digest and every consumed (offset,length,SHA-256(actual chunk bytes)) frame; exact-length zero digests may be reused only after reading and checking every actual byte for zero; not a direct allocation-wide or whole-image digest",
             opening_chunks: chunks.len(),
             opening_bytes,
             closing_ranges: closing_consumed.len(),
@@ -803,9 +869,11 @@ fn verify_nonrouted_allocation_closed(
             closing_bytes_reread: opening_bytes,
             free_space_rechecked: false,
             raw_consumption: Some(RoutedPayloadBracketScope {
-                scope: "source-backed-raw-consumption-v1",
-                framed_hash_domain: "n2r-refs-source-backed-raw-consumption-v1",
-                raw_metadata_hash_algorithm: "sha256-direct-bytes",
+                scope: "source-backed-raw-consumption-v2",
+                framed_hash_domain: "n2r-refs-source-backed-raw-consumption-v2",
+                raw_metadata_hash_algorithm: "sha256-framed-chunks-v1",
+                opening_hash_counts,
+                closing_hash_counts,
                 protected_routes_sha256,
                 excluded_payload_map_sha256,
                 excluded_payload_ranges: exclusions,

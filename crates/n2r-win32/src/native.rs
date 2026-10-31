@@ -16,7 +16,7 @@ use std::{
     sync::Arc,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_NO_MORE_FILES, ERROR_SHARING_VIOLATION, GetLastError, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetVolumeInformationByHandleW,
@@ -2572,6 +2572,150 @@ impl GeneralFrozenPartition {
         }
         close_file(management, "close-general-activation-management", events)?;
         self.file = writable;
+        self.frozen_state = expected;
+        Ok(GeneralJournaledPartition {
+            inner: self,
+            policy: None,
+            write_poisoned: false,
+            native_bytes_written: 0,
+            native_write_bytes_requested: 0,
+        })
+    }
+
+    /// Activate while retaining a real deny-new-writers gate on the primary
+    /// PhysicalDrive route. Read-only aliases remain permitted. This does not
+    /// claim global exclusion of administrative/volume aliases; the caller
+    /// must retain offline filesystem exclusion and own every mutable alias.
+    /// No serialized flag creates this capability: the held writable File is
+    /// opened without FILE_SHARE_WRITE and retained through journal handoff.
+    pub fn activate_for_journal_exclusive(
+        mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralJournaledPartition> {
+        let before = self.state(events)?;
+        if before.disk_attributes != OFFLINE | READ_ONLY {
+            return Err(invalid(
+                "exclusive journal activation requires frozen read-only disk",
+            ));
+        }
+        let path = format!("\\\\.\\PhysicalDrive{}", self.binding.disk_number);
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(1) // FILE_SHARE_READ; existing/new write aliases must refuse.
+            .custom_flags(0xa000_0000) // NO_BUFFERING | WRITE_THROUGH, as the writer uses.
+            .open(&path);
+        events.push(NativeEvent {
+            operation: "open-exclusive-primary-raw-route-gate".into(),
+            control_code: 0,
+            input: 1u32.to_le_bytes().to_vec(),
+            succeeded: opened.is_ok(),
+            native_error: opened.as_ref().err().and_then(io::Error::raw_os_error),
+            output: b"primary-raw-route-deny-new-writers".to_vec(),
+        });
+        // Opening failure leaves the original OFFLINE|READ_ONLY source intact.
+        let gate = opened?;
+        let mut expected = before.clone();
+        expected.disk_attributes = OFFLINE;
+        let mut transition_attempted = false;
+        let activated = (|| -> io::Result<()> {
+            if general_disk_state(&gate, &self.binding, events)? != before {
+                return Err(invalid("exclusive gate route differs from frozen source"));
+            }
+            // Prove the sharing restriction on the exact route while the
+            // disk is still READ_ONLY. Opening this probe issues no payload IO.
+            let probe = device_file(&path, true, true);
+            let denied = probe.as_ref().err().and_then(io::Error::raw_os_error)
+                == Some(ERROR_SHARING_VIOLATION as i32);
+            events.push(NativeEvent {
+                operation: "probe-second-primary-raw-route-writer".into(),
+                control_code: 0,
+                input: 3u32.to_le_bytes().to_vec(),
+                succeeded: probe.is_ok(),
+                native_error: probe.as_ref().err().and_then(io::Error::raw_os_error),
+                output: b"open-only; no payload read or write requested".to_vec(),
+            });
+            match probe {
+                Ok(file) => {
+                    close_file(file, "close-unexpected-secondary-raw-writer-probe", events)?;
+                    return Err(invalid(
+                        "exclusive raw gate allowed a second writable handle",
+                    ));
+                }
+                Err(error) if !denied => return Err(error),
+                Err(_) => (),
+            }
+            events.push(NativeEvent {
+                operation: "primary-raw-route-deny-new-writers".into(),
+                control_code: 0,
+                input: vec![],
+                succeeded: true,
+                native_error: None,
+                output: serde_json::to_vec(&serde_json::json!({
+                    "scope":"primary-raw-route-deny-new-writers",
+                    "gate_share_mode":1,"second_writer_native_error":ERROR_SHARING_VIOLATION,
+                    "filesystem_excluded":true,"source_payload_write_requests":0,
+                    "global_alias_exclusion_claimed":false
+                }))
+                .map_err(io::Error::other)?,
+            });
+            // No separate management writer can coexist with the gate. The
+            // same held, positively bound handle performs the transition.
+            transition_attempted = true;
+            set_attributes(&gate, OFFLINE, events)?;
+            if general_disk_state(&gate, &self.binding, events)? != expected {
+                return Err(invalid(
+                    "exclusive journal activation lost exclusion or identity",
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = activated {
+            if !transition_attempted {
+                // In particular, never change attributes through a handle
+                // whose initial route/identity validation just failed.
+                events.push(NativeEvent {
+                    operation: "exclusive-activation-refused-before-attribute-change".into(),
+                    control_code: 0,
+                    input: vec![],
+                    succeeded: true,
+                    native_error: None,
+                    output: b"original frozen source not changed by this activation".to_vec(),
+                });
+                return Err(error);
+            }
+            // No source payload writes have occurred. Re-establish persistent
+            // protection through the gate before either owning handle closes.
+            let restored = set_attributes(&gate, OFFLINE | READ_ONLY, events).and_then(|()| {
+                if general_disk_state(&gate, &self.binding, events)? != before {
+                    return Err(invalid("exclusive activation protection restore differs"));
+                }
+                Ok(())
+            });
+            events.push(NativeEvent {
+                operation: "exclusive-activation-restore-offline-readonly".into(),
+                control_code: 0,
+                input: (OFFLINE | READ_ONLY).to_le_bytes().to_vec(),
+                succeeded: restored.is_ok(),
+                native_error: restored.as_ref().err().and_then(io::Error::raw_os_error),
+                output: restored
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .unwrap_or_default()
+                    .into_bytes(),
+            });
+            return match restored {
+                Ok(()) => Err(error),
+                Err(restore) => Err(io::Error::new(
+                    error.kind(),
+                    format!(
+                        "exclusive activation failed: {error}; read-only protection restore failed: {restore}"
+                    ),
+                )),
+            };
+        }
+        self.file = gate;
         self.frozen_state = expected;
         Ok(GeneralJournaledPartition {
             inner: self,

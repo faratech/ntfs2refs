@@ -389,7 +389,18 @@ pub(super) fn convert_allocation_selected(
         );
         let mut events = Vec::<NativeEvent>::new();
         let shadow_before = native_target.state(&mut events)?;
-        let mut target = source.activate_for_journal(&mut events)?;
+        let activation = if request.verification_policy.is_fast() {
+            source.activate_for_journal_exclusive(&mut events)
+        } else {
+            source.activate_for_journal(&mut events)
+        };
+        let mut target = match activation {
+            Ok(target) => target,
+            Err(error) => {
+                qualification::save(output, "activation-events.json", &events)?;
+                return Err(error.into());
+            }
+        };
         ensure!(
             target.state(&mut events)?.disk_attributes == 1
                 && native_target.state(&mut events)? == shadow_before,

@@ -12,6 +12,14 @@ they must not claim retained payload was left unhashed.
 
 Normal fast conversion validates the complete journal before using it, then
 keeps exclusive mutable borrows of journal and target across apply and handoff.
+Before activation it opens the primary PhysicalDrive route without
+`FILE_SHARE_WRITE`, then positively requires a second writable open on that exact
+route to fail with `ERROR_SHARING_VIOLATION` while the source remains offline and
+read-only. The same held gate changes the disk to offline writable and remains
+the journal writer through HND. Offline filesystem exclusion and ownership of
+mutable aliases are still required; this gate does not claim global exclusion
+of administrative or volume aliases. Activation refusals persist their native
+events before returning.
 All target checks, original write ordering, intent durability, source exclusion,
 flushes and complete post-write target digest remain. The receipt callback gets
 only the applied result, persists it, and cannot access either stream. With the
@@ -27,8 +35,14 @@ routes. Its two raw-byte hashes omit only exact physical payload ranges that
 the composite replaces with frozen source bytes. Metadata, reserved zeros,
 unknown allocations and recorded raw inspection/anchor reads remain covered.
 Any overlap or inconsistent route/coverage refuses the candidate. The hash
-uses a distinct domain, pinned exclusion map and direct SHA-256 of every
-consumed raw byte; it is not labeled an allocation-wide or whole-image hash.
+uses the distinct `source-backed-raw-consumption-v2` domain, partition length,
+pinned exclusion map, chunk count, and every consumed `(offset, length,
+SHA-256(actual chunk bytes))` frame. Every covered byte is read in both brackets.
+An inner digest may be reused for an exact chunk length only after checking all
+actual bytes are zero; this does not infer zero contents from allocation or
+sparsity. Separate opening/closing counters record reads, observed zero bytes,
+cache hits and bytes processed by the inner SHA-256. The outer digest is not
+labeled a direct-byte, allocation-wide or whole-image hash.
 Full-content wrappers retain the previous bracket and serialized shape.
 
 Whole-buffer old/new comparisons now use slice equality before the original

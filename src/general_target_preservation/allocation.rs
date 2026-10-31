@@ -53,7 +53,7 @@ impl ProtectedAllocationCoverage {
         self.phase = "protected-native-nonrouted-allocation-v1";
         self.raw_shadow_sha256.clear();
         self.raw_consumed_shadow_sha256 = Some(digest.into());
-        self.raw_consumption_scope = Some("source-backed-raw-consumption-v1");
+        self.raw_consumption_scope = Some("source-backed-raw-consumption-v2");
         self.excluded_payload_map_sha256 = Some(exclusions.into());
     }
 

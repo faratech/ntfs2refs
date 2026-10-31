@@ -28,11 +28,13 @@ pub mod io_profile;
 #[cfg(windows)]
 pub mod journal_file;
 #[cfg(windows)]
+pub mod lab_compression_fixture;
+#[cfg(windows)]
 pub mod lab_ntfs_fragmentation;
 #[cfg(windows)]
-pub mod lab_security_fixture;
-#[cfg(windows)]
 pub mod lab_reparse_fixture;
+#[cfg(windows)]
+pub mod lab_security_fixture;
 pub mod layout;
 pub mod logical_hash;
 #[cfg(windows)]

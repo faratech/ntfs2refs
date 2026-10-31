@@ -252,6 +252,7 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
         for stream in &file.streams {
             let named = !stream.name_utf16.is_empty();
             let sparse_requested = stream.flags == 0x8000;
+            let compressed = crate::ntfs_admission::compressed_stream_supported(raw, file, stream);
             let sparse = sparse_requested
                 .then(|| sparse_candidate(raw, file, stream))
                 .and_then(|value| value.ok());
@@ -298,7 +299,7 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
                 && physical_runs;
             let (mut disposition, mut reason) = if !resources
                 .supports_source_geometry(&raw.geometry)
-                || (stream.flags != 0 && sparse.is_none())
+                || (stream.flags != 0 && sparse.is_none() && !compressed)
                 || (named && !crate::ntfs_admission::valid_named_stream_name(&stream.name_utf16))
                 || plan.streams.len() >= crate::ntfs_admission::MAX_DATA_STREAMS
                 || !complete
@@ -308,6 +309,11 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
                 (
                     Disposition::Reject,
                     "source geometry, encoding, logical hash or bounded copy is unsupported",
+                )
+            } else if compressed {
+                (
+                    Disposition::MaterializeCandidate,
+                    "NTFS LZNT1 is decoded and rewritten as ordinary ReFS data; compressed physical bytes cannot be adopted",
                 )
             } else if let Some(sparse) = &sparse {
                 (

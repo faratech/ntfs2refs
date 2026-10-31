@@ -23,6 +23,22 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Compression candidate continuation: pure Rust LZNT1 logical reads, physical
+allocation reconciliation, explicit target compression normalization and a
+seven-stream native fixture are implemented. Focused release builds of the
+public CLI, fixture helper and read-only converted-volume verifier pass. No
+unit tests were added or run. Native compression conversion is not yet qualified.
+See docs/ntfs-compression-normalization.md. Current VM state supersedes the
+older state below: running from NTFS source e4186f31, no active project task
+or worker at preflight. There are47 checkpoints after user-authorized removal
+of obsolete failed leaves44048279,9d98ce2a,f96b8890; their closed archives were
+rehashed and retained. Cleanup receipt is
+.lab/hyperv/streaming-v2-20261027/compression-obsolete-checkpoint-cleanup-20261031.json.
+Capacity admission for8GiB passed (actual228,745,987,040B; D free113,704,525,824B).
+Keep the fixed storage epoch, existing source/qualified branches and main.rs
+overlay unchanged. The next action is fixture creation and public conversion
+inside the guest; no previous native qualification transfers to this build.
+
 Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.

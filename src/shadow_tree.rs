@@ -62,6 +62,10 @@ pub struct Object {
     /// FILE_BASIC_INFO order: creation, access, write, change.
     pub stored_times: [u64; 4],
     pub attributes: u32,
+    /// Source compression policy/encoding is intentionally normalized. Source
+    /// views retain their original flags; target DATA is ordinary ReFS data.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ntfs_compression_normalized: bool,
     pub security: Vec<u8>,
     /// Measured GetSecurityInfo projection, when it differs from the stored
     /// descriptor. Never written over the stored/kernel descriptor.
@@ -632,6 +636,8 @@ fn derive_profile(
         ];
         let has_verified_eas = crate::ntfs_attestation::has_verified_nonempty_eas(f);
         let reparse = crate::ntfs_reparse::file_point(f)?;
+        let ntfs_compression_normalized =
+            ordinary && (si.file_attributes & 0x800 != 0 || f.streams.iter().any(|s| s.flags == 1));
         ensure!(
             times.iter().all(|t| *t > 0 && *t < i64::MAX as u64)
                 && si.file_attributes
@@ -642,7 +648,12 @@ fn derive_profile(
                         } else {
                             0
                         }
-                        | if has_verified_eas { 0x40000 } else { 0 })
+                        | if has_verified_eas { 0x40000 } else { 0 }
+                        | if ntfs_compression_normalized {
+                            0x800
+                        } else {
+                            0
+                        })
                     == 0,
             "unsupported basic metadata"
         );
@@ -714,7 +725,12 @@ fn derive_profile(
             attributes: crate::ntfs_attestation::default_stream_attributes(
                 f,
                 si.file_attributes | if f.is_directory { 16 } else { 0 },
-            )?,
+            )? & !if ntfs_compression_normalized {
+                0x800
+            } else {
+                0
+            },
+            ntfs_compression_normalized,
             security: hex::decode(&descriptor.relative_hex)?,
             api_security: None,
             extended_attributes: Some(crate::ntfs_extended_attributes::file_set(f)?),

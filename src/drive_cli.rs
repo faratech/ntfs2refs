@@ -399,6 +399,9 @@ mod windows {
                 "whole-image verification (compares and journals every byte; much slower)"
             }
         );
+        println!(
+            "NTFS-compressed streams, when present, are decoded into ordinary ReFS data and require space for their logical contents."
+        );
         println!("Convert this partition to ReFS in place, preserving supported files? [y/N]");
         print!("> ");
         io::stdout().flush()?;

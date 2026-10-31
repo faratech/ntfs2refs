@@ -311,9 +311,35 @@ pub fn check_file(
             r.code == layout::GET_RETRIEVAL && r.input == [0; 8],
             "unexpected retrieval input"
         );
+        let compressed = if s.flags == 1 {
+            let mut attributes = file
+                .attributes
+                .iter()
+                .filter(|a| a.type_code == 0x80 && a.name_utf16 == s.name_utf16);
+            let attribute = attributes
+                .next()
+                .context("compressed DATA inventory absent")?;
+            ensure!(
+                attributes.next().is_none(),
+                "duplicate compressed DATA inventory"
+            );
+            crate::ntfs_compression::supported(attribute, geometry)?;
+            ensure!(
+                attribute.flags == s.flags
+                    && attribute.resident == s.resident
+                    && attribute.logical_size == s.logical_size
+                    && attribute.initialized_size == s.initialized_size
+                    && attribute.allocated_size == s.allocated_size
+                    && attribute.extents == s.extents,
+                "compressed stream differs from its validated DATA attribute"
+            );
+            Some(attribute)
+        } else {
+            None
+        };
         ensure!(
-            s.flags & !0x8000 == 0,
-            "encoded/compressed/encrypted stream is outside adoption profile"
+            s.flags & !0x8000 == 0 || compressed.is_some(),
+            "unsupported encoded or encrypted stream"
         );
         if s.resident {
             ensure!(
@@ -364,6 +390,12 @@ pub fn check_file(
             q.allocated_size == physical,
             "native physical allocation differs from mapped NTFS data"
         );
+        if let Some(attribute) = compressed {
+            ensure!(
+                attribute.total_allocated_size == Some(physical),
+                "native compressed allocation differs from raw TotalAllocated"
+            );
+        }
     }
     Ok(())
 }

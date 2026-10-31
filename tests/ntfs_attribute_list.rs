@@ -35,6 +35,7 @@ fn resident(type_code: u32, instance: u16) -> AttributeInventory {
         allocated_size: 48,
         lowest_vcn: 0,
         compression_unit: 0,
+        total_allocated_size: None,
         extents: vec![],
         resident_sha256: Some(hash(&[0; 48])),
         resident_metadata_hex: None,
@@ -52,6 +53,7 @@ fn data(instance: u16, lowest: u64, physical: u64) -> AttributeInventory {
         allocated_size: 12288,
         lowest_vcn: lowest,
         compression_unit: 0,
+        total_allocated_size: None,
         extents: vec![Extent {
             logical_offset: lowest * 4096,
             physical_offset: Some(physical * 4096),

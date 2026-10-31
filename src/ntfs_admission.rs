@@ -33,6 +33,32 @@ pub fn valid_named_stream_name(name: &[u16]) -> bool {
             .chars()
             .all(|c| !c.is_control() && !"<>:\"/\\|?*".contains(c))
 }
+
+/// Encoded bytes are never retained as ReFS payload. This recognizes only a
+/// fully mapped NTFS stream whose logical reader can decode the source form.
+pub(crate) fn compressed_stream_supported(
+    raw: &ntfs::NtfsInspection,
+    file: &FileInventory,
+    stream: &ntfs::StreamInventory,
+) -> bool {
+    if stream.flags != 1 {
+        return false;
+    }
+    let mut attributes = file.attributes.iter().filter(|attribute| {
+        attribute.type_code == 0x80 && attribute.name_utf16 == stream.name_utf16
+    });
+    let Some(attribute) = attributes.next() else {
+        return false;
+    };
+    attributes.next().is_none()
+        && attribute.resident == stream.resident
+        && attribute.flags == stream.flags
+        && attribute.logical_size == stream.logical_size
+        && attribute.initialized_size == stream.initialized_size
+        && attribute.allocated_size == stream.allocated_size
+        && attribute.extents == stream.extents
+        && crate::ntfs_compression::supported(attribute, &raw.geometry).is_ok()
+}
 pub const MAX_FILES: usize = 128;
 pub const MAX_DIRECTORIES: usize = 32;
 pub const MAX_LOGICAL_BYTES: u64 = 256 * 1024 * 1024;
@@ -807,8 +833,12 @@ fn user_issues_profile(
                 && !a.resident
                 && a.flags == 0x8000
                 && matches!(a.compression_unit, 0 | 4);
+            let compressed_data = ordinary
+                && data
+                && a.flags == 1
+                && crate::ntfs_compression::supported(a, &raw.geometry).is_ok();
             !(plain || data || index || root_txf || ea || point)
-                || ((a.flags != 0 || a.compression_unit != 0) && !sparse_data)
+                || ((a.flags != 0 || a.compression_unit != 0) && !sparse_data && !compressed_data)
                 || a.lowest_vcn != 0
         })
     {
@@ -834,7 +864,8 @@ fn user_issues_profile(
                 } else {
                     0
                 }
-                | if has_verified_eas { 0x40000 } else { 0 })
+                | if has_verified_eas { 0x40000 } else { 0 }
+                | if ordinary { 0x800 } else { 0 })
             != 0
     }) {
         issues.push("unsupported attributes or missing standard information".into());
@@ -902,7 +933,9 @@ fn user_issues_profile(
             || (!ordinary && f.streams.len() != 1)
             || f.streams.iter().any(|s| {
                 (!ordinary && !s.name_utf16.is_empty())
-                    || (s.flags != 0 && !(ordinary && !s.resident && s.flags == 0x8000))
+                    || (s.flags != 0
+                        && !(ordinary && !s.resident && s.flags == 0x8000)
+                        && !(ordinary && compressed_stream_supported(raw, f, s)))
                     || s.initialized_size > s.logical_size
                     || (!ordinary
                         && (s.resident

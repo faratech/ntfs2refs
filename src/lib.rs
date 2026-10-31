@@ -49,13 +49,13 @@ pub mod lab_tree_expectation;
 #[cfg(windows)]
 pub mod lab_tree_reconstruct;
 pub mod ntfs_admission;
-pub mod ntfs_extended_attributes;
-pub mod ntfs_reparse;
 pub mod ntfs_allocation;
 pub mod ntfs_attestation;
 pub mod ntfs_attribute_list;
 pub mod ntfs_backup;
+pub mod ntfs_compression;
 pub mod ntfs_data_attestation;
+pub mod ntfs_extended_attributes;
 #[cfg(windows)]
 pub mod ntfs_freeze;
 pub mod ntfs_index;
@@ -64,6 +64,7 @@ pub mod ntfs_internal;
 pub mod ntfs_log;
 pub mod ntfs_namespace;
 pub mod ntfs_namespace_attestation;
+pub mod ntfs_reparse;
 pub mod ntfs_security;
 pub mod ntfs_source_view;
 pub mod ntfs_stream_attestation;
@@ -71,29 +72,29 @@ pub mod ntfs_stream_plan;
 pub mod ntfs_transactions;
 #[cfg(windows)]
 pub(crate) mod parallel_digest;
-pub mod planner;
 pub mod payload_copy_plan;
+pub mod planner;
 pub mod preparation_progress;
 #[cfg(windows)]
 pub mod reference_file_verification;
 pub mod refs_allocator;
-pub mod refs_extent_refs;
 pub mod refs_bootstrap;
 pub mod refs_containers;
 pub mod refs_cow_overlay;
+pub mod refs_extent_refs;
 pub mod refs_hybrid;
 pub mod refs_inspect;
-pub mod refs_node;
 pub mod refs_mlog_refs;
+pub mod refs_node;
 pub mod refs_object_refs;
 pub mod refs_ownership;
 pub mod refs_record_refs;
-pub mod refs_required_ranges;
-pub mod refs_split_refs;
 #[cfg(windows)]
 pub mod refs_reference_import;
 pub mod refs_reference_transport;
+pub mod refs_required_ranges;
 pub mod refs_retained_allocation;
+pub mod refs_split_refs;
 pub mod refs_virtual_roots;
 pub mod refs_write_set;
 pub mod retained_compare;

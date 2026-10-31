@@ -494,6 +494,10 @@ pub struct AttributeInventory {
     pub lowest_vcn: u64,
     #[serde(default)]
     pub compression_unit: u16,
+    /// Compressed base-header TotalAllocated, distinct from virtual allocation.
+    /// Plain/sparse reports omit this field to retain their legacy encoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_allocated_size: Option<u64>,
     pub extents: Vec<Extent>,
     pub resident_sha256: Option<String>,
     /// Exact bytes for resident semantic metadata, never file $DATA contents.
@@ -920,6 +924,11 @@ fn parse_record(mut bytes: Vec<u8>, geometry: &NtfsGeometry) -> Result<Record> {
                 allocated_size,
                 lowest_vcn,
                 compression_unit: if resident { 0 } else { u16le(raw, 34)? },
+                total_allocated_size: if !resident && flags & 0x00ff != 0 && lowest_vcn == 0 {
+                    Some(u64le(raw, 64)?)
+                } else {
+                    None
+                },
                 extents,
                 resident_sha256,
                 resident_metadata_hex,
@@ -958,6 +967,41 @@ fn read_attribute_range<R: Read + Seek>(
     output: &mut [u8],
     geometry: &NtfsGeometry,
 ) -> Result<()> {
+    let mut compression = compression_reader(attribute, geometry)?;
+    read_logical_range(
+        reader,
+        attribute,
+        offset,
+        output,
+        geometry,
+        &mut compression,
+    )
+}
+
+fn compression_reader(
+    attribute: &Attribute,
+    geometry: &NtfsGeometry,
+) -> Result<Option<crate::ntfs_compression::Reader>> {
+    if attribute.report.flags & 0x00ff != 0 {
+        Ok(Some(crate::ntfs_compression::Reader::new(
+            &attribute.report,
+            geometry,
+        )?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Dispatch encoded DATA before the plain sparse-run interpretation. A cache
+/// belongs to one checked attribute and never treats compression padding as holes.
+fn read_logical_range<R: Read + Seek>(
+    reader: &mut R,
+    attribute: &Attribute,
+    offset: u64,
+    output: &mut [u8],
+    geometry: &NtfsGeometry,
+    compression: &mut Option<crate::ntfs_compression::Reader>,
+) -> Result<()> {
     let end = offset
         .checked_add(output.len() as u64)
         .context("attribute read overflow")?;
@@ -965,6 +1009,9 @@ fn read_attribute_range<R: Read + Seek>(
         end <= attribute.report.logical_size,
         "read beyond logical attribute EOF"
     );
+    if let Some(compression) = compression {
+        return compression.read_range(reader, offset, output);
+    }
     ensure!(
         attribute.report.flags & 0x40ff == 0,
         "cannot interpret compressed or encrypted metadata"
@@ -1294,6 +1341,9 @@ pub(crate) fn read_nonresident_inventory_range<R: Read + Seek>(
 /// Validate the entire standalone mapping, including allocation past EOF and the
 /// uninitialized tail. Zero filling must never conceal missing mapping pairs.
 fn validate_stream_mapping(a: &AttributeInventory, geometry: &NtfsGeometry) -> Result<()> {
+    if a.flags & 0x00ff != 0 {
+        return crate::ntfs_compression::supported(a, geometry);
+    }
     ensure!(
         a.lowest_vcn == 0,
         "standalone DATA mapping must start at VCN zero"
@@ -1398,13 +1448,15 @@ fn hash_stream<R: Read + Seek>(
         // ordinary logical DATA or weakening the ordinary sparse-run check.
         // https://github.com/tuxera/ntfs-3g/blob/edge/ntfsprogs/mkntfs.c
         Some(LogicalHashStatus::UnsupportedBadClusterMetadata)
-    } else if a.flags & 0x00ff != 0 {
+    } else if a.flags & 0x00ff != 0 && crate::ntfs_compression::supported(a, geometry).is_err() {
         Some(LogicalHashStatus::UnsupportedCompression)
     } else if a.flags & 0x4000 != 0 {
         Some(LogicalHashStatus::UnsupportedEncryption)
     } else if a.flags & !0xc0ff != 0 || (a.resident && a.flags != 0) {
         Some(LogicalHashStatus::UnsupportedFlags)
-    } else if a.compression_unit != 0 && !(a.flags & 0x8000 != 0 && a.compression_unit == 4) {
+    } else if a.compression_unit != 0
+        && !((a.flags & 0x8000 != 0 || a.flags == 1) && a.compression_unit == 4)
+    {
         // Native sparse attributes can carry unit 4 without compression. The
         // compression method flags, not the unit alone, distinguish that case.
         Some(LogicalHashStatus::UnsupportedCompressionUnit)
@@ -1426,6 +1478,18 @@ fn hash_stream<R: Read + Seek>(
     // Reserve all work before the first DATA read, including CPU work hashing
     // zeros. No partial digest or partial report is returned on exhaustion.
     budget.reserve(a.logical_size)?;
+    if let Some(mut compression) = compression_reader(attribute, geometry)? {
+        let mut hasher = n2r_win32::content_digest::Hasher::new();
+        let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
+        let mut offset = 0u64;
+        while offset < a.logical_size {
+            let count = (a.logical_size - offset).min(buffer.len() as u64) as usize;
+            compression.read_range(reader, offset, &mut buffer[..count])?;
+            hasher.update(&buffer[..count]);
+            offset += count as u64;
+        }
+        return Ok((LogicalHashStatus::Complete, Some(hasher.finish())));
+    }
     // Streams over 4 MiB are read in 4 MiB requests; smaller streams keep the
     // fixed 64 KiB buffer. The result is the stream's content digest.
     let large = a.logical_size > LARGE_STREAM_HASH_BYTES as u64;
@@ -2450,8 +2514,8 @@ fn checked_plain_attribute<R: Read + Seek>(
     )
 }
 
-/// Shared metadata/identity checks. Sparse support is an explicit reader
-/// policy; it does not widen plain callers or source/target admission.
+/// Shared metadata/identity checks. LZNT1 DATA is decoded into logical bytes;
+/// sparse support remains explicit and neither path grants source admission.
 fn checked_data_attribute<R: Read + Seek>(
     reader: &mut R,
     raw: &NtfsInspection,
@@ -2478,8 +2542,16 @@ fn checked_data_attribute<R: Read + Seek>(
         .iter()
         .find(|s| s.name_utf16 == stream_name_utf16)
         .context("requested DATA stream absent")?;
+    let mut inventoried = file
+        .attributes
+        .iter()
+        .filter(|a| a.type_code == 0x80 && a.name_utf16 == stream_name_utf16);
+    let expected = inventoried.next().context("source DATA inventory absent")?;
+    ensure!(inventoried.next().is_none(), "duplicate DATA inventory");
+    let compressed =
+        stream.flags == 1 && crate::ntfs_compression::supported(expected, &raw.geometry).is_ok();
     ensure!(
-        (stream.flags == 0 || (allow_sparse && stream.flags == 0x8000))
+        (stream.flags == 0 || (allow_sparse && stream.flags == 0x8000) || compressed)
             && stream.logical_hash_status == LogicalHashStatus::Complete
             && stream.logical_size <= max_bytes
             && (!alpha_limit || max_bytes <= ALPHA_MAX_PLAIN_BYTES),
@@ -2553,29 +2625,26 @@ fn checked_data_attribute<R: Read + Seek>(
         candidates.next().is_none(),
         "duplicate requested DATA attribute"
     );
-    let expected = file
-        .attributes
-        .iter()
-        .find(|a| a.type_code == 0x80 && a.name_utf16 == stream_name_utf16)
-        .context("source DATA inventory absent")?;
     ensure!(
         serde_json::to_vec(&data.report)? == serde_json::to_vec(expected)?
             && ((data.report.flags == 0 && data.report.compression_unit == 0)
                 || (allow_sparse
                     && data.report.flags == 0x8000
                     && !data.report.resident
-                    && matches!(data.report.compression_unit, 0 | 4)))
+                    && matches!(data.report.compression_unit, 0 | 4))
+                || (compressed
+                    && crate::ntfs_compression::supported(&data.report, geometry).is_ok()))
             && data.report.logical_size == stream.logical_size,
         "source DATA attribute changed"
     );
-    if allow_sparse {
+    if allow_sparse || compressed {
         ensure!(
             stream.flags == data.report.flags
                 && stream.resident == data.report.resident
                 && stream.initialized_size == data.report.initialized_size
                 && stream.allocated_size == data.report.allocated_size
                 && stream.extents == data.report.extents,
-            "sparse DATA inventory differs from the actual attribute mapping"
+            "DATA inventory differs from the actual attribute mapping"
         );
     }
     if !data.report.resident {
@@ -2753,9 +2822,17 @@ fn copy_checked_attribute<R: Read + Seek, W: Write>(
     let mut digest = n2r_win32::content_digest::Hasher::new();
     let mut copied = 0u64;
     let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
+    let mut compression = compression_reader(attribute, geometry)?;
     while copied < attribute.report.logical_size {
         let count = (attribute.report.logical_size - copied).min(buffer.len() as u64) as usize;
-        read_attribute_range(reader, attribute, copied, &mut buffer[..count], geometry)?;
+        read_logical_range(
+            reader,
+            attribute,
+            copied,
+            &mut buffer[..count],
+            geometry,
+            &mut compression,
+        )?;
         output.write_all(&buffer[..count])?;
         digest.update(&buffer[..count]);
         copied += count as u64;
@@ -2890,14 +2967,16 @@ fn hash_checked_attribute_range<R: Read + Seek>(
     let mut content = whole.then(n2r_win32::content_digest::Hasher::new);
     let mut copied = 0u64;
     let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
+    let mut compression = compression_reader(attribute, geometry)?;
     while copied < length {
         let count = (length - copied).min(buffer.len() as u64) as usize;
-        read_attribute_range(
+        read_logical_range(
             reader,
             attribute,
             offset + copied,
             &mut buffer[..count],
             geometry,
+            &mut compression,
         )?;
         hash.update(&buffer[..count]);
         if let Some(content) = &mut content {
@@ -2990,6 +3069,7 @@ pub struct PlainStreamRangeSession {
     stream_name_utf16: Vec<u16>,
     allow_sparse: bool,
     attribute: Attribute,
+    compression: Option<crate::ntfs_compression::Reader>,
     expected: String,
     poisoned: bool,
 }
@@ -3022,8 +3102,8 @@ impl PlainStreamRangeSession {
         )
     }
 
-    /// Explicitly accept uncompressed sparse DATA as well as plain DATA. A
-    /// hole or bytes after VDL read as zeros; they issue no payload-device read.
+    /// Explicitly accept uncompressed sparse DATA as well as plain/LZNT1 DATA.
+    /// Sparse holes and bytes after VDL read as zeros without payload-device IO.
     /// Full logical-byte hashing/budgets are unchanged, and physical ownership
     /// must still be independently reconciled before conversion.
     pub fn open_sparse_named<R: Read + Seek>(
@@ -3064,11 +3144,13 @@ impl PlainStreamRangeSession {
             false,
             allow_sparse,
         )?;
+        let compression = compression_reader(&attribute, &raw.geometry)?;
         Ok(Self {
             record_number,
             stream_name_utf16: stream_name_utf16.to_vec(),
             allow_sparse,
             attribute,
+            compression,
             expected,
             poisoned: false,
         })
@@ -3110,7 +3192,14 @@ impl PlainStreamRangeSession {
         );
         self.poisoned = true;
         budget.reserve(output.len() as u64)?;
-        read_attribute_range(reader, &self.attribute, offset, output, &raw.geometry)?;
+        read_logical_range(
+            reader,
+            &self.attribute,
+            offset,
+            output,
+            &raw.geometry,
+            &mut self.compression,
+        )?;
         self.poisoned = false;
         Ok(())
     }
@@ -3176,10 +3265,10 @@ pub fn read_plain_named_stream_range_into<R: Read + Seek>(
     )
 }
 
-/// Sparse-aware counterpart of the plain named range reader. Only flags zero
-/// or SPARSE (0x8000) are accepted; compression and EFS remain refused. The
-/// existing logical reader preserves holes and uninitialized zero semantics,
-/// and the proof distinguishes header allocation from physical mapped bytes.
+/// Sparse-aware counterpart of the named logical reader. Plain, SPARSE
+/// (0x8000), and the checked LZNT1 profile are accepted; EFS remains refused.
+/// Encoded compression padding is decoded rather than exposed as sparse holes.
+/// The proof distinguishes header allocation from physical mapped bytes.
 pub fn read_sparse_named_stream_range_into<R: Read + Seek>(
     reader: &mut R,
     raw: &NtfsInspection,
@@ -3515,14 +3604,25 @@ pub fn inspect_with_limits<R: Read + Seek>(
         }
         namespace.observe(reader, &record, number, &geometry);
         security.observe(reader, &record, number, &geometry);
+        // The SI bit is a file/directory compression policy. A resident DATA
+        // value may remain ordinary bytes under that policy; only the DATA
+        // encoding determines whether payload decoding is necessary.
+        let compression_policy_supported = record
+            .attributes
+            .iter()
+            .filter(|a| a.report.type_code == 0x80)
+            .all(|a| {
+                (a.report.flags == 0 && a.report.compression_unit == 0)
+                    || crate::ntfs_compression::supported(&a.report, &geometry).is_ok()
+            });
         for attribute in record.attributes {
             let a = &attribute.report;
-            if a.flags & 0x00ff != 0 {
+            if a.flags & 0x00ff != 0 && crate::ntfs_compression::supported(a, &geometry).is_err() {
                 blocker(
                     &mut report,
                     &mut budget,
                     "ntfs_compression",
-                    "Compressed attribute requires a preservation implementation",
+                    "Compressed attribute is outside the supported LZNT1 DATA profile",
                     Some(number),
                 )?;
             }
@@ -3559,12 +3659,12 @@ pub fn inspect_with_limits<R: Read + Seek>(
                             None
                         },
                     });
-                    if flags & 0x800 != 0 {
+                    if flags & 0x800 != 0 && !compression_policy_supported {
                         blocker(
                             &mut report,
                             &mut budget,
                             "compressed_file_attribute",
-                            "File or directory carries the NTFS compression attribute",
+                            "Compression policy has DATA outside the supported encoding profile",
                             Some(number),
                         )?;
                     }

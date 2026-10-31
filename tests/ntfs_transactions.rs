@@ -26,6 +26,7 @@ fn txf() -> AttributeInventory {
         allocated_size: 56,
         lowest_vcn: 0,
         compression_unit: 0,
+        total_allocated_size: None,
         extents: vec![],
         resident_sha256: Some("a".repeat(64)),
         resident_metadata_hex: None,

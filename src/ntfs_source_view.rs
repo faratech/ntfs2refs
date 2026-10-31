@@ -156,14 +156,39 @@ pub fn check_metadata(
                 .find(|s| s.name_utf16.is_empty())
                 .context("default stream absent")?;
             if !stream.resident {
-                let expected_allocation = if stream.flags == 0x8000 {
+                let expected_allocation = if stream.flags == 0x8000 || stream.flags == 1 {
+                    if stream.flags == 1 {
+                        let mut attrs = f
+                            .attributes
+                            .iter()
+                            .filter(|a| a.type_code == 0x80 && a.name_utf16 == stream.name_utf16);
+                        let attr = attrs.next().context("compressed DATA attribute absent")?;
+                        ensure!(
+                            attrs.next().is_none(),
+                            "compressed DATA attribute ambiguous"
+                        );
+                        // The raw allocation header describes logical allocation;
+                        // Windows reports the physically compressed allocation.
+                        let physical = stream
+                            .extents
+                            .iter()
+                            .filter(|extent| extent.physical_offset.is_some())
+                            .try_fold(0u64, |sum, extent| {
+                                sum.checked_add(extent.length)
+                                    .context("compressed physical allocation overflow")
+                            })?;
+                        ensure!(
+                            attr.total_allocated_size == Some(physical),
+                            "compressed physical allocation header differs"
+                        );
+                    }
                     stream
                         .extents
                         .iter()
                         .filter(|extent| extent.physical_offset.is_some())
                         .try_fold(0u64, |sum, extent| {
                             sum.checked_add(extent.length)
-                                .context("sparse physical allocation overflow")
+                                .context("physical allocation overflow")
                         })?
                 } else {
                     stream.allocated_size

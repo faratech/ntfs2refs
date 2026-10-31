@@ -644,6 +644,7 @@ mod tests {
                     directory: false,
                     stored_times: [1; 4],
                     attributes: 32,
+                    ntfs_compression_normalized: false,
                     security: vec![],
                     api_security: None,
                     extended_attributes: None,

@@ -187,6 +187,7 @@ fn legacy_attr(data: &[u8]) -> AttributeInventory {
         allocated_size: data.len() as u64,
         lowest_vcn: 0,
         compression_unit: 0,
+        total_allocated_size: None,
         extents: Vec::new(),
         resident_sha256: Some(sec::hash(data)),
         resident_metadata_hex: Some(hex::encode(data)),

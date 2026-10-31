@@ -1,0 +1,350 @@
+{
+  "schema_version": 1,
+  "kind": "extent-verification-native-conversion-and-independent-read-only-completion",
+  "recorded_utc": "2026-10-31T16:58:07.1380177Z",
+  "converter_runtime": {
+    "native_wall_seconds": 34.8259249,
+    "native_exit": 0,
+    "source_commit": "e606c5374d508bd6787f5bd29e4a2fbb4fdcfee1",
+    "native_creation_ms": 1793465084481,
+    "wrapper_run_id": "95833c80359d4df9b0bfbc14ca555881",
+    "native_exit_observed": true,
+    "core_run_id": "c2e31aceb0a2e7faea3870c3f5f557b9",
+    "public_binary_sha256": "d0033a8b2dd1dd20e0c92ea62eb6040ded8a615b78de8ecc11b972954491accf",
+    "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "native_pid": 5504,
+    "public_binary_bytes": 9369600
+  },
+  "target_engine": {
+    "label_restoration_verified": true,
+    "mount_paths_preserved": true,
+    "observed_default_content_hashes": 0,
+    "observed_named_content_hashes": 0,
+    "objects": 44,
+    "content_observation": {
+      "scope": "converted-metadata-and-complete-stream-maps-v1",
+      "default_streams_observed": 30,
+      "named_streams_observed": 9,
+      "admitted_payload_bytes_read": 0,
+      "full_file_hashes": false,
+      "content_equality_verified": false,
+      "metadata_and_namespace_verified": true,
+      "complete_stream_mappings_observed": true,
+      "data_storage_validity_checked": true
+    },
+    "extent_verification": {
+      "all_complete_maps_identical": true,
+      "expected_tree_sha256": "2b132b71025db2eb5cc508f538e96760cab951172e7b31f842cc519659bc7a15",
+      "handoff_replay_closed": true,
+      "resident_and_residual_bytes_bound_by_selected_image": true,
+      "retained_bytes_proven_by_same_physical_mapping": true,
+      "saved_receipt_grants_execution_authority": false,
+      "schema_version": 1,
+      "scope": "fresh-conversion-extent-identity-v1",
+      "selected_bytes_checksummed": 82259968,
+      "selected_sha256": "5064c8302b6647f4aae04a3d6b4c5ef07ffefe59585ba1fbaaffe88e99abe335",
+      "stream_and_directory_bindings": 53,
+      "target_admitted_payload_bytes_read": 0,
+      "target_full_file_hashes": false
+    },
+    "actual_verification_policy": "extent_identity_v1",
+    "handoff_replay_closed": true
+  },
+  "source_engine": {
+    "native_bytes_read_for_elided_streams": 0.0,
+    "zero_initial_payload_reads_claimed": false,
+    "native_request_schema": 4,
+    "native_complete_stream_logical_bytes": 86934843.0,
+    "native_report_schema": 12,
+    "native_streams_not_read_by_extent_identity": 3,
+    "native_logical_bytes_not_read_by_extent_identity": 4214784.0,
+    "native_content_passes": 1,
+    "native_logical_read_audit": {
+      "limit_bytes": 9007199254740992,
+      "reserved_bytes": 86934884,
+      "bytes_read": 86934843,
+      "read_calls": 92,
+      "eof_probes": 41
+    },
+    "native_streams_read_completely": 41,
+    "fingerprint": {
+      "allocated_bytes": 103927808,
+      "allocated_ranges": 1051,
+      "fingerprint_bytes": 96272384,
+      "fingerprint_ranges": 47,
+      "grants_source_admission": false,
+      "kind": "ntfs_metadata_and_extent_fingerprint_v1",
+      "omitted_initialized_payload_bytes": 7655424,
+      "omitted_initialized_payload_ranges": 1038,
+      "partition_bytes": 55834574848,
+      "raw_inspector_content_hashes_preserved": true,
+      "whole_source_content_digest": false
+    },
+    "actual_verification_policy": "extent_identity_v1",
+    "raw_source_logical_hashes": true,
+    "initial_raw_stream_hash_bytes": 163711987
+  },
+  "primary_raw_writer_gate": {
+    "filesystem_excluded": true,
+    "gate_share_mode": 1,
+    "global_alias_exclusion_claimed": false,
+    "scope": "primary-raw-route-deny-new-writers",
+    "second_writer_native_error": 32,
+    "source_payload_write_requests": 0
+  },
+  "raw_shadow_bracket": {
+    "scope": "source-backed-raw-consumption-v2",
+    "framed_hash_domain": "n2r-refs-source-backed-raw-consumption-v2",
+    "raw_metadata_hash_algorithm": "sha256-framed-chunks-v1",
+    "opening_hash_counts": {
+      "raw_bytes_read": 6174121984,
+      "chunks_read": 5897,
+      "zero_chunks_observed": 5816,
+      "zero_bytes_observed": 6097473536,
+      "zero_digest_cache_hits": 5814,
+      "zero_lengths_hashed": 2,
+      "bytes_processed_by_inner_sha256": 77701120
+    },
+    "closing_hash_counts": {
+      "raw_bytes_read": 6174121984,
+      "chunks_read": 5897,
+      "zero_chunks_observed": 5816,
+      "zero_bytes_observed": 6097473536,
+      "zero_digest_cache_hits": 5814,
+      "zero_lengths_hashed": 2,
+      "bytes_processed_by_inner_sha256": 77701120
+    },
+    "excluded_payload_bytes": 10604544,
+    "preliminary_and_bracketed_native_routes_identical": true,
+    "preliminary_and_bracketed_allocation_maps_identical": true,
+    "raw_inspection_reads_covered": true
+  },
+  "selected_ranges": 253,
+  "selected_bytes": 82259968,
+  "journal_bytes": 88907648,
+  "packed_backing_bytes": 6615040,
+  "preserved_initial_observer_failure": {
+    "phase": "independent-complete-target-hashes",
+    "conversion_retried": false,
+    "native_exit": 0,
+    "raw_replay_performed": false,
+    "error": "System.Management.Automation.RuntimeException: Independent target content differs or cannot be read: H:\\ReparseFixture-5dc696e66b6d441496c31aab7b06cecc\\absolute-file",
+    "converted_checkpoint": "26607589-a002-4e25-9102-199ef9fc52e7",
+    "diagnosis": "The lab backup-read helper refused an empty file reparse point in the shared ordinary-file type guard before reading it; native conversion had already succeeded and HND was closed.",
+    "initial_digest_helper_sha256": "9045a574479529cfe39063512f4d7d074541ea3d83ee2569c19a6151d90d6fd6",
+    "task_result": 1
+  },
+  "independent_completion": {
+    "ea_entries_verified": 7,
+    "helper_sha256": "232fbf271c363a504152347dd7cd7e64d91d903f3f7ff63b0b3c335449e3559f",
+    "raw_replay_performed": false,
+    "reparse_point_buffers_verified": 6,
+    "original_failure_preserved": true,
+    "old_named_stream_alias_views": 15,
+    "independent_default_stream_hashes": 30,
+    "target_metadata_repaired": false,
+    "independent_complete_stream_hashes": 39,
+    "old_native_identity_verified_absent": true,
+    "attribute_alias_stream_hashes": 9,
+    "scope": "read-only-completion-of-native-extent-conversion-v1",
+    "independent_named_stream_hashes": 9,
+    "helper_bytes": 324096,
+    "helper_source_commit": "543444f553edeafc3a5706d12ec6017652e28079",
+    "observer_worker_creation_ms": 1793465679686,
+    "observer_wall_seconds": 28.3773377,
+    "sparse_content_paths": 4,
+    "security_fixture_identities_verified": 8,
+    "compression_independent_sha256_hashes": 7,
+    "observer_run_id": "75e152b3070a486990408bcd4ee16287",
+    "after_normal_shutdown_and_restart": true,
+    "journal_opened": false,
+    "all_expected_hashes_match": true,
+    "conversion_executed": false,
+    "schema_adapters": [
+      "EA source schema12 admitted with unchanged complete EA field checks",
+      "Reparse source schema12 admitted with unchanged tag/buffer/index checks; actual source schema reported",
+      "Original native Process-object guard replaced by actual terminal/dead-identity preflight"
+    ],
+    "observer_worker_pid": 4216
+  },
+  "advisory_phase_process_io": [
+    {
+      "phase": "start",
+      "read_transfer_bytes": 8197,
+      "write_transfer_bytes": 81294,
+      "user_time_100ns": 312500,
+      "kernel_time_100ns": 468750
+    },
+    {
+      "phase": "qualified",
+      "read_transfer_bytes": 25291236233,
+      "write_transfer_bytes": 84119019,
+      "user_time_100ns": 141406250,
+      "kernel_time_100ns": 60156250
+    },
+    {
+      "phase": "journal-prepared",
+      "read_transfer_bytes": 25588257417,
+      "write_transfer_bytes": 173546864,
+      "user_time_100ns": 164218750,
+      "kernel_time_100ns": 61875000
+    },
+    {
+      "phase": "applied",
+      "read_transfer_bytes": 26211181065,
+      "write_transfer_bytes": 255862690,
+      "user_time_100ns": 181875000,
+      "kernel_time_100ns": 63593750
+    },
+    {
+      "phase": "handoff",
+      "read_transfer_bytes": 26211185161,
+      "write_transfer_bytes": 255867821,
+      "user_time_100ns": 181875000,
+      "kernel_time_100ns": 63593750
+    },
+    {
+      "phase": "native-verified",
+      "read_transfer_bytes": 26217800201,
+      "write_transfer_bytes": 259109399,
+      "user_time_100ns": 183593750,
+      "kernel_time_100ns": 63750000
+    }
+  ],
+  "physical_disk_io_measured": false,
+  "closed_archives": [
+    {
+      "root": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80",
+      "files": 100,
+      "bytes": 82719759.0,
+      "every_file_length_and_sha256_verified": true,
+      "metadata_only": true,
+      "per_file_maximum_bytes": 67108864,
+      "index_pin": {
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\archive.json",
+        "bytes": 30468,
+        "sha256": "7bde30b82c98a663fd5c2a0c3da25ed73b9c8e0d57fe566ffb66888efb9559e8"
+      }
+    },
+    {
+      "root": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-readonly-success-75e152b3",
+      "files": 40,
+      "bytes": 2457084.0,
+      "every_file_length_and_sha256_verified": true,
+      "metadata_only": true,
+      "per_file_maximum_bytes": 67108864,
+      "index_pin": {
+        "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-readonly-success-75e152b3\\archive.json",
+        "bytes": 10951,
+        "sha256": "6f713d1954c527e0b43c8f5d408da80c5d184078c7d7636b75bd5b633c76e191"
+      }
+    }
+  ],
+  "current_vm": {
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "state": "Off",
+    "memory_assigned": 0,
+    "current_parent": "26607589-a002-4e25-9102-199ef9fc52e7",
+    "checkpoint_count": 50,
+    "normal_shutdown": true,
+    "observer_task": "N2R-ExtentReadOnlyCompletion-75e152b3070a486990408bcd4ee16287",
+    "observer_task_state_before_stop": "Ready",
+    "observer_task_result_before_stop": 0,
+    "active_native_workers_before_stop": 0,
+    "active_n2r_tasks_before_stop": 0,
+    "new_checkpoint_created": false,
+    "reason_no_additional_checkpoint": "The native completed state is already preserved at current checkpoint; all50 checkpoint slots are occupied. Fresh read-only completion metadata is archived and current guest disk state remains stopped.",
+    "closed_archive_files": 40,
+    "closed_archive_bytes": 2457084.0,
+    "all_copied_files_sha256_verified": true,
+    "capacity": {
+      "ActualBytes": 264785508129,
+      "FreeBytes": 80448499712,
+      "MaximumActualBytes": 329374052988,
+      "MinimumFreeBytes": 17179869184
+    },
+    "utc": "2026-10-31T16:56:34.8991114Z"
+  },
+  "qualification_scope": "One complete H corpus: fresh conversion with extent verification followed by independently pinned read-only all-stream and fixture completion. Initial inspector content hashing remains complete; native elision is explicitly scoped. No recovery/mutation/power-loss or broad cold-boot/full-map qualification transfers.",
+  "general_conversion_qualified": false,
+  "free_space_contents_proven_equal": false,
+  "d2_incremental_retrieval_used": false,
+  "unit_tests_added_or_run": false,
+  "pins": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\closed\\core\\conversion\\result.json",
+      "bytes": 1323,
+      "sha256": "1e5868df9d256af701e26f8f32be47173b596241a71755f3a6f04b97c9a07489"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\closed\\core\\conversion\\extent-verification.json",
+      "bytes": 664,
+      "sha256": "80a8908d1120fc66523cdb2a153a2655276b7a1ea20f36e8a4795695811d8234"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\closed\\core\\conversion\\finalization.json",
+      "bytes": 3228081,
+      "sha256": "354936b0ee75fb2857fb7cc5c19d33eff3513434a9378bbd4b3f9f996864bd0d"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\closed\\core\\conversion\\activation-events.json",
+      "bytes": 37985,
+      "sha256": "a8a7654bdf3ecc364a18f766a140b8e57d792cf574c198a1c7d054a87ab5153a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\closed\\core\\conversion\\qualification\\source-basis.json",
+      "bytes": 1196925,
+      "sha256": "9ca3a5f2a42ac3855137e9adc01e83ec48e64d3163a36274a1dee5d50a95b7ea"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\closed\\core\\conversion\\qualification\\source-frozen.json",
+      "bytes": 14328,
+      "sha256": "407d946bf3da9141f4ba1560010105a08aeda9b0ee3fb38a47c10857c70858ce"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\closed\\core\\conversion\\qualification\\native-source.json",
+      "bytes": 6611266,
+      "sha256": "01a30e9e7b5a874a214ee2d88077e912df106102218ea39011fc0b68c64c8115"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-readonly-success-75e152b3\\closed\\completion-result.json",
+      "bytes": 2402,
+      "sha256": "fc281e039da0ff66da13d832b1addee5c15372588e0aa442897c54f2caa13b25"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-readonly-success-75e152b3\\closed\\independent-target-hashes.json",
+      "bytes": 21847,
+      "sha256": "ae65076ff659d70a25f70988f1c94e1090f9eeef43e2892ebf4d408cbc1888a8"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-readonly-success-75e152b3\\closed\\original-native-terminal-verification.json",
+      "bytes": 734,
+      "sha256": "9ac2165f88add4ce8828743ba83fc835b06c487cac961fb89e162dc889a4304b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-native-observer-failure-95833c80\\checkpoint.json",
+      "bytes": 460,
+      "sha256": "632ab72588741032a79a8785f06daaf1281fb87c2b5bb9cc2b826460a3bd3381"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-readonly-success-75e152b3\\vm-stopped.json",
+      "bytes": 1073,
+      "sha256": "4cbf9542fbd92752763cfe463536c2628dcd6a93fbdab8fe2025267da5b4cb54"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-tools-e606c53\\build.json",
+      "bytes": 1049,
+      "sha256": "6cc8809db54e496a8f5652d6b7f32c32b59b32f940a7c2020ae23b3b33dac843"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\extent-observer-tools-543444f\\build.json",
+      "bytes": 400,
+      "sha256": "50380c7374ba7222b25986ae05f3ee515451e05862201478c9911d594f485533"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\fast-extent-obsolete-checkpoint-cleanup-20261031.json",
+      "bytes": 528,
+      "sha256": "674a28897ec7ecb04020464c17b6091a4ed63276cf3db311f76867785f169b02"
+    }
+  ]
+}

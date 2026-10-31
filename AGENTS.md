@@ -23,22 +23,37 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-Current candidate adds source request4/report12 with explicit unread extent
-evidence, a separately scoped metadata/extent source fingerprint, and a fresh
-in-memory target witness matching complete mounted maps to the protected shadow
-and actual Apply/HND checksums. Initial raw NTFS content hashing remains FULL;
-do not claim zero initial payload reads. Resident/compressed/sparse/VDL/tail
-source streams retain native hashing. Final target metadata observation contains
-no observed file hashes; separate extent-verification.json records its proof.
-Full-content and recovery entry points keep their checks. Lab wrappers independently
-hash every target stream after engine exit with the newly pinned backup-read
-digest helper. Focused library check and public/digest-helper/bind release builds
-pass; native run pending. No unit tests added/run.
-VM remains Off/RAM0 at904cbd98; obsolete first-D3 leafdb10c68f was removed through
-Hyper-V only after revalidating125 archived files/83,267,193B.49 checkpoints
-remain, current/source/large/D1cold checkpoints preserved; closed evidence kept.
-The cleanup receipt is fast-extent-obsolete-checkpoint-cleanup-20261031.json.
-Never force deletion of f4bf5238. The following native result predates this candidate.
+Runtime e606c53/public d0033a8b2dd1dd20e0c92ea62eb6040ded8a615b78de8ecc11b972954491accf
+passed native wrapper95833c80/corec2e31ace: exit0/HND,44 objects,53 complete
+object/stream map bindings,0 observed target hashes and0 target payload reads.
+Native wall34.826s. Source request4/report12 explicitly omitted native hashing
+for3 streams/4,214,784B; remaining native reads86,934,843B. Initial raw NTFS
+inspection still hashed163,711,987B: no zero-initial-read claim. Source fingerprint
+covered96,272,384B and explicitly omitted7,655,424B; it is not a content digest.
+Full-content/recovery checks and D2 deferral remain. No unit tests added/run.
+
+The original observer failed AFTER native success on an empty symlink because
+its lab helper refused reparse points before reading. Native conversion was
+never retried/replayed. Failure archive100 metadata files/82,719,759B is retained
+under extent-native-observer-failure-95833c80. Separate fixed helper543444f/SHA
+232fbf271c363a504152347dd7cd7e64d91d903f3f7ff63b0b3c335449e3559f passed fresh
+read-only completion75e152b3: all30 default+9 named hashes, prior alias/sparse/
+attribute checks,7 EAs,8 security identities,6 reparse buffers and7 compression
+hashes. Its40 closed metadata files/2,457,084B are SHA verified separately under
+extent-readonly-success-75e152b3. Native and observer timings/counts stay separate.
+Tracked EA/reparse binders accept report12 only paired with request4; old paths
+and complete field checks remain. Evidence: evidence/extent-verification-native-20261031.json.
+
+Current VM Off/RAM0 at native-completed checkpoint26607589-a002-4e25-9102-199ef9fc52e7,
+50 checkpoints; all tasks/workers terminal/idle before normal stop. Completion
+metadata is archived; no extra snapshot was created at the50-slot limit.
+Prior904cbd98/source371ae756/F:source6fe2d6b6/large78513f35/D1cold d939f576 and
+f4bf5238 remain preserved. Obsolete db10c68f was removed through Hyper-V only
+after125 archived files/83,267,193B rehashed. Actual lab264,785,508,129B and host
+free80,448,499,712B remain within the unchanged epoch. No new recovery/mutation/
+power-loss or broad cold-boot/full-map qualification. Initial retained-payload
+inspection elimination and broader scale/compatibility remain unfinished.
+The following native results and VM states predate this runtime.
 
 Latest native D3 stage runtime19569cb/public2e014b6be32710d19f6beacd7ab8d97ab57c7f887ae6df702de0310933431c6c
 passed wrapper59939273/core12c9a91c: native0/HND,44objects/30default+9named hashes,

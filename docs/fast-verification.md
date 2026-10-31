@@ -5,7 +5,7 @@ with full-content verification retained as an option. The policy is explicit in
 new requests. Historical requests omit the field and retain full verification.
 `--verify-full-content` and whole-image mode select the original full path.
 
-The current candidate also removes redundant native source reads for eligible
+The current implementation removes redundant native source reads for eligible
 ordinary initialized aligned streams and replaces final target stream scans with
 live extent verification. **The initial raw NTFS inspection still hashes every
 supported stream.** This stage reduces repeated reads; it does not yet eliminate
@@ -96,13 +96,33 @@ and 32.852 for the earlier D1 baseline, using process creation to terminal
 receipt. These are single runs with uncontrolled cache/host conditions; the
 result does not establish an improvement over D1 or reduced physical I/O.
 The 125 closed metadata files (83,275,284 bytes) were copied and SHA-256 checked.
-The VM is stopped at checkpoint `904cbd98-f87c-4a30-91c0-dedda106062f`.
+That run was saved at checkpoint `904cbd98-f87c-4a30-91c0-dedda106062f`.
 See [the native evidence](../evidence/fast-v2-native-20261031.json).
 
-The native results above describe runtime `19569cb`, before the new source and
-target extent-verification candidate. They are preserved evidence, not results
-for the new candidate. Focused library check and public/digest-helper/bind release
-builds pass; native qualification is pending. No unit tests were added or run.
+Runtime `e606c53` then passed native conversion `95833c80` / core `c2e31ace`
+in 34.826 seconds: 44 objects, all 53 protected object/stream bindings unchanged,
+closed HND, zero observed target content hashes and zero target payload reads.
+Initial raw inspection still hashed 163,711,987 bytes. Source report 12 records
+three streams / 4,214,784 logical bytes left unread by native extent checking;
+the remaining native logical reads total 86,934,843 bytes. The source fingerprint
+covers 96,272,384 bytes and explicitly omits 7,655,424 initialized payload bytes.
+
+The original lab observer failed after native success because its helper refused
+an empty file symlink. The failure and completed native checkpoint were preserved;
+the conversion was never retried or replayed. A separate fixed helper from
+`543444f` passed fresh read-only completion `75e152b3`: all 30 default and 9 named
+stream hashes, plus the prior alias/sparse/attribute, EA, security, reparse and
+compression checks. Those independent reads are separate from engine behavior.
+The tracked fixture binders accept source report 12 only with request 4 while
+retaining their existing field checks and legacy schema paths. The two closed
+archives contain 100/40 metadata files (82,719,759/2,457,084 bytes), all SHA checked.
+The VM is stopped at native-completed checkpoint
+`26607589-a002-4e25-9102-199ef9fc52e7`; no extra observer checkpoint was created
+at the 50-checkpoint limit. See [the native and observer evidence](../evidence/extent-verification-native-20261031.json).
+
+These single-run timings do not establish an improvement over the earlier
+32.852-second D1 baseline or reduced physical I/O. Focused release builds passed;
+no unit tests were added or run.
 
 Pending work includes eliminating the initial retained-payload inspection pass,
 further read-pass reduction, and exact-build recovery,

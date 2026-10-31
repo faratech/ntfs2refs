@@ -283,5 +283,14 @@
       "bytes": 766,
       "sha256": "97d27dbeacb1d131cd1ae2d814edb6e714f1dd10e670e0a82ed37f55a46914e4"
     }
-  ]
+  ],
+  "harness_provenance": {
+    "interruption_controller_commit": "102d9543da5a32a675abe11f1bf7737a3ea38bee",
+    "resume_controller_commit": "aca7fd310fe517a0aa8782eb73c2eb2d9fb11428",
+    "resume_original_parser_failure_preserved": true,
+    "explicit_json_array_enumeration_fix_commit": "bde480bef417f96c52e1ee0874299459d8b78f19",
+    "rollback_controller_commit": "bde480bef417f96c52e1ee0874299459d8b78f19",
+    "converter_runtime_unchanged": "7ced37b9310a2ff90d01f2bfe078b3e2072e896f",
+    "resume_completion_was_read_only_and_did_not_rerun_recovery": true
+  }
 }

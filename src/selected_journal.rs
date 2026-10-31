@@ -1047,6 +1047,28 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
         target.byte_len()? == plan.image_length,
         "selected target length differs"
     );
+    if let Some(expected) = expected {
+        // Exact old/new states have an independently trusted framed SHA-256.
+        // Hash every actual selected target byte with the same framing. A
+        // complete match proves the chosen side without rereading both journal
+        // payloads merely to repeat their old-or-new membership comparison.
+        // Mixed recovery states (None) keep every original byte check below.
+        let mut current = vec![0; BUFFER];
+        let mut digest = pin_hash()?;
+        for record in records {
+            frame(&mut digest, &record.range)?;
+            let mut done = 0u64;
+            while done < record.range.length {
+                let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
+                at(target, record.range.offset + done, &mut current[..count])?;
+                digest.update(&current[..count])?;
+                done += count as u64;
+            }
+        }
+        let digest = finish(digest)?;
+        ensure!(&digest == expected, "selected target digest differs");
+        return Ok(digest);
+    }
     let mut current = vec![0; BUFFER];
     let mut before = vec![0; BUFFER];
     let mut after = vec![0; BUFFER];

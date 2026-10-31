@@ -23,6 +23,17 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Built next read-reduction candidate: check_target with an authenticated exact
+old/new selected digest now hashes EVERYselected actualtargetbyte with identical
+framing, without rereading both journal sides for redundant old-or-new membership.
+Mixed pre-resume/rollback (expectedNone) keeps all old/new reads and byte checks.
+Loader/ticket/plan/payload/footer/immutable checks, bounds, SHAfailures and every
+barrier stay. Library/CLI/release checks+independentreviewpass; nativequalification
+pending, no unit tests. It is NOT in the sealed18b F run. See
+docs/exact-selected-target-verification.md. Current publicprofile scaling guards
+and required next manifest work are documented in docs/scaling-budget-gaps.md;
+no arbitrary volume/file-count support is claimed.
+
 Built subsequent CPU/allocation candidate reuses two1MiB preparation buffers and
 three1MiB replay buffers across ranges; every usedslice is freshly filled by
 current IO. Preparation scratch drops before readback; replay scratch drops

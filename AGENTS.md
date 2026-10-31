@@ -27,8 +27,8 @@ Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is running at ReFS
-performance checkpointe9bc8adf-1faf-4725-94e6-e3c5d2b254be; all42 checkpoints
+Current state supersedes all older VM states below: VM is Off/RAM0 at NTFS
+EA source checkpoint1fc4b960-c252-41ce-9ad2-ef7ef0b030d3; all46 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Latest runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
@@ -72,6 +72,23 @@ read-only D1 preparation. Window proofs have a distinct encoding and retain
 raw queries for replay; they cannot populate full-map Candidate hashes or
 authorize moves. Focused probe build passes. Production per-move checks remain
 full-volume pending the recorded D1 user decision. No converter is active.
+
+EA continuation (2026-10-31): sourceb0c626a/public58a07152b68488ff7c335b9d9fb54d01d34e0791147a43c18e830f377f326ba3
+builds with complete raw/native EA capture, schema10 streaming reports, canonical
+EA sets, constructor-owned restoration and target/alias verification. Fixture
+80607d54 passed7 EAs on4 identities (2dirs/2files), binary/8192-byte values,
+FILE_NEED_EA and a hard-link alias; its SHA is826aa04171efa8ae85ec4ca867bf743fdaaf16f5ae5cfbd2caa0dfe3a24af2c0.
+Public runfc890481/core00b08d0d stopped before activation at source admission:
+raw SI includes internal0x40000 on EA objects but Win32 omits it. The correction
+projects that bit only with validated nonempty EA storage and keeps raw SI,
+native EA equality and cached-access policy unchanged. Focused release build
+passes; conversion with the correction is next. Failure metadata39 files is
+under .lab/hyperv/streaming-v2-20261027/ea-attribute-refusal-fc890481; checkpoint
+2c8164d8-a785-4640-ae78-236ed380cbf5 preserves it. Do not replay that failure.
+Earlier empty-EA immediate-status refusal3aff6405 is preserved in286e2588;
+the backend now distinguishes untouched IOSB from actual completion using a
+sentinel and accepts only the two exact no-output terminal statuses. Unknown
+queries remain errors. No unit tests were added or run.
 
 ### Previous milestones and fixture setup
 
@@ -789,8 +806,9 @@ pins ntfs2btrfs and similar upstream tools. Do not copy their skip/truncate
 policies into a lossless claim. The audit found no explicit live VSS or
 directory case-sensitivity gate/preservation path; these are admission gaps,
 not already implemented refusals. Conversion preserves hard-link groups using
-new ReFS file IDs, not original numeric NTFS IDs. SACLs, absent/null DACLs,
-user EAs and reparse points remain outside the current preservation profile.
+new ReFS file IDs, not original numeric NTFS IDs. Bounded EA preservation is
+implemented with native conversion qualification pending; SACLs, absent/null
+DACLs and reparse points remain outside the current preservation profile.
 
 ## Build tools
 

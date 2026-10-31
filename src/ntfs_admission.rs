@@ -805,6 +805,7 @@ fn user_issues_profile(
         issues.push("duplicate root transaction metadata".into());
     }
     let has_sparse = f.streams.iter().any(|s| s.flags == 0x8000);
+    let has_verified_eas = ordinary && crate::ntfs_attestation::has_verified_nonempty_eas(f);
     if f.standard_information.as_ref().is_none_or(|si| {
         si.file_attributes
             & !(0x2027
@@ -812,7 +813,8 @@ fn user_issues_profile(
                     0x200
                 } else {
                     0
-                })
+                }
+                | if has_verified_eas { 0x40000 } else { 0 })
             != 0
     }) {
         issues.push("unsupported attributes or missing standard information".into());

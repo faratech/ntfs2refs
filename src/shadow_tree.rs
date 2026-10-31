@@ -581,6 +581,7 @@ fn derive_profile(
             si.modification_time,
             si.mft_change_time,
         ];
+        let has_verified_eas = crate::ntfs_attestation::has_verified_nonempty_eas(f);
         ensure!(
             times.iter().all(|t| *t > 0 && *t < i64::MAX as u64)
                 && si.file_attributes
@@ -589,7 +590,8 @@ fn derive_profile(
                             0x200
                         } else {
                             0
-                        })
+                        }
+                        | if has_verified_eas { 0x40000 } else { 0 })
                     == 0,
             "unsupported basic metadata"
         );

@@ -248,11 +248,22 @@ pub(crate) fn check_non_time_snapshot(
 
 /// The frozen-source policy checks both descriptor views separately. Keep
 /// identity/type/size/attribute validation independent of API SD projection.
-/// Project only FILE_ATTRIBUTE_SPARSE_FILE onto the opened default stream.
+/// Project FILE_ATTRIBUTE_SPARSE_FILE onto the opened default stream.
 /// NTFS STANDARD_INFORMATION can retain this bit when a named stream is
-/// sparse while the default stream is not. Every other attribute bit is kept
-/// as supplied; callers retain their existing directory/normal-bit handling.
+/// sparse while the default stream is not. The internal NTFS EA marker is
+/// omitted by Win32 for files and directories, but only validated nonempty EA
+/// storage can identify that marker: the same numeric bit also names
+/// RECALL_ON_OPEN. All other bits and the raw SI inventory remain unchanged.
+pub(crate) fn has_verified_nonempty_eas(file: &FileInventory) -> bool {
+    crate::ntfs_extended_attributes::file_set(file).is_ok_and(|set| !set.is_empty())
+}
+
 pub(crate) fn default_stream_attributes(file: &FileInventory, attributes: u32) -> Result<u32> {
+    let attributes = if attributes & 0x40000 != 0 && has_verified_nonempty_eas(file) {
+        attributes & !0x40000
+    } else {
+        attributes
+    };
     if file.is_directory {
         return Ok(attributes);
     }

@@ -827,8 +827,17 @@ fn user_issues_profile(
             .iter()
             .find(|d| d.descriptor.sha256 == binding.descriptor_sha256)
     });
-    if descriptor.is_none_or(|d| d.descriptor.sacl.state != ntfs_security::AclState::Absent) {
-        issues.push("initial preservation profile requires verified SACL absence".into());
+    match descriptor {
+        Some(record) if ordinary => {
+            let validated = hex::decode(&record.descriptor.relative_hex)
+                .ok()
+                .and_then(|bytes| n2r_win32::security_descriptor::validate(&bytes).ok());
+            if validated.is_none() {
+                issues.push("security descriptor exceeds native preservation layout".into());
+            }
+        }
+        Some(record) if record.descriptor.sacl.state == ntfs_security::AclState::Absent => (),
+        _ => issues.push("initial preservation profile requires verified SACL absence".into()),
     }
     if f.streams.iter().any(|stream| !stream.name_utf16.is_empty())
         && user_paths(raw, f).is_some_and(|paths| {

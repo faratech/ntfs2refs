@@ -1860,71 +1860,25 @@ fn existing_system_entries(
     }
     Ok(existing)
 }
-fn descriptor(bytes: &[u8]) -> io::Result<Vec<u64>> {
-    if !(20..=65536).contains(&bytes.len()) {
-        return Err(invalid("shadow descriptor length"));
-    }
+pub(crate) fn descriptor(bytes: &[u8]) -> io::Result<Vec<u64>> {
+    // Check self-relative components and known SID/ACE bounds before Windows
+    // receives a pointer. ACL absence and NULL ACLs remain distinct states.
+    crate::security_descriptor::validate(bytes)?;
     let mut aligned = vec![0u64; bytes.len().div_ceil(8)];
-    // SAFETY: initialized aligned allocation covers every copied byte. Validate
-    // self-relative offsets in safe code before letting Windows follow them.
-    if bytes[0] != 1
-        || u16::from_le_bytes(bytes[2..4].try_into().unwrap()) & 0x8004 != 0x8004
-        || bytes[12..16] != [0; 4]
-    {
-        return Err(invalid("shadow descriptor form or SACL differs"));
-    }
-    for at in [4, 8, 16] {
-        let p = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
-        if p < 20 || p > bytes.len().saturating_sub(8) || !p.is_multiple_of(4) {
-            return Err(invalid("shadow descriptor component bounds"));
-        }
-        let n = if at == 16 {
-            u16::from_le_bytes(bytes[p + 2..p + 4].try_into().unwrap()) as usize
-        } else {
-            8 + 4 * bytes[p + 1] as usize
-        };
-        if n < 8 || p + n > bytes.len() {
-            return Err(invalid("shadow descriptor component length"));
-        }
-        if at != 16 {
-            if bytes[p] != 1 || bytes[p + 1] > 15 {
-                return Err(invalid("shadow SID form"));
-            }
-        } else {
-            if bytes[p] != 2 || bytes[p + 1] != 0 {
-                return Err(invalid("initial shadow requires revision-two ACL"));
-            }
-            let count = u16::from_le_bytes(bytes[p + 4..p + 6].try_into().unwrap()) as usize;
-            let mut cursor = p + 8;
-            for _ in 0..count {
-                if cursor + 16 > p + n || ![0, 1].contains(&bytes[cursor]) {
-                    return Err(invalid("initial shadow requires bounded allow/deny ACEs"));
-                }
-                let size =
-                    u16::from_le_bytes(bytes[cursor + 2..cursor + 4].try_into().unwrap()) as usize;
-                let sid_count = bytes[cursor + 9] as usize;
-                if bytes[cursor + 8] != 1
-                    || sid_count > 15
-                    || size != 16 + 4 * sid_count
-                    || cursor + size > p + n
-                {
-                    return Err(invalid("shadow ACE or SID bounds"));
-                }
-                cursor += size;
-            }
-            if cursor > p + n {
-                return Err(invalid("shadow ACL overflow"));
-            }
-        }
-    }
+    // SAFETY: initialized aligned storage covers all bytes; the safe validator
+    // checked component offsets and known SID/GUID bounds before native calls.
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), aligned.as_mut_ptr().cast(), bytes.len());
     }
-    let p = aligned.as_mut_ptr().cast();
-    if unsafe { IsValidSecurityDescriptor(p) } == 0
-        || unsafe { GetSecurityDescriptorLength(p) } as usize > bytes.len()
-    {
+    let pointer = aligned.as_mut_ptr().cast();
+    if unsafe { IsValidSecurityDescriptor(pointer) } == 0 {
         return Err(invalid("invalid shadow security descriptor"));
+    }
+    let length = unsafe { GetSecurityDescriptorLength(pointer) } as usize;
+    if length < 20 || length > bytes.len() {
+        return Err(invalid(
+            "native shadow descriptor length exceeds validated storage",
+        ));
     }
     Ok(aligned)
 }

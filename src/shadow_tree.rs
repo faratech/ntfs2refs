@@ -226,6 +226,8 @@ impl ExpectedTree {
             if let Some(eas) = &object.extended_attributes {
                 eas.validate()?;
             }
+            ntfs_security::parse_descriptor(&object.security)?;
+            n2r_win32::security_descriptor::validate(&object.security)?;
             let path_key = destination_key(&object.path, resources);
             ensure!(
                 object.path.len() <= 16
@@ -562,11 +564,15 @@ fn derive_profile(
             .find(|d| d.descriptor.sha256 == binding.descriptor_sha256)
             .context("missing descriptor bytes")?
             .descriptor;
-        ensure!(
-            descriptor.sacl.state == ntfs_security::AclState::Absent
-                && descriptor.dacl.state == ntfs_security::AclState::Present,
-            "initial shadow requires present DACL and absent SACL"
-        );
+        if ordinary {
+            n2r_win32::security_descriptor::validate(&hex::decode(&descriptor.relative_hex)?)?;
+        } else {
+            ensure!(
+                descriptor.sacl.state == ntfs_security::AclState::Absent
+                    && descriptor.dacl.state == ntfs_security::AclState::Present,
+                "initial shadow requires present DACL and absent SACL"
+            );
+        }
         ensure!(
             ordinary || f.record_number == 5 || descriptor.control & 0x1000 != 0,
             "initial shadow profile requires protected child DACLs"

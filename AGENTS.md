@@ -21,14 +21,14 @@ converter working. Do not add or run unit tests unless specifically requested.
 Use focused builds and necessary native checks. Do not repeat expensive scans
 when unchanged evidence already answers the question.
 
-## Current handoff snapshot — 2026-10-30
+## Current handoff snapshot — 2026-10-31
 
 Work in D:\code\ntfs2refs, branch codex/isolated-journal-observation.
 The branch tracks the same origin branch. The existing one-line src/main.rs
 capabilities change belongs to the user; never edit, format, stage or reset it.
 
-Current state supersedes all older VM states below: VM is Off/RAM0 at ReFS
-EA cold-boot checkpointbecf6351-c611-48b9-b6f7-629e88716ac2; all48 checkpoints
+Current state supersedes all older VM states below: VM is running at NTFS
+EA source checkpoint1fc4b960-c252-41ce-9ad2-ef7ef0b030d3; all48 checkpoints
 remain. The attribute-list NTFS source is1057eb82-d152-4572-881b-53ff9dbb82dd;
 the earlier clean sparse NTFS source is9c42e1fd-435b-401c-b261-53ab433ca2f6.
 Prior performance runtime940f4e2/public95086126968afeaf73a46644401086c218959ca559d9480084ecac8593223b98
@@ -102,6 +102,21 @@ Earlier empty-EA immediate-status refusal3aff6405 is preserved in286e2588;
 the backend now distinguishes untouched IOSB from actual completion using a
 sentinel and accepts only the two exact no-output terminal statuses. Unknown
 queries remain errors. No unit tests were added or run.
+
+Security continuation: the ordinary profile now accepts validated self-relative
+SACL and absent/null/present DACL layouts. Native validation preserves complete
+ACE/control bytes and restores DACL/SACL protection separately; exact stored,
+kernel and API comparisons remain mandatory. No ACL absence is replaced with a
+null ACL. Current source getters already use0x1f (SACL|LABEL included), so query
+scope and schema10 remain unchanged. Focused public/fixture release builds pass;
+public00899bf5e046d767f8548d3979ac8674769b8e25008b1638d36e24ab71ba4975
+has no native conversion result yet. New lab-create-security-fixture creates
+only fresh H: objects and records requested versus actual descriptor state;
+Windows normalization is not successful preservation. Its read-only manifest
+mode uses backup reads for restrictive ACLs without permission repair. Fixture
+d813f2f240624fe3943acf11646a2297 is prepared on the restored NTFS EA source;
+no native fixture worker has started yet. Keep the qualified EA ReFS branch
+becf6351 and its proof material separate. No unit tests were added or run.
 
 ### Previous milestones and fixture setup
 

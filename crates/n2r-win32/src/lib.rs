@@ -21,16 +21,20 @@ pub mod extended_attributes_native;
 #[cfg(windows)]
 pub mod extent_observation;
 #[cfg(windows)]
-pub mod managed_shadow;
-#[cfg(windows)]
 pub mod file_storage;
 pub mod general_layout;
 #[cfg(windows)]
+pub mod io_profile;
+#[cfg(windows)]
 pub mod journal_file;
-pub mod layout;
 #[cfg(windows)]
 pub mod lab_ntfs_fragmentation;
+#[cfg(windows)]
+pub mod lab_security_fixture;
+pub mod layout;
 pub mod logical_hash;
+#[cfg(windows)]
+pub mod managed_shadow;
 pub mod namespace_layout;
 #[cfg(windows)]
 mod namespace_native;
@@ -40,8 +44,7 @@ pub mod reference_import;
 pub mod region_layout;
 pub mod retention_layout;
 pub mod retrieval_paging;
-#[cfg(windows)]
-pub mod io_profile;
+pub mod security_descriptor;
 #[cfg(windows)]
 pub mod sha256_native;
 #[cfg(windows)]
@@ -66,10 +69,9 @@ mod native;
 pub use native::{
     DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
     GeneralAllocationSnapshot, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenLane,
-    GeneralFrozenPartition,
-    GeneralJournalReadView, GeneralJournaledPartition, GeneralLiveNtfsObservation,
-    GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation, GeneralLockedPartition,
-    GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness,
+    GeneralFrozenPartition, GeneralJournalReadView, GeneralJournaledPartition,
+    GeneralLiveNtfsObservation, GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation,
+    GeneralLockedPartition, GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness,
     LiveNtfsObservation, MountPathObservation, NativeEvent, OfflinePartition, PartitionSnapshot,
     WritePolicy, capture_mount_paths_general, mounted_filesystem_general,
     observe_general_disk_state_readonly, probe_general, rediscover_general_volume,

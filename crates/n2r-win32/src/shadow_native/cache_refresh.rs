@@ -3,11 +3,19 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn restore_dacl_protection(file: &File, item: &Input<'_>) -> io::Result<bool> {
+#[derive(Clone, Copy, Default)]
+struct ProtectionRestore {
+    dacl: bool,
+    sacl: bool,
+}
+
+fn restore_acl_protection(file: &File, item: &Input<'_>) -> io::Result<ProtectionRestore> {
+    use crate::security_descriptor::{self, Presence};
     use windows_sys::Win32::Security::{
         Authorization::{SE_FILE_OBJECT, SetSecurityInfo},
         DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-        UNPROTECTED_DACL_SECURITY_INFORMATION,
+        PROTECTED_SACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION,
+        UNPROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_SACL_SECURITY_INFORMATION,
     };
     let actual = snapshot(file);
     let kernel = actual
@@ -17,22 +25,71 @@ fn restore_dacl_protection(file: &File, item: &Input<'_>) -> io::Result<bool> {
     if kernel.native_error.is_some() || kernel.bytes.len() < 20 {
         return Err(invalid("kernel protection query failed"));
     }
-    let want = u16::from_le_bytes(item.security[2..4].try_into().unwrap()) & 0x1000 != 0;
-    let got = u16::from_le_bytes(kernel.bytes[2..4].try_into().unwrap()) & 0x1000 != 0;
-    if want == got {
-        return Ok(false);
+    let source = security_descriptor::validate(item.security)?;
+    let observed = security_descriptor::validate(&kernel.bytes)?;
+    let changed = ProtectionRestore {
+        dacl: source.dacl_protected() != observed.dacl_protected(),
+        sacl: source.sacl_protected() != observed.sacl_protected(),
+    };
+    if !changed.dacl && !changed.sacl {
+        return Ok(changed);
     }
     let mut sd = descriptor(item.security)?;
-    let offset = u32::from_le_bytes(item.security[16..20].try_into().unwrap()) as usize;
-    let flags = DACL_SECURITY_INFORMATION
-        | if want {
+    let mut flags = 0;
+    if changed.dacl {
+        flags |= if source.dacl_protected() {
             PROTECTED_DACL_SECURITY_INFORMATION
         } else {
             UNPROTECTED_DACL_SECURITY_INFORMATION
         };
-    // SAFETY: descriptor validated self-relative ACL bounds/alignment; the
-    // backing allocation outlives the synchronous call. This sets the actual
-    // source DACL/protection state, never a null/everyone DACL.
+        if source.dacl.presence != Presence::Absent {
+            flags |= DACL_SECURITY_INFORMATION;
+        }
+    }
+    if changed.sacl {
+        flags |= if source.sacl_protected() {
+            PROTECTED_SACL_SECURITY_INFORMATION
+        } else {
+            UNPROTECTED_SACL_SECURITY_INFORMATION
+        };
+        if source.sacl.presence != Presence::Absent {
+            flags |= SACL_SECURITY_INFORMATION;
+        }
+    }
+    // Every nonzero ACL offset is checked by the portable descriptor parser
+    // and the native descriptor validator. A null ACL is passed as NULL only
+    // when that is the source state. In particular, offset zero is never an
+    // ACL pointer into the descriptor header.
+    let base = sd.as_mut_ptr().cast::<u8>();
+    let dacl = if changed.dacl && source.dacl.presence == Presence::Present {
+        let offset = source
+            .dacl
+            .offset
+            .ok_or_else(|| invalid("source DACL offset absent"))?;
+        // SAFETY: validated aligned ACL range inside the live descriptor.
+        unsafe { base.add(offset).cast() }
+    } else {
+        ptr::null_mut()
+    };
+    let sacl = if changed.sacl && source.sacl.presence == Presence::Present {
+        let offset = source
+            .sacl
+            .offset
+            .ok_or_else(|| invalid("source SACL offset absent"))?;
+        // SAFETY: validated aligned ACL range inside the live descriptor.
+        unsafe { base.add(offset).cast() }
+    } else {
+        ptr::null_mut()
+    };
+    // For an absent ACL, omit the ACL_SECURITY_INFORMATION bit. SetSecurityInfo
+    // then receives a protection-only request, not a request to install a null
+    // ACL. If this combination is unsupported, propagate that failure while
+    // still constructing the disposable shadow; never normalize absence away.
+    // Directory inheritance is completed parent-first below. BackupWrite then
+    // restores the full stored descriptor, including exact ACL presence and ACE
+    // order; the caller's kernel/API semantic comparison remains mandatory.
+    // SAFETY: live authorized metadata handle, validated aligned ACL buffers,
+    // and enabled security privilege for any SACL protection operation.
     let result = unsafe {
         SetSecurityInfo(
             file.as_raw_handle(),
@@ -40,14 +97,14 @@ fn restore_dacl_protection(file: &File, item: &Input<'_>) -> io::Result<bool> {
             flags,
             ptr::null_mut(),
             ptr::null_mut(),
-            sd.as_mut_ptr().cast::<u8>().add(offset).cast(),
-            ptr::null_mut(),
+            dacl,
+            sacl,
         )
     };
     if result != 0 {
         return Err(io::Error::from_raw_os_error(result as i32));
     }
-    Ok(true)
+    Ok(changed)
 }
 
 fn guid_payload(bytes: &[u8]) -> bool {
@@ -201,7 +258,8 @@ pub(super) fn complete_owned_metadata(
     namespace()?;
     let mut ordered: Vec<_> = input.iter().enumerate().collect();
     ordered.sort_by_key(|(_, i)| i.components.len());
-    let mut protection_updates = 0;
+    let mut dacl_protection_updates = 0usize;
+    let mut sacl_protection_updates = 0usize;
     // Finish every directory's inheritance propagation before restoring any
     // file. A shallow canonical file may also have a name under a deep parent.
     for &(index, item) in ordered
@@ -216,7 +274,9 @@ pub(super) fn complete_owned_metadata(
             ));
         }
         if !security_matches(item, &snapshot(handle), &same_security)? {
-            protection_updates += usize::from(restore_dacl_protection(handle, item)?);
+            let restored = restore_acl_protection(handle, item)?;
+            dacl_protection_updates += usize::from(restored.dacl);
+            sacl_protection_updates += usize::from(restored.sacl);
             backup_security(handle, item.security)?;
             if !security_matches(item, &snapshot(handle), &same_security)? {
                 return Err(invalid(
@@ -317,7 +377,8 @@ pub(super) fn complete_owned_metadata(
     Ok(
         serde_json::json!({"schema_version":1,"kind":"owning-private-tree-metadata-completion",
         "metadata_objects_updated":input.len(),"metadata_objects_verified":input.len(),
-        "metadata_readback_verified":true,"dacl_protection_states_restored":protection_updates,
+        "metadata_readback_verified":true,"dacl_protection_states_restored":dacl_protection_updates,
+        "sacl_protection_states_restored":sacl_protection_updates,
         "ea_objects_verified":ea_objects,"ea_entries_restored":ea_entries,
         "source_payload_writes":0,"user_payload_bytes_read":0,"user_payload_bytes_written":0,
         "source_before":source_before,"events":events,"owner_consumed":true,
@@ -567,7 +628,8 @@ pub fn run(
     // files, including files with aliases under deeper directories.
     let mut ordered: Vec<_> = input.iter().collect();
     ordered.sort_by_key(|i| i.components.len());
-    let mut protection_updates = 0;
+    let mut dacl_protection_updates = 0usize;
+    let mut sacl_protection_updates = 0usize;
     for item in ordered
         .iter()
         .filter(|item| item.directory)
@@ -585,7 +647,9 @@ pub fn run(
             return Err(invalid("shadow identity changed before metadata refresh"));
         }
         if !security_matches(item, &before, &same_security)? {
-            protection_updates += usize::from(restore_dacl_protection(&handle, item)?);
+            let restored = restore_acl_protection(&handle, item)?;
+            dacl_protection_updates += usize::from(restored.dacl);
+            sacl_protection_updates += usize::from(restored.sacl);
             backup_security(&handle, item.security)?;
             if !security_matches(item, &snapshot(&handle), &same_security)? {
                 return Err(io::Error::other(format!(
@@ -674,7 +738,8 @@ pub fn run(
         "cache_created":!cache_exists,"cache_payload_bytes_written":payload_written,
         "unchanged_user_payload_bytes_written":0,"metadata_objects_updated":metadata_updated,
         "metadata_objects_verified":metadata_verified,"metadata_readback_verified":true,
-        "dacl_protection_states_restored":protection_updates,
+        "dacl_protection_states_restored":dacl_protection_updates,
+        "sacl_protection_states_restored":sacl_protection_updates,
         "source_payload_writes":0,"source_before":source_before,"events":events,
         "privileges":privileges.audit(),"requires_fresh_conversion_admission":true,"conversion_qualified":false}),
     )

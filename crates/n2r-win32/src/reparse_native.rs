@@ -158,10 +158,30 @@ pub fn restore_fresh_owned(file: &File, expected: &Point) -> io::Result<Point> {
     let directory = standard[21] != 0;
     // A constructor-owned file can already have several constructor-owned
     // aliases. Ownership comes from the live tree, never from link count.
-    if standard[20] != 0 || links == 0 || (!directory && (allocation != 0 || length != 0)) {
-        return Err(invalid(
-            "reparse restoration requires a fresh owned empty object",
+    if standard[20] != 0 || links == 0 || (!directory && length != 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "reparse restoration requires a fresh owned empty object: directory={directory}, allocation={allocation}, EOF={length}, links={links}, delete_pending={}",
+                standard[20]
+            ),
         ));
+    }
+    if !directory {
+        // ReFS can report inline metadata capacity (observed 1024 bytes) for
+        // an EOF-zero stream. Prove there are no physical DATA runs rather
+        // than interpreting that capacity as file payload or ignoring it.
+        let (first, continuation) = crate::stream_native::retrieval_queries(file);
+        let empty_resident = first.native_error == Some(38) && first.bytes.is_empty();
+        let empty_map = first.native_error.is_none()
+            && first.bytes.len() == 16
+            && u32::from_le_bytes(first.bytes[..4].try_into().unwrap()) == 0
+            && u64::from_le_bytes(first.bytes[8..16].try_into().unwrap()) == 0;
+        if !continuation.is_empty() || !(empty_resident || empty_map) {
+            return Err(invalid(
+                "fresh reparse file has allocated or unresolved DATA runs",
+            ));
+        }
     }
     if expected.tag() == reparse_layout::IO_REPARSE_TAG_MOUNT_POINT && !directory {
         return Err(invalid("mount-point reparse target must be a directory"));

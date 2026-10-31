@@ -318,7 +318,12 @@ pub(super) fn complete_owned_metadata(
                     "owned identity changed before reparse installation",
                 ));
             }
-            crate::reparse_native::restore_fresh_owned(handle, point)?;
+            crate::reparse_native::restore_fresh_owned(handle, point).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("reparse install {:?}: {error}", item.components),
+                )
+            })?;
             reparse_objects += 1;
         }
     }

@@ -23,6 +23,20 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Built next fresh-apply candidate: private nonserializable FreshExclusiveApply
+owns both mutable IO borrows, plan/ticket and fully authenticated journal records.
+Constructor requires clear markers, target flush and complete exact-old selected
+SHA. Under the existing no-mutable-alias contract, disjoint destinations remain
+old until their sole write; fresh writes omit current/old per-span rereads and
+use one1MiB desired buffer. Exact-new complete readback, discovery granule last,
+flushes/callback/HND remain. Legacy/fault/resume/rollback mixed checks unchanged.
+No global admin/volume-alias exclusion or immediate foreign-write detection is
+claimed; up toD bytes may be written including already-equal chunks. Expected
+read reduction2D=22,786,547,712B for the last V3 plan is code-path accounting,
+not a measured gain. Focused check/release and two reviews pass; native pending.
+Includes previously unqualified e6d zero cache; NOT used in qualified f32 below.
+See docs/journal-fresh-exclusive-writes.md. No unit tests.
+
 Current qualified V3 case1cb0adcbd89d470cafc6ff53829ac8c5/coreb68cb9b3 passed
 sealedf32c0f6/public648cf28363b854ac5b960bb22ccd45855e5d81b468d29d6ac8d4f7342f4b1803
 (9,849,344B): actualPID568/creation1793483535328 native0/HND384.7244694s,

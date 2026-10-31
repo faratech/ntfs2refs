@@ -6,10 +6,14 @@ and two buffers for each copy comparison. Apply and rollback allocated three
 that allocation and zero-initialization work by their range count.
 
 Preparation now reuses two buffers throughout the range loop. They are dropped
-before the validating journal readback. Replay reuses one three-buffer working
+before the validating journal readback. Mixed replay reuses one three-buffer working
 set for all ranges and the final discovery-region write, then drops it before
 the complete post-write target check. Reuse therefore does not add a second
 working set to the verification phase.
+
+The subsequent [fresh exclusive writer](journal-fresh-exclusive-writes.md) uses
+one desired-byte buffer after exact-old verification. Legacy, fault and recovery
+replay retain the three-buffer path described here.
 
 Every slice is completely populated by the current source/candidate/journal or
 target read before hashing, comparing or writing. Synthetic zero ranges are

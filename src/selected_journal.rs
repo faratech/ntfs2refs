@@ -1302,9 +1302,8 @@ fn execute<T: DurableIo, J: DurableIo>(
     )
 }
 
-/// Both callers obtained these records through a complete load in this call.
-/// Only the exclusive fresh path can retain that validation across its own
-/// writes; legacy/recovery execution rehashes the immutable body afterward.
+/// Legacy, fault and recovery execution retains every per-span membership
+/// check and rehashes the immutable body after its own writes.
 #[allow(clippy::too_many_arguments)]
 fn execute_loaded<T: DurableIo, J: DurableIo>(
     target: &mut T,
@@ -1413,6 +1412,138 @@ pub fn apply<T: DurableIo, J: DurableIo>(
     execute(target, journal, plan, ticket, true, true)
 }
 
+/// A one-shot, operation-local owner of a completely authenticated journal and
+/// exact old target. The caller's continuous exclusion contract is mandatory:
+/// mutable Rust borrows do not provide global exclusion of device/admin aliases.
+/// No Boolean, deserialized record or recovery entry can construct this owner.
+struct FreshExclusiveApply<'a, T: DurableIo, J: DurableIo> {
+    target: &'a mut T,
+    journal: &'a mut J,
+    plan: &'a SelectedPlan,
+    ticket: &'a SelectedTicket,
+    records: Vec<JournalRecord>,
+}
+
+impl<'a, T: DurableIo, J: DurableIo> FreshExclusiveApply<'a, T, J> {
+    fn new(
+        target: &'a mut T,
+        journal: &'a mut J,
+        plan: &'a SelectedPlan,
+        ticket: &'a SelectedTicket,
+    ) -> Result<Self> {
+        // load validates geometry, disjoint ranges, every immutable byte,
+        // payload, descriptor, resolved copy, footer and independently held pin.
+        let records = load(journal, plan, ticket)?;
+        let (apply_intent, rollback_intent) = read_markers(journal, ticket)?;
+        ensure!(
+            !apply_intent && !rollback_intent,
+            "fresh exclusive apply requires clear intent"
+        );
+        target.sync_all()?;
+        check_target(
+            target,
+            journal,
+            plan,
+            &records,
+            Some(&ticket.old_selected_sha256),
+        )?;
+        Ok(Self {
+            target,
+            journal,
+            plan,
+            ticket,
+            records,
+        })
+    }
+
+    fn write_new_span(
+        &mut self,
+        index: usize,
+        start: u64,
+        length: u64,
+        after: &mut [u8],
+    ) -> Result<()> {
+        let record = &self.records[index];
+        ensure!(
+            start
+                .checked_add(length)
+                .is_some_and(|end| end <= record.range.length),
+            "fresh exclusive span escapes its authenticated record"
+        );
+        let mut done = 0u64;
+        while done < length {
+            let count = usize::try_from((length - done).min(after.len() as u64))?;
+            let within = start + done;
+            // Destinations are disjoint and still old until this sole write.
+            // Copy references resolve saved J payloads, never a changed target.
+            read_after(
+                self.journal,
+                &self.records,
+                record,
+                within,
+                &mut after[..count],
+            )?;
+            self.target
+                .seek(SeekFrom::Start(record.range.offset + within))?;
+            ensure!(
+                self.target.write(&after[..count])? == count,
+                "short fresh exclusive target write"
+            );
+            done += count as u64;
+        }
+        Ok(())
+    }
+
+    fn apply_and_handoff<F: FnOnce(&SelectedResult) -> Result<()>>(
+        mut self,
+        after_apply: F,
+    ) -> Result<(SelectedResult, SelectedResult)> {
+        let intent = marker(b"N2RSAP01", self.ticket, &self.ticket.new_selected_sha256);
+        write_marker(self.journal, GRANULE, &intent)?;
+        let mut after = vec![0; BUFFER];
+        for index in 0..self.records.len() {
+            let record = &self.records[index];
+            let skip = if record.range.offset == 0 { GRANULE } else { 0 };
+            let length = record.range.length - skip;
+            self.write_new_span(index, skip, length, &mut after)?;
+        }
+        self.target.sync_all()?;
+        if self.records.first().is_some_and(|r| r.range.offset == 0) {
+            self.write_new_span(0, 0, GRANULE, &mut after)?;
+        }
+        drop(after);
+        self.target.sync_all()?;
+        let digest = check_target(
+            self.target,
+            self.journal,
+            self.plan,
+            &self.records,
+            Some(&self.ticket.new_selected_sha256),
+        )?;
+        let applied = SelectedResult {
+            selected_sha256: digest,
+            selected_bytes: self.ticket.selected_bytes,
+            range_count: self.ticket.range_count,
+            replay_closed: false,
+            whole_image_verified: false,
+            conversion_qualified: false,
+        };
+        after_apply(&applied)?;
+        // The owner retains both mutable borrows through receipt persistence
+        // and HND. After a completed intent write, data/check/callback errors
+        // leave that intent open. Marker-write failures keep existing torn-
+        // marker semantics; this owner adds no marker-recovery guarantee.
+        self.target.sync_all()?;
+        let completed = marker(b"N2RSHN01", self.ticket, &digest);
+        write_marker(self.journal, 0, &completed)?;
+        let handed_off = SelectedResult {
+            replay_closed: true,
+            ..applied
+        };
+        Ok((applied, handed_off))
+    }
+}
+
 /// Fresh apply and durable handoff while one process retains exclusive owning
 /// access to both resources. This is not a recovery API or persisted authority.
 ///
@@ -1423,7 +1554,15 @@ pub fn apply<T: DurableIo, J: DurableIo>(
 /// returning success. Exclusive `&mut` borrows span that callback and HND.
 ///
 /// Entry validates every immutable byte, payload, descriptor and footer once.
-/// Apply retains all pre/post target checks, original write order and flushes.
+/// Every selected target byte must match the exact old digest before intent,
+/// then the exact new digest after flushed writes. With disjoint destinations
+/// and no intervening mutable aliases, each unwritten span is still old; this
+/// path reads only desired journal bytes while writing each destination once.
+/// It omits per-span old/current rereads and may write already-equal chunks up
+/// to selected_bytes. It does not detect out-of-contract concurrent writes
+/// before overwriting them or claim global administrative alias exclusion.
+/// Legacy/fault/resume/rollback paths retain all mixed-byte checks. Discovery
+/// granule last, original flushes and durable markers remain.
 /// Under that continuous exclusive ownership the already validated immutable
 /// body and post-target digest remain valid through the callback, so neither is
 /// scanned again before HND. A callback error leaves the durable apply intent
@@ -1439,24 +1578,7 @@ pub fn apply_and_handoff_exclusive<
     ticket: &SelectedTicket,
     after_apply: F,
 ) -> Result<(SelectedResult, SelectedResult)> {
-    let records = load(journal, plan, ticket)?;
-    let applied = execute_loaded(target, journal, plan, ticket, &records, true, true, false)?;
-    after_apply(&applied)?;
-    // Preserve the handoff flush; no caller has received mutable device access
-    // since the complete post-apply target verification above.
-    target.sync_all()?;
-    let completed = marker(b"N2RSHN01", ticket, &applied.selected_sha256);
-    write_marker(journal, 0, &completed)?;
-    let handed_off = SelectedResult {
-        selected_sha256: applied.selected_sha256,
-        selected_bytes: applied.selected_bytes,
-        range_count: applied.range_count,
-        replay_closed: true,
-        whole_image_verified: false,
-        conversion_qualified: false,
-    };
-    drop(records);
-    Ok((applied, handed_off))
+    FreshExclusiveApply::new(target, journal, plan, ticket)?.apply_and_handoff(after_apply)
 }
 pub fn resume<T: DurableIo, J: DurableIo>(
     target: &mut T,

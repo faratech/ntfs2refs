@@ -23,6 +23,15 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Built next CPU candidate: selected-side and immutable journal aggregate SHA-256
+updates use the existing bounded digest pipeline on machines with at least three
+cores. Per-record SHA, every read/comparison, byte ordering, digests and barriers
+remain. Each worker owns one recycled 1MiB buffer; all required finishes/errors
+are joined before ticket/record publication. Serial fallback stays on smaller
+machines. Focused library/CLI check and independent review pass; native timing
+and qualification pending. It is NOT in sealed cc6cd28. See
+docs/journal-parallel-aggregates.md. No unit tests.
+
 Built next read-reduction candidate: check_target with an authenticated exact
 old/new selected digest now hashes EVERYselected actualtargetbyte with identical
 framing, without rereading both journal sides for redundant old-or-new membership.

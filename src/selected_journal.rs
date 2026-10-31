@@ -124,6 +124,9 @@ type PinHash = crate::retained_compare::stream_digest::StreamDigest;
 fn pin_hash() -> Result<PinHash> {
     PinHash::new(cfg!(windows))
 }
+fn aggregate_pin_hash() -> Result<PinHash> {
+    PinHash::alongside_record_hash(BUFFER, cfg!(windows))
+}
 fn finish(hash: PinHash) -> Result<[u8; 32]> {
     hash.finish()
 }
@@ -604,8 +607,8 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal.seek(SeekFrom::Start(0))?;
     journal.write_all(&[0; BODY as usize])?;
     journal.write_all(&header)?;
-    let mut old_selected = pin_hash()?;
-    let mut new_selected = pin_hash()?;
+    let mut old_selected = aggregate_pin_hash()?;
+    let mut new_selected = aggregate_pin_hash()?;
     // Fixed memory for the whole preparation; small fragmented ranges do not
     // repeatedly allocate/zero MiB-sized vectors. Each slice used below is
     // completely filled by its current read before hashing or comparison.
@@ -746,7 +749,7 @@ fn validate_body<J: ReadSeek>(
             && journal.byte_len()? == journal_length,
         "selected ticket, plan or journal length differs"
     );
-    let mut immutable = pin_hash()?;
+    let mut immutable = aggregate_pin_hash()?;
     let mut header = [0u8; HEADER];
     at(journal, BODY, &mut header)?;
     immutable.update(&header)?;
@@ -763,8 +766,14 @@ fn validate_body<J: ReadSeek>(
         "selected journal header differs"
     );
     let mut records = Vec::with_capacity(plan.ranges.len());
-    let mut old_selected = pin_hash()?;
-    let mut new_selected = pin_hash()?;
+    let mut old_selected = aggregate_pin_hash()?;
+    // Copy-format new selected bytes are authenticated in the resolved pass
+    // below. Do not start an unused worker for this first descriptor pass.
+    let mut new_selected = if copy_encoded {
+        pin_hash()?
+    } else {
+        aggregate_pin_hash()?
+    };
     let mut buffer = vec![0; BUFFER];
     for range in &plan.ranges {
         let mut record = [0u8; COPY_RECORD];
@@ -907,7 +916,7 @@ fn validate_body<J: ReadSeek>(
         // All old payloads and descriptors are authenticated before any
         // reference is followed. References resolve only to those old bytes,
         // so overlap, forward references and reference cycles are harmless.
-        let mut new_selected = pin_hash()?;
+        let mut new_selected = aggregate_pin_hash()?;
         for record in &records {
             frame(&mut new_selected, &record.range)?;
             let mut hash = pin_hash()?;

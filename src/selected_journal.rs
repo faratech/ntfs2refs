@@ -464,11 +464,11 @@ fn copy_selected<R: Read + Seek, J: Write>(
     range: &SelectedRange,
     journal: &mut J,
     selected: &mut PinHash,
+    buffer: &mut [u8],
 ) -> Result<[u8; 32]> {
     input.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
     let mut hash = pin_hash()?;
-    let mut buffer = vec![0; BUFFER];
     let mut remaining = range.length;
     while remaining > 0 {
         let count = usize::try_from(remaining.min(BUFFER as u64))?;
@@ -485,11 +485,11 @@ fn verify_zero_selected<R: Read + Seek>(
     input: &mut R,
     range: &SelectedRange,
     selected: &mut PinHash,
+    buffer: &mut [u8],
 ) -> Result<[u8; 32]> {
     input.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
     let mut hash = pin_hash()?;
-    let mut buffer = vec![0; BUFFER];
     let mut remaining = range.length;
     while remaining > 0 {
         let count = usize::try_from(remaining.min(BUFFER as u64))?;
@@ -512,11 +512,11 @@ fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
     range: &SelectedRange,
     source_offset: u64,
     selected: &mut PinHash,
+    before: &mut [u8],
+    after: &mut [u8],
 ) -> Result<[u8; 32]> {
     frame(selected, range)?;
     let mut hash = pin_hash()?;
-    let mut before = vec![0; BUFFER];
-    let mut after = vec![0; BUFFER];
     let mut done = 0u64;
     while done < range.length {
         let count = usize::try_from((range.length - done).min(BUFFER as u64))?;
@@ -606,15 +606,20 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal.write_all(&header)?;
     let mut old_selected = pin_hash()?;
     let mut new_selected = pin_hash()?;
+    // Fixed memory for the whole preparation; small fragmented ranges do not
+    // repeatedly allocate/zero MiB-sized vectors. Each slice used below is
+    // completely filled by its current read before hashing or comparison.
+    let mut data_buffer = vec![0; BUFFER];
+    let mut copy_buffer = vec![0; BUFFER];
     for range in &plan.ranges {
         let record_at = journal.stream_position()?;
         let mut record = [0u8; COPY_RECORD];
         journal.write_all(&record[..plan.record_size()])?;
-        let old_hash = copy_selected(source, range, journal, &mut old_selected)?;
+        let old_hash = copy_selected(source, range, journal, &mut old_selected, &mut data_buffer)?;
         let is_zero = plan.is_new_zero(range);
         let copy_source = plan.copy_source(range);
         let new_hash = if is_zero {
-            verify_zero_selected(candidate, range, &mut new_selected)?
+            verify_zero_selected(candidate, range, &mut new_selected, &mut data_buffer)?
         } else if let Some(source_offset) = copy_source {
             verify_copy_selected(
                 source,
@@ -623,9 +628,17 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 range,
                 source_offset,
                 &mut new_selected,
+                &mut data_buffer,
+                &mut copy_buffer,
             )?
         } else {
-            copy_selected(candidate, range, journal, &mut new_selected)?
+            copy_selected(
+                candidate,
+                range,
+                journal,
+                &mut new_selected,
+                &mut data_buffer,
+            )?
         };
         let next = journal.stream_position()?;
         put_u64(&mut record, 0, range.offset);
@@ -658,6 +671,8 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     }
     let old_selected_sha256 = finish(old_selected)?;
     let new_selected_sha256 = finish(new_selected)?;
+    drop(data_buffer);
+    drop(copy_buffer);
     let mut footer = [0u8; FOOTER];
     footer[..8].copy_from_slice(plan.footer_magic());
     footer[8..40].copy_from_slice(&old_selected_sha256);
@@ -1060,6 +1075,24 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
     Ok(digest)
 }
 
+/// One fixed working set for the entire replay. Every compared/written byte
+/// is filled by the current IO before use; no previous span contents are used.
+struct ReplayBuffers {
+    current: Vec<u8>,
+    before: Vec<u8>,
+    after: Vec<u8>,
+}
+
+impl ReplayBuffers {
+    fn new() -> Self {
+        Self {
+            current: vec![0; BUFFER],
+            before: vec![0; BUFFER],
+            after: vec![0; BUFFER],
+        }
+    }
+}
+
 fn write_span<T: DurableIo, J: Read + Seek>(
     target: &mut T,
     journal: &mut J,
@@ -1068,10 +1101,13 @@ fn write_span<T: DurableIo, J: Read + Seek>(
     start: u64,
     length: u64,
     forward: bool,
+    buffers: &mut ReplayBuffers,
 ) -> Result<()> {
-    let mut current = vec![0; BUFFER];
-    let mut before = vec![0; BUFFER];
-    let mut after = vec![0; BUFFER];
+    let ReplayBuffers {
+        current,
+        before,
+        after,
+    } = buffers;
     let mut done = 0u64;
     while done < length {
         let count = usize::try_from((length - done).min(BUFFER as u64))?;
@@ -1165,6 +1201,7 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         marker(b"N2RSRB01", ticket, &ticket.old_selected_sha256)
     };
     write_marker(journal, GRANULE, &intent)?;
+    let mut replay_buffers = ReplayBuffers::new();
     for record in records {
         let skip = if record.range.offset == 0 { GRANULE } else { 0 };
         write_span(
@@ -1175,12 +1212,25 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
             skip,
             record.range.length - skip,
             forward,
+            &mut replay_buffers,
         )?;
     }
     target.sync_all()?;
     if let Some(first) = records.first().filter(|r| r.range.offset == 0) {
-        write_span(target, journal, records, first, 0, GRANULE, forward)?;
+        write_span(
+            target,
+            journal,
+            records,
+            first,
+            0,
+            GRANULE,
+            forward,
+            &mut replay_buffers,
+        )?;
     }
+    // The subsequent complete target check has its own fixed buffers. Release
+    // replay scratch first so reuse does not double that phase's working set.
+    drop(replay_buffers);
     target.sync_all()?;
     let expected = if forward {
         &ticket.new_selected_sha256

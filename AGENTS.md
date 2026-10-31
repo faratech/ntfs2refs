@@ -23,6 +23,23 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Built subsequent CPU/allocation candidate reuses two1MiB preparation buffers and
+three1MiB replay buffers across ranges; every usedslice is freshly filled by
+current IO. Preparation scratch drops before readback; replay scratch drops
+before the final full target check, preserving phase working-set bounds. No
+read/check/digest/order/flush/marker change. Library/CLI checks, independentreview
+and release builds pass; native qualification pending. No unit tests. See
+docs/journal-buffer-reuse.md. This is NOT in the sealed18bdea8 F run in progress.
+
+Current F case alloc-drive-20261029-5b30c30e38374664bfe3b4dfdfd91f5a runs18bdea8/
+publice2e2132 on exactsource6fe,4GiB/4CPU/noNIC, singleinvocation. PID5296/
+creation1793476577793 confirmedlive during journalpreparation. Prepared actual
+artifacts:933objects/811streams,654unhashedextentstreams/9,885,682,940B and650
+partialtails/1,371,388B with650constructorreceipts. Rawhash94,077,273B versusold
+9,979,760,213B; this is phaseevidence ONLY, notfinalsuccess orphysicalIO/speedproof.
+Source/candidate checks and native recovery evidence below remain separate.
+RootdelegatedexclusiveVMcontroltofast_native_finish; do not restart on timeout.
+
 Exact sealed3ce15c7 partial-tail recovery matrix now passes one controlled
 first-flushed-write case. Producer1798b541 actualPID5516/creation1793474877619
 exited86; source6 stayed offline writable/shadow offline read-only. Bundle

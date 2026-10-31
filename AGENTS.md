@@ -23,6 +23,36 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Exact7ced recovery matrix now passes one controlled first-flushed-write case.
+Interruption07247cfa actualPID5484/creation1793470826071 exited86, source6 stayed
+offline writable/managed shadow offline read-only,2 unread streams/4MiB and the
+53-binding map manifest stayed pinned by bundle63054c5acd048eff4c3aa00951c1b2fd1a1354157007e5cd1dc26fe1767584dd.
+The interrupted checkpoint9ce156c3-f080-4720-ab6d-a8abf3c90cfb remains for audit.
+Public Resume57285c7e observedapply_intent→resume→HND, native0/ReFS and37 known
+full stream hashes/64,869,591B plus2 pinned-map streams. All39 independent lab
+hashes match. Its PS5 observer initially failed on array enumeration AFTER native
+success; separately recorded parsing of actual completed helper stdout qualified
+the39 hashes with no recovery rerun or additional target reads. ReFS checkpoint
+9bb675b9-fde4-4f39-8df5-124902598188 and original failure remain preserved.
+From the SAME saved86 parent, public Rollback86384798 passed native0/ABT,
+old-selected checksum equality and NTFSH:/4KiB/label plus all39 independent hashes.
+Rollback timestamps are covered by the closed old-byte journal proof; no separate
+post-rollback timestamp comparison is claimed. No completed HND/ABT was replayed.
+
+Current VM Off/RAM0 at NTFS checkpointb8091885-73f6-41f8-a24d-dfed3ce8b599,
+50 snapshots; native/tasks were terminal/idle before each normal stop. Metadata
+archives extent-firstwrite-07247cfa(71 files/77,454,834B), extent-resume-57285c7e
+(32/5,370,275B plus separate completion receipts), extent-rollback-86384798
+(35/2,196,473B) are SHA verified. Actual lab264,392,061,107B/free80,827,138,048B
+remain within the unchanged epoch. Obsolete764b57bf/058f1ca5/26607589 were removed
+through Hyper-V only after rehashing retained archives; ALL lab baseline files stay.
+Keep normal44c, interrupted9ce, resumed9bb, currentb809, sources371/6fe,large785,
+D1cold d939 and f4bf. Evidence: evidence/raw-extent-recovery-matrix-20261031.json.
+This is controlled exit86 plus clean restart, not arbitrary fault/power-loss
+coverage. No new mutation, broad cold-boot/full-map or physical-power-loss claim.
+No unit tests added/run; D2 and broader compatibility/boot/scale remain unfinished.
+The normal result below remains qualified; its former current VM state is historical.
+
 Runtime7ced37b/public97990e9ecd5ead33511e18ef7ca8d79f2ed302546344f89efec058dc24b40af7
 passed normal H conversion aac022f8/core19ebb0e6: native0/HND and wrapper0,
 44 objects/53 bindings,0 observed target hashes/0 target payload reads. Record47
@@ -40,8 +70,8 @@ time differences are recorded against CURRENT raw/native-source/target metadata;
 all other canonical fields remain exact. Only the existing source-absent indexer
 SVI-directory interval is an explicit target-time exception; product JSON and
 filesystem times are untouched. Closed133 metadata files/86,066,547B are SHA
-verified under raw-extent-success-aac022f8. Current VM Off/RAM0 at44c48db9-c9ad-452f-8811-ce32a170c979,
-50 checkpoints; all workers/tasks terminal/idle before normal stop. Lab actual
+verified under raw-extent-success-aac022f8. Saved normal checkpoint44c48db9-c9ad-452f-8811-ce32a170c979
+remains preserved; all workers/tasks were terminal/idle before normal stop. Then lab actual
 265,872,180,636B/free79,310,647,296B remain in the unchanged storage epoch.
 
 Keep this qualified normal result and source371/F:source6fe/large785/D1cold d939/f4bf.
@@ -52,9 +82,9 @@ enumeration;103 closed files/84,376,938B and checkpoint058f1ca5 remain. Neither 
 a successful initial-scan-elision result. Obsolete904cbd98/30b37828/863e9372 were
 removed only through Hyper-V after their retained archives rehashed. No replay.
 Evidence: evidence/raw-extent-verification-native-20261031.json; docs/raw-extent-verification.md.
-Focused builds pass; no unit tests added/run. Next: exact7ced controlled
-interruption/resume/rollback with pinned manifest; those recovery paths remain
-unqualified by this normal run. Broader scale/compatibility/power-loss work remains.
+Focused builds pass; no unit tests added/run. The exact7ced controlled
+interruption/resume/rollback matrix above is now separately qualified. Broader
+scale/compatibility/power-loss work remains.
 The following results and VM states predate this normal qualification.
 
 Runtime e606c53/public d0033a8b2dd1dd20e0c92ea62eb6040ded8a615b78de8ecc11b972954491accf

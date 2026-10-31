@@ -59,5 +59,7 @@ at checkpoint `44c48db9-c9ad-452f-8811-ce32a170c979`. Earlier SVI-copy refusal a
 full-fallback/observer-failure cases remain separately preserved. See
 [the native evidence](../evidence/raw-extent-verification-native-20261031.json).
 
-Focused builds pass. Exact-build interruption/resume/rollback qualification is
-next; this normal case does not qualify those paths. No unit tests were added or run.
+The same runtime also passed a separate first-flushed-write interruption,
+Resume and Rollback matrix with the pinned manifest. See
+[the recovery scope](raw-extent-recovery.md). Focused builds pass; no unit tests
+were added or run.

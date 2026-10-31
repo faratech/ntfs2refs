@@ -67,6 +67,18 @@ pub(super) fn validate(input: &[Input<'_>], partition: u64) -> io::Result<()> {
             }
             layout.validate(object.logical_length())?;
         }
+        if !object.directory
+            && object.expected_sha256.is_none()
+            && object.payload.len() as u64 != object.logical_length()
+        {
+            validate_extent_only(
+                object.logical_length(),
+                object.source_offset,
+                &object.source_runs,
+                object.sparse.is_some(),
+                partition,
+            )?;
+        }
         let mut names = BTreeSet::new();
         for stream in &object.named_streams {
             if let Some(layout) = stream.sparse {
@@ -79,14 +91,73 @@ pub(super) fn validate(input: &[Input<'_>], partition: u64) -> io::Result<()> {
                         .to_uppercase(),
                 )
                 || stream.expected_length > partition
-                || !crate::content_digest::is_hex(stream.expected_sha256)
+                || stream
+                    .expected_sha256
+                    .is_some_and(|digest| !crate::content_digest::is_hex(digest))
                 || (stream.source_offset.is_some() && !stream.source_runs.is_empty())
             {
                 return Err(invalid(
                     "named stream identity, size, digest or source mapping differs",
                 ));
             }
+            if stream.expected_sha256.is_none() {
+                validate_extent_only(
+                    stream.expected_length,
+                    stream.source_offset,
+                    &stream.source_runs,
+                    stream.sparse.is_some(),
+                    partition,
+                )?;
+            }
         }
+    }
+    Ok(())
+}
+
+/// An absent content expectation is representable only for a complete plain
+/// initialized source route. Full-content entry points independently require
+/// a digest before reading; this mapping check never grants content authority.
+pub(super) fn validate_extent_only(
+    length: u64,
+    source_offset: Option<u64>,
+    source_runs: &[SourceRun],
+    sparse: bool,
+    partition: u64,
+) -> io::Result<()> {
+    if length == 0 || !length.is_multiple_of(4096) || sparse {
+        return Err(invalid(
+            "digest-free input requires nonempty aligned plain source data",
+        ));
+    }
+    let bound = |offset: u64, bytes: u64| {
+        bytes != 0
+            && offset.is_multiple_of(4096)
+            && bytes.is_multiple_of(4096)
+            && offset
+                .checked_add(bytes)
+                .is_some_and(|end| end <= partition)
+    };
+    if let Some(offset) = source_offset {
+        if !source_runs.is_empty() || !bound(offset, length) {
+            return Err(invalid("digest-free single source route differs"));
+        }
+        return Ok(());
+    }
+    let mut end = 0u64;
+    for run in source_runs {
+        if run.logical_offset != end
+            || run
+                .physical_offset
+                .is_none_or(|offset| !bound(offset, run.length))
+        {
+            return Err(invalid("digest-free complete source mapping differs"));
+        }
+        end = end
+            .checked_add(run.length)
+            .ok_or_else(|| invalid("digest-free source mapping overflow"))?;
+    }
+    if end != length {
+        return Err(invalid("digest-free source mapping is incomplete"));
     }
     Ok(())
 }
@@ -118,7 +189,7 @@ pub(super) fn view<'a>(input: &'a [Input<'_>], key: &StreamKey) -> io::Result<In
         reparse: None,
         payload: if named.is_some() { &[] } else { object.payload },
         expected_length: named.map(|s| s.expected_length).or(object.expected_length),
-        expected_sha256: named.map(|s| s.expected_sha256).or(object.expected_sha256),
+        expected_sha256: named.map_or(object.expected_sha256, |s| s.expected_sha256),
         source_offset: named.map_or(object.source_offset, |s| s.source_offset),
         source_runs: named.map_or_else(|| object.source_runs.clone(), |s| s.source_runs.clone()),
         named_streams: Vec::new(),
@@ -151,7 +222,7 @@ pub(super) fn exact_list(bytes: &[u8], item: &Input<'_>) -> io::Result<()> {
 #[derive(Debug, Serialize)]
 pub struct Report {
     pub name_utf16: Vec<u16>,
-    pub expected_sha256: String,
+    pub expected_sha256: Option<String>,
     pub before: Snapshot,
     pub after: Snapshot,
     pub logical_sha256: Option<String>,
@@ -258,8 +329,11 @@ pub(super) fn observe(
             return Err(invalid("named stream integrity profile differs"));
         }
         let logical_sha256 = if hash {
+            let expected = named.expected_sha256.ok_or_else(|| {
+                invalid("full named-stream verification requires a content digest")
+            })?;
             let actual = hash_exact_stream(&mut file, named.expected_length)?;
-            if actual != named.expected_sha256 {
+            if actual != expected {
                 return Err(invalid("named stream logical digest differs"));
             }
             Some(actual)
@@ -276,7 +350,7 @@ pub(super) fn observe(
                 .map(|s| sparse_stream::observe(&file, s, named.expected_length))
                 .transpose()?,
             name_utf16: named.name_utf16.to_vec(),
-            expected_sha256: named.expected_sha256.into(),
+            expected_sha256: named.expected_sha256.map(str::to_owned),
             before,
             after,
             logical_sha256,
@@ -298,11 +372,13 @@ pub(super) fn verify(item: &Input<'_>, object: &ObjectReport, hash: bool) -> io:
     }
     for (wanted, actual) in item.named_streams.iter().zip(&object.named_streams) {
         if actual.name_utf16 != wanted.name_utf16
-            || actual.expected_sha256 != wanted.expected_sha256
+            || actual.expected_sha256.as_deref() != wanted.expected_sha256
             || actual.before != actual.after
             || query_bytes(&actual.before, 18, 24)? != query_bytes(&object.before, 18, 24)?
             || layout::u64_at(query_bytes(&actual.before, 1, 24)?, 8)? != wanted.expected_length
-            || (hash && actual.logical_sha256.as_deref() != Some(wanted.expected_sha256))
+            || (hash
+                && (wanted.expected_sha256.is_none()
+                    || actual.logical_sha256.as_deref() != wanted.expected_sha256))
             || (!hash && actual.logical_sha256.is_some())
         {
             return Err(invalid("named stream report differs"));

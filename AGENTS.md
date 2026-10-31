@@ -23,6 +23,19 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Current built candidate eliminates initial raw hashes for eligible whole-aligned,
+plain initialized nonresident user streams. Explicit RawNotRead/shaNone and
+canonical source_evidence flow through optional native expectations/routes;
+unknown bytes never become empty-placeholder hashes. Full fallbacks remain for
+resident/compressed/sparse/VDL/tails. A preactivation map-facts artifact is pinned
+in the recovery bundle only for hash-free expectations; actual SJ lifecycle and
+checksums still authorize recovery. Recovery reads/checks every known-digest
+stream and uses pinned maps for unread streams, with no historical-content claim.
+Focused library/CLI/helper checks and public/bind/digest release builds pass;
+new native conversion/recovery qualification pending. No unit tests added/run.
+See docs/raw-extent-verification.md. VM remains Off/RAM0 at26607589 with50 checkpoints;
+the previous runtime evidence below remains authoritative until the next run.
+
 Runtime e606c53/public d0033a8b2dd1dd20e0c92ea62eb6040ded8a615b78de8ecc11b972954491accf
 passed native wrapper95833c80/corec2e31ace: exit0/HND,44 objects,53 complete
 object/stream map bindings,0 observed target hashes and0 target payload reads.

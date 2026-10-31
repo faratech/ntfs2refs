@@ -661,7 +661,8 @@ fn in_place_payload_ranges(
             .stream(&route.stream_name_utf16)
             .context("in-place route stream absent")?;
         ensure!(
-            stream.length == route.stream_length && stream.sha256 == route.expected_sha256,
+            stream.length == route.stream_length
+                && stream.sha256 == route.expected_sha256.as_deref(),
             "in-place route stream differs from canonical source"
         );
         let (_, data) = source_index.get(object, &route.stream_name_utf16)?;
@@ -782,7 +783,8 @@ fn payload_copy_candidates(
             .stream(&route.stream_name_utf16)
             .context("copy route stream absent")?;
         ensure!(
-            stream.length == route.stream_length && stream.sha256 == route.expected_sha256,
+            stream.length == route.stream_length
+                && stream.sha256 == route.expected_sha256.as_deref(),
             "copy route differs from canonical stream"
         );
         let (file, attribute) = source_index.get(object, &route.stream_name_utf16)?;
@@ -1327,7 +1329,7 @@ fn protected_prefix(
             };
             ensure!(
                 proof.stream_logical_bytes == stream.length
-                    && stream.sha256 == proof.expected_stream_sha256,
+                    && stream.sha256 == proof.expected_stream_sha256.as_deref(),
                 "composite residual source stream identity or digest differs"
             );
             residuals.push(LayoutResidualExpectation {

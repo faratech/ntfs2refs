@@ -5,11 +5,15 @@ with full-content verification retained as an option. The policy is explicit in
 new requests. Historical requests omit the field and retain full verification.
 `--verify-full-content` and whole-image mode select the original full path.
 
-The current implementation removes redundant native source reads for eligible
+The latest native-qualified runtime (`e606c53`) removes redundant native source reads for eligible
 ordinary initialized aligned streams and replaces final target stream scans with
 live extent verification. **The initial raw NTFS inspection still hashes every
 supported stream.** This stage reduces repeated reads; it does not yet eliminate
-the first payload pass. Historical requests and recovery keep full verification.
+the first payload pass. Historical requests keep full verification.
+
+The next built candidate also omits that initial pass for eligible streams using
+explicit optional digest evidence and a pinned recovery-map protocol. Its new
+native qualification is pending; see [initial scan elimination](raw-extent-verification.md).
 
 Source report schema 12 explicitly distinguishes an unread extent-bound stream
 from a completed content hash. Native identity, EOF, geometry and complete

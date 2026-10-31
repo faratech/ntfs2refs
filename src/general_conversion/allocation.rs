@@ -60,7 +60,8 @@ pub(super) fn convert_allocation_selected(
             "planned_source_verification_policy":request.verification_policy,
             "planned_target_verification_policy":request.verification_policy,
             "full_file_hashes_requested":request.verification_policy.is_full_content(),
-            "raw_source_logical_hashes_requested":true,
+            "raw_source_logical_hashes_requested":request.verification_policy.is_full_content(),
+            "raw_source_extent_identity_requested":request.verification_policy.is_fast(),
             "interrupt_after_writes":interrupt_after_writes,
             "interrupt_after_first_copy_write":interrupt_after_first_copy_write,
             "requires_original_live_source_certificate":true,
@@ -349,6 +350,17 @@ pub(super) fn convert_allocation_selected(
                 )
             })
             .transpose()?;
+        let recovery_payload_manifest = if expectation.has_extent_only_streams() {
+            let manifest = fresh_payload_proof
+                .as_ref()
+                .context("hash-free source requires the original fresh payload proof")?
+                .recovery_manifest()?;
+            let path = output.join("recovery-payload-manifest.json");
+            let sha256 = qualification::save(output, "recovery-payload-manifest.json", &manifest)?;
+            Some(serde_json::json!({"path":path,"sha256":sha256}))
+        } else {
+            None
+        };
         // Publish one checksummed locator before activation. It carries pins
         // only; the recovery engine rechecks the journal and device itself.
         let request_pin = qualification::save(output, "request.json", request)?;
@@ -360,20 +372,21 @@ pub(super) fn convert_allocation_selected(
                 "expected_source_label":source_label.label(),
             }),
         )?;
-        let recovery_pin = qualification::save(
-            output,
-            "allocation-recovery-bundle.json",
-            &serde_json::json!({
-                "schema_version":1,"kind":"allocation-bounded-recovery-bundle",
-                "request":{"path":output.join("request.json"),"sha256":request_pin},
-                "plan":{"path":output.join("selected-plan.json"),"sha256":plan_pin},
-                "ticket":{"path":output.join("selected-ticket.json"),"sha256":ticket_pin},
-                "expectation":{"path":output.join("expectation.json"),"sha256":expectation_pin},
-                "verification":{"path":output.join("verification.json"),"sha256":verification_pin},
-                "journal":journal_path,"source":request.pair.source,
-                "serialized_bundle_grants_recovery_authority":false,
-            }),
-        )?;
+        let mut recovery_bundle = serde_json::json!({
+            "schema_version":1,"kind":"allocation-bounded-recovery-bundle",
+            "request":{"path":output.join("request.json"),"sha256":request_pin},
+            "plan":{"path":output.join("selected-plan.json"),"sha256":plan_pin},
+            "ticket":{"path":output.join("selected-ticket.json"),"sha256":ticket_pin},
+            "expectation":{"path":output.join("expectation.json"),"sha256":expectation_pin},
+            "verification":{"path":output.join("verification.json"),"sha256":verification_pin},
+            "journal":journal_path,"source":request.pair.source,
+            "serialized_bundle_grants_recovery_authority":false,
+        });
+        if let Some(manifest) = recovery_payload_manifest {
+            recovery_bundle["recovery_payload_manifest"] = manifest;
+        }
+        let recovery_pin =
+            qualification::save(output, "allocation-recovery-bundle.json", &recovery_bundle)?;
         println!("Recovery directory: {}", output.display());
         println!("Recovery checksum: {recovery_pin}");
 
@@ -569,7 +582,9 @@ pub(super) fn convert_allocation_selected(
                 "success":true,"source_admitted":true,"rollback_closed":true,
                 "verification_policy":request.verification_policy,
                 "actual_source_verification_policy":request.verification_policy,
-                "raw_source_logical_hashes":true,
+                "raw_source_logical_hashes":!expectation.has_extent_only_streams(),
+                "raw_source_extent_only_streams":expectation.objects.iter()
+                    .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence.is_some()).count(),
                 "actual_target_verification_policy":request.verification_policy,
                 "actual_full_file_hashes":request.verification_policy.is_full_content(),
                 "exclusive_apply_handoff_used":request.verification_policy.is_fast(),

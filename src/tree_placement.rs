@@ -655,6 +655,7 @@ mod tests {
                     sparse: None,
                     length: 8192,
                     sha256: Some(sha.clone()),
+                    source_evidence: None,
                 }],
             },
             Mapping {

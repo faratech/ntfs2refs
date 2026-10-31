@@ -154,7 +154,7 @@ pub(super) fn construct(
         };
         ensure!(
             read.stream_logical_bytes == stream.length
-                && read.expected_stream_sha256 == stream.sha256,
+                && read.expected_stream_sha256.as_deref() == stream.sha256,
             "residual source bytes differ from the fresh canonical tree"
         );
     }

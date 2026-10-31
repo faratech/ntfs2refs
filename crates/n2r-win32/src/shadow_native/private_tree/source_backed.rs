@@ -12,7 +12,7 @@ pub struct PayloadRoute {
     pub length: u64,
     pub stream_length: u64,
     pub components: Vec<String>,
-    pub expected_sha256: String,
+    pub expected_sha256: Option<String>,
     pub native_file_id: Vec<u8>,
     #[serde(skip_serializing_if = "one_link")]
     pub expected_link_count: u32,
@@ -59,6 +59,13 @@ impl SourceBackedRoutes {
                 let length = layout::u64_at(ns, 8)?;
                 let prefix = length / 4096 * 4096;
                 let sparse = named.sparse.as_ref();
+                if named.expected_sha256.is_none()
+                    && (!length.is_multiple_of(4096) || sparse.is_some() || named.resident_data)
+                {
+                    return Err(invalid(
+                        "digest-free named route requires complete plain initialized clusters",
+                    ));
+                }
                 if prefix == 0 || (sparse.is_some() && named.retrieval.is_empty()) {
                     continue;
                 }
@@ -135,9 +142,14 @@ impl SourceBackedRoutes {
                     .map(|r| r.length.min(prefix.saturating_sub(r.offset)))
                     .sum()
             });
-            let expected = observed.expected_stream_sha256[index]
-                .as_ref()
-                .ok_or_else(|| invalid("protected stream digest expectation absent"))?;
+            let expected = &observed.expected_stream_sha256[index];
+            if expected.is_none()
+                && (!length.is_multiple_of(4096) || sparse.is_some() || object.resident_data)
+            {
+                return Err(invalid(
+                    "digest-free route requires complete plain initialized clusters",
+                ));
+            }
             if object.resident_data || object.retrieval_page_proof.is_none() {
                 return Err(invalid(
                     "protected payload prefix has no complete native map",
@@ -366,15 +378,23 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
         let index = key.object_index;
         let item = streams::view(input, key)?;
         let initial = &tree.initial_objects[index];
-        let expected = item
-            .expected_sha256
-            .ok_or_else(|| invalid("payload source digest absent"))?;
+        let expected = item.expected_sha256;
+        if expected.is_none() {
+            streams::validate_extent_only(
+                item.logical_length(),
+                item.source_offset,
+                &item.source_runs,
+                item.sparse.is_some(),
+                tree.pair.source.identity.partition_bytes,
+            )?;
+        }
         if item.directory
-            || !crate::content_digest::is_hex(expected)
+            || expected.is_some_and(|digest| !crate::content_digest::is_hex(digest))
             || initial["components"]
                 != serde_json::to_value(item.components).map_err(io::Error::other)?
             || (key.name_utf16.is_empty()
-                && initial["payload_expected_sha256"].as_str() != Some(expected))
+                && (initial.get("payload_expected_sha256").is_none()
+                    || initial["payload_expected_sha256"].as_str() != expected))
         {
             return Err(invalid("source-backed canonical input differs"));
         }
@@ -430,7 +450,7 @@ pub(super) fn capture(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<Sou
                     length: n,
                     stream_length: logical_length,
                     components: item.components.to_vec(),
-                    expected_sha256: expected.to_owned(),
+                    expected_sha256: expected.map(str::to_owned),
                     native_file_id: identity[8..24].to_vec(),
                     expected_link_count: super::super::hard_links::count(&item)?,
                 });

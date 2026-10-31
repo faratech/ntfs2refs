@@ -46,7 +46,7 @@ pub fn native_named_streams(
             name_utf16: &stream.name_utf16,
             sparse: stream.sparse.as_ref(),
             expected_length: stream.length,
-            expected_sha256: &stream.sha256,
+            expected_sha256: stream.sha256.as_deref(),
             source_offset: stream.source_offset,
             source_runs: stream
                 .source_extents
@@ -295,17 +295,14 @@ fn canonical_stream_shape<'a>(
     stream_name_utf16: &[u16],
 ) -> Result<(
     u64,
-    &'a str,
+    Option<&'a str>,
     Option<&'a n2r_win32::sparse_layout::SparseLayout>,
 )> {
     ensure!(!object.directory, "directories do not receive payload");
     if stream_name_utf16.is_empty() {
         return Ok((
             object.length,
-            object
-                .sha256
-                .as_deref()
-                .context("default stream digest absent")?,
+            object.sha256.as_deref(),
             object.sparse.as_ref(),
         ));
     }
@@ -318,7 +315,11 @@ fn canonical_stream_shape<'a>(
         streams.next().is_none(),
         "canonical named stream duplicated"
     );
-    Ok((stream.length, &stream.sha256, stream.sparse.as_ref()))
+    Ok((
+        stream.length,
+        stream.sha256.as_deref(),
+        stream.sparse.as_ref(),
+    ))
 }
 
 /// Materialize an exact named or unnamed stream range. A name selects the
@@ -384,7 +385,7 @@ pub fn materialize_private_named_range(
     ensure!(
         read.stream_logical_bytes == stream_length
             && read.stream_name_utf16 == stream_name_utf16
-            && read.expected_stream_sha256 == stream_digest,
+            && read.expected_stream_sha256.as_deref() == stream_digest,
         "materialization source differs from canonical object"
     );
     ensure!(
@@ -584,6 +585,8 @@ pub fn verify_private_hybrid_contents(
             .get(index)
             .context("hybrid stream outside canonical tree")?;
         let (stream_length, stream_digest, _) = canonical_stream_shape(object, &stream_name)?;
+        let stream_digest =
+            stream_digest.context("legacy full hybrid verification requires a content baseline")?;
         template.validate_stream_shape_named(index, &stream_name, &object.path, stream_length)?;
         let mut cursor = 0u64;
         // Canonical stream digests use content_digest (currently XXH3-128),

@@ -238,10 +238,11 @@ fn prepare_source_context(
         SourceDigest::WholeImage => (None, None),
         SourceDigest::NtfsAllocated => {
             let mut recorder = ntfs_inspect::ReadRecorder::new(&mut source)?;
-            let raw = ntfs_inspect::inspect_with_limits(
+            let raw = ntfs_inspect::inspect_with_limits_and_policy(
                 &mut recorder,
                 length,
                 ntfs_inspect::limits_for_resource_profile(resources),
+                verification_policy,
             )?;
             (Some(raw), Some(recorder.ranges()))
         }

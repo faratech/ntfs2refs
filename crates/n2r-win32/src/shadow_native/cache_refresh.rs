@@ -480,7 +480,7 @@ pub fn run(
     if wanted.len() != 1
         || wanted[0].directory
         || wanted[0].logical_length() != 76
-        || wanted[0].logical_sha256() != crate::content_digest::of(payload)
+        || wanted[0].logical_sha256() != Some(crate::content_digest::of(payload))
     {
         return Err(invalid(
             "source indexer cache bytes do not match expectation",
@@ -628,7 +628,7 @@ pub fn run(
             payload_written = 76;
         }
         file.seek(SeekFrom::Start(0))?;
-        if hash_exact_stream(&mut file, 76)? != cache.logical_sha256()
+        if Some(hash_exact_stream(&mut file, 76)?) != cache.logical_sha256()
             || Some(query_bytes(&snapshot(&file), 18, 24)?[8..24].to_vec()).as_ref()
                 != identities.get(cache.components)
         {
@@ -641,7 +641,7 @@ pub fn run(
         create(&path, cache, 0, Some(&mut writer))?;
         payload_written = 76;
         let mut file = open(&path, false, false)?;
-        if hash_exact_stream(&mut file, 76)? != cache.logical_sha256() {
+        if Some(hash_exact_stream(&mut file, 76)?) != cache.logical_sha256() {
             return Err(invalid("created source cache bytes differ"));
         }
         identities.insert(

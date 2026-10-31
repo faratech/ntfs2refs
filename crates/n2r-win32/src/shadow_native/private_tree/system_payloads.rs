@@ -139,7 +139,7 @@ pub(super) fn run(
         }
         file.seek(SeekFrom::Start(0))?;
         let actual = hash_exact_stream(&mut file, item.logical_length())?;
-        if actual != item.logical_sha256() {
+        if Some(actual.as_str()) != item.logical_sha256().as_deref() {
             return Err(invalid("system payload readback differs"));
         }
         let handle = open(&path, false, true)?;

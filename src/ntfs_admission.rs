@@ -962,7 +962,8 @@ fn user_issues_profile(
                             || s.extents[0].logical_offset != 0
                             || s.extents[0].physical_offset.is_none()
                             || s.extents[0].length != s.logical_size))
-                    || s.logical_hash_status != ntfs::LogicalHashStatus::Complete
+                    || !crate::ntfs_attestation::source_stream_evidence_valid(raw, f, s)
+                        .unwrap_or(false)
             })
         {
             issues.push(

@@ -28,6 +28,8 @@ struct Bundle {
     ticket: Pin,
     expectation: Pin,
     verification: Pin,
+    #[serde(default)]
+    recovery_payload_manifest: Option<Pin>,
     journal: PathBuf,
     source: GeneralDiskBinding,
     serialized_bundle_grants_recovery_authority: bool,
@@ -84,7 +86,10 @@ fn open_bundle(bundle_path: &Path, bundle_sha256: &str) -> Result<(HeldInput, Bu
         &bundle.expectation.path,
         &bundle.verification.path,
         &bundle.journal,
-    ] {
+    ]
+    .into_iter()
+    .chain(bundle.recovery_payload_manifest.iter().map(|pin| &pin.path))
+    {
         ensure!(
             ordinary_absolute(path),
             "allocation recovery inputs need absolute paths without traversal"
@@ -136,6 +141,33 @@ pub fn recover_allocation(
         serde_json::from_slice(&expectation_input.bytes)?;
     expectation
         .validate_with_resource_profile(request.source_resource_profile.unwrap_or_default())?;
+    ensure!(
+        !expectation.has_extent_only_streams() || request.verification_policy.is_fast(),
+        "hash-free recovery expectation requires the explicit fast verification policy"
+    );
+    let needs_payload_manifest =
+        request.verification_policy.is_fast() && expectation.has_extent_only_streams();
+    ensure!(
+        bundle.recovery_payload_manifest.is_some() == needs_payload_manifest,
+        "recovery payload manifest must match the fast hash-free expectation profile"
+    );
+    let mut recovery_payload_input = bundle
+        .recovery_payload_manifest
+        .as_ref()
+        .map(|pin| HeldInput::open(&pin.path, &pin.sha256, 64 * 1024 * 1024))
+        .transpose()?;
+    let recovery_payload_proof = recovery_payload_input
+        .as_ref()
+        .map(|held| {
+            protocol::fast_verification::RecoveryPayloadProof::from_pinned_manifest(
+                &held.bytes,
+                &request.pair.source,
+                &expectation,
+                &plan,
+                &ticket,
+            )
+        })
+        .transpose()?;
     let mut verification_input = HeldInput::open(
         &bundle.verification.path,
         &bundle.verification.sha256,
@@ -151,7 +183,10 @@ pub fn recover_allocation(
         &ticket_input,
         &expectation_input,
         &verification_input,
-    ] {
+    ]
+    .into_iter()
+    .chain(recovery_payload_input.iter())
+    {
         for binding in [&request.pair.source, &request.pair.shadow] {
             ensure!(
                 !held
@@ -168,6 +203,9 @@ pub fn recover_allocation(
     save_bytes(output, "request.json", &request_input.bytes)?;
     save_bytes(output, "selected-plan.json", &plan_input.bytes)?;
     save_bytes(output, "selected-ticket.json", &ticket_input.bytes)?;
+    if let Some(held) = &recovery_payload_input {
+        save_bytes(output, "recovery-payload-manifest.json", &held.bytes)?;
+    }
     artifacts::save(
         output,
         "intent.json",
@@ -247,7 +285,10 @@ pub fn recover_allocation(
             &mut ticket_input,
             &mut expectation_input,
             &mut verification_input,
-        ] {
+        ]
+        .into_iter()
+        .chain(recovery_payload_input.iter_mut())
+        {
             held.revalidate()?;
         }
         let policy = WritePolicy {
@@ -257,6 +298,10 @@ pub fn recover_allocation(
             journal_profile: profile,
         };
         phase = "selected-journal-recovery";
+        // A parsed manifest supplies bounded facts only. Native extent
+        // verification below also requires the real HND/closed-journal result
+        // returned by this recovery's unchanged complete journal checks.
+        let mut verified_refs_closed = None;
         let outcome = match action {
             Action::Resume => {
                 if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
@@ -268,11 +313,18 @@ pub fn recover_allocation(
                 artifacts::save(output, "resume.json", &resumed)?;
                 let handoff = sj::handoff(&mut target, &mut journal, &plan, &ticket)?;
                 artifacts::save(output, "handoff.json", &handoff)?;
+                verified_refs_closed = Some(handoff);
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::VerifyHandoff => {
-                let (_, verified) = sj::verify_closed(&mut target, &mut journal, &plan, &ticket)?;
+                let (closed_state, verified) =
+                    sj::verify_closed(&mut target, &mut journal, &plan, &ticket)?;
+                ensure!(
+                    closed_state == SelectedLifecycle::Handoff,
+                    "ReFS verification requires the actual closed HND lifecycle"
+                );
                 artifacts::save(output, "verified-handoff.json", &verified)?;
+                verified_refs_closed = Some(verified);
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::Rollback => {
@@ -304,10 +356,14 @@ pub fn recover_allocation(
             &mut ticket_input,
             &mut expectation_input,
             &mut verification_input,
-        ] {
+        ]
+        .into_iter()
+        .chain(recovery_payload_input.iter_mut())
+        {
             held.revalidate()?;
         }
         phase = "native-mount";
+        let mut extent_verification_receipt = None;
         match outcome {
             AllocationRecoveryOutcome::RefsCompleted => {
                 let mut finalization = protocol::Finalization {
@@ -347,12 +403,36 @@ pub fn recover_allocation(
                             ),
                             expected_source_label: Some(&verification.expected_source_label),
                         };
-                        protocol::verify_native_scoped(
-                            &scope,
-                            &expectation,
-                            &mut finalization,
-                            restored_label,
-                        );
+                        if let Some(proof) = &recovery_payload_proof {
+                            let closed = verified_refs_closed.as_ref().context(
+                                "extent recovery lacks an actual verified closed-journal result",
+                            )?;
+                            match protocol::fast_verification::verify_native_recovery_extents_scoped(
+                                &scope,
+                                &expectation,
+                                &mut finalization,
+                                proof,
+                                closed,
+                                restored_label,
+                            ) {
+                                Ok(receipt) => {
+                                    artifacts::save(
+                                        output,
+                                        "recovery-extent-verification.json",
+                                        &receipt,
+                                    )?;
+                                    extent_verification_receipt = Some(receipt);
+                                }
+                                Err(error) => finalization.error = Some(format!("{error:#}")),
+                            }
+                        } else {
+                            protocol::verify_native_scoped(
+                                &scope,
+                                &expectation,
+                                &mut finalization,
+                                restored_label,
+                            );
+                        }
                     }
                     Err(error) => finalization.error = Some(error.to_string()),
                 }
@@ -384,16 +464,19 @@ pub fn recover_allocation(
                 );
             }
         }
-        artifacts::save(
-            output,
-            "result.json",
-            &serde_json::json!({
-                "schema_version":1,"kind":"allocation-bounded-recovery","success":true,
-                "observed_lifecycle":state,"action":action,"outcome":outcome,
-                "fresh_apply_authorized":false,"source_admitted":false,
-                "general_conversion_qualified":false,
-            }),
-        )?;
+        let mut result = serde_json::json!({
+            "schema_version":1,"kind":"allocation-bounded-recovery","success":true,
+            "observed_lifecycle":state,"action":action,"outcome":outcome,
+            "fresh_apply_authorized":false,"source_admitted":false,
+            "general_conversion_qualified":false,
+        });
+        if let Some(receipt) = extent_verification_receipt {
+            result["actual_verification_scope"] = "pinned_extent_identity_v1".into();
+            result["full_content_hashes_compared"] = false.into();
+            result["original_unread_content_digest_reconstructed"] = false.into();
+            result["extent_verification"] = receipt;
+        }
+        artifacts::save(output, "result.json", &result)?;
         Ok(outcome)
     })();
     match attempted {

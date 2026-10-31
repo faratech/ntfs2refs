@@ -25,6 +25,7 @@ pub struct SourceFingerprint {
     allocated: Vec<(u64, u64)>,
     covered: Vec<(u64, u64)>,
     omitted: Vec<(u64, u64)>,
+    raw_extent_identity_streams: usize,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -39,6 +40,7 @@ pub struct Report {
     pub omitted_initialized_payload_bytes: u64,
     pub whole_source_content_digest: bool,
     pub raw_inspector_content_hashes_preserved: bool,
+    pub raw_extent_identity_streams: usize,
     pub grants_source_admission: bool,
 }
 
@@ -148,14 +150,22 @@ impl SourceFingerprint {
                     && file.metadata_role_issue.is_none()
             }) {
                 for stream in &file.streams {
+                    let explicit_extent = stream.logical_hash_status
+                        == LogicalHashStatus::NotReadExtentIdentityV1
+                        && stream.logical_sha256.is_none()
+                        && crate::ntfs_attestation::extent_identity_stream_request(
+                            raw, file, stream,
+                        )?
+                        .is_some();
                     if stream.resident
                         || stream.flags != 0
                         || stream.initialized_size != stream.logical_size
-                        || stream.logical_hash_status != LogicalHashStatus::Complete
-                        || !stream
-                            .logical_sha256
-                            .as_deref()
-                            .is_some_and(n2r_win32::content_digest::is_hex)
+                        || (!explicit_extent
+                            && (stream.logical_hash_status != LogicalHashStatus::Complete
+                                || !stream
+                                    .logical_sha256
+                                    .as_deref()
+                                    .is_some_and(n2r_win32::content_digest::is_hex)))
                     {
                         continue;
                     }
@@ -241,6 +251,12 @@ impl SourceFingerprint {
             allocated,
             covered,
             omitted,
+            raw_extent_identity_streams: raw
+                .files
+                .iter()
+                .flat_map(|f| &f.streams)
+                .filter(|s| s.logical_hash_status == LogicalHashStatus::NotReadExtentIdentityV1)
+                .count(),
         })
     }
 
@@ -263,7 +279,8 @@ impl SourceFingerprint {
             omitted_initialized_payload_ranges: self.omitted.len(),
             omitted_initialized_payload_bytes: self.omitted.iter().map(|r| r.1).sum(),
             whole_source_content_digest: false,
-            raw_inspector_content_hashes_preserved: true,
+            raw_inspector_content_hashes_preserved: self.raw_extent_identity_streams == 0,
+            raw_extent_identity_streams: self.raw_extent_identity_streams,
             grants_source_admission: false,
         }
     }

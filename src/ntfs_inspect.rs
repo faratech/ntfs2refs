@@ -471,6 +471,9 @@ pub enum LogicalHashStatus {
     #[default]
     NotComputed,
     Complete,
+    /// Deliberately not read under the explicit extent-identity policy.
+    /// The logical digest is absent; complete metadata/mappings are retained.
+    NotReadExtentIdentityV1,
     UnsupportedCompression,
     UnsupportedEncryption,
     UnsupportedAttributeList,
@@ -1349,7 +1352,10 @@ pub(crate) fn read_nonresident_inventory_range<R: Read + Seek>(
 
 /// Validate the entire standalone mapping, including allocation past EOF and the
 /// uninitialized tail. Zero filling must never conceal missing mapping pairs.
-fn validate_stream_mapping(a: &AttributeInventory, geometry: &NtfsGeometry) -> Result<()> {
+pub(crate) fn validate_stream_mapping(
+    a: &AttributeInventory,
+    geometry: &NtfsGeometry,
+) -> Result<()> {
     if a.flags & 0x00ff != 0 {
         return crate::ntfs_compression::supported(a, geometry);
     }
@@ -2553,7 +2559,7 @@ fn checked_plain_attribute<R: Read + Seek>(
     stream_name_utf16: &[u16],
     max_bytes: u64,
     alpha_limit: bool,
-) -> Result<(Attribute, String)> {
+) -> Result<(Attribute, Option<String>)> {
     checked_data_attribute(
         reader,
         raw,
@@ -2575,7 +2581,7 @@ fn checked_data_attribute<R: Read + Seek>(
     max_bytes: u64,
     alpha_limit: bool,
     allow_sparse: bool,
-) -> Result<(Attribute, String)> {
+) -> Result<(Attribute, Option<String>)> {
     if !raw.attribute_assemblies.is_empty() {
         validate_record_coverage(raw)?;
     }
@@ -2603,7 +2609,7 @@ fn checked_data_attribute<R: Read + Seek>(
         stream.flags == 1 && crate::ntfs_compression::supported(expected, &raw.geometry).is_ok();
     ensure!(
         (stream.flags == 0 || (allow_sparse && stream.flags == 0x8000) || compressed)
-            && stream.logical_hash_status == LogicalHashStatus::Complete
+            && crate::ntfs_attestation::source_stream_evidence_valid(raw, file, stream)?
             && stream.logical_size <= max_bytes
             && (!alpha_limit || max_bytes <= ALPHA_MAX_PLAIN_BYTES),
         "unsupported stream or materialization budget"
@@ -2687,7 +2693,10 @@ fn checked_data_attribute<R: Read + Seek>(
             && data.report.logical_size == stream.logical_size,
         "source DATA attribute changed"
     );
-    if allow_sparse || compressed {
+    if allow_sparse
+        || compressed
+        || stream.logical_hash_status == LogicalHashStatus::NotReadExtentIdentityV1
+    {
         ensure!(
             stream.flags == data.report.flags
                 && stream.resident == data.report.resident
@@ -2700,15 +2709,23 @@ fn checked_data_attribute<R: Read + Seek>(
     if !data.report.resident {
         validate_stream_mapping(&data.report, geometry)?;
     }
-    let digest = stream
-        .logical_sha256
-        .as_deref()
-        .context("inspected logical stream digest absent")?;
-    ensure!(
-        n2r_win32::content_digest::is_hex(digest),
-        "invalid inspected logical stream hash"
-    );
-    Ok((data, digest.into()))
+    let digest = stream.logical_sha256.clone();
+    match stream.logical_hash_status {
+        LogicalHashStatus::Complete => ensure!(
+            digest
+                .as_deref()
+                .is_some_and(n2r_win32::content_digest::is_hex),
+            "invalid inspected logical stream hash"
+        ),
+        LogicalHashStatus::NotReadExtentIdentityV1 => ensure!(
+            digest.is_none()
+                && crate::ntfs_attestation::extent_identity_stream_request(raw, file, stream)?
+                    .is_some(),
+            "hash-free range reader requires exact extent-identity evidence"
+        ),
+        _ => anyhow::bail!("inspected logical stream evidence is incomplete"),
+    }
+    Ok((data, digest))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2804,7 +2821,7 @@ pub fn copy_plain_named_stream<R: Read + Seek, W: Write>(
         reader,
         &raw.geometry,
         &attribute,
-        &expected,
+        expected.as_deref(),
         record_number,
         stream_name_utf16,
         output,
@@ -2853,7 +2870,7 @@ pub fn copy_plain_named_stream_with_budget<R: Read + Seek, W: Write>(
         reader,
         &raw.geometry,
         &attribute,
-        &expected,
+        expected.as_deref(),
         record_number,
         stream_name_utf16,
         output,
@@ -2864,11 +2881,13 @@ fn copy_checked_attribute<R: Read + Seek, W: Write>(
     reader: &mut R,
     geometry: &NtfsGeometry,
     attribute: &Attribute,
-    expected: &str,
+    expected: Option<&str>,
     record_number: u64,
     stream_name_utf16: &[u16],
     output: &mut W,
 ) -> Result<StreamCopyProof> {
+    let expected =
+        expected.context("legacy full-stream copy requires an inspected content digest")?;
     let mut digest = n2r_win32::content_digest::Hasher::new();
     let mut copied = 0u64;
     let mut buffer = [0u8; STREAM_HASH_BUFFER_BYTES];
@@ -2938,7 +2957,14 @@ pub fn hash_plain_named_stream_range<R: Read + Seek>(
         max_bytes,
         true,
     )?;
-    hash_checked_attribute_range(reader, &raw.geometry, &attribute, &expected, offset, length)
+    hash_checked_attribute_range(
+        reader,
+        &raw.geometry,
+        &attribute,
+        expected.as_deref(),
+        offset,
+        length,
+    )
 }
 
 /// Hash a checked logical range using the same cumulative streaming budget.
@@ -2993,17 +3019,26 @@ pub fn hash_plain_named_stream_range_with_budget<R: Read + Seek>(
         "requested logical stream range escapes EOF"
     );
     budget.reserve(length)?;
-    hash_checked_attribute_range(reader, &raw.geometry, &attribute, &expected, offset, length)
+    hash_checked_attribute_range(
+        reader,
+        &raw.geometry,
+        &attribute,
+        expected.as_deref(),
+        offset,
+        length,
+    )
 }
 
 fn hash_checked_attribute_range<R: Read + Seek>(
     reader: &mut R,
     geometry: &NtfsGeometry,
     attribute: &Attribute,
-    expected: &str,
+    expected: Option<&str>,
     offset: u64,
     length: u64,
 ) -> Result<String> {
+    let expected =
+        expected.context("legacy stream hashing requires an inspected content digest")?;
     ensure!(
         offset
             .checked_add(length)
@@ -3103,7 +3138,7 @@ pub struct StreamRangeReadProof {
     pub logical_offset: u64,
     pub logical_bytes: u64,
     pub stream_logical_bytes: u64,
-    pub expected_stream_sha256: String,
+    pub expected_stream_sha256: Option<String>,
     pub sha256: String,
     pub whole_stream_hash_matched: bool,
     /// Present only for the explicitly opted-in sparse-aware reader.
@@ -3120,7 +3155,7 @@ pub struct PlainStreamRangeSession {
     allow_sparse: bool,
     attribute: Attribute,
     compression: Option<crate::ntfs_compression::Reader>,
-    expected: String,
+    expected: Option<String>,
     poisoned: bool,
 }
 impl PlainStreamRangeSession {
@@ -3218,8 +3253,8 @@ impl PlainStreamRangeSession {
     pub fn stream_length(&self) -> u64 {
         self.attribute.report.logical_size
     }
-    pub fn expected_sha256(&self) -> &str {
-        &self.expected
+    pub fn expected_sha256(&self) -> Option<&str> {
+        self.expected.as_deref()
     }
     pub fn allocation_evidence(&self) -> Result<StreamAllocationEvidence> {
         data_allocation_evidence(&self.attribute.report)
@@ -3380,9 +3415,9 @@ fn read_data_stream_range_into<R: Read + Seek>(
     // a whole stream is also checked against the inspected content digest.
     let actual = hex::encode(Sha256::digest(&*output));
     let whole = offset == 0 && length == attribute.report.logical_size;
-    if whole {
+    if whole && let Some(expected) = &expected {
         ensure!(
-            n2r_win32::content_digest::of(output) == expected,
+            n2r_win32::content_digest::of(output) == *expected,
             "materialized whole stream differs from inspection"
         );
     }
@@ -3401,6 +3436,7 @@ fn read_data_stream_range_into<R: Read + Seek>(
         after == expected,
         "inspected source stream changed around range read"
     );
+    let whole_stream_hash_matched = whole && expected.is_some();
     Ok(StreamRangeReadProof {
         record_number,
         stream_name_utf16: stream_name_utf16.to_vec(),
@@ -3409,7 +3445,7 @@ fn read_data_stream_range_into<R: Read + Seek>(
         stream_logical_bytes: attribute.report.logical_size,
         expected_stream_sha256: expected,
         sha256: actual,
-        whole_stream_hash_matched: whole,
+        whole_stream_hash_matched,
         allocation: if allow_sparse {
             Some(data_allocation_evidence(&attribute.report)?)
         } else {
@@ -3431,6 +3467,22 @@ pub fn inspect_with_limits<R: Read + Seek>(
     reader: &mut R,
     length: u64,
     limits: InspectionLimits,
+) -> Result<NtfsInspection> {
+    inspect_with_limits_and_policy(
+        reader,
+        length,
+        limits,
+        crate::verification_policy::VerificationPolicy::FullContent,
+    )
+}
+
+/// Explicit raw observation policy. Extent mode still captures all metadata,
+/// namespaces, security and allocation; only proven eligible DATA is not read.
+pub fn inspect_with_limits_and_policy<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    limits: InspectionLimits,
+    policy: crate::verification_policy::VerificationPolicy,
 ) -> Result<NtfsInspection> {
     let mut budget = ReportBudget {
         limit: limits.max_report_bytes,
@@ -3795,22 +3847,42 @@ pub fn inspect_with_limits<R: Read + Seek>(
                     Some(number),
                 )?,
                 0x80 => {
-                    let (logical_hash_status, logical_sha256) = hash_stream(
-                        reader,
-                        &attribute,
-                        &geometry,
-                        &mut hash_budget,
-                        has_attribute_list,
-                        record.base != 0,
-                        number,
-                    )
-                    .with_context(|| {
-                        format!(
-                            "hashing DATA attribute {} in MFT record {number}",
-                            a.instance
+                    // Ancestry is not known until all metadata is captured.
+                    // Defer only potential whole aligned plain DATA; every
+                    // other form retains the existing content read/fallback.
+                    let deferred = policy.is_fast()
+                        && number >= 16
+                        && record.base == 0
+                        && !inventory.is_directory
+                        && !has_attribute_list
+                        && !a.resident
+                        && a.flags == 0
+                        && a.compression_unit == 0
+                        && a.lowest_vcn == 0
+                        && a.logical_size > 0
+                        && a.logical_size.is_multiple_of(4096)
+                        && a.initialized_size == a.logical_size
+                        && a.extents.iter().all(|e| e.physical_offset.is_some());
+                    let (logical_hash_status, logical_sha256) = if deferred {
+                        (LogicalHashStatus::NotComputed, None)
+                    } else {
+                        hash_stream(
+                            reader,
+                            &attribute,
+                            &geometry,
+                            &mut hash_budget,
+                            has_attribute_list,
+                            record.base != 0,
+                            number,
                         )
-                    })?;
-                    if logical_hash_status != LogicalHashStatus::Complete {
+                        .with_context(|| {
+                            format!(
+                                "hashing DATA attribute {} in MFT record {number}",
+                                a.instance
+                            )
+                        })?
+                    };
+                    if !deferred && logical_hash_status != LogicalHashStatus::Complete {
                         blocker(
                             &mut report,
                             &mut budget,
@@ -3890,6 +3962,69 @@ pub fn inspect_with_limits<R: Read + Seek>(
     let allocation = reconcile_allocation(&report, &mut bitmap_reader, &bitmap_summary)?;
     budget.charge((allocation.bitmap_sha256.capacity() + allocation.detail.capacity()) as u64)?;
     report.allocation_reconciliation = Some(allocation);
+    if policy.is_fast() {
+        // Reborrow the reader held by the completed bitmap pass; no bitmap
+        // reads remain while deferred DATA hashes are decided below.
+        let reader = &mut *bitmap_reader.reader;
+        for file_index in 0..report.files.len() {
+            for stream_index in 0..report.files[file_index].streams.len() {
+                if report.files[file_index].streams[stream_index].logical_hash_status
+                    != LogicalHashStatus::NotComputed
+                {
+                    continue;
+                }
+                let file = &report.files[file_index];
+                let stream = &file.streams[stream_index];
+                let eligible = report.allocation_reconciliation.as_ref().is_some_and(|a| {
+                    a.status == AllocationReconciliationStatus::ConsistentRawModel
+                }) && crate::ntfs_attestation::extent_identity_stream_request(
+                    &report, file, stream,
+                )?
+                .is_some();
+                let (status, digest) = if eligible {
+                    (LogicalHashStatus::NotReadExtentIdentityV1, None)
+                } else {
+                    let attribute = file
+                        .attributes
+                        .iter()
+                        .find(|a| a.type_code == 0x80 && a.name_utf16 == stream.name_utf16)
+                        .context("deferred DATA attribute absent")?
+                        .clone();
+                    hash_stream(
+                        reader,
+                        &Attribute {
+                            report: attribute,
+                            resident_value: None,
+                        },
+                        &geometry,
+                        &mut hash_budget,
+                        false,
+                        false,
+                        file.record_number,
+                    )?
+                };
+                if let Some(hash) = &digest {
+                    budget.charge(hash.capacity() as u64)?;
+                }
+                let number = report.files[file_index].record_number;
+                let stream = &mut report.files[file_index].streams[stream_index];
+                stream.logical_hash_status = status;
+                stream.logical_sha256 = digest;
+                if !matches!(
+                    status,
+                    LogicalHashStatus::Complete | LogicalHashStatus::NotReadExtentIdentityV1
+                ) {
+                    blocker(
+                        &mut report,
+                        &mut budget,
+                        "logical_stream_hash_unavailable",
+                        format!("Deferred DATA has no supported source evidence: {status:?}"),
+                        Some(number),
+                    )?;
+                }
+            }
+        }
+    }
     let namespace = namespace.finish(&report.files);
     budget.charge((namespace.evidence_sha256.capacity() + namespace.detail.capacity()) as u64)?;
     report.namespace_reconciliation = Some(namespace);

@@ -71,8 +71,10 @@ pub struct Input<'a> {
     pub extended_attributes: Option<&'a crate::extended_attributes::Set>,
     pub reparse: Option<&'a crate::reparse_layout::Point>,
     pub payload: &'a [u8],
-    /// Hash-only expectations are accepted for ordinary shadow streaming and
-    /// verification. The source reader supplies bytes during construction.
+    /// Source-backed expectations carry EOF separately from supplied payload.
+    /// None is an explicitly absent content digest, accepted only for the
+    /// routed extent-only metadata path. Full verification requires a digest
+    /// or the complete actual in-memory payload.
     pub expected_length: Option<u64>,
     pub expected_sha256: Option<&'a str>,
     pub source_offset: Option<u64>,
@@ -83,7 +85,7 @@ pub struct Input<'a> {
 pub struct NamedStreamInput<'a> {
     pub name_utf16: &'a [u16],
     pub expected_length: u64,
-    pub expected_sha256: &'a str,
+    pub expected_sha256: Option<&'a str>,
     pub source_offset: Option<u64>,
     pub source_runs: Vec<SourceRun>,
     pub sparse: Option<&'a crate::sparse_layout::SparseLayout>,
@@ -98,11 +100,14 @@ impl Input<'_> {
     fn logical_length(&self) -> u64 {
         self.expected_length.unwrap_or(self.payload.len() as u64)
     }
-    /// The expected [`crate::content_digest`] (historical name).
-    fn logical_sha256(&self) -> String {
-        self.expected_sha256
-            .map(str::to_owned)
-            .unwrap_or_else(|| crate::content_digest::of(self.payload))
+    /// The expected [`crate::content_digest`] (historical name), or a digest
+    /// computed from the complete actual payload. An absent source-backed
+    /// digest never becomes the digest of its empty placeholder slice.
+    fn logical_sha256(&self) -> Option<String> {
+        self.expected_sha256.map(str::to_owned).or_else(|| {
+            (self.payload.len() as u64 == self.logical_length())
+                .then(|| crate::content_digest::of(self.payload))
+        })
     }
 }
 fn valid_shadow_component(s: &str) -> bool {
@@ -373,6 +378,16 @@ pub struct ConvertedContentObservation {
     pub metadata_and_namespace_verified: bool,
     pub complete_stream_mappings_observed: bool,
     pub data_storage_validity_checked: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub known_content: Option<KnownContentVerification>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KnownContentVerification {
+    pub streams_hashed: usize,
+    pub streams_without_content_baseline: usize,
+    pub payload_bytes_read: u64,
+    pub privilege_states: Vec<PrivilegeState>,
 }
 
 /// Independent lab readback through backup-intent handles. Access-time updates
@@ -1304,6 +1319,13 @@ fn validate_existing_content_profile(
     let mut identities = BTreeMap::new();
     let mut unique = BTreeSet::new();
     for (i, o) in input.iter().zip(&report.objects) {
+        let expected_content = if verify_contents && !i.directory {
+            Some(i.logical_sha256().ok_or_else(|| {
+                invalid("full existing-tree verification requires a content expectation")
+            })?)
+        } else {
+            None
+        };
         if !before_restore
             && (!extended_attributes_match(i, &o.before)?
                 || !extended_attributes_match(i, &o.after)?
@@ -1374,7 +1396,7 @@ fn validate_existing_content_profile(
             || standard[20] != 0
             || (standard[21] != 0) != i.directory
             || (!i.directory && layout::u64_at(standard, 8)? != i.logical_length())
-            || (verify_contents && o.logical_sha256 != (!i.directory).then(|| i.logical_sha256()))
+            || (verify_contents && o.logical_sha256 != expected_content)
             || (!verify_contents && o.logical_sha256.is_some())
         {
             return Err(invalid(
@@ -2404,7 +2426,7 @@ pub(crate) fn observe_general_layout_readonly_with_resource_profile(
         native,
         expected_stream_sha256: input
             .iter()
-            .map(|item| (!item.directory).then(|| item.logical_sha256()))
+            .map(|item| (!item.directory).then(|| item.logical_sha256()).flatten())
             .collect(),
         metadata_and_namespace_verified: true,
         complete_stream_mappings_verified: true,
@@ -2716,9 +2738,104 @@ pub fn observe_general_converted_metadata_with_resource_profile(
             metadata_and_namespace_verified: true,
             complete_stream_mappings_observed: true,
             data_storage_validity_checked: true,
+            known_content: None,
         }),
         conversion_qualified: false,
     })
+}
+
+/// Recovery keeps full logical reads for every stream with a real original
+/// digest. Streams without such a digest remain explicitly un-hashed and must
+/// be verified against the recovery bundle's independently pinned map facts.
+pub fn verify_general_converted_known_contents_with_resource_profile(
+    pair: GeneralSourceShadowBinding,
+    input: &[Input<'_>],
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
+    let mut report = observe_general_converted_metadata_with_resource_profile(
+        pair,
+        input,
+        expected_label,
+        &same_security,
+        resource_profile,
+    )?;
+    let root = report.pair.source.volume_path()?;
+    let mut privileges = Privileges::enable_for(&[
+        "SeBackupPrivilege",
+        "SeSecurityPrivilege",
+        "SeRestorePrivilege",
+    ])?;
+    let mut count = 0usize;
+    let mut skipped = 0usize;
+    let mut bytes = 0u64;
+    for (item, object) in input.iter().zip(&mut report.native.objects) {
+        if item.directory {
+            continue;
+        }
+        if let Some(expected) = item.logical_sha256() {
+            let path = streams::path(&root, item.components, &[])?;
+            let mut file = open_input(&path, item, false)?;
+            if metadata_snapshot(&file, item) != object.before {
+                return Err(invalid(
+                    "recovery known-content file identity or metadata changed",
+                ));
+            }
+            let actual = hash_exact_stream(&mut file, item.logical_length())?;
+            if actual != expected || metadata_snapshot(&file, item) != object.after {
+                return Err(invalid("recovery known-content bytes or metadata differ"));
+            }
+            object.logical_sha256 = Some(actual);
+            count += 1;
+            bytes = bytes
+                .checked_add(item.logical_length())
+                .ok_or_else(|| invalid("recovery read count overflow"))?;
+        } else {
+            skipped += 1;
+        }
+        for named in &mut object.named_streams {
+            let stream = item
+                .named_streams
+                .iter()
+                .find(|s| s.name_utf16 == named.name_utf16)
+                .ok_or_else(|| invalid("recovery named stream absent"))?;
+            let Some(expected) = stream.expected_sha256 else {
+                skipped += 1;
+                continue;
+            };
+            let path = streams::path(&root, item.components, stream.name_utf16)?;
+            let mut file = open(&path, false, false)?;
+            if snapshot(&file) != named.before {
+                return Err(invalid("recovery named stream metadata changed"));
+            }
+            let actual = hash_exact_stream(&mut file, stream.expected_length)?;
+            if actual != expected || snapshot(&file) != named.after {
+                return Err(invalid(
+                    "recovery known named-stream bytes or metadata differ",
+                ));
+            }
+            named.logical_sha256 = Some(actual);
+            count += 1;
+            bytes = bytes
+                .checked_add(stream.expected_length)
+                .ok_or_else(|| invalid("recovery read count overflow"))?;
+        }
+    }
+    privileges.restore()?;
+    let observation = report
+        .content_observation
+        .as_mut()
+        .ok_or_else(|| invalid("known-content scope absent"))?;
+    observation.scope = "converted-metadata-and-known-content-hashes-v1";
+    observation.admitted_payload_bytes_read = bytes;
+    observation.known_content = Some(KnownContentVerification {
+        streams_hashed: count,
+        streams_without_content_baseline: skipped,
+        payload_bytes_read: bytes,
+        privilege_states: privileges.audit().to_vec(),
+    });
+    Ok(report)
 }
 
 fn observe_general_converted_label_profile(
@@ -3170,6 +3287,16 @@ fn run_role_content_profile(
         }
     })?;
     streams::validate(input, binding.identity.partition_bytes)?;
+    if verify_file_contents
+        && input
+            .iter()
+            .flat_map(|item| &item.named_streams)
+            .any(|stream| stream.expected_sha256.is_none())
+    {
+        return Err(invalid(
+            "full named-stream verification requires content expectations",
+        ));
+    }
     if input.iter().any(|i| !i.named_streams.is_empty())
         && matches!(mode, Mode::Construct | Mode::ConstructRetaining)
     {
@@ -3255,9 +3382,10 @@ fn run_role_content_profile(
         if digest_only
             && (!digest_allowed
                 || i.expected_length.is_none()
-                || i.expected_sha256.is_none()
                 || !i.payload.is_empty()
-                || !i.expected_sha256.is_some_and(crate::content_digest::is_hex))
+                || i.expected_sha256
+                    .is_some_and(|digest| !crate::content_digest::is_hex(digest))
+                || (verify_file_contents && i.logical_sha256().is_none()))
         {
             return Err(invalid("invalid hash-only verification input"));
         }

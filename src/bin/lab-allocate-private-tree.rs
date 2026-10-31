@@ -212,7 +212,7 @@ fn main() -> anyhow::Result<()> {
                         &mut budget,
                     )?;
                     ensure!(
-                        Some(&proof.expected_stream_sha256) == object.sha256.as_ref()
+                        proof.expected_stream_sha256.as_deref() == object.sha256.as_deref()
                             && proof.stream_logical_bytes == object.length,
                         "small source object differs from tree"
                     );

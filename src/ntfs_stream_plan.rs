@@ -2,9 +2,7 @@
 //! not namespace admission or a target allocation/write plan.
 use crate::{
     ntfs_admission::ResourceProfile,
-    ntfs_inspect::{
-        Extent, FileInventory, LogicalHashStatus, MetadataRole, NtfsInspection, StreamInventory,
-    },
+    ntfs_inspect::{Extent, FileInventory, MetadataRole, NtfsInspection, StreamInventory},
 };
 use anyhow::{Context, Result, ensure};
 use n2r_win32::sparse_layout::{LogicalRange, SparseLayout};
@@ -256,11 +254,8 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
             let sparse = sparse_requested
                 .then(|| sparse_candidate(raw, file, stream))
                 .and_then(|value| value.ok());
-            let complete = stream.logical_hash_status == LogicalHashStatus::Complete
-                && stream
-                    .logical_sha256
-                    .as_ref()
-                    .is_some_and(|hash| n2r_win32::content_digest::is_hex(hash));
+            let complete = crate::ntfs_attestation::source_stream_evidence_valid(raw, file, stream)
+                .unwrap_or(false);
             let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
             let physical = single.and_then(|e| e.physical_offset);
             let full_prefix = stream.initialized_size.min(stream.logical_size) / CLUSTER * CLUSTER;

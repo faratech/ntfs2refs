@@ -59,7 +59,16 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
         }
     }
     if input.iter().any(|i| !i.named_streams.is_empty()) {
-        hash.update(b"n2r-private-named-streams-v1");
+        let optional_content = input.iter().any(|item| {
+            item.named_streams
+                .iter()
+                .any(|stream| stream.expected_sha256.is_none())
+        });
+        if optional_content {
+            hash.update(b"n2r-private-named-streams-optional-content-v1".as_slice());
+        } else {
+            hash.update(b"n2r-private-named-streams-v1".as_slice());
+        }
         for item in input {
             hash.update((item.named_streams.len() as u64).to_le_bytes());
             for stream in &item.named_streams {
@@ -68,7 +77,13 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
                     hash.update(unit.to_le_bytes());
                 }
                 hash.update(stream.expected_length.to_le_bytes());
-                bytes(&mut hash, stream.expected_sha256.as_bytes());
+                if optional_content {
+                    hash.update([u8::from(stream.expected_sha256.is_some())]);
+                }
+                bytes(
+                    &mut hash,
+                    stream.expected_sha256.unwrap_or_default().as_bytes(),
+                );
                 number(&mut hash, stream.source_offset);
                 hash.update((stream.source_runs.len() as u64).to_le_bytes());
                 for run in &stream.source_runs {

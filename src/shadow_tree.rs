@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Actual source evidence, never a fabricated content digest. Native mapping
+/// reconciliation and the original live freeze are still required for admission.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceStreamEvidence {
+    ExtentIdentityV1,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NamedStream {
@@ -16,7 +24,9 @@ pub struct NamedStream {
     pub source_extents: Vec<ntfs::Extent>,
     pub length: u64,
     /// The inspected content digest, not a native target-verification claim.
-    pub sha256: String,
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_evidence: Option<SourceStreamEvidence>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sparse: Option<SparseLayout>,
 }
@@ -27,7 +37,8 @@ pub struct StreamRef<'a> {
     pub source_offset: Option<u64>,
     pub source_extents: &'a [ntfs::Extent],
     pub length: u64,
-    pub sha256: &'a str,
+    pub sha256: Option<&'a str>,
+    pub source_evidence: Option<SourceStreamEvidence>,
     pub sparse: Option<&'a SparseLayout>,
 }
 impl StreamRef<'_> {
@@ -85,6 +96,8 @@ pub struct Object {
     pub length: u64,
     /// The stream's [`n2r_win32::content_digest`] (XXH3-128; historical name).
     pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_evidence: Option<SourceStreamEvidence>,
     /// File streams share the canonical file identity and all hard-link names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_streams: Vec<NamedStream>,
@@ -95,15 +108,14 @@ impl Object {
     /// Read-only flattened view of a validated object's DATA streams. The
     /// default stream remains first; directory streams are unsupported.
     pub fn data_streams(&self) -> impl Iterator<Item = StreamRef<'_>> {
-        self.sha256
-            .as_deref()
-            .filter(|_| !self.directory)
-            .map(|sha256| StreamRef {
+        (!self.directory)
+            .then(|| StreamRef {
                 name_utf16: &[],
                 source_offset: self.source_offset,
                 source_extents: &self.source_extents,
                 length: self.length,
-                sha256,
+                sha256: self.sha256.as_deref(),
+                source_evidence: self.source_evidence,
                 sparse: self.sparse.as_ref(),
             })
             .into_iter()
@@ -112,7 +124,8 @@ impl Object {
                 source_offset: stream.source_offset,
                 source_extents: &stream.source_extents,
                 length: stream.length,
-                sha256: &stream.sha256,
+                sha256: stream.sha256.as_deref(),
+                source_evidence: stream.source_evidence,
                 sparse: stream.sparse.as_ref(),
             }))
     }
@@ -182,6 +195,13 @@ impl From<&Tree> for ExpectedTree {
     }
 }
 impl ExpectedTree {
+    pub fn has_extent_only_streams(&self) -> bool {
+        self.objects.iter().any(|object| {
+            object
+                .data_streams()
+                .any(|stream| stream.source_evidence.is_some())
+        })
+    }
     pub fn validate(&self) -> Result<()> {
         self.validate_with_resource_profile(ntfs_admission::ResourceProfile::AlphaV1)
     }
@@ -217,6 +237,20 @@ impl ExpectedTree {
         let mut stream_count = 0usize;
         let mut source_ranges = Vec::new();
         for object in &self.objects {
+            if object.source_evidence.is_some()
+                || object
+                    .named_streams
+                    .iter()
+                    .any(|s| s.source_evidence.is_some())
+            {
+                ensure!(
+                    resources == ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
+                        && !object.directory
+                        && object.reparse.is_none()
+                        && !object.ntfs_compression_normalized,
+                    "extent-only evidence requires the ordinary streaming source profile"
+                );
+            }
             name_count = name_count
                 .checked_add(1)
                 .and_then(|n| n.checked_add(object.additional_names.len()))
@@ -367,11 +401,7 @@ impl ExpectedTree {
                     object.length <= limits.maximum_stream_bytes,
                     "expected stream exceeds selected resource profile"
                 );
-                let digest = object.sha256.as_deref().unwrap_or("");
-                ensure!(
-                    n2r_win32::content_digest::is_hex(digest),
-                    "expected stream digest differs"
-                );
+                validate_stream_evidence(object.stream(&[]).context("default stream absent")?)?;
                 bytes = bytes
                     .checked_add(object.length)
                     .context("expected byte overflow")?;
@@ -387,10 +417,14 @@ impl ExpectedTree {
                             && exact_names.insert(stream.name_utf16.as_slice())
                             && folded_names
                                 .insert(String::from_utf16(&stream.name_utf16)?.to_uppercase())
-                            && stream.length <= limits.maximum_stream_bytes
-                            && n2r_win32::content_digest::is_hex(&stream.sha256),
+                            && stream.length <= limits.maximum_stream_bytes,
                         "expected named stream identity, size or digest differs"
                     );
+                    validate_stream_evidence(
+                        object
+                            .stream(&stream.name_utf16)
+                            .context("named stream absent")?,
+                    )?;
                     bytes = bytes
                         .checked_add(stream.length)
                         .context("named stream byte overflow")?;
@@ -399,6 +433,7 @@ impl ExpectedTree {
                 ensure!(
                     object.length == 0
                         && object.sha256.is_none()
+                        && object.source_evidence.is_none()
                         && object.source_offset.is_none()
                         && object.source_extents.is_empty()
                         && object.named_streams.is_empty()
@@ -657,7 +692,7 @@ fn derive_profile(
                     == 0,
             "unsupported basic metadata"
         );
-        let (source_offset, source_extents, length, sha256, sparse) =
+        let (source_offset, source_extents, length, sha256, source_evidence, sparse) =
             match f.streams.iter().find(|s| s.name_utf16.is_empty()) {
                 Some(s) => {
                     let candidate = source_decisions
@@ -668,11 +703,12 @@ fn derive_profile(
                         offset,
                         extents,
                         s.logical_size,
-                        Some(s.logical_sha256.clone().context("missing logical digest")?),
+                        s.logical_sha256.clone(),
+                        source_stream_evidence(raw, f, s)?,
                         candidate.and_then(|decision| decision.sparse.clone()),
                     )
                 }
-                None => (None, Vec::new(), 0, None, None),
+                None => (None, Vec::new(), 0, None, None, None),
             };
         let mut named_streams = Vec::new();
         for stream in f
@@ -697,10 +733,8 @@ fn derive_profile(
                 source_offset,
                 source_extents,
                 length: stream.logical_size,
-                sha256: stream
-                    .logical_sha256
-                    .clone()
-                    .context("missing named stream logical digest")?,
+                sha256: stream.logical_sha256.clone(),
+                source_evidence: source_stream_evidence(raw, f, stream)?,
                 sparse: candidate.and_then(|decision| decision.sparse.clone()),
             });
         }
@@ -739,6 +773,7 @@ fn derive_profile(
             source_extents,
             length,
             sha256,
+            source_evidence,
             named_streams,
             sparse,
         };
@@ -795,6 +830,7 @@ fn planned_stream_source(
 }
 
 fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>) -> Result<()> {
+    validate_stream_evidence(stream)?;
     if let Some(sparse) = stream.sparse {
         sparse.validate(stream.length)?;
         ensure!(
@@ -880,6 +916,82 @@ fn validate_stream_source(stream: StreamRef<'_>, physical: &mut Vec<(u64, u64)>)
             covered <= stream.length / 4096 * 4096,
             "source initialized-cluster prefix differs"
         );
+    }
+    Ok(())
+}
+
+fn source_stream_evidence(
+    raw: &ntfs::NtfsInspection,
+    file: &ntfs::FileInventory,
+    stream: &ntfs::StreamInventory,
+) -> Result<Option<SourceStreamEvidence>> {
+    match stream.logical_hash_status {
+        ntfs::LogicalHashStatus::Complete => {
+            ensure!(
+                stream
+                    .logical_sha256
+                    .as_deref()
+                    .is_some_and(n2r_win32::content_digest::is_hex),
+                "complete source stream digest absent"
+            );
+            Ok(None)
+        }
+        ntfs::LogicalHashStatus::NotReadExtentIdentityV1 => {
+            ensure!(
+                stream.logical_sha256.is_none()
+                    && crate::ntfs_attestation::extent_identity_stream_request(raw, file, stream)?
+                        .is_some(),
+                "source extent-only stream is not eligible"
+            );
+            Ok(Some(SourceStreamEvidence::ExtentIdentityV1))
+        }
+        _ => anyhow::bail!("source stream evidence is incomplete"),
+    }
+}
+
+fn validate_stream_evidence(stream: StreamRef<'_>) -> Result<()> {
+    match (stream.sha256, stream.source_evidence) {
+        (Some(digest), None) => ensure!(
+            n2r_win32::content_digest::is_hex(digest),
+            "invalid content digest"
+        ),
+        (None, Some(SourceStreamEvidence::ExtentIdentityV1)) => {
+            ensure!(
+                stream.length != 0 && stream.length.is_multiple_of(4096) && stream.sparse.is_none(),
+                "extent-only stream requires a nonempty initialized aligned plain mapping"
+            );
+            let mut covered = 0u64;
+            if let Some(offset) = stream.source_offset {
+                ensure!(
+                    stream.source_extents.is_empty()
+                        && offset.is_multiple_of(4096)
+                        && offset.checked_add(stream.length).is_some(),
+                    "invalid extent-only single mapping"
+                );
+                covered = stream.length;
+            } else {
+                for extent in stream.source_extents {
+                    ensure!(
+                        extent.logical_offset == covered
+                            && extent.length > 0
+                            && extent.length.is_multiple_of(4096)
+                            && extent
+                                .physical_offset
+                                .is_some_and(|p| p.is_multiple_of(4096)
+                                    && p.checked_add(extent.length).is_some()),
+                        "invalid extent-only mapping"
+                    );
+                    covered = covered
+                        .checked_add(extent.length)
+                        .context("extent-only coverage overflow")?;
+                }
+            }
+            ensure!(
+                covered == stream.length,
+                "extent-only mapping does not cover the complete stream"
+            );
+        }
+        _ => anyhow::bail!("missing or ambiguous source stream evidence"),
     }
     Ok(())
 }

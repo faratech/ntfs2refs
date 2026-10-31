@@ -129,21 +129,23 @@ pub fn request_for_general_inspection_with_profile(
     Ok(request)
 }
 
-/// Keep the raw logical hash; omit a second native content read only for an
-/// explicitly bound plain, initialized, aligned stream. The complete native
-/// retrieval map and stable identity/EOF remain independently required.
+/// Shared structural eligibility/spec builder for explicit extent evidence.
+/// No content hash is required or invented here. Native retrieval, allocation,
+/// stable identity/EOF and the original frozen context remain separate gates.
 pub fn extent_identity_stream_request(
     raw: &NtfsInspection,
     file: &FileInventory,
     stream: &crate::ntfs_inspect::StreamInventory,
 ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
-    use crate::ntfs_inspect::{LogicalHashStatus, MetadataRole};
+    use crate::ntfs_inspect::MetadataRole;
     if !(4096..=65536).contains(&raw.geometry.cluster_size)
         || !raw.geometry.cluster_size.is_power_of_two()
         || file.is_directory
         || file.record_number < 16
         || file.base_file_reference != 0
         || file.metadata_role != MetadataRole::OutsideExtendCandidate
+        || file.metadata_role_issue.is_some()
+        || file.is_metadata
         || file.reparse.is_some()
         || file
             .standard_information
@@ -160,12 +162,15 @@ pub fn extent_identity_stream_request(
         return Ok(None);
     }
     ensure!(
-        stream.logical_hash_status == LogicalHashStatus::Complete
-            && stream
-                .logical_sha256
-                .as_deref()
-                .is_some_and(n2r_win32::content_digest::is_hex),
-        "native read elision requires an actual complete raw logical digest"
+        file.sequence_number != 0
+            && file.record_number < 1 << 48
+            && stream.name_utf16.len() <= 255
+            && String::from_utf16(&stream.name_utf16).is_ok()
+            && !stream
+                .name_utf16
+                .iter()
+                .any(|n| matches!(*n, 0 | 0x2f | 0x5c | 0x3a)),
+        "invalid extent-identity stream identity or name"
     );
     let attributes: Vec<_> = file
         .attributes
@@ -181,12 +186,25 @@ pub fn extent_identity_stream_request(
         !a.resident
             && a.flags == 0
             && a.compression_unit == 0
+            && a.total_allocated_size.is_none()
             && a.lowest_vcn == 0
             && a.logical_size == stream.logical_size
             && a.initialized_size == stream.initialized_size
             && a.allocated_size == stream.allocated_size
             && a.extents == stream.extents,
         "extent-identity DATA attribute differs from its stream"
+    );
+    crate::ntfs_inspect::validate_stream_mapping(a, &raw.geometry)?;
+    ensure!(
+        stream
+            .allocated_size
+            .is_multiple_of(u64::from(raw.geometry.cluster_size))
+            && stream.extents.iter().all(|e| e
+                .length
+                .is_multiple_of(u64::from(raw.geometry.cluster_size))
+                && e.physical_offset
+                    .is_some_and(|at| at.is_multiple_of(u64::from(raw.geometry.cluster_size)))),
+        "extent-identity source allocation is not cluster aligned"
     );
     let mut extents: Vec<n2r_win32::attestation::ExtentIdentityExtent> = Vec::new();
     for e in &stream.extents {
@@ -218,6 +236,27 @@ pub fn extent_identity_stream_request(
         allocated_size: stream.allocated_size,
         extents,
     }))
+}
+
+/// A complete digest or an explicitly un-read, structurally eligible stream.
+/// This is planner evidence only, never live source/write authority.
+pub fn source_stream_evidence_valid(
+    raw: &NtfsInspection,
+    file: &FileInventory,
+    stream: &crate::ntfs_inspect::StreamInventory,
+) -> Result<bool> {
+    use crate::ntfs_inspect::LogicalHashStatus;
+    Ok(match stream.logical_hash_status {
+        LogicalHashStatus::Complete => stream
+            .logical_sha256
+            .as_deref()
+            .is_some_and(n2r_win32::content_digest::is_hex),
+        LogicalHashStatus::NotReadExtentIdentityV1 => {
+            stream.logical_sha256.is_none()
+                && extent_identity_stream_request(raw, file, stream)?.is_some()
+        }
+        _ => false,
+    })
 }
 
 pub fn request_for_general_inspection_with_policy(

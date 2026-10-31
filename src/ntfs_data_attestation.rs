@@ -209,11 +209,8 @@ fn check_file_with_extent_evidence(
         for s in &file.streams {
             let h = pass.iter().find(|h| h.name_utf16 == s.name_utf16).unwrap();
             ensure!(
-                s.logical_hash_status == LogicalHashStatus::Complete
-                    && s.logical_sha256
-                        .as_deref()
-                        .is_some_and(n2r_win32::content_digest::is_hex),
-                "raw stream still requires a complete content digest"
+                crate::ntfs_attestation::source_stream_evidence_valid(raw, file, s)?,
+                "raw stream has no supported content or extent evidence"
             );
             ensure!(
                 h.logical_size == s.logical_size,
@@ -252,7 +249,11 @@ fn check_file_with_extent_evidence(
                 }
             } else {
                 ensure!(
-                    h.outcome.status == Status::Complete
+                    s.logical_hash_status == LogicalHashStatus::Complete
+                        && s.logical_sha256
+                            .as_deref()
+                            .is_some_and(n2r_win32::content_digest::is_hex)
+                        && h.outcome.status == Status::Complete
                         && h.outcome.eof_confirmed
                         && h.outcome.bytes_read == s.logical_size
                         && h.outcome.native_error.is_none()

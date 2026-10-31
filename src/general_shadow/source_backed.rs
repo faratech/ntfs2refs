@@ -610,7 +610,7 @@ impl<'a> SourceBackedShadow<'a> {
                 !object.directory
                     && object.path == route.components
                     && stream.length == route.stream_length
-                    && stream.sha256 == route.expected_sha256
+                    && stream.sha256 == route.expected_sha256.as_deref()
                     && identities.get(&object.record_number) == Some(&Some(object.sequence_number)),
                 "source-backed canonical stream identity differs"
             );
@@ -1419,7 +1419,7 @@ impl<'a> SourceBackedShadow<'a> {
             let session = self.session.as_mut().unwrap();
             ensure!(
                 session.stream_length() == route.stream_length
-                    && session.expected_sha256() == route.expected_sha256,
+                    && session.expected_sha256() == route.expected_sha256.as_deref(),
                 "source-backed read differs from bound stream"
             );
             session.read(

@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "kind": "obsolete-hyperv-checkpoint-cleanup",
+  "user_requested_all_obsolete_states_removed": true,
+  "before_snapshot_count": 47,
+  "removed_count": 37,
+  "removed_ids": [
+    "52d37819-2b9c-4041-9232-bd7eac3c21bb",
+    "5f30f4a1-9db0-4df5-a0e5-2c7be5d87eec",
+    "ec034c81-e39b-46bd-a8d1-cfc3481da8dd",
+    "914bb77d-d924-4ed6-ab14-9a40288c3bc9",
+    "174011ed-b989-46cf-b5d3-8a25333759d5",
+    "1c23ca96-dd72-4846-b7bf-39fb13389639",
+    "d2c6ff09-2e26-4e25-be53-831a916f5489",
+    "4a084701-74f9-42c2-91ce-6f4436f23180",
+    "0f685623-9109-4d97-afe7-84fafb232d60",
+    "f3eb7560-4804-47a8-ad91-530cd87221ab",
+    "145c0060-b98e-4857-963f-238e72199869",
+    "45924882-3aab-4fec-82fd-3848461e0225",
+    "2f9ef65b-bac7-4614-9855-4e64160d4518",
+    "6264afb3-6031-4e5e-bd9a-ef9b4b0d4490",
+    "a6604468-b624-47ed-aec2-06d12095e6f5",
+    "7f926b79-465f-4945-a00b-bdaae2607cd4",
+    "289cf0f3-bfcc-47b0-8697-10e3cb9e6922",
+    "496bcf38-53ac-49ab-9551-2d4e24651f32",
+    "a6497e33-2544-44b7-aae2-784f72904da2",
+    "37414e94-26c0-4033-b9ca-93892b51e76b",
+    "1ad67365-8a17-46d7-aac1-f2a38748d7ba",
+    "637d286f-ecb3-46e0-8621-e7d89fe4862a",
+    "1057eb82-d152-4572-881b-53ff9dbb82dd",
+    "cafe187b-5f44-43e4-b1d9-d71dac5c0f50",
+    "f981e1df-398e-4c08-997d-d1aea8361267",
+    "1fc4b960-c252-41ce-9ad2-ef7ef0b030d3",
+    "684b9c4c-4cb9-4b58-9669-028bd8b1c946",
+    "e4186f31-ee81-4d10-b8fa-17a0f9920a10",
+    "64304900-25ef-4797-8d01-f58d229dedc3",
+    "fcc42f45-2101-441d-8751-b625cc7d0051",
+    "1683b2be-c372-45b2-8583-3b6028fd72f1",
+    "9f32dee4-0691-4b2a-9ec2-e7834b6d11db",
+    "20068b68-ffc2-4443-bea8-179a797c1495",
+    "8a53c8cc-91ed-40b8-a85f-ac744585a991",
+    "3cbc9ae0-c7da-49ab-bd08-ca0c48275f03",
+    "119445de-8c2d-4186-b54c-6b5cda644e4d",
+    "6bef3bd2-db31-45fe-9e6c-939c812b7375"
+  ],
+  "remaining_snapshot_count": 10,
+  "remaining": [
+    {
+      "parent": "",
+      "name": "copy-reference-mixed-20261030",
+      "id": "6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e"
+    },
+    {
+      "parent": "6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e",
+      "name": "ntfs-sparse-fixture-3f1812ef",
+      "id": "9c42e1fd-435b-401c-b261-53ab433ca2f6"
+    },
+    {
+      "parent": "9c42e1fd-435b-401c-b261-53ab433ca2f6",
+      "name": "sparse-placement-refusal-66400017-2287d82",
+      "id": "f4bf5238-14c0-4b15-bda6-7859abd4d1c9"
+    },
+    {
+      "parent": "9c42e1fd-435b-401c-b261-53ab433ca2f6",
+      "name": "ntfs-compression-fixture-8c4644bb",
+      "id": "371ae756-faf2-40ac-bf86-5e8e1d744e30"
+    },
+    {
+      "parent": "371ae756-faf2-40ac-bf86-5e8e1d744e30",
+      "name": "refs-window-coldboot-c7fd1596",
+      "id": "d939f576-4868-43d0-bde8-2a6f742dd489"
+    },
+    {
+      "parent": "6fe2d6b6-a2fb-447e-802b-7b3ff0d9f16e",
+      "name": "ntfs-object-envelope-source-32cbcf9d",
+      "id": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b"
+    },
+    {
+      "parent": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+      "name": "interrupted-old-zero-d4f9c352",
+      "id": "dea902f6-7d3f-49ba-86d2-27ce6dbe9516"
+    },
+    {
+      "parent": "dea902f6-7d3f-49ba-86d2-27ce6dbe9516",
+      "name": "refs-exclusive-recovery-resume-4b877c53",
+      "id": "8087814c-b2ed-4060-b321-fccaa8869873"
+    },
+    {
+      "parent": "dea902f6-7d3f-49ba-86d2-27ce6dbe9516",
+      "name": "ntfs-exclusive-recovery-rollback-104ca6aa",
+      "id": "d40b4b41-be9c-4243-8f91-7f953085e3a3"
+    },
+    {
+      "parent": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+      "name": "paired-source-copy-read-reuse-2d22-native-success",
+      "id": "31d77adf-2682-4e4d-b1f8-95e35702c4c0"
+    }
+  ],
+  "current_success_preserved": "31d77adf-2682-4e4d-b1f8-95e35702c4c0",
+  "retired_old_fixture_states_preserved_as_host_metadata": true,
+  "unique_metadata_files_verified_and_held": 1410,
+  "all_host_archives_retained": true,
+  "hyperv_api_only": true,
+  "manual_avhdx_deletions": false,
+  "guarded_archive_mismatch_state_preserved": "f4bf5238-14c0-4b15-bda6-7859abd4d1c9",
+  "final_state": {
+    "capacity": {
+      "ActualBytes": 208799333690,
+      "FreeBytes": 135396851712,
+      "MaximumActualBytes": 329374052988,
+      "MinimumFreeBytes": 17179869184
+    },
+    "d_free_bytes": 135396851712,
+    "d_free_gib": 126.1,
+    "host_free_gain_from_settled_pre_batch_bytes": 88341303296,
+    "snapshots": 10,
+    "current": "31d77adf-2682-4e4d-b1f8-95e35702c4c0",
+    "merge_jobs": 0,
+    "utc": "2026-11-01T21:17:07.688793Z"
+  },
+  "free_space_delta_scope": "settled host bracket; not attributed per checkpoint",
+  "artifact_pins": [
+    {
+      "bytes": 318284,
+      "sha256": "179a6f9026abda8da199c994858c20babc15c7e71f1d2291fbdb63cbe99c6ea9",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\obsolete-checkpoint-cleanup-e934c825371d48838d04acf8efb4549b\\plan.json"
+    },
+    {
+      "bytes": 4616,
+      "sha256": "b5c3249d8f3d2a825317e599836a066cf9ce2b11bc8365ff1bd16c0a4749484b",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\obsolete-checkpoint-cleanup-e934c825371d48838d04acf8efb4549b\\completion.json"
+    },
+    {
+      "bytes": 3999,
+      "sha256": "3cc7cd3c22f1ead822c393ee4139b23f6563b62e02e33e023177c7bdb4673a41",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\obsolete-checkpoint-cleanup-e934c825371d48838d04acf8efb4549b\\removals.jsonl"
+    },
+    {
+      "bytes": 169721,
+      "sha256": "b464fab5009b92bce5a1aba1309cd5915d95d82dcaa6077eb5f97e54ae20e7e3",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\obsolete-checkpoint-cleanup-d59a3d7435224214bcd178ceea2f4973\\plan.json"
+    },
+    {
+      "bytes": 1035,
+      "sha256": "e5884545bed80b78aa01eeb1b8886a2d3aabffe85cf132392c2c4601e2314ed2",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\obsolete-checkpoint-cleanup-d59a3d7435224214bcd178ceea2f4973\\completion.json"
+    },
+    {
+      "bytes": 918,
+      "sha256": "f31e3709647a57b013f65d5b3fd75256c0c0723ce2c188bd350a8eee4340a81f",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\obsolete-checkpoint-cleanup-d59a3d7435224214bcd178ceea2f4973\\removals.jsonl"
+    }
+  ],
+  "new_unit_tests_added_or_run": false
+}

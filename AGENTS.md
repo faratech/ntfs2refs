@@ -45,12 +45,17 @@ See evidence/native-paired-preparation-copy-reuse-20261101.json.
 
 Current VM is fresh-confirmed Off/RAM0 at successful ReFS checkpoint
 31d77adf-2682-4e4d-b1f8-95e35702c4c0, parent clean NTFS83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b,
-with48 snapshots. All project tasks terminal/workers absent before normal stop.
+with10 snapshots after the user's obsolete-state cleanup. All project tasks
+were terminal/workers absent before normal stop.
 93 closed metadata files were source/copy SHA-verified; archive/preserved/idle
 receipts are under .lab/hyperv/streaming-v2-20261027/source-free-performance-normal-
 2d220c6122aa47cfbdcc247013a0b44a. No converter/raw HND replay is permitted.
-Earlier capture-only d1bbcaa3 remains inactive and can be retired after archive
-and graph guards; preserve latest31d7. Already retired26c844d0 must not return.
+Earlier capture-only d1bbcaa3 and37 obsolete fixture/result checkpoints were
+retired through Hyper-V after archive/graph guards. Preserve latest31d7.
+Cleanup receipts: obsolete-checkpoint-cleanup-e934c825371d48838d04acf8efb4549b
+and obsolete-checkpoint-cleanup-d59a3d7435224214bcd178ceea2f4973. All host archives
+remain. The older preservation lists in historical guidance are superseded.
+Retired IDs, including26c844d0, must not return.
 
 New source implements NTFS-owned collision preparation before freeze through
 FSCTL_MOVE_FILE, with metadata-only planning, live destination bitmap windows,
@@ -83,11 +88,11 @@ The preceding detailed handoff is preserved in
   Old-selected checksum exactly matched original ticket. This is not arbitrary
   faults or physical-power-loss qualification. See docs/old-zero-recovery-matrix.md
   and evidence/old-zero-recovery-matrix-20261031.json.
-- Preserve new normal6bef3bd2-db31-45fe-9e6c-939c812b7375, interrupteddea902f6,
-  clean grown source
- 83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b, original F source6fe2d6b6, H source371ae756,
-  H tail matrix3cbc/119/643/fcc, D1 cold d939 and guarded f4bf5238; also preserve
-  new journal-owner ReFS8087 and restored-NTFSd40b until superseded with evidence.
+- The remaining10 states are latest31d7, grown source8329, original F source6fe2,
+  H source371a, sparse source9c42 with guardedf4bf, H cold resultd939, interrupted
+  old-zerodea9 and journal-owner recovery results8087/d40b. Other historical
+  fixture/intermediate/result nodes, including6bef and the H tail matrix, are
+  retired. Their reports and pins remain. Never recreate old IDs from guidance.
 - Grown F corpus:808 user files/271 user dirs;811 total streams/273 total dirs/
  1084 semantic objects/1111 raw identities;9,885,781,381 user bytes. Fresh full
   baseline f5de156f and metadata-only growth835b1196 remain pinned. Full/fast raw

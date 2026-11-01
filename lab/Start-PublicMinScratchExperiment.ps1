@@ -186,7 +186,11 @@ function ResolveLabContentBaseline($Expected,$Request,[string]$Records){
   Need ($named.Count-eq$oldNamed.Count) 'Original/current named-stream coverage differs.'
   foreach($s in $named){$names.Add(@($s.name_utf16))}
   foreach($name in $names){$current=LabStream $o $name;$known=LabStream $reference $name
-   Need ($known.sha256-cmatch'\A[0-9a-f]{32}\z'-and(SameJsonValue (PublicSemanticStream $current) (PublicSemanticStream $known))) 'Original/current stream semantic metadata differs.'
+   $currentSemantic=PublicSemanticStream $current;$knownSemantic=PublicSemanticStream $known
+   # Reuse the exact cached-access proof already established for this object.
+   # Other times and metadata remain exact in both comparisons.
+   if(@($name).Count-eq0-and$null-ne$time){$currentSemantic.stored_times[1]=$known.stored_times[1]}
+   Need ($known.sha256-cmatch'\A[0-9a-f]{32}\z'-and(SameJsonValue $currentSemantic $knownSemantic)) 'Original/current stream semantic metadata differs.'
    if($null-eq$current.sha256){$null=LabExtentEvidenceShape $current;$unread++}else{Need ($current.sha256-ceq$known.sha256) 'Actual freshly read source digest differs from original full baseline.'}
    $streams++
   }

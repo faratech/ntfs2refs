@@ -29,6 +29,10 @@ struct Args {
     /// sources when --copy-new is enabled. Files remain owned ordinary8MiB.
     #[arg(long, conflicts_with = "zero_new")]
     old_zero: bool,
+    /// Leave admitted source-free destinations unchanged on rollback while
+    /// checking their actual original/new 4 KiB identities. Ordinary files only.
+    #[arg(long)]
+    source_free: bool,
 }
 #[derive(Default, Clone, Serialize)]
 struct Counts {
@@ -304,7 +308,9 @@ fn exercise(
     let expected = if forward {
         ticket.new_selected_sha256
     } else {
-        ticket.old_selected_sha256
+        ticket
+            .old_restored_selected_sha256
+            .unwrap_or(ticket.old_selected_sha256)
     };
     ensure!(
         result.replay_closed
@@ -312,6 +318,18 @@ fn exercise(
             && !result.whole_image_verified
             && !result.conversion_qualified,
         "completion digest/scope differs"
+    );
+    let (closed_state, closed) = sj::verify_closed(&mut target, &mut journal, plan, &ticket)?;
+    ensure!(
+        closed.selected_sha256 == expected
+            && closed.old_restoration_bytes == result.old_restoration_bytes
+            && closed_state
+                == if forward {
+                    sj::SelectedLifecycle::Handoff
+                } else {
+                    sj::SelectedLifecycle::Aborted
+                },
+        "closed selected restoration scope differs"
     );
     let resume_rejected = sj::resume(&mut target, &mut journal, plan, &ticket).is_err();
     let rollback_rejected = sj::rollback(&mut target, &mut journal, plan, &ticket).is_err();
@@ -323,10 +341,136 @@ fn exercise(
         "closed replay or core fence failed"
     );
     Ok(
-        serde_json::json!({"role":role,"interrupted_apply_error":format!("{error:#}"),"fault_persisted_bytes":G,"selected_sha256":hex::encode(result.selected_sha256),"replay_closed":true,"resume_after_close_rejected":resume_rejected,"rollback_after_close_rejected":rollback_rejected,"single_pass_lifecycle_bytes_read":validation_read_bytes,"reference_resolution_journal_bytes":reference_resolution_bytes,"previous_duplicate_pass_lifecycle_bytes":duplicate_pass_read_bytes,"lifecycle_read_bytes_saved":duplicate_pass_read_bytes.saturating_sub(validation_read_bytes),"target_core_io":target.count,"journal_core_io":journal.count}),
+        serde_json::json!({"role":role,"interrupted_apply_error":format!("{error:#}"),"fault_persisted_bytes":G,"selected_sha256":hex::encode(result.selected_sha256),"old_restoration_bytes":result.old_restoration_bytes,"replay_closed":true,"resume_after_close_rejected":resume_rejected,"rollback_after_close_rejected":rollback_rejected,"single_pass_lifecycle_bytes_read":validation_read_bytes,"reference_resolution_journal_bytes":reference_resolution_bytes,"previous_duplicate_pass_lifecycle_bytes":duplicate_pass_read_bytes,"lifecycle_read_bytes_saved":duplicate_pass_read_bytes.saturating_sub(validation_read_bytes),"target_core_io":target.count,"journal_core_io":journal.count}),
     )
 }
-fn verify(dir: &Path, ranges: &[sj::SelectedRange]) -> Result<u64> {
+
+/// Complete AP without HND, reject a foreign free granule, then prove that
+/// rollback preserves the new free contents rather than reconstructing old.
+fn exercise_free_new_rollback(
+    dir: &Path,
+    source: &mut Fenced,
+    candidate: &mut Fenced,
+    plan: &sj::SelectedPlan,
+) -> Result<serde_json::Value> {
+    let free = plan
+        .source_free_ranges
+        .first()
+        .context("source-free exercise needs a free range")?;
+    let path = dir.join("free-new-rollback-target.bin");
+    let mut setup_bytes = setup(&path, false, &plan.ranges)?;
+    if !plan.old_zero_ranges.is_empty() {
+        let mut file = OpenOptions::new().write(true).open(&path)?;
+        for range in &plan.old_zero_ranges {
+            file.seek(SeekFrom::Start(range.offset))?;
+            file.write_all(&vec![0; usize::try_from(range.length)?])?;
+            setup_bytes += range.length;
+        }
+        file.sync_all()?;
+    }
+    let mut target = Fenced::open(&path, Some(&plan.ranges), true, false)?;
+    let mut journal = Fenced::open(&dir.join("free-new-rollback.journal"), None, true, true)?;
+    let ticket = sj::prepare(source, candidate, &mut journal, plan)?;
+    let applied = sj::apply(&mut target, &mut journal, plan, &ticket)?;
+    ensure!(
+        !applied.replay_closed
+            && applied.selected_sha256 == ticket.new_selected_sha256
+            && sj::lifecycle(&mut journal, plan, &ticket)? == sj::SelectedLifecycle::ApplyIntent,
+        "complete apply must retain AP without HND"
+    );
+
+    let mut old = [0u8; 1];
+    let mut new = [0u8; 1];
+    source.seek(SeekFrom::Start(free.offset))?;
+    source.read_exact(&mut old)?;
+    candidate.seek(SeekFrom::Start(free.offset))?;
+    candidate.read_exact(&mut new)?;
+    let foreign = (0..=u8::MAX)
+        .find(|byte| *byte != old[0] && *byte != new[0])
+        .context("foreign diagnostic byte unavailable")?;
+    target.seek(SeekFrom::Start(free.offset))?;
+    target.write_all(&[foreign])?;
+    target.sync_all()?;
+    let writes_before = target.count.writes;
+    let journal_writes_before = journal.count.writes;
+    let refused = sj::resume(&mut target, &mut journal, plan, &ticket)
+        .err()
+        .context("foreign hash-only free granule accepted by Resume")?;
+    ensure!(
+        target.count.writes == writes_before && journal.count.writes == journal_writes_before,
+        "foreign free granule must refuse before target or intent writes"
+    );
+    // Restore the actual admitted NEW byte, not the old contents.
+    target.seek(SeekFrom::Start(free.offset))?;
+    target.write_all(&new)?;
+    target.sync_all()?;
+    let rolled = sj::rollback(&mut target, &mut journal, plan, &ticket)?;
+    let expected_restored = ticket
+        .old_restored_selected_sha256
+        .context("format-five restoration pin absent")?;
+    ensure!(
+        rolled.replay_closed
+            && rolled.selected_sha256 == expected_restored
+            && rolled.old_restoration_bytes == Some(plan.old_restored_bytes()?),
+        "allocated-only rollback terminal scope differs"
+    );
+    let (state, closed) = sj::verify_closed(&mut target, &mut journal, plan, &ticket)?;
+    ensure!(
+        state == sj::SelectedLifecycle::Aborted
+            && closed.selected_sha256 == expected_restored
+            && closed.old_restoration_bytes == rolled.old_restoration_bytes,
+        "closed ABT verification lost allocated-only scope"
+    );
+
+    let mut verified = 0u64;
+    let mut free_new_differing_bytes = 0u64;
+    for range in &plan.ranges {
+        let mut actual = vec![0; usize::try_from(range.length)?];
+        let mut expected = vec![0; actual.len()];
+        target.seek(SeekFrom::Start(range.offset))?;
+        target.read_exact(&mut actual)?;
+        let free = plan.source_free_ranges.contains(range);
+        let expected_input = if free { &mut *candidate } else { &mut *source };
+        expected_input.seek(SeekFrom::Start(range.offset))?;
+        expected_input.read_exact(&mut expected)?;
+        ensure!(
+            actual == expected,
+            "rollback changed source-free NEW or restore-required OLD bytes"
+        );
+        verified += 2 * range.length;
+        if free {
+            source.seek(SeekFrom::Start(range.offset))?;
+            source.read_exact(&mut expected)?;
+            free_new_differing_bytes += actual
+                .iter()
+                .zip(&expected)
+                .filter(|(new, old)| new != old)
+                .count() as u64;
+            verified += range.length;
+        }
+    }
+    ensure!(
+        free_new_differing_bytes != 0 && target.count.denied == 0 && journal.count.denied == 0,
+        "fixture must leave real changed free bytes without fence violations"
+    );
+    Ok(serde_json::json!({
+        "completed_apply_before_fault":true,"handoff_recorded":false,
+        "foreign_free_granule_resume_refused":true,"foreign_resume_error":format!("{refused:#}"),
+        "foreign_resume_target_write_calls":0,"foreign_resume_journal_write_calls":0,
+        "manual_injection_bytes_written":2,"manual_injection_write_calls":2,
+        "manual_restoration_used_admitted_new_byte":true,
+        "rollback_required_old_bytes_match":true,"rollback_free_bytes_exactly_new":true,
+        "free_new_bytes_differing_from_old":free_new_differing_bytes,
+        "old_restoration_bytes":rolled.old_restoration_bytes,"closed_abt_verified":true,
+        "selected_sha256":hex::encode(rolled.selected_sha256),
+        "setup_bytes_written":setup_bytes,"verification_bytes_read":verified,
+        "target_io_including_manual_injections_and_verification":target.count,
+        "journal_io":journal.count,"native_conversion_qualified":false,
+    }))
+}
+
+fn verify(dir: &Path, plan: &sj::SelectedPlan) -> Result<u64> {
+    let ranges = &plan.ranges;
     let mut read = 0;
     for (target_name, expected_name) in [
         ("resume-target.bin", "candidate.bin"),
@@ -346,7 +490,22 @@ fn verify(dir: &Path, ranges: &[sj::SelectedRange]) -> Result<u64> {
             target.read_exact(&mut a)?;
             expected.read_exact(&mut b)?;
             read += r.length * 2;
-            ensure!(a == b, "selected bytes differ after wrapper drop");
+            if target_name == "rollback-target.bin" && plan.source_free_ranges.contains(r) {
+                let mut candidate = File::open(dir.join("candidate.bin"))?;
+                let mut new = vec![0; r.length as usize];
+                candidate.seek(SeekFrom::Start(r.offset))?;
+                candidate.read_exact(&mut new)?;
+                read += r.length;
+                ensure!(
+                    a.chunks_exact(G)
+                        .zip(b.chunks_exact(G))
+                        .zip(new.chunks_exact(G))
+                        .all(|((actual, old), new)| actual == old || actual == new),
+                    "source-free rollback granule changed outside admitted old/new states"
+                );
+            } else {
+                ensure!(a == b, "selected bytes differ after wrapper drop");
+            }
         }
         let mut source = File::open(dir.join("source.bin"))?;
         let sentinels: Vec<_> = [
@@ -431,6 +590,7 @@ fn planned(dir: &Path) -> Result<serde_json::Value> {
         new_zero_ranges: Vec::new(),
         new_copy_ranges: Vec::new(),
         old_zero_ranges: Vec::new(),
+        source_free_ranges: Vec::new(),
     }
     .validate()?;
     ensure!(
@@ -523,6 +683,7 @@ fn main() -> Result<()> {
         new_zero_ranges: Vec::new(),
         new_copy_ranges: Vec::new(),
         old_zero_ranges: Vec::new(),
+        source_free_ranges: Vec::new(),
     };
     if args.copy_new {
         const MIB: u64 = 1024 * 1024;
@@ -587,6 +748,26 @@ fn main() -> Result<()> {
             plan.ranges[1..].to_vec()
         };
     }
+    if args.source_free {
+        let free = plan
+            .ranges
+            .iter()
+            .find(|range| {
+                range.offset >= G as u64
+                    && !plan.old_zero_ranges.contains(range)
+                    && plan.new_copy_ranges.iter().all(|copy| {
+                        range.offset + range.length <= copy.source_offset
+                            || copy.source_offset + copy.length <= range.offset
+                    })
+            })
+            .context("owned source-free case has no nonzero non-copy-origin destination")?
+            .clone();
+        plan.source_free_ranges.push(free);
+    }
+    let mut without_source_free = plan.clone();
+    without_source_free.source_free_ranges.clear();
+    without_source_free.max_journal_bytes = u64::MAX;
+    let journal_without_source_free_bytes = without_source_free.validate()?.1;
     let mut without_old_zero = plan.clone();
     without_old_zero.old_zero_ranges.clear();
     without_old_zero.max_journal_bytes = u64::MAX;
@@ -595,6 +776,7 @@ fn main() -> Result<()> {
     legacy_plan.new_zero_ranges.clear();
     legacy_plan.new_copy_ranges.clear();
     legacy_plan.old_zero_ranges.clear();
+    legacy_plan.source_free_ranges.clear();
     legacy_plan.max_journal_bytes = u64::MAX;
     let legacy_journal_bytes = legacy_plan.validate()?.1;
     plan.validate()?;
@@ -653,6 +835,10 @@ fn main() -> Result<()> {
     )?;
     let resumed = exercise(&args.directory, &mut source, &mut candidate, &plan, true)?;
     let rolled_back = exercise(&args.directory, &mut source, &mut candidate, &plan, false)?;
+    let free_new_rollback = args
+        .source_free
+        .then(|| exercise_free_new_rollback(&args.directory, &mut source, &mut candidate, &plan))
+        .transpose()?;
     let old_zero_digest_comparison = if args.old_zero {
         let mut journal = Fenced::open(
             &args.directory.join("without-old-zero.journal"),
@@ -664,7 +850,12 @@ fn main() -> Result<()> {
         ensure!(
             ticket.journal_length == journal_without_old_zero_bytes
                 && resumed["selected_sha256"] == hex::encode(ticket.new_selected_sha256)
-                && rolled_back["selected_sha256"] == hex::encode(ticket.old_selected_sha256),
+                && rolled_back["selected_sha256"]
+                    == hex::encode(
+                        ticket
+                            .old_restored_selected_sha256
+                            .unwrap_or(ticket.old_selected_sha256)
+                    ),
             "old-zero encoding changed selected old/new digest framing"
         );
         Some(serde_json::json!({
@@ -748,9 +939,21 @@ fn main() -> Result<()> {
     );
     drop(source);
     drop(candidate);
-    let verification_bytes = verify(&args.directory, &plan.ranges)?;
+    let verification_bytes = verify(&args.directory, &plan)?;
     let pruned = planned(&args.directory)?;
+    let source_free_accounting = serde_json::json!({
+        "enabled":args.source_free,"old_payload_bytes_omitted":plan.source_free_bytes()?,
+        "old_granule_digest_table_bytes":plan.source_free_bytes()?/G as u64*16,
+        "journal_without_source_free_bytes":journal_without_source_free_bytes,
+        "net_journal_bytes_saved":i128::from(journal_without_source_free_bytes)-i128::from(plan.validate()?.1),
+        "rollback_restores_original_free_contents":plan.source_free_ranges.is_empty(),
+        "source_allocation_authority":"Owned ordinary-file fixture declaration only; no filesystem source admission",
+    });
     let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"zero_new_encoding":!plan.new_zero_ranges.is_empty(),"copy_new_encoding":args.copy_new,"old_zero_encoding":args.old_zero,"journal_encoding":plan.encoding_name(),"journal_bytes":plan.validate()?.1,"legacy_journal_bytes":legacy_journal_bytes,"journal_without_old_zero_bytes":journal_without_old_zero_bytes,"old_zero_net_journal_bytes_saved":i128::from(journal_without_old_zero_bytes)-i128::from(plan.validate()?.1),"old_zero_payload_bytes_omitted":plan.old_zero_bytes()?,"old_zero_setup_bytes_written":old_zero_setup_bytes,"old_zero_digest_comparison":old_zero_digest_comparison,"false_old_zero_claim":false_old_zero_claim,"new_zero_payload_bytes_omitted":plan.new_zero_bytes()?,"new_copy_payload_bytes_omitted":plan.new_copy_bytes()?,"false_zero_claim_rejected":false_zero_claim_rejected,"false_copy_claim_rejected":false_copy_claim_rejected,"changed_granule_planning":pruned,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
+    let mut report = report;
+    report["source_free_accounting"] = source_free_accounting;
+    report["source_free_complete_apply_foreign_and_rollback"] =
+        serde_json::to_value(free_new_rollback)?;
     let bytes = serde_json::to_vec_pretty(&report)?;
     ensure!(bytes.len() <= 65536, "report exceeds64KiB");
     let mut output = OpenOptions::new()

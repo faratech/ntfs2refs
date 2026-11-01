@@ -32,12 +32,18 @@ Do not redefine completion as the existing small-corpus success.
   recovery material and host archives; do not infer preserve-all from history.
 - Keep WSL running. No disabling UAC or new persistent privilege changes.
 
-## Paused work and last native observation (2026-11-01 UTC)
+## Performance continuation and last native observation (2026-11-01 UTC)
 
-Implementation and VM operations remain paused. The subsequent ntfs2btrfs
-comparison was read-only; the Git checkpoint does not resume either activity.
-The native state below is the last recorded observation, not a fresh process
-or VM check. Re-establish actual task/handle state before any future VM action.
+The user resumed implementation of the ntfs2btrfs comparison's performance plan,
+retaining the native-shadow alpha. New work adds source-free format-5 recovery
+storage and actual-read COPY reuse; see docs/native-shadow-performance.md.
+Existing formats/default requests remain unchanged. The new --minimize-scratch
+mode is explicit and has not yet passed a full native conversion/recovery run.
+No unit tests were added/run; focused builds and owned-file checks are used.
+The older conversion state below remains a last observation. The resumed turn
+read-only confirmed the VM Running/4GiB, original wrapper/producer absent and
+its exact task Ready, with terminal/postcheck files present. Full archival and
+checkpoint closure remain pending; recheck all tasks/handles before mutation.
 The directory-case work in attestation.rs is an unfinished model/schema change:
 native collection, admission integration, build and native validation remain
 pending. It is not part of the qualified frozen binary or a completed feature.
@@ -54,7 +60,7 @@ prepared-ownertrue,1084maps,654missing650tails1371388, targetpayloadreads0.
 Wrapper5076/creation1793501997496 was ACTIVE in independent postchecks; all811/
 capacity-observation verification/archive/final-idle PENDING. No power/retry or
 HND replay until that closes. Root alone mutates VM; normalcheckpoint47 next.
-Source-case evidence versions13/14 are being coded onhost ONLY, not in this
+Unfinished source-case evidence versions13/14 remain onhost ONLY, not in this
 frozenVMbinary/report12. No scope/qualification transfer to that future code.
 
 Root alone owns VM mutation. Delegated agents may observe metadata/processes

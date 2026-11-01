@@ -514,6 +514,10 @@ pub struct FrozenAllocationTargetPreservation {
     capture: DifferenceCapture,
     #[serde(skip_serializing_if = "Option::is_none")]
     capture_budget: Option<CaptureBudget>,
+    /// Derived from this frozen inspection, not deserialized diagnostics.
+    /// The live source certificate still binds the inspection and this proof.
+    #[serde(skip)]
+    source_allocation: Option<crate::selected_ownership::ReconciledSourceAllocation>,
     /// Non-gating destination split of the captured changed granules; it
     /// binds and authorizes nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -626,6 +630,7 @@ impl FrozenAllocationTargetPreservation {
                 .into_iter()
                 .map(|(offset, length)| crate::selected_journal::SelectedRange { offset, length })
                 .collect(),
+            source_free_ranges: Vec::new(),
         };
         // Format 4 widens every descriptor. Preserve the capture's actual
         // zero observations, but select compression only when its omitted
@@ -646,6 +651,16 @@ impl FrozenAllocationTargetPreservation {
                 plan.old_zero_ranges.clear();
             }
         }
+        if self
+            .capture_budget
+            .is_some_and(|budget| budget.selected_capacity_policy.allows_source_free())
+        {
+            plan = self
+                .source_allocation
+                .as_ref()
+                .context("source-free plan lacks its frozen allocation witness")?
+                .refine_selected_plan(&plan)?;
+        }
         let (changed, _) = plan.validate()?;
         let conservative_limit = max_journal_bytes
             .checked_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
@@ -656,9 +671,9 @@ impl FrozenAllocationTargetPreservation {
             ensure!(
                 self.capture_budget
                     .is_some_and(|budget| { !budget.selected_capacity_policy.is_conservative() })
-                    && plan.old_zero_bytes()? > 0
-                    && plan.encoding_version() == 4,
-                "expanded captured write set requires actual-byte capacity and profitable old-zero encoding"
+                    && ((plan.old_zero_bytes()? > 0 && plan.encoding_version() == 4)
+                        || (plan.source_free_bytes()? > 0 && plan.encoding_version() == 5)),
+                "expanded captured write set requires actual-byte capacity and explicit old-byte omission"
             );
         }
         Ok(plan)
@@ -1147,7 +1162,27 @@ fn verify_and_select_inner(
     // Non-gating destination split of the changed granules. The bracket above
     // already required this model; were it unavailable, the split would only
     // mark its NTFS counters unavailable.
-    let ntfs_allocated = raw.allocated_byte_ranges(length).ok();
+    let source_free_policy =
+        capture_budget.is_some_and(|budget| budget.selected_capacity_policy.allows_source_free());
+    let source_allocation = if source_free_policy {
+        let witness = crate::selected_ownership::ReconciledSourceAllocation::from_inspection(
+            raw,
+            length,
+            crate::selected_ownership::Limits::default(),
+        )?;
+        ensure!(
+            witness.source_inspection_sha256() == inspection_sha256,
+            "source-free allocation witness differs from the frozen source inspection"
+        );
+        Some(witness)
+    } else {
+        None
+    };
+    let ntfs_allocated = if source_free_policy {
+        None
+    } else {
+        raw.allocated_byte_ranges(length).ok()
+    };
     let copy_candidates =
         payload_copy_candidates(length, &source_index, &tree, protected.routes())?;
     let view = SourceBackedShadow::new(
@@ -1159,7 +1194,10 @@ fn verify_and_select_inner(
         protected.routes().payload_bytes().max(1),
     )?;
     let split = Some(ChangeClassSplit {
-        ntfs_allocated: ntfs_allocated.as_deref(),
+        ntfs_allocated: source_allocation
+            .as_ref()
+            .map(|allocation| allocation.allocated_byte_ranges())
+            .or(ntfs_allocated.as_deref()),
     });
     let mut capture = match (capture_budget, capture_guard) {
         (Some(budget), Some(guard)) => view
@@ -1230,6 +1268,7 @@ fn verify_and_select_inner(
         in_place_payload_bytes_not_compared: in_place_bytes,
         capture,
         capture_budget,
+        source_allocation,
         changed_classes,
         backing,
         source_before,

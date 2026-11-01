@@ -1010,6 +1010,88 @@ fn compression_reader(
 
 /// Dispatch encoded DATA before the plain sparse-run interpretation. A cache
 /// belongs to one checked attribute and never treats compression padding as holes.
+pub(crate) const MAX_DIRECT_READ_SPANS: usize = 1024;
+
+/// Operation-local evidence of bytes actually returned by successful direct
+/// physical reads. No constructor from mappings/JSON, cloning or serialization.
+/// Missing spans (resident/decoded/hole/VDL bytes) prove nothing about a COPY.
+pub(crate) struct DirectReadReceipt {
+    spans: Vec<DirectReadSpan>,
+    available: bool,
+}
+
+pub(crate) struct DirectReadSpan {
+    output_offset: usize,
+    source_offset: u64,
+    length: usize,
+}
+
+impl DirectReadSpan {
+    pub(crate) fn output_offset(&self) -> usize {
+        self.output_offset
+    }
+    pub(crate) fn source_offset(&self) -> u64 {
+        self.source_offset
+    }
+    pub(crate) fn length(&self) -> usize {
+        self.length
+    }
+}
+
+impl DirectReadReceipt {
+    fn new() -> Self {
+        Self {
+            spans: Vec::new(),
+            available: true,
+        }
+    }
+
+    pub(crate) fn spans(&self) -> Option<&[DirectReadSpan]> {
+        self.available.then_some(self.spans.as_slice())
+    }
+
+    fn unavailable(&mut self) {
+        self.available = false;
+        self.spans.clear();
+    }
+
+    fn record(&mut self, output_offset: usize, source_offset: u64, length: usize) {
+        if !self.available {
+            return;
+        }
+        if length == 0
+            || source_offset.checked_add(length as u64).is_none()
+            || output_offset.checked_add(length).is_none()
+        {
+            self.unavailable();
+            return;
+        }
+        if let Some(last) = self.spans.last_mut() {
+            if last.output_offset.checked_add(last.length) == Some(output_offset)
+                && last.source_offset.checked_add(last.length as u64) == Some(source_offset)
+            {
+                if let Some(next) = last.length.checked_add(length) {
+                    last.length = next;
+                    return;
+                }
+                self.unavailable();
+                return;
+            }
+        }
+        // This optimization is optional: budget/allocation failure restores
+        // the caller's ordinary COPY reread, never a partially accepted proof.
+        if self.spans.len() == MAX_DIRECT_READ_SPANS || self.spans.try_reserve(1).is_err() {
+            self.unavailable();
+            return;
+        }
+        self.spans.push(DirectReadSpan {
+            output_offset,
+            source_offset,
+            length,
+        });
+    }
+}
+
 fn read_logical_range<R: Read + Seek>(
     reader: &mut R,
     attribute: &Attribute,
@@ -1017,6 +1099,26 @@ fn read_logical_range<R: Read + Seek>(
     output: &mut [u8],
     geometry: &NtfsGeometry,
     compression: &mut Option<crate::ntfs_compression::Reader>,
+) -> Result<()> {
+    read_logical_range_observed(
+        reader,
+        attribute,
+        offset,
+        output,
+        geometry,
+        compression,
+        None,
+    )
+}
+
+fn read_logical_range_observed<R: Read + Seek>(
+    reader: &mut R,
+    attribute: &Attribute,
+    offset: u64,
+    output: &mut [u8],
+    geometry: &NtfsGeometry,
+    compression: &mut Option<crate::ntfs_compression::Reader>,
+    mut receipt: Option<&mut DirectReadReceipt>,
 ) -> Result<()> {
     let end = offset
         .checked_add(output.len() as u64)
@@ -1067,14 +1169,20 @@ fn read_logical_range<R: Read + Seek>(
         let count = available.min((output.len() - done) as u64) as usize;
         ensure!(count > 0, "zero-progress attribute read");
         if let Some(physical) = extent.physical_offset {
+            let physical = physical
+                .checked_add(in_run)
+                .context("physical read overflow")?;
             read_at(
                 reader,
-                physical
-                    .checked_add(in_run)
-                    .context("physical read overflow")?,
+                physical,
                 &mut output[done..done + count],
                 geometry.volume_size,
             )?;
+            // Mint only after this exact output slice was read successfully.
+            // The transformation/synthesis branches above never reach here.
+            if let Some(receipt) = receipt.as_deref_mut() {
+                receipt.record(done, physical, count);
+            }
         } else {
             output[done..done + count].fill(0);
         }
@@ -3280,6 +3388,31 @@ impl PlainStreamRangeSession {
         output: &mut [u8],
         budget: &mut StreamTransferBudget,
     ) -> Result<()> {
+        self.read_observed(reader, raw, offset, output, budget, None)
+    }
+
+    pub(crate) fn read_with_direct_receipts<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        raw: &NtfsInspection,
+        offset: u64,
+        output: &mut [u8],
+        budget: &mut StreamTransferBudget,
+    ) -> Result<DirectReadReceipt> {
+        let mut receipt = DirectReadReceipt::new();
+        self.read_observed(reader, raw, offset, output, budget, Some(&mut receipt))?;
+        Ok(receipt)
+    }
+
+    fn read_observed<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        raw: &NtfsInspection,
+        offset: u64,
+        output: &mut [u8],
+        budget: &mut StreamTransferBudget,
+        receipt: Option<&mut DirectReadReceipt>,
+    ) -> Result<()> {
         ensure!(
             !self.poisoned
                 && output.len() <= SESSION_READ_BYTES
@@ -3290,13 +3423,14 @@ impl PlainStreamRangeSession {
         );
         self.poisoned = true;
         budget.reserve(output.len() as u64)?;
-        read_logical_range(
+        read_logical_range_observed(
             reader,
             &self.attribute,
             offset,
             output,
             &raw.geometry,
             &mut self.compression,
+            receipt,
         )?;
         self.poisoned = false;
         Ok(())

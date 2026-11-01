@@ -12,10 +12,19 @@ pub enum SelectedCapacityPolicy {
     /// The caller must bind this intent to CapacityPinnedV3 and the actual
     /// admitted source; preparation still checks every declared old-zero byte.
     OldZeroActualBytesV1,
+    /// Preserve every selected NTFS allocation and COPY source, but leave
+    /// proven-free destinations unrestored on rollback. Their actual old
+    /// 4 KiB hashes remain in the journal for foreign-write detection.
+    /// This requires fresh frozen allocation evidence and VSS admission.
+    SourceFreeActualBytesV1,
 }
 
 impl SelectedCapacityPolicy {
     pub fn is_conservative(&self) -> bool {
         matches!(self, Self::ConservativeV1)
+    }
+
+    pub fn allows_source_free(&self) -> bool {
+        matches!(self, Self::SourceFreeActualBytesV1)
     }
 }

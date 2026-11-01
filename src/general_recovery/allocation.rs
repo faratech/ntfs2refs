@@ -127,6 +127,7 @@ pub fn recover_allocation(
     let (selected_bytes, journal_bytes) = plan.validate()?;
     request.validate_selected_capacity(&plan)?;
     let old_zero_bytes = plan.old_zero_bytes()?;
+    let source_free_bytes = plan.source_free_bytes()?;
     let mut ticket_input = HeldInput::open(&bundle.ticket.path, &bundle.ticket.sha256, 65536)?;
     let ticket: SelectedTicket = serde_json::from_slice(&ticket_input.bytes)?;
     ensure!(
@@ -316,7 +317,22 @@ pub fn recover_allocation(
         let mut verified_refs_closed = None;
         let outcome = match action {
             Action::Resume => {
-                if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative() {
+                if source_free_bytes != 0 {
+                    ensure!(
+                        request.selected_capacity_policy.allows_source_free()
+                            && plan.encoding_version() == 5,
+                        "source-free recovery requires format five policy"
+                    );
+                    target.arm_source_free_actual_bytes_v3_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        source_free_bytes,
+                        request.max_journal_bytes,
+                        &mut events,
+                    )?;
+                } else if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative()
+                {
                     ensure!(
                         plan.encoding_version() == 4,
                         "actual-byte recovery requires format four"
@@ -359,7 +375,22 @@ pub fn recover_allocation(
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::Rollback => {
-                if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative() {
+                if source_free_bytes != 0 {
+                    ensure!(
+                        request.selected_capacity_policy.allows_source_free()
+                            && plan.encoding_version() == 5,
+                        "source-free recovery requires format five policy"
+                    );
+                    target.arm_source_free_actual_bytes_v3_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        source_free_bytes,
+                        request.max_journal_bytes,
+                        &mut events,
+                    )?;
+                } else if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative()
+                {
                     ensure!(
                         plan.encoding_version() == 4,
                         "actual-byte recovery requires format four"
@@ -524,6 +555,10 @@ pub fn recover_allocation(
             "journal_bytes":journal_bytes,"selected_bytes":selected_bytes,
             "old_zero_bytes":old_zero_bytes,
             "old_zero_payload_storage_elided":old_zero_bytes > 0,
+            "source_free_old_payload_storage_elided":source_free_bytes > 0,
+            "source_free_bytes":source_free_bytes,
+            "source_free_hash_table_bytes":source_free_bytes / 256,
+            "rollback_preserves_free_space_contents":source_free_bytes == 0,
             "fresh_apply_authorized":false,"source_admitted":false,
             "general_conversion_qualified":false,
         });

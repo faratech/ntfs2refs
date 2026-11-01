@@ -199,6 +199,11 @@ impl Request {
     ) -> Result<()> {
         let (changed, journal) = plan.validate()?;
         ensure!(
+            plan.source_free_ranges.is_empty()
+                || self.selected_capacity_policy.allows_source_free(),
+            "source-free restoration requires its explicit pinned recovery policy"
+        );
+        ensure!(
             plan.image_length == self.pair.source.identity.partition_bytes
                 && plan.max_journal_bytes == self.max_journal_bytes
                 && journal <= self.max_journal_bytes
@@ -208,9 +213,11 @@ impl Request {
         if changed > self.journal_profile()?.max_encoded_changed_bytes() {
             ensure!(
                 !self.selected_capacity_policy.is_conservative()
-                    && plan.old_zero_bytes()? > 0
-                    && plan.encoding_version() == 4,
-                "expanded selected write set requires the explicit actual-byte policy and old-zero encoding"
+                    && ((plan.old_zero_bytes()? > 0 && plan.encoding_version() == 4)
+                        || (self.selected_capacity_policy.allows_source_free()
+                            && plan.source_free_bytes()? > 0
+                            && plan.encoding_version() == 5)),
+                "expanded selected write set requires an explicit omitted-old-byte capacity policy"
             );
         }
         Ok(())

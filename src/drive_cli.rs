@@ -42,6 +42,10 @@ pub struct DriveArgs {
     /// verification is the allocation-bounded default; full mode stays available.
     #[arg(long, requires = "drive")]
     pub verify_full_content: bool,
+    /// Experimental: reduce recovery storage by leaving unused NTFS space unrestored on
+    /// rollback. Requires fast verification and no VSS snapshots/diff areas.
+    #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
+    pub minimize_scratch: bool,
 }
 impl DriveArgs {
     pub fn requested(&self) -> bool {
@@ -415,6 +419,11 @@ mod windows {
         println!(
             "NTFS-compressed streams, when present, are decoded into ordinary ReFS data and require space for their logical contents."
         );
+        if args.minimize_scratch {
+            println!(
+                "Reduced scratch: rollback restores allocated NTFS data and metadata; unused-space contents may change. Volumes with VSS snapshots or hosted diff areas are refused."
+            );
+        }
         println!("Convert this partition to ReFS in place, preserving supported files? [y/N]");
         print!("> ");
         io::stdout().flush()?;
@@ -436,6 +445,7 @@ mod windows {
             resources,
             allocation_bounded,
             verification_policy,
+            args.minimize_scratch,
         )
     }
     fn convert_selected(
@@ -445,6 +455,7 @@ mod windows {
         resources: crate::ntfs_admission::ResourceProfile,
         allocation_bounded: bool,
         verification_policy: crate::verification_policy::VerificationPolicy,
+        minimize_scratch: bool,
     ) -> Result<u8> {
         let system = std::env::var("SystemRoot").context("Windows system path unavailable")?;
         let os_root = format!(
@@ -544,7 +555,11 @@ mod windows {
         )?;
         let request = crate::general_conversion::Request {
             verification_policy,
-            selected_capacity_policy: Default::default(),
+            selected_capacity_policy: if minimize_scratch {
+                crate::selected_capacity::SelectedCapacityPolicy::SourceFreeActualBytesV1
+            } else {
+                Default::default()
+            },
             schema_version: if allocation_bounded { 3 } else { 2 },
             source_resource_profile: Some(resources),
             experiment_id: id,

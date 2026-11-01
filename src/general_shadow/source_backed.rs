@@ -25,6 +25,137 @@ pub struct ReadCounts {
     /// logical candidate reads and their stream-transfer budget.
     #[serde(skip_serializing_if = "is_zero")]
     pub source_reference_bytes: u64,
+    /// COPY bytes whose exact source mapping and immutable candidate slice
+    /// were already observed during this same chunk read. Not extra disk IO.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub source_reference_bytes_reused: u64,
+}
+
+struct CandidateReadSpan {
+    output_offset: usize,
+    source_offset: u64,
+    length: usize,
+}
+
+struct CandidateReadSpans {
+    spans: Vec<CandidateReadSpan>,
+    available: bool,
+}
+
+impl CandidateReadSpans {
+    fn new() -> Self {
+        Self {
+            spans: Vec::new(),
+            available: true,
+        }
+    }
+
+    fn unavailable(&mut self) {
+        self.available = false;
+        self.spans.clear();
+    }
+
+    fn append(
+        &mut self,
+        base: usize,
+        count: usize,
+        receipt: &crate::ntfs_inspect::DirectReadReceipt,
+    ) {
+        if !self.available {
+            return;
+        }
+        let Some(spans) = receipt.spans() else {
+            self.unavailable();
+            return;
+        };
+        for span in spans {
+            if !span
+                .output_offset()
+                .checked_add(span.length())
+                .is_some_and(|end| end <= count)
+            {
+                self.unavailable();
+                return;
+            }
+            let Some(output_offset) = base.checked_add(span.output_offset()) else {
+                self.unavailable();
+                return;
+            };
+            if let Some(last) = self.spans.last_mut() {
+                if last.output_offset.checked_add(last.length) == Some(output_offset)
+                    && last.source_offset.checked_add(last.length as u64)
+                        == Some(span.source_offset())
+                {
+                    if let Some(length) = last.length.checked_add(span.length()) {
+                        last.length = length;
+                        continue;
+                    }
+                    self.unavailable();
+                    return;
+                }
+            }
+            if self.spans.len() == crate::ntfs_inspect::MAX_DIRECT_READ_SPANS
+                || self.spans.try_reserve(1).is_err()
+            {
+                self.unavailable();
+                return;
+            }
+            self.spans.push(CandidateReadSpan {
+                output_offset,
+                source_offset: span.source_offset(),
+                length: span.length(),
+            });
+        }
+    }
+}
+
+/// The receipt cannot outlive or be detached from these immutable actual
+/// candidate bytes. Neither it nor the session receipt is serializable.
+struct CandidateChunk<'buf> {
+    bytes: &'buf [u8],
+    reads: CandidateReadSpans,
+}
+
+impl CandidateChunk<'_> {
+    fn bytes(&self) -> &[u8] {
+        self.bytes
+    }
+
+    fn covers_copy(&self, output_offset: usize, source_offset: u64, length: usize) -> bool {
+        if !self.reads.available || length == 0 {
+            return false;
+        }
+        let Some(finish) = output_offset
+            .checked_add(length)
+            .filter(|end| *end <= self.bytes.len())
+        else {
+            return false;
+        };
+        if source_offset.checked_add(length as u64).is_none() {
+            return false;
+        }
+        let mut cursor = output_offset;
+        let mut index = self
+            .reads
+            .spans
+            .partition_point(|r| r.output_offset + r.length <= cursor);
+        while cursor < finish {
+            let Some(span) = self.reads.spans.get(index) else {
+                return false;
+            };
+            if span.output_offset > cursor
+                || span
+                    .source_offset
+                    .checked_add((cursor - span.output_offset) as u64)
+                    != source_offset.checked_add((cursor - output_offset) as u64)
+            {
+                return false;
+            }
+            cursor = finish.min(span.output_offset + span.length);
+            index += 1;
+        }
+        true
+    }
 }
 
 fn is_zero(bytes: &u64) -> bool {
@@ -65,6 +196,10 @@ pub struct CaptureProgress {
     /// explicitly; historical conservative progress keeps its original shape.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_zero_bytes: Option<u64>,
+    /// Actual nonzero old destinations proved free by the frozen NTFS map.
+    /// Their old granule hashes, rather than old payload, consume journal space.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_free_bytes: Option<u64>,
 }
 impl CaptureProgress {
     /// Already written backing is reflected in current filesystem free space;
@@ -102,6 +237,7 @@ impl CaptureBudget {
         &self,
         changed: u64,
         old_zero: u64,
+        source_free: u64,
         literal: u64,
         append: u64,
         ranges: usize,
@@ -127,18 +263,23 @@ impl CaptureBudget {
             .context("capture literal backing overflow")?;
         let stored_old = match self.selected_capacity_policy {
             SelectedCapacityPolicy::ConservativeV1 => changed,
-            SelectedCapacityPolicy::OldZeroActualBytesV1 => {
+            SelectedCapacityPolicy::OldZeroActualBytesV1
+            | SelectedCapacityPolicy::SourceFreeActualBytesV1 => {
                 ensure!(
-                    old_zero.is_multiple_of(4096),
-                    "capture old-zero bytes are not granule aligned"
+                    old_zero.is_multiple_of(4096)
+                        && source_free.is_multiple_of(4096)
+                        && (self.selected_capacity_policy.allows_source_free() || source_free == 0),
+                    "capture omitted old bytes differ from the explicit policy"
                 );
                 changed
                     .checked_sub(old_zero)
-                    .context("capture old-zero bytes exceed changed bytes")?
+                    .and_then(|bytes| bytes.checked_sub(source_free))
+                    .context("capture omitted old bytes exceed changed bytes")?
             }
         };
         let journal = stored_old
             .checked_add(projected_literal)
+            .and_then(|bytes| bytes.checked_add(source_free / 256))
             .and_then(|n| n.checked_add(overhead))
             .context("capture journal capacity overflow")?;
         let combined = journal
@@ -170,6 +311,10 @@ impl CaptureBudget {
             minimum_free_bytes: self.minimum_free_bytes,
             selected_capacity_policy: self.selected_capacity_policy,
             old_zero_bytes: (!self.selected_capacity_policy.is_conservative()).then_some(old_zero),
+            source_free_bytes: self
+                .selected_capacity_policy
+                .allows_source_free()
+                .then_some(source_free),
         })
     }
 }
@@ -993,6 +1138,64 @@ impl<'a> SourceBackedShadow<'a> {
         use crate::refs_hybrid::delta::{ChangedRange, DeltaLayout};
         use sha2::{Digest, Sha256};
         use std::io::Write;
+        let source_free_mode = capacity.as_ref().is_some_and(|capacity| {
+            capacity
+                .budget
+                .selected_capacity_policy
+                .allows_source_free()
+        });
+        let allocated = if source_free_mode {
+            let allocated = class_split.and_then(|split| split.ntfs_allocated).context(
+                "source-free capture requires a complete reconciled NTFS allocation map",
+            )?;
+            let mut prior_end = 0;
+            for &(offset, length) in allocated {
+                let end = offset
+                    .checked_add(length)
+                    .context("NTFS allocation overflow")?;
+                ensure!(
+                    length > 0 && offset >= prior_end && end <= self.length,
+                    "source-free allocation map overlaps or escapes its partition"
+                );
+                prior_end = end;
+            }
+            for copy in
+                copies.context("source-free capture requires reference-aware construction")?
+            {
+                let end = copy
+                    .source_offset
+                    .checked_add(copy.length)
+                    .context("COPY source overflow")?;
+                let mut cursor = copy.source_offset;
+                let mut index =
+                    allocated.partition_point(|&(offset, length)| offset + length <= cursor);
+                while cursor < end {
+                    let &(offset, length) = allocated
+                        .get(index)
+                        .context("COPY source is outside reconciled NTFS allocations")?;
+                    ensure!(
+                        offset <= cursor && cursor < offset + length,
+                        "COPY source crosses a source-free allocation gap"
+                    );
+                    cursor = end.min(offset + length);
+                    index += 1;
+                }
+            }
+            Some(allocated)
+        } else {
+            None
+        };
+        let is_source_free = |offset: u64| {
+            allocated.is_some_and(|allocated| {
+                if offset < 4096 {
+                    return false;
+                }
+                let index = allocated.partition_point(|&(start, length)| start + length <= offset);
+                allocated
+                    .get(index)
+                    .is_none_or(|&(start, _)| start >= offset + 4096)
+            })
+        };
         if let Some(capacity) = &mut capacity {
             ensure!(
                 capacity.budget.selected_capacity_policy.is_conservative()
@@ -1002,7 +1205,7 @@ impl<'a> SourceBackedShadow<'a> {
                         && capacity.budget.max_changed_bytes == max_changed_bytes),
                 "actual-old-zero capacity requires the complete reference-aware capture"
             );
-            (capacity.guard)(capacity.budget.assess(0, 0, 0, 0, 0)?)
+            (capacity.guard)(capacity.budget.assess(0, 0, 0, 0, 0, 0)?)
                 .context("capture capacity guard refused before backing creation")?;
         }
         let mut file = std::fs::OpenOptions::new()
@@ -1018,7 +1221,9 @@ impl<'a> SourceBackedShadow<'a> {
         // the exact 4 KiB comparison, budget and output loop is unchanged.
         let mut original = vec![0u8; NATIVE_CAPTURE_BYTES];
         let mut candidate = vec![0u8; NATIVE_CAPTURE_BYTES];
-        let mut copy_check = copies.map(|_| vec![0u8; NATIVE_CAPTURE_BYTES]);
+        // Allocate the fallback comparison buffer only if observed direct-read
+        // coverage is missing. Its original full comparison remains unchanged.
+        let mut copy_check: Option<Vec<u8>> = None;
         let mut source_digest = if chunk_digests {
             SelectedDigest::chunks()
         } else {
@@ -1050,6 +1255,8 @@ impl<'a> SourceBackedShadow<'a> {
         // a zero record with nonzero bytes revokes its entire prior credit;
         // there is no per-run scan of the accumulated interval table.
         let mut old_zero_bytes = 0u64;
+        let mut source_free_bytes = 0u64;
+        let mut previous_source_free = false;
         let mut packed = 0u64;
         let mut compared = 0u64;
         let mut ranges: Vec<ChangedRange> = Vec::new();
@@ -1067,8 +1274,12 @@ impl<'a> SourceBackedShadow<'a> {
             while done < range.length {
                 let count = (range.length - done).min(original.len() as u64) as usize;
                 let at = range.offset + done;
-                self.seek(SeekFrom::Start(at))?;
-                self.read_exact(&mut candidate[..count])?;
+                let candidate_chunk = self.read_capture_chunk(
+                    at,
+                    &mut candidate[..count],
+                    copies.is_some_and(|copies| !copies.is_empty()),
+                )?;
+                let candidate = candidate_chunk.bytes();
                 let prefetched = match &mut prefetch {
                     Some(prefetch) => Some(prefetch.next(count)?),
                     None => {
@@ -1104,9 +1315,18 @@ impl<'a> SourceBackedShadow<'a> {
                             captured_copy_source(copies, &ranges, at + offset as u64)
                         })
                     };
+                    let free_destination = is_source_free(at + offset as u64);
+                    let old_granule_zero = source_free_mode
+                        && original[offset..offset + 4096]
+                            .iter()
+                            .all(|&byte| byte == 0);
                     let mut end = offset + 4096;
                     while end < count
                         && original[end..end + 4096] != candidate[end..end + 4096]
+                        && (!source_free_mode
+                            || (is_source_free(at + end as u64) == free_destination
+                                && original[end..end + 4096].iter().all(|&byte| byte == 0)
+                                    == old_granule_zero))
                         && (!zero_payloads
                             || candidate[end..end + 4096].iter().all(|&byte| byte == 0)
                                 == new_is_zero)
@@ -1160,6 +1380,9 @@ impl<'a> SourceBackedShadow<'a> {
                     let address = at + offset as u64;
                     let extends_previous = ranges.last().is_some_and(|r| {
                         r.offset + r.length == address
+                            && (!source_free_mode
+                                || (previous_source_free == free_destination
+                                    && r.old_is_zero == old_is_zero))
                             && r.new_is_zero == new_is_zero
                             && match (r.copy_source_offset, copy_source_offset) {
                                 (None, None) => true,
@@ -1200,6 +1423,13 @@ impl<'a> SourceBackedShadow<'a> {
                     } else {
                         old_zero_bytes
                     };
+                    let next_source_free_bytes = if free_destination && !old_is_zero {
+                        source_free_bytes
+                            .checked_add(bytes as u64)
+                            .context("capture source-free byte total overflow")?
+                    } else {
+                        source_free_bytes
+                    };
                     if let Some(capacity) = &mut capacity {
                         let range_count = ranges
                             .len()
@@ -1213,6 +1443,7 @@ impl<'a> SourceBackedShadow<'a> {
                         let progress = capacity.budget.assess(
                             next,
                             next_old_zero_bytes,
+                            next_source_free_bytes,
                             packed,
                             append,
                             range_count,
@@ -1228,20 +1459,27 @@ impl<'a> SourceBackedShadow<'a> {
                         );
                     }
                     if let Some(source_offset) = copy_source_offset {
-                        let check = copy_check
-                            .as_mut()
-                            .context("source-reference buffer absent")?;
-                        self.source.seek(SeekFrom::Start(source_offset))?;
-                        self.source.read_exact(&mut check[..bytes])?;
-                        self.counts.source_reference_bytes = self
-                            .counts
-                            .source_reference_bytes
-                            .checked_add(bytes as u64)
-                            .context("source reference read accounting overflow")?;
-                        ensure!(
-                            check[..bytes] == candidate[offset..offset + bytes],
-                            "raw source reference differs from logical candidate"
-                        );
+                        if candidate_chunk.covers_copy(offset, source_offset, bytes) {
+                            self.counts.source_reference_bytes_reused = self
+                                .counts
+                                .source_reference_bytes_reused
+                                .checked_add(bytes as u64)
+                                .context("reused source reference accounting overflow")?;
+                        } else {
+                            let check =
+                                copy_check.get_or_insert_with(|| vec![0u8; NATIVE_CAPTURE_BYTES]);
+                            self.source.seek(SeekFrom::Start(source_offset))?;
+                            self.source.read_exact(&mut check[..bytes])?;
+                            self.counts.source_reference_bytes = self
+                                .counts
+                                .source_reference_bytes
+                                .checked_add(bytes as u64)
+                                .context("source reference read accounting overflow")?;
+                            ensure!(
+                                check[..bytes] == candidate[offset..offset + bytes],
+                                "raw source reference differs from logical candidate"
+                            );
+                        }
                     }
                     if let Some(classes) = &mut classes {
                         classes.record(
@@ -1275,6 +1513,8 @@ impl<'a> SourceBackedShadow<'a> {
                     }
                     changed = next;
                     old_zero_bytes = next_old_zero_bytes;
+                    source_free_bytes = next_source_free_bytes;
+                    previous_source_free = free_destination;
                     offset += bytes;
                 }
                 if let (Some(prefetch), Some(buffer)) = (&prefetch, prefetched) {
@@ -1450,9 +1690,56 @@ impl<'a> SourceBackedShadow<'a> {
         Ok(self.counts)
     }
 
+    fn read_capture_chunk<'buf>(
+        &mut self,
+        at: u64,
+        output: &'buf mut [u8],
+        observe_direct: bool,
+    ) -> Result<CandidateChunk<'buf>> {
+        ensure!(
+            !self.poisoned && output.len() <= NATIVE_CAPTURE_BYTES,
+            "candidate capture chunk is poisoned or exceeds its bound"
+        );
+        self.seek(SeekFrom::Start(at))?;
+        let mut done = 0usize;
+        let mut reads = CandidateReadSpans::new();
+        while done < output.len() {
+            let read = self.read_inner_observed(&mut output[done..], observe_direct);
+            let (count, receipt) = match read {
+                Ok(read) => read,
+                Err(error) => {
+                    self.poisoned = true;
+                    return Err(error);
+                }
+            };
+            if count == 0 {
+                self.poisoned = true;
+                anyhow::bail!("candidate capture chunk ended before its requested bytes");
+            }
+            if let Some(receipt) = receipt {
+                reads.append(done, count, &receipt);
+            }
+            done = done
+                .checked_add(count)
+                .context("candidate chunk byte total overflow")?;
+        }
+        Ok(CandidateChunk {
+            bytes: output,
+            reads,
+        })
+    }
+
     fn read_inner(&mut self, output: &mut [u8]) -> Result<usize> {
+        Ok(self.read_inner_observed(output, false)?.0)
+    }
+
+    fn read_inner_observed(
+        &mut self,
+        output: &mut [u8],
+        observe_direct: bool,
+    ) -> Result<(usize, Option<crate::ntfs_inspect::DirectReadReceipt>)> {
         if output.is_empty() || self.position == self.length {
-            return Ok(0);
+            return Ok((0, None));
         }
         let index = self
             .routes
@@ -1476,68 +1763,80 @@ impl<'a> SourceBackedShadow<'a> {
         let count = (boundary - self.position)
             .min(output.len() as u64)
             .min(limit as u64) as usize;
-        if in_payload {
-            let route = route.unwrap();
-            let object = &self.tree.objects[route.object_index];
-            let stream = object
-                .stream(&route.stream_name_utf16)
-                .context("source-backed sparse stream absent")?;
-            let logical = route.logical_offset + self.position - route.target_physical_offset;
-            if self
-                .session
-                .as_ref()
-                .is_none_or(|s| !s.matches_stream(object.record_number, &route.stream_name_utf16))
-            {
-                if let Some(old) = self.session.take() {
-                    old.finish(self.source, self.raw)?;
+        let receipt =
+            if in_payload {
+                let route = route.unwrap();
+                let object = &self.tree.objects[route.object_index];
+                let stream = object
+                    .stream(&route.stream_name_utf16)
+                    .context("source-backed sparse stream absent")?;
+                let logical = route.logical_offset + self.position - route.target_physical_offset;
+                if self.session.as_ref().is_none_or(|s| {
+                    !s.matches_stream(object.record_number, &route.stream_name_utf16)
+                }) {
+                    if let Some(old) = self.session.take() {
+                        old.finish(self.source, self.raw)?;
+                    }
+                    self.session = Some(if stream.sparse.is_some() {
+                        crate::ntfs_inspect::PlainStreamRangeSession::open_sparse_named(
+                            self.source,
+                            self.raw,
+                            object.record_number,
+                            &route.stream_name_utf16,
+                            route.stream_length,
+                        )?
+                    } else {
+                        crate::ntfs_inspect::PlainStreamRangeSession::open_named(
+                            self.source,
+                            self.raw,
+                            object.record_number,
+                            &route.stream_name_utf16,
+                            route.stream_length,
+                        )?
+                    });
                 }
-                self.session = Some(if stream.sparse.is_some() {
-                    crate::ntfs_inspect::PlainStreamRangeSession::open_sparse_named(
+                let session = self.session.as_mut().unwrap();
+                ensure!(
+                    session.stream_length() == route.stream_length
+                        && session.expected_sha256() == route.expected_sha256.as_deref(),
+                    "source-backed read differs from bound stream"
+                );
+                let receipt = if observe_direct {
+                    Some(session.read_with_direct_receipts(
                         self.source,
                         self.raw,
-                        object.record_number,
-                        &route.stream_name_utf16,
-                        route.stream_length,
-                    )?
+                        logical,
+                        &mut output[..count],
+                        &mut self.budget,
+                    )?)
                 } else {
-                    crate::ntfs_inspect::PlainStreamRangeSession::open_named(
+                    session.read(
                         self.source,
                         self.raw,
-                        object.record_number,
-                        &route.stream_name_utf16,
-                        route.stream_length,
-                    )?
-                });
-            }
-            let session = self.session.as_mut().unwrap();
-            ensure!(
-                session.stream_length() == route.stream_length
-                    && session.expected_sha256() == route.expected_sha256.as_deref(),
-                "source-backed read differs from bound stream"
-            );
-            session.read(
-                self.source,
-                self.raw,
-                logical,
-                &mut output[..count],
-                &mut self.budget,
-            )?;
-            self.counts.source_logical_bytes = self
-                .counts
-                .source_logical_bytes
-                .checked_add(count as u64)
-                .context("source-backed source accounting overflow")?;
-        } else {
-            self.shadow.seek(SeekFrom::Start(self.position))?;
-            self.shadow.read_exact(&mut output[..count])?;
-            self.counts.shadow_bytes = self
-                .counts
-                .shadow_bytes
-                .checked_add(count as u64)
-                .context("source-backed shadow accounting overflow")?;
-        }
+                        logical,
+                        &mut output[..count],
+                        &mut self.budget,
+                    )?;
+                    None
+                };
+                self.counts.source_logical_bytes = self
+                    .counts
+                    .source_logical_bytes
+                    .checked_add(count as u64)
+                    .context("source-backed source accounting overflow")?;
+                receipt
+            } else {
+                self.shadow.seek(SeekFrom::Start(self.position))?;
+                self.shadow.read_exact(&mut output[..count])?;
+                self.counts.shadow_bytes = self
+                    .counts
+                    .shadow_bytes
+                    .checked_add(count as u64)
+                    .context("source-backed shadow accounting overflow")?;
+                None
+            };
         self.position += count as u64;
-        Ok(count)
+        Ok((count, receipt))
     }
 }
 

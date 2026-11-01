@@ -222,6 +222,7 @@ pub(crate) fn snapshot(file: &File) -> Snapshot {
         extended_attributes: None,
         extended_attributes_error: None,
         reparse: None,
+        directory_case_sensitivity: None,
     }
 }
 

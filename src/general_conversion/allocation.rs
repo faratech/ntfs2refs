@@ -186,6 +186,10 @@ pub(super) fn convert_allocation_selected(
                             serde_json::to_value(progress.selected_capacity_policy)?;
                         observation["old_zero_bytes"] =
                             serde_json::to_value(progress.old_zero_bytes)?;
+                        if let Some(free) = progress.source_free_bytes {
+                            observation["source_free_bytes"] = free.into();
+                            observation["source_free_hash_table_bytes"] = (free / 256).into();
+                        }
                         observation["projected_journal_bytes"] =
                             progress.projected_journal_bytes.into();
                         observation["projected_combined_bytes"] =
@@ -274,6 +278,7 @@ pub(super) fn convert_allocation_selected(
         let new_zero_bytes = plan.new_zero_bytes()?;
         let new_copy_bytes = plan.new_copy_bytes()?;
         let old_zero_bytes = plan.old_zero_bytes()?;
+        let source_free_bytes = plan.source_free_bytes()?;
         let packed_bytes = proof.capture().layout.packed_bytes();
         let plan_pin = qualification::save(output, "selected-plan.json", &plan)?;
         let copy_interruption_target = if interrupt_after_first_copy_write {
@@ -311,6 +316,9 @@ pub(super) fn convert_allocation_selected(
                 "selected_bytes":selected_bytes,"new_zero_bytes":new_zero_bytes,
                 "new_copy_bytes":new_copy_bytes,
                 "old_zero_bytes":old_zero_bytes,
+                "source_free_bytes":source_free_bytes,
+                "source_free_hash_table_bytes":source_free_bytes / 256,
+                "rollback_preserves_free_space_contents":source_free_bytes == 0,
                 "available_after_shadow_and_backing":space.available_bytes_to_caller,
                 "reserve_bytes":reserve,"source_writes_started":false,
             }),
@@ -534,7 +542,21 @@ pub(super) fn convert_allocation_selected(
             maximum_bytes: selected_bytes,
             journal_profile: profile,
         };
-        if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative() {
+        if source_free_bytes != 0 {
+            ensure!(
+                request.selected_capacity_policy.allows_source_free()
+                    && plan.encoding_version() == 5,
+                "source-free writes require format five policy"
+            );
+            target.arm_source_free_actual_bytes_v3_writes(
+                policy,
+                journal_bytes,
+                old_zero_bytes,
+                source_free_bytes,
+                request.max_journal_bytes,
+                &mut events,
+            )?;
+        } else if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative() {
             ensure!(
                 plan.encoding_version() == 4,
                 "actual-byte capacity requires format four"
@@ -718,6 +740,10 @@ pub(super) fn convert_allocation_selected(
             "new_copy_bytes":new_copy_bytes,
             "old_zero_bytes":old_zero_bytes,
             "old_zero_payload_storage_elided":old_zero_bytes > 0,
+            "source_free_old_payload_storage_elided":source_free_bytes > 0,
+            "source_free_bytes":source_free_bytes,
+            "source_free_hash_table_bytes":source_free_bytes / 256,
+            "rollback_preserves_free_space_contents":source_free_bytes == 0,
             "zero_payload_storage_elided":new_zero_bytes > 0,
             "free_space_contents_compared":false,"recovery_bundle_sha256":recovery_pin,
             "general_conversion_qualified":false,

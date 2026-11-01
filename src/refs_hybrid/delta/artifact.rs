@@ -68,6 +68,8 @@ struct StoredReads {
     shadow_bytes: u64,
     #[serde(default)]
     source_reference_bytes: u64,
+    #[serde(default)]
+    source_reference_bytes_reused: u64,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -313,7 +315,13 @@ impl VerifiedDeltaArtifact {
                     .source_logical_bytes
                     .checked_add(capture.read_counts.shadow_bytes)
                     == Some(capture.selected_bytes_compared)
-                && capture.read_counts.source_reference_bytes <= capture.layout.changed_bytes,
+                && capture.read_counts.source_reference_bytes_reused
+                    <= capture.read_counts.source_logical_bytes
+                && capture
+                    .read_counts
+                    .source_reference_bytes
+                    .checked_add(capture.read_counts.source_reference_bytes_reused)
+                    .is_some_and(|bytes| bytes <= capture.layout.changed_bytes),
             "capture geometry, read totals or selected-byte accounting differs"
         );
         for digest in [

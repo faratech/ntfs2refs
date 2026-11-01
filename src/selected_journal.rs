@@ -10,6 +10,9 @@
 //! payloads. It never needs a source device when replaying a copy.
 //! N2ROLD01 additionally omits old ranges independently verified as zero.
 //! Recovery synthesizes their original bytes, including old-copy sources.
+//! N2RFRE01 stores only 4 KiB digests for admitted source-free old ranges.
+//! Their actual old bytes remain part of the fresh target pin, but rollback
+//! leaves these free destinations unchanged and restores only the other ranges.
 use crate::lab_reconstruct::{DurableIo, ReadSeek};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -30,6 +33,8 @@ const FORMAT: u32 = 1;
 const ZERO_FORMAT: u32 = 2;
 const COPY_FORMAT: u32 = 3;
 const OLD_ZERO_FORMAT: u32 = 4;
+const SOURCE_FREE_FORMAT: u32 = 5;
+const FREE_DIGEST: u64 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,6 +72,12 @@ pub struct SelectedPlan {
     /// check or write, and the declaration alone authenticates no source byte.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub old_zero_ranges: Vec<SelectedRange>,
+    /// Exact whole-range subset independently proved source-free by the caller.
+    /// Preparation records actual old 4 KiB digests, never allocation authority.
+    /// Rollback may leave these destinations changed. Discovery and immutable
+    /// old-copy source bytes must never belong to this subset.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_free_ranges: Vec<SelectedRange>,
 }
 
 /// Trusted only when held independently by the caller. This format and its
@@ -80,6 +91,10 @@ pub struct SelectedTicket {
     pub journal_length: u64,
     pub immutable_sha256: [u8; 32],
     pub old_selected_sha256: [u8; 32],
+    /// Format-five rollback pin over framed restore-required ranges only.
+    /// The complete original selected pin above is retained for fresh apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_restored_selected_sha256: Option<[u8; 32]>,
     pub new_selected_sha256: [u8; 32],
     pub whole_image_verified: bool,
 }
@@ -92,6 +107,10 @@ pub struct SelectedResult {
     pub replay_closed: bool,
     pub whole_image_verified: bool,
     pub conversion_qualified: bool,
+    /// Present only when selected_sha256 describes restore-required ranges;
+    /// selected_bytes still records the complete checked selected address set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_restoration_bytes: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -106,6 +125,8 @@ struct JournalRecord {
 enum OldBytes {
     Payload(u64),
     Zero,
+    /// Offset of the authenticated 16-byte-per-granule old-digest table.
+    SourceFree(u64),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +212,83 @@ fn frame(hash: &mut PinHash, range: &SelectedRange) -> Result<()> {
 }
 
 impl SelectedPlan {
+    pub fn source_free_bytes(&self) -> Result<u64> {
+        if self.source_free_ranges.is_empty() {
+            return Ok(0);
+        }
+        // COPY destinations are ordered, but their source addresses need not
+        // be. Merge their source union once rather than scanning C for each F.
+        let mut protected = self
+            .new_copy_ranges
+            .iter()
+            .map(|copy| {
+                Ok((
+                    copy.source_offset,
+                    copy.source_offset
+                        .checked_add(copy.length)
+                        .context("copy source overflow")?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        protected.sort_unstable();
+        let mut used = 0usize;
+        for position in 0..protected.len() {
+            let current = protected[position];
+            if used != 0 && current.0 <= protected[used - 1].1 {
+                protected[used - 1].1 = protected[used - 1].1.max(current.1);
+            } else {
+                protected[used] = current;
+                used += 1;
+            }
+        }
+        protected.truncate(used);
+        let mut index = 0usize;
+        let mut bytes = 0u64;
+        for free in &self.source_free_ranges {
+            while index < self.ranges.len() && self.ranges[index].offset < free.offset {
+                index += 1;
+            }
+            ensure!(
+                self.ranges.get(index) == Some(free),
+                "source-free ranges must be a sorted unique exact subset of selected ranges"
+            );
+            ensure!(
+                free.offset >= GRANULE,
+                "source-free range covers discovery bytes"
+            );
+            ensure!(
+                self.old_zero_ranges
+                    .binary_search_by_key(&free.offset, |r| r.offset)
+                    .is_err(),
+                "source-free and old-zero ranges overlap"
+            );
+            let end = free
+                .offset
+                .checked_add(free.length)
+                .context("source-free range overflow")?;
+            let first = protected.partition_point(|&(_, source_end)| source_end <= free.offset);
+            ensure!(
+                protected.get(first).is_none_or(|&(start, _)| start >= end),
+                "source-free range omits immutable copy-source bytes"
+            );
+            bytes = bytes
+                .checked_add(free.length)
+                .context("source-free byte total overflow")?;
+            index += 1;
+        }
+        Ok(bytes)
+    }
+
+    pub fn old_restored_bytes(&self) -> Result<u64> {
+        let total = self.ranges.iter().try_fold(0u64, |sum, r| {
+            sum.checked_add(r.length)
+                .context("selected byte total overflow")
+        })?;
+        total
+            .checked_sub(self.source_free_bytes()?)
+            .context("source-free bytes exceed selection")
+    }
+
     pub fn old_zero_bytes(&self) -> Result<u64> {
         let mut index = 0usize;
         let mut bytes = 0u64;
@@ -302,6 +400,10 @@ impl SelectedPlan {
         !self.old_zero_ranges.is_empty()
     }
 
+    fn source_free_encoded(&self) -> bool {
+        !self.source_free_ranges.is_empty()
+    }
+
     /// The exact on-disk encoding; empty old-zero lists retain legacy names.
     pub fn encoding_name(&self) -> &'static str {
         std::str::from_utf8(self.magic()).expect("selected journal ASCII magic")
@@ -323,7 +425,9 @@ impl SelectedPlan {
     }
 
     fn format(&self) -> u32 {
-        if self.old_zero_encoded() {
+        if self.source_free_encoded() {
+            SOURCE_FREE_FORMAT
+        } else if self.old_zero_encoded() {
             OLD_ZERO_FORMAT
         } else if self.copy_encoded() {
             COPY_FORMAT
@@ -335,7 +439,9 @@ impl SelectedPlan {
     }
 
     fn magic(&self) -> &'static [u8; 8] {
-        if self.old_zero_encoded() {
+        if self.source_free_encoded() {
+            b"N2RFRE01"
+        } else if self.old_zero_encoded() {
             b"N2ROLD01"
         } else if self.copy_encoded() {
             b"N2RCPY01"
@@ -347,7 +453,9 @@ impl SelectedPlan {
     }
 
     fn footer_magic(&self) -> &'static [u8; 8] {
-        if self.old_zero_encoded() {
+        if self.source_free_encoded() {
+            b"N2RFEND1"
+        } else if self.old_zero_encoded() {
             b"N2ROEND1"
         } else if self.copy_encoded() {
             b"N2RCEND1"
@@ -370,8 +478,14 @@ impl SelectedPlan {
             .is_ok()
     }
 
+    fn is_source_free(&self, range: &SelectedRange) -> bool {
+        self.source_free_ranges
+            .binary_search_by_key(&range.offset, |r| r.offset)
+            .is_ok()
+    }
+
     fn record_size(&self) -> usize {
-        if self.old_zero_encoded() {
+        if self.source_free_encoded() || self.old_zero_encoded() {
             OLD_ZERO_RECORD
         } else if self.copy_encoded() {
             COPY_RECORD
@@ -420,6 +534,7 @@ impl SelectedPlan {
         let zero_bytes = self.new_zero_bytes()?;
         let copy_bytes = self.new_copy_bytes()?;
         let old_zero_bytes = self.old_zero_bytes()?;
+        let source_free_bytes = self.source_free_bytes()?;
         let journal_length = BODY
             .checked_add(HEADER as u64)
             .and_then(|n| {
@@ -431,7 +546,9 @@ impl SelectedPlan {
                         .checked_mul(2)?
                         .checked_sub(zero_bytes)?
                         .checked_sub(copy_bytes)?
-                        .checked_sub(old_zero_bytes)?,
+                        .checked_sub(old_zero_bytes)?
+                        .checked_sub(source_free_bytes)?
+                        .checked_add((source_free_bytes / GRANULE).checked_mul(FREE_DIGEST)?)?,
                 )
             })
             .and_then(|n| n.checked_add(FOOTER as u64))
@@ -506,6 +623,7 @@ pub(crate) fn validate_coarse(image_length: u64, coarse: &[SelectedRange]) -> Re
         new_zero_ranges: Vec::new(),
         new_copy_ranges: Vec::new(),
         old_zero_ranges: Vec::new(),
+        source_free_ranges: Vec::new(),
     }
     .validate()?;
     Ok(())
@@ -552,6 +670,7 @@ pub(crate) fn finish_changed_plan(
         new_zero_ranges: Vec::new(),
         new_copy_ranges: Vec::new(),
         old_zero_ranges: Vec::new(),
+        source_free_ranges: Vec::new(),
     };
     plan.validate()?;
     Ok(plan)
@@ -577,9 +696,13 @@ fn copy_selected<R: Read + Seek, J: Write>(
     journal: &mut J,
     selected: &mut PinHash,
     buffer: &mut [u8],
+    mut restored: Option<&mut PinHash>,
 ) -> Result<[u8; 32]> {
     input.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
+    if let Some(restored) = restored.as_deref_mut() {
+        frame(restored, range)?;
+    }
     let mut hash = pin_hash()?;
     let mut remaining = range.length;
     while remaining > 0 {
@@ -587,6 +710,9 @@ fn copy_selected<R: Read + Seek, J: Write>(
         input.read_exact(&mut buffer[..count])?;
         journal.write_all(&buffer[..count])?;
         selected.update(&buffer[..count])?;
+        if let Some(restored) = restored.as_deref_mut() {
+            restored.update(&buffer[..count])?;
+        }
         hash.update(&buffer[..count])?;
         remaining -= count as u64;
     }
@@ -600,9 +726,13 @@ fn verify_zero_selected<R: Read + Seek>(
     buffer: &mut [u8],
     zero_digests: &mut ZeroDigests,
     mismatch: &'static str,
+    mut restored: Option<&mut PinHash>,
 ) -> Result<[u8; 32]> {
     input.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
+    if let Some(restored) = restored.as_deref_mut() {
+        frame(restored, range)?;
+    }
     let cached = zero_digests.get(range.length);
     let mut hash = if cached.is_some() {
         None
@@ -615,6 +745,9 @@ fn verify_zero_selected<R: Read + Seek>(
         input.read_exact(&mut buffer[..count])?;
         ensure!(buffer[..count].iter().all(|&byte| byte == 0), mismatch);
         selected.update(&buffer[..count])?;
+        if let Some(restored) = restored.as_deref_mut() {
+            restored.update(&buffer[..count])?;
+        }
         if let Some(hash) = hash.as_mut() {
             hash.update(&buffer[..count])?;
         }
@@ -627,6 +760,38 @@ fn verify_zero_selected<R: Read + Seek>(
     // No hit can bypass even one actual input byte or its aggregate update.
     zero_digests.remember_verified(range.length, digest);
     Ok(digest)
+}
+
+fn capture_free_selected<R: Read + Seek, J: Write>(
+    source: &mut R,
+    range: &SelectedRange,
+    journal: &mut J,
+    selected: &mut PinHash,
+    buffer: &mut [u8],
+) -> Result<[u8; 32]> {
+    source.seek(SeekFrom::Start(range.offset))?;
+    frame(selected, range)?;
+    let mut table_hash = pin_hash()?;
+    // The binary table is streamed; it never expands the JSON plan or the
+    // retained record vector by one entry per source-free cluster.
+    let mut table = vec![0u8; buffer.len() / GRANULE as usize * FREE_DIGEST as usize];
+    let mut remaining = range.length;
+    while remaining != 0 {
+        let count = usize::try_from(remaining.min(buffer.len() as u64))?;
+        source.read_exact(&mut buffer[..count])?;
+        selected.update(&buffer[..count])?;
+        let table_count = count / GRANULE as usize * FREE_DIGEST as usize;
+        for (granule, digest) in buffer[..count]
+            .chunks_exact(GRANULE as usize)
+            .zip(table[..table_count].chunks_exact_mut(FREE_DIGEST as usize))
+        {
+            digest.copy_from_slice(&xxhash_rust::xxh3::xxh3_128(granule).to_le_bytes());
+        }
+        journal.write_all(&table[..table_count])?;
+        table_hash.update(&table[..table_count])?;
+        remaining -= count as u64;
+    }
+    finish(table_hash)
 }
 
 fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
@@ -782,7 +947,8 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut header = [0u8; HEADER];
     let zero_encoded = plan.zero_encoded();
     let copy_encoded = plan.copy_encoded();
-    let old_zero_encoded = plan.old_zero_encoded();
+    let source_free_encoded = plan.source_free_encoded();
+    let old_zero_encoded = plan.old_zero_encoded() || source_free_encoded;
     header[..8].copy_from_slice(plan.magic());
     put_u32(&mut header, 8, plan.format());
     put_u32(&mut header, 12, u32::try_from(plan.ranges.len())?);
@@ -793,6 +959,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal.write_all(&[0; BODY as usize])?;
     journal.write_all(&header)?;
     let mut old_selected = aggregate_pin_hash()?;
+    let mut old_restored = source_free_encoded.then(aggregate_pin_hash).transpose()?;
     let mut new_selected = aggregate_pin_hash()?;
     // Fixed memory for the whole preparation; small fragmented ranges do not
     // repeatedly allocate/zero MiB-sized vectors. Each slice used below is
@@ -805,7 +972,10 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         let mut record = [0u8; OLD_ZERO_RECORD];
         journal.write_all(&record[..plan.record_size()])?;
         let old_is_zero = plan.is_old_zero(range);
-        let old_hash = if old_is_zero {
+        let old_is_free = plan.is_source_free(range);
+        let old_hash = if old_is_free {
+            capture_free_selected(source, range, journal, &mut old_selected, &mut data_buffer)?
+        } else if old_is_zero {
             verify_zero_selected(
                 source,
                 range,
@@ -813,9 +983,17 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut data_buffer,
                 &mut zero_digests,
                 "selected old-zero range contains nonzero source bytes",
+                old_restored.as_mut(),
             )?
         } else {
-            copy_selected(source, range, journal, &mut old_selected, &mut data_buffer)?
+            copy_selected(
+                source,
+                range,
+                journal,
+                &mut old_selected,
+                &mut data_buffer,
+                old_restored.as_mut(),
+            )?
         };
         let is_zero = plan.is_new_zero(range);
         let copy_source = plan.copy_source(range);
@@ -827,6 +1005,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut data_buffer,
                 &mut zero_digests,
                 "selected zero range contains nonzero candidate bytes",
+                None,
             )?
         } else if let Some(source_offset) = copy_source {
             verify_copy_selected(
@@ -846,6 +1025,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 journal,
                 &mut new_selected,
                 &mut data_buffer,
+                None,
             )?
         };
         let next = journal.stream_position()?;
@@ -865,7 +1045,15 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             );
             put_u64(&mut record, 24, copy_source.unwrap_or(0));
             if old_zero_encoded {
-                put_u64(&mut record, 32, u64::from(old_is_zero));
+                put_u64(
+                    &mut record,
+                    32,
+                    if old_is_free {
+                        2
+                    } else {
+                        u64::from(old_is_zero)
+                    },
+                );
                 40
             } else {
                 32
@@ -883,6 +1071,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         journal.seek(SeekFrom::Start(next))?;
     }
     let old_selected_sha256 = finish(old_selected)?;
+    let old_restored_selected_sha256 = old_restored.map(finish).transpose()?;
     let new_selected_sha256 = finish(new_selected)?;
     drop(data_buffer);
     drop(copy_buffer);
@@ -892,6 +1081,13 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     footer[40..72].copy_from_slice(&new_selected_sha256);
     put_u64(&mut footer, 72, journal_length);
     journal.write_all(&footer)?;
+    if let Some(restored) = old_restored_selected_sha256 {
+        header[40..72].copy_from_slice(&restored);
+        put_u64(&mut header, 72, plan.source_free_bytes()?);
+        journal.seek(SeekFrom::Start(BODY))?;
+        journal.write_all(&header)?;
+        journal.seek(SeekFrom::Start(journal_length))?;
+    }
     ensure!(
         journal.byte_len()? == journal_length
             && source.byte_len()? == plan.image_length
@@ -908,6 +1104,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         // validating readback supplies the actual digest below.
         immutable_sha256: [0; 32],
         old_selected_sha256,
+        old_restored_selected_sha256,
         new_selected_sha256,
         whole_image_verified: false,
     };
@@ -970,6 +1167,7 @@ fn validate_body<J: ReadSeek>(
     let (changed, journal_length) = plan.validate()?;
     ensure!(
         !ticket.whole_image_verified
+            && ticket.old_restored_selected_sha256.is_some() == plan.source_free_encoded()
             && ticket.image_length == plan.image_length
             && ticket.selected_bytes == changed
             && ticket.range_count as usize == plan.ranges.len()
@@ -983,7 +1181,8 @@ fn validate_body<J: ReadSeek>(
     immutable.update(&header)?;
     let zero_encoded = plan.zero_encoded();
     let copy_encoded = plan.copy_encoded();
-    let old_zero_encoded = plan.old_zero_encoded();
+    let source_free_encoded = plan.source_free_encoded();
+    let old_zero_encoded = plan.old_zero_encoded() || source_free_encoded;
     ensure!(
         &header[..8] == plan.magic()
             && get_u32(&header, 8) == plan.format()
@@ -991,7 +1190,11 @@ fn validate_body<J: ReadSeek>(
             && get_u64(&header, 16) == plan.image_length
             && get_u64(&header, 24) == changed
             && get_u64(&header, 32) == journal_length
-            && header[40..].iter().all(|&b| b == 0),
+            && if let Some(restored) = ticket.old_restored_selected_sha256 {
+                header[40..72] == restored && get_u64(&header, 72) == plan.source_free_bytes()?
+            } else {
+                header[40..].iter().all(|&b| b == 0)
+            },
         "selected journal header differs"
     );
     let mut records = Vec::with_capacity(plan.ranges.len());
@@ -1014,8 +1217,15 @@ fn validate_body<J: ReadSeek>(
         );
         let before_at = journal.stream_position()?;
         let old_is_zero = plan.is_old_zero(range);
+        let old_is_free = plan.is_source_free(range);
         let after_at = before_at
-            .checked_add(if old_is_zero { 0 } else { range.length })
+            .checked_add(if old_is_zero {
+                0
+            } else if old_is_free {
+                range.length / GRANULE * FREE_DIGEST
+            } else {
+                range.length
+            })
             .context("selected journal offset overflow")?;
         let is_zero = plan.is_new_zero(range);
         let copy_source = plan.copy_source(range);
@@ -1033,7 +1243,12 @@ fn validate_body<J: ReadSeek>(
             );
             if old_zero_encoded {
                 ensure!(
-                    get_u64(&record, 32) == u64::from(old_is_zero),
+                    get_u64(&record, 32)
+                        == if old_is_free {
+                            2
+                        } else {
+                            u64::from(old_is_zero)
+                        },
                     "selected journal old-zero descriptor differs from the pinned plan"
                 );
                 40
@@ -1063,6 +1278,26 @@ fn validate_body<J: ReadSeek>(
         for old in [true, false] {
             if !old && copy_source.is_some() {
                 continue; // The complete old-payload table is needed first.
+            }
+            if old && old_is_free {
+                // The original free bytes deliberately do not exist in J.
+                // Authenticate the entire digest table and its independent
+                // immutable pin. Its truth is established from actual bytes
+                // during preparation and the complete fresh target gate.
+                let mut hash = pin_hash()?;
+                let mut remaining = range.length / GRANULE * FREE_DIGEST;
+                while remaining != 0 {
+                    let count = usize::try_from(remaining.min(BUFFER as u64))?;
+                    journal.read_exact(&mut buffer[..count])?;
+                    immutable.update(&buffer[..count])?;
+                    hash.update(&buffer[..count])?;
+                    remaining -= count as u64;
+                }
+                ensure!(
+                    finish(hash)?.as_slice() == &record[hashes..hashes + 32],
+                    "source-free old digest table differs"
+                );
+                continue;
             }
             let offset = if old {
                 (!old_is_zero).then_some(before_at)
@@ -1097,6 +1332,19 @@ fn validate_body<J: ReadSeek>(
             } else {
                 None
             };
+            // A copy-format descriptor pass does not compute the new aggregate;
+            // the resolved pass below does. If a canonical zero digest is
+            // already known, no stored byte or aggregate update remains here.
+            // Keep the descriptor check without repeatedly filling MiB buffers.
+            if selected.is_none()
+                && let Some(actual) = cached
+            {
+                ensure!(
+                    actual.as_slice() == expected,
+                    "selected zero digest differs"
+                );
+                continue;
+            }
             let mut hash = if cached.is_some() {
                 None
             } else {
@@ -1133,7 +1381,9 @@ fn validate_body<J: ReadSeek>(
         }
         records.push(JournalRecord {
             range: range.clone(),
-            before: if old_is_zero {
+            before: if old_is_free {
+                OldBytes::SourceFree(before_at)
+            } else if old_is_zero {
                 OldBytes::Zero
             } else {
                 OldBytes::Payload(before_at)
@@ -1162,7 +1412,10 @@ fn validate_body<J: ReadSeek>(
             && footer[8..40] == ticket.old_selected_sha256
             && footer[40..72] == ticket.new_selected_sha256
             && get_u64(&footer, 72) == journal_length
-            && finish(old_selected)? == ticket.old_selected_sha256
+            && finish(old_selected)?
+                == ticket
+                    .old_restored_selected_sha256
+                    .unwrap_or(ticket.old_selected_sha256)
             && (copy_encoded || finish(new_selected)? == ticket.new_selected_sha256)
             && journal.stream_position()? == journal_length,
         "selected journal footer or selected digest differs"
@@ -1294,7 +1547,55 @@ fn read_before<J: Read + Seek>(
             bytes.fill(0);
             Ok(())
         }
+        OldBytes::SourceFree(_) => {
+            anyhow::bail!("source-free old bytes are hash-only and cannot resolve a copy")
+        }
     }
+}
+
+/// Compare actual whole granules to their authenticated original digests and,
+/// when supplied, their authenticated new bytes. This format deliberately
+/// refuses torn/foreign 4 KiB granules instead of the legacy per-byte rule.
+fn check_free_granules<J: Read + Seek>(
+    journal: &mut J,
+    record: &JournalRecord,
+    within: u64,
+    current: &[u8],
+    after: Option<&[u8]>,
+) -> Result<()> {
+    let OldBytes::SourceFree(table_at) = record.before else {
+        anyhow::bail!("source-free check requires a hash-only old record");
+    };
+    ensure!(
+        within.is_multiple_of(GRANULE)
+            && current.len().is_multiple_of(GRANULE as usize)
+            && current.len() <= BUFFER
+            && within
+                .checked_add(current.len() as u64)
+                .is_some_and(|end| end <= record.range.length)
+            && after.is_none_or(|bytes| bytes.len() == current.len()),
+        "source-free granule check escapes its authenticated range"
+    );
+    let mut table = [0u8; BUFFER / GRANULE as usize * FREE_DIGEST as usize];
+    let count = current.len() / GRANULE as usize * FREE_DIGEST as usize;
+    let offset = table_at
+        .checked_add(within / GRANULE * FREE_DIGEST)
+        .context("source-free digest offset overflow")?;
+    at(journal, offset, &mut table[..count])?;
+    for (index, (actual, old)) in current
+        .chunks_exact(GRANULE as usize)
+        .zip(table[..count].chunks_exact(FREE_DIGEST as usize))
+        .enumerate()
+    {
+        let is_new = after.is_some_and(|bytes| {
+            actual == &bytes[index * GRANULE as usize..(index + 1) * GRANULE as usize]
+        });
+        ensure!(
+            is_new || xxhash_rust::xxh3::xxh3_128(actual).to_le_bytes().as_slice() == old,
+            "source-free target granule is neither original nor new"
+        );
+    }
+    Ok(())
 }
 
 fn read_after<J: Read + Seek>(
@@ -1362,6 +1663,7 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
     plan: &SelectedPlan,
     records: &[JournalRecord],
     expected: Option<&[u8; 32]>,
+    fresh_old: bool,
 ) -> Result<[u8; 32]> {
     ensure!(
         target.byte_len()? == plan.image_length,
@@ -1381,6 +1683,9 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
             while done < record.range.length {
                 let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
                 at(target, record.range.offset + done, &mut current[..count])?;
+                if fresh_old && matches!(record.before, OldBytes::SourceFree(_)) {
+                    check_free_granules(journal, record, done, &current[..count], None)?;
+                }
                 digest.update(&current[..count])?;
                 done += count as u64;
             }
@@ -1399,12 +1704,22 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
         while done < record.range.length {
             let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
             at(target, record.range.offset + done, &mut current[..count])?;
-            read_before(journal, record, done, &mut before[..count])?;
             read_after(journal, records, record, done, &mut after[..count])?;
-            ensure!(
-                bytes_are_old_or_new(&current[..count], &before[..count], &after[..count]),
-                "selected target contains a foreign byte"
-            );
+            if matches!(record.before, OldBytes::SourceFree(_)) {
+                check_free_granules(
+                    journal,
+                    record,
+                    done,
+                    &current[..count],
+                    Some(&after[..count]),
+                )?;
+            } else {
+                read_before(journal, record, done, &mut before[..count])?;
+                ensure!(
+                    bytes_are_old_or_new(&current[..count], &before[..count], &after[..count]),
+                    "selected target contains a foreign byte"
+                );
+            }
             digest.update(&current[..count])?;
             done += count as u64;
         }
@@ -1415,6 +1730,64 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
         "selected target digest differs"
     );
     Ok(digest)
+}
+
+/// Verify the rollback result without claiming restoration of formerly free
+/// contents. Every free granule still undergoes its old/new membership check.
+fn check_restored_target<T: ReadSeek, J: Read + Seek>(
+    target: &mut T,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    records: &[JournalRecord],
+    ticket: &SelectedTicket,
+) -> Result<[u8; 32]> {
+    let Some(expected) = ticket.old_restored_selected_sha256 else {
+        return check_target(
+            target,
+            journal,
+            plan,
+            records,
+            Some(&ticket.old_selected_sha256),
+            false,
+        );
+    };
+    ensure!(
+        target.byte_len()? == plan.image_length,
+        "selected target length differs"
+    );
+    let mut current = vec![0; BUFFER];
+    let mut after = vec![0; BUFFER];
+    let mut restored = pin_hash()?;
+    for record in records {
+        let free = matches!(record.before, OldBytes::SourceFree(_));
+        if !free {
+            frame(&mut restored, &record.range)?;
+        }
+        let mut done = 0u64;
+        while done < record.range.length {
+            let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
+            at(target, record.range.offset + done, &mut current[..count])?;
+            if free {
+                read_after(journal, records, record, done, &mut after[..count])?;
+                check_free_granules(
+                    journal,
+                    record,
+                    done,
+                    &current[..count],
+                    Some(&after[..count]),
+                )?;
+            } else {
+                restored.update(&current[..count])?;
+            }
+            done += count as u64;
+        }
+    }
+    let actual = finish(restored)?;
+    ensure!(
+        actual == expected,
+        "restore-required selected target digest differs"
+    );
+    Ok(actual)
 }
 
 /// One fixed working set for the entire replay. Every compared/written byte
@@ -1456,12 +1829,28 @@ fn write_span<T: DurableIo, J: Read + Seek>(
         let within = start + done;
         let offset = record.range.offset + within;
         at(target, offset, &mut current[..count])?;
-        read_before(journal, record, within, &mut before[..count])?;
         read_after(journal, records, record, within, &mut after[..count])?;
-        ensure!(
-            bytes_are_old_or_new(&current[..count], &before[..count], &after[..count]),
-            "selected target changed before write"
-        );
+        if matches!(record.before, OldBytes::SourceFree(_)) {
+            check_free_granules(
+                journal,
+                record,
+                within,
+                &current[..count],
+                Some(&after[..count]),
+            )?;
+            if !forward {
+                // Original source-free bytes are deliberately unavailable.
+                // Check membership but never overwrite their current state.
+                done += count as u64;
+                continue;
+            }
+        } else {
+            read_before(journal, record, within, &mut before[..count])?;
+            ensure!(
+                bytes_are_old_or_new(&current[..count], &before[..count], &after[..count]),
+                "selected target changed before write"
+            );
+        }
         let desired = if forward {
             &after[..count]
         } else {
@@ -1536,6 +1925,7 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         plan,
         records,
         fresh.then_some(&ticket.old_selected_sha256),
+        fresh,
     )?;
     let intent = if forward {
         marker(b"N2RSAP01", ticket, &ticket.new_selected_sha256)
@@ -1579,7 +1969,11 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
     } else {
         &ticket.old_selected_sha256
     };
-    let selected_sha256 = check_target(target, journal, plan, records, Some(expected))?;
+    let selected_sha256 = if forward {
+        check_target(target, journal, plan, records, Some(expected), false)?
+    } else {
+        check_restored_target(target, journal, plan, records, ticket)?
+    };
     if recheck_immutable {
         ensure!(
             hash_range(journal, BODY, ticket.journal_length - BODY)? == ticket.immutable_sha256,
@@ -1597,6 +1991,11 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         replay_closed: !forward,
         whole_image_verified: false,
         conversion_qualified: false,
+        old_restoration_bytes: if !forward && plan.source_free_encoded() {
+            Some(plan.old_restored_bytes()?)
+        } else {
+            None
+        },
     })
 }
 
@@ -1656,6 +2055,7 @@ impl<'a, T: DurableIo, J: DurableIo> FreshExclusiveApply<'a, T, J> {
             plan,
             &records,
             Some(&ticket.old_selected_sha256),
+            true,
         )?;
         Ok(Self {
             target,
@@ -1729,6 +2129,7 @@ impl<'a, T: DurableIo, J: DurableIo> FreshExclusiveApply<'a, T, J> {
             self.plan,
             &self.records,
             Some(&self.ticket.new_selected_sha256),
+            false,
         )?;
         let applied = SelectedResult {
             selected_sha256: digest,
@@ -1737,6 +2138,7 @@ impl<'a, T: DurableIo, J: DurableIo> FreshExclusiveApply<'a, T, J> {
             replay_closed: false,
             whole_image_verified: false,
             conversion_qualified: false,
+            old_restoration_bytes: None,
         };
         after_apply(&applied)?;
         // The owner retains both mutable borrows through receipt persistence
@@ -2006,16 +2408,23 @@ fn abandon_loaded<T: DurableIo, J: DurableIo>(
         plan,
         records,
         Some(&ticket.old_selected_sha256),
+        true,
     )?;
     let completed = marker(b"N2RSAB01", ticket, &ticket.old_selected_sha256);
     write_marker(journal, 0, &completed)?;
     Ok(SelectedResult {
-        selected_sha256,
+        selected_sha256: ticket
+            .old_restored_selected_sha256
+            .unwrap_or(selected_sha256),
         selected_bytes: ticket.selected_bytes,
         range_count: ticket.range_count,
         replay_closed: true,
         whole_image_verified: false,
         conversion_qualified: false,
+        old_restoration_bytes: plan
+            .source_free_encoded()
+            .then(|| plan.old_restored_bytes())
+            .transpose()?,
     })
 }
 
@@ -2044,7 +2453,11 @@ fn verify_closed_loaded<T: ReadSeek, J: ReadSeek>(
         SelectedLifecycle::Aborted => &ticket.old_selected_sha256,
         _ => anyhow::bail!("selected journal is not closed by HND or ABT"),
     };
-    let selected_sha256 = check_target(target, journal, plan, records, Some(expected))?;
+    let selected_sha256 = if state == SelectedLifecycle::Aborted {
+        check_restored_target(target, journal, plan, records, ticket)?
+    } else {
+        check_target(target, journal, plan, records, Some(expected), false)?
+    };
     Ok((
         state,
         SelectedResult {
@@ -2054,6 +2467,13 @@ fn verify_closed_loaded<T: ReadSeek, J: ReadSeek>(
             replay_closed: true,
             whole_image_verified: false,
             conversion_qualified: false,
+            old_restoration_bytes: if state == SelectedLifecycle::Aborted
+                && plan.source_free_encoded()
+            {
+                Some(plan.old_restored_bytes()?)
+            } else {
+                None
+            },
         },
     ))
 }
@@ -2089,6 +2509,7 @@ fn handoff_loaded<T: DurableIo, J: DurableIo>(
         plan,
         records,
         Some(&ticket.new_selected_sha256),
+        false,
     )?;
     if recheck_immutable {
         ensure!(
@@ -2105,5 +2526,6 @@ fn handoff_loaded<T: DurableIo, J: DurableIo>(
         replay_closed: true,
         whole_image_verified: false,
         conversion_qualified: false,
+        old_restoration_bytes: None,
     })
 }

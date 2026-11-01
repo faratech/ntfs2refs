@@ -73,6 +73,8 @@ pub mod tree_resources;
 pub mod txf_native;
 pub mod volume_label;
 #[cfg(windows)]
+pub mod vss_observation;
+#[cfg(windows)]
 pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]
 mod native;

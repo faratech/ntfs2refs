@@ -102,6 +102,7 @@ pub mod refs_write_set;
 pub mod retained_compare;
 pub mod selected_capacity;
 pub mod selected_journal;
+pub mod selected_ownership;
 #[cfg(windows)]
 pub mod shadow_freeze;
 pub mod shadow_tree;

@@ -114,6 +114,8 @@ pub struct GeneralLiveNtfsObservation {
     report: crate::attestation::Report,
     txf: Option<crate::txf_native::GeneralObservation>,
     txf_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vss_observation: Option<crate::vss_observation::Observation>,
     before: GeneralDiskState,
     after: GeneralDiskState,
 }
@@ -226,6 +228,9 @@ impl GeneralLiveNtfsObservation {
     pub fn txf_error(&self) -> Option<&str> {
         self.txf_error.as_deref()
     }
+    pub fn vss_observation(&self) -> Option<&crate::vss_observation::Observation> {
+        self.vss_observation.as_ref()
+    }
 }
 impl LiveNtfsObservation {
     pub fn report(&self) -> &crate::attestation::Report {
@@ -282,6 +287,12 @@ enum SelectedWriteCapacity {
     OldZeroActualBytesV3 {
         journal_bytes: u64,
         old_zero_bytes: u64,
+        pinned_max_journal_bytes: u64,
+    },
+    SourceFreeActualBytesV3 {
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        source_free_bytes: u64,
         pinned_max_journal_bytes: u64,
     },
 }
@@ -359,6 +370,41 @@ impl WritePolicy {
         let reconstructed = journal_bytes
             .checked_add(old_zero_bytes)
             .ok_or_else(|| invalid("actual-byte selected capacity overflow"))?;
+        self.validate_with_byte_limit(length, reconstructed.min(length))
+    }
+
+    /// Capacity only: frozen allocation/VSS admission and the authenticated
+    /// format-five plan remain the caller's separate obligations.
+    fn validate_source_free_actual_bytes_v3(
+        &self,
+        length: u64,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        source_free_bytes: u64,
+        pinned_max_journal_bytes: u64,
+    ) -> io::Result<()> {
+        let expected = crate::journal_file::JournalProfile::from_schema_and_capacity(
+            3,
+            Some(pinned_max_journal_bytes),
+        )?;
+        let omitted = old_zero_bytes
+            .checked_add(source_free_bytes)
+            .ok_or_else(|| invalid("source-free omitted byte count overflow"))?;
+        if self.journal_profile != expected
+            || journal_bytes == 0
+            || journal_bytes > pinned_max_journal_bytes
+            || source_free_bytes == 0
+            || !source_free_bytes.is_multiple_of(GRANULE)
+            || !old_zero_bytes.is_multiple_of(GRANULE)
+            || omitted > self.maximum_bytes
+        {
+            return Err(invalid(
+                "source-free selected capacity differs from pinned V3 policy",
+            ));
+        }
+        let reconstructed = journal_bytes
+            .checked_add(omitted)
+            .ok_or_else(|| invalid("source-free selected capacity overflow"))?;
         self.validate_with_byte_limit(length, reconstructed.min(length))
     }
 
@@ -2141,7 +2187,7 @@ impl GeneralFrozenPartition {
         request: &crate::attestation::Request,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveNtfsObservation> {
-        self.observe_ntfs_files_with_passes(request, events, false)
+        self.observe_ntfs_files_with_passes(request, events, false, false)
     }
 
     /// As `observe_ntfs_files`, reading each stream's content once. Only for a
@@ -2151,7 +2197,18 @@ impl GeneralFrozenPartition {
         request: &crate::attestation::Request,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<GeneralLiveNtfsObservation> {
-        self.observe_ntfs_files_with_passes(request, events, true)
+        self.observe_ntfs_files_with_passes(request, events, true, false)
+    }
+
+    /// Observe VSS inside the existing physically READ_ONLY native view.
+    /// Offline volume GUIDs cannot be queried reliably by VSS. This adds no
+    /// extra publication/mount and restores persistent exclusion before return.
+    pub fn observe_ntfs_files_single_content_pass_with_vss(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
+        self.observe_ntfs_files_with_passes(request, events, true, true)
     }
 
     fn observe_ntfs_files_with_passes(
@@ -2159,6 +2216,7 @@ impl GeneralFrozenPartition {
         request: &crate::attestation::Request,
         events: &mut Vec<NativeEvent>,
         single_content_pass: bool,
+        require_vss: bool,
     ) -> io::Result<GeneralLiveNtfsObservation> {
         request.validate()?;
         if !matches!(request.schema_version, 2 | 3 | 4)
@@ -2228,6 +2286,24 @@ impl GeneralFrozenPartition {
             Ok(observation) => (Some(observation), None),
             Err(error) => (None, Some(error.to_string())),
         };
+        let vss_observation = (|| -> io::Result<_> {
+            if !require_vss {
+                return Ok(None);
+            }
+            if attributes(lease.file, lease.events)? != READ_ONLY {
+                return Err(invalid(
+                    "source lost physical write protection before VSS observation",
+                ));
+            }
+            let observation = crate::vss_observation::observe_snapshot_presence(&request.volume)?;
+            observation.require_observed_snapshot_absence()?;
+            if attributes(lease.file, lease.events)? != READ_ONLY {
+                return Err(invalid(
+                    "source lost physical write protection during VSS observation",
+                ));
+            }
+            Ok(Some(observation))
+        })();
         let restored = lease.finish();
         drop(lease);
         restored?;
@@ -2238,6 +2314,7 @@ impl GeneralFrozenPartition {
             ));
         }
         let report = collected?;
+        let vss_observation = vss_observation?;
         if report.request != *request
             || report.conversion_qualified
             || report.schema_version
@@ -2256,6 +2333,7 @@ impl GeneralFrozenPartition {
             report,
             txf,
             txf_error,
+            vss_observation,
             before,
             after,
         })
@@ -2958,6 +3036,30 @@ impl GeneralJournaledPartition {
         )
     }
 
+    /// Caller has authenticated a format-five journal, its explicit recovery
+    /// scope, frozen allocation witness and VSS admission. Counts alone grant
+    /// neither source admission nor replay authority.
+    pub fn arm_source_free_actual_bytes_v3_writes(
+        &mut self,
+        policy: WritePolicy,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        source_free_bytes: u64,
+        pinned_max_journal_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.arm_writes_inner(
+            policy,
+            Some(SelectedWriteCapacity::SourceFreeActualBytesV3 {
+                journal_bytes,
+                old_zero_bytes,
+                source_free_bytes,
+                pinned_max_journal_bytes,
+            }),
+            events,
+        )
+    }
+
     fn arm_writes_inner(
         &mut self,
         policy: WritePolicy,
@@ -2985,6 +3087,18 @@ impl GeneralJournaledPartition {
                 self.byte_len(),
                 journal_bytes,
                 old_zero_bytes,
+                pinned_max_journal_bytes,
+            )?,
+            Some(SelectedWriteCapacity::SourceFreeActualBytesV3 {
+                journal_bytes,
+                old_zero_bytes,
+                source_free_bytes,
+                pinned_max_journal_bytes,
+            }) => policy.validate_source_free_actual_bytes_v3(
+                self.byte_len(),
+                journal_bytes,
+                old_zero_bytes,
+                source_free_bytes,
                 pinned_max_journal_bytes,
             )?,
             None => policy.validate(self.byte_len())?,

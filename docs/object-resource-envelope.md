@@ -51,7 +51,13 @@ routes/transcripts and all current recovery readers. This change does not add
 paged manifests, handle batching, arbitrary file counts or larger-volume
 qualification. One sealed `f32c0f6` normal F: case now passed above the former
 directory split: 1,084 objects, 273 directories and all 811 independent stream
-hashes. More than 1,024 files, recovery and broader scale remain unqualified.
+hashes. Sealed `07b0164` subsequently passed controlled first-flushed-write
+interruption, clean restart, public Resume and separate Rollback for the same
+1,084-object/273-directory source. Resume preserved 654 missing digests and
+checked pinned complete maps plus 157 known hashes / 119,009 payload bytes;
+both lab observers independently matched all 811 hashes. More than 1,024 files,
+arbitrary faults, physical power loss and broader scale remain unqualified.
+[Recovery matrix](envelope-recovery-matrix.md).
 No unit tests were added or run. [Native scope](object-envelope-native.md).
 
 The V3 lab observer now explicitly validates the admitted descriptor and exact

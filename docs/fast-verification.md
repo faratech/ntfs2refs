@@ -5,25 +5,27 @@ with full-content verification retained as an option. The policy is explicit in
 new requests. Historical requests omit the field and retain full verification.
 `--verify-full-content` and whole-image mode select the original full path.
 
-The latest native-qualified runtime (`e606c53`) removes redundant native source reads for eligible
-ordinary initialized aligned streams and replaces final target stream scans with
-live extent verification. **The initial raw NTFS inspection still hashes every
-supported stream.** This stage reduces repeated reads; it does not yet eliminate
-the first payload pass. Historical requests keep full verification.
-
-The next built candidate also omits that initial pass for eligible streams using
-explicit optional digest evidence and a pinned recovery-map protocol. Its new
-native qualification is pending; see [initial scan elimination](raw-extent-verification.md).
+Native-qualified fast conversion omits initial raw and redundant native payload
+hashes for eligible initialized nonresident streams, using explicit absent
+digests and pinned extent evidence. Final target verification checks live maps
+and metadata. Whole aligned streams and retained prefixes with separately
+materialized, checksummed tails have native coverage. The grown V3 normal `f2`
+case passed 654 digest-free streams, 650 tails and all 811 independent lab hashes;
+see [normal scope](fresh-exclusive-native.md) and
+[initial scan elimination](raw-extent-verification.md). Historical requests keep
+full verification.
 
 Source report schema 12 explicitly distinguishes an unread extent-bound stream
 from a completed content hash. Native identity, EOF, geometry and complete
 retrieval evidence must agree with the raw model before a read is omitted.
-Resident, compressed, sparse, uninitialized and partial-tail streams retain
-native logical reads. No unread stream receives a digest or a successful EOF
+Resident, compressed, sparse and uninitialized streams retain the required
+logical reads. Eligible partial-tail streams retain only their aligned prefix;
+actual tail reads, writes, readback hashes and protected residuals are bound
+separately. No unread stream receives a digest or a successful EOF
 probe. The complete requested-evidence gate is separate from full-content equality.
 
 Repeated source fingerprints use a separate metadata-and-extents domain. Only
-Complete-hashed, independently ownership-checked ordinary user DATA interiors
+independently ownership-checked eligible ordinary user DATA interiors
 may be omitted. Bootstrap granules, metadata and tails remain covered; the exact
 omission map and canonical inspection pin are bound into the fingerprint. This
 is never labeled a full-content digest or accepted for whole-image admission.
@@ -36,7 +38,12 @@ map, file ID, EOF, allocation, link count, residency, sparse contract and integr
 state. Changed bytes are bound by the selected-image checksums, including resident
 and residual bytes. The final native report contains no observed content hashes;
 `extent-verification.json` records the separate proof. It cannot be deserialized
-into execution authority. Separate observers and recovery still perform full reads.
+into execution authority. Separate lab observers still hash every stream.
+Recovery of hashless expectations retains the pinned complete-map and selected
+checksum protocol and fully hashes only streams with known expected digests.
+The sealed `07b0164` grown V3 recovery matrix checked 157 known hashes / 119,009
+payload bytes on Resume while retaining 654 absent digests; both independent lab
+observers matched all 811 hashes. [Recovery scope](envelope-recovery-matrix.md).
 
 The lab independently hashes every target stream after the converter exits,
 using backup-intent handles for restrictive ACLs. Those lab-only reads and counts
@@ -52,8 +59,8 @@ the journal writer through HND. Offline filesystem exclusion and ownership of
 mutable aliases are still required; this gate does not claim global exclusion
 of administrative or volume aliases. Activation refusals persist their native
 events before returning.
-All target checks, original write ordering, intent durability, source exclusion,
-flushes and complete post-write target digest remain. The receipt callback gets
+Complete exact-old/new target checks, original write ordering, intent durability,
+source exclusion, flushes and complete post-write target digest remain. The receipt callback gets
 only the applied result, persists it, and cannot access either stream. With the
 same exclusive ownership and no hidden aliases, the validated immutable journal
 and post-apply target state remain valid; HND commits without redundant payload
@@ -85,7 +92,8 @@ Advisory current-process I/O and CPU counters are recorded at phase boundaries
 to identify remaining bulk work. These logical transfer counters are not
 physical disk-traffic measurements and do not reserve storage or authorize I/O.
 
-Native runtime `19569cb` passed wrapper `59939273` / core `12c9a91c` with exit 0,
+The following smaller cases are historical observations. Native runtime
+`19569cb` passed wrapper `59939273` / core `12c9a91c` with exit 0,
 44 objects, 30 default and 9 named stream hashes, the prior sparse/EA/security/
 reparse/compression fixture checks, label/mount preservation and closed HND.
 The activation transcript proves the primary gate opened, the second writable
@@ -120,7 +128,7 @@ compression checks. Those independent reads are separate from engine behavior.
 The tracked fixture binders accept source report 12 only with request 4 while
 retaining their existing field checks and legacy schema paths. The two closed
 archives contain 100/40 metadata files (82,719,759/2,457,084 bytes), all SHA checked.
-The VM is stopped at native-completed checkpoint
+That run was saved at native-completed checkpoint
 `26607589-a002-4e25-9102-199ef9fc52e7`; no extra observer checkpoint was created
 at the 50-checkpoint limit. See [the native and observer evidence](../evidence/extent-verification-native-20261031.json).
 
@@ -128,6 +136,8 @@ These single-run timings do not establish an improvement over the earlier
 32.852-second D1 baseline or reduced physical I/O. Focused release builds passed;
 no unit tests were added or run.
 
-Pending work includes eliminating the initial retained-payload inspection pass,
-further read-pass reduction, and exact-build recovery,
-mutation, cold-boot and power-loss qualification. No unit tests added or run.
+Pending work includes broader compatibility and scale, further read-pass
+reduction, arbitrary mutation/fault and physical power-loss qualification.
+Controlled first-write interruption, clean restart and public recovery are
+qualified only for their recorded sealed runtime and matrix. No unit tests
+were added or run.

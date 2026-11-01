@@ -28,7 +28,11 @@ including these aggregates and the V3 envelope, passed one normal F: case:
 1,084 objects, 273 directories and all 811 independent hashes, native0/HND.
 Native elapsed time was 384.724 seconds, with the observer passing 163.489
 seconds later. This is not a controlled timing comparison; process transfer
-counters are not physical disk I/O. Recovery and arbitrary-fault qualification
-remain pending. The later zero-digest cache was not used.
+counters are not physical disk I/O. The later zero-digest cache was not used
+in that normal f32 case. Sealed `07b0164`, including both changes, subsequently
+passed the grown V3 controlled first-flushed-write interruption, clean restart,
+public Resume and separate Rollback; each recovery observer matched all 811
+stream hashes. Arbitrary faults and physical power loss remain unqualified.
+[Recovery scope](envelope-recovery-matrix.md).
 [Native evidence](../evidence/object-envelope-native-20261031.json).
 No unit tests were added or run.

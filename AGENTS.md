@@ -23,6 +23,53 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+The grown-tree fresh-exclusive recovery matrix is complete. See
+`docs/envelope-recovery-matrix.md` and
+`evidence/envelope-recovery-matrix-20261031.json` for the exact artifact pins.
+The lab fault path uses sealed source `07b0164`, public binary `c11af38e`, and
+fault binary `73e92d3f`. It enters the real V3 planning-None -> admitted-Some,
+exclusive preparation and fresh exclusive apply path, then exits 86 after the
+first successful target write has been flushed. This is a controlled first-write
+interruption followed by a clean guest restart, not arbitrary power-loss proof.
+
+From the same interrupted checkpoint `307b65ff-555d-430d-ac93-7b5946834083`:
+public Resume `68203aa3` exited 0/HND in 552.2482827 s and independent observation
+matched all 811 stream hashes. Public Rollback `27abc45e` exited 0/ABT in
+325.5027467 s; its selected checksum matches the original ticket's old checksum
+over 11,392,921,600 bytes / 3,505 ranges. The NTFS 64 KiB label, 1,084-object
+namespace shape and all 811 independent hashes matched. Do not claim independent
+post-rollback extent-map or timestamp equality. Product Resume verifies 157 known
+full hashes / 119,009 payload bytes plus complete pinned maps; the independent
+lab observer's 811 full hashes are separate evidence. Missing digests stay missing.
+
+Both recovery directions succeeded with the cold-detached managed shadow absent;
+allocation journals are self-contained. Required pinned routing, request, plan,
+ticket, expectation, verification and map metadata still apply. This does not
+remove the compact/whole-shadow recovery dependency. Never replay after HND/ABT.
+Product rollback currently checks the NTFS mount; label and mount-set equality
+in this matrix are lab observations, not an implemented product gate.
+
+Root confirmed the final VM from a fresh process at 2026-11-01T00:04:06Z:
+Off / RAM 0 / 50 checkpoints, current restored-NTFS checkpoint
+`5f07551f-b339-4beb-97cd-0209967ee348`, parent `307b65ff`.
+Preserve interrupted `307b65ff`, resumed-ReFS `1aedc3d5`, normal ReFS `1c75c73f`,
+grown clean NTFS `83290a28`, original sources `6fe2d6b6` / `371ae756`, the partial
+tail matrix, D1 cold `d939f576` and guarded `f4bf5238`. This turn removed only
+obsolete `eaa87f30`, `9bb675b9` and `9ce156c3` through Hyper-V after their closed
+archives and dependencies were verified. All host evidence remains preserved.
+Actual lab usage was 279,145,884,943 bytes; D: free was 66,088,849,408 bytes under
+the unchanged storage epoch. WSL remains running. No unit tests were run.
+
+Pre-dispatch refusals remain recorded: malformed PowerShell numeric syntax,
+the original cold-shadow preflight dependency, and root's duplicate Rollback
+launcher, which the idle guard rejected before a second helper/native process.
+None is a second native recovery or a native replay failure. The successful
+matrix qualifies these exercised paths only; broad scale, compatibility, boot,
+arbitrary faults and physical power loss remain unfinished.
+
+The following normal-run observations and earlier milestone labels are history;
+the current checkpoint and preservation state above take precedence.
+
 Current qualified normal f2casee27c6a4675ef4cf682552b53b393af02/core89207dbd:
 runtimef2e5f73/public02e5e009d0805c8e3c35eafaa2c3f0632e77974d1b25dcea0a194b0f1eac816a
 (9,894,400B) native1652/creation1793485612084 exited0/HND358.795446s;

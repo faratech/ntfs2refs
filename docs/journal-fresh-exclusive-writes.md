@@ -20,9 +20,10 @@ the final flush and durable HND write/readback remain. Callback/data/check error
 after a successful intent write leave that intent open. Marker-write failures
 retain their existing torn-marker semantics.
 
-Legacy apply, fault injection, resume and rollback still use the original
-three-buffer old-or-new byte checks. Each independently opened journal still
-undergoes complete validation. Formats, expected digests, marker values and
+Legacy apply and V2 fault injection, resume and rollback still use the original
+three-buffer old-or-new byte checks. The explicit V3 first-write fault path uses
+the private fresh writer through an interrupting target. Each independently
+opened journal still undergoes complete validation. Formats, expected digests, marker values and
 write-policy ceilings are unchanged.
 
 The native gate denies other writers on the primary PhysicalDrive route and
@@ -40,6 +41,10 @@ compilation and independent review passed, followed by one sealed `f2e5f73`
 normal case: native0/HND, 273 directories and all 811 independent hashes.
 Observed process reads were 22,810,169,088 bytes below prior f32; slightly
 different plans/formatter metadata prevent a controlled attribution or speed
-claim. This is logical accounting, not physical I/O. Recovery/fault qualification
-remains pending; this code was not in the earlier sealed f32 case.
+claim. This is logical accounting, not physical I/O. Sealed `07b0164` subsequently
+passed a controlled first-flushed-write interruption and clean restart, followed
+by public Resume and separate Rollback on the grown V3 source. Both independent
+observers checked all 811 stream hashes. Arbitrary faults and physical power
+loss remain unqualified; this code was not in the earlier sealed f32 case.
+[Recovery matrix](envelope-recovery-matrix.md).
 [Native scope](fresh-exclusive-native.md). No unit tests were added or run.

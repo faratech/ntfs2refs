@@ -32,7 +32,30 @@ Do not redefine completion as the existing small-corpus success.
   recovery material and host archives; do not infer preserve-all from history.
 - Keep WSL running. No disabling UAC or new persistent privilege changes.
 
-## Active native operation (2026-11-01 UTC)
+## Paused work and last native observation (2026-11-01 UTC)
+
+Implementation and VM operations remain paused. The subsequent ntfs2btrfs
+comparison was read-only; the Git checkpoint does not resume either activity.
+The native state below is the last recorded observation, not a fresh process
+or VM check. Re-establish actual task/handle state before any future VM action.
+The directory-case work in attestation.rs is an unfinished model/schema change:
+native collection, admission integration, build and native validation remain
+pending. It is not part of the qualified frozen binary or a completed feature.
+
+LAST OBSERVED 8GiB NORMAL: root restored clean8329 once fromd40, fresh-verified then
+booted once with46 checkpoints. Actual case27ae9824f5794fe98a96d69c66cfc10b,
+stage C:\ntfs2refs\actual-byte-capacity-normal-27ae9824f5794fe98a96d69c66cfc10b,
+task N2R-ActualByteCapacity-normal-27ae9824f5794fe98a96d69c66cfc10b.
+Frozenadf08e9 producer80e5b0ff/public34c9, toolset4f62, exact8GiB policy used.
+Producer5412/creation1793502009573 exited0/HND03:04:51.8197235Z
+(282.2467235s from ms birth). ActualD11393249280>old8GiB-reserve,
+O5588070400/J5847923376<=8GiB,N3530, actualold_zero_actual_bytes_v1,
+prepared-ownertrue,1084maps,654missing650tails1371388, targetpayloadreads0.
+Wrapper5076/creation1793501997496 was ACTIVE in independent postchecks; all811/
+capacity-observation verification/archive/final-idle PENDING. No power/retry or
+HND replay until that closes. Root alone mutates VM; normalcheckpoint47 next.
+Source-case evidence versions13/14 are being coded onhost ONLY, not in this
+frozenVMbinary/report12. No scope/qualification transfer to that future code.
 
 Root alone owns VM mutation. Delegated agents may observe metadata/processes
 or edit assigned source. No other actor may dispatch, retry, stop, restore,

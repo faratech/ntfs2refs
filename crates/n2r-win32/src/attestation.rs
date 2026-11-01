@@ -126,7 +126,7 @@ pub struct Request {
     pub partition_length: u64,
     pub ntfs_serial: u64,
     pub files: Vec<FileIdentity>,
-    /// Explicit schema4 read-elision requests. These are not content digests
+    /// Explicit schema4/6 read-elision requests. These are not content digests
     /// or source-write authority. Every raw byte extent is reconciled with a
     /// complete native retrieval map before eliding the logical read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -207,6 +207,14 @@ impl ExtentIdentityStream {
     }
 }
 impl Request {
+    pub fn requires_directory_case_sensitivity(&self) -> bool {
+        matches!(self.schema_version, 5 | 6)
+    }
+
+    pub fn uses_extent_identity(&self) -> bool {
+        matches!(self.schema_version, 4 | 6)
+    }
+
     pub fn validate(&self) -> io::Result<()> {
         let guid = self
             .volume
@@ -233,14 +241,14 @@ impl Request {
                         .checked_add(self.partition_length)
                         .is_some_and(|n| n <= 64 * 1024 * 1024 * 1024)
             }
-            2 => {
+            2 | 5 if self.resource_profile.is_none() => {
                 self.disk_number <= 4095
                     && self
                         .partition_offset
                         .checked_add(self.partition_length)
                         .is_some_and(|n| n <= 64 * 1024 * 1024 * 1024 * 1024)
             }
-            3 | 4 => {
+            3 | 4 | 5 | 6 => {
                 self.disk_number <= 4095
                     && self.resource_profile.is_some_and(|profile| {
                         self.partition_length <= profile.maximum_partition_bytes()
@@ -255,9 +263,9 @@ impl Request {
         if !geometry_profile
             || !matches!(
                 (self.schema_version, self.resource_profile),
-                (1 | 2, None)
+                (1 | 2 | 5, None)
                     | (
-                        3 | 4,
+                        3 | 4 | 5 | 6,
                         Some(
                             ResourceProfile::ExperimentalLargeTreeV1
                                 | ResourceProfile::ExperimentalStreamingTreeV2
@@ -306,15 +314,15 @@ impl Request {
                 ));
             }
         }
-        if self.schema_version != 4 && !self.extent_identity_streams.is_empty()
-            || self.schema_version == 4
+        if !self.uses_extent_identity() && !self.extent_identity_streams.is_empty()
+            || self.uses_extent_identity()
                 && !self
                     .resource_profile
                     .is_some_and(ResourceProfile::is_streaming)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "extent read elision requires schema4 streaming evidence",
+                "extent read elision requires schema4/6 streaming evidence",
             ));
         }
         let mut streams = BTreeSet::new();
@@ -407,9 +415,73 @@ pub struct Snapshot {
     /// and deliberately absent on named DATA-stream payload snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reparse: Option<ReparseObservation>,
+    /// FileCaseSensitiveInfo on this same canonical directory handle. Missing
+    /// legacy evidence is Unknown, never a recorded case-insensitive result.
+    /// DATA-stream snapshots and actual nondirectories deliberately omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_case_sensitivity: Option<Query>,
 }
 
 impl Snapshot {
+    fn validate_case_query(query: &Query) -> io::Result<()> {
+        if query.class == 23
+            && match query.native_error {
+                None => query.bytes.len() == 4,
+                Some(_) => query.bytes.is_empty(),
+            }
+        {
+            // Unknown flag bits remain diagnostic evidence. Fresh source
+            // admission separately rejects nonzero/error/missing/unstable.
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native directory case query is contradictory or malformed",
+            ))
+        }
+    }
+
+    pub fn validate_directory_case_sensitivity(&self, required: bool) -> io::Result<()> {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native directory case evidence does not match its report or actual object type",
+            )
+        };
+        if !required {
+            return if self.directory_case_sensitivity.is_none() {
+                Ok(())
+            } else {
+                Err(invalid())
+            };
+        }
+        let mut standard = self.queries.iter().filter(|query| query.class == 1);
+        let actual_directory = match (standard.next(), standard.next()) {
+            (Some(query), None) if query.native_error.is_none() && query.bytes.len() == 24 => {
+                Some(query.bytes[21] != 0)
+            }
+            // An unsuccessful type query proves neither directory nor file.
+            // Its metadata error remains for higher-level refusal, and no
+            // missing case observation can be interpreted as flags zero.
+            _ => None,
+        };
+        match (actual_directory, &self.directory_case_sensitivity) {
+            (Some(true), Some(query)) => Self::validate_case_query(query),
+            (Some(false) | None, None) => Ok(()),
+            _ => Err(invalid()),
+        }
+    }
+
+    pub(crate) fn directory_case_sensitivity_bytes(&self) -> io::Result<usize> {
+        match &self.directory_case_sensitivity {
+            Some(query) => {
+                Self::validate_case_query(query)?;
+                Ok(query.bytes.len())
+            }
+            None => Ok(0),
+        }
+    }
+
     pub fn validate_reparse(&self, required: bool) -> io::Result<()> {
         match &self.reparse {
             Some(ReparseObservation {
@@ -756,6 +828,10 @@ impl Report {
                     snapshot.extended_attribute_bytes()?,
                 )?;
                 add(&mut out.stream_evidence_bytes, snapshot.reparse_bytes()?)?;
+                add(
+                    &mut out.stream_evidence_bytes,
+                    snapshot.directory_case_sensitivity_bytes()?,
+                )?;
             }
             for capture in file.streams_before.iter().chain(file.streams_after.iter()) {
                 query(&mut out.stream_evidence_bytes, &capture.enumeration)?;
@@ -907,14 +983,20 @@ impl Report {
         for file in &self.files {
             for snapshot in file.before.iter().chain(file.after.iter()) {
                 snapshot
-                    .validate_extended_attributes(matches!(self.schema_version, 10 | 11 | 12))?;
-                snapshot.validate_reparse(matches!(self.schema_version, 11 | 12))?;
+                    .validate_extended_attributes(matches!(self.schema_version, 10 | 11 | 12 | 13 | 14))?;
+                snapshot.validate_reparse(matches!(self.schema_version, 11 | 12 | 13 | 14))?;
+                snapshot.validate_directory_case_sensitivity(matches!(self.schema_version, 13 | 14))?;
             }
         }
         let Some(profile) = self.request.resource_profile else {
-            return if (2..=7).contains(&self.schema_version)
+            let legacy = (2..=7).contains(&self.schema_version)
+                && matches!(self.request.schema_version, 1 | 2);
+            let canonical_case = self.schema_version == 13 && self.request.schema_version == 5;
+            if canonical_case {
+                self.request.validate()?;
+            }
+            return if (legacy || canonical_case)
                 && self.resources.is_none()
-                && matches!(self.request.schema_version, 1 | 2)
                 && self
                     .allocation
                     .as_ref()
@@ -926,7 +1008,10 @@ impl Report {
             };
         };
         self.request.validate()?;
-        if (self.request.schema_version == 4) != (self.schema_version == 12) {
+        if !matches!(
+            (self.request.schema_version, self.schema_version),
+            (3, 8 | 9 | 10 | 11) | (4, 12) | (5, 13) | (6, 14)
+        ) {
             return Err(invalid());
         }
         let limits = profile.limits();
@@ -934,7 +1019,7 @@ impl Report {
         let data = self.logical_data.as_ref().ok_or_else(invalid)?;
         let namespace = self.namespace.as_ref().ok_or_else(invalid)?;
         let allocation = self.allocation.as_ref().ok_or_else(invalid)?;
-        if matches!(self.schema_version, 9 | 10 | 11 | 12) {
+        if matches!(self.schema_version, 9 | 10 | 11 | 12 | 13 | 14) {
             allocation
                 .streamed_before
                 .as_ref()
@@ -977,8 +1062,10 @@ impl Report {
                 }
                 for h in pass {
                     if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
-                        && (self.schema_version != 12
-                            || self.request.schema_version != 4
+                        && (!matches!(
+                            (self.request.schema_version, self.schema_version),
+                            (4, 12) | (6, 14)
+                        )
                             || h.outcome.bytes_read != 0
                             || h.outcome.eof_confirmed
                             || h.outcome.sha256.is_some()
@@ -1030,7 +1117,7 @@ impl Report {
         }
         let streaming_shape = match self.schema_version {
             8 => allocation.streamed_before.is_none() && allocation.streamed_after.is_none(),
-            9 | 10 | 11 | 12 => {
+            9 | 10 | 11 | 12 | 13 | 14 => {
                 allocation.streamed_before.is_some()
                     && allocation.streamed_after.is_some()
                     && allocation.bitmap_before_continuation.is_empty()

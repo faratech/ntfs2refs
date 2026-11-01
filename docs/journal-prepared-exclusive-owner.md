@@ -7,7 +7,7 @@ the selected old/new SHA-256 values, footer and clear markers. Previously it
 discarded the validated record table. Fresh apply then loaded and validated the
 same journal again before checking the actual old target.
 
-The candidate retains that table in a private, nonserializable, one-shot
+The implementation retains that table in a private, nonserializable, one-shot
 `PreparedExclusiveJournal`. It owns the exact journal and immutable plan/ticket
 continuously from preparation through apply and HND. It exposes the ticket for
 receipt persistence, but no mutable journal accessor. Neither a saved ticket nor
@@ -40,5 +40,13 @@ reads:
 
 The clear-marker and exact-old-target reads remain. This is code-path accounting
 for that plan, not a measured physical-I/O reduction, wall-time result or HDD
-forecast. Previous normal and recovery evidence belongs to its sealed binaries;
-it is not qualification of this new candidate. No unit tests were added or run.
+forecast. Sealed `11e8963` subsequently passed one grown V3 normal case with
+`prepared_journal_owner_reused: true`: native exit 0/HND in 280.7502894 seconds,
+273 directories and all 811 independent stream hashes. Its actual plan removes
+17,136,951,040 duplicate logical read bytes by this accounting. Process counters
+and differing historical plans do not establish a controlled speed or physical
+I/O gain. [Native scope and evidence](prepared-owner-native.md).
+
+The `07b0164` recovery matrix belongs to its earlier sealed binaries. Fault,
+recovery, arbitrary mutation and physical power-loss qualification remain
+pending for this prepared-owner candidate. No unit tests were added or run.

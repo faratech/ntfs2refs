@@ -23,7 +23,32 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-Next performance candidate: `PreparedExclusiveJournal` now retains the SAME
+Latest normal native qualification: sealed `11e8963` / public `2ff60056`
+(9,896,960 bytes), case `79b22a2f` / core `b4135fc9`, actual PID 3944 /
+creation 1793492056135, exited 0/HND in 280.7502894 seconds. Actual result proves
+`prepared_journal_owner_reused=true`; the separate observer passed all 811 hashes
+165.6914236 seconds later. Same grown `8329`, fresh baseline `f5de` and growth
+`835b`: 1,084 objects / 273 directories, 654 absent digests / 650 materialized
+tails / 1,371,388 bytes. No digests were manufactured. Native-verified process
+reads were 111,031,478,753 bytes and writes 23,029,158,576 bytes. Prepared-to-applied
+reads 28,487,536,640 equal `2D + copy + literal + 12,288` marker bytes exactly.
+The avoided duplicate load on this plan is 17,136,951,040 logical bytes. Prior f2
+process reads were 17,144,221,184 bytes higher; differing plans/formatter metadata
+preclude controlled timing or physical-I/O claims. CPU was 270.4375 user /
+26.546875 kernel seconds. See `docs/prepared-owner-native.md` and
+`evidence/prepared-owner-native-20261031.json`.
+
+Current VM, confirmed from a fresh process at 2026-11-01T00:24:16Z: Off / RAM 0 /
+50 checkpoints at converted ReFS `ed6fe063-3a06-489a-8028-2a16929ce171`, parent
+`83290a28`. Preserve the new normal branch, the `307b` / `1aed` / `5f075`
+interruption/Resume/Rollback matrix, clean grown `8329`, original sources and
+the other explicitly protected branches below. Obsolete inactive-leaf normal
+checkpoint `1c75c73f` was removed through Hyper-V only after its full closed
+archive/dependencies (91 unique files) and exact graph were checked under held
+read guards. All host files remain. Actual lab usage 279,038,846,111 bytes /
+host free 66,131,628,032 bytes remains inside the unchanged epoch. WSL stays up.
+
+Performance implementation: `PreparedExclusiveJournal` retains the SAME
 exclusive journal borrow, immutable plan, original ticket and authenticated
 records from the complete post-flush preparation readback through activation
 and fresh apply/HND. The fresh arm exposes no mutable journal accessor. Exact
@@ -32,10 +57,10 @@ flush/order/callback/HND and all independently opened recovery checks stay.
 Normal fast and V3 first-write fault use the owner; legacy fault/full paths stay.
 Result records the actual enum-derived `prepared_journal_owner_reused` value;
 the fault diagnostic is schema 2, with exact historical schema 1 still accepted
-by the lab controllers. Focused library/CLI check, independent review and AST
-parsing pass; release/native qualification is pending. For the prior e27c plan,
-avoiding the duplicate immutable/resolved validation reads saves a code-accounted
-17,138,157,184 logical bytes, not a measured physical-I/O or timing result.
+by the lab controllers. Focused library/CLI check, independent review, AST
+parsing, release build and the scoped normal native case above pass. This new
+owner's fault/recovery/mutation/power-loss qualification remains pending; the
+following `07b0164` matrix belongs to its original sealed binaries.
 See `docs/journal-prepared-exclusive-owner.md`. No unit tests.
 
 The grown-tree fresh-exclusive recovery matrix is complete. See
@@ -64,10 +89,11 @@ remove the compact/whole-shadow recovery dependency. Never replay after HND/ABT.
 Product rollback currently checks the NTFS mount; label and mount-set equality
 in this matrix are lab observations, not an implemented product gate.
 
-Root confirmed the final VM from a fresh process at 2026-11-01T00:04:06Z:
+At closure of the recovery matrix, root confirmed from a fresh process at
+2026-11-01T00:04:06Z:
 Off / RAM 0 / 50 checkpoints, current restored-NTFS checkpoint
 `5f07551f-b339-4beb-97cd-0209967ee348`, parent `307b65ff`.
-Preserve interrupted `307b65ff`, resumed-ReFS `1aedc3d5`, normal ReFS `1c75c73f`,
+Preserve interrupted `307b65ff`, resumed-ReFS `1aedc3d5`, restored NTFS `5f07551f`,
 grown clean NTFS `83290a28`, original sources `6fe2d6b6` / `371ae756`, the partial
 tail matrix, D1 cold `d939f576` and guarded `f4bf5238`. This turn removed only
 obsolete `eaa87f30`, `9bb675b9` and `9ce156c3` through Hyper-V after their closed

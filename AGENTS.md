@@ -23,6 +23,26 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+New built candidate: canonical old-zero journal format 4 `N2ROLD01` omits stored
+payload only for whole selected ranges whose actual original bytes were checked
+zero during capture AND reread/checked during preparation. Existing boundaries
+are unchanged; coalescing ANDs the evidence. New 104-byte records authenticate
+old kind, new kind and both complete logical hashes. Central `read_before`
+resolves payload/zero for rollback, mixed checks and cross-record COPY. Legacy
+formats/serialization remain unchanged with absent/empty `old_zero_ranges`.
+Exact `J=8352+104*N+2D-Z-C-O`; native new-format gate allows `D<=J+O` with checked
+arithmetic and unchanged profile ceiling. Conservative capture `D+literal`
+capacity, selected writes, required ReFS zeros, complete target hashes, owner,
+flush/order/HND/ABT and source-certificate gates stay. No admission-cap lift.
+Focused public/fault/manual-helper release build and independent review pass.
+Existing standalone owned-file experiment passed legacy SEL/ZERO/CPY plus old-zero
+alone and with COPY, persisted short-write Resume/Rollback, false-old-zero refusal
+and equal framed old/new digests. New modes omitted 12,288/16,384 old bytes and
+saved 12,216/16,328 actual journal bytes. Summary under `old-zero-functional-8f3c08f0`
+SHA `44827ea6397d5ead7b5ecd05c9f4a496753a6a871fddafa138f26b9bb36e2ac4`.
+Native qualification is pending; do not transfer the following sealed results.
+See `docs/old-zero-journal.md`. No unit tests were added or run.
+
 Latest normal native qualification: sealed `11e8963` / public `2ff60056`
 (9,896,960 bytes), case `79b22a2f` / core `b4135fc9`, actual PID 3944 /
 creation 1793492056135, exited 0/HND in 280.7502894 seconds. Actual result proves

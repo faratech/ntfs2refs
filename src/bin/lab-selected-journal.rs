@@ -25,6 +25,10 @@ struct Args {
     /// crossing old-record boundaries in both directions.
     #[arg(long)]
     copy_new: bool,
+    /// Omit independently checked old-zero whole ranges, including old-copy
+    /// sources when --copy-new is enabled. Files remain owned ordinary8MiB.
+    #[arg(long, conflicts_with = "zero_new")]
+    old_zero: bool,
 }
 #[derive(Default, Clone, Serialize)]
 struct Counts {
@@ -256,12 +260,24 @@ fn exercise(
     );
     let validation_read_bytes = journal.count.bytes_read - validation_before;
     // The immutable body is read exactly once; lifecycle then reads the two
-    // 4 KiB marker slots. This assertion covers both actual payload formats.
-    let reference_resolution_bytes = if plan.new_copy_ranges.is_empty() {
+    // 4 KiB marker slots. Canonical old zeros supply no physical journal
+    // reads even when a copy spans old-zero and stored old-payload records.
+    let mut reference_resolution_bytes = if plan.new_copy_ranges.is_empty() {
         0
     } else {
         ticket.selected_bytes - plan.new_zero_bytes()?
     };
+    if !plan.new_copy_ranges.is_empty() {
+        for copy in &plan.new_copy_ranges {
+            for zero in &plan.old_zero_ranges {
+                let start = copy.source_offset.max(zero.offset);
+                let end = (copy.source_offset + copy.length).min(zero.offset + zero.length);
+                reference_resolution_bytes = reference_resolution_bytes
+                    .checked_sub(end.saturating_sub(start))
+                    .context("old-zero reference read accounting underflow")?;
+            }
+        }
+    }
     ensure!(
         validation_read_bytes == ticket.journal_length + reference_resolution_bytes,
         "lifecycle validation reread or omitted journal bytes"
@@ -414,6 +430,7 @@ fn planned(dir: &Path) -> Result<serde_json::Value> {
         max_journal_bytes: u64::MAX,
         new_zero_ranges: Vec::new(),
         new_copy_ranges: Vec::new(),
+        old_zero_ranges: Vec::new(),
     }
     .validate()?;
     ensure!(
@@ -505,6 +522,7 @@ fn main() -> Result<()> {
         max_journal_bytes: JOURNAL,
         new_zero_ranges: Vec::new(),
         new_copy_ranges: Vec::new(),
+        old_zero_ranges: Vec::new(),
     };
     if args.copy_new {
         const MIB: u64 = 1024 * 1024;
@@ -555,9 +573,28 @@ fn main() -> Result<()> {
     } else if args.zero_new {
         plan.new_zero_ranges = plan.ranges[..2].to_vec();
     }
+    if args.old_zero {
+        plan.old_zero_ranges = if args.copy_new {
+            // The1MiB destination starts old-zero and receives nonzero bytes
+            // before the persisted short write. Both copy origins cross an
+            // old-zero/stored-old boundary, in opposite orders.
+            vec![
+                plan.ranges[1].clone(),
+                plan.ranges[2].clone(),
+                plan.ranges[6].clone(),
+            ]
+        } else {
+            plan.ranges[1..].to_vec()
+        };
+    }
+    let mut without_old_zero = plan.clone();
+    without_old_zero.old_zero_ranges.clear();
+    without_old_zero.max_journal_bytes = u64::MAX;
+    let journal_without_old_zero_bytes = without_old_zero.validate()?.1;
     let mut legacy_plan = plan.clone();
     legacy_plan.new_zero_ranges.clear();
     legacy_plan.new_copy_ranges.clear();
+    legacy_plan.old_zero_ranges.clear();
     legacy_plan.max_journal_bytes = u64::MAX;
     let legacy_journal_bytes = legacy_plan.validate()?.1;
     plan.validate()?;
@@ -569,6 +606,20 @@ fn main() -> Result<()> {
         ("rollback-target.bin", false),
     ] {
         setup_bytes += setup(&args.directory.join(name), candidate, &plan.ranges)?;
+    }
+    let mut old_zero_setup_bytes = 0u64;
+    if args.old_zero {
+        for name in ["source.bin", "resume-target.bin", "rollback-target.bin"] {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .open(args.directory.join(name))?;
+            for range in &plan.old_zero_ranges {
+                file.seek(SeekFrom::Start(range.offset))?;
+                file.write_all(&vec![0; usize::try_from(range.length)?])?;
+                old_zero_setup_bytes += range.length;
+            }
+            file.sync_all()?;
+        }
     }
     if !plan.new_zero_ranges.is_empty() || !plan.new_copy_ranges.is_empty() {
         let mut file = OpenOptions::new()
@@ -602,12 +653,65 @@ fn main() -> Result<()> {
     )?;
     let resumed = exercise(&args.directory, &mut source, &mut candidate, &plan, true)?;
     let rolled_back = exercise(&args.directory, &mut source, &mut candidate, &plan, false)?;
+    let old_zero_digest_comparison = if args.old_zero {
+        let mut journal = Fenced::open(
+            &args.directory.join("without-old-zero.journal"),
+            None,
+            true,
+            true,
+        )?;
+        let ticket = sj::prepare(&mut source, &mut candidate, &mut journal, &without_old_zero)?;
+        ensure!(
+            ticket.journal_length == journal_without_old_zero_bytes
+                && resumed["selected_sha256"] == hex::encode(ticket.new_selected_sha256)
+                && rolled_back["selected_sha256"] == hex::encode(ticket.old_selected_sha256),
+            "old-zero encoding changed selected old/new digest framing"
+        );
+        Some(serde_json::json!({
+            "same_range_boundaries":without_old_zero.ranges==plan.ranges,
+            "legacy_encoding":without_old_zero.encoding_name(),
+            "old_selected_sha256":hex::encode(ticket.old_selected_sha256),
+            "new_selected_sha256":hex::encode(ticket.new_selected_sha256),
+            "old_and_new_selected_digests_identical":true,
+            "journal_bytes":ticket.journal_length,
+            "journal_core_io":journal.count,
+        }))
+    } else {
+        None
+    };
     ensure!(
         source.count.denied == 0 && candidate.count.denied == 0,
         "core complement input read attempted"
     );
     let source_io = source.count.clone();
     let candidate_io = candidate.count.clone();
+    let false_old_zero_claim = if args.old_zero {
+        let mut false_plan = plan.clone();
+        // Source range0 is the original nonzero pattern in every setup.
+        false_plan.old_zero_ranges = vec![plan.ranges[0].clone()];
+        let mut rejected = Fenced::open(
+            &args.directory.join("false-old-zero-claim.journal"),
+            None,
+            true,
+            true,
+        )?;
+        let before = source.count.bytes_read;
+        let error = sj::prepare(&mut source, &mut candidate, &mut rejected, &false_plan)
+            .err()
+            .context("nonzero original source accepted as old-zero")?;
+        ensure!(
+            source.count.bytes_read - before == plan.ranges[0].length,
+            "false old-zero declaration did not inspect the actual original bytes"
+        );
+        Some(serde_json::json!({
+            "rejected":true,"error":format!("{error:#}"),
+            "actual_source_bytes_read":source.count.bytes_read-before,
+            "target_writes_attempted":false,"ticket_issued":false,
+            "journal_core_io":rejected.count,
+        }))
+    } else {
+        None
+    };
     let false_zero_claim_rejected = if !plan.new_zero_ranges.is_empty() {
         let mut false_plan = plan.clone();
         false_plan.new_zero_ranges = vec![plan.ranges[2].clone()];
@@ -646,7 +750,7 @@ fn main() -> Result<()> {
     drop(candidate);
     let verification_bytes = verify(&args.directory, &plan.ranges)?;
     let pruned = planned(&args.directory)?;
-    let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"zero_new_encoding":!plan.new_zero_ranges.is_empty(),"copy_new_encoding":args.copy_new,"journal_bytes":plan.validate()?.1,"legacy_journal_bytes":legacy_journal_bytes,"new_zero_payload_bytes_omitted":plan.new_zero_bytes()?,"new_copy_payload_bytes_omitted":plan.new_copy_bytes()?,"false_zero_claim_rejected":false_zero_claim_rejected,"false_copy_claim_rejected":false_copy_claim_rejected,"changed_granule_planning":pruned,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
+    let report = serde_json::json!({"kind":"ordinary-file-selected-journal-integration","success":true,"plan":plan,"zero_new_encoding":!plan.new_zero_ranges.is_empty(),"copy_new_encoding":args.copy_new,"old_zero_encoding":args.old_zero,"journal_encoding":plan.encoding_name(),"journal_bytes":plan.validate()?.1,"legacy_journal_bytes":legacy_journal_bytes,"journal_without_old_zero_bytes":journal_without_old_zero_bytes,"old_zero_net_journal_bytes_saved":i128::from(journal_without_old_zero_bytes)-i128::from(plan.validate()?.1),"old_zero_payload_bytes_omitted":plan.old_zero_bytes()?,"old_zero_setup_bytes_written":old_zero_setup_bytes,"old_zero_digest_comparison":old_zero_digest_comparison,"false_old_zero_claim":false_old_zero_claim,"new_zero_payload_bytes_omitted":plan.new_zero_bytes()?,"new_copy_payload_bytes_omitted":plan.new_copy_bytes()?,"false_zero_claim_rejected":false_zero_claim_rejected,"false_copy_claim_rejected":false_copy_claim_rejected,"changed_granule_planning":pruned,"setup_image_bytes_written":setup_bytes,"source_core_io":source_io,"candidate_core_io":candidate_io,"resume":resumed,"rollback":rolled_back,"independent_verification_bytes_read":verification_bytes,"outside_sentinel_blocks_checked":10,"core_complement_io_permitted":false,"whole_image_verified":false,"conversion_qualified":false,"scope":"Owned ordinary8MiB files only. Selected bytes and sampled outside sentinels verified independently after all core wrappers closed. No metadata ownership or native conversion qualification."});
     let bytes = serde_json::to_vec_pretty(&report)?;
     ensure!(bytes.len() <= 65536, "report exceeds64KiB");
     let mut output = OpenOptions::new()

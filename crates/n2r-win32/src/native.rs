@@ -288,6 +288,34 @@ impl WritePolicy {
         self.validate_with_byte_limit(length, journal_bytes)
     }
 
+    /// Canonical old zeros preserve logical rollback bytes without storing a
+    /// payload copy. The caller authenticates the pinned old-zero subset;
+    /// these counts alone grant no journal or source authority.
+    fn validate_old_zero_encoded(
+        &self,
+        length: u64,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+    ) -> io::Result<()> {
+        if journal_bytes == 0
+            || journal_bytes > self.journal_profile.max_journal_bytes()
+            || old_zero_bytes == 0
+            || old_zero_bytes > self.maximum_bytes
+            || !old_zero_bytes.is_multiple_of(GRANULE)
+        {
+            return Err(invalid(
+                "old-zero journal capacity or logical byte count differs",
+            ));
+        }
+        let reconstructed_capacity = journal_bytes
+            .checked_add(old_zero_bytes)
+            .ok_or_else(|| invalid("old-zero journal capacity overflow"))?;
+        self.validate_with_byte_limit(
+            length,
+            reconstructed_capacity.min(self.journal_profile.max_encoded_changed_bytes()),
+        )
+    }
+
     fn validate_with_byte_limit(&self, length: u64, byte_limit: u64) -> io::Result<()> {
         layout::validate_ranges(&self.allowed, length)?;
         // Relocation-only tree plans have no retained ranges. The native
@@ -2830,20 +2858,41 @@ impl GeneralJournaledPartition {
         journal_bytes: u64,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
-        self.arm_writes_inner(policy, Some(journal_bytes), events)
+        self.arm_writes_inner(policy, Some((journal_bytes, 0)), events)
+    }
+
+    /// Canonical old-zero encoding may have a journal shorter than its selected
+    /// write set. Complete journal/plan authentication is still the caller's
+    /// obligation; the selected-byte profile ceiling remains unchanged.
+    pub fn arm_old_zero_selected_writes(
+        &mut self,
+        policy: WritePolicy,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        if old_zero_bytes == 0 {
+            return Err(invalid(
+                "old-zero write policy requires a nonempty pinned subset",
+            ));
+        }
+        self.arm_writes_inner(policy, Some((journal_bytes, old_zero_bytes)), events)
     }
 
     fn arm_writes_inner(
         &mut self,
         policy: WritePolicy,
-        encoded_journal_bytes: Option<u64>,
+        encoded_journal_bytes: Option<(u64, u64)>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
         if self.policy.is_some() || self.write_poisoned || self.native_write_bytes_requested != 0 {
             return Err(invalid("general journal write policy is already consumed"));
         }
         match encoded_journal_bytes {
-            Some(bytes) => policy.validate_encoded(self.byte_len(), bytes)?,
+            Some((bytes, 0)) => policy.validate_encoded(self.byte_len(), bytes)?,
+            Some((bytes, old_zero)) => {
+                policy.validate_old_zero_encoded(self.byte_len(), bytes, old_zero)?
+            }
             None => policy.validate(self.byte_len())?,
         }
         if self.state(events)?.disk_attributes != OFFLINE {

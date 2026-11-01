@@ -90,14 +90,14 @@ impl CaptureBudget {
         append: u64,
         ranges: usize,
     ) -> Result<CaptureProgress> {
-        // The widest selected encoding has 96-byte records. The established
+        // The widest selected encoding has 104-byte records. The established
         // 16 MiB reserve also covers headers, footer and bounded metadata; the
         // exact plan is independently validated after the capture completes.
         let metadata = 8192u64
             .checked_add(80 + 80)
             .and_then(|n| {
                 (ranges as u64)
-                    .checked_mul(96)
+                    .checked_mul(104)
                     .and_then(|r| n.checked_add(r))
             })
             .context("capture journal metadata overflow")?;
@@ -1105,6 +1105,13 @@ impl<'a> SourceBackedShadow<'a> {
                     let clusters =
                         usize::try_from(u64::try_from((end - offset) / 4096)?.min(allowed))?;
                     let bytes = clusters * 4096;
+                    // Only allocation reference-aware captures classify actual
+                    // old bytes. Keep existing boundaries; the whole range is
+                    // eligible only if every accepted byte is observed zero.
+                    let old_is_zero = copies.is_some()
+                        && original[offset..offset + bytes]
+                            .iter()
+                            .all(|&byte| byte == 0);
                     let next = changed
                         .checked_add(bytes as u64)
                         .context("delta byte count overflow")?;
@@ -1157,10 +1164,10 @@ impl<'a> SourceBackedShadow<'a> {
                         );
                     }
                     if extends_previous {
-                        ranges
-                            .last_mut()
-                            .context("extended capture range absent")?
-                            .length += bytes as u64;
+                        let previous =
+                            ranges.last_mut().context("extended capture range absent")?;
+                        previous.old_is_zero &= old_is_zero;
+                        previous.length += bytes as u64;
                     } else {
                         ensure!(
                             ranges.len() < 65536,
@@ -1171,6 +1178,7 @@ impl<'a> SourceBackedShadow<'a> {
                             length: bytes as u64,
                             packed_offset: packed,
                             new_is_zero,
+                            old_is_zero,
                             copy_source_offset,
                         });
                     }

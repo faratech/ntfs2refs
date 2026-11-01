@@ -23,6 +23,8 @@ pub struct DeltaArtifactPins {
     pub packed_bytes: u64,
     pub partition_bytes: u64,
     pub changed_ranges: usize,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub old_zero_bytes: u64,
     pub selected_bytes_compared: u64,
     pub equal_selected_bytes: u64,
     pub source_selected_sha256: String,
@@ -40,7 +42,13 @@ struct StoredRange {
     #[serde(default)]
     new_is_zero: bool,
     #[serde(default)]
+    old_is_zero: bool,
+    #[serde(default)]
     copy_source_offset: Option<u64>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -316,6 +324,11 @@ impl VerifiedDeltaArtifact {
         ] {
             ensure!(canonical_digest(digest), "noncanonical capture digest");
         }
+        ensure!(
+            capture.layout.encoding_version == Some(4)
+                || capture.layout.ranges.iter().all(|range| !range.old_is_zero),
+            "legacy delta encoding cannot carry old-zero evidence"
+        );
         let ranges = capture
             .layout
             .ranges
@@ -325,6 +338,7 @@ impl VerifiedDeltaArtifact {
                 length: r.length,
                 packed_offset: r.packed_offset,
                 new_is_zero: r.new_is_zero,
+                old_is_zero: r.old_is_zero,
                 copy_source_offset: r.copy_source_offset,
             })
             .collect();
@@ -341,6 +355,12 @@ impl VerifiedDeltaArtifact {
                 ranges,
             )?,
             (Some(3), Some(packed_bytes)) => DeltaLayout::new_reference_aware(
+                capture.layout.partition_bytes,
+                capture.layout.changed_bytes,
+                packed_bytes,
+                ranges,
+            )?,
+            (Some(4), Some(packed_bytes)) => DeltaLayout::new_old_zero_aware(
                 capture.layout.partition_bytes,
                 capture.layout.changed_bytes,
                 packed_bytes,
@@ -386,6 +406,7 @@ impl VerifiedDeltaArtifact {
             packed_bytes: packed_stamp.bytes,
             partition_bytes: layout.partition_bytes(),
             changed_ranges: layout.changed_ranges(),
+            old_zero_bytes: layout.old_zero_bytes(),
             selected_bytes_compared: capture.selected_bytes_compared,
             equal_selected_bytes: capture.equal_selected_bytes,
             source_selected_sha256: capture.source_selected_sha256,

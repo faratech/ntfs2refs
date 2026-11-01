@@ -619,6 +619,13 @@ impl FrozenAllocationTargetPreservation {
                     },
                 )
                 .collect(),
+            old_zero_ranges: self
+                .capture
+                .layout
+                .old_zero_ranges()
+                .into_iter()
+                .map(|(offset, length)| crate::selected_journal::SelectedRange { offset, length })
+                .collect(),
         };
         plan.validate()?;
         Ok(plan)

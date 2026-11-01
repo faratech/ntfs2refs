@@ -195,6 +195,47 @@ function Save([string]$Name,$Value){
  $f=[IO.File]::Open((Join-Path $c.stage $Name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
  try{$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}
 }
+function LabJournalRangeKey($Range){
+ Need ($Range-is[pscustomobject]-and@($Range.PSObject.Properties).Count-eq2-and@($Range.PSObject.Properties|Where-Object {$_.Name-cnotin@('offset','length')}).Count-eq0) 'Exact offset/length range fields required.'
+ $null=LabIntegerKey $Range.offset;$null=LabIntegerKey $Range.length
+ return (LabIntegerKey $Range.offset)+':'+(LabIntegerKey $Range.length)
+}
+function AssertLabOldZeroEncoding($Plan,[string]$Records,$ActualResult){
+ $property=$Plan.PSObject.Properties['old_zero_ranges']
+ if($null-eq$property){return @{enabled=$false}}
+ Need ($null-ne$property.Value-and$property.Value-is[Collections.IList]) 'Old-zero ranges must be an explicit array.'
+ $oldZeros=@($property.Value);if($oldZeros.Count-eq0){return @{enabled=$false}}
+ $null=LabIntegerKey $Plan.image_length;$null=LabIntegerKey $Plan.max_selected_bytes;$null=LabIntegerKey $Plan.max_journal_bytes
+ Need ($Plan.image_length-gt0-and[decimal]$Plan.image_length-le[long]::MaxValue-and$Plan.ranges-is[Collections.IList]-and@($Plan.ranges).Count-gt0-and@($Plan.ranges).Count-le65536) 'Bounded complete selected-range domain required.'
+ $selected=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+ $d=0D;$previousEnd=0D
+ foreach($range in $Plan.ranges){$key=LabJournalRangeKey $range;$end=[decimal]$range.offset+[decimal]$range.length;Need ($range.length-gt0-and$range.offset%4096-eq0-and$range.length%4096-eq0-and[decimal]$range.offset-ge$previousEnd-and$end-le[decimal]$Plan.image_length-and-not$selected.ContainsKey($key)) 'Selected ranges must be aligned, sorted, unique and within the image.';$selected.Add($key,$range);$d+=[decimal]$range.length;$previousEnd=$end}
+ Need ($d-gt0-and$d-le[long]::MaxValue-and$d-le[decimal]$Plan.max_selected_bytes) 'Selected byte sum exceeds its admitted bound.'
+ $o=0D;$previousOffset=-1D
+ foreach($range in $oldZeros){$key=LabJournalRangeKey $range;Need ($selected.ContainsKey($key)-and[decimal]$range.offset-gt$previousOffset) 'Old-zero ranges must be a sorted unique exact whole-selected-range subset.';$o+=[decimal]$range.length;$previousOffset=[decimal]$range.offset}
+ Need ($o-gt0-and$o-le$d) 'Pinned old-zero total must be positive and bounded by selected bytes.'
+ $newZeros=@();$p=$Plan.PSObject.Properties['new_zero_ranges'];if($null-ne$p){Need ($null-ne$p.Value-and$p.Value-is[Collections.IList]) 'New-zero ranges must be an array.';$newZeros=@($p.Value)}
+ $copies=@();$p=$Plan.PSObject.Properties['new_copy_ranges'];if($null-ne$p){Need ($null-ne$p.Value-and$p.Value-is[Collections.IList]) 'Copy ranges must be an array.';$copies=@($p.Value)}
+ $z=0D;$copy=0D;$destinations=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);$previousOffset=-1D
+ foreach($range in $newZeros){$key=LabJournalRangeKey $range;Need ($selected.ContainsKey($key)-and[decimal]$range.offset-gt$previousOffset-and$destinations.Add($key)) 'New-zero ranges must be a sorted unique exact selected subset.';$z+=[decimal]$range.length;$previousOffset=[decimal]$range.offset}
+ $previousOffset=-1D
+ foreach($range in $copies){Need ($range-is[pscustomobject]-and@($range.PSObject.Properties).Count-eq3-and@($range.PSObject.Properties|Where-Object {$_.Name-cnotin@('offset','length','source_offset')}).Count-eq0) 'Exact copy range fields required.';$null=LabIntegerKey $range.offset;$null=LabIntegerKey $range.length;$null=LabIntegerKey $range.source_offset;$key=(LabIntegerKey $range.offset)+':'+(LabIntegerKey $range.length);Need ($selected.ContainsKey($key)-and[decimal]$range.offset-gt$previousOffset-and$destinations.Add($key)-and$range.source_offset%4096-eq0-and([decimal]$range.source_offset+[decimal]$range.length)-le[decimal]$Plan.image_length) 'Copy destinations must be exact selected ranges disjoint from new zeros; source geometry must be bounded.';$copy+=[decimal]$range.length;$previousOffset=[decimal]$range.offset}
+ $literal=$d-$z-$copy;Need ($literal-ge0) 'New zero/copy payload sums exceed selected bytes.'
+ $planPath=Join-Path $Records 'selected-plan.json';$ticketPath=Join-Path $Records 'selected-ticket.json';$locationPath=Join-Path $Records 'journal-location.json';$capacityPath=Join-Path $Records 'journal-capacity.json'
+ foreach($spec in @(@{path=$planPath;max=16MB},@{path=$ticketPath;max=65536},@{path=$locationPath;max=1MB},@{path=$capacityPath;max=1MB},@{path=(Join-Path $Records 'allocation-recovery-bundle.json');max=65536},@{path=(Join-Path $Records 'request.json');max=131072})){$item=Get-Item -LiteralPath $spec.path -Force;Need (-not$item.PSIsContainer-and$item.Length-gt0-and$item.Length-le$spec.max) 'Old-zero metadata exceeds its existing closed-artifact bound.'}
+ $ticket=Json $ticketPath;$location=Json $locationPath;$capacity=Json $capacityPath;$bundle=Json (Join-Path $Records 'allocation-recovery-bundle.json');$request=Json (Join-Path $Records 'request.json')
+ $planPin=(Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant();$ticketPin=(Get-FileHash -LiteralPath $ticketPath -Algorithm SHA256).Hash.ToLowerInvariant()
+ Need ($bundle.plan.path-ceq$planPath-and$bundle.plan.sha256-ceq$planPin-and$bundle.ticket.path-ceq$ticketPath-and$bundle.ticket.sha256-ceq$ticketPin-and$bundle.journal-ceq$location.path) 'Old-zero facts must bind the actual bundle-pinned plan, ticket and journal route.'
+ foreach($value in @($ticket.image_length,$ticket.selected_bytes,$ticket.range_count,$ticket.journal_length,$location.journal_format_version,$location.journal_record_bytes,$location.old_zero_bytes,$capacity.old_zero_bytes)){$null=LabIntegerKey $value}
+ $expected=8192D+80D+80D+104D*@($Plan.ranges).Count+2D*$d-$z-$copy-$o
+ Need ($expected-gt0-and$expected-le[long]::MaxValue-and$ticket.image_length-eq$Plan.image_length-and$ticket.selected_bytes-eq$d-and$ticket.range_count-eq@($Plan.ranges).Count-and$ticket.whole_image_verified-eq$false-and$ticket.journal_length-eq$expected-and$expected-le[decimal]$Plan.max_journal_bytes) 'Format4 exact descriptor/payload journal size or trusted ticket domain differs.'
+ Need ($location.format-ceq'N2ROLD01'-and$location.journal_format_version-eq4-and$location.journal_record_bytes-eq104-and$location.old_zero_bytes-eq$o-and$capacity.old_zero_bytes-eq$o-and$capacity.journal_bytes-eq$expected-and$capacity.selected_bytes-eq$d-and$capacity.new_zero_bytes-eq$z-and$capacity.new_copy_bytes-eq$copy-and$capacity.packed_bytes-eq$literal) 'Actual format4 location/capacity totals differ from the pinned exact subsets.'
+ $capElision=$capacity.PSObject.Properties['old_zero_payload_storage_elided'];if($null-ne$capElision){Need ($capElision.Value-is[bool]-and$capElision.Value) 'Capacity old-zero elision flag differs.'}
+ $null=LabIntegerKey $request.max_combined_scratch_bytes;$null=LabIntegerKey $request.max_literal_backing_bytes
+ Need ($literal-le[decimal]$request.max_literal_backing_bytes-and$d+$literal-le[decimal]$request.max_combined_scratch_bytes-and$expected+$literal-le[decimal]$request.max_combined_scratch_bytes) 'Conservative selectedD plus literal capture and actual journal scratch ceilings must both remain admitted.'
+ if($null-ne$ActualResult){$null=LabIntegerKey $ActualResult.old_zero_bytes;Need ($ActualResult.old_zero_bytes-eq$o-and$ActualResult.old_zero_payload_storage_elided-is[bool]-and$ActualResult.old_zero_payload_storage_elided) 'Actual product result must explicitly report the same old-zero total and storage elision.'}
+ return @{enabled=$true;scope='lab-pinned-old-zero-journal-encoding-v1';format='N2ROLD01';journal_format_version=4;journal_record_bytes=104;range_count=@($Plan.ranges).Count;selected_bytes=[long]$d;old_zero_ranges=$oldZeros.Count;old_zero_bytes=[long]$o;stored_old_payload_bytes=[long]($d-$o);new_zero_bytes=[long]$z;new_copy_bytes=[long]$copy;literal_new_payload_bytes=[long]$literal;expected_journal_bytes=[long]$expected;journal_bytes=$ticket.journal_length;plan_sha256=$planPin;ticket_sha256=$ticketPin;location_sha256=(Get-FileHash -LiteralPath $locationPath -Algorithm SHA256).Hash.ToLowerInvariant();capacity_sha256=(Get-FileHash -LiteralPath $capacityPath -Algorithm SHA256).Hash.ToLowerInvariant();old_zero_exact_selected_subset=$true;core_actual_source_zero_check_replaced_by_lab=$false;lab_source_payload_bytes_read=0;raw_journal_opened=$false;grants_product_authority=$false}
+}
 function SameArray($Left,$Right){$a=@($Left);$b=@($Right);if($a.Count-ne$b.Count){return $false};for($i=0;$i-lt$a.Count;$i++){if($a[$i]-cne$b[$i]){return $false}};return $true}
 function Json([string]$Path){
  Need ($Path.StartsWith('C:\',[StringComparison]::OrdinalIgnoreCase)-and$Path.EndsWith('.json',[StringComparison]::Ordinal)) 'Closed C JSON only.'
@@ -369,6 +410,7 @@ try{
     Need ($success.Count -eq 1 -and $published.Count -eq 1 -and $success[0].Groups[1].Value -ceq $published[0].Groups[1].Value) 'One actual complete success path and matching recovery directory required.'
     $records=$success[0].Groups[1].Value;$runRoot=[IO.Path]::GetDirectoryName($records);$engine=[IO.Path]::GetFileName($runRoot)
     $result=Json (Join-Path $records 'result.json');$final=Json (Join-Path $records 'finalization.json');$expected=Json (Join-Path $records 'expectation.json');$devices=Json (Join-Path $runRoot 'devices.json');$managed=Json (Join-Path $runRoot 'managed-shadow.json');$plan=Json (Join-Path $records 'selected-plan.json')
+    $oldZeroEncoding=AssertLabOldZeroEncoding $plan $records $result;if($oldZeroEncoding.enabled){Save 'old-zero-encoding-verification.json' $oldZeroEncoding}
     $expectationSha=(Get-FileHash -LiteralPath (Join-Path $records 'expectation.json')).Hash.ToLowerInvariant()
     $resourceProfileAccepted=($devices.source_resource_profile -ceq 'experimental_streaming_tree_v2');if($null-ne$c.PSObject.Properties['fresh_baseline_enabled']-and$c.fresh_baseline_enabled){$resourceProfileAccepted=AssertLabV3CurrentDevices $devices $expected $records}
     Need (-not (Test-Path -LiteralPath (Join-Path $records 'failed.json')) -and $result.kind -ceq 'experimental-allocation-bounded-conversion' -and $result.success -eq $true -and $result.source_admitted -eq $true -and $result.rollback_closed -eq $true -and $result.free_space_contents_compared -eq $false -and $result.recovery_bundle_sha256 -cmatch '\A[0-9a-f]{64}\z' -and $result.expected_tree_sha256 -ceq $expectationSha -and $devices.experiment_id -ceq $engine -and $resourceProfileAccepted -and $devices.pair.source.disk_number -eq 1 -and [guid]$devices.pair.source.identity.disk_guid -eq [guid]'1b191872-c372-41ee-a416-e18863996f54' -and [guid]$devices.pair.source.identity.partition_guid -eq [guid]'f06075a8-67a2-46b9-8fac-4af4da809617' -and $devices.pair.source.identity.partition_bytes -eq 52GB -and @($plan.ranges).Count -eq $result.selected_ranges) 'Actual allocation-bounded result/devices/expected tree differs.'

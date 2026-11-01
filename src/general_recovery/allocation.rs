@@ -125,6 +125,7 @@ pub fn recover_allocation(
     let mut plan_input = HeldInput::open(&bundle.plan.path, &bundle.plan.sha256, 16 * 1024 * 1024)?;
     let plan: SelectedPlan = serde_json::from_slice(&plan_input.bytes)?;
     let (selected_bytes, journal_bytes) = plan.validate()?;
+    let old_zero_bytes = plan.old_zero_bytes()?;
     let mut ticket_input = HeldInput::open(&bundle.ticket.path, &bundle.ticket.sha256, 65536)?;
     let ticket: SelectedTicket = serde_json::from_slice(&ticket_input.bytes)?;
     ensure!(
@@ -309,7 +310,14 @@ pub fn recover_allocation(
         let mut verified_refs_closed = None;
         let outcome = match action {
             Action::Resume => {
-                if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
+                if old_zero_bytes != 0 {
+                    target.arm_old_zero_selected_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        &mut events,
+                    )?;
+                } else if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
                     target.arm_writes(policy, &mut events)?;
                 } else {
                     target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
@@ -333,7 +341,14 @@ pub fn recover_allocation(
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::Rollback => {
-                if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
+                if old_zero_bytes != 0 {
+                    target.arm_old_zero_selected_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        &mut events,
+                    )?;
+                } else if plan.new_zero_ranges.is_empty() && plan.new_copy_ranges.is_empty() {
                     target.arm_writes(policy, &mut events)?;
                 } else {
                     target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
@@ -472,6 +487,10 @@ pub fn recover_allocation(
         let mut result = serde_json::json!({
             "schema_version":1,"kind":"allocation-bounded-recovery","success":true,
             "observed_lifecycle":state,"action":action,"outcome":outcome,
+            "journal_format":plan.encoding_name(),
+            "journal_bytes":journal_bytes,"selected_bytes":selected_bytes,
+            "old_zero_bytes":old_zero_bytes,
+            "old_zero_payload_storage_elided":old_zero_bytes > 0,
             "fresh_apply_authorized":false,"source_admitted":false,
             "general_conversion_qualified":false,
         });

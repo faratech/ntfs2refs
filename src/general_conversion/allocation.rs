@@ -107,9 +107,9 @@ pub(super) fn convert_allocation_selected(
     let attempted = (|| -> Result<()> {
         record_process_io(output, "start")?;
         let profile = request.journal_profile()?;
-        // Every old byte remains in the encoded journal. New zero bytes need
-        // no stored copy; the exact D + literal-new + metadata size is checked
-        // by the live plan before preparing the journal or activating source.
+        // Preserve the conservative changed-byte ceiling even when the exact
+        // plan can omit canonical old-zero payloads. Preparation checks every
+        // claimed source byte; exact encoded size is checked before activation.
         let maximum = request
             .max_journal_bytes
             .checked_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
@@ -266,6 +266,7 @@ pub(super) fn convert_allocation_selected(
         let (selected_bytes, journal_bytes) = plan.validate()?;
         let new_zero_bytes = plan.new_zero_bytes()?;
         let new_copy_bytes = plan.new_copy_bytes()?;
+        let old_zero_bytes = plan.old_zero_bytes()?;
         let packed_bytes = proof.capture().layout.packed_bytes();
         let plan_pin = qualification::save(output, "selected-plan.json", &plan)?;
         let copy_interruption_target = if interrupt_after_first_copy_write {
@@ -302,6 +303,7 @@ pub(super) fn convert_allocation_selected(
                 "journal_bytes":journal_bytes,"packed_bytes":packed_bytes,
                 "selected_bytes":selected_bytes,"new_zero_bytes":new_zero_bytes,
                 "new_copy_bytes":new_copy_bytes,
+                "old_zero_bytes":old_zero_bytes,
                 "available_after_shadow_and_backing":space.available_bytes_to_caller,
                 "reserve_bytes":reserve,"source_writes_started":false,
             }),
@@ -346,7 +348,10 @@ pub(super) fn convert_allocation_selected(
             "journal-location.json",
             &serde_json::json!({
                 "path":journal_path,"identity":observed.identity,
-                "format":if new_copy_bytes != 0 {"N2RCPY01"} else if new_zero_bytes != 0 {"N2RZERO1"} else {"N2RSEL01"},
+                "format":plan.encoding_name(),
+                "journal_format_version":plan.encoding_version(),
+                "journal_record_bytes":plan.journal_record_bytes(),
+                "old_zero_bytes":old_zero_bytes,
             }),
         )?;
         let mut preparation_events = Vec::new();
@@ -522,7 +527,14 @@ pub(super) fn convert_allocation_selected(
             maximum_bytes: selected_bytes,
             journal_profile: profile,
         };
-        if new_zero_bytes == 0 && new_copy_bytes == 0 {
+        if old_zero_bytes != 0 {
+            target.arm_old_zero_selected_writes(
+                policy,
+                journal_bytes,
+                old_zero_bytes,
+                &mut events,
+            )?;
+        } else if new_zero_bytes == 0 && new_copy_bytes == 0 {
             target.arm_writes(policy, &mut events)?;
         } else {
             target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
@@ -688,6 +700,8 @@ pub(super) fn convert_allocation_selected(
                 "journal_bytes":journal_bytes,"selection_sha256":proof.selection_sha256(),
                 "packed_bytes":packed_bytes,"new_zero_bytes":new_zero_bytes,
                 "new_copy_bytes":new_copy_bytes,
+                "old_zero_bytes":old_zero_bytes,
+                "old_zero_payload_storage_elided":old_zero_bytes > 0,
                 "zero_payload_storage_elided":new_zero_bytes > 0,
                 "free_space_contents_compared":false,"recovery_bundle_sha256":recovery_pin,
                 "general_conversion_qualified":false,

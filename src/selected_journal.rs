@@ -8,6 +8,8 @@
 //! barriers; zero encoding changes storage, not the target write set.
 //! N2RCPY01 additionally resolves new bytes from the journal's immutable old
 //! payloads. It never needs a source device when replaying a copy.
+//! N2ROLD01 additionally omits old ranges independently verified as zero.
+//! Recovery synthesizes their original bytes, including old-copy sources.
 use crate::lab_reconstruct::{DurableIo, ReadSeek};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -20,12 +22,14 @@ const HEADER: usize = 80;
 const RECORD: usize = 80;
 const ZERO_RECORD: usize = 88;
 const COPY_RECORD: usize = 96;
+const OLD_ZERO_RECORD: usize = 104;
 const FOOTER: usize = 80;
 const BUFFER: usize = 1024 * 1024;
 const MAX_RANGES: usize = 65_536;
 const FORMAT: u32 = 1;
 const ZERO_FORMAT: u32 = 2;
 const COPY_FORMAT: u32 = 3;
+const OLD_ZERO_FORMAT: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +62,11 @@ pub struct SelectedPlan {
     /// entire source interval must be covered by the journal's old payloads.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub new_copy_ranges: Vec<SelectedCopyRange>,
+    /// A sorted unique whole-range subset whose actual original source bytes
+    /// are rechecked as zero during preparation. This never omits a target
+    /// check or write, and the declaration alone authenticates no source byte.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub old_zero_ranges: Vec<SelectedRange>,
 }
 
 /// Trusted only when held independently by the caller. This format and its
@@ -88,9 +97,15 @@ pub struct SelectedResult {
 #[derive(Debug)]
 struct JournalRecord {
     range: SelectedRange,
-    before_at: u64,
+    before: OldBytes,
     after: NewBytes,
     new_sha256: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OldBytes {
+    Payload(u64),
+    Zero,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -176,6 +191,25 @@ fn frame(hash: &mut PinHash, range: &SelectedRange) -> Result<()> {
 }
 
 impl SelectedPlan {
+    pub fn old_zero_bytes(&self) -> Result<u64> {
+        let mut index = 0usize;
+        let mut bytes = 0u64;
+        for zero in &self.old_zero_ranges {
+            while index < self.ranges.len() && self.ranges[index].offset < zero.offset {
+                index += 1;
+            }
+            ensure!(
+                self.ranges.get(index) == Some(zero),
+                "old-zero ranges must be a sorted unique exact subset of selected ranges"
+            );
+            bytes = bytes
+                .checked_add(zero.length)
+                .context("old-zero byte total overflow")?;
+            index += 1;
+        }
+        Ok(bytes)
+    }
+
     pub fn new_copy_bytes(&self) -> Result<u64> {
         self.new_zero_bytes()?;
         let mut index = 0usize;
@@ -264,6 +298,23 @@ impl SelectedPlan {
         !self.new_copy_ranges.is_empty()
     }
 
+    fn old_zero_encoded(&self) -> bool {
+        !self.old_zero_ranges.is_empty()
+    }
+
+    /// The exact on-disk encoding; empty old-zero lists retain legacy names.
+    pub fn encoding_name(&self) -> &'static str {
+        std::str::from_utf8(self.magic()).expect("selected journal ASCII magic")
+    }
+
+    pub fn encoding_version(&self) -> u32 {
+        self.format()
+    }
+
+    pub fn journal_record_bytes(&self) -> usize {
+        self.record_size()
+    }
+
     fn copy_source(&self, range: &SelectedRange) -> Option<u64> {
         self.new_copy_ranges
             .binary_search_by_key(&range.offset, |r| r.offset)
@@ -272,7 +323,9 @@ impl SelectedPlan {
     }
 
     fn format(&self) -> u32 {
-        if self.copy_encoded() {
+        if self.old_zero_encoded() {
+            OLD_ZERO_FORMAT
+        } else if self.copy_encoded() {
             COPY_FORMAT
         } else if self.zero_encoded() {
             ZERO_FORMAT
@@ -282,7 +335,9 @@ impl SelectedPlan {
     }
 
     fn magic(&self) -> &'static [u8; 8] {
-        if self.copy_encoded() {
+        if self.old_zero_encoded() {
+            b"N2ROLD01"
+        } else if self.copy_encoded() {
             b"N2RCPY01"
         } else if self.zero_encoded() {
             b"N2RZERO1"
@@ -292,7 +347,9 @@ impl SelectedPlan {
     }
 
     fn footer_magic(&self) -> &'static [u8; 8] {
-        if self.copy_encoded() {
+        if self.old_zero_encoded() {
+            b"N2ROEND1"
+        } else if self.copy_encoded() {
             b"N2RCEND1"
         } else if self.zero_encoded() {
             b"N2RZEND1"
@@ -307,8 +364,16 @@ impl SelectedPlan {
             .is_ok()
     }
 
+    fn is_old_zero(&self, range: &SelectedRange) -> bool {
+        self.old_zero_ranges
+            .binary_search_by_key(&range.offset, |r| r.offset)
+            .is_ok()
+    }
+
     fn record_size(&self) -> usize {
-        if self.copy_encoded() {
+        if self.old_zero_encoded() {
+            OLD_ZERO_RECORD
+        } else if self.copy_encoded() {
             COPY_RECORD
         } else if self.zero_encoded() {
             ZERO_RECORD
@@ -354,6 +419,7 @@ impl SelectedPlan {
         );
         let zero_bytes = self.new_zero_bytes()?;
         let copy_bytes = self.new_copy_bytes()?;
+        let old_zero_bytes = self.old_zero_bytes()?;
         let journal_length = BODY
             .checked_add(HEADER as u64)
             .and_then(|n| {
@@ -364,7 +430,8 @@ impl SelectedPlan {
                     changed
                         .checked_mul(2)?
                         .checked_sub(zero_bytes)?
-                        .checked_sub(copy_bytes)?,
+                        .checked_sub(copy_bytes)?
+                        .checked_sub(old_zero_bytes)?,
                 )
             })
             .and_then(|n| n.checked_add(FOOTER as u64))
@@ -438,6 +505,7 @@ pub(crate) fn validate_coarse(image_length: u64, coarse: &[SelectedRange]) -> Re
         max_journal_bytes: u64::MAX,
         new_zero_ranges: Vec::new(),
         new_copy_ranges: Vec::new(),
+        old_zero_ranges: Vec::new(),
     }
     .validate()?;
     Ok(())
@@ -483,6 +551,7 @@ pub(crate) fn finish_changed_plan(
         max_journal_bytes,
         new_zero_ranges: Vec::new(),
         new_copy_ranges: Vec::new(),
+        old_zero_ranges: Vec::new(),
     };
     plan.validate()?;
     Ok(plan)
@@ -530,6 +599,7 @@ fn verify_zero_selected<R: Read + Seek>(
     selected: &mut PinHash,
     buffer: &mut [u8],
     zero_digests: &mut ZeroDigests,
+    mismatch: &'static str,
 ) -> Result<[u8; 32]> {
     input.seek(SeekFrom::Start(range.offset))?;
     frame(selected, range)?;
@@ -543,10 +613,7 @@ fn verify_zero_selected<R: Read + Seek>(
     while remaining > 0 {
         let count = usize::try_from(remaining.min(BUFFER as u64))?;
         input.read_exact(&mut buffer[..count])?;
-        ensure!(
-            buffer[..count].iter().all(|&byte| byte == 0),
-            "selected zero range contains nonzero candidate bytes"
-        );
+        ensure!(buffer[..count].iter().all(|&byte| byte == 0), mismatch);
         selected.update(&buffer[..count])?;
         if let Some(hash) = hash.as_mut() {
             hash.update(&buffer[..count])?;
@@ -557,7 +624,7 @@ fn verify_zero_selected<R: Read + Seek>(
         Some(hash) => finish(hash)?,
         None => cached.context("verified zero digest absent")?,
     };
-    // No hit can bypass even one candidate byte or its aggregate update.
+    // No hit can bypass even one actual input byte or its aggregate update.
     zero_digests.remember_verified(range.length, digest);
     Ok(digest)
 }
@@ -715,6 +782,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut header = [0u8; HEADER];
     let zero_encoded = plan.zero_encoded();
     let copy_encoded = plan.copy_encoded();
+    let old_zero_encoded = plan.old_zero_encoded();
     header[..8].copy_from_slice(plan.magic());
     put_u32(&mut header, 8, plan.format());
     put_u32(&mut header, 12, u32::try_from(plan.ranges.len())?);
@@ -734,9 +802,21 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let mut zero_digests = ZeroDigests::new();
     for range in &plan.ranges {
         let record_at = journal.stream_position()?;
-        let mut record = [0u8; COPY_RECORD];
+        let mut record = [0u8; OLD_ZERO_RECORD];
         journal.write_all(&record[..plan.record_size()])?;
-        let old_hash = copy_selected(source, range, journal, &mut old_selected, &mut data_buffer)?;
+        let old_is_zero = plan.is_old_zero(range);
+        let old_hash = if old_is_zero {
+            verify_zero_selected(
+                source,
+                range,
+                &mut old_selected,
+                &mut data_buffer,
+                &mut zero_digests,
+                "selected old-zero range contains nonzero source bytes",
+            )?
+        } else {
+            copy_selected(source, range, journal, &mut old_selected, &mut data_buffer)?
+        };
         let is_zero = plan.is_new_zero(range);
         let copy_source = plan.copy_source(range);
         let new_hash = if is_zero {
@@ -746,6 +826,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut new_selected,
                 &mut data_buffer,
                 &mut zero_digests,
+                "selected zero range contains nonzero candidate bytes",
             )?
         } else if let Some(source_offset) = copy_source {
             verify_copy_selected(
@@ -770,7 +851,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         let next = journal.stream_position()?;
         put_u64(&mut record, 0, range.offset);
         put_u64(&mut record, 8, range.length);
-        let hashes = if copy_encoded {
+        let hashes = if old_zero_encoded || copy_encoded {
             put_u64(
                 &mut record,
                 16,
@@ -783,7 +864,12 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 },
             );
             put_u64(&mut record, 24, copy_source.unwrap_or(0));
-            32
+            if old_zero_encoded {
+                put_u64(&mut record, 32, u64::from(old_is_zero));
+                40
+            } else {
+                32
+            }
         } else if zero_encoded {
             put_u64(&mut record, 16, u64::from(is_zero));
             24
@@ -897,6 +983,7 @@ fn validate_body<J: ReadSeek>(
     immutable.update(&header)?;
     let zero_encoded = plan.zero_encoded();
     let copy_encoded = plan.copy_encoded();
+    let old_zero_encoded = plan.old_zero_encoded();
     ensure!(
         &header[..8] == plan.magic()
             && get_u32(&header, 8) == plan.format()
@@ -918,7 +1005,7 @@ fn validate_body<J: ReadSeek>(
     };
     let mut buffer = vec![0; BUFFER];
     for range in &plan.ranges {
-        let mut record = [0u8; COPY_RECORD];
+        let mut record = [0u8; OLD_ZERO_RECORD];
         journal.read_exact(&mut record[..plan.record_size()])?;
         immutable.update(&record[..plan.record_size()])?;
         ensure!(
@@ -926,12 +1013,13 @@ fn validate_body<J: ReadSeek>(
             "selected journal range differs"
         );
         let before_at = journal.stream_position()?;
+        let old_is_zero = plan.is_old_zero(range);
         let after_at = before_at
-            .checked_add(range.length)
+            .checked_add(if old_is_zero { 0 } else { range.length })
             .context("selected journal offset overflow")?;
         let is_zero = plan.is_new_zero(range);
         let copy_source = plan.copy_source(range);
-        let hashes = if copy_encoded {
+        let hashes = if old_zero_encoded || copy_encoded {
             let kind = if is_zero {
                 1
             } else if copy_source.is_some() {
@@ -943,7 +1031,15 @@ fn validate_body<J: ReadSeek>(
                 get_u64(&record, 16) == kind && get_u64(&record, 24) == copy_source.unwrap_or(0),
                 "selected journal copy descriptor differs from the pinned plan"
             );
-            32
+            if old_zero_encoded {
+                ensure!(
+                    get_u64(&record, 32) == u64::from(old_is_zero),
+                    "selected journal old-zero descriptor differs from the pinned plan"
+                );
+                40
+            } else {
+                32
+            }
         } else if zero_encoded {
             ensure!(
                 get_u64(&record, 16) == u64::from(is_zero),
@@ -969,7 +1065,7 @@ fn validate_body<J: ReadSeek>(
                 continue; // The complete old-payload table is needed first.
             }
             let offset = if old {
-                Some(before_at)
+                (!old_is_zero).then_some(before_at)
             } else {
                 (!is_zero).then_some(after_at)
             };
@@ -994,8 +1090,8 @@ fn validate_body<J: ReadSeek>(
             if let Some(selected) = selected.as_deref_mut() {
                 frame(selected, range)?;
             }
-            // None is exclusively a canonical generated new-zero side. Old
-            // payloads and literal/copy data always keep their actual hashes.
+            // None is exclusively a canonical generated old/new zero side.
+            // Actual old/literal payloads always keep their complete hashes.
             let cached = if offset.is_none() {
                 zero_digests.get(range.length)
             } else {
@@ -1037,7 +1133,11 @@ fn validate_body<J: ReadSeek>(
         }
         records.push(JournalRecord {
             range: range.clone(),
-            before_at,
+            before: if old_is_zero {
+                OldBytes::Zero
+            } else {
+                OldBytes::Payload(before_at)
+            },
             after: if is_zero {
                 NewBytes::Zero
             } else if let Some(source) = copy_source {
@@ -1168,6 +1268,35 @@ fn write_marker<J: DurableIo>(
     Ok(())
 }
 
+/// Resolve original bytes only from the authenticated old representation.
+/// Recovery never needs the source device or an already modified target.
+fn read_before<J: Read + Seek>(
+    journal: &mut J,
+    record: &JournalRecord,
+    within: u64,
+    bytes: &mut [u8],
+) -> Result<()> {
+    ensure!(
+        within
+            .checked_add(bytes.len() as u64)
+            .is_some_and(|end| end <= record.range.length),
+        "old read escapes its authenticated range"
+    );
+    match record.before {
+        OldBytes::Payload(offset) => at(
+            journal,
+            offset
+                .checked_add(within)
+                .context("old payload offset overflow")?,
+            bytes,
+        ),
+        OldBytes::Zero => {
+            bytes.fill(0);
+            Ok(())
+        }
+    }
+}
+
 fn read_after<J: Read + Seek>(
     journal: &mut J,
     records: &[JournalRecord],
@@ -1197,9 +1326,10 @@ fn read_after<J: Read + Seek>(
                     (original.range.offset + original.range.length - cursor)
                         .min((bytes.len() - filled) as u64),
                 )?;
-                at(
+                read_before(
                     journal,
-                    original.before_at + cursor - original.range.offset,
+                    original,
+                    cursor - original.range.offset,
                     &mut bytes[filled..filled + count],
                 )?;
                 cursor += count as u64;
@@ -1269,7 +1399,7 @@ fn check_target<T: ReadSeek, J: Read + Seek>(
         while done < record.range.length {
             let count = usize::try_from((record.range.length - done).min(BUFFER as u64))?;
             at(target, record.range.offset + done, &mut current[..count])?;
-            at(journal, record.before_at + done, &mut before[..count])?;
+            read_before(journal, record, done, &mut before[..count])?;
             read_after(journal, records, record, done, &mut after[..count])?;
             ensure!(
                 bytes_are_old_or_new(&current[..count], &before[..count], &after[..count]),
@@ -1326,7 +1456,7 @@ fn write_span<T: DurableIo, J: Read + Seek>(
         let within = start + done;
         let offset = record.range.offset + within;
         at(target, offset, &mut current[..count])?;
-        at(journal, record.before_at + within, &mut before[..count])?;
+        read_before(journal, record, within, &mut before[..count])?;
         read_after(journal, records, record, within, &mut after[..count])?;
         ensure!(
             bytes_are_old_or_new(&current[..count], &before[..count], &after[..count]),

@@ -17,6 +17,11 @@ pub struct ChangedRange {
     /// zero throughout this interval. The interval remains in the write set.
     #[serde(skip_serializing_if = "is_false")]
     pub(crate) new_is_zero: bool,
+    /// Version-four evidence covers every actual old byte in this whole
+    /// interval. Preparation must read and verify those bytes again before
+    /// omitting their journal payload; allocation or diagnostics are no proof.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) old_is_zero: bool,
     /// Version-three backing may reference the original frozen source instead
     /// of storing new payload bytes. Never resolve this against an activated
     /// target: the original source interval may already have been overwritten.
@@ -45,9 +50,9 @@ impl DeltaLayout {
         ranges: Vec<ChangedRange>,
     ) -> Result<Self> {
         ensure!(
-            ranges
-                .iter()
-                .all(|range| !range.new_is_zero && range.copy_source_offset.is_none()),
+            ranges.iter().all(|range| {
+                !range.old_is_zero && !range.new_is_zero && range.copy_source_offset.is_none()
+            }),
             "legacy delta cannot omit or reference payloads"
         );
         Self::checked(partition_bytes, changed_bytes, None, None, ranges)
@@ -62,7 +67,7 @@ impl DeltaLayout {
         ensure!(
             ranges
                 .iter()
-                .all(|range| range.copy_source_offset.is_none()),
+                .all(|range| !range.old_is_zero && range.copy_source_offset.is_none()),
             "version-two delta cannot reference source payloads"
         );
         Self::checked(
@@ -80,10 +85,32 @@ impl DeltaLayout {
         packed_bytes: u64,
         ranges: Vec<ChangedRange>,
     ) -> Result<Self> {
+        if ranges.iter().any(|range| range.old_is_zero) {
+            return Self::new_old_zero_aware(partition_bytes, changed_bytes, packed_bytes, ranges);
+        }
         Self::checked(
             partition_bytes,
             changed_bytes,
             Some(3),
+            Some(packed_bytes),
+            ranges,
+        )
+    }
+
+    pub(crate) fn new_old_zero_aware(
+        partition_bytes: u64,
+        changed_bytes: u64,
+        packed_bytes: u64,
+        ranges: Vec<ChangedRange>,
+    ) -> Result<Self> {
+        ensure!(
+            ranges.iter().any(|range| range.old_is_zero),
+            "version-four delta requires whole-range old-zero evidence"
+        );
+        Self::checked(
+            partition_bytes,
+            changed_bytes,
+            Some(4),
             Some(packed_bytes),
             ranges,
         )
@@ -104,6 +131,10 @@ impl DeltaLayout {
         let mut packed = 0u64;
         let mut logical = 0u64;
         for r in &ranges {
+            ensure!(
+                !r.old_is_zero || encoding_version == Some(4),
+                "old-zero evidence requires version-four delta encoding"
+            );
             let next = r
                 .offset
                 .checked_add(r.length)
@@ -123,7 +154,7 @@ impl DeltaLayout {
                 .context("delta logical byte overflow")?;
             if let Some(source) = r.copy_source_offset {
                 ensure!(
-                    encoding_version == Some(3)
+                    matches!(encoding_version, Some(3 | 4))
                         && !r.new_is_zero
                         && source.is_multiple_of(4096)
                         && source
@@ -169,6 +200,23 @@ impl DeltaLayout {
             .collect()
     }
 
+    pub fn old_zero_ranges(&self) -> Vec<(u64, u64)> {
+        self.ranges
+            .iter()
+            .filter(|range| range.old_is_zero)
+            .map(|range| (range.offset, range.length))
+            .collect()
+    }
+
+    pub fn old_zero_bytes(&self) -> u64 {
+        // The checked, disjoint ranges total at most partition_bytes.
+        self.ranges
+            .iter()
+            .filter(|range| range.old_is_zero)
+            .map(|range| range.length)
+            .sum()
+    }
+
     pub fn new_copy_ranges(&self) -> Vec<(u64, u64, u64)> {
         self.ranges
             .iter()
@@ -181,7 +229,7 @@ impl DeltaLayout {
     }
 
     fn requires_original_source(&self) -> bool {
-        self.encoding_version == Some(3)
+        matches!(self.encoding_version, Some(3 | 4))
     }
 
     pub(crate) fn intervals(&self) -> &[ChangedRange] {

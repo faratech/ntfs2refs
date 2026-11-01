@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "superseded-checkpoint-branches-cleanup",
+  "utc": "2026-11-01T01:58:33.5138560Z",
+  "review": {
+    "path": ".lab/hyperv/streaming-v2-20261027/obsolete-07b-review-d010a6185b5a47a5b68420cbcccea984/proposed-cleanup.json",
+    "sha256": "37176fcc0e7b60595d415185ad489c24cf9fbad666ff10da6cf9462c59ae5cb5"
+  },
+  "inventory": {
+    "path": ".lab/hyperv/streaming-v2-20261027/obsolete-07b-review-d010a6185b5a47a5b68420cbcccea984/verified-files.json",
+    "sha256": "b3e67b4ee9e6da42a122fc80945dcc530e3a0c25066060b834fa38b35f33853b",
+    "verified_files": 336,
+    "verified_bytes": 576851960,
+    "read_guards_held_through_removals": true
+  },
+  "completion": {
+    "path": ".lab/hyperv/streaming-v2-20261027/checkpoint-cleanup-superseded-07b-d5cc95d3b8f744cabfd45e2b27b3dc91/completed.json",
+    "sha256": "d5ec224b8e4b9fc233b2a21b28bde262496392fd1ab75372b5306dd55ab8bd98"
+  },
+  "removed_in_order": [
+    "1aedc3d5-0d29-4eef-b8a6-d5d0d6171b20",
+    "5f07551f-b339-4beb-97cd-0209967ee348",
+    "307b65ff-555d-430d-ac93-7b5946834083",
+    "ed6fe063-3a06-489a-8028-2a16929ce171"
+  ],
+  "method": "Remove-VMSnapshot only; each exact inactive-leaf guard ran in a fresh process; parent307b removed only after both children",
+  "final_vm": {
+    "id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "state": "Off",
+    "memory_assigned_bytes": 0,
+    "current_parent_id": "35c9a8f8-b646-4d3b-98e9-191b2f12a4a6",
+    "snapshot_count": 46,
+    "all_other_ids_and_parents_preserved": true
+  },
+  "all_host_archives_and_baselines_preserved": true,
+  "disk_images_or_journals_hashed": false,
+  "host_disk_file_deletion_commands_used": false,
+  "capacity": {
+    "before_actual_bytes": 322376794614,
+    "after_actual_bytes": 275354925443,
+    "measured_lab_usage_decrease_bytes": 47021869171,
+    "after_host_free_bytes": 69904642048,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_free_bytes": 17179869184,
+    "epoch_reset": false,
+    "next_16gib_forecast_admitted": true,
+    "note": "Usage decrease is the measured lab bracket, not a per-file physical-reclaim guarantee."
+  },
+  "unit_tests_run": false,
+  "new_conversion_or_recovery_claim": false
+}

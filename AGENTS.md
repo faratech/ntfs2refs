@@ -36,15 +36,22 @@ attach/rebind. Product Resume checked complete1084 maps plus known157 hashes /
 See `docs/old-zero-recovery-matrix.md` and its evidence JSON. This does NOT
 qualify newer capacity87a or recovery-ownerb88, arbitrary faults or physical loss.
 
-CURRENT VM confirmed fresh at2026-11-01T01:50:19Z: Off/RAM0/50 snapshots,
+At matrix closure, VM was confirmed fresh at2026-11-01T01:50:19Z: Off/RAM0/50 snapshots,
 restored-NTFS35c9a8f8-b646-4d3b-98e9-191b2f12a4a6, parent ORIGINALdea902f6.
 Preserve NEWnormal6bef, NEWintdea, NEWResume033, NEWrollback35c9, sources8329/
 6fe/371, H tail matrix, D1 and guardedf4bf. All host evidence remains.
-Actual322,376,794,614/free22,809,677,824 bytes is within the unchanged epoch,
-but a new16GiB forecast DOES NOT FIT. Reclaim obsolete checkpoints only after
-full archive/dependency/graph guards; no cap reset, image deletion or WSL stop.
-A propose-only review targets old07b1aed+5f, then their parent307b, plus olded6;
-none is removed yet. Do not force parent deletion or touch f4bf.
+That closure measured322,376,794,614/free22,809,677,824 bytes inside the epoch.
+SUBSEQUENT CLEANUP COMPLETE at01:58:33Z: root removed ONLY old07b1aed,5f,
+then their now-childless parent307b, plus olded6, through Hyper-V. All336 closed
+archive/control/dependency files (576,851,960B) were rehashed under held reads;
+each removal used a fresh process and exact graph/leaf/current guards.
+Review37176fcc/inventoryb3e67b4e; completiond5ec224b under
+checkpoint-cleanup-superseded-07b-d5cc95d3b8f744cabfd45e2b27b3dc91.
+CURRENT fresh VM remains Off/RAM0/current35c9, now46 snapshots; every other ID/
+parent and all host archives/baselines remain. Actual275,354,925,443 bytes /
+free69,904,642,048 bytes: measured lab decrease47,021,869,171B. Fixedmax329374052988/
+min17179869184 unchanged; next16GiB forecast fits again. No host disk-file
+deletions, new epoch, WSL stop or f4bf action. Retired IDs must not be recreated.
 
 New journal-only recovery owner is implemented/reviewed and passes focused
 library/public/fault/binder compilation (17.68s), natively UNQUALIFIED.

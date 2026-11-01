@@ -88,9 +88,16 @@ The provider needs one extra1-MiB buffer and keeps the existing4-MiB comparison
 reducer. `shadow_bytes_reused_from_closing` distinguishes reused closing bytes
 from actual capture shadow reads; the strict saved-artifact reader defaults
 historical reports to zero and includes the new value in exact read accounting.
-Full/generic paths retain their previous behavior. This is compiled and source
-reviewed; native qualification and any measured read reduction remain pending.
-The6be case had6,176,772,096 potentially reusable third-pass shadow bytes.
+Full/generic paths retain their previous behavior. Runtime72b4db0 passed native
+conversion/HND and all811 independent hashes. It reused6,176,772,096 actual closing
+bytes with zero extra capture shadow reads; both brackets still read6,176,772,096
+bytes and checked6,048,186,368 zero bytes each. Native-verified logical reads were
+21,473,893,401 versus27,643,861,313 previously (22.32% lower). Native wall time was
+70.5999624s versus62.2871679s: this establishes fewer reads, not a timing speedup.
+The epochs/cache conditions were not controlled. Source/copy-verified87-file
+metadata archive and checkpointf8f7db07 preserve the result. This does not qualify
+the later directory-case runtime or its recovery matrix.
+[Exact measured scope and pins](../evidence/closing-buffer-native-20261101.json).
 
 ## Source-free recovery storage
 

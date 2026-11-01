@@ -15,7 +15,8 @@ param(
     [Parameter(Mandatory)][string]$SourceRequestPath,
     [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$SourceRequestSha256,
     [Parameter(Mandatory)][ValidateRange(1,50000000000)][long]$ForecastAdditionalBytes,
-    [switch]$InterruptAfterFirstWrite
+    [switch]$InterruptAfterFirstWrite,
+    [switch]$RequirePreparationCopyReuse
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -227,7 +228,7 @@ function AssertLabSourceFreeEncoding($Plan,[string]$Records,$ActualResult){
     HostGuard; Need (-not (Test-Path -LiteralPath $root)) 'Fresh host stage required.'
     New-Item -ItemType Directory -Path $root | Out-Null; $created=$true
     $digest = @($tools | Where-Object name -CEQ 'lab-content-digest.exe')[0]
-    $c = @{stage=$stage;task=$task;run_id=$run;vm_id=$vmId.ToString('D');operation=$operation;source_commit=$SourceCommit;tools=$tools;output=(Join-Path $stage 'conversion');managed=(Join-Path $stage 'managed-shadow');source_request_sha256=$SourceRequestSha256;fresh_baseline_enabled=$true;baseline_enabled=$true;fresh_baseline_files=$baseline.files;fresh_manifest_sha256=$FreshBaselineManifestSha256;fresh_source_checkpoint=$sourceCheckpoint.ToString('D');fresh_source_binding=$baseline.provenance.source_binding;baseline_sha256=$baseline.sha256;baseline_basis_sha256=$baseline.basis_sha256;baseline_request_sha256='';baseline_result_sha256='';minimum_extent_only_streams=654;minimum_tail_extent_only_streams=650;journal_budget_bytes=8GB;literal_ceiling_bytes=256MB;combined_ceiling_bytes=10GB;digest_bytes=$digest.bytes;digest_sha256=$digest.sha256;expected_exit=$expectedExit}
+    $c = @{stage=$stage;task=$task;run_id=$run;vm_id=$vmId.ToString('D');operation=$operation;source_commit=$SourceCommit;tools=$tools;output=(Join-Path $stage 'conversion');managed=(Join-Path $stage 'managed-shadow');source_request_sha256=$SourceRequestSha256;fresh_baseline_enabled=$true;baseline_enabled=$true;fresh_baseline_files=$baseline.files;fresh_manifest_sha256=$FreshBaselineManifestSha256;fresh_source_checkpoint=$sourceCheckpoint.ToString('D');fresh_source_binding=$baseline.provenance.source_binding;baseline_sha256=$baseline.sha256;baseline_basis_sha256=$baseline.basis_sha256;baseline_request_sha256='';baseline_result_sha256='';minimum_extent_only_streams=654;minimum_tail_extent_only_streams=650;journal_budget_bytes=8GB;literal_ceiling_bytes=256MB;combined_ceiling_bytes=10GB;digest_bytes=$digest.bytes;digest_sha256=$digest.sha256;expected_exit=$expectedExit;require_preparation_copy_reuse=[bool]$RequirePreparationCopyReuse}
     Save 'intent.json' @{kind='source-free-performance-experiment-intent';configuration=$c;parent_id=$ExpectedParent;checkpoint_ids=$ids;toolset_manifest=$ToolsetManifest;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$SourceCommit;baseline_provenance=$baseline.provenance;capacity=$capacity;forecast_bytes=$ForecastAdditionalBytes;source_request_path=$SourceRequestPath;source_request_sha256=$SourceRequestSha256;function_sources=@($interrupt.pin,$normal.pin,@{path=$supportPath;sha256=$supportPin},@{path=$PSCommandPath;sha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant()});observer_cost_gate_adaptation='D+literal -> (D-O-F)+F/256+literal+16MiB; combined includes backing';no_source_or_replay_authority=$true;utc=[DateTime]::UtcNow.ToString('o')}
     $guest = @'
 Set-StrictMode -Version Latest
@@ -258,6 +259,12 @@ function AssertActualCapacity($Request,$Plan,$Result){
  Need ($reused-gt0-and$reused+$fallback-eq[decimal]$facts.new_copy_bytes-and$reused-le[decimal]$reads.source_logical_bytes) 'Actual COPY receipt reuse must be positive and cover the exact measured copy/fallback split.'
  Save 'copy-read-reuse-verification.json' @{reused_bytes=[long]$reused;actual_fallback_read_bytes=[long]$fallback;copy_bytes=$facts.new_copy_bytes;source_logical_read_bytes=$reads.source_logical_bytes;scope='actual-capture-counter-observation';physical_io_or_wall_delta_claimed=$false;grants_product_authority=$false}
  $facts.source_reference_bytes_reused=[long]$reused;$facts.source_reference_bytes=[long]$fallback
+ if($c.require_preparation_copy_reuse){
+  $prep=Json (Join-Path $c.output 'preparation-source-copy-reuse.json') 1MB
+  Need ($prep.schema_version-eq1-and$prep.scope-ceq'same-frozen-native-source-reference-construction-v1'-and$prep.actual_source_copy_bytes_reused-eq$facts.new_copy_bytes-and$prep.candidate_bytes_still_read_and_hashed-and$prep.resolved_journal_copy_readback_retained-and$prep.fresh_old_target_gate_retained-and-not$prep.source_admission_granted) 'Actual paired-source preparation scope differs.'
+  if($null-ne$Result){Need ($Result.preparation_source_copy_bytes_reused-eq$facts.new_copy_bytes) 'Actual result must record preparation reuse.'}
+  Save 'preparation-read-reuse-verification.json' @{scope=$prep.scope;reused_bytes=$prep.actual_source_copy_bytes_reused;actual_metadata_path=(Join-Path $c.output 'preparation-source-copy-reuse.json');actual_metadata_sha256=(Get-FileHash -LiteralPath (Join-Path $c.output 'preparation-source-copy-reuse.json')).Hash.ToLowerInvariant();source_or_replay_authority=$false}
+ }
  Save 'source-free-performance-verification.json' @{scope='lab-source-free-capacity-v1';facts=$facts;sampled_capacity_observations=$observations.Count;every_rolling_step_observed=$false;core_guards_every_proposed_run=$true;capture_layout_and_final_plan_remain_required=$true;raw_journal_opened=$false;lab_source_payload_bytes_read=0;grants_product_authority=$false}
  return $facts
 }

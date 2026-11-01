@@ -61,6 +61,13 @@ Closed108 metadata files267771060B were source/copy SHA-verified. Preserved new
 ReFS node d1bbcaa3-a6a6-48de-8593-75f1641ec450, parent8329; fresh Off/RAM0/48.
 See evidence/native-capture-copy-reuse-20261101.json. The later typed paired-source
 journal-preparation optimization is compiled ONLY, not used in that native run.
+Latest cleanup retired ONLY superseded26c through Hyper-V after196 archive files
+were verified/held. Currentd1 remains Off/RAM0; fresh graph47 checkpoints.
+Cleanup receipts: retire-capacity-normal26c-2d40e2634c444b7fa966036af5e0bd42.
+Paired-preparation runtime c2c1ef3 is release-built/sealed under
+paired-source-preparation-tools-c2c1ef3/manifest.json, SHA
+70fb7abaff41ad497bb90e996662057de36222ddd9d5a68cc411d57957dc557e.
+Next native invocation must require preparation-copy reuse; its result is pending.
 The older conversion state below remains a last observation. The resumed turn
 read-only confirmed the VM Running/4GiB, original wrapper/producer absent and
 its exact task Ready, with terminal/postcheck files present. Full archival and

@@ -23,6 +23,21 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Next performance candidate: `PreparedExclusiveJournal` now retains the SAME
+exclusive journal borrow, immutable plan, original ticket and authenticated
+records from the complete post-flush preparation readback through activation
+and fresh apply/HND. The fresh arm exposes no mutable journal accessor. Exact
+old-target/clear-marker checks immediately before intent, full new readback,
+flush/order/callback/HND and all independently opened recovery checks stay.
+Normal fast and V3 first-write fault use the owner; legacy fault/full paths stay.
+Result records the actual enum-derived `prepared_journal_owner_reused` value;
+the fault diagnostic is schema 2, with exact historical schema 1 still accepted
+by the lab controllers. Focused library/CLI check, independent review and AST
+parsing pass; release/native qualification is pending. For the prior e27c plan,
+avoiding the duplicate immutable/resolved validation reads saves a code-accounted
+17,138,157,184 logical bytes, not a measured physical-I/O or timing result.
+See `docs/journal-prepared-exclusive-owner.md`. No unit tests.
+
 The grown-tree fresh-exclusive recovery matrix is complete. See
 `docs/envelope-recovery-matrix.md` and
 `evidence/envelope-recovery-matrix-20261031.json` for the exact artifact pins.

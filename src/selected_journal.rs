@@ -614,7 +614,7 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    prepare_inner(source, candidate, journal, plan, false)
+    Ok(prepare_inner(source, candidate, journal, plan, false)?.ticket)
 }
 
 /// Prepare under continuous exclusive ownership of the new journal. The
@@ -626,13 +626,76 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
 /// while checking descriptors, all payloads and source/candidate selected
 /// digests. No preliminary hash-only scan is needed to issue the same pin.
 /// Legacy preparation and every fresh recovery entry retain their checks.
+#[allow(
+    dead_code,
+    reason = "retain the independently validating ticket-only exclusive entry point"
+)]
 pub(crate) fn prepare_exclusive<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     source: &mut R,
     candidate: &mut S,
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    prepare_inner(source, candidate, journal, plan, true)
+    Ok(prepare_inner(source, candidate, journal, plan, true)?.ticket)
+}
+
+/// Only complete post-flush validation can produce these operation-local
+/// contents. Legacy ticket-only APIs discard the records; fresh ownership can
+/// retain them without authenticating the same immutable body a second time.
+struct PreparedContents {
+    ticket: SelectedTicket,
+    records: Vec<JournalRecord>,
+}
+
+/// Continuous ownership of the exact newly prepared journal and plan. No
+/// mutable journal accessor, cloning or deserialization can manufacture the
+/// completed preparation readback. The source/candidate borrows end on return;
+/// the same exclusive journal borrow remains held through activation and HND.
+pub(crate) struct PreparedExclusiveJournal<'a, J: DurableIo> {
+    journal: &'a mut J,
+    plan: &'a SelectedPlan,
+    ticket: SelectedTicket,
+    records: Vec<JournalRecord>,
+}
+
+pub(crate) fn prepare_exclusive_owned<'a, R: ReadSeek, S: ReadSeek, J: DurableIo>(
+    source: &mut R,
+    candidate: &mut S,
+    journal: &'a mut J,
+    plan: &'a SelectedPlan,
+) -> Result<PreparedExclusiveJournal<'a, J>> {
+    let PreparedContents { ticket, records } =
+        prepare_inner(source, candidate, journal, plan, true)?;
+    Ok(PreparedExclusiveJournal {
+        journal,
+        plan,
+        ticket,
+        records,
+    })
+}
+
+impl<J: DurableIo> PreparedExclusiveJournal<'_, J> {
+    pub(crate) fn ticket(&self) -> &SelectedTicket {
+        &self.ticket
+    }
+
+    /// Consume the completed preparation exactly once. Journal sharing and
+    /// alias exclusion remain the caller's existing contract. Clear markers,
+    /// the immediate exact-old target gate and every apply/HND barrier remain.
+    pub(crate) fn apply_and_handoff<T: DurableIo, F: FnOnce(&SelectedResult) -> Result<()>>(
+        self,
+        target: &mut T,
+        after_apply: F,
+    ) -> Result<(SelectedResult, SelectedResult)> {
+        let Self {
+            journal,
+            plan,
+            ticket,
+            records,
+        } = self;
+        FreshExclusiveApply::from_authenticated(target, journal, plan, &ticket, records)?
+            .apply_and_handoff(after_apply)
+    }
 }
 
 fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
@@ -641,7 +704,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
     exclusive_readback: bool,
-) -> Result<SelectedTicket> {
+) -> Result<PreparedContents> {
     let (changed, journal_length) = plan.validate()?;
     ensure!(
         source.byte_len()? == plan.image_length
@@ -762,9 +825,11 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         new_selected_sha256,
         whole_image_verified: false,
     };
-    if exclusive_readback {
-        let (_, immutable_sha256) = validate_body(journal, plan, &ticket, None, &mut zero_digests)?;
+    let records = if exclusive_readback {
+        let (records, immutable_sha256) =
+            validate_body(journal, plan, &ticket, None, &mut zero_digests)?;
         ticket.immutable_sha256 = immutable_sha256;
+        records
     } else {
         ticket.immutable_sha256 = hash_range(journal, BODY, journal_length - BODY)?;
         validate_body(
@@ -773,15 +838,16 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
             &ticket,
             Some(&ticket.immutable_sha256),
             &mut zero_digests,
-        )?;
-    }
+        )?
+        .0
+    };
     let mut markers = [0u8; BODY as usize];
     at(journal, 0, &mut markers)?;
     ensure!(
         markers.iter().all(|&b| b == 0),
         "selected journal markers are not clear"
     );
-    Ok(ticket)
+    Ok(PreparedContents { ticket, records })
 }
 
 /// Recheck the pinned complete immutable journal and each payload in one
@@ -1434,6 +1500,19 @@ impl<'a, T: DurableIo, J: DurableIo> FreshExclusiveApply<'a, T, J> {
         // load validates geometry, disjoint ranges, every immutable byte,
         // payload, descriptor, resolved copy, footer and independently held pin.
         let records = load(journal, plan, ticket)?;
+        Self::from_authenticated(target, journal, plan, ticket, records)
+    }
+
+    /// Records are reachable here only from a complete load in this call or
+    /// the one-shot owner of the same completed preparation readback. Neither
+    /// the ticket nor a serialized record can bypass journal authentication.
+    fn from_authenticated(
+        target: &'a mut T,
+        journal: &'a mut J,
+        plan: &'a SelectedPlan,
+        ticket: &'a SelectedTicket,
+        records: Vec<JournalRecord>,
+    ) -> Result<Self> {
         let (apply_intent, rollback_intent) = read_markers(journal, ticket)?;
         ensure!(
             !apply_intent && !rollback_intent,

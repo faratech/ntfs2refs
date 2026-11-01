@@ -8,6 +8,25 @@ use crate::selected_journal as sj;
 use anyhow::Context;
 use n2r_win32::{GeneralFrozenPartition, WritePolicy};
 
+/// The fresh alternative exposes no mutable journal between completed
+/// preparation and handoff. Legacy execution retains its original stream APIs.
+enum PreparedJournal<'a> {
+    Exclusive(sj::PreparedExclusiveJournal<'a, fs::File>),
+    Legacy {
+        journal: &'a mut fs::File,
+        ticket: sj::SelectedTicket,
+    },
+}
+
+impl PreparedJournal<'_> {
+    fn ticket(&self) -> &sj::SelectedTicket {
+        match self {
+            Self::Exclusive(prepared) => prepared.ticket(),
+            Self::Legacy { ticket, .. } => ticket,
+        }
+    }
+}
+
 fn announce_conversion_phase(message: &str) {
     use std::io::Write as _;
     let _ = writeln!(std::io::stderr(), "Conversion: {message}");
@@ -341,17 +360,30 @@ pub(super) fn convert_allocation_selected(
             complement_before == source_before && complement_before.disk_attributes == 3,
             "selected preparation complement differs from the admitted source"
         );
-        let ticket = {
+        let prepared = {
             let mut image = proof.image(&mut complement)?;
             if request.verification_policy.is_fast()
                 && ((interrupt_after_writes.is_none() && !interrupt_after_first_copy_write)
                     || fresh_exclusive_v3_first_write_fault)
             {
-                sj::prepare_exclusive(&mut source, &mut image, &mut journal, &plan)?
+                PreparedJournal::Exclusive(sj::prepare_exclusive_owned(
+                    &mut source,
+                    &mut image,
+                    &mut journal,
+                    &plan,
+                )?)
             } else {
-                sj::prepare(&mut source, &mut image, &mut journal, &plan)?
+                let ticket = sj::prepare(&mut source, &mut image, &mut journal, &plan)?;
+                PreparedJournal::Legacy {
+                    journal: &mut journal,
+                    ticket,
+                }
             }
         };
+        let prepared_journal_owner_reused = matches!(&prepared, PreparedJournal::Exclusive(_));
+        // This immutable copy is persisted and bound into other evidence; the
+        // fresh owner retains its original ticket and authenticated records.
+        let ticket = prepared.ticket().clone();
         ensure!(
             complement.state(&mut preparation_events)? == complement_before
                 && source.state(&mut preparation_events)? == source_before,
@@ -426,10 +458,11 @@ pub(super) fn convert_allocation_selected(
                 output,
                 "fresh-exclusive-fault-path.json",
                 &serde_json::json!({
-                    "schema_version":1,"kind":"lab-fresh-exclusive-v3-first-write-path",
+                    "schema_version":2,"kind":"lab-fresh-exclusive-v3-first-write-path",
                     "source_resource_profile":request.source_resource_profile,
-                    "preparation_completed":"prepare_exclusive",
-                    "apply_entrypoint_requested":"apply_and_handoff_exclusive",
+                    "preparation_completed":"prepare_exclusive_owned",
+                    "apply_entrypoint_requested":"PreparedExclusiveJournal::apply_and_handoff",
+                    "prepared_journal_owner_reused":prepared_journal_owner_reused,
                     "requested_flushed_payload_writes":1,"controlled_exit_code":86,
                     "hnd_allowed_if_interruption_not_reached":false,"source_writes_started":false,
                     "diagnostic_only":true,"execution_authorized":false,"replay_authorized":false,
@@ -499,83 +532,73 @@ pub(super) fn convert_allocation_selected(
 
         phase = "selected-apply";
         announce_conversion_phase("applying the selected ranges");
-        let (applied, exclusive_handoff) = match (
-            interrupt_after_writes,
-            copy_interruption_target.as_ref(),
-        ) {
-            (Some(remaining), _) if fresh_exclusive_v3_first_write_fault => {
-                let mut interrupted =
-                    reconstruct::InterruptingGeneralTarget::new(&mut target, remaining);
-                let _ = sj::apply_and_handoff_exclusive(
-                    &mut interrupted,
-                    &mut journal,
-                    &plan,
-                    &ticket,
-                    |_| {
+        let (applied, handoff) = match prepared {
+            PreparedJournal::Exclusive(prepared) => {
+                if fresh_exclusive_v3_first_write_fault {
+                    let mut interrupted =
+                        reconstruct::InterruptingGeneralTarget::new(&mut target, 1);
+                    let _ = prepared.apply_and_handoff(&mut interrupted, |_| {
                         anyhow::bail!(
                             "exclusive first-write interruption was not reached; refusing HND"
                         )
-                    },
-                )?;
-                anyhow::bail!("exclusive first-write interruption unexpectedly returned; no retry")
+                    })?;
+                    anyhow::bail!(
+                        "exclusive first-write interruption unexpectedly returned; no retry"
+                    )
+                }
+                ensure!(
+                    interrupt_after_writes.is_none() && copy_interruption_target.is_none(),
+                    "prepared exclusive journal cannot enter a legacy fault path"
+                );
+                // The same journal borrow and completed validating readback
+                // span metadata publication, source activation and durable HND.
+                prepared.apply_and_handoff(&mut target, |applied| {
+                    qualification::save(output, "apply.json", applied)?;
+                    record_process_io(output, "applied")?;
+                    phase = "selected-handoff";
+                    announce_conversion_phase(
+                        "completing ReFS handoff and verifying mounted file contents",
+                    );
+                    Ok(())
+                })?
             }
-            (Some(remaining), _) => {
-                // Lab fault: the wrapper flushes then exits the process with 86.
-                let mut interrupted =
-                    reconstruct::InterruptingGeneralTarget::new(&mut target, remaining);
-                let result = sj::apply(&mut interrupted, &mut journal, &plan, &ticket)?;
-                anyhow::bail!(
-                    "allocation-bounded interruption not reached: {} ranges written",
-                    result.range_count
-                )
+            PreparedJournal::Legacy { journal, .. } => {
+                let applied = match (interrupt_after_writes, copy_interruption_target.as_ref()) {
+                    (Some(remaining), _) => {
+                        // Legacy lab fault: flush and exit86 after accepted writes.
+                        let mut interrupted =
+                            reconstruct::InterruptingGeneralTarget::new(&mut target, remaining);
+                        let result = sj::apply(&mut interrupted, journal, &plan, &ticket)?;
+                        anyhow::bail!(
+                            "allocation-bounded interruption not reached: {} ranges written",
+                            result.range_count
+                        )
+                    }
+                    (None, Some(copy)) => {
+                        let mut interrupted = reconstruct::FirstCopyInterruptingGeneralTarget::new(
+                            &mut target,
+                            copy.offset,
+                            copy.length,
+                        )?;
+                        let result = sj::apply(&mut interrupted, journal, &plan, &ticket)?;
+                        anyhow::bail!(
+                            "first-copy interruption not reached: qualified copy at {} for {} bytes; {} ranges applied",
+                            copy.offset,
+                            copy.length,
+                            result.range_count
+                        )
+                    }
+                    (None, None) => sj::apply(&mut target, journal, &plan, &ticket)?,
+                };
+                qualification::save(output, "apply.json", &applied)?;
+                record_process_io(output, "applied")?;
+                phase = "selected-handoff";
+                announce_conversion_phase(
+                    "completing ReFS handoff and verifying mounted file contents",
+                );
+                let handoff = sj::handoff(&mut target, journal, &plan, &ticket)?;
+                (applied, handoff)
             }
-            (None, Some(copy)) => {
-                let mut interrupted = reconstruct::FirstCopyInterruptingGeneralTarget::new(
-                    &mut target,
-                    copy.offset,
-                    copy.length,
-                )?;
-                let result = sj::apply(&mut interrupted, &mut journal, &plan, &ticket)?;
-                anyhow::bail!(
-                    "first-copy interruption not reached: qualified copy at {} for {} bytes; {} ranges applied",
-                    copy.offset,
-                    copy.length,
-                    result.range_count
-                )
-            }
-            (None, None) if request.verification_policy.is_fast() => {
-                // Preserve exclusive ownership through the validated Apply
-                // and durable HND. Only this fresh path can later consume the
-                // live payload proof for mounted extent verification.
-                let (applied, handoff) = sj::apply_and_handoff_exclusive(
-                    &mut target,
-                    &mut journal,
-                    &plan,
-                    &ticket,
-                    |applied| {
-                        qualification::save(output, "apply.json", applied)?;
-                        record_process_io(output, "applied")?;
-                        phase = "selected-handoff";
-                        announce_conversion_phase(
-                            "completing ReFS handoff and verifying mounted file contents",
-                        );
-                        Ok(())
-                    },
-                )?;
-                (applied, Some(handoff))
-            }
-            (None, None) => (sj::apply(&mut target, &mut journal, &plan, &ticket)?, None),
-        };
-        let handoff = if let Some(handoff) = exclusive_handoff {
-            handoff
-        } else {
-            qualification::save(output, "apply.json", &applied)?;
-            record_process_io(output, "applied")?;
-            phase = "selected-handoff";
-            announce_conversion_phase(
-                "completing ReFS handoff and verifying mounted file contents",
-            );
-            sj::handoff(&mut target, &mut journal, &plan, &ticket)?
         };
         qualification::save(output, "handoff.json", &handoff)?;
         record_process_io(output, "handoff")?;
@@ -656,6 +679,7 @@ pub(super) fn convert_allocation_selected(
                 "actual_target_verification_policy":request.verification_policy,
                 "actual_full_file_hashes":request.verification_policy.is_full_content(),
                 "exclusive_apply_handoff_used":request.verification_policy.is_fast(),
+                "prepared_journal_owner_reused":prepared_journal_owner_reused,
                 "exclusive_preparation_readback_used":request.verification_policy.is_fast()
                     && interrupt_after_writes.is_none() && !interrupt_after_first_copy_write,
                 "journal_path":journal_path,"ticket_sha256":ticket_pin,"plan_sha256":plan_pin,

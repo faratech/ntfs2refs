@@ -40,8 +40,11 @@ checkpoint, attach, format or clear protection.
 
 VM `2401593c-4b30-472e-9b6d-c9534cbaa599`, name
 `ntfs2refs-streaming-v2-20261027`: 4 GiB fixed RAM / 4 CPU / no NIC.
-Current branch is ORIGINAL interrupted checkpoint
-`dea902f6-7d3f-49ba-86d2-27ce6dbe9516`, 46 snapshots after reviewed cleanup.
+CURRENT VM: fresh-confirmed Off/RAM0/48 snapshots at restored-NTFS checkpoint
+`d40b4b41-be9c-4243-8f91-7f953085e3a3`, parent ORIGINAL interrupted
+`dea902f6-7d3f-49ba-86d2-27ce6dbe9516`, at2026-11-01T02:37:17Z.
+Actual lab292508370854B/free52696043520B remains inside the unchanged epoch.
+No project tasks or workers remain. No raw HND/ABT replay is permitted.
 A NEW-runtime compatibility Resume passed:
 
 - Run `4b877c53e6204ed38a13b513aef0bb09`, stage
@@ -79,16 +82,26 @@ Original producer manifest `.lab/hyperv/streaming-v2-20261027/envelope-recovery-
 SHA `5102ee458144233f56a6f5c8ca2758bd775934dff78ee4ba68f7eb1f50d5dd4c`.
 Original producer SHA `9140d57cc18a7f3dac0e7cadd1ffdb9210324bf607c58cfb8042a595f9f655d2`.
 
-CURRENT: root restored ORIGINALdea once, fresh-verified then cold-started once.
-NEW-runtime Rollback104ca6aae25c40f7b5cabeef3d502943 dispatched exactly once at
-02:28:28.2201196Z, stage/task envelope-rollback-104ca6aae25c40f7b5cabeef3d502943.
-Wrapper712 / creation1793500112028 is active in pre-native checks; actual native
-terminal/observer are PENDING. No retry or death inference from a timeout.
-Forecast6GiB was admitted at actual291094674131/free54143934464 bytes.
-NEXT: wait for native0/ABT and ORIGINAL old-selected checksum, all811 observer,
-bounded closed archive and all-idle. Then normal shutdown and ONE NTFS48
-checkpoint with fresh-process verification. Never replay the saved HND branch.
-Only then qualify both journal-owner recovery directions. Latest source contains
+NEW-runtime Rollback104ca6aae25c40f7b5cabeef3d502943 also PASSED from ORIGINALdea,
+not the saved HND branch. Native5548/creation1793500267757 exited0/ABT at
+02:33:52.4674809Z (164.7104809s from millisecond birth); actual owner=true,
+ApplyIntent/Rollback. Original old-selected SHA037b3963…7775c46d matched over
+all D11392847872/N3547. NTFS64KiB/label/shape1084/all811 hashes passed at
+02:35:45.9183803Z (+113.4508994s); no independent postrollback maps/time claim.
+Closed53 metadata files62133832B copied/sourceSHAverified, indexe3a699dc,
+receipt7149e13e. Final-idle02:36:23.4990939Z preceded normalstop/finalNTFS48.
+Checkpoint receipt SHA169ae84302d6f12220fd820c89b87c54fceb1ec3477bb3bd45df8dae81b7867c.
+Both new journal-owner directions are qualified for this recorded old journal
+and conservative request only. Final native IO/CPU unavailable; preserve that
+limitation. See docs/exclusive-recovery-native.md and its evidence JSON.
+NEXT: qualify actual-byte capacity on a fresh8329 conversion with J8GiB.
+Use the sealed actual-byte-capacity-tools-adf08e9/manifest.json,
+SHA4f62f03a1ae0ba978358e9128c3418d8c153cb0b63537248938c12e3788ea107;
+new producer80e5b0ff/7055360B and same newpublic34c9, inherited helpers.
+The new8GiB recovery controller is still being prepared; do not produce its
+interrupted case before that recovery plan is reviewed and real inputs exist.
+Two slots remain for a new normal/fault; later recovery branches need reviewed
+retirement of superseded states, never a new storage epoch. Latest source contains
 capacity policy, but this compatibility run uses the original conservative
 request and does NOT qualify expanded actual-byte capacity.
 
@@ -103,7 +116,8 @@ request and does NOT qualify expanded actual-byte capacity.
   old E4ff Resume033e05bd-447b-450e-9acb-9413feaf00dc,
   E4ff restored-NTFS35c9a8f8-b646-4d3b-98e9-191b2f12a4a6, clean grown source
  83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b, original F source6fe2d6b6, H source371ae756,
-  H tail matrix3cbc/119/643/fcc, D1 cold d939 and guarded f4bf5238.
+  H tail matrix3cbc/119/643/fcc, D1 cold d939 and guarded f4bf5238; also preserve
+  new journal-owner ReFS8087 and restored-NTFSd40b until superseded with evidence.
 - Grown F corpus:808 user files/271 user dirs;811 total streams/273 total dirs/
  1084 semantic objects/1111 raw identities;9,885,781,381 user bytes. Fresh full
   baseline f5de156f and metadata-only growth835b1196 remain pinned. Full/fast raw

@@ -35,6 +35,11 @@ storage checks remain. Root alone owns VM restoration and checkpoints;
 conversion and recovery still execute inside the owning guest.
 
 Host/guest syntax checks and independent review pass. The public/fault release
-build passes; native qualification of the new runtime is pending. The existing
-8 GiB capacity experiment uses a separate fresh conversion entry and must not
-inherit recovery-only qualification. No unit tests were added or run.
+build passes. New public runtime `adf08e9` passed actual ApplyIntent Resume/HND
+and separate Rollback/ABT of the unchanged e4ff producer journal, with actual
+exclusive recovery-owner use and all 811 independent hashes in each direction.
+[Native scope](exclusive-recovery-native.md). The 8 GiB capacity policy remains
+unqualified: these recoveries used the original conservative request. Final
+I/O/CPU counters were unavailable, and timings are uncontrolled observations.
+No arbitrary-fault or power-loss qualification is implied. No unit tests were
+added or run.

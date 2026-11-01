@@ -40,6 +40,12 @@ also rehashes the body after resume and after handoff verification. The owner
 keeps the original authentication valid across those stages. These figures are
 code-path accounting, not measured native or physical-I/O improvements.
 Implementation and independent review are complete. Focused library/public/
-fault-helper/binder compilation passed in 17.68 seconds. Native qualification
-is pending; the frozen e4ff recovery matrix does not exercise this newer owner.
+fault-helper/binder compilation passed in 17.68 seconds. Public runtime
+`adf08e9` subsequently passed Resume and separate Rollback against the unchanged
+e4ff interrupted journal, with actual owner-use receipts and all 811 independent
+hashes in each direction. [Native compatibility scope](exclusive-recovery-native.md).
+Final old/new native I/O and CPU counters were unavailable; live CIM samples are
+not final, and the equations above remain code accounting rather than measured
+causal gains. This does not qualify the separate 8 GiB resource policy or
+arbitrary faults/power loss.
 No unit tests were added or run.

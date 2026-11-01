@@ -43,7 +43,7 @@ Journal5,773,273,160B/D11,393,306,624B/O5,662,773,248B. F0 selected canonical
 format4 fallback; native format5/its recovery remain UNQUALIFIED.
 See evidence/native-paired-preparation-copy-reuse-20261101.json.
 
-Current VM is fresh-confirmed Off/RAM0 at successful ReFS checkpoint
+Previous unprepared success is preserved at ReFS checkpoint
 31d77adf-2682-4e4d-b1f8-95e35702c4c0, parent clean NTFS83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b,
 with10 snapshots after the user's obsolete-state cleanup. All project tasks
 were terminal/workers absent before normal stop.
@@ -57,18 +57,39 @@ and obsolete-checkpoint-cleanup-d59a3d7435224214bcd178ceea2f4973. All host archi
 remain. The older preservation lists in historical guidance are superseded.
 Retired IDs, including26c844d0, must not return.
 
+CURRENT: VM is Running/4GiB/4CPU/noNIC with11 checkpoints, parent prepared NTFS
+cb802669-903c-48cc-99e5-57976b149e7d. Preparation runtime82e805b completed385 native
+moves/5,643,501,568B over222 identities in18.5202009s; all811 independent hashes
+and a fresh full frozen raw/native baseline passed. Prepared source/empty shadow
+were preserved with memory in cb802669; no move was repeated. See
+evidence/ntfs-owned-preparation-native-20261101.json. Baseline manifest7d10997d
+is under ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e/full-baseline-
+8796571ebd24458f8bedf17b5784e5a7/closed-native/full-baseline (inside the usual .lab base).
+The old f5de baseline does not describe these relocated physical mappings.
+
+Actual conversion6be2648addc24d1b95a11d807dae76d6 is active under
+C:\ntfs2refs\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6,
+task N2R-PreparedSourcePerformance-normal-6be2648addc24d1b95a11d807dae76d6.
+Native producer2988/birth1793569348608 is runtime c2c1ef3. Reuses the exact empty
+shadow6 from preparation, with NEW live source inspection/certificate; no JSON
+or baseline grants authority. Do not power/checkpoint/restore/retry until actual
+task/PID+birth/terminal/HND state and all project workers are rechecked. Journal
+size, final IO and all811 postconversion hashes remain pending.
+
 New source implements NTFS-owned collision preparation before freeze through
 FSCTL_MOVE_FILE, with metadata-only planning, live destination bitmap windows,
 full retrieval/identity checks and bounded receipts. The explicit minimize-scratch
-path and lab-prepare-ntfs invoke it. Focused compilation passed; native moves and
-post-preparation conversion are PENDING. No qualification transfers fromc2.
+path and lab-prepare-ntfs invoke it. Scoped native moves passed as above;
+post-preparation conversion/recovery are PENDING. A later32MiB receipt reserve
+fix is focused-build ONLY, not part of the82e native result. No qualification
+transfers across those revisions.
 No unit tests added/run. See docs/ntfs-owned-preparation.md.
 
-Next: restore clean8329 only after idle/capacity guards; create a new empty native
-shadow and exercise lab-prepare-ntfs in the guest. Reinventory after moves and
-obtain a NEW frozen source certificate; old physical maps are never authority.
-Keep independently pinned logical-content baseline for checking unchanged data.
-Then qualify scratch reduction and actual format5 Resume/Rollback. Paged evidence
+Next: finish observing live6be, preserve its actual result, then qualify scratch
+reduction and actual format5 Resume/Rollback from the preparedcb802669 source.
+Reinventory after moves and obtain a NEW frozen source certificate; old physical
+maps are never authority. Keep independently pinned logical-content evidence.
+Paged evidence
 and bounded handle windows still remain. Do not mark the performance plan complete.
 
 Root alone mutates VM2401593c-4b30-472e-9b6d-c9534cbaa599, name
@@ -88,9 +109,10 @@ The preceding detailed handoff is preserved in
   Old-selected checksum exactly matched original ticket. This is not arbitrary
   faults or physical-power-loss qualification. See docs/old-zero-recovery-matrix.md
   and evidence/old-zero-recovery-matrix-20261031.json.
-- The remaining10 states are latest31d7, grown source8329, original F source6fe2,
+- The retained states are latest31d7, grown source8329, original F source6fe2,
   H source371a, sparse source9c42 with guardedf4bf, H cold resultd939, interrupted
-  old-zerodea9 and journal-owner recovery results8087/d40b. Other historical
+  old-zerodea9 and journal-owner recovery results8087/d40b, plus new prepared
+  sourcecb802669 (11 total). Other historical
   fixture/intermediate/result nodes, including6bef and the H tail matrix, are
   retired. Their reports and pins remain. Never recreate old IDs from guidance.
 - Grown F corpus:808 user files/271 user dirs;811 total streams/273 total dirs/

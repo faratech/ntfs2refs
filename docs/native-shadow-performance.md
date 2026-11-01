@@ -52,8 +52,10 @@ This remains a logical-I/O result, not a controlled wall-time speedup claim.
 [Exact paired-preparation result and pins](../evidence/native-paired-preparation-copy-reuse-20261101.json).
 
 [NTFS-managed collision preparation](ntfs-owned-preparation.md) is now implemented
-for the explicit scratch-minimizing mode. Its actual moves remain unqualified;
-they must be checked before promoting the new path for release.
+for the explicit scratch-minimizing mode. The scoped native run moved5.64GB
+through385 verified NTFS requests and passed all811 independent hashes. A fresh
+frozen raw/native baseline also passed. Its conversion/journal-size and recovery
+qualification remain pending; this does not establish released CLI support.
 
 ## Source-free recovery storage
 

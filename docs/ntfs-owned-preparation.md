@@ -2,7 +2,8 @@
 
 The experimental `--minimize-scratch` path now prepares NTFS placement after
 creating the native ReFS shadow and before source freeze. This implementation
-is compiled, but native move/conversion qualification is pending. The ordinary
+passed the scoped native move experiment below; post-preparation conversion and
+recovery qualification are pending. The ordinary
 alpha path remains available without this option.
 
 The empty shadow's actual legacy and metadata-inclusive allocation bitmaps form
@@ -42,6 +43,11 @@ moves in memory. Moves and bytes are explicitly budgeted; the initial drive
 path uses 64-MiB move slices, 32,768 submissions and 64-MiB metadata/receipt
 budgets. The payload ceiling comes from the selected partition. Existing full
 retrieval and inventory limits still apply; this is not broad-scale qualification.
+The subsequent compiled receipt fix reserves a reusable 32-MiB record buffer and
+ledger headroom before any move. It serializes each complete JSONL record before
+appending, preventing budget exhaustion from truncating a successfully moved
+file's receipt. Exhausted headroom stops best-effort preparation before another
+submission. This fix was not in the native runtime described below.
 
 After preparation, the converter discards planning inventory and obtains a new
 frozen raw/native inventory, fingerprint and opaque certificate. Raw rollback
@@ -59,3 +65,21 @@ pinned request, fresh output and preparation acknowledgement. It invokes no
 formatter, raw cutover, source certificate or journal replay. Native success,
 unchanged logical contents and the subsequent conversion/recovery still need
 end-to-end evidence before release.
+
+The first owning-Windows run of82e805b moved5,643,501,568 bytes in385 verified
+requests over222 identities, with no sharing/access skips. Each request passed
+identity, EOF, complete-map destination and outside-VCN preservation checks.
+Observed native duration was18.5202009 seconds, without a controlled physical-I/O
+benchmark. All811 independently read logical stream hashes matched the existing
+full baseline. A subsequent frozen capture independently matched all811 raw and
+native stream reads and reconciled the1084-object namespace/security model.
+The prepared NTFS source/empty-shadow state is saved ascb802669. Wrapper path,
+UTF8 and PS5 array-decoding failures are retained; their completion helpers only
+read files and never repeated a move. See the
+[exact evidence and artifact pins](../evidence/ntfs-owned-preparation-native-20261101.json).
+
+The versioned `Start-PreparedSourcePerformanceExperiment.ps1` uses that prepared
+checkpoint, its newly captured full baseline and the same owned empty shadow.
+The source-free controller and prior evidence remain unchanged. A zero COPY set
+is accepted as zero actual reuse; nonzero sets retain exact reuse/fallback
+accounting. This is a lab-scenario change, not a reduced product check.

@@ -32,9 +32,41 @@ pub struct Report {
     pub observed_outside_free_bytes: u64,
     pub receipt_bytes: u64,
     pub receipt_sha256: String,
+    pub receipt_record_reserve_bytes: u64,
+    pub receipt_budget_limited: bool,
     pub fresh_source_inventory_and_certificate_required: bool,
     pub final_native_placement_required: bool,
     pub source_admitted: bool,
+}
+
+// For the fixed native Limits used here, two complete retrieval buffers need
+// at most 8 MiB as JSON byte arrays. The 1-MiB bitmap window and 4-MiB returned
+// query budget need at most another 20 MiB. The remaining 4 MiB bounds page
+// descriptors, scalar fields and diagnostics. Reserve before submitting a move;
+// an encoding failure still refuses preparation and never appends a partial row.
+const RECEIPT_RECORD_BYTES: usize = 32 * 1024 * 1024;
+
+struct Record {
+    bytes: Vec<u8>,
+}
+impl Write for Record {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let end = self
+            .bytes
+            .len()
+            .checked_add(data.len())
+            .filter(|n| *n <= RECEIPT_RECORD_BYTES)
+            .ok_or_else(|| {
+                io::Error::other("preparation observation exceeds its reserved record")
+            })?;
+        // Capacity was obtained before FSCTL_MOVE_FILE, so this cannot grow.
+        debug_assert!(end <= self.bytes.capacity());
+        self.bytes.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 struct Ledger {
@@ -98,6 +130,7 @@ pub fn prepare(
     let mut moved = 0u64;
     let mut verified = 0u64;
     let mut skipped = 0u64;
+    let mut receipt_budget_limited = false;
     let attempted = (|| -> Result<Report> {
         let catalog =
             n2r_win32::vss_observation::observe_catalog(&format!("{}\\", source.volume_path()?))?;
@@ -170,6 +203,11 @@ pub fn prepare(
             limit: budget.receipt_bytes,
             digest: Sha256::new(),
         };
+        let mut record = Record { bytes: Vec::new() };
+        record
+            .bytes
+            .try_reserve_exact(RECEIPT_RECORD_BYTES)
+            .context("reserving bounded preparation observation before any move")?;
         let mut index = 0;
         'files: while index < plan.moves.len() {
             let first = &plan.moves[index];
@@ -209,6 +247,10 @@ pub fn prepare(
             for suggestion in &plan.moves[index..end] {
                 let mut done = 0u64;
                 while done < u64::from(suggestion.cluster_count) {
+                    if ledger.limit - ledger.bytes < RECEIPT_RECORD_BYTES as u64 {
+                        receipt_budget_limited = true;
+                        break 'files;
+                    }
                     if verified >= budget.maximum_moves {
                         break 'files;
                     }
@@ -238,8 +280,10 @@ pub fn prepare(
                             .context("preparation moved-byte total overflow")?;
                         verified += 1;
                     }
-                    serde_json::to_writer(&mut ledger, &observation)?;
-                    ledger.write_all(b"\n")?;
+                    record.bytes.clear();
+                    serde_json::to_writer(&mut record, &observation)?;
+                    record.write_all(b"\n")?;
+                    ledger.write_all(&record.bytes)?;
                     ledger.file.sync_all()?;
                     ensure!(
                         observation.verified,
@@ -263,6 +307,8 @@ pub fn prepare(
             observed_outside_free_bytes: plan.observed_outside_free_bytes,
             receipt_bytes: ledger.bytes,
             receipt_sha256: hex::encode(ledger.digest.finalize()),
+            receipt_record_reserve_bytes: RECEIPT_RECORD_BYTES as u64,
+            receipt_budget_limited,
             fresh_source_inventory_and_certificate_required: true,
             final_native_placement_required: true,
             source_admitted: false,

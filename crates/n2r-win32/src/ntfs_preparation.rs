@@ -99,6 +99,9 @@ pub struct FileInformation {
     pub delete_pending: bool,
     pub directory: bool,
     pub attributes: u32,
+    /// Creation, last-access, last-write and change FILETIMEs from the same
+    /// actual FILE_BASIC_INFO query. Move verification preserves all four.
+    pub basic_times: [u64; 4],
 }
 
 /// The canonical complete retrieval representation and its page proof. Native
@@ -362,6 +365,7 @@ fn information(file: &File) -> io::Result<FileInformation> {
         delete_pending: tail[4] != 0,
         directory: tail[5] != 0,
         attributes: basic[4] as u32,
+        basic_times: [basic[0], basic[1], basic[2], basic[3]],
     })
 }
 

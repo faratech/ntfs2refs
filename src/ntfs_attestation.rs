@@ -444,67 +444,71 @@ fn compare_directory_cases(raw: &NtfsInspection, native: &Report) -> DirectoryCa
                 matching.next().is_none(),
                 "source directory observation duplicated"
             );
-            if observed.open_error.is_none() {
-                row.observation_path = "canonical-snapshot";
-                ensure!(
-                    observed.case_only_fallback.is_none(),
-                    "successful metadata open also carries fallback"
-                );
-                let before = observed
-                    .before
-                    .as_ref()
-                    .context("before directory snapshot missing")?;
-                let after = observed
-                    .after
-                    .as_ref()
-                    .context("after directory snapshot missing")?;
-                row.before_flags = Some(directory_case_flags(
-                    raw,
-                    file,
-                    &before.queries,
-                    before.directory_case_sensitivity.as_ref(),
-                )?);
-                row.after_flags = Some(directory_case_flags(
-                    raw,
-                    file,
-                    &after.queries,
-                    after.directory_case_sensitivity.as_ref(),
-                )?);
-            } else {
-                row.observation_path = "read-attributes-only-fallback";
-                ensure!(
-                    observed.before.is_none() && observed.after.is_none(),
-                    "failed broad open carries metadata snapshots"
-                );
-                let fallback = observed
-                    .case_only_fallback
-                    .as_ref()
-                    .context("directory case fallback missing after broad-open failure")?;
-                ensure!(
-                    fallback.access_mask == 0x80 && fallback.open_error.is_none(),
-                    "directory read-attributes fallback failed: {:?}",
-                    fallback.open_error
-                );
-                let before = fallback
-                    .before
-                    .as_ref()
-                    .context("fallback before snapshot missing")?;
-                let after = fallback
-                    .after
-                    .as_ref()
-                    .context("fallback after snapshot missing")?;
-                row.before_flags = Some(directory_case_flags(
-                    raw,
-                    file,
-                    &before.queries,
-                    before.directory_case_sensitivity.as_ref(),
-                )?);
-                row.after_flags = Some(directory_case_flags(
-                    raw,
-                    file,
-                    &after.queries,
-                    after.directory_case_sensitivity.as_ref(),
-                )?);
+            let (before_queries, before_case, after_queries, after_case) =
+                if observed.open_error.is_none() {
+                    row.observation_path = "canonical-snapshot";
+                    ensure!(
+                        observed.case_only_fallback.is_none(),
+                        "successful metadata open also carries fallback"
+                    );
+                    let before = observed
+                        .before
+                        .as_ref()
+                        .context("before directory snapshot missing")?;
+                    let after = observed
+                        .after
+                        .as_ref()
+                        .context("after directory snapshot missing")?;
+                    (
+                        before.queries.as_slice(),
+                        before.directory_case_sensitivity.as_ref(),
+                        after.queries.as_slice(),
+                        after.directory_case_sensitivity.as_ref(),
+                    )
+                } else {
+                    row.observation_path = "read-attributes-only-fallback";
+                    ensure!(
+                        observed.before.is_none() && observed.after.is_none(),
+                        "failed broad open carries metadata snapshots"
+                    );
+                    let fallback = observed
+                        .case_only_fallback
+                        .as_ref()
+                        .context("directory case fallback missing after broad-open failure")?;
+                    ensure!(
+                        fallback.access_mask == 0x80 && fallback.open_error.is_none(),
+                        "directory read-attributes fallback failed: {:?}",
+                        fallback.open_error
+                    );
+                    let before = fallback
+                        .before
+                        .as_ref()
+                        .context("fallback before snapshot missing")?;
+                    let after = fallback
+                        .after
+                        .as_ref()
+                        .context("fallback after snapshot missing")?;
+                    (
+                        before.queries.as_slice(),
+                        before.directory_case_sensitivity.as_ref(),
+                        after.queries.as_slice(),
+                        after.directory_case_sensitivity.as_ref(),
+                    )
+                };
+            // Retain both actual query failures. A failed before query must
+            // not hide the after observation or create synthetic zero flags.
+            for (phase, queries, case) in [
+                ("before", before_queries, before_case),
+                ("after", after_queries, after_case),
+            ] {
+                match directory_case_flags(raw, file, queries, case) {
+                    Ok(flags) if phase == "before" => row.before_flags = Some(flags),
+                    Ok(flags) => row.after_flags = Some(flags),
+                    Err(error) => row.issues.push(format!("{phase}: {error:#}")),
+                }
+            }
+            if !row.issues.is_empty() {
+                return Ok(());
             }
             ensure!(
                 row.before_flags == Some(0) && row.after_flags == Some(0),
@@ -515,7 +519,7 @@ fn compare_directory_cases(raw: &NtfsInspection, native: &Report) -> DirectoryCa
             Ok(())
         })();
         match checked {
-            Ok(()) => row.matched = true,
+            Ok(()) => row.matched = row.issues.is_empty(),
             Err(error) => row.issues.push(format!("{error:#}")),
         }
         directories.push(row);

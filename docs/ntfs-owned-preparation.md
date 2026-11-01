@@ -49,6 +49,14 @@ appending, preventing budget exhaustion from truncating a successfully moved
 file's receipt. Exhausted headroom stops best-effort preparation before another
 submission. This fix was not in the native runtime described below.
 
+The public-workflow evidence hook saves the already-read bounded metadata-only
+inventory as `source-before-preparation.json`, with its exact SHA/length in the
+result. Its permanent preparation-only blocker remains; it grants no source
+admission and adds no source read. Actual native move information now includes
+the four FILE_BASIC_INFO times from the existing query, and verified moves
+require those times to stay unchanged. These later changes await native
+qualification and do not alter the recorded82e experiment.
+
 After preparation, the converter discards planning inventory and obtains a new
 frozen raw/native inventory, fingerprint and opaque certificate. Raw rollback
 therefore restores post-preparation NTFS. Cancellation does not promise the

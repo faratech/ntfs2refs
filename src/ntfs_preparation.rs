@@ -24,6 +24,8 @@ pub struct Budget {
 #[derive(Debug, Serialize)]
 pub struct Report {
     pub schema_version: u32,
+    pub source_before_preparation_sha256: String,
+    pub source_before_preparation_bytes: u64,
     pub suggested_bytes: u64,
     pub moved_bytes: u64,
     pub verified_moves: u64,
@@ -149,6 +151,17 @@ pub fn prepare(
         )?;
         reader.revalidate_route(&mut events)?;
         drop(reader);
+        // Save the already-read bounded inventory, with its permanent
+        // preparation-only admission blocker. No additional source read or
+        // logical-content hash is acquired by this observation hook.
+        let source_before_preparation_sha256 = crate::general_qualification::save_bounded(
+            output,
+            "source-before-preparation.json",
+            &raw,
+            usize::try_from(budget.metadata_bytes)?,
+        )?;
+        let source_before_preparation_bytes =
+            fs::metadata(output.join("source-before-preparation.json"))?.len();
         let occupied: Vec<_> = occupancy
             .occupied
             .iter()
@@ -299,6 +312,8 @@ pub fn prepare(
         ledger.file.sync_all()?;
         Ok(Report {
             schema_version: 1,
+            source_before_preparation_sha256,
+            source_before_preparation_bytes,
             suggested_bytes: plan.proposed_move_bytes,
             moved_bytes: moved,
             verified_moves: verified,

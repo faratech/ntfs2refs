@@ -9,7 +9,6 @@ use crate::{
 #[cfg(windows)]
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
-#[cfg(windows)]
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
@@ -537,11 +536,172 @@ pub struct Gate {
     pub detail: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InternalReplacement {
     pub record_number: u64,
+    pub sequence_number: u16,
     pub role: String,
     pub action: &'static str,
+}
+
+/// Created only after the independent internal-index, transaction-freeze and
+/// source-state obligations have bound. The diagnostic replacement rows alone
+/// cannot exclude an object from directory-case admission.
+pub(crate) struct BoundInternalReplacements {
+    inspection_sha256: String,
+    replacements: Vec<InternalReplacement>,
+}
+impl BoundInternalReplacements {
+    fn binds(&self, raw: &ntfs::NtfsInspection) -> bool {
+        serde_json::to_vec(raw)
+            .is_ok_and(|bytes| hex::encode(Sha256::digest(bytes)) == self.inspection_sha256)
+    }
+    pub(crate) fn into_replacements(self) -> Vec<InternalReplacement> {
+        self.replacements
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct DirectoryCaseIdentity {
+    pub record_number: u64,
+    pub sequence_number: u16,
+}
+
+/// Admission scope is separate from the complete raw case-query diagnostics.
+/// A transferred directory always requires actual stable zero flags. Only an
+/// independently bound replacement can remove an internal directory from this
+/// obligation; its Unknown/error observation remains in the comparison.
+#[derive(Debug, Serialize)]
+pub struct DirectoryCaseAdmission {
+    pub raw_directories: usize,
+    pub required_directories: Vec<DirectoryCaseIdentity>,
+    pub matched_required_directories: usize,
+    pub replaced_internal_directories: Vec<InternalReplacement>,
+    pub internal_replacement_proof_bound: bool,
+    pub all_required_directories_case_insensitive: bool,
+    pub issues: Vec<String>,
+}
+
+fn directory_case_admission(
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    replacements: Option<&BoundInternalReplacements>,
+) -> Option<DirectoryCaseAdmission> {
+    let evidence = comparison.directory_case_sensitivity.as_ref()?;
+    let raw_ids: BTreeSet<_> = raw
+        .files
+        .iter()
+        .filter(|file| file.is_directory)
+        .map(|file| (file.record_number, file.sequence_number))
+        .collect();
+    let observed_ids: BTreeSet<_> = evidence
+        .directories
+        .iter()
+        .map(|row| (row.record_number, row.sequence_number))
+        .collect();
+    let replacements = replacements.filter(|proof| {
+        proof.binds(raw) && proof.inspection_sha256 == comparison.source_inspection_sha256
+    });
+    let mut scope = DirectoryCaseAdmission {
+        raw_directories: raw_ids.len(),
+        required_directories: Vec::new(),
+        matched_required_directories: 0,
+        replaced_internal_directories: Vec::new(),
+        internal_replacement_proof_bound: replacements.is_some(),
+        all_required_directories_case_insensitive: false,
+        issues: Vec::new(),
+    };
+    if !has_unique_sorted_records(raw)
+        || evidence.raw_directories != raw_ids.len()
+        || evidence.directories.len() != raw_ids.len()
+        || observed_ids.len() != evidence.directories.len()
+        || observed_ids != raw_ids
+    {
+        scope
+            .issues
+            .push("complete uniquely identified raw directory-case coverage is missing".into());
+    }
+    for file in raw.files.iter().filter(|file| file.is_directory) {
+        // This is the same exact internal-object recognition used by Tree
+        // derivation, now additionally backed by the opaque replacement proof.
+        let replacement = replacements.and_then(|proof| {
+            proof.replacements.iter().find(|replacement| {
+                replacement.record_number == file.record_number
+                    && replacement.sequence_number == file.sequence_number
+                    && internal_role(raw, file).as_deref() == Some(replacement.role.as_str())
+            })
+        });
+        if let Some(replacement) = replacement {
+            scope
+                .replaced_internal_directories
+                .push(replacement.clone());
+            continue;
+        }
+        scope.required_directories.push(DirectoryCaseIdentity {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+        });
+        let row = evidence.directories.iter().find(|row| {
+            row.record_number == file.record_number && row.sequence_number == file.sequence_number
+        });
+        if row.is_some_and(|row| {
+            row.matched
+                && row.before_flags == Some(0)
+                && row.after_flags == Some(0)
+                && row.issues.is_empty()
+        }) {
+            scope.matched_required_directories += 1;
+        } else {
+            scope.issues.push(format!(
+                "directory {}/{} requires successful same-identity before/after zero case flags: {:?}{}",
+                file.record_number,
+                file.sequence_number,
+                row,
+                if internal_role(raw, file).is_some() {
+                    "; independently validated exact internal replacement proof is not bound"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
+    scope.all_required_directories_case_insensitive = !scope.required_directories.is_empty()
+        && scope.issues.is_empty()
+        && scope.matched_required_directories == scope.required_directories.len();
+    Some(scope)
+}
+
+pub(crate) fn bind_directory_case_admission(
+    assessment: &mut Assessment,
+    raw: &ntfs::NtfsInspection,
+    comparison: &Comparison,
+    replacements: Option<&BoundInternalReplacements>,
+) {
+    let scope = directory_case_admission(raw, comparison, replacements);
+    for gate in &mut assessment.gates {
+        if gate.code == "native_directory_case_sensitivity" {
+            gate.satisfied = scope
+                .as_ref()
+                .is_some_and(|scope| scope.all_required_directories_case_insensitive);
+            gate.detail = format!(
+                "every transferred directory requires successful same-identity before/after FileCaseSensitiveInfo flags zero; exact proof-backed internal replacements alone are excluded; required={}, matched={}, replaced={}, replacement_proof_bound={}, issues={:?}; complete raw Unknown/error observations are retained",
+                scope
+                    .as_ref()
+                    .map_or(0, |scope| scope.required_directories.len()),
+                scope
+                    .as_ref()
+                    .map_or(0, |scope| scope.matched_required_directories),
+                scope
+                    .as_ref()
+                    .map_or(0, |scope| scope.replaced_internal_directories.len()),
+                scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.internal_replacement_proof_bound),
+                scope.as_ref().map(|scope| &scope.issues),
+            );
+        }
+    }
+    assessment.directory_case_admission = scope;
 }
 
 /// Account only for a reread, cross-indexed filesystem-internal volume ID.
@@ -587,29 +747,50 @@ pub(crate) fn bind_internal_replacement(
     raw: &ntfs::NtfsInspection,
     indexes: &crate::ntfs_internal::VerifiedIndexes,
     transactions: &crate::ntfs_transactions::VerifiedTransactions,
-) -> Option<Vec<InternalReplacement>> {
+) -> Option<BoundInternalReplacements> {
+    let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw).ok()?));
     let required = [
         "clean_volume",
         "raw_allocation",
         "raw_namespace",
+        "raw_mft_record_coverage",
         "raw_security",
         "objects",
+        "native_identity_coverage",
         "native_volume_allocation",
         "source_backups",
         "log_restart_pages",
         "remaining_inspection_refusals",
         "frozen_device_basis",
     ];
-    if !indexes.binds(raw)
-        || !indexes.replacement_supported
-        || !transactions.binds(raw)
-        || required.iter().any(|code| {
+    let missing_gates: Vec<_> = required
+        .iter()
+        .filter(|code| {
             !assessment
                 .gates
                 .iter()
-                .any(|g| g.code == *code && g.satisfied)
+                .any(|g| g.code == **code && g.satisfied)
         })
+        .copied()
+        .collect();
+    if assessment.source_inspection_sha256 != inspection_sha256
+        || !indexes.binds(raw)
+        || !indexes.replacement_supported
+        || !transactions.binds(raw)
+        || !missing_gates.is_empty()
     {
+        for gate in &mut assessment.gates {
+            if gate.code == "internal_replacement_state" {
+                gate.satisfied = false;
+                gate.detail = format!(
+                    "exact internal replacement proof is incomplete: inspection_pin_matches={}, indexes_bound={}, index_replacement_supported={}, transactions_bound={}, missing_source_gates={missing_gates:?}",
+                    assessment.source_inspection_sha256 == inspection_sha256,
+                    indexes.binds(raw),
+                    indexes.replacement_supported,
+                    transactions.binds(raw),
+                );
+            }
+        }
         return None;
     }
     let mut replacements = Vec::new();
@@ -639,6 +820,7 @@ pub(crate) fn bind_internal_replacement(
         };
         replacements.push(InternalReplacement {
             record_number: object.record_number,
+            sequence_number: object.sequence_number,
             role: object.role.clone(),
             action,
         });
@@ -649,7 +831,10 @@ pub(crate) fn bind_internal_replacement(
             gate.detail = "frozen allocation/namespace/security, backup/restart copies, verified internal object/reparse index state, disabled default quotas and the observed default-RM freeze agree; a sole NTFS volume identity is recorded for explicit replacement and user object IDs remain refused".into();
         }
     }
-    Some(replacements)
+    Some(BoundInternalReplacements {
+        inspection_sha256,
+        replacements,
+    })
 }
 #[derive(Debug, Serialize)]
 pub struct Assessment {
@@ -666,6 +851,8 @@ pub struct Assessment {
     pub execution_authorized: bool,
     pub backup_evidence: Option<crate::ntfs_backup::VerifiedBackups>,
     pub source_view: Option<crate::ntfs_source_view::Analysis>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory_case_admission: Option<DirectoryCaseAdmission>,
 }
 fn reference(f: &FileInventory) -> u64 {
     f.record_number | (u64::from(f.sequence_number) << 48)
@@ -1315,6 +1502,7 @@ fn assess_source_view_profile(
             issues,
         });
     }
+    let directory_case_admission = directory_case_admission(raw, comparison, None);
     let mut gates = vec![];
     let mut gate = |code: &str, satisfied: bool, detail: &str| {
         gates.push(Gate {
@@ -1402,16 +1590,10 @@ fn assess_source_view_profile(
     if matches!(native_schema, 13 | 14) {
         gate(
             "native_directory_case_sensitivity",
-            comparison
-                .directory_case_sensitivity
+            directory_case_admission
                 .as_ref()
-                .is_some_and(|evidence| {
-                    evidence.all_directories_case_insensitive
-                        && evidence.raw_directories
-                            == raw.files.iter().filter(|file| file.is_directory).count()
-                        && evidence.matched_directories == evidence.raw_directories
-                }),
-            "every raw source directory, including internal directories and root, needs successful same-identity before/after FileCaseSensitiveInfo flags zero; missing/error/nonzero is refused",
+                .is_some_and(|scope| scope.all_required_directories_case_insensitive),
+            "every raw directory requires actual stable zero case flags until exact independently validated internal replacements are bound; role recognition alone cannot narrow the case obligation",
         );
     }
     gate(
@@ -1505,6 +1687,7 @@ fn assess_source_view_profile(
         execution_authorized: false,
         backup_evidence: backups.cloned(),
         source_view,
+        directory_case_admission,
     }
 }
 
@@ -1518,6 +1701,7 @@ pub(crate) fn bind_large_native_profile(
     raw: &ntfs::NtfsInspection,
     observed: &n2r_win32::GeneralLiveNtfsObservation,
     expected_source_sha256: &str,
+    replacements: Option<&BoundInternalReplacements>,
 ) -> Result<()> {
     use n2r_win32::attestation::ResourceProfile as NativeProfile;
 
@@ -1564,7 +1748,7 @@ pub(crate) fn bind_large_native_profile(
         serde_json::to_vec(&view)? == serde_json::to_vec(assessment.source_view.as_ref().unwrap())?,
         "large native source-view evidence differs from the live observation"
     );
-    let fresh = assess_source_view_profile(
+    let mut fresh = assess_source_view_profile(
         raw,
         &comparison,
         native.schema_version,
@@ -1572,6 +1756,12 @@ pub(crate) fn bind_large_native_profile(
         Some(view),
         true,
         resources,
+    );
+    bind_directory_case_admission(&mut fresh, raw, &comparison, replacements);
+    ensure!(
+        serde_json::to_vec(&fresh.directory_case_admission)?
+            == serde_json::to_vec(&assessment.directory_case_admission)?,
+        "large native directory-case scope differs from the bound replacement proof and fresh raw observations"
     );
     let objects_match =
         serde_json::to_vec(&fresh.objects)? == serde_json::to_vec(&assessment.objects)?;

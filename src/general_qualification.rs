@@ -74,7 +74,12 @@ impl Write for BoundedJson {
     }
 }
 
-fn save_bounded(root: &Path, name: &str, value: &impl Serialize, limit: usize) -> Result<String> {
+pub(crate) fn save_bounded(
+    root: &Path,
+    name: &str,
+    value: &impl Serialize,
+    limit: usize,
+) -> Result<String> {
     let mut output = BoundedJson {
         bytes: Vec::new(),
         limit,

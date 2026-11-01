@@ -2,10 +2,20 @@
 
 Fresh source collection uses Request5/Report13 for full content and6/14 for
 extent verification. It queries actual NTFS FileCaseSensitiveInfo(class23) before
-and after every raw directory observation. Exact4-byte successful zero flags,
-stable directory/delete state and full NTFS serial/file-reference/sequence
-identity are required before the opaque source certificate can be issued.
+and after every raw directory observation. Every transferred directory requires
+exact4-byte successful zero flags, stable directory/delete state and full NTFS
+serial/file-reference/sequence identity before a source certificate is issued.
 Missing evidence, query errors, nonzero flags and mismatched identities refuse.
+
+Raw observations remain complete, including errors. Admission's exact directory
+set is bound separately after existing index, transaction and source-state checks
+produce a private internal-replacement proof. A raw metadata role or candidate
+label cannot exclude anything. Only exact record/sequence/role identities from
+that proof can be classed as replaced internal directories; the root and every
+transferred directory remain required. Expanded profiles recompute this scope
+independently before binding. `.assessment.directory_case_admission` records the
+required/replaced partition; `.comparison.directory_case_sensitivity` retains
+the original raw observations.
 
 Some recognized NTFS internal directories cannot be opened with the ordinary
 metadata/security access mask. New reports retain that original failure and may
@@ -20,7 +30,10 @@ diagnostic/recovery schemas remain readable; actual live assessment collectors
 now request the new full-source protocol. Unprofiled Report13 retains legacy
 paged bitmap reconciliation, while profiled13 and extent14 retain streaming.
 
-Focused compilation passed. Native positive and refusal qualification remain
-pending. No unit tests were added or run. The versioned performance observer can
+The actual2e20aa9 run observed278 raw directories,277 successful zero/zero pairs,
+and actual query87 for internal `$Deleted` record29. It refused before certificate,
+journal or conversion writes. That query remains Unknown; it is not converted to
+false. The proof-bound applicability correction is compiled and source-reviewed;
+native qualification remains pending. No unit tests were added or run. The versioned performance observer can
 require the exact14/6 pair and complete positive per-directory evidence without
 equating it to the historical full-content baseline.

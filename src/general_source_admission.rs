@@ -443,17 +443,6 @@ pub fn assess_with_source_digest(
     );
     let comparison =
         ntfs_attestation::compare(raw, canonical_inspection_sha256, observed.report())?;
-    ensure!(
-        comparison
-            .directory_case_sensitivity
-            .as_ref()
-            .is_some_and(|evidence| evidence.all_directories_case_insensitive
-                && evidence.raw_directories
-                    == raw.files.iter().filter(|file| file.is_directory).count()
-                && evidence.matched_directories == evidence.raw_directories),
-        "fresh source directories have missing, failed, nonzero or unstable case evidence: {:?}",
-        comparison.directory_case_sensitivity
-    );
     let mut view = ntfs_source_view::diagnose(raw, canonical_inspection_sha256, observed.report())?;
     view.bind_frozen_source(&source_sha256);
     let mut assessment = ntfs_admission::assess_ordinary_source_view_with_resources(
@@ -473,9 +462,6 @@ pub fn assess_with_source_digest(
                 "actual dedicated disk remained offline/read-only and matched the complete pinned source hash after native collection"
             }.into();
         }
-    }
-    if resources.native_profile().is_some() {
-        ntfs_admission::bind_large_native_profile(&mut assessment, raw, observed, &source_sha256)?;
     }
     if let Some(proof) = log_restart {
         ntfs_admission::bind_clean_log(&mut assessment, raw, proof);
@@ -527,12 +513,43 @@ pub fn assess_with_source_digest(
         satisfied:transaction_freeze.as_ref().is_some_and(|proof|proof.binds(raw)),
         detail:"idle/inactive native default RM, actual lock/dismount exclusion, clean restart copies and empty deferred namespaces must agree".into(),
     });
-    let internal_replacements = match (&internal_indexes, &transaction_freeze) {
+    let bound_internal_replacements = match (&internal_indexes, &transaction_freeze) {
         (Some(indexes), Some(transactions)) => {
             ntfs_admission::bind_internal_replacement(&mut assessment, raw, indexes, transactions)
         }
         _ => None,
     };
+    // Case applicability follows the independent replacement proof. A role or
+    // candidate label cannot waive an actual directory query failure.
+    ntfs_admission::bind_directory_case_admission(
+        &mut assessment,
+        raw,
+        &comparison,
+        bound_internal_replacements.as_ref(),
+    );
+    ensure!(
+        assessment
+            .gates
+            .iter()
+            .any(|gate| gate.code == "native_directory_case_sensitivity" && gate.satisfied),
+        "fresh source directory-case admission refused: scope={:?}; internal_indexes_error={internal_indexes_error:?}; transaction_freeze_error={transaction_freeze_error:?}; internal_replacement_state={:?}",
+        assessment.directory_case_admission,
+        assessment
+            .gates
+            .iter()
+            .find(|gate| gate.code == "internal_replacement_state")
+    );
+    if resources.native_profile().is_some() {
+        ntfs_admission::bind_large_native_profile(
+            &mut assessment,
+            raw,
+            observed,
+            &source_sha256,
+            bound_internal_replacements.as_ref(),
+        )?;
+    }
+    let internal_replacements = bound_internal_replacements
+        .map(ntfs_admission::BoundInternalReplacements::into_replacements);
     let context = AdmissionContext {
         source_views_sha256: hex::encode(Sha256::digest(serde_json::to_vec(
             &assessment.source_view,

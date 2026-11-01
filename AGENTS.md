@@ -40,6 +40,10 @@ storage and actual-read COPY reuse; see docs/native-shadow-performance.md.
 Existing formats/default requests remain unchanged. The new --minimize-scratch
 mode is explicit and has not yet passed a full native conversion/recovery run.
 No unit tests were added/run; focused builds and owned-file checks are used.
+Implemented/pushed performance source is58be22c. Optimized builds, legacy/free
+owned-file recovery and foreign-granule refusal passed; native COPY reuse and a
+complete new-format volume conversion/recovery remain pending. Exact pins and
+saved-plan sizing are in evidence/native-shadow-performance-20261101.json.
 The older conversion state below remains a last observation. The resumed turn
 read-only confirmed the VM Running/4GiB, original wrapper/producer absent and
 its exact task Ready, with terminal/postcheck files present. Full archival and

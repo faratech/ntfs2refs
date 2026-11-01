@@ -119,6 +119,8 @@ Primary contracts: [snapshot presence](https://learn.microsoft.com/windows/win32
 
 ## Current evidence and remaining work
 
+[Recorded scope, artifact pins and results](../evidence/native-shadow-performance-20261101.json).
+
 Focused builds and owned ordinary-file experiments cover the new encoding and
 existing legacy copy/old-zero encoding. These do not qualify a new native volume
 conversion. The read-only owning-Windows VSS probe passed its supported-provider

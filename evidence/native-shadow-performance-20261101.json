@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "kind": "native-shadow-performance-implementation",
+  "utc": "2026-11-01T18:49:03.4223312Z",
+  "source_commit": "58be22cd644c1440eba4cb10e9313e434b148707",
+  "source_commit_scope": "Task-owned source; public main retains the separately pinned protected user hunk",
+  "main_source_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "protected_main_uncommitted": true,
+  "build": {
+    "profile": "release",
+    "success": true,
+    "binaries": [
+      {
+        "name": "ntfs2refs.exe",
+        "bytes": 10087936,
+        "sha256": "3e5b889d350d906276248a960332784c32133e4dc3885520e45e7975065d8067"
+      },
+      {
+        "name": "lab-selected-journal.exe",
+        "bytes": 1170944,
+        "sha256": "a16fd6f5e4d59507c0b541e258d47ac036d749828afd472fdadc7987c9863e74"
+      },
+      {
+        "name": "lab-plan-source-free.exe",
+        "bytes": 1543168,
+        "sha256": "d8df1c72675a67d7bfb4a77a47df506114d9d90bcdd72c4e8c015dedc3ee106b"
+      },
+      {
+        "name": "lab-vss-catalog.exe",
+        "bytes": 891392,
+        "sha256": "9a1ff5c772a99816a2ba3497431f7ea63719a8b87fbe3a8b53e9b1e52c484480"
+      },
+      {
+        "name": "lab-convert-native-composite.exe",
+        "bytes": 7189504,
+        "sha256": "d5a22054fe21f651faef0c5a08c88da384cec9ad099a60464c25d171fcc64f97"
+      }
+    ],
+    "unit_tests_added_or_run": false
+  },
+  "owned_file_results": {
+    "legacy": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\research\\source-free-final-d5f4d132fc1648f5907cfb1c782bca16\\legacy\\report.json",
+      "sha256": "3e4498ba311c8c3bbc4ad12252ad7b16067b7d6202aa05e8fa108006d72117c8",
+      "success": true,
+      "encoding": "N2ROLD01",
+      "journal_bytes": 41848,
+      "restores_free_contents": true
+    },
+    "source_free": {
+      "path": "D:\\code\\ntfs2refs\\.lab\\research\\source-free-final-d5f4d132fc1648f5907cfb1c782bca16\\source-free\\report.json",
+      "sha256": "7385da55d94f450221df3a524a2b86631d8c26db8112c6c08c19be5694b56560",
+      "success": true,
+      "encoding": "N2RFRE01",
+      "journal_bytes": 33688,
+      "accounting": {
+        "enabled": true,
+        "journal_without_source_free_bytes": 41848,
+        "net_journal_bytes_saved": 8160,
+        "old_granule_digest_table_bytes": 32,
+        "old_payload_bytes_omitted": 8192,
+        "rollback_restores_original_free_contents": false,
+        "source_allocation_authority": "Owned ordinary-file fixture declaration only; no filesystem source admission"
+      },
+      "complete_apply_foreign_and_rollback": {
+        "closed_abt_verified": true,
+        "completed_apply_before_fault": true,
+        "foreign_free_granule_resume_refused": true,
+        "foreign_resume_error": "source-free target granule is neither original nor new",
+        "foreign_resume_journal_write_calls": 0,
+        "foreign_resume_target_write_calls": 0,
+        "free_new_bytes_differing_from_old": 8175,
+        "handoff_recorded": false,
+        "journal_io": {
+          "bytes_read": 540984,
+          "bytes_written": 46784,
+          "denied": 0,
+          "fault_syncs": 0,
+          "reads": 181,
+          "seeks": 251,
+          "short_writes": 0,
+          "syncs": 4,
+          "writes": 28
+        },
+        "manual_injection_bytes_written": 2,
+        "manual_injection_write_calls": 2,
+        "manual_restoration_used_admitted_new_byte": true,
+        "native_conversion_qualified": false,
+        "old_restoration_bytes": 28672,
+        "rollback_free_bytes_exactly_new": true,
+        "rollback_required_old_bytes_match": true,
+        "selected_sha256": "3c8a5d5ee3bd670a8cbc64777be8c72f75c21da8c273d8420923de66138162a4",
+        "setup_bytes_written": 8404992,
+        "target_io_including_manual_injections_and_verification": {
+          "bytes_read": 323584,
+          "bytes_written": 65538,
+          "denied": 0,
+          "fault_syncs": 0,
+          "reads": 61,
+          "seeks": 76,
+          "short_writes": 0,
+          "syncs": 9,
+          "writes": 15
+        },
+        "verification_bytes_read": 81920
+      }
+    }
+  },
+  "saved_native_plan_sizing": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\research\\source-free-journal-0508d836b97c420ba6e72ebf3d819bf1\\native-old-zero-plan-sizing.json",
+    "sha256": "4f273b96557944ed1d5315e1afb6ed564bab5be1bb30c0d628dc204ed8e72a11",
+    "before": {
+      "encoding": "N2ROLD01",
+      "encoding_version": 4,
+      "journal_bytes": 5850442832,
+      "new_literal_payload_bytes": 44888064,
+      "old_granule_digest_table_bytes": 0,
+      "old_restore_required_bytes": 11392786432,
+      "old_zero_bytes": 5587607552,
+      "selected_bytes": 11392786432,
+      "selected_ranges": 3534,
+      "source_free_bytes": 0,
+      "source_free_ranges": 0,
+      "stored_old_payload_bytes": 5805178880
+    },
+    "refined": {
+      "encoding": "N2RFRE01",
+      "encoding_version": 5,
+      "journal_bytes": 5780851832,
+      "new_literal_payload_bytes": 44888064,
+      "old_granule_digest_table_bytes": 272912,
+      "old_restore_required_bytes": 11322920960,
+      "old_zero_bytes": 5587607552,
+      "selected_bytes": 11392786432,
+      "selected_ranges": 3549,
+      "source_free_bytes": 69865472,
+      "source_free_ranges": 15,
+      "stored_old_payload_bytes": 5735313408
+    },
+    "theoretical_journal_bytes_saved": 69591000,
+    "native_conversion_qualified": false
+  },
+  "copy_read_reuse": {
+    "implemented": true,
+    "baseline_copy_bytes": 5659303936,
+    "new_native_reused_bytes": null,
+    "new_native_process_io": null,
+    "new_native_wall_seconds": null,
+    "measurement_status": "Pending a fresh native conversion; baseline is not a new-runtime measurement"
+  },
+  "protected_vss_api_probe": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\vss-offline-probe-c31766f498754dc6a3f3af5c89a5364a\\readonly-presence-scoped.json",
+    "sha256": "088c678ff0c753cd92037c09b2bd93a4df8ce1decc997ce5dff0538810c37388",
+    "source_snapshot_absence": true,
+    "hosted_storage_claimed": false,
+    "scope": "Requester snapshot-presence API on disposable physically READ_ONLY published NTFS; not complete native admission"
+  },
+  "full_native_conversion_recovery_qualified": false,
+  "physical_power_loss_qualified": false,
+  "source_case_feature_qualified": false,
+  "next": "Close/archive the previous terminal native case, qualify new conversion/recovery, then NTFS-owned preparation and broader resource scaling"
+}

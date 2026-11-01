@@ -57,3 +57,14 @@ no native execution of this capacity case has occurred. Current file-count,
 metadata, geometry and feature
 limits remain; this is not unbounded-volume qualification. No unit tests were
 added or run.
+
+`lab/Start-ActualByteCapacityRecovery.ps1` is a separate reviewed recovery
+controller for this budget. It requires pinned helper-source hashes and a real
+future `actual-byte-capacity-interrupted-checkpoint` receipt containing the
+observed producer PID/creation/exit86/first flush/no HND, final idle, checkpoint
+and actual parent, bundle path/checksum and five original metadata pins. The
+actual checkpoint node must join the saved receipt and clean source8329.
+It reads the actual new producer fields and managed receipt; it does not
+manufacture legacy fields. The shadow may remain absent after cold restart.
+Host and assembled guest pass PowerShell 5.1 syntax and independent review.
+No such interrupted receipt has been created, and no 8 GiB recovery has run.

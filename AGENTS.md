@@ -107,8 +107,13 @@ NEXT: qualify actual-byte capacity on a fresh8329 conversion with J8GiB.
 Use the sealed actual-byte-capacity-tools-adf08e9/manifest.json,
 SHA4f62f03a1ae0ba978358e9128c3418d8c153cb0b63537248938c12e3788ea107;
 new producer80e5b0ff/7055360B and same newpublic34c9, inherited helpers.
-The new8GiB recovery controller is still being prepared; do not produce its
-interrupted case before that recovery plan is reviewed and real inputs exist.
+The new8GiB recovery controller is reviewed/PS5 parsed, sourceSHA860a571e…fdf2912.
+It requires REAL future actual-byte-capacity-interrupted-checkpoint receipt
+(schema1/kind exactly as documented in its header), actual producerPID/birth/
+86/firstflush/noHND/idle, checkpoint and actual parent8329, original bundle and
+five original metadata pins. It cross-checks the actual Hyper-V parent node;
+never invent a receipt or legacy producer fields. Pinned helper-source SHA
+inputs are mandatory. No8GiB interrupted receipt or native case exists yet.
 Two slots remain for a new normal/fault; later recovery branches need reviewed
 retirement of superseded states, never a new storage epoch. Latest source contains
 capacity policy, but this compatibility run uses the original conservative

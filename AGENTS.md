@@ -44,12 +44,23 @@ Implemented/pushed performance source is58be22c. Optimized builds, legacy/free
 owned-file recovery and foreign-granule refusal passed; native COPY reuse and a
 complete new-format volume conversion/recovery remain pending. Exact pins and
 saved-plan sizing are in evidence/native-shadow-performance-20261101.json.
-CURRENT: the prior8GiB normal branch was metadata-archived (88 files/219773456B)
+PREVIOUS: the prior8GiB normal branch was metadata-archived (88 files/219773456B)
 and preserved at26c844d0-ed7e-49dd-a867-9b5a5ce33130, parent8329. Fresh process
 verified Off/RAM0/47 checkpoints. Its performance-transition-archive.json and
 preserved-checkpoint.json are under the original actual-byte-capacity-normal-
 27ae9824f5794fe98a96d69c66cfc10b host directory. Do not repeat the checkpoint.
-The new source-free performance controller is PS5 parsed, not yet dispatched.
+CURRENT: new native63393142005e45ef9320964dbc6ed683 of runtime58be22c exited0/HND;
+all811 independent hashes passed through the metadata-only hashes completion.
+Native4144/birth1793560925173, terminal19:26:51.0626735Z,285.8896735s.
+Capture reused5659303936B with zero fallback; native-verified logical reads
+99711691009/writes17367730980. Policy source_free_actual_bytes_v1 selected optimal
+format4 (all free original bytes were zero): F0/O5662216192/J5773344392/D11392749568.
+Do not claim format5 native/recovery qualification or a timing speedup.
+Original observer failures are preserved; no converter or raw HND replay reran.
+Closed108 metadata files267771060B were source/copy SHA-verified. Preserved new
+ReFS node d1bbcaa3-a6a6-48de-8593-75f1641ec450, parent8329; fresh Off/RAM0/48.
+See evidence/native-capture-copy-reuse-20261101.json. The later typed paired-source
+journal-preparation optimization is compiled ONLY, not used in that native run.
 The older conversion state below remains a last observation. The resumed turn
 read-only confirmed the VM Running/4GiB, original wrapper/producer absent and
 its exact task Ready, with terminal/postcheck files present. Full archival and

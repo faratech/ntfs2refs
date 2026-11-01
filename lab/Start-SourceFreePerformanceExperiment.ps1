@@ -120,8 +120,49 @@ try {
         $definitions.Add($normal.functions[$name])
     }
     # Format-five verifier observes pinned metadata only; the core authenticates J.
+    $sourceZeroFallback = @'
+function AssertLabSourceFreeZeroFallback($Plan,[string]$Records,$ActualResult){
+ $property=$Plan.PSObject.Properties['old_zero_ranges']
+ if($null-eq$property){return @{enabled=$false}}
+ Need ($null-ne$property.Value-and$property.Value-is[Collections.IList]) 'Old-zero ranges must be an explicit array.'
+ $oldZeros=@($property.Value);if($oldZeros.Count-eq0){return @{enabled=$false}}
+ $null=LabIntegerKey $Plan.image_length;$null=LabIntegerKey $Plan.max_selected_bytes;$null=LabIntegerKey $Plan.max_journal_bytes
+ Need ($Plan.image_length-gt0-and[decimal]$Plan.image_length-le[long]::MaxValue-and$Plan.ranges-is[Collections.IList]-and@($Plan.ranges).Count-gt0-and@($Plan.ranges).Count-le65536) 'Bounded complete selected-range domain required.'
+ $selected=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+ $d=0D;$previousEnd=0D
+ foreach($range in $Plan.ranges){$key=LabJournalRangeKey $range;$end=[decimal]$range.offset+[decimal]$range.length;Need ($range.length-gt0-and$range.offset%4096-eq0-and$range.length%4096-eq0-and[decimal]$range.offset-ge$previousEnd-and$end-le[decimal]$Plan.image_length-and-not$selected.ContainsKey($key)) 'Selected ranges must be aligned, sorted, unique and within the image.';$selected.Add($key,$range);$d+=[decimal]$range.length;$previousEnd=$end}
+ Need ($d-gt0-and$d-le[long]::MaxValue-and$d-le[decimal]$Plan.max_selected_bytes) 'Selected byte sum exceeds its admitted bound.'
+ $o=0D;$previousOffset=-1D
+ foreach($range in $oldZeros){$key=LabJournalRangeKey $range;Need ($selected.ContainsKey($key)-and[decimal]$range.offset-gt$previousOffset) 'Old-zero ranges must be a sorted unique exact whole-selected-range subset.';$o+=[decimal]$range.length;$previousOffset=[decimal]$range.offset}
+ Need ($o-gt0-and$o-le$d) 'Pinned old-zero total must be positive and bounded by selected bytes.'
+ $newZeros=@();$p=$Plan.PSObject.Properties['new_zero_ranges'];if($null-ne$p){Need ($null-ne$p.Value-and$p.Value-is[Collections.IList]) 'New-zero ranges must be an array.';$newZeros=@($p.Value)}
+ $copies=@();$p=$Plan.PSObject.Properties['new_copy_ranges'];if($null-ne$p){Need ($null-ne$p.Value-and$p.Value-is[Collections.IList]) 'Copy ranges must be an array.';$copies=@($p.Value)}
+ $z=0D;$copy=0D;$destinations=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);$previousOffset=-1D
+ foreach($range in $newZeros){$key=LabJournalRangeKey $range;Need ($selected.ContainsKey($key)-and[decimal]$range.offset-gt$previousOffset-and$destinations.Add($key)) 'New-zero ranges must be a sorted unique exact selected subset.';$z+=[decimal]$range.length;$previousOffset=[decimal]$range.offset}
+ $previousOffset=-1D
+ foreach($range in $copies){Need ($range-is[pscustomobject]-and@($range.PSObject.Properties).Count-eq3-and@($range.PSObject.Properties|Where-Object {$_.Name-cnotin@('offset','length','source_offset')}).Count-eq0) 'Exact copy range fields required.';$null=LabIntegerKey $range.offset;$null=LabIntegerKey $range.length;$null=LabIntegerKey $range.source_offset;$key=(LabIntegerKey $range.offset)+':'+(LabIntegerKey $range.length);Need ($selected.ContainsKey($key)-and[decimal]$range.offset-gt$previousOffset-and$destinations.Add($key)-and$range.source_offset%4096-eq0-and([decimal]$range.source_offset+[decimal]$range.length)-le[decimal]$Plan.image_length) 'Copy destinations must be exact selected ranges disjoint from new zeros; source geometry must be bounded.';$copy+=[decimal]$range.length;$previousOffset=[decimal]$range.offset}
+ $literal=$d-$z-$copy;Need ($literal-ge0) 'New zero/copy payload sums exceed selected bytes.'
+ $planPath=Join-Path $Records 'selected-plan.json';$ticketPath=Join-Path $Records 'selected-ticket.json';$locationPath=Join-Path $Records 'journal-location.json';$capacityPath=Join-Path $Records 'journal-capacity.json'
+ foreach($spec in @(@{path=$planPath;max=16MB},@{path=$ticketPath;max=65536},@{path=$locationPath;max=1MB},@{path=$capacityPath;max=1MB},@{path=(Join-Path $Records 'allocation-recovery-bundle.json');max=65536},@{path=(Join-Path $Records 'request.json');max=131072})){$item=Get-Item -LiteralPath $spec.path -Force;Need (-not$item.PSIsContainer-and$item.Length-gt0-and$item.Length-le$spec.max) 'Old-zero metadata exceeds its existing closed-artifact bound.'}
+ $ticket=Json $ticketPath;$location=Json $locationPath;$capacity=Json $capacityPath;$bundle=Json (Join-Path $Records 'allocation-recovery-bundle.json');$request=Json (Join-Path $Records 'request.json')
+ $planPin=(Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant();$ticketPin=(Get-FileHash -LiteralPath $ticketPath -Algorithm SHA256).Hash.ToLowerInvariant()
+ Need ($bundle.plan.path-ceq$planPath-and$bundle.plan.sha256-ceq$planPin-and$bundle.ticket.path-ceq$ticketPath-and$bundle.ticket.sha256-ceq$ticketPin-and$bundle.journal-ceq$location.path) 'Old-zero facts must bind the actual bundle-pinned plan, ticket and journal route.'
+ foreach($value in @($ticket.image_length,$ticket.selected_bytes,$ticket.range_count,$ticket.journal_length,$location.journal_format_version,$location.journal_record_bytes,$location.old_zero_bytes,$capacity.old_zero_bytes)){$null=LabIntegerKey $value}
+ $expected=8192D+80D+80D+104D*@($Plan.ranges).Count+2D*$d-$z-$copy-$o
+ Need ($expected-gt0-and$expected-le[long]::MaxValue-and$ticket.image_length-eq$Plan.image_length-and$ticket.selected_bytes-eq$d-and$ticket.range_count-eq@($Plan.ranges).Count-and$ticket.whole_image_verified-eq$false-and$ticket.journal_length-eq$expected-and$expected-le[decimal]$Plan.max_journal_bytes) 'Format4 exact descriptor/payload journal size or trusted ticket domain differs.'
+ Need ($location.format-ceq'N2ROLD01'-and$location.journal_format_version-eq4-and$location.journal_record_bytes-eq104-and$location.old_zero_bytes-eq$o-and$capacity.old_zero_bytes-eq$o-and$capacity.journal_bytes-eq$expected-and$capacity.selected_bytes-eq$d-and$capacity.new_zero_bytes-eq$z-and$capacity.new_copy_bytes-eq$copy-and$capacity.packed_bytes-eq$literal) 'Actual format4 location/capacity totals differ from the pinned exact subsets.'
+ $capElision=$capacity.PSObject.Properties['old_zero_payload_storage_elided'];if($null-ne$capElision){Need ($capElision.Value-is[bool]-and$capElision.Value) 'Capacity old-zero elision flag differs.'}
+ $null=LabIntegerKey $request.max_combined_scratch_bytes;$null=LabIntegerKey $request.max_literal_backing_bytes
+ Need ($request.selected_capacity_policy-ceq'source_free_actual_bytes_v1'-and$capacity.source_free_bytes-eq0-and$capacity.source_free_hash_table_bytes-eq0-and$capacity.rollback_preserves_free_space_contents-and$literal-le[decimal]$request.max_literal_backing_bytes-and($d-$o+$literal+16MB)-le[decimal]$request.max_journal_bytes-and($d-$o+2*$literal+16MB)-le[decimal]$request.max_combined_scratch_bytes-and$expected+$literal-le[decimal]$request.max_combined_scratch_bytes) 'Clean-source zero fallback keeps exact old restoration and admitted storage.'
+ if($null-ne$ActualResult){$null=LabIntegerKey $ActualResult.old_zero_bytes;Need ($ActualResult.old_zero_bytes-eq$o-and$ActualResult.old_zero_payload_storage_elided-is[bool]-and$ActualResult.old_zero_payload_storage_elided) 'Actual product result must explicitly report the same old-zero total and storage elision.'}
+ if($null-ne$ActualResult){Need ($ActualResult.source_free_bytes-eq0-and-not$ActualResult.source_free_old_payload_storage_elided-and$ActualResult.rollback_preserves_free_space_contents) 'Actual clean fallback must preserve all original selected bytes.'}
+ return @{enabled=$true;source_free_bytes=0L;source_free_hash_table_bytes=0L;old_restore_required_bytes=[long]$d;scope='lab-pinned-old-zero-journal-encoding-v1';format='N2ROLD01';journal_format_version=4;journal_record_bytes=104;range_count=@($Plan.ranges).Count;selected_bytes=[long]$d;old_zero_ranges=$oldZeros.Count;old_zero_bytes=[long]$o;stored_old_payload_bytes=[long]($d-$o);new_zero_bytes=[long]$z;new_copy_bytes=[long]$copy;literal_new_payload_bytes=[long]$literal;expected_journal_bytes=[long]$expected;journal_bytes=$ticket.journal_length;plan_sha256=$planPin;ticket_sha256=$ticketPin;location_sha256=(Get-FileHash -LiteralPath $locationPath -Algorithm SHA256).Hash.ToLowerInvariant();capacity_sha256=(Get-FileHash -LiteralPath $capacityPath -Algorithm SHA256).Hash.ToLowerInvariant();old_zero_exact_selected_subset=$true;core_actual_source_zero_check_replaced_by_lab=$false;lab_source_payload_bytes_read=0;raw_journal_opened=$false;grants_product_authority=$false}
+}
+'@
+    $definitions.Add($sourceZeroFallback)
     $sourceFreeVerifier = @'
 function AssertLabSourceFreeEncoding($Plan,[string]$Records,$ActualResult){
+ $freeProperty=$Plan.PSObject.Properties['source_free_ranges'];if($null-eq$freeProperty-or($freeProperty.Value-is[Collections.IList]-and@($freeProperty.Value).Count-eq0)){return (AssertLabSourceFreeZeroFallback $Plan $Records $ActualResult)}
  $property=$Plan.PSObject.Properties['old_zero_ranges']
  if($null-eq$property){return @{enabled=$false}}
  Need ($null-ne$property.Value-and$property.Value-is[Collections.IList]) 'Old-zero ranges must be an explicit array.'
@@ -200,7 +241,7 @@ __FUNCTIONS__
 function AssertActualCapacity($Request,$Plan,$Result){
  Need ($Request.schema_version-eq3-and$Request.selected_capacity_policy-ceq'source_free_actual_bytes_v1'-and$Request.verification_policy-ceq'extent_identity_v1'-and$Request.verify_existing_shadow-eq$false-and$Request.max_journal_bytes-eq8GB-and$Request.max_literal_backing_bytes-eq256MB-and$Request.max_combined_scratch_bytes-eq10GB) 'Exact explicit fresh actual-byte request required.'
  $facts=AssertLabSourceFreeEncoding $Plan $c.output $Result
- Need ($facts.enabled-and$facts.old_zero_bytes-gt0-and$facts.source_free_bytes-gt0-and$facts.format-ceq'N2RFRE01'-and$facts.journal_bytes-le8GB-and$facts.journal_bytes-lt$facts.selected_bytes) 'Actual positiveF/format5 and exactJ<=8GiB required.'
+ Need ($facts.enabled-and$facts.old_zero_bytes-gt0-and(($facts.source_free_bytes-gt0-and$facts.format-ceq'N2RFRE01')-or($facts.source_free_bytes-eq0-and$facts.format-ceq'N2ROLD01'))-and$facts.journal_bytes-le8GB-and$facts.journal_bytes-lt$facts.selected_bytes) 'Exact encoded old-byte storage within8GiB required; clean free space retains lossless format4.'
  $capture=Json (Join-Path $c.output 'capture-capacity.json') 64MB;$b=$capture.budget
  Need ($b.selected_capacity_policy-ceq'source_free_actual_bytes_v1'-and$b.max_changed_bytes-eq52GB-and$b.max_journal_bytes-eq8GB-and$b.max_literal_backing_bytes-eq256MB-and$b.max_combined_backing_and_journal_bytes-eq10GB-and$b.minimum_free_bytes-eq1GB) 'Actual capture policy/bounds differ.'
  $observations=@($capture.observations);Need ($observations.Count-gt0-and$observations.Count-le65536) 'Bounded sampled live capacity observations required.'

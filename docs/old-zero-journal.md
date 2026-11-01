@@ -61,8 +61,13 @@ uses 104-byte records within the existing 16 MiB reserve. Sealed `e4ffb3a`
 passed one normal grown V3 native case with format 4, 5,587,607,552 actual
 old-zero bytes, native exit 0/HND and all 811 independent stream hashes. Its
 same-plan serialized journal reduction is 5,587,579,280 bytes after record
-widening. [Normal native scope](old-zero-native.md). Native old-zero fault and
-recovery qualification remain pending. The focused release build passed.
+widening. [Normal native scope](old-zero-native.md). The same sealed runtime
+then passed controlled first-flushed-write interruption and clean restart,
+public Resume and separate Rollback from the original interrupted checkpoint;
+both independent recovery observers matched all 811 hashes. This does not
+qualify arbitrary faults/power loss or the later capacity-policy/journal-owner
+candidates. [Recovery scope](old-zero-recovery-matrix.md).
+The focused release build passed.
 The earlier `0474927` owned-file experiment passed all three previous encodings
 and both old-zero modes, including persisted short-write Resume/Rollback,
 cross-record copies, actual false-old-zero refusal and unchanged framed old/new

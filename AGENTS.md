@@ -23,6 +23,29 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+The FROZEN e4ff old-zero native matrix is COMPLETE: controlled first flushed
+write exit86, clean restart, public Resume0/HND and separate original-branch
+Rollback0/ABT. Both independent observers matched all811 hashes. Rollback's
+selected checksum equals the ORIGINAL ticket over D=11,392,847,872 bytes /
+3,547 ranges; NTFS64KiB/label/mount/shape1084 verified. No independent
+post-rollback extent-map or timestamp equality claim. Source/shadow protection,
+schema2 prepared owner, positive O=5,587,685,376 and self-contained format4
+J=5,849,731,480<D all passed. Cold shadow6 was absent in both recoveries; no
+attach/rebind. Product Resume checked complete1084 maps plus known157 hashes /
+119009 payload bytes;654 digests stay absent,650 tails/1371388 bytes stay bound.
+See `docs/old-zero-recovery-matrix.md` and its evidence JSON. This does NOT
+qualify newer capacity87a or recovery-ownerb88, arbitrary faults or physical loss.
+
+CURRENT VM confirmed fresh at2026-11-01T01:50:19Z: Off/RAM0/50 snapshots,
+restored-NTFS35c9a8f8-b646-4d3b-98e9-191b2f12a4a6, parent ORIGINALdea902f6.
+Preserve NEWnormal6bef, NEWintdea, NEWResume033, NEWrollback35c9, sources8329/
+6fe/371, H tail matrix, D1 and guardedf4bf. All host evidence remains.
+Actual322,376,794,614/free22,809,677,824 bytes is within the unchanged epoch,
+but a new16GiB forecast DOES NOT FIT. Reclaim obsolete checkpoints only after
+full archive/dependency/graph guards; no cap reset, image deletion or WSL stop.
+A propose-only review targets old07b1aed+5f, then their parent307b, plus olded6;
+none is removed yet. Do not force parent deletion or touch f4bf.
+
 New journal-only recovery owner is implemented/reviewed and passes focused
 library/public/fault/binder compilation (17.68s), natively UNQUALIFIED.
 `authenticate_recovery_exclusive` performs actual full load+classify and holds
@@ -72,13 +95,17 @@ receipt6f315670b0bf950286a0b99bc441e706d1db60489caa5011ea9526d5e22c3a45.
 After allidle normalstop, saved ReFS033e05bd-447b-450e-9acb-9413feaf00dc,
 parent ORIGINALdea. FreshOff/RAM0/49; receipt6b8f42cdca07b9574c64c4ed0cf56c96be48136dc46d8cf26c0341cd52e5efd2.
 Restored ORIGINALdea once (never replay the HND branch), freshverified thenbooted.
-Public Rollback525621320f8040b6b0a4fe4697bed692 dispatched ONCE at01:38:35Z;
-wrapper988/birth1793497118971 active in pre-native checks, terminal is PENDING.
+Public Rollback525621320f8040b6b0a4fe4697bed692 PASSED: native5680/
+birth1793497274111 exited0/ABT01:45:32.5100680Z (258.399068s), observer988/
+birth1793497118971 all811 at01:47:34.7203322Z (+122.2102642s). Closed50files
+62,129,359B source/copySHAverified, index18b15e86e56962651ce665d6e251db74545b041ad4dbfd46a4c19a377c193a57,
+receiptb6c14a975f8635757fa465e5ee92a3232c64693c0c9be9b23cffb56e3e259957.
+Finalcheckpoint receipt4b4db0a5f1d661f87a0d47cb22a18b20bc953aa0831e8027117ae1a8b58c39d9.
 Root alone owns VM mutation; no second recovery/death inference from timeout.
 Snapshot receipt SHA0b54d62b257da159148a2e25af338fd6782f4d7de4bc818de2e4f1129c45870f;
 actual303,750,131,935/free41,418,272,768 bytes admitted16GiB Resume forecast under
 the fixed epoch. No HND/ABT replay. Current cold shadow may be absent; never attach
-or rebind it to bypass a refusal. One slot remains for final Rollback checkpoint.
+or rebind it to bypass a refusal. All50 slots are now occupied.
 At Resume closure actual319,544,893,906/free25,723,949,056 bytes admitted6GiB
 Rollback forecast inside the fixed epoch. Re-admit any later work; no cap reset.
 

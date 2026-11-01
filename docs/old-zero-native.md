@@ -59,7 +59,11 @@ preserved. Exact artifact pins and final state are recorded in
 
 This qualifies one normal old-zero conversion. The earlier `0474927` manual
 helper results concern owned ordinary files; the earlier `07b0164` native
-recovery matrix belongs to its sealed binaries. Native old-zero interruption,
-Resume, Rollback, arbitrary mutation and physical power loss remain pending.
+recovery matrix belongs to its sealed binaries. The same `e4ffb3a` runtime later
+passed controlled first-flushed-write interruption, clean restart, public Resume
+and separate Rollback, with all 811 independent hashes in each direction.
+[Exact recovery scope](old-zero-recovery-matrix.md). Arbitrary mutation and
+physical power loss remain pending. Later capacity-policy and recovery-owner
+candidates were not used in this matrix.
 The existing no-mutable-alias contract and limits of primary-route exclusion
 remain. No unit tests were added or run.

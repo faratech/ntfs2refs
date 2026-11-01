@@ -45,6 +45,15 @@ limits from current free space or grant fresh Apply authority.
 
 The implementation and independent code review are complete. Focused library,
 public CLI, fault-helper and binder compilation passed. Native qualification is
-pending. Current file-count, metadata, geometry and feature
+pending. The owning-guest controller `lab/Start-ActualByteCapacityExperiment.ps1`
+uses 8 GiB journal / 256 MiB literal / 10 GiB combined bounds and requires the
+actual changed set to exceed the former conservative ceiling while format-4
+journal storage fits. Normal conversion uses the explicit fresh V3 entry;
+first-write mode uses the existing flushed-write interruption entry. Its full
+baseline and independent 811-stream observer remain. Capacity observations
+are sampled free-space queries, not a complete rolling-credit ledger.
+Host and assembled-guest PowerShell 5 syntax and independent review passed;
+no native execution of this capacity case has occurred. Current file-count,
+metadata, geometry and feature
 limits remain; this is not unbounded-volume qualification. No unit tests were
 added or run.

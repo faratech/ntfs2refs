@@ -23,6 +23,21 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+Next experiment controller is ready: Start-EnvelopeRecovery supports explicit
+schema2 `envelope-recovery-compatibility-toolset`, source scope public-recovery-only.
+It pins actual OLD e4ff producer manifest5102/producer9140/PID5208/birth/86,
+ORIGINALdea checkpoint and bundlecd919, separately from a NEW public runtime.
+Original fault/helper bytes remain inherited; no helper build revision or old
+receipt is invented. Original manifest is staged unchanged; host/guest bounds,
+actual action ApplyIntent and completed exclusive_recovery_journal_used=true
+are mandatory. Schema1 unchanged. Host/guest AST and independent review pass.
+New normal lab --fresh-exclusive-v3 accepts only schema3 fast fresh planningNone,
+conflicts faults and runs genuine admission. SourceSome cannot be restored.
+Actual-byte-only capacity samples now include policy/O/projectedJ/combined;
+they remain sampled space observations, not a full rolling-O ledger. Conservative
+rows unchanged. Focused public/fault release build passes (1m04s); new native
+qualification remains pending. See docs/recovery-runtime-compatibility.md.
+
 The FROZEN e4ff old-zero native matrix is COMPLETE: controlled first flushed
 write exit86, clean restart, public Resume0/HND and separate original-branch
 Rollback0/ABT. Both independent observers matched all811 hashes. Rollback's

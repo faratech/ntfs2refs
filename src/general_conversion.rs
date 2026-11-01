@@ -244,8 +244,8 @@ pub fn convert_compact_experimental(
 
 /// Experimental allocation-bounded backend for the same selected data disks,
 /// under the ntfs2btrfs-style guarantee: only the protected native allocation of
-/// the frozen shadow is compared, journaled and written. Public `--recover` does
-/// not yet read its selected-range journal.
+/// the frozen shadow is compared, journaled and written. Public `--recover`
+/// reopens the pinned allocation recovery bundle and authenticates its journal.
 pub fn convert_allocation_experimental(
     request: &Request,
     budget: qualification::CompactConstructionBudget,

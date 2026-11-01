@@ -46,6 +46,10 @@ fn main() -> anyhow::Result<()> {
         /// Capture/J capacities must already be explicit in the pinned request.
         #[arg(long, requires = "allocation_bounded", conflicts_with_all = ["interrupt_after_writes", "interrupt_after_first_copy_write"])]
         fresh_exclusive_v3_first_write: bool,
+        /// Run a normal fresh V3 allocation experiment through genuine live
+        /// admission. Never accepts an admitted Some profile as fresh input.
+        #[arg(long, requires = "allocation_bounded", conflicts_with_all = ["fresh_exclusive_v3_first_write", "interrupt_after_writes", "interrupt_after_first_copy_write"])]
+        fresh_exclusive_v3: bool,
     }
     let args = Args::parse();
     ensure!(
@@ -71,7 +75,7 @@ fn main() -> anyhow::Result<()> {
         "conversion request pin or identity differs"
     );
     let request: Request = serde_json::from_slice(&bytes)?;
-    if args.fresh_exclusive_v3_first_write {
+    if args.fresh_exclusive_v3_first_write || args.fresh_exclusive_v3 {
         ensure!(
             request.source_resource_profile
                 == Some(
@@ -80,14 +84,14 @@ fn main() -> anyhow::Result<()> {
                 && request.schema_version == 3
                 && request.verification_policy.is_fast()
                 && !request.verify_existing_shadow,
-            "fresh-exclusive V3 fault requires the pinned schema3 fast fresh planning-None request"
+            "fresh-exclusive V3 requires the pinned schema3 fast fresh planning-None request"
         );
     } else {
         ensure!(
             !request
                 .source_resource_profile
                 .is_some_and(|profile| profile.is_envelope()),
-            "V3 fault production requires --fresh-exclusive-v3-first-write; admitted Some cannot be restored as a fresh input"
+            "V3 production requires an explicit fresh V3 entry; admitted Some cannot be restored as a fresh input"
         );
     }
     let budget = CompactConstructionBudget {
@@ -100,6 +104,13 @@ fn main() -> anyhow::Result<()> {
             &request,
             budget,
             &args.output,
+        )
+    } else if args.fresh_exclusive_v3 {
+        ntfs2refs::general_lab::convert_fresh_allocation_selected(
+            &request,
+            budget,
+            &args.output,
+            None,
         )
     } else if args.allocation_bounded {
         if args.interrupt_after_first_copy_write {

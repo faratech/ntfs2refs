@@ -175,12 +175,23 @@ pub(super) fn convert_allocation_selected(
                     capacity_observations
                         .try_reserve(1)
                         .context("capture capacity observation allocation failed")?;
-                    capacity_observations.push(serde_json::json!({
+                    let mut observation = serde_json::json!({
                         "changed_bytes":progress.changed_bytes,
                         "literal_backing_bytes":progress.literal_backing_bytes,
                         "next_append_bytes":progress.next_append_bytes,
                         "required_available_bytes":required,"space":space,
-                    }));
+                    });
+                    if !progress.selected_capacity_policy.is_conservative() {
+                        observation["selected_capacity_policy"] =
+                            serde_json::to_value(progress.selected_capacity_policy)?;
+                        observation["old_zero_bytes"] =
+                            serde_json::to_value(progress.old_zero_bytes)?;
+                        observation["projected_journal_bytes"] =
+                            progress.projected_journal_bytes.into();
+                        observation["projected_combined_bytes"] =
+                            progress.projected_combined_bytes.into();
+                    }
+                    capacity_observations.push(observation);
                 }
                 let (_, literal, available) =
                     observed_capacity.context("capture capacity not observed")?;

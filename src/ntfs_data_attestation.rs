@@ -165,7 +165,10 @@ fn check_file_with_extent_evidence(
         return Ok((check_file(file, logical, raw.geometry.serial_number)?, 0, 0));
     }
     ensure!(
-        native.schema_version == 12 && native.request.schema_version == 4,
+        matches!(
+            (native.schema_version, native.request.schema_version),
+            (12, 4) | (14, 6)
+        ),
         "native read elision lacks its explicit protocol"
     );
     ensure!(
@@ -296,11 +299,11 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         crate::ntfs_inspect::validate_record_coverage(raw)?;
     }
     ensure!(
-        matches!(native.schema_version, 4..=12),
+        matches!(native.schema_version, 4..=14),
         "native logical-data profile absent"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;
-    if native.request.schema_version == 4 {
+    if native.request.uses_extent_identity() {
         let mut expected = Vec::new();
         for file in &raw.files {
             for stream in &file.streams {
@@ -312,7 +315,10 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
             }
         }
         ensure!(
-            native.schema_version == 12 && native.request.extent_identity_streams == expected,
+            matches!(
+                (native.schema_version, native.request.schema_version),
+                (12, 4) | (14, 6)
+            ) && native.request.extent_identity_streams == expected,
             "native read-elision request set differs from the complete raw eligibility set"
         );
     } else {

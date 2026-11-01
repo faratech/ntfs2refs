@@ -344,17 +344,13 @@ fn prepare_source_context(
         "freeze_observation":source.freeze_observation(),"events":events}),
     )?;
     *phase = "source-observation";
-    let request = if let Some(native_profile) = resources.native_profile() {
-        ntfs_attestation::request_for_general_inspection_with_policy(
-            &raw,
-            &pin,
-            source.binding(),
-            native_profile,
-            verification_policy,
-        )?
-    } else {
-        ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?
-    };
+    let request = ntfs_attestation::request_for_fresh_general_inspection(
+        &raw,
+        &pin,
+        source.binding(),
+        resources.native_profile(),
+        verification_policy,
+    )?;
     // In the allocation-bounded mode the allocated-range digest brackets this
     // observation over the frozen, read-only source, so one content pass is
     // enough; the whole-image path keeps both passes.

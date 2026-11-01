@@ -1385,7 +1385,8 @@ fn assess_source_view_profile(
     );
     gate(
         "native_profile",
-        matches!(native_schema, 5..=7)
+        (matches!(native_schema, 5..=7)
+            || (native_schema == 13 && resources.native_profile().is_none()))
             && comparison.native_namespace.is_some()
             && comparison.native_logical_data.is_some(),
         "older replay reports do not supply complete native namespace/logical-data evidence",
@@ -1398,6 +1399,21 @@ fn assess_source_view_profile(
             .is_some_and(|s| s.bitmap.matched),
         "the full native bitmap must match; per-user stream checks also bind the physical retrieval base",
     );
+    if matches!(native_schema, 13 | 14) {
+        gate(
+            "native_directory_case_sensitivity",
+            comparison
+                .directory_case_sensitivity
+                .as_ref()
+                .is_some_and(|evidence| {
+                    evidence.all_directories_case_insensitive
+                        && evidence.raw_directories
+                            == raw.files.iter().filter(|file| file.is_directory).count()
+                        && evidence.matched_directories == evidence.raw_directories
+                }),
+            "every raw source directory, including internal directories and root, needs successful same-identity before/after FileCaseSensitiveInfo flags zero; missing/error/nonzero is refused",
+        );
+    }
     gate(
         "objects",
         !objects.is_empty() && objects.iter().all(|o| o.disposition != Disposition::Reject),
@@ -1522,7 +1538,7 @@ pub(crate) fn bind_large_native_profile(
             && assessment.source_inspection_sha256 == inspection
             && matches!(
                 (native.schema_version, native.request.schema_version),
-                (11, 3) | (12, 4)
+                (11, 3) | (12, 4) | (13, 5) | (14, 6)
             )
             && native.request.resource_profile == resources.native_profile()
             && native.request.source_inspection_sha256 == inspection
@@ -1562,6 +1578,7 @@ pub(crate) fn bind_large_native_profile(
     let failed_gates: Vec<_> = [
         "native_identity_coverage",
         "native_volume_allocation",
+        "native_directory_case_sensitivity",
         "objects",
         "resource_limits",
     ]

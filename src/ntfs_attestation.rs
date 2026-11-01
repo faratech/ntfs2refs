@@ -301,6 +301,36 @@ pub fn request_for_general_inspection_with_policy(
     Ok(request)
 }
 
+/// Fresh source admission additionally requires explicit per-directory native
+/// case evidence. Historical request builders intentionally keep schemas2–4.
+pub fn request_for_fresh_general_inspection(
+    raw: &NtfsInspection,
+    inspection_sha256: &str,
+    binding: &n2r_win32::general_layout::GeneralDiskBinding,
+    profile: Option<n2r_win32::attestation::ResourceProfile>,
+    policy: crate::verification_policy::VerificationPolicy,
+) -> Result<n2r_win32::attestation::Request> {
+    let mut request = match profile {
+        Some(profile) => request_for_general_inspection_with_policy(
+            raw,
+            inspection_sha256,
+            binding,
+            profile,
+            policy,
+        )?,
+        None => {
+            ensure!(
+                policy.is_full_content(),
+                "unprofiled fresh source cannot elide stream reads"
+            );
+            request_for_general_inspection(raw, inspection_sha256, binding)?
+        }
+    };
+    request.schema_version = if request.uses_extent_identity() { 6 } else { 5 };
+    request.validate()?;
+    Ok(request)
+}
+
 #[derive(Debug, Serialize)]
 pub struct FileComparison {
     pub record_number: u64,
@@ -323,6 +353,180 @@ pub struct Comparison {
     pub native_streams: Option<crate::ntfs_stream_attestation::Reconciliation>,
     pub native_logical_data: Option<crate::ntfs_data_attestation::Reconciliation>,
     pub native_namespace: Option<crate::ntfs_namespace_attestation::Reconciliation>,
+    /// None is historical Unknown, never an observation that flags were zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory_case_sensitivity: Option<DirectoryCaseAssessment>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DirectoryCaseAssessment {
+    pub raw_directories: usize,
+    pub matched_directories: usize,
+    pub all_directories_case_insensitive: bool,
+    pub directories: Vec<DirectoryCaseCheck>,
+}
+#[derive(Debug, Serialize)]
+pub struct DirectoryCaseCheck {
+    pub record_number: u64,
+    pub sequence_number: u16,
+    pub observation_path: &'static str,
+    pub before_flags: Option<u32>,
+    pub after_flags: Option<u32>,
+    pub matched: bool,
+    pub issues: Vec<String>,
+}
+
+fn directory_case_flags(
+    raw: &NtfsInspection,
+    file: &FileInventory,
+    queries: &[n2r_win32::attestation::Query],
+    case: Option<&n2r_win32::attestation::Query>,
+) -> Result<u32> {
+    let bytes = |class, length| -> Result<&[u8]> {
+        let mut found = queries.iter().filter(|q| q.class == class);
+        let query = found
+            .next()
+            .context("directory identity/type query missing")?;
+        ensure!(
+            found.next().is_none() && query.native_error.is_none() && query.bytes.len() == length,
+            "directory identity/type query failed or malformed (class{class})"
+        );
+        Ok(&query.bytes)
+    };
+    let basic = bytes(0, 40)?;
+    let standard = bytes(1, 24)?;
+    let id = bytes(18, 24)?;
+    ensure!(
+        u32::from_le_bytes(basic[32..36].try_into()?) & 0x10 != 0
+            && standard[21] == 1
+            && standard[20] == 0,
+        "directory case handle type/delete state differs"
+    );
+    ensure!(
+        u64::from_le_bytes(id[..8].try_into()?) == raw.geometry.serial_number
+            && u64::from_le_bytes(id[8..16].try_into()?)
+                == (file.record_number | (u64::from(file.sequence_number) << 48))
+            && id[16..].iter().all(|byte| *byte == 0),
+        "directory case handle serial/file reference differs from frozen raw identity"
+    );
+    let case = case.context("directory case sensitivity is Unknown (query missing)")?;
+    ensure!(
+        case.class == 23 && case.native_error.is_none() && case.bytes.len() == 4,
+        "directory case query failed or malformed: class={}, error={:?}, bytes={}",
+        case.class,
+        case.native_error,
+        case.bytes.len()
+    );
+    Ok(u32::from_le_bytes(case.bytes[..].try_into()?))
+}
+
+fn compare_directory_cases(raw: &NtfsInspection, native: &Report) -> DirectoryCaseAssessment {
+    let mut directories = Vec::new();
+    for file in raw.files.iter().filter(|file| file.is_directory) {
+        let mut row = DirectoryCaseCheck {
+            record_number: file.record_number,
+            sequence_number: file.sequence_number,
+            observation_path: "missing",
+            before_flags: None,
+            after_flags: None,
+            matched: false,
+            issues: Vec::new(),
+        };
+        let checked = (|| -> Result<()> {
+            let mut matching = native.files.iter().filter(|item| {
+                item.identity.record_number == file.record_number
+                    && item.identity.sequence_number == file.sequence_number
+            });
+            let observed = matching
+                .next()
+                .context("source directory observation missing")?;
+            ensure!(
+                matching.next().is_none(),
+                "source directory observation duplicated"
+            );
+            if observed.open_error.is_none() {
+                row.observation_path = "canonical-snapshot";
+                ensure!(
+                    observed.case_only_fallback.is_none(),
+                    "successful metadata open also carries fallback"
+                );
+                let before = observed
+                    .before
+                    .as_ref()
+                    .context("before directory snapshot missing")?;
+                let after = observed
+                    .after
+                    .as_ref()
+                    .context("after directory snapshot missing")?;
+                row.before_flags = Some(directory_case_flags(
+                    raw,
+                    file,
+                    &before.queries,
+                    before.directory_case_sensitivity.as_ref(),
+                )?);
+                row.after_flags = Some(directory_case_flags(
+                    raw,
+                    file,
+                    &after.queries,
+                    after.directory_case_sensitivity.as_ref(),
+                )?);
+            } else {
+                row.observation_path = "read-attributes-only-fallback";
+                ensure!(
+                    observed.before.is_none() && observed.after.is_none(),
+                    "failed broad open carries metadata snapshots"
+                );
+                let fallback = observed
+                    .case_only_fallback
+                    .as_ref()
+                    .context("directory case fallback missing after broad-open failure")?;
+                ensure!(
+                    fallback.access_mask == 0x80 && fallback.open_error.is_none(),
+                    "directory read-attributes fallback failed: {:?}",
+                    fallback.open_error
+                );
+                let before = fallback
+                    .before
+                    .as_ref()
+                    .context("fallback before snapshot missing")?;
+                let after = fallback
+                    .after
+                    .as_ref()
+                    .context("fallback after snapshot missing")?;
+                row.before_flags = Some(directory_case_flags(
+                    raw,
+                    file,
+                    &before.queries,
+                    before.directory_case_sensitivity.as_ref(),
+                )?);
+                row.after_flags = Some(directory_case_flags(
+                    raw,
+                    file,
+                    &after.queries,
+                    after.directory_case_sensitivity.as_ref(),
+                )?);
+            }
+            ensure!(
+                row.before_flags == Some(0) && row.after_flags == Some(0),
+                "directory has unsupported nonzero/unstable case flags: before={:?}, after={:?}",
+                row.before_flags,
+                row.after_flags
+            );
+            Ok(())
+        })();
+        match checked {
+            Ok(()) => row.matched = true,
+            Err(error) => row.issues.push(format!("{error:#}")),
+        }
+        directories.push(row);
+    }
+    let matched = directories.iter().filter(|row| row.matched).count();
+    DirectoryCaseAssessment {
+        raw_directories: directories.len(),
+        matched_directories: matched,
+        all_directories_case_insensitive: !directories.is_empty() && matched == directories.len(),
+        directories,
+    }
 }
 fn acl_bytes(d: &Descriptor, a: &Acl) -> Result<Vec<Vec<u8>>> {
     let b = hex::decode(&d.relative_hex)?;
@@ -586,7 +790,7 @@ pub fn compare(
     }
     native.request.validate()?;
     ensure!(
-        matches!(native.schema_version, 2..=12) && !native.conversion_qualified,
+        matches!(native.schema_version, 2..=14) && !native.conversion_qualified,
         "unexpected native report kind/claim"
     );
     crate::ntfs_stream_attestation::validate_paging_schema(native)?;
@@ -793,6 +997,11 @@ pub fn compare(
     } else {
         None
     };
+    let directory_case_sensitivity = matches!(
+        (native.schema_version, native.request.schema_version),
+        (13, 5) | (14, 6)
+    )
+    .then(|| compare_directory_cases(raw, native));
     Ok(Comparison {
         schema_version: 1,
         source_inspection_sha256: inspection_sha256.into(),
@@ -808,11 +1017,15 @@ pub fn compare(
                 .is_none_or(|d| d.all_requested_stream_evidence_matched)
             && native_namespace
                 .as_ref()
-                .is_none_or(|n| n.all_visible_names_matched),
+                .is_none_or(|n| n.all_visible_names_matched)
+            && directory_case_sensitivity
+                .as_ref()
+                .is_none_or(|evidence| evidence.all_directories_case_insensitive),
         files,
         conversion_qualified: false,
         native_streams,
         native_logical_data,
         native_namespace,
+        directory_case_sensitivity,
     })
 }

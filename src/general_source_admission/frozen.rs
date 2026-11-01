@@ -112,16 +112,13 @@ pub fn assess(
         .as_ref()
         .map(|label| source_volume_label::verify(source, &raw, label))
         .transpose()?;
-    let native_request = if let Some(profile) = resources.native_profile() {
-        ntfs_attestation::request_for_general_inspection_with_profile(
-            &raw,
-            &pin,
-            source.binding(),
-            profile,
-        )?
-    } else {
-        ntfs_attestation::request_for_general_inspection(&raw, &pin, source.binding())?
-    };
+    let native_request = ntfs_attestation::request_for_fresh_general_inspection(
+        &raw,
+        &pin,
+        source.binding(),
+        resources.native_profile(),
+        crate::verification_policy::VerificationPolicy::FullContent,
+    )?;
     let observed = source.observe_ntfs_files(&native_request, events)?;
     let native_observation = serde_json::to_value(&observed)?;
     let assessment = general_source_admission::assess(

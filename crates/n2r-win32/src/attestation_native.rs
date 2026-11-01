@@ -245,6 +245,57 @@ pub(crate) fn snapshot_with_ea(file: &File) -> Snapshot {
     observation
 }
 
+/// Source NTFS only. FileCaseSensitiveInfo is Win32 class 23 and its SDK
+/// FILE_CASE_SENSITIVE_INFO contains one ULONG Flags (four bytes). Value1 means
+/// case-sensitive; higher layers refuse every nonzero value, including unknown
+/// flags. Failed queries retain the actual Windows error, never flags zero.
+fn source_directory_case(file: &File, queries: &[Query]) -> Option<Query> {
+    let standard = queries.iter().find(|query| query.class == 1)?;
+    (standard.native_error.is_none() && standard.bytes.len() == 24 && standard.bytes[21] != 0)
+        .then(|| query(file, 23, 4))
+}
+
+fn source_snapshot(file: &File, require_case: bool) -> Snapshot {
+    let mut snapshot = snapshot_with_ea(file);
+    if require_case {
+        snapshot.directory_case_sensitivity = source_directory_case(file, &snapshot.queries);
+    }
+    snapshot
+}
+
+fn case_only_snapshot(file: &File) -> DirectoryCaseSnapshot {
+    let queries = [(0, 40), (1, 24), (18, 24)]
+        .into_iter()
+        .map(|(class, length)| query(file, class, length))
+        .collect::<Vec<_>>();
+    let directory_case_sensitivity = source_directory_case(file, &queries);
+    DirectoryCaseSnapshot {
+        queries,
+        directory_case_sensitivity,
+    }
+}
+
+fn case_only_fallback(volume: &File, descriptor: &FILE_ID_DESCRIPTOR) -> DirectoryCaseFallback {
+    let mut observation = DirectoryCaseFallback {
+        access_mask: 0x80,
+        open_error: None,
+        before: None,
+        after: None,
+    };
+    // SAFETY: same requested NTFS file reference, READ_ATTRIBUTES only; no
+    // payload, security or write access, and no reparse-point following.
+    let handle = unsafe { OpenFileById(raw(volume), descriptor, 0x80, 7, ptr::null(), 0x02200000) };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        observation.open_error = Some(io::Error::last_os_error().raw_os_error().unwrap_or(31));
+    } else {
+        // SAFETY: take unique ownership of the newly opened native handle.
+        let file = unsafe { File::from_raw_handle(handle) };
+        observation.before = Some(case_only_snapshot(&file));
+        observation.after = Some(case_only_snapshot(&file));
+    }
+    observation
+}
+
 pub(crate) struct Privileges {
     token: HANDLE,
     previous: Vec<(LUID, u32)>,
@@ -401,7 +452,7 @@ fn collect_file_metadata_with_passes(
     let before = route(&volume, &disk, request)?;
     let mut privileges = Privileges::enable()?;
     let base_before = crate::stream_native::base(&volume);
-    let extent_context = if request.schema_version == 4 {
+    let extent_context = if request.uses_extent_identity() {
         if base_before.native_error.is_some() || base_before.bytes.len() != 8 {
             return Err(invalid("extent-identity retrieval base unavailable"));
         }
@@ -477,13 +528,28 @@ fn collect_file_metadata_with_passes(
             after: None,
             streams_before: None,
             streams_after: None,
+            case_only_fallback: None,
         };
         if handle == INVALID_HANDLE_VALUE || handle.is_null() {
             obs.open_error = Some(io::Error::last_os_error().raw_os_error().unwrap_or(31));
+            if request.requires_directory_case_sensitivity() {
+                obs.case_only_fallback = Some(case_only_fallback(&volume, &descriptor));
+                stream_bytes = stream_bytes
+                    .checked_add(obs.case_only_fallback.as_ref().unwrap().retained_bytes()?)
+                    .ok_or_else(|| invalid("native directory case fallback budget overflow"))?;
+                if stream_bytes > limits.stream_evidence_bytes {
+                    return Err(invalid(
+                        "native directory case fallback evidence budget exceeded",
+                    ));
+                }
+            }
         } else {
             // SAFETY: transfer the newly acquired unique file-handle ownership.
             let file = unsafe { File::from_raw_handle(handle) };
-            obs.before = Some(snapshot_with_ea(&file));
+            obs.before = Some(source_snapshot(
+                &file,
+                request.requires_directory_case_sensitivity(),
+            ));
             let (capture, hashes) = crate::stream_native::capture(
                 &file,
                 request,
@@ -517,7 +583,10 @@ fn collect_file_metadata_with_passes(
                 obs.streams_after = Some(capture);
                 logical.after = hashes;
             }
-            obs.after = Some(snapshot_with_ea(&file));
+            obs.after = Some(source_snapshot(
+                &file,
+                request.requires_directory_case_sensitivity(),
+            ));
             for s in [&obs.before, &obs.after].into_iter().flatten() {
                 security_bytes +=
                     s.security.len() + s.kernel_security.as_ref().map_or(0, |q| q.bytes.len());
@@ -527,6 +596,9 @@ fn collect_file_metadata_with_passes(
                 stream_bytes = stream_bytes
                     .checked_add(s.reparse_bytes()?)
                     .ok_or_else(|| invalid("native reparse evidence budget overflow"))?;
+                stream_bytes = stream_bytes
+                    .checked_add(s.directory_case_sensitivity_bytes()?)
+                    .ok_or_else(|| invalid("native directory case evidence budget overflow"))?;
             }
             if security_bytes > limits.security_bytes {
                 return Err(invalid("native descriptor budget exhausted"));
@@ -569,7 +641,11 @@ fn collect_file_metadata_with_passes(
     privileges.restore()?;
     let after = route(&volume, &disk, request)?;
     let mut report = Report {
-        schema_version: if request.schema_version == 4 {
+        schema_version: if request.schema_version == 6 {
+            14
+        } else if request.schema_version == 5 {
+            13
+        } else if request.schema_version == 4 {
             12
         } else if request.resource_profile.is_some() {
             11
@@ -609,6 +685,8 @@ fn collect_file_metadata_with_passes(
     };
     if let Some(profile) = request.resource_profile {
         report.resources = Some(report.measured_resources(profile)?);
+    }
+    if request.resource_profile.is_some() || request.requires_directory_case_sensitivity() {
         report.validate_resources()?;
     }
     Ok(report)

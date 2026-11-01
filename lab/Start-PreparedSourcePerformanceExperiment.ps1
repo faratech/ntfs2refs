@@ -19,7 +19,8 @@ param(
     [switch]$RequirePreparationCopyReuse,
     [Parameter(Mandatory)][string]$PreparedManagedReceiptPath,
     [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$PreparedManagedReceiptSha256,
-    [switch]$RequireClosingReadReuse
+    [switch]$RequireClosingReadReuse,
+    [switch]$RequireSourceDirectoryCase
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -234,7 +235,7 @@ function AssertLabSourceFreeEncoding($Plan,[string]$Records,$ActualResult){
     HostGuard; Need (-not (Test-Path -LiteralPath $root)) 'Fresh host stage required.'
     New-Item -ItemType Directory -Path $root | Out-Null; $created=$true
     $digest = @($tools | Where-Object name -CEQ 'lab-content-digest.exe')[0]
-    $c = @{stage=$stage;task=$task;run_id=$run;vm_id=$vmId.ToString('D');operation=$operation;source_commit=$SourceCommit;tools=$tools;output=(Join-Path $stage 'conversion');managed=(Split-Path -LiteralPath $preparedManaged.path);prepared_managed_sha256=$PreparedManagedReceiptSha256;source_request_sha256=$SourceRequestSha256;fresh_baseline_enabled=$true;baseline_enabled=$true;fresh_baseline_files=$baseline.files;fresh_manifest_sha256=$FreshBaselineManifestSha256;fresh_source_checkpoint=$sourceCheckpoint.ToString('D');fresh_source_binding=$baseline.provenance.source_binding;baseline_sha256=$baseline.sha256;baseline_basis_sha256=$baseline.basis_sha256;baseline_request_sha256='';baseline_result_sha256='';minimum_extent_only_streams=654;minimum_tail_extent_only_streams=650;journal_budget_bytes=8GB;literal_ceiling_bytes=256MB;combined_ceiling_bytes=10GB;digest_bytes=$digest.bytes;digest_sha256=$digest.sha256;expected_exit=$expectedExit;require_preparation_copy_reuse=[bool]$RequirePreparationCopyReuse;require_closing_read_reuse=[bool]$RequireClosingReadReuse}
+    $c = @{stage=$stage;task=$task;run_id=$run;vm_id=$vmId.ToString('D');operation=$operation;source_commit=$SourceCommit;tools=$tools;output=(Join-Path $stage 'conversion');managed=(Split-Path -LiteralPath $preparedManaged.path);prepared_managed_sha256=$PreparedManagedReceiptSha256;source_request_sha256=$SourceRequestSha256;fresh_baseline_enabled=$true;baseline_enabled=$true;fresh_baseline_files=$baseline.files;fresh_manifest_sha256=$FreshBaselineManifestSha256;fresh_source_checkpoint=$sourceCheckpoint.ToString('D');fresh_source_binding=$baseline.provenance.source_binding;baseline_sha256=$baseline.sha256;baseline_basis_sha256=$baseline.basis_sha256;baseline_request_sha256='';baseline_result_sha256='';minimum_extent_only_streams=654;minimum_tail_extent_only_streams=650;journal_budget_bytes=8GB;literal_ceiling_bytes=256MB;combined_ceiling_bytes=10GB;digest_bytes=$digest.bytes;digest_sha256=$digest.sha256;expected_exit=$expectedExit;require_preparation_copy_reuse=[bool]$RequirePreparationCopyReuse;require_closing_read_reuse=[bool]$RequireClosingReadReuse;require_source_directory_case=[bool]$RequireSourceDirectoryCase}
     Save 'intent.json' @{kind='prepared-source-performance-experiment-intent';configuration=$c;parent_id=$ExpectedParent;checkpoint_ids=$ids;toolset_manifest=$ToolsetManifest;toolset_manifest_sha256=$ToolsetManifestSha256;source_commit=$SourceCommit;baseline_provenance=$baseline.provenance;capacity=$capacity;forecast_bytes=$ForecastAdditionalBytes;source_request_path=$SourceRequestPath;source_request_sha256=$SourceRequestSha256;function_sources=@($interrupt.pin,$normal.pin,@{path=$supportPath;sha256=$supportPin},@{path=$PSCommandPath;sha256=(Get-FileHash -LiteralPath $PSCommandPath).Hash.ToLowerInvariant()});observer_cost_gate_adaptation='D+literal -> (D-O-F)+F/256+literal+16MiB; combined includes backing';no_source_or_replay_authority=$true;utc=[DateTime]::UtcNow.ToString('o')}
     $guest = @'
 Set-StrictMode -Version Latest
@@ -265,6 +266,17 @@ function AssertActualCapacity($Request,$Plan,$Result){
  Need (($reused-gt0-or$facts.new_copy_bytes-eq0)-and$reused+$fallback-eq[decimal]$facts.new_copy_bytes-and$reused-le[decimal]$reads.source_logical_bytes) 'Exact COPY split required; zero COPY bytes need no positive reuse.'
  Save 'copy-read-reuse-verification.json' @{reused_bytes=[long]$reused;actual_fallback_read_bytes=[long]$fallback;copy_bytes=$facts.new_copy_bytes;source_logical_read_bytes=$reads.source_logical_bytes;scope='actual-capture-counter-observation';physical_io_or_wall_delta_claimed=$false;grants_product_authority=$false}
  $facts.source_reference_bytes_reused=[long]$reused;$facts.source_reference_bytes=[long]$fallback
+ $caseRequirement=$c.PSObject.Properties['require_source_directory_case']
+ if($null-ne$caseRequirement-and$caseRequirement.Value){
+  $source=Json (Join-Path $c.output 'qualification\native-source.json') 64MB
+  $basis=Json (Join-Path $c.output 'qualification\source-basis.json') 64MB
+  $assessment=Json (Join-Path $c.output 'qualification\source-assessment.json') 64MB
+  $case=$assessment.comparison.directory_case_sensitivity;$dirs=@($basis.ntfs.files|Where-Object {$_.is_directory})
+  Need ($source.schema_version-eq14-and$source.request.schema_version-eq6-and$dirs.Count-gt0-and$case.raw_directories-eq$dirs.Count-and$case.matched_directories-eq$dirs.Count-and$case.all_directories_case_insensitive-and@($case.directories).Count-eq$dirs.Count-and@($case.directories|Where-Object {-not$_.matched-or$_.before_flags-ne0-or$_.after_flags-ne0-or@($_.issues).Count-ne0}).Count-eq0) 'Every raw source directory requires actual successful stable zero case flags; historical missing evidence is Unknown.'
+  $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach($d in $dirs){$key=LabRecordKey $d.record_number $d.sequence_number;Need ($seen.Add($key)) 'Duplicate raw directory identity.';$found=@($case.directories|Where-Object {$_.record_number-eq$d.record_number-and$_.sequence_number-eq$d.sequence_number});Need ($found.Count-eq1) 'Directory case coverage/sequence differs.'}
+  Save 'source-directory-case-verification.json' @{scope='actual-frozen-ntfs-directory-case-v1';report_schema=14;request_schema=6;raw_directories=$dirs.Count;matched_directories=$case.matched_directories;fallback_directories=@($case.directories|Where-Object observation_path -CEQ 'read-attributes-only-fallback').Count;all_flags_zero_before_and_after=$true;historical_baseline_equated=$false;grants_source_or_replay_authority=$false}
+ }
  $closingRequirement=$c.PSObject.Properties['require_closing_read_reuse']
  if($null-ne$closingRequirement-and$closingRequirement.Value){
   $value=$reads.PSObject.Properties['shadow_bytes_reused_from_closing'];Need ($null-ne$value) 'Actual closing-byte reuse counter required.'
@@ -351,6 +363,12 @@ try {
 finally{if($null-ne$process){$process.Dispose()};foreach($e in $script:closedJsonCache.Values){$e.stream.Dispose()};$script:closedJsonCache.Clear();$script:labIndexes.Clear()}
 '@
     $guest = [IO.File]::ReadAllText($supportPath) + [Environment]::NewLine + $guest
+    if($RequireSourceDirectoryCase){
+        # New-source-only schema adaptation. Historical baseline report11 stays
+        # unchanged, and positive per-directory evidence is checked separately.
+        $guest=$guest.Replace('$native.schema_version-eq12-and$native.request.schema_version-eq4','$native.schema_version-eq14-and$native.request.schema_version-eq6')
+        $guest=$guest.Replace('$sourceNative.schema_version-eq12-and$sourceNative.request.schema_version-eq4','$sourceNative.schema_version-eq14-and$sourceNative.request.schema_version-eq6')
+    }
     $guest = $guest.Replace('__FUNCTIONS__', ($definitions -join [Environment]::NewLine)).Replace('__NORMAL_OBSERVER__', $observer)
     $guest = $guest.Replace('__CONFIG__', [Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes(($c | ConvertTo-Json -Depth 32 -Compress))))
     $tokens=$null; $errors=$null; $null=[Management.Automation.Language.Parser]::ParseInput($guest,[ref]$tokens,[ref]$errors)

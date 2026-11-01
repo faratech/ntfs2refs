@@ -571,6 +571,88 @@ pub struct Observation {
     pub streams_before: Option<StreamCapture>,
     #[serde(default)]
     pub streams_after: Option<StreamCapture>,
+    /// New source-only reports may read identity/type/case with READ_ATTRIBUTES
+    /// when the original broader metadata/security open failed. That original
+    /// failure is retained and this never supplies security or stream evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub case_only_fallback: Option<DirectoryCaseFallback>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryCaseFallback {
+    pub access_mask: u32,
+    pub open_error: Option<i32>,
+    pub before: Option<DirectoryCaseSnapshot>,
+    pub after: Option<DirectoryCaseSnapshot>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryCaseSnapshot {
+    pub queries: Vec<Query>,
+    pub directory_case_sensitivity: Option<Query>,
+}
+impl DirectoryCaseFallback {
+    pub(crate) fn validate(&self) -> io::Result<()> {
+        let invalid = || {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "read-attributes-only directory case fallback is malformed",
+            )
+        };
+        if self.access_mask != 0x80 {
+            return Err(invalid());
+        }
+        if self.open_error.is_some() {
+            return if self.before.is_none() && self.after.is_none() {
+                Ok(())
+            } else {
+                Err(invalid())
+            };
+        }
+        let (Some(before), Some(after)) = (&self.before, &self.after) else {
+            return Err(invalid());
+        };
+        for snapshot in [before, after] {
+            if snapshot.queries.len() != 3 {
+                return Err(invalid());
+            }
+            for (query, (class, length)) in
+                snapshot.queries.iter().zip([(0, 40), (1, 24), (18, 24)])
+            {
+                if query.class != class
+                    || (query.native_error.is_none() && query.bytes.len() != length)
+                    || (query.native_error.is_some() && !query.bytes.is_empty())
+                {
+                    return Err(invalid());
+                }
+            }
+            let standard = &snapshot.queries[1];
+            let directory = standard.native_error.is_none() && standard.bytes.get(21) == Some(&1);
+            match (directory, &snapshot.directory_case_sensitivity) {
+                (true, Some(query)) => Snapshot::validate_case_query(query)?,
+                (false, None) => (),
+                _ => return Err(invalid()),
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn retained_bytes(&self) -> io::Result<usize> {
+        self.validate()?;
+        self.before
+            .iter()
+            .chain(self.after.iter())
+            .try_fold(0usize, |total, snapshot| {
+                snapshot
+                    .queries
+                    .iter()
+                    .chain(snapshot.directory_case_sensitivity.iter())
+                    .try_fold(total, |total, query| {
+                        total.checked_add(query.bytes.len()).ok_or_else(|| {
+                            io::Error::other("case fallback evidence accounting overflow")
+                        })
+                    })
+            })
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Report {
@@ -815,6 +897,9 @@ impl Report {
             namespace_evidence_bytes: 0,
         };
         for file in &self.files {
+            if let Some(fallback) = &file.case_only_fallback {
+                add(&mut out.stream_evidence_bytes, fallback.retained_bytes()?)?;
+            }
             for snapshot in file.before.iter().chain(file.after.iter()) {
                 add(&mut out.security_bytes, snapshot.security.len())?;
                 if let Some(s) = &snapshot.kernel_security {
@@ -981,11 +1066,24 @@ impl Report {
             )
         };
         for file in &self.files {
+            if let Some(fallback) = &file.case_only_fallback {
+                if !matches!(self.schema_version, 13 | 14)
+                    || file.open_error.is_none()
+                    || file.before.is_some()
+                    || file.after.is_some()
+                {
+                    return Err(invalid());
+                }
+                fallback.validate()?;
+            }
             for snapshot in file.before.iter().chain(file.after.iter()) {
-                snapshot
-                    .validate_extended_attributes(matches!(self.schema_version, 10 | 11 | 12 | 13 | 14))?;
+                snapshot.validate_extended_attributes(matches!(
+                    self.schema_version,
+                    10 | 11 | 12 | 13 | 14
+                ))?;
                 snapshot.validate_reparse(matches!(self.schema_version, 11 | 12 | 13 | 14))?;
-                snapshot.validate_directory_case_sensitivity(matches!(self.schema_version, 13 | 14))?;
+                snapshot
+                    .validate_directory_case_sensitivity(matches!(self.schema_version, 13 | 14))?;
             }
         }
         let Some(profile) = self.request.resource_profile else {
@@ -1065,8 +1163,7 @@ impl Report {
                         && (!matches!(
                             (self.request.schema_version, self.schema_version),
                             (4, 12) | (6, 14)
-                        )
-                            || h.outcome.bytes_read != 0
+                        ) || h.outcome.bytes_read != 0
                             || h.outcome.eof_confirmed
                             || h.outcome.sha256.is_some()
                             || h.outcome.native_error.is_some()

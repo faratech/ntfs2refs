@@ -2219,7 +2219,7 @@ impl GeneralFrozenPartition {
         require_vss: bool,
     ) -> io::Result<GeneralLiveNtfsObservation> {
         request.validate()?;
-        if !matches!(request.schema_version, 2 | 3 | 4)
+        if !matches!(request.schema_version, 2 | 3 | 4 | 5 | 6)
             || request.disk_number != self.binding.disk_number
             || request.volume != format!("{}\\", self.binding.volume_path()?)
             || request.partition_offset != self.binding.identity.partition_offset
@@ -2319,6 +2319,8 @@ impl GeneralFrozenPartition {
             || report.conversion_qualified
             || report.schema_version
                 != match request.schema_version {
+                    6 => 14,
+                    5 => 13,
                     4 => 12,
                     3 => 11,
                     _ => 7,

@@ -389,23 +389,37 @@ pub fn assess_with_source_digest(
         observed.report().request.schema_version,
         observed.report().request.resource_profile,
     ) {
-        (2, None) => ntfs_admission::ResourceProfile::AlphaV1,
-        (3, Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)) => {
+        (2 | 5, None) => ntfs_admission::ResourceProfile::AlphaV1,
+        (3 | 5, Some(n2r_win32::attestation::ResourceProfile::ExperimentalLargeTreeV1)) => {
             ntfs_admission::ResourceProfile::ExperimentalLargeTreeV1
         }
-        (3 | 4, Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2)) => {
-            ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
-        }
         (
-            3 | 4,
+            3 | 4 | 5 | 6,
+            Some(n2r_win32::attestation::ResourceProfile::ExperimentalStreamingTreeV2),
+        ) => ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
+        (
+            3 | 4 | 5 | 6,
             Some(n2r_win32::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(admission)),
         ) => ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(admission),
         _ => anyhow::bail!("unsupported or mismatched native source resource profile"),
     };
     // The collector's schema-4 request explicitly selects the extent policy,
     // even when the particular source has no eligible streams to omit.
-    let source_fingerprint_kind = (observed.report().request.schema_version == 4)
+    let source_fingerprint_kind = observed
+        .report()
+        .request
+        .uses_extent_identity()
         .then_some(crate::source_fingerprint::EXTENT_KIND);
+    ensure!(
+        matches!(
+            (
+                observed.report().schema_version,
+                observed.report().request.schema_version
+            ),
+            (13, 5) | (14, 6)
+        ),
+        "fresh source admission requires explicit directory case evidence; legacy reports remain Unknown"
+    );
     ensure!(
         canonical_inspection_sha256 == hex::encode(Sha256::digest(serde_json::to_vec(raw)?))
             && backups.binds(raw)
@@ -429,6 +443,17 @@ pub fn assess_with_source_digest(
     );
     let comparison =
         ntfs_attestation::compare(raw, canonical_inspection_sha256, observed.report())?;
+    ensure!(
+        comparison
+            .directory_case_sensitivity
+            .as_ref()
+            .is_some_and(|evidence| evidence.all_directories_case_insensitive
+                && evidence.raw_directories
+                    == raw.files.iter().filter(|file| file.is_directory).count()
+                && evidence.matched_directories == evidence.raw_directories),
+        "fresh source directories have missing, failed, nonzero or unstable case evidence: {:?}",
+        comparison.directory_case_sensitivity
+    );
     let mut view = ntfs_source_view::diagnose(raw, canonical_inspection_sha256, observed.report())?;
     view.bind_frozen_source(&source_sha256);
     let mut assessment = ntfs_admission::assess_ordinary_source_view_with_resources(

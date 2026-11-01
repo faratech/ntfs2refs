@@ -107,10 +107,12 @@ fn main() -> anyhow::Result<()> {
             .open(intent)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
-        let request = ntfs_attestation::request_for_general_inspection(
+        let request = ntfs_attestation::request_for_fresh_general_inspection(
             &ntfs,
             &canonical_inspection_sha256,
             source.binding(),
+            None,
+            ntfs2refs::verification_policy::VerificationPolicy::FullContent,
         )?;
         Some(source.observe_ntfs_files(&request, &mut events))
     } else {

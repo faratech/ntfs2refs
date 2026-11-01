@@ -57,9 +57,13 @@ or journal authority. Legacy native gates are unchanged.
 Capture still uses the conservative `D + literal + reserve` capacity allowance
 and existing resource ceilings. This first change reduces actual stored payload;
 it does not widen admission to arbitrarily large changed sets. Metadata sizing
-uses 104-byte records within the existing 16 MiB reserve. The format is a
-candidate until native qualification is complete. The focused release build
-passed. The existing owned-file experiment passed all three previous encodings
+uses 104-byte records within the existing 16 MiB reserve. Sealed `e4ffb3a`
+passed one normal grown V3 native case with format 4, 5,587,607,552 actual
+old-zero bytes, native exit 0/HND and all 811 independent stream hashes. Its
+same-plan serialized journal reduction is 5,587,579,280 bytes after record
+widening. [Normal native scope](old-zero-native.md). Native old-zero fault and
+recovery qualification remain pending. The focused release build passed.
+The earlier `0474927` owned-file experiment passed all three previous encodings
 and both old-zero modes, including persisted short-write Resume/Rollback,
 cross-record copies, actual false-old-zero refusal and unchanged framed old/new
 digests. Old-zero alone omitted 12,288 bytes and saved 12,216 journal bytes;

@@ -23,7 +23,33 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
-New built candidate: canonical old-zero journal format 4 `N2ROLD01` omits stored
+Latest qualified normal runtime is sealed `e4ffb3a` / public `f8c07817`
+(9,899,008 bytes), case `6d9b4cd5` / core `6e91f232`. Actual PID 724 /
+creation 1793494088987 exited 0/HND in 276.7805697 s; the separate observer
+matched all 811 hashes 174.6023869 s later. Actual format 4 / 104-byte records
+contains 1,770 old-zero ranges / 5,587,607,552 omitted bytes, with
+`old_zero_payload_storage_elided=true` and `prepared_journal_owner_reused=true`.
+D=11,392,786,432 / N=3,534 / L=44,888,064 / J=5,850,442,832 bytes. The SAME plan
+without old-zero encoding needs 11,438,022,112 bytes: net 5,587,579,280 saved,
+after its 8*N descriptor cost. All selected D writes and required ReFS zeros
+remain. Actual process reads 105,470,433,073 / writes 17,446,733,391 bytes;
+CPU 253.421875 user / 22.359375 kernel seconds. These are logical counters,
+not physical I/O or a controlled timing comparison. Same grown 8329/fresh f5de/
+growth835: 1,084 objects / 654 absent digests / 650 tails / 1,371,388 bytes.
+See `docs/old-zero-native.md` and `evidence/old-zero-native-20261031.json`.
+
+Current VM, confirmed fresh at 2026-11-01T01:00:04Z: Off / RAM 0 / 47 snapshots,
+converted ReFS `6bef3bd2-db31-45fe-9e6c-939c812b7375`, parent clean grown `8329`.
+Preserve 6bef, prior ed6, the 307b/1aed/5f075 matrix, clean sources, H tail
+matrix, D1 and guarded f4bf. All host evidence remains. Actual lab usage
+295,406,531,182 bytes / host free 49,858,801,664 bytes stays in the fixed epoch.
+NEXT: new-format native first-flushed-write interruption, clean restart and
+public Resume/Rollback. The former 39 GiB forecast does not fit now; use actual
+per-phase capacity admission. A 16 GiB first-write forecast covers the observed
+5.85 GB journal, shadow, OS and metadata margin; remeasure before dispatch.
+There are three checkpoint slots left. Do not replay either closed HND branch.
+
+Canonical old-zero journal format 4 `N2ROLD01` omits stored
 payload only for whole selected ranges whose actual original bytes were checked
 zero during capture AND reread/checked during preparation. Existing boundaries
 are unchanged; coalescing ANDs the evidence. New 104-byte records authenticate
@@ -43,18 +69,20 @@ alone and with COPY, persisted short-write Resume/Rollback, false-old-zero refus
 and equal framed old/new digests. New modes omitted 12,288/16,384 old bytes and
 saved 12,216/16,328 actual journal bytes. Summary under `old-zero-functional-8f3c08f0`
 SHA `44827ea6397d5ead7b5ecd05c9f4a496753a6a871fddafa138f26b9bb36e2ac4`.
-Native qualification is pending; do not transfer the following sealed results.
+The scoped normal native result above passed; native fault/recovery/mutation
+and physical power loss remain pending for this format. Do not transfer the
+older sealed recovery matrix to this new runtime.
 See `docs/old-zero-journal.md`. No unit tests were added or run.
 
 Before the new native attempt, root removed only obsolete inactive leaves
 `2c964314`, `a18bf3a5`, `acb5449f`, `bb8a6475` through Hyper-V after rehashing
 273 unique closed archive/control/dependency files under held read guards.
 Reviewed plan `e7223c3d` and completion `a678c846` remain under `.lab`.
-A fresh process confirmed Off / RAM 0 / 46 snapshots, current `ed6fe063`;
+A fresh process then confirmed Off / RAM 0 / 46 snapshots, current `ed6fe063`;
 every other ID/parent and all host evidence were preserved. The prior 50-count
-observations below are historical. New native qualification remains pending.
+observations below are historical. The new current state is recorded above.
 
-Latest normal native qualification: sealed `11e8963` / public `2ff60056`
+Prior normal native qualification: sealed `11e8963` / public `2ff60056`
 (9,896,960 bytes), case `79b22a2f` / core `b4135fc9`, actual PID 3944 /
 creation 1793492056135, exited 0/HND in 280.7502894 seconds. Actual result proves
 `prepared_journal_owner_reused=true`; the separate observer passed all 811 hashes

@@ -75,6 +75,10 @@ pub mod volume_label;
 #[cfg(windows)]
 pub mod vss_observation;
 #[cfg(windows)]
+pub mod ntfs_preparation;
+#[cfg(windows)]
+pub mod preparation_shadow;
+#[cfg(windows)]
 pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]
 mod native;

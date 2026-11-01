@@ -44,6 +44,17 @@ source read. Actual candidate hashing, complete post-flush resolved journal
 validation, and every fresh/recovery target gate remain. Generic readers keep
 the original comparison. This later candidate is not qualified by the58be run.
 
+The later c2c1ef3 native run qualified that preparation path: it reused another
+5,659,303,936 source bytes, exited0/HND, and passed all811 independent hashes.
+Native-verified logical reads were94,053,323,457 bytes. The two construction
+optimizations therefore removed two measured duplicate5.66-GB source passes.
+This remains a logical-I/O result, not a controlled wall-time speedup claim.
+[Exact paired-preparation result and pins](../evidence/native-paired-preparation-copy-reuse-20261101.json).
+
+[NTFS-managed collision preparation](ntfs-owned-preparation.md) is now implemented
+for the explicit scratch-minimizing mode. Its actual moves remain unqualified;
+they must be checked before promoting the new path for release.
+
 ## Source-free recovery storage
 
 `--minimize-scratch` explicitly selects `source_free_actual_bytes_v1` for fresh,

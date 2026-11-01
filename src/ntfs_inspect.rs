@@ -3631,6 +3631,33 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
     limits: InspectionLimits,
     policy: crate::verification_policy::VerificationPolicy,
 ) -> Result<NtfsInspection> {
+    inspect_internal(reader, length, limits, policy, false)
+}
+
+/// Layout suggestions only: never read nonresident DATA merely to hash streams
+/// which preparation may skip. All logical hashes stay explicitly unavailable;
+/// a permanent blocker prevents this report from satisfying source admission.
+pub fn inspect_for_preparation<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    limits: InspectionLimits,
+) -> Result<NtfsInspection> {
+    inspect_internal(
+        reader,
+        length,
+        limits,
+        crate::verification_policy::VerificationPolicy::ExtentIdentityV1,
+        true,
+    )
+}
+
+fn inspect_internal<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    limits: InspectionLimits,
+    policy: crate::verification_policy::VerificationPolicy,
+    preparation_only: bool,
+) -> Result<NtfsInspection> {
     let mut budget = ReportBudget {
         limit: limits.max_report_bytes,
         used: 0,
@@ -4011,7 +4038,7 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
                         && a.logical_size >= 4096
                         && a.initialized_size == a.logical_size
                         && a.extents.iter().all(|e| e.physical_offset.is_some());
-                    let (logical_hash_status, logical_sha256) = if deferred {
+                    let (logical_hash_status, logical_sha256) = if deferred || preparation_only {
                         (LogicalHashStatus::NotComputed, None)
                     } else {
                         hash_stream(
@@ -4030,7 +4057,10 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
                             )
                         })?
                     };
-                    if !deferred && logical_hash_status != LogicalHashStatus::Complete {
+                    if !preparation_only
+                        && !deferred
+                        && logical_hash_status != LogicalHashStatus::Complete
+                    {
                         blocker(
                             &mut report,
                             &mut budget,
@@ -4117,7 +4147,7 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
     let namespace = namespace.finish(&report.files);
     budget.charge((namespace.evidence_sha256.capacity() + namespace.detail.capacity()) as u64)?;
     report.namespace_reconciliation = Some(namespace);
-    if policy.is_fast() {
+    if policy.is_fast() && !preparation_only {
         // Reborrow the reader held by the completed bitmap pass; no bitmap
         // reads remain while deferred DATA hashes are decided below.
         let reader = &mut *bitmap_reader.reader;
@@ -4208,6 +4238,15 @@ pub fn inspect_with_limits_and_policy<R: Read + Seek>(
         blocker(&mut report, &mut budget, code, message, None)?;
     }
     report.inventory_memory_bytes = budget.used;
+    if preparation_only {
+        blocker(
+            &mut report,
+            &mut budget,
+            "preparation_inventory_only",
+            "Metadata-only layout hints lack logical content evidence and cannot admit conversion",
+            None,
+        )?;
+    }
     report.stream_hash_bytes = hash_budget.used;
     Ok(report)
 }

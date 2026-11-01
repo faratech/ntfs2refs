@@ -32,150 +32,50 @@ Do not redefine completion as the existing small-corpus success.
   recovery material and host archives; do not infer preserve-all from history.
 - Keep WSL running. No disabling UAC or new persistent privilege changes.
 
-## Performance continuation and last native observation (2026-11-01 UTC)
+## Performance continuation and current native state (2026-11-01 UTC)
 
-The user resumed implementation of the ntfs2btrfs comparison's performance plan,
-retaining the native-shadow alpha. New work adds source-free format-5 recovery
-storage and actual-read COPY reuse; see docs/native-shadow-performance.md.
-Existing formats/default requests remain unchanged. The new --minimize-scratch
-mode is explicit and has not yet passed a full native conversion/recovery run.
-No unit tests were added/run; focused builds and owned-file checks are used.
-Implemented/pushed performance source is58be22c. Optimized builds, legacy/free
-owned-file recovery and foreign-granule refusal passed; native COPY reuse and a
-complete new-format volume conversion/recovery remain pending. Exact pins and
-saved-plan sizing are in evidence/native-shadow-performance-20261101.json.
-PREVIOUS: the prior8GiB normal branch was metadata-archived (88 files/219773456B)
-and preserved at26c844d0-ed7e-49dd-a867-9b5a5ce33130, parent8329. Fresh process
-verified Off/RAM0/47 checkpoints. Its performance-transition-archive.json and
-preserved-checkpoint.json are under the original actual-byte-capacity-normal-
-27ae9824f5794fe98a96d69c66cfc10b host directory. Do not repeat the checkpoint.
-CURRENT: new native63393142005e45ef9320964dbc6ed683 of runtime58be22c exited0/HND;
-all811 independent hashes passed through the metadata-only hashes completion.
-Native4144/birth1793560925173, terminal19:26:51.0626735Z,285.8896735s.
-Capture reused5659303936B with zero fallback; native-verified logical reads
-99711691009/writes17367730980. Policy source_free_actual_bytes_v1 selected optimal
-format4 (all free original bytes were zero): F0/O5662216192/J5773344392/D11392749568.
-Do not claim format5 native/recovery qualification or a timing speedup.
-Original observer failures are preserved; no converter or raw HND replay reran.
-Closed108 metadata files267771060B were source/copy SHA-verified. Preserved new
-ReFS node d1bbcaa3-a6a6-48de-8593-75f1641ec450, parent8329; fresh Off/RAM0/48.
-See evidence/native-capture-copy-reuse-20261101.json. The later typed paired-source
-journal-preparation optimization is compiled ONLY, not used in that native run.
-Latest cleanup retired ONLY superseded26c through Hyper-V after196 archive files
-were verified/held. Currentd1 remains Off/RAM0; fresh graph47 checkpoints.
-Cleanup receipts: retire-capacity-normal26c-2d40e2634c444b7fa966036af5e0bd42.
-Paired-preparation runtime c2c1ef3 is release-built/sealed under
-paired-source-preparation-tools-c2c1ef3/manifest.json, SHA
-70fb7abaff41ad497bb90e996662057de36222ddd9d5a68cc411d57957dc557e.
-Next native invocation must require preparation-copy reuse; its result is pending.
-The older conversion state below remains a last observation. The resumed turn
-read-only confirmed the VM Running/4GiB, original wrapper/producer absent and
-its exact task Ready, with terminal/postcheck files present. Full archival and
-checkpoint closure remain pending; recheck all tasks/handles before mutation.
-The directory-case work in attestation.rs is an unfinished model/schema change:
-native collection, admission integration, build and native validation remain
-pending. It is not part of the qualified frozen binary or a completed feature.
+Latest native runtime c2c1ef3 passed conversion/HND and all811 independent stream
+hashes in run2d220c6122aa47cfbdcc247013a0b44a. Both capture and journal preparation
+reused actual source reads:5,659,303,936B each. Native-verified logical reads
+94,053,323,457B/writes17,368,271,656B; observed native wall280.3918824s.
+These are process transfer counters, not physical traffic or a timing speedup.
+Journal5,773,273,160B/D11,393,306,624B/O5,662,773,248B. F0 selected canonical
+format4 fallback; native format5/its recovery remain UNQUALIFIED.
+See evidence/native-paired-preparation-copy-reuse-20261101.json.
 
-LAST OBSERVED 8GiB NORMAL: root restored clean8329 once fromd40, fresh-verified then
-booted once with46 checkpoints. Actual case27ae9824f5794fe98a96d69c66cfc10b,
-stage C:\ntfs2refs\actual-byte-capacity-normal-27ae9824f5794fe98a96d69c66cfc10b,
-task N2R-ActualByteCapacity-normal-27ae9824f5794fe98a96d69c66cfc10b.
-Frozenadf08e9 producer80e5b0ff/public34c9, toolset4f62, exact8GiB policy used.
-Producer5412/creation1793502009573 exited0/HND03:04:51.8197235Z
-(282.2467235s from ms birth). ActualD11393249280>old8GiB-reserve,
-O5588070400/J5847923376<=8GiB,N3530, actualold_zero_actual_bytes_v1,
-prepared-ownertrue,1084maps,654missing650tails1371388, targetpayloadreads0.
-Wrapper5076/creation1793501997496 was ACTIVE in independent postchecks; all811/
-capacity-observation verification/archive/final-idle PENDING. No power/retry or
-HND replay until that closes. Root alone mutates VM; normalcheckpoint47 next.
-Unfinished source-case evidence versions13/14 remain onhost ONLY, not in this
-frozenVMbinary/report12. No scope/qualification transfer to that future code.
+Current VM is fresh-confirmed Off/RAM0 at successful ReFS checkpoint
+31d77adf-2682-4e4d-b1f8-95e35702c4c0, parent clean NTFS83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b,
+with48 snapshots. All project tasks terminal/workers absent before normal stop.
+93 closed metadata files were source/copy SHA-verified; archive/preserved/idle
+receipts are under .lab/hyperv/streaming-v2-20261027/source-free-performance-normal-
+2d220c6122aa47cfbdcc247013a0b44a. No converter/raw HND replay is permitted.
+Earlier capture-only d1bbcaa3 remains inactive and can be retired after archive
+and graph guards; preserve latest31d7. Already retired26c844d0 must not return.
 
-Root alone owns VM mutation. Delegated agents may observe metadata/processes
-or edit assigned source. No other actor may dispatch, retry, stop, restore,
-checkpoint, attach, format or clear protection.
+New source implements NTFS-owned collision preparation before freeze through
+FSCTL_MOVE_FILE, with metadata-only planning, live destination bitmap windows,
+full retrieval/identity checks and bounded receipts. The explicit minimize-scratch
+path and lab-prepare-ntfs invoke it. Focused compilation passed; native moves and
+post-preparation conversion are PENDING. No qualification transfers fromc2.
+No unit tests added/run. See docs/ntfs-owned-preparation.md.
 
-VM `2401593c-4b30-472e-9b6d-c9534cbaa599`, name
-`ntfs2refs-streaming-v2-20261027`: 4 GiB fixed RAM / 4 CPU / no NIC.
-At new-owner matrix closure, VM was fresh-confirmed Off/RAM0/48 snapshots at restored-NTFS checkpoint
-`d40b4b41-be9c-4243-8f91-7f953085e3a3`, parent ORIGINAL interrupted
-`dea902f6-7d3f-49ba-86d2-27ce6dbe9516`, at2026-11-01T02:37:17Z.
-Actual lab292508370854B/free52696043520B remains inside the unchanged epoch.
-No project tasks or workers remain. No raw HND/ABT replay is permitted.
-CURRENT after reviewed slot cleanup02:44:15Z: same Off/RAM0/currentd40,
-46 snapshots. Root removed ONLY superseded old E4ff033e/35c leaves after
-130 complete archive/control/dependency files were rehashed under held reads
-and fresh-process graph guards. NEW8087/d40, ORIGINALdea, normal6bef, sources
-and every other ID/parent remain. Plan02307ecc; completionf0619810 under
-checkpoint-cleanup-two-old-recoveries-90dedad073fa45779610a8735d7b9657.
-Actual274033264527/free71243247616B, fixedmax329374052988/min17179869184
-unchanged. Four slots are reserved for the new8GiB normal/fault/recovery cases.
-Old033e/35c IDs are retired; archived evidence remains, never recreate them.
-A NEW-runtime compatibility Resume passed:
+Next: restore clean8329 only after idle/capacity guards; create a new empty native
+shadow and exercise lab-prepare-ntfs in the guest. Reinventory after moves and
+obtain a NEW frozen source certificate; old physical maps are never authority.
+Keep independently pinned logical-content baseline for checking unchanged data.
+Then qualify scratch reduction and actual format5 Resume/Rollback. Paged evidence
+and bounded handle windows still remain. Do not mark the performance plan complete.
 
-- Run `4b877c53e6204ed38a13b513aef0bb09`, stage
-  `C:\ntfs2refs\envelope-resume-4b877c53e6204ed38a13b513aef0bb09`.
-- Task `N2R-Envelope-resume-4b877c53e6204ed38a13b513aef0bb09`.
-- Public PID5516 / creation1793499329262, start02:15:29.262237Z,
-  native exit0/HND02:19:08.2588846Z (218.9968846s).
-- Recovery records `C:\ProgramData\ntfs2refs\runs\recovery-1d20e06b2a2ce539e812c363070e6073`.
-- Actual result: exclusive_recovery_journal_used=true, ApplyIntent/Resume,
-  complete1084 maps, known157 hashes/119009 payload bytes,654 digests absent,
- 650 materialized tails/1371388 bytes. Source is online ReFS; shadow6 absent.
-- Wrapper1440 / creation1793499175077 passed all811 independent hashes at
-  02:24:43.6123698Z (+335.3534852s). Closed55 metadata files88,769,148B were
-  copy/source SHA verified: exclusive-recovery-resume-4b877c53, index675ad553,
-  receipt0725122b. Final-idle02:26:00.1779416Z preceded normal shutdown.
-- Saved Resume checkpoint8087814c-b2ed-4060-b321-fccaa8869873, parent ORIGINALdea.
-  Fresh process confirmed Off/RAM0/47. Checkpoint receipt SHA
-  `454b701d9bf340993994b5328e8242a8c36a28ba39542db19f17d1f70724a188`.
-- Existing monitor has timestamped live CIM samples, not retained final native
-  IO counters. Never relabel the last live sample as final or claim a measured
-  final read delta. The read reduction is currently code accounting.
+Root alone mutates VM2401593c-4b30-472e-9b6d-c9534cbaa599, name
+ntfs2refs-streaming-v2-20261027;4GiB fixed/4CPU/noNIC. Guest credentials only
+Import-Clixml .lab/hyperv/win11/secrets/guest-credential.xml, never print them.
+Current archive retains previous failures and all811 results. Preserve original
+interrupteddea902f6 plus its journals; old8GiB recovery source/compatibility
+qualification is in docs/exclusive-recovery-native.md. Original producer remains
+E4ff/9140; a new observer/runtime never creates fresh source authority.
 
-New public source `adf08e94f4edb0f3910537864f4c8f5262bc99fe`, binary9,931,264B:
-`34c9cc072a9441ce4d41599ad82abd5226acb19195ae321df1558bd399b3c7e9`.
-Schema2 toolset `.lab/hyperv/streaming-v2-20261027/envelope-recovery-tools-adf08e9-compat/manifest.json`,
-SHA `947de265461082609700031160282b33cc0a16c3a18f0ed14c94d626a413673c`.
-Its source_commit scope is PUBLIC RECOVERY ONLY. Original producer remains
-E4ff/9140, actual5208/creation1793495149312/exit86. The original manifest5102
-is staged unchanged; inherited helpers have no invented build revision.
-
-Original journal directory:
-`C:\ntfs2refs\envelope-interrupt-d4f9c35229b84373a0ba3ff0887763d1\conversion`.
-Bundle SHA `cd919acd5237d3c5087017b2c312ba54cb1d72cea09d634182cebe4e21515f26`.
-Original producer manifest `.lab/hyperv/streaming-v2-20261027/envelope-recovery-tools-e4ffb3a/manifest.json`,
-SHA `5102ee458144233f56a6f5c8ca2758bd775934dff78ee4ba68f7eb1f50d5dd4c`.
-Original producer SHA `9140d57cc18a7f3dac0e7cadd1ffdb9210324bf607c58cfb8042a595f9f655d2`.
-
-NEW-runtime Rollback104ca6aae25c40f7b5cabeef3d502943 also PASSED from ORIGINALdea,
-not the saved HND branch. Native5548/creation1793500267757 exited0/ABT at
-02:33:52.4674809Z (164.7104809s from millisecond birth); actual owner=true,
-ApplyIntent/Rollback. Original old-selected SHA037b3963…7775c46d matched over
-all D11392847872/N3547. NTFS64KiB/label/shape1084/all811 hashes passed at
-02:35:45.9183803Z (+113.4508994s); no independent postrollback maps/time claim.
-Closed53 metadata files62133832B copied/sourceSHAverified, indexe3a699dc,
-receipt7149e13e. Final-idle02:36:23.4990939Z preceded normalstop/finalNTFS48.
-Checkpoint receipt SHA169ae84302d6f12220fd820c89b87c54fceb1ec3477bb3bd45df8dae81b7867c.
-Both new journal-owner directions are qualified for this recorded old journal
-and conservative request only. Final native IO/CPU unavailable; preserve that
-limitation. See docs/exclusive-recovery-native.md and its evidence JSON.
-NEXT: qualify actual-byte capacity on a fresh8329 conversion with J8GiB.
-Use the sealed actual-byte-capacity-tools-adf08e9/manifest.json,
-SHA4f62f03a1ae0ba978358e9128c3418d8c153cb0b63537248938c12e3788ea107;
-new producer80e5b0ff/7055360B and same newpublic34c9, inherited helpers.
-The new8GiB recovery controller is reviewed/PS5 parsed, sourceSHA860a571e…fdf2912.
-It requires REAL future actual-byte-capacity-interrupted-checkpoint receipt
-(schema1/kind exactly as documented in its header), actual producerPID/birth/
-86/firstflush/noHND/idle, checkpoint and actual parent8329, original bundle and
-five original metadata pins. It cross-checks the actual Hyper-V parent node;
-never invent a receipt or legacy producer fields. Pinned helper-source SHA
-inputs are mandatory. No8GiB interrupted receipt or native case exists yet.
-Two slots remain for a new normal/fault; later recovery branches need reviewed
-retirement of superseded states, never a new storage epoch. Latest source contains
-capacity policy, but this compatibility run uses the original conservative
-request and does NOT qualify expanded actual-byte capacity.
-
+The preceding detailed handoff is preserved in
+[the21:10 UTC archive](docs/history/AGENTS-through-20261101T2110.md).
 ## Evidence and current implementations
 
 - Frozen E4ff old-zero matrix is complete: first flushed write86, clean restart,

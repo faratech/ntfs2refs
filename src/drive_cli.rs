@@ -553,6 +553,23 @@ mod windows {
                 "binding": staged.binding,
             }),
         )?;
+        if minimize_scratch {
+            println!("Preparing NTFS file placement to reduce recovery storage.");
+            let preparation = crate::ntfs_preparation::prepare(
+                before.binding.clone(),
+                staged.binding.clone(),
+                resources,
+                &run.join("ntfs-preparation"),
+                crate::ntfs_preparation::Budget {
+                    metadata_bytes: 64 * 1024 * 1024,
+                    receipt_bytes: 64 * 1024 * 1024,
+                    maximum_moves: 32768,
+                    maximum_move_bytes: 64 * 1024 * 1024,
+                    maximum_payload_bytes: before.binding.identity.partition_bytes,
+                },
+            )?;
+            save_new(&run.join("ntfs-preparation-result.json"), &preparation)?;
+        }
         let request = crate::general_conversion::Request {
             verification_policy,
             selected_capacity_policy: if minimize_scratch {

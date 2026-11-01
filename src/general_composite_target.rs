@@ -332,6 +332,7 @@ pub fn verify_and_capture(
         expected_tree_sha256,
         residuals,
         protected,
+        closing_capture: _,
     } = protected_prefix(
         source,
         target,
@@ -346,6 +347,7 @@ pub fn verify_and_capture(
         false,
         None,
         crate::verification_policy::VerificationPolicy::FullContent,
+        None,
     )?;
     let capture = SourceBackedShadow::new(
         source,
@@ -1108,7 +1110,7 @@ fn verify_and_select_inner(
     max_changed_bytes: u64,
     events: &mut Vec<NativeEvent>,
     capture_budget: Option<CaptureBudget>,
-    capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
+    mut capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
     policy: crate::verification_policy::VerificationPolicy,
 ) -> Result<FrozenAllocationTargetPreservation> {
     if let Some(budget) = capture_budget {
@@ -1123,7 +1125,7 @@ fn verify_and_select_inner(
         }
     }
     let ProtectedPrefix {
-        length,
+        length: _,
         source_before,
         target_before,
         inspection_sha256,
@@ -1132,6 +1134,7 @@ fn verify_and_select_inner(
         expected_tree_sha256,
         residuals,
         protected,
+        closing_capture,
     } = protected_prefix(
         source,
         target,
@@ -1146,78 +1149,38 @@ fn verify_and_select_inner(
         true,
         capture_budget.map(|budget| budget.max_literal_backing_bytes),
         policy,
+        policy.is_fast().then(|| AllocationCaptureRequest {
+            budget: capture_budget,
+            guard: capture_guard.take(),
+        }),
     )?;
-    let selection = protected
-        .allocation_coverage()
-        .observed_ranges(protected.native())?;
-    let selection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&selection)?));
-    // Payload that stayed at its NTFS location is the same physical bytes in
-    // both images; compare everything else in the selection.
-    let source_index = PayloadSourceIndex::new(raw);
-    let in_place = in_place_payload_ranges(&source_index, &tree, protected.routes())?;
-    let compared = subtract_ranges(&selection, &in_place);
-    let compared_bytes: u64 = compared.iter().map(|range| range.length).sum();
-    let selection_bytes: u64 = selection.iter().map(|range| range.length).sum();
-    let in_place_bytes = selection_bytes - compared_bytes;
-    // Non-gating destination split of the changed granules. The bracket above
-    // already required this model; were it unavailable, the split would only
-    // mark its NTFS counters unavailable.
-    let source_free_policy =
-        capture_budget.is_some_and(|budget| budget.selected_capacity_policy.allows_source_free());
-    let source_allocation = if source_free_policy {
-        let witness = crate::selected_ownership::ReconciledSourceAllocation::from_inspection(
+    let ClosingAllocationCapture {
+        selection,
+        compared,
+        in_place_bytes,
+        source_allocation,
+        mut capture,
+    } = match closing_capture {
+        Some(captured) => captured,
+        None => capture_selected_allocation(
+            source,
+            target,
             raw,
-            length,
-            crate::selected_ownership::Limits::default(),
-        )?;
-        ensure!(
-            witness.source_inspection_sha256() == inspection_sha256,
-            "source-free allocation witness differs from the frozen source inspection"
-        );
-        Some(witness)
-    } else {
-        None
-    };
-    let ntfs_allocated = if source_free_policy {
-        None
-    } else {
-        raw.allocated_byte_ranges(length).ok()
-    };
-    let copy_candidates =
-        payload_copy_candidates(length, &source_index, &tree, protected.routes())?;
-    let view = SourceBackedShadow::new(
-        source,
-        target,
-        raw,
-        &tree,
-        protected.routes(),
-        protected.routes().payload_bytes().max(1),
-    )?;
-    let split = Some(ChangeClassSplit {
-        ntfs_allocated: source_allocation
-            .as_ref()
-            .map(|allocation| allocation.allocated_byte_ranges())
-            .or(ntfs_allocated.as_deref()),
-    });
-    let mut capture = match (capture_budget, capture_guard) {
-        (Some(budget), Some(guard)) => view
-            .capture_listed_source_references_to_new_file_with_budget(
-                &compared,
-                packed_path,
-                budget,
-                split,
-                &copy_candidates,
-                guard,
-            )?,
-        (None, None) => view.capture_listed_source_references_to_new_file(
-            &compared,
+            &tree,
+            protected.routes(),
+            protected
+                .allocation_coverage()
+                .observed_ranges(protected.native())?,
+            &inspection_sha256,
             packed_path,
             max_changed_bytes,
-            split,
-            &copy_candidates,
+            capture_budget,
+            capture_guard,
+            None,
         )?,
-        _ => anyhow::bail!("capture capacity budget and live guard must be supplied together"),
     };
+    let selection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(&selection)?));
+    let compared_bytes = compared.iter().map(|range| range.length).sum::<u64>();
     // Record the split once, beside the capture, keeping the capture object
     // in its earlier shape.
     let changed_classes = capture.changed_classes.take();
@@ -1293,6 +1256,116 @@ fn verify_and_select_inner(
     })
 }
 
+struct AllocationCaptureRequest<'guard> {
+    budget: Option<CaptureBudget>,
+    guard: Option<&'guard mut dyn FnMut(CaptureProgress) -> Result<()>>,
+}
+
+/// Unqualified backing and comparison facts. This value remains internal until
+/// the complete closing hash, native layout and frozen-state gates succeed.
+struct ClosingAllocationCapture {
+    selection: Vec<crate::refs_write_set::ByteRange>,
+    compared: Vec<crate::refs_write_set::ByteRange>,
+    in_place_bytes: u64,
+    source_allocation: Option<crate::selected_ownership::ReconciledSourceAllocation>,
+    capture: DifferenceCapture,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_selected_allocation<'a>(
+    source: &'a mut GeneralFrozenPartition,
+    target: &'a mut GeneralFrozenPartition,
+    raw: &'a ntfs_inspect::NtfsInspection,
+    tree: &'a shadow_tree::Tree,
+    routes: &'a n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
+    selection: Vec<crate::refs_write_set::ByteRange>,
+    inspection_sha256: &str,
+    packed_path: &Path,
+    max_changed_bytes: u64,
+    capture_budget: Option<CaptureBudget>,
+    capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
+    closing_bytes: Option<&'a mut dyn crate::general_shadow::source_backed::ClosingShadowBytes>,
+) -> Result<ClosingAllocationCapture> {
+    let length = source.byte_len();
+    // Payload that stayed at its NTFS location is the same physical bytes in
+    // both images; compare everything else in the selection.
+    let source_index = PayloadSourceIndex::new(raw);
+    let in_place = in_place_payload_ranges(&source_index, tree, routes)?;
+    let compared = subtract_ranges(&selection, &in_place);
+    let compared_bytes: u64 = compared.iter().map(|range| range.length).sum();
+    let selection_bytes: u64 = selection.iter().map(|range| range.length).sum();
+    let in_place_bytes = selection_bytes - compared_bytes;
+    // Non-gating destination split of the changed granules. The bracket above
+    // already required this model; were it unavailable, the split would only
+    // mark its NTFS counters unavailable.
+    let source_free_policy =
+        capture_budget.is_some_and(|budget| budget.selected_capacity_policy.allows_source_free());
+    let source_allocation = if source_free_policy {
+        let witness = crate::selected_ownership::ReconciledSourceAllocation::from_inspection(
+            raw,
+            length,
+            crate::selected_ownership::Limits::default(),
+        )?;
+        ensure!(
+            witness.source_inspection_sha256() == inspection_sha256,
+            "source-free allocation witness differs from the frozen source inspection"
+        );
+        Some(witness)
+    } else {
+        None
+    };
+    let ntfs_allocated = if source_free_policy {
+        None
+    } else {
+        raw.allocated_byte_ranges(length).ok()
+    };
+    let copy_candidates = payload_copy_candidates(length, &source_index, tree, routes)?;
+    let view = SourceBackedShadow::new(
+        source,
+        target,
+        raw,
+        tree,
+        routes,
+        routes.payload_bytes().max(1),
+    )?;
+    let split = Some(ChangeClassSplit {
+        ntfs_allocated: source_allocation
+            .as_ref()
+            .map(|allocation| allocation.allocated_byte_ranges())
+            .or(ntfs_allocated.as_deref()),
+    });
+    let view = match closing_bytes {
+        Some(bytes) => view.with_closing_bytes(bytes),
+        None => view,
+    };
+    let capture = match (capture_budget, capture_guard) {
+        (Some(budget), Some(guard)) => view
+            .capture_listed_source_references_to_new_file_with_budget(
+                &compared,
+                packed_path,
+                budget,
+                split,
+                &copy_candidates,
+                guard,
+            )?,
+        (None, None) => view.capture_listed_source_references_to_new_file(
+            &compared,
+            packed_path,
+            max_changed_bytes,
+            split,
+            &copy_candidates,
+        )?,
+        _ => anyhow::bail!("capture capacity budget and live guard must be supplied together"),
+    };
+    Ok(ClosingAllocationCapture {
+        selection,
+        compared,
+        in_place_bytes,
+        source_allocation,
+        capture,
+    })
+}
+
 struct ProtectedPrefix {
     length: u64,
     source_before: GeneralDiskState,
@@ -1303,11 +1376,13 @@ struct ProtectedPrefix {
     expected_tree_sha256: String,
     residuals: Vec<LayoutResidualExpectation>,
     protected: ProtectedTargetLayout,
+    closing_capture: Option<ClosingAllocationCapture>,
 }
 
 /// Shared by complete and allocation-bounded preparation: frozen bindings, the
 /// unchanged source inventory, bound views, actual residual reads and the
-/// protected native shadow observation. No difference capture happens here.
+/// protected native shadow observation. Fast allocation may consume actual
+/// closing buffers, but releases no capture proof until all closing gates pass.
 #[allow(clippy::too_many_arguments)]
 fn protected_prefix(
     source: &mut GeneralFrozenPartition,
@@ -1323,6 +1398,7 @@ fn protected_prefix(
     allocation_closed_bracket: bool,
     max_literal_backing_bytes: Option<u64>,
     policy: crate::verification_policy::VerificationPolicy,
+    closing_request: Option<AllocationCaptureRequest<'_>>,
 ) -> Result<ProtectedPrefix> {
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
@@ -1431,8 +1507,40 @@ fn protected_prefix(
             });
         }
     }
-    let protected = if allocation_closed_bracket {
-        general_target_preservation::verify_frozen_layout_residuals_allocation_closed_with_policy(
+    let (protected, closing_capture) = if let Some(request) = closing_request {
+        ensure!(
+            allocation_closed_bracket && policy.is_fast(),
+            "closing capture requires fast allocation"
+        );
+        let (protected, captured) =
+            general_target_preservation::verify_nonrouted_allocation_closed_with_consumption(
+                target,
+                pair.clone(),
+                &expected,
+                resources,
+                &residuals,
+                events,
+                |target, routes, selection, closing| {
+                    capture_selected_allocation(
+                        source,
+                        target,
+                        raw,
+                        &tree,
+                        routes,
+                        selection.to_vec(),
+                        &inspection_sha256,
+                        packed_path,
+                        max_changed_bytes,
+                        request.budget,
+                        request.guard,
+                        Some(closing),
+                    )
+                },
+            )?;
+        (protected, Some(captured))
+    } else {
+        let protected = if allocation_closed_bracket {
+            general_target_preservation::verify_frozen_layout_residuals_allocation_closed_with_policy(
             target,
             pair.clone(),
             &expected,
@@ -1441,15 +1549,17 @@ fn protected_prefix(
             events,
             policy,
         )?
-    } else {
-        general_target_preservation::verify_frozen_layout_residuals_with_resource_profile(
-            target,
-            pair.clone(),
-            &expected,
-            resources,
-            &residuals,
-            events,
-        )?
+        } else {
+            general_target_preservation::verify_frozen_layout_residuals_with_resource_profile(
+                target,
+                pair.clone(),
+                &expected,
+                resources,
+                &residuals,
+                events,
+            )?
+        };
+        (protected, None)
     };
     ensure!(
         protected.expected_tree_sha256() == expected_tree_sha256
@@ -1467,6 +1577,7 @@ fn protected_prefix(
         expected_tree_sha256,
         residuals,
         protected,
+        closing_capture,
     })
 }
 

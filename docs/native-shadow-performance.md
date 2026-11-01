@@ -74,6 +74,24 @@ Rollback still require separate qualification. The result is preserved at051b650
 the older unprepared31d7 checkpoint was retired after verifying both archives.
 [Exact result and pins](../evidence/prepared-source-performance-native-20261101.json).
 
+## Closing-buffer reuse candidate
+
+The next Rust candidate feeds actual closing-bracket read buffers directly into
+the existing allocation comparison. Each buffer is read, checked for required
+zeros and included in the unchanged framed hash before its immutable bytes are
+reused. Both complete opening and closing brackets, original-source reads,
+granule comparisons and final native/route/allocation/state gates remain.
+Unqualified capture output cannot mint execution authority if a closing gate
+fails. Unsupported or backward requests retain actual-read fallback.
+
+The provider needs one extra1-MiB buffer and keeps the existing4-MiB comparison
+reducer. `shadow_bytes_reused_from_closing` distinguishes reused closing bytes
+from actual capture shadow reads; the strict saved-artifact reader defaults
+historical reports to zero and includes the new value in exact read accounting.
+Full/generic paths retain their previous behavior. This is compiled and source
+reviewed; native qualification and any measured read reduction remain pending.
+The6be case had6,176,772,096 potentially reusable third-pass shadow bytes.
+
 ## Source-free recovery storage
 
 `--minimize-scratch` explicitly selects `source_free_actual_bytes_v1` for fresh,

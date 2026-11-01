@@ -556,54 +556,67 @@ fn consumed_chunks(
     Ok(chunks)
 }
 
-fn hash_consumed_chunks(
-    target: &mut GeneralFrozenPartition,
-    length: u64,
-    exclusions_sha256: &str,
-    chunks: &[crate::parallel_digest::Chunk],
-) -> Result<(String, RawBracketHashCounts)> {
-    let mut hash = n2r_win32::sha256_native::Sha256::new()?;
-    hash.update(b"n2r-refs-source-backed-raw-consumption-v2\0")?;
-    hash.update(&length.to_le_bytes())?;
-    hash.update(exclusions_sha256.as_bytes())?;
-    hash.update(&(chunks.len() as u64).to_le_bytes())?;
-    let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
-    // Exact-length SHA-256 values, never inferred bitmap contents. Chunk
-    // lengths are 4 KiB multiples, so this cache has at most 256 live entries
-    // with the current 1 MiB bound and never grows with the volume's size.
-    let cache_slots = BRACKET_CHUNK as usize / 4096 + 1;
-    let mut zero_digests: Vec<Option<[u8; 32]>> = Vec::new();
-    zero_digests
-        .try_reserve_exact(cache_slots)
-        .context("raw metadata zero-digest cache allocation failed")?;
-    zero_digests.resize(cache_slots, None);
-    let mut counts = RawBracketHashCounts::default();
-    for chunk in chunks {
+/// A chunk can only be minted here after the complete actual read, every
+/// zero-byte assertion and the exact v2 hash frame have consumed its bytes.
+/// Its borrow prevents recycling the closing buffer while a consumer uses it.
+struct ConsumedShadowChunk<'buf> {
+    offset: u64,
+    bytes: &'buf [u8],
+}
+
+struct RawConsumptionHash {
+    hash: n2r_win32::sha256_native::Sha256,
+    zero_digests: Vec<Option<[u8; 32]>>,
+    counts: RawBracketHashCounts,
+}
+impl RawConsumptionHash {
+    fn new(length: u64, exclusions_sha256: &str, chunk_count: usize) -> Result<Self> {
+        let mut hash = n2r_win32::sha256_native::Sha256::new()?;
+        hash.update(b"n2r-refs-source-backed-raw-consumption-v2\0")?;
+        hash.update(&length.to_le_bytes())?;
+        hash.update(exclusions_sha256.as_bytes())?;
+        hash.update(&(chunk_count as u64).to_le_bytes())?;
+        // Exact-length SHA-256 values, never inferred bitmap contents. Chunk
+        // lengths are 4 KiB multiples, so this cache has at most 256 live entries
+        // with the current 1 MiB bound and never grows with the volume's size.
+        let cache_slots = BRACKET_CHUNK as usize / 4096 + 1;
+        let mut zero_digests: Vec<Option<[u8; 32]>> = Vec::new();
+        zero_digests
+            .try_reserve_exact(cache_slots)
+            .context("raw metadata zero-digest cache allocation failed")?;
+        zero_digests.resize(cache_slots, None);
+        let counts = RawBracketHashCounts::default();
+        Ok(Self {
+            hash,
+            zero_digests,
+            counts,
+        })
+    }
+
+    fn consume(&mut self, offset: u64, bytes: &[u8]) -> Result<()> {
         ensure!(
-            chunk.length != 0
-                && chunk.length <= buffer.len()
-                && chunk.length.is_multiple_of(4096)
-                && chunk.offset.is_multiple_of(4096),
+            !bytes.is_empty()
+                && bytes.len() <= BRACKET_CHUNK as usize
+                && bytes.len().is_multiple_of(4096)
+                && offset.is_multiple_of(4096),
             "raw metadata bracket chunk exceeds its read bound"
         );
-        hash.update(&chunk.offset.to_le_bytes())?;
-        hash.update(&(chunk.length as u64).to_le_bytes())?;
-        target.seek(std::io::SeekFrom::Start(chunk.offset))?;
-        target.read_exact(&mut buffer[..chunk.length])?;
-        counts.raw_bytes_read = counts
+        self.hash.update(&offset.to_le_bytes())?;
+        self.hash.update(&(bytes.len() as u64).to_le_bytes())?;
+        self.counts.raw_bytes_read = self
+            .counts
             .raw_bytes_read
-            .checked_add(chunk.length as u64)
+            .checked_add(bytes.len() as u64)
             .context("raw metadata read accounting overflow")?;
-        counts.chunks_read += 1;
-        let bytes = &buffer[..chunk.length];
+        self.counts.chunks_read += 1;
         let zero = bytes.iter().all(|&byte| byte == 0);
         let cached = if zero {
-            zero_digests[chunk.length / 4096]
+            self.zero_digests[bytes.len() / 4096]
         } else {
             None
         };
         let digest = if let Some(digest) = cached {
-            counts.zero_digest_cache_hits += 1;
+            self.counts.zero_digest_cache_hits += 1;
             digest
         } else {
             // Every nonzero chunk, and the first actually observed zero chunk
@@ -611,29 +624,172 @@ fn hash_consumed_chunks(
             let mut chunk_hash = n2r_win32::sha256_native::Sha256::new()?;
             chunk_hash.update(bytes)?;
             let digest = chunk_hash.finish()?;
-            counts.bytes_processed_by_inner_sha256 = counts
+            self.counts.bytes_processed_by_inner_sha256 = self
+                .counts
                 .bytes_processed_by_inner_sha256
-                .checked_add(chunk.length as u64)
+                .checked_add(bytes.len() as u64)
                 .context("raw metadata hash accounting overflow")?;
             if zero {
-                zero_digests[chunk.length / 4096] = Some(digest);
-                counts.zero_lengths_hashed += 1;
+                self.zero_digests[bytes.len() / 4096] = Some(digest);
+                self.counts.zero_lengths_hashed += 1;
             }
             digest
         };
         if zero {
-            counts.zero_chunks_observed += 1;
-            counts.zero_bytes_observed = counts
+            self.counts.zero_chunks_observed += 1;
+            self.counts.zero_bytes_observed = self
+                .counts
                 .zero_bytes_observed
-                .checked_add(chunk.length as u64)
+                .checked_add(bytes.len() as u64)
                 .context("raw metadata zero-byte accounting overflow")?;
         }
         // Frame boundaries and the exact length are authenticated outside the
         // inner SHA-256. Reuse is allowed only after reading and checking every
         // actual byte for zero, never from allocation or sparsity assumptions.
-        hash.update(&digest)?;
+        self.hash.update(&digest)?;
+        Ok(())
     }
-    Ok((hex::encode(hash.finish()?), counts))
+
+    fn finish(self) -> Result<(String, RawBracketHashCounts)> {
+        Ok((hex::encode(self.hash.finish()?), self.counts))
+    }
+}
+
+fn hash_consumed_chunks(
+    target: &mut GeneralFrozenPartition,
+    length: u64,
+    exclusions_sha256: &str,
+    chunks: &[crate::parallel_digest::Chunk],
+) -> Result<(String, RawBracketHashCounts)> {
+    let mut hash = RawConsumptionHash::new(length, exclusions_sha256, chunks.len())?;
+    let mut buffer = vec![0u8; BRACKET_CHUNK as usize];
+    for chunk in chunks {
+        ensure!(
+            chunk.length <= buffer.len(),
+            "raw metadata bracket chunk exceeds its read bound"
+        );
+        target.seek(std::io::SeekFrom::Start(chunk.offset))?;
+        target.read_exact(&mut buffer[..chunk.length])?;
+        hash.consume(chunk.offset, &buffer[..chunk.length])?;
+    }
+    hash.finish()
+}
+
+/// One bounded actual closing buffer, pulled in increasing physical order by
+/// capture. All skipped chunks are still read/authenticated before completion.
+/// No hash, bitmap or serialized value can supply bytes through this object.
+struct ClosingShadowConsumption<'chunks> {
+    chunks: &'chunks [crate::parallel_digest::Chunk],
+    hash: RawConsumptionHash,
+    buffer: Vec<u8>,
+    next: usize,
+    loaded: Option<usize>,
+}
+impl<'chunks> ClosingShadowConsumption<'chunks> {
+    fn new(
+        length: u64,
+        exclusions_sha256: &str,
+        chunks: &'chunks [crate::parallel_digest::Chunk],
+    ) -> Result<Self> {
+        Ok(Self {
+            chunks,
+            hash: RawConsumptionHash::new(length, exclusions_sha256, chunks.len())?,
+            buffer: vec![0u8; BRACKET_CHUNK as usize],
+            next: 0,
+            loaded: None,
+        })
+    }
+
+    fn consume_next(&mut self, target: &mut GeneralFrozenPartition) -> Result<()> {
+        let chunk = self.chunks.get(self.next).context("closing chunk absent")?;
+        ensure!(
+            chunk.length <= self.buffer.len(),
+            "closing chunk exceeds its buffer"
+        );
+        target.seek(std::io::SeekFrom::Start(chunk.offset))?;
+        target.read_exact(&mut self.buffer[..chunk.length])?;
+        self.hash
+            .consume(chunk.offset, &self.buffer[..chunk.length])?;
+        self.loaded = Some(self.next);
+        self.next += 1;
+        Ok(())
+    }
+
+    fn loaded_chunk(&self) -> Result<ConsumedShadowChunk<'_>> {
+        let chunk = &self.chunks[self
+            .loaded
+            .context("closing buffer has no consumed chunk")?];
+        Ok(ConsumedShadowChunk {
+            offset: chunk.offset,
+            bytes: &self.buffer[..chunk.length],
+        })
+    }
+
+    fn finish(
+        mut self,
+        target: &mut GeneralFrozenPartition,
+    ) -> Result<(String, RawBracketHashCounts)> {
+        while self.next < self.chunks.len() {
+            self.consume_next(target)?;
+        }
+        self.hash.finish()
+    }
+}
+impl crate::general_shadow::source_backed::ClosingShadowBytes for ClosingShadowConsumption<'_> {
+    fn read_shadow_exact(
+        &mut self,
+        target: &mut GeneralFrozenPartition,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<u64> {
+        let end = offset
+            .checked_add(output.len() as u64)
+            .context("closing supply end overflow")?;
+        let first = self
+            .chunks
+            .partition_point(|chunk| chunk.offset + chunk.length as u64 <= offset);
+        let mut cursor = offset;
+        for chunk in &self.chunks[first..] {
+            if cursor == end {
+                break;
+            }
+            if chunk.offset > cursor {
+                break;
+            }
+            cursor = end.min(chunk.offset + chunk.length as u64);
+        }
+        // Preserve ordinary reader behavior for an unsupported/nonmonotone
+        // request. The complete closing pass and its final equality still run.
+        if cursor != end
+            || self
+                .loaded
+                .is_some_and(|loaded| offset < self.chunks[loaded].offset)
+        {
+            target.seek(std::io::SeekFrom::Start(offset))?;
+            target.read_exact(output)?;
+            return Ok(0);
+        }
+        let mut done = 0;
+        while done < output.len() {
+            let position = offset + done as u64;
+            while self.loaded.is_none_or(|loaded| {
+                let chunk = &self.chunks[loaded];
+                position >= chunk.offset + chunk.length as u64
+            }) {
+                self.consume_next(target)?;
+            }
+            let consumed = self.loaded_chunk()?;
+            let start = usize::try_from(
+                position
+                    .checked_sub(consumed.offset)
+                    .context("closing supply precedes consumed buffer")?,
+            )?;
+            let count = (output.len() - done).min(consumed.bytes.len() - start);
+            output[done..done + count].copy_from_slice(&consumed.bytes[start..start + count]);
+            done += count;
+        }
+        Ok(output.len() as u64)
+    }
 }
 
 /// Raw bytes inside a route cannot affect this composite: SourceBackedShadow
@@ -649,6 +805,32 @@ fn verify_nonrouted_allocation_closed(
     residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetLayout> {
+    verify_nonrouted_allocation_closed_with_consumption(
+        target,
+        pair,
+        expected,
+        resources,
+        residuals,
+        events,
+        |_, _, _, _| Ok(()),
+    )
+    .map(|(protected, ())| protected)
+}
+
+pub(crate) fn verify_nonrouted_allocation_closed_with_consumption<T>(
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    expected: &shadow_tree::ExpectedTree,
+    resources: crate::ntfs_admission::ResourceProfile,
+    residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
+    events: &mut Vec<NativeEvent>,
+    consume: impl FnOnce(
+        &mut GeneralFrozenPartition,
+        &n2r_win32::shadow_native::private_tree::SourceBackedRoutes,
+        &[crate::refs_write_set::ByteRange],
+        &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+    ) -> Result<T>,
+) -> Result<(ProtectedTargetLayout, T)> {
     pair.validate_with_resource_profile(resources.native_profile())?;
     expected.validate_with_resource_profile(resources)?;
     ensure!(
@@ -828,15 +1010,18 @@ fn verify_nonrouted_allocation_closed(
     );
     let mut allocation_coverage = allocation::reconcile(&native, anchors, &raw_sha256, length)?;
     let selection = allocation_coverage.observed_ranges(&native)?;
-    let closing_all =
-        allocation::union(selection.into_iter().chain(closing_reads).collect(), length)?;
+    let closing_all = allocation::union(
+        selection.iter().copied().chain(closing_reads).collect(),
+        length,
+    )?;
     let closing_consumed = allocation::subtract(&closing_all, &exclusions)?;
     ensure!(
         allocation::subtract(&closing_consumed, &consumed)?.is_empty(),
         "closing raw consumer requires bytes absent from the opening bracket"
     );
-    let (closing_sha256, closing_hash_counts) =
-        hash_consumed_chunks(target, length, &excluded_payload_map_sha256, &chunks)?;
+    let mut closing = ClosingShadowConsumption::new(length, &excluded_payload_map_sha256, &chunks)?;
+    let captured = consume(target, &routes, &selection, &mut closing)?;
+    let (closing_sha256, closing_hash_counts) = closing.finish(target)?;
     ensure!(
         closing_sha256 == raw_sha256,
         "protected observation changed consumed raw shadow bytes"
@@ -850,45 +1035,48 @@ fn verify_nonrouted_allocation_closed(
         "protected layout observation changed identity or exclusion"
     );
     allocation_coverage.bind_routed_payload_bracket(&raw_sha256, &excluded_payload_map_sha256);
-    Ok(ProtectedTargetLayout {
-        native,
-        raw_sha256,
-        expected_tree_sha256,
-        frozen_state: before,
-        resources,
-        routes,
-        allocation_coverage,
-        raw_image_unchanged: false,
-        bracket_closure: Some(AllocationBracketClosure {
-            opening: "exact 4 KiB-aligned native allocation plus observed raw metadata reads, excluding only opaque source-backed payload routes",
-            raw_sha256_meaning: "SHA-256 over the v2 raw-consumption domain, partition length, pinned exclusion-map digest and every consumed (offset,length,SHA-256(actual chunk bytes)) frame; exact-length zero digests may be reused only after reading and checking every actual byte for zero; not a direct allocation-wide or whole-image digest",
-            opening_chunks: chunks.len(),
-            opening_bytes,
-            closing_ranges: closing_consumed.len(),
-            closing_chunks: chunks.len(),
-            closing_bytes_reread: opening_bytes,
-            free_space_rechecked: false,
-            raw_consumption: Some(RoutedPayloadBracketScope {
-                scope: "source-backed-raw-consumption-v2",
-                framed_hash_domain: "n2r-refs-source-backed-raw-consumption-v2",
-                raw_metadata_hash_algorithm: "sha256-framed-chunks-v1",
-                opening_hash_counts,
-                closing_hash_counts,
-                protected_routes_sha256,
-                excluded_payload_map_sha256,
-                excluded_payload_ranges: exclusions,
-                excluded_payload_bytes,
-                consumed_ranges_sha256,
-                preliminary_and_bracketed_native_routes_identical: true,
-                preliminary_and_bracketed_allocation_maps_identical: true,
-                raw_inspection_reads_covered: true,
+    Ok((
+        ProtectedTargetLayout {
+            native,
+            raw_sha256,
+            expected_tree_sha256,
+            frozen_state: before,
+            resources,
+            routes,
+            allocation_coverage,
+            raw_image_unchanged: false,
+            bracket_closure: Some(AllocationBracketClosure {
+                opening: "exact 4 KiB-aligned native allocation plus observed raw metadata reads, excluding only opaque source-backed payload routes",
+                raw_sha256_meaning: "SHA-256 over the v2 raw-consumption domain, partition length, pinned exclusion-map digest and every consumed (offset,length,SHA-256(actual chunk bytes)) frame; exact-length zero digests may be reused only after reading and checking every actual byte for zero; not a direct allocation-wide or whole-image digest",
+                opening_chunks: chunks.len(),
+                opening_bytes,
+                closing_ranges: closing_consumed.len(),
+                closing_chunks: chunks.len(),
+                closing_bytes_reread: opening_bytes,
+                free_space_rechecked: false,
+                raw_consumption: Some(RoutedPayloadBracketScope {
+                    scope: "source-backed-raw-consumption-v2",
+                    framed_hash_domain: "n2r-refs-source-backed-raw-consumption-v2",
+                    raw_metadata_hash_algorithm: "sha256-framed-chunks-v1",
+                    opening_hash_counts,
+                    closing_hash_counts,
+                    protected_routes_sha256,
+                    excluded_payload_map_sha256,
+                    excluded_payload_ranges: exclusions,
+                    excluded_payload_bytes,
+                    consumed_ranges_sha256,
+                    preliminary_and_bracketed_native_routes_identical: true,
+                    preliminary_and_bracketed_allocation_maps_identical: true,
+                    raw_inspection_reads_covered: true,
+                }),
             }),
-        }),
-        logical_payload_verified: false,
-        complete_allocation_graph_verified: false,
-        source_admitted: false,
-        conversion_qualified: false,
-    })
+            logical_payload_verified: false,
+            complete_allocation_graph_verified: false,
+            source_admitted: false,
+            conversion_qualified: false,
+        },
+        captured,
+    ))
 }
 
 pub fn verify_frozen_tree(

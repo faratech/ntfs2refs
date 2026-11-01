@@ -44,17 +44,30 @@ prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move 
 is separate. These are scoped observations, not a controlled physical benchmark.
 See evidence/prepared-source-performance-native-20261101.json.
 
-CURRENT VM is fresh-confirmed Off/RAM0 at ReFS051b650a-3358-40db-a7ed-8619e6e36760,
-parent prepared NTFS cb802669-903c-48cc-99e5-57976b149e7d,11 snapshots. ALL project
-tasks/worker processes were terminal/absent before normal shutdown. Closed86
-metadata files220,577,341B were source/copy SHA-verified; .lab base subfolder
-prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6 contains archive,
-checkpoint and final-idle receipts. No raw HND replay. Superseded31d7 was retired
-through Hyper-V after179 old/new archive files were rehashed and held. Cleanup
-receipt: retire-superseded-unprepared-31d7-e9c520f1c166451ca2f53ba71172fe7c.
-All host archives remain. User-authorized accidental EMPTY-folder cleanup also
-completed; no pending approval or blocked cleanup remains. Keep WSL running.
+CURRENT VM is Running/4GiB, original first-write checkpoint
+7721d92e-c80c-4843-983a-d9d3c89bb964, parentcb802669,12 snapshots. Fresh nativefault
+4456/birth1793571035196 exited86 at22:11:33.0920178Z; controlled observer passed
+positiveformat5 F402,669,568/J132,774,832, no Apply/HND. Closed75 metadata files
+185,020,599B were source/copy SHA-verified; final-idle and actual Off/RAM0/checkpoint
+observations produced REAL schema1 checkpoint.json under prepared-source-performance-
+interrupt-7a18009eb7e94c6dbaffc2b9295ace98. Receipt SHA9afc04c396cad6051bde711914227ac394e78aacc5391ef479fdf630cb95d4eb.
+Bundle SHA0b6cc964ac2b3410712b23c99b5247a58a9b9297d4554c052c4312daac35c0fc.
+D-F restore scope143,527,936B (not normal6be's142,114,816B). Actual source offline1;
+shadow offline+readonly3 before stop. No raw journal was opened by the observer.
 
+RESUME370b4f632703445f80f8f356115bd3b5 is now active using frozen c2c1ef3 public
+runtime, task N2R-PreparedSourceRecovery-resume-370b4f632703445f80f8f356115bd3b5,
+stage C:\ntfs2refs\prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5.
+Inspect actual task/PID+birth/terminal files; no power/restore/retry until closed.
+Original7721 and its recovery material must remain. Once Resume/HND and all811
+checks close, archive/preserve its branch; restore ORIGINAL7721 separately for
+Rollback. Never replay a closed HND or recovered branch. Root matrix receipts
+are under prepared-format5-recovery-matrix-679714c852da493d8b7253e054c30995.
+
+Normal6be is preserved at051b650a-3358-40db-a7ed-8619e6e36760 (Off checkpoint,
+parentcb802669). Closed86 metadata files220,577,341B were SHA-verified. Superseded
+31d7 was retired through Hyper-V after179 old/new archive files were held/verified;
+all host archives remain. User-authorized accidental empty-folder cleanup passed.
 Preparation82e805b moved5,643,501,568B over385 native requests/222 identities,
 with complete native maps/EOF/identity checks and all811 independent hashes.
 A fresh frozen full raw/native baseline also passed1084 objects/811 streams.
@@ -113,7 +126,7 @@ retired. Old recovery compatibility evidence is in docs/exclusive-recovery-nativ
   Old-selected checksum exactly matched original ticket. This is not arbitrary
   faults or physical-power-loss qualification. See docs/old-zero-recovery-matrix.md
   and evidence/old-zero-recovery-matrix-20261031.json.
-- The retained states are latest31d7, grown source8329, original F source6fe2,
+- The retained states include latest051b, grown source8329, original F source6fe2,
   H source371a, sparse source9c42 with guardedf4bf, H cold resultd939, interrupted
   old-zerodea9 and journal-owner recovery results8087/d40b, plus new prepared
   sourcecb802669 (11 total). Other historical

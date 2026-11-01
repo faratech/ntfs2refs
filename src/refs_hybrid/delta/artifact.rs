@@ -67,6 +67,8 @@ struct StoredReads {
     source_logical_bytes: u64,
     shadow_bytes: u64,
     #[serde(default)]
+    shadow_bytes_reused_from_closing: u64,
+    #[serde(default)]
     source_reference_bytes: u64,
     #[serde(default)]
     source_reference_bytes_reused: u64,
@@ -314,6 +316,8 @@ impl VerifiedDeltaArtifact {
                     .read_counts
                     .source_logical_bytes
                     .checked_add(capture.read_counts.shadow_bytes)
+                    .and_then(|bytes| bytes
+                        .checked_add(capture.read_counts.shadow_bytes_reused_from_closing))
                     == Some(capture.selected_bytes_compared)
                 && capture.read_counts.source_reference_bytes_reused
                     <= capture.read_counts.source_logical_bytes

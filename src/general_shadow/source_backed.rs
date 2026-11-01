@@ -21,6 +21,10 @@ const LOGICAL_SOURCE_READ_BYTES: usize = crate::ntfs_inspect::SESSION_READ_BYTES
 pub struct ReadCounts {
     pub source_logical_bytes: u64,
     pub shadow_bytes: u64,
+    /// Actual closing-bracket bytes supplied again from its immutable read buffer.
+    /// The closing bracket still reads and authenticates all of these bytes.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub shadow_bytes_reused_from_closing: u64,
     /// Raw equality checks proving an omitted reference, separate from the
     /// logical candidate reads and their stream-transfer budget.
     #[serde(skip_serializing_if = "is_zero")]
@@ -714,9 +718,22 @@ fn budget_refusal(
     anyhow::anyhow!(message)
 }
 
+/// Internal byte supply for the fused closing pass. It receives the same held
+/// frozen target, and may reuse only its actual immutable closing-read bytes.
+/// Returning zero retains the ordinary actual-read fallback accounting.
+pub(crate) trait ClosingShadowBytes {
+    fn read_shadow_exact(
+        &mut self,
+        target: &mut GeneralFrozenPartition,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<u64>;
+}
+
 pub struct SourceBackedShadow<'a> {
     source: &'a mut GeneralFrozenPartition,
     shadow: &'a mut GeneralFrozenPartition,
+    closing_bytes: Option<&'a mut dyn ClosingShadowBytes>,
     raw: &'a crate::ntfs_inspect::NtfsInspection,
     tree: &'a crate::shadow_tree::Tree,
     routes: &'a SourceBackedRoutes,
@@ -794,6 +811,7 @@ impl<'a> SourceBackedShadow<'a> {
         Ok(Self {
             source,
             shadow,
+            closing_bytes: None,
             raw,
             tree,
             routes,
@@ -809,6 +827,11 @@ impl<'a> SourceBackedShadow<'a> {
             poisoned: false,
             session: None,
         })
+    }
+
+    pub(crate) fn with_closing_bytes(mut self, bytes: &'a mut dyn ClosingShadowBytes) -> Self {
+        self.closing_bytes = Some(bytes);
+        self
     }
 
     pub fn read_counts(&self) -> ReadCounts {
@@ -1826,13 +1849,30 @@ impl<'a> SourceBackedShadow<'a> {
                     .context("source-backed source accounting overflow")?;
                 receipt
             } else {
-                self.shadow.seek(SeekFrom::Start(self.position))?;
-                self.shadow.read_exact(&mut output[..count])?;
+                let reused = match &mut self.closing_bytes {
+                    Some(bytes) => {
+                        bytes.read_shadow_exact(self.shadow, self.position, &mut output[..count])?
+                    }
+                    None => {
+                        self.shadow.seek(SeekFrom::Start(self.position))?;
+                        self.shadow.read_exact(&mut output[..count])?;
+                        0
+                    }
+                };
+                ensure!(
+                    reused <= count as u64,
+                    "closing shadow reuse exceeds actual supply"
+                );
                 self.counts.shadow_bytes = self
                     .counts
                     .shadow_bytes
-                    .checked_add(count as u64)
+                    .checked_add(count as u64 - reused)
                     .context("source-backed shadow accounting overflow")?;
+                self.counts.shadow_bytes_reused_from_closing = self
+                    .counts
+                    .shadow_bytes_reused_from_closing
+                    .checked_add(reused)
+                    .context("closing shadow reuse accounting overflow")?;
                 None
             };
         self.position += count as u64;

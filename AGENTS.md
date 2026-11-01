@@ -34,74 +34,78 @@ Do not redefine completion as the existing small-corpus success.
 
 ## Performance continuation and current native state (2026-11-01 UTC)
 
-Latest native runtime c2c1ef3 passed conversion/HND and all811 independent stream
-hashes in run2d220c6122aa47cfbdcc247013a0b44a. Both capture and journal preparation
-reused actual source reads:5,659,303,936B each. Native-verified logical reads
-94,053,323,457B/writes17,368,271,656B; observed native wall280.3918824s.
-These are process transfer counters, not physical traffic or a timing speedup.
-Journal5,773,273,160B/D11,393,306,624B/O5,662,773,248B. F0 selected canonical
-format4 fallback; native format5/its recovery remain UNQUALIFIED.
-See evidence/native-paired-preparation-copy-reuse-20261101.json.
+Latest native performance case6be2648addc24d1b95a11d807dae76d6 PASSED exit0/HND
+and all811 independent hashes. Runtime c2c1ef3 used the already-prepared source,
+new live source certificate and same owned empty shadow. D544,784,384B /
+J131,301,000B / C15,888,384B / O55,504,896B / F402,669,568B. Actual format5
+N2RFRE01; native conversion62.2871679s, prep18.5202009s (80.8073688s combined).
+Native-verified logical process reads27,643,861,313B/writes878,482,576B versus
+prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move IO
+is separate. These are scoped observations, not a controlled physical benchmark.
+See evidence/prepared-source-performance-native-20261101.json.
 
-Previous unprepared success is preserved at ReFS checkpoint
-31d77adf-2682-4e4d-b1f8-95e35702c4c0, parent clean NTFS83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b,
-with10 snapshots after the user's obsolete-state cleanup. All project tasks
-were terminal/workers absent before normal stop.
-93 closed metadata files were source/copy SHA-verified; archive/preserved/idle
-receipts are under .lab/hyperv/streaming-v2-20261027/source-free-performance-normal-
-2d220c6122aa47cfbdcc247013a0b44a. No converter/raw HND replay is permitted.
-Earlier capture-only d1bbcaa3 and37 obsolete fixture/result checkpoints were
-retired through Hyper-V after archive/graph guards. Preserve latest31d7.
-Cleanup receipts: obsolete-checkpoint-cleanup-e934c825371d48838d04acf8efb4549b
-and obsolete-checkpoint-cleanup-d59a3d7435224214bcd178ceea2f4973. All host archives
-remain. The older preservation lists in historical guidance are superseded.
-Retired IDs, including26c844d0, must not return.
+CURRENT VM is fresh-confirmed Off/RAM0 at ReFS051b650a-3358-40db-a7ed-8619e6e36760,
+parent prepared NTFS cb802669-903c-48cc-99e5-57976b149e7d,11 snapshots. ALL project
+tasks/worker processes were terminal/absent before normal shutdown. Closed86
+metadata files220,577,341B were source/copy SHA-verified; .lab base subfolder
+prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6 contains archive,
+checkpoint and final-idle receipts. No raw HND replay. Superseded31d7 was retired
+through Hyper-V after179 old/new archive files were rehashed and held. Cleanup
+receipt: retire-superseded-unprepared-31d7-e9c520f1c166451ca2f53ba71172fe7c.
+All host archives remain. User-authorized accidental EMPTY-folder cleanup also
+completed; no pending approval or blocked cleanup remains. Keep WSL running.
 
-CURRENT: VM is Running/4GiB/4CPU/noNIC with11 checkpoints, parent prepared NTFS
-cb802669-903c-48cc-99e5-57976b149e7d. Preparation runtime82e805b completed385 native
-moves/5,643,501,568B over222 identities in18.5202009s; all811 independent hashes
-and a fresh full frozen raw/native baseline passed. Prepared source/empty shadow
-were preserved with memory in cb802669; no move was repeated. See
-evidence/ntfs-owned-preparation-native-20261101.json. Baseline manifest7d10997d
+Preparation82e805b moved5,643,501,568B over385 native requests/222 identities,
+with complete native maps/EOF/identity checks and all811 independent hashes.
+A fresh frozen full raw/native baseline also passed1084 objects/811 streams.
+Prepared checkpoint cb802669 preserves RUNNING MEMORY and empty owned shadow6:
+restoring it yields Saved; verify in a fresh process, then Start-VM once.
+The original prepared managed smoke receipt is pinned SHA184aad57e2c8c8616adb4ad57ed82e40aba31949c530015ebcc5f7b681bcf876,
+at ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e/closed-native/managed-shadow/result.json.
+The actual guest VHDX is under that same6ec...stage, not each conversion's stage.
+New source uses a32MiB pre-submission receipt reserve; focused compilation passed,
+but that later change was not part of recorded82e execution. No unit tests.
+
+New full baseline manifest SHA7d10997d0ec43a54725c66956a0992d40437b20720a78217852cc338e82a74e7
 is under ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e/full-baseline-
-8796571ebd24458f8bedf17b5784e5a7/closed-native/full-baseline (inside the usual .lab base).
-The old f5de baseline does not describe these relocated physical mappings.
+8796571ebd24458f8bedf17b5784e5a7/closed-native/full-baseline in the .lab base.
+Original f5de describes PRE-move physical locations and is not admission forcb.
+Conversion uses genuine fresh source inspection/certificate; baseline JSON is
+only independent lab evidence. Original logical-content hashes remain pinned.
 
-Actual conversion6be2648addc24d1b95a11d807dae76d6 is active under
-C:\ntfs2refs\prepared-source-performance-normal-6be2648addc24d1b95a11d807dae76d6,
-task N2R-PreparedSourcePerformance-normal-6be2648addc24d1b95a11d807dae76d6.
-Native producer2988/birth1793569348608 is runtime c2c1ef3. Reuses the exact empty
-shadow6 from preparation, with NEW live source inspection/certificate; no JSON
-or baseline grants authority. Do not power/checkpoint/restore/retry until actual
-task/PID+birth/terminal/HND state and all project workers are rechecked. Journal
-size, final IO and all811 postconversion hashes remain pending.
+NEXT: controlled first-write interruption from restoredcb using
+lab/Start-PreparedSourcePerformanceExperiment.ps1 -InterruptAfterFirstWrite.
+Its exact schema3/8GiB J/256MiB literal/10GiB combined bounds remain; requires
+positive format5 F for the new recovery experiment. Toolset remains sealed
+paired-source-preparation-tools-c2c1ef3/manifest.json SHA70fb7abaff41ad497bb90e996662057de36222ddd9d5a68cc411d57957dc557e.
+Native producer SHA93c1eb20a3510fb12f6d84732fb3b4c8779ee7493ceefa46f5125f1bd0c8e232;
+public SHAe49d604561d19652557b8ee8a2e93f3ca8797d7e97fd7c228ae7a7ee7cab2f75.
+Root must create a REAL interrupted checkpoint receipt only after actual86,
+first flush/noHND, idle, normal stop and fresh checkpoint graph verification.
+New lab/Start-PreparedSourcePerformanceRecovery.ps1 documents the schema1
+prepared-source-performance-interrupted-checkpoint-v1 contract. It is parsed,
+not native-qualified, and requires original bundle/process/terminal/diagnostic/
+managed pins. Root must review it before execution. Resume must prove full new
+selected SHA/HND; Rollback proves ticket.old_restored_selected_sha256 over D-F,
+not full old-selected bytes. Marker/footer identity REMAINS original full old SHA.
+Never invent legacy producer fields or recreate fresh Apply authority from JSON.
+Native positive-format5 interruption/Resume/Rollback remain PENDING.
 
-New source implements NTFS-owned collision preparation before freeze through
-FSCTL_MOVE_FILE, with metadata-only planning, live destination bitmap windows,
-full retrieval/identity checks and bounded receipts. The explicit minimize-scratch
-path and lab-prepare-ntfs invoke it. Scoped native moves passed as above;
-post-preparation conversion/recovery are PENDING. A later32MiB receipt reserve
-fix is focused-build ONLY, not part of the82e native result. No qualification
-transfers across those revisions.
-No unit tests added/run. See docs/ntfs-owned-preparation.md.
+A delegated Rust read-pass fusion may be in progress; inspect worktree before
+build/commit. Desired optimization consumes actual borrowed closing-read buffers
+in capture, retaining BOTH complete opening/closing reads/hash equality and all
+native/route/allocator/source gates. No zero-range skipping or JSON byte authority.
+Unchanged9,868,443,648B of adopted payload is ALREADY excluded from comparison.
+Actual remaining bulk is repeated6.18GB native-metadata/required-zero brackets;
+see current target-preservation and phase IO counters. Paged evidence/handle
+windows remain for broad scale. Do not mark the performance goal complete.
 
-Next: finish observing live6be, preserve its actual result, then qualify scratch
-reduction and actual format5 Resume/Rollback from the preparedcb802669 source.
-Reinventory after moves and obtain a NEW frozen source certificate; old physical
-maps are never authority. Keep independently pinned logical-content evidence.
-Paged evidence
-and bounded handle windows still remain. Do not mark the performance plan complete.
-
-Root alone mutates VM2401593c-4b30-472e-9b6d-c9534cbaa599, name
-ntfs2refs-streaming-v2-20261027;4GiB fixed/4CPU/noNIC. Guest credentials only
-Import-Clixml .lab/hyperv/win11/secrets/guest-credential.xml, never print them.
-Current archive retains previous failures and all811 results. Preserve original
-interrupteddea902f6 plus its journals; old8GiB recovery source/compatibility
-qualification is in docs/exclusive-recovery-native.md. Original producer remains
-E4ff/9140; a new observer/runtime never creates fresh source authority.
-
-The preceding detailed handoff is preserved in
-[the21:10 UTC archive](docs/history/AGENTS-through-20261101T2110.md).
+Root alone mutates VM2401593c-4b30-472e-9b6d-c9534cbaa599,
+ntfs2refs-streaming-v2-20261027;4GiB fixed/4CPU/noNIC. Credentials only Import-Clixml
+.lab/hyperv/win11/secrets/guest-credential.xml, never print. Keep current051b,
+preparedcb, sources8329/6fe2/371a/9c42, guardedf4bf, H cold d939, original old-format
+interrupteddea9 and recovery8087/d40b (11 states). All other older listed IDs were
+retired. Old recovery compatibility evidence is in docs/exclusive-recovery-native.md.
 ## Evidence and current implementations
 
 - Frozen E4ff old-zero matrix is complete: first flushed write86, clean restart,

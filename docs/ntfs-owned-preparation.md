@@ -2,8 +2,8 @@
 
 The experimental `--minimize-scratch` path now prepares NTFS placement after
 creating the native ReFS shadow and before source freeze. This implementation
-passed the scoped native move experiment below; post-preparation conversion and
-recovery qualification are pending. The ordinary
+passed the scoped native move experiment and post-preparation conversion below;
+interruption/recovery qualification remains pending. The ordinary
 alpha path remains available without this option.
 
 The empty shadow's actual legacy and metadata-inclusive allocation bitmaps form
@@ -78,8 +78,20 @@ UTF8 and PS5 array-decoding failures are retained; their completion helpers only
 read files and never repeated a move. See the
 [exact evidence and artifact pins](../evidence/ntfs-owned-preparation-native-20261101.json).
 
+The subsequent conversion passed through native ReFS and all811 independent
+hashes. Its journal was131,301,000 bytes versus5,773,273,160 previously; source-free
+format5 avoided storing402,669,568 free bytes, using1,572,928 hash-table bytes.
+Native wall time was62.2871679s after18.5202009s NTFS preparation. These observations
+exclude full lab baseline/observer work and are not a controlled physical-I/O
+benchmark. See [conversion evidence](../evidence/prepared-source-performance-native-20261101.json).
+
 The versioned `Start-PreparedSourcePerformanceExperiment.ps1` uses that prepared
 checkpoint, its newly captured full baseline and the same owned empty shadow.
 The source-free controller and prior evidence remain unchanged. A zero COPY set
 is accepted as zero actual reuse; nonzero sets retain exact reuse/fallback
 accounting. This is a lab-scenario change, not a reduced product check.
+
+`Start-PreparedSourcePerformanceRecovery.ps1` is implemented and PS5-parsed, but
+awaits real format5 interruption evidence. Its header specifies the required
+checkpoint/producer/bundle pins. Rollback compares the restore-required digest
+over D-F; original full-old digest identity remains in the journal markers.

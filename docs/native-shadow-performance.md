@@ -54,8 +54,25 @@ This remains a logical-I/O result, not a controlled wall-time speedup claim.
 [NTFS-managed collision preparation](ntfs-owned-preparation.md) is now implemented
 for the explicit scratch-minimizing mode. The scoped native run moved5.64GB
 through385 verified NTFS requests and passed all811 independent hashes. A fresh
-frozen raw/native baseline also passed. Its conversion/journal-size and recovery
-qualification remain pending; this does not establish released CLI support.
+frozen raw/native baseline also passed. The subsequent conversion passed with
+positive format5 free-space elision and all811 independent postconversion hashes.
+This does not establish released CLI or arbitrary-volume support.
+
+The prepared-source case reduced journal storage from5,773,273,160 to131,301,000
+bytes (97.73%), and selected writes from11,393,306,624 to544,784,384 bytes.
+Native-verified logical process reads fell from94,053,323,457 to27,643,861,313;
+writes fell from17,368,271,656 to878,482,576. The separate NTFS relocation moved
+5,643,501,568 bytes and entails kernel-managed payload I/O outside those converter
+counters. Native wall time was62.2871679s plus18.5202009s preparation, versus the
+previous280.3918824s conversion. Full lab baseline/observer time is excluded;
+formatter epochs and cache conditions were not controlled.
+
+Actual journal format wasN2RFRE01 with402,669,568 hash-only free bytes and a
+1,572,928-byte hash table. This qualifies the recorded fresh conversion and native
+mount, with scoped free-space rollback semantics. Native interruption/Resume/
+Rollback still require separate qualification. The result is preserved at051b650a;
+the older unprepared31d7 checkpoint was retired after verifying both archives.
+[Exact result and pins](../evidence/prepared-source-performance-native-20261101.json).
 
 ## Source-free recovery storage
 
@@ -154,8 +171,9 @@ Primary contracts: [snapshot presence](https://learn.microsoft.com/windows/win32
 
 Focused builds and owned ordinary-file experiments cover the new format5 and
 existing legacy copy/old-zero encoding. Native capture-read reuse and clean
-format4 fallback passed the converted-volume/811-stream run described above;
-hash-only format5 originals and its native recovery remain pending. The owning
+format4 fallback passed the earlier converted-volume/811-stream run. The later
+prepared source passed positive format5 conversion and all811 streams; native
+format5 interruption and recovery remain pending. The owning
 Windows VSS API probes and the native run exercised the supported admission
 scopes without a global VSS exclusion claim.
 
@@ -181,8 +199,9 @@ may have different boundaries and actual old-zero counts.
 
 Most remaining old payload in that case is live source data overwritten by the
 required target layout. Omitting free garbage alone cannot eliminate that cost.
-The next candidates are native qualification of actual COPY reuse and format-5
-recovery, then NTFS-owned relocation before freeze to keep payload out of target
-metadata collisions. Paged source/evidence records and bounded handle windows
+Actual COPY reuse and NTFS-owned relocation now have the scoped native evidence
+above. Next are native format5 interruption/recovery and reuse of already-read
+closing metadata buffers while retaining both metadata brackets. Paged
+source/evidence records and bounded handle windows
 remain necessary for broad scale. Required-zone zero skipping remains disabled;
 any smaller footprint needs independently authenticated ownership evidence.

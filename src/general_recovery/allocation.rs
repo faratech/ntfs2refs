@@ -131,6 +131,10 @@ pub fn recover_allocation(
     let mut ticket_input = HeldInput::open(&bundle.ticket.path, &bundle.ticket.sha256, 65536)?;
     let ticket: SelectedTicket = serde_json::from_slice(&ticket_input.bytes)?;
     ensure!(
+        ticket.marker_profile.is_none(),
+        "redundant selected markers require a qualified native marker I/O backend"
+    );
+    ensure!(
         ticket.selected_bytes == selected_bytes
             && ticket.journal_length == journal_bytes
             && journal_bytes <= request.max_journal_bytes

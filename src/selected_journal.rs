@@ -13,6 +13,9 @@
 //! N2RFRE01 stores only 4 KiB digests for admitted source-free old ranges.
 //! Their actual old bytes remain part of the fresh target pin, but rollback
 //! leaves these free destinations unchanged and restores only the other ranges.
+//! Explicit N2RFRE02 preparation adds write-once duplicated lifecycle markers.
+//! Distinct file offsets alone do not certify physical failure independence or
+//! uncached durable readback; native callers remain on the legacy preparation.
 use crate::lab_reconstruct::{DurableIo, ReadSeek};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -21,6 +24,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 const GRANULE: u64 = 4096;
 const BODY: u64 = 8192;
+const REDUNDANT_BODY: u64 = 8 * GRANULE;
 const HEADER: usize = 80;
 const RECORD: usize = 80;
 const ZERO_RECORD: usize = 88;
@@ -34,6 +38,7 @@ const ZERO_FORMAT: u32 = 2;
 const COPY_FORMAT: u32 = 3;
 const OLD_ZERO_FORMAT: u32 = 4;
 const SOURCE_FREE_FORMAT: u32 = 5;
+const REDUNDANT_SOURCE_FREE_FORMAT: u32 = 6;
 const FREE_DIGEST: u64 = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +85,15 @@ pub struct SelectedPlan {
     pub source_free_ranges: Vec<SelectedRange>,
 }
 
+/// Explicit format selection, never inferred from file size or damaged markers.
+/// Native use also needs a backend proving separate failure granules and durable
+/// uncached marker readback; `DurableIo` alone makes neither claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectedMarkerProfile {
+    RedundantSourceFreeV1,
+}
+
 /// Trusted only when held independently by the caller. This format and its
 /// magic are separate from full-image reconstruction journal versions 1/2.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,13 +104,30 @@ pub struct SelectedTicket {
     pub range_count: u32,
     pub journal_length: u64,
     pub immutable_sha256: [u8; 32],
+    /// Absent preserves selected formats one through five exactly. Format six
+    /// binds this explicit selection into its immutable header and trusted pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_profile: Option<SelectedMarkerProfile>,
     pub old_selected_sha256: [u8; 32],
-    /// Format-five rollback pin over framed restore-required ranges only.
+    /// Format-five/six rollback pin over framed restore-required ranges only.
     /// The complete original selected pin above is retained for fresh apply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub old_restored_selected_sha256: Option<[u8; 32]>,
     pub new_selected_sha256: [u8; 32],
     pub whole_image_verified: bool,
+}
+
+impl SelectedTicket {
+    fn body_offset(&self) -> u64 {
+        marker_body(self.marker_profile)
+    }
+}
+
+fn marker_body(profile: Option<SelectedMarkerProfile>) -> u64 {
+    match profile {
+        None => BODY,
+        Some(SelectedMarkerProfile::RedundantSourceFreeV1) => REDUNDANT_BODY,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -404,7 +435,8 @@ impl SelectedPlan {
         !self.source_free_ranges.is_empty()
     }
 
-    /// The exact on-disk encoding; empty old-zero lists retain legacy names.
+    /// The default encoding; explicit redundant preparation selects format six.
+    /// Empty old-zero lists retain legacy names.
     pub fn encoding_name(&self) -> &'static str {
         std::str::from_utf8(self.magic()).expect("selected journal ASCII magic")
     }
@@ -415,6 +447,58 @@ impl SelectedPlan {
 
     pub fn journal_record_bytes(&self) -> usize {
         self.record_size()
+    }
+
+    /// Exact opt-in format-six size, including all eight marker slots. This
+    /// changes no source-free admission or selected-byte verification rule.
+    pub fn validate_redundant_source_free(&self) -> Result<(u64, u64)> {
+        self.validate_marker_profile(Some(SelectedMarkerProfile::RedundantSourceFreeV1))
+    }
+
+    fn validate_marker_profile(
+        &self,
+        profile: Option<SelectedMarkerProfile>,
+    ) -> Result<(u64, u64)> {
+        let (changed, legacy_length) = self.validate()?;
+        if profile.is_none() {
+            return Ok((changed, legacy_length));
+        }
+        ensure!(
+            self.source_free_encoded(),
+            "redundant marker profile requires a source-free plan"
+        );
+        let journal_length = legacy_length
+            .checked_add(REDUNDANT_BODY - BODY)
+            .context("redundant selected journal length overflow")?;
+        ensure!(
+            journal_length <= self.max_journal_bytes,
+            "redundant selected journal exceeds caller budget"
+        );
+        Ok((changed, journal_length))
+    }
+
+    fn format_with_markers(&self, profile: Option<SelectedMarkerProfile>) -> u32 {
+        match profile {
+            None => self.format(),
+            Some(SelectedMarkerProfile::RedundantSourceFreeV1) => REDUNDANT_SOURCE_FREE_FORMAT,
+        }
+    }
+
+    fn magic_with_markers(&self, profile: Option<SelectedMarkerProfile>) -> &'static [u8; 8] {
+        match profile {
+            None => self.magic(),
+            Some(SelectedMarkerProfile::RedundantSourceFreeV1) => b"N2RFRE02",
+        }
+    }
+
+    fn footer_magic_with_markers(
+        &self,
+        profile: Option<SelectedMarkerProfile>,
+    ) -> &'static [u8; 8] {
+        match profile {
+            None => self.footer_magic(),
+            Some(SelectedMarkerProfile::RedundantSourceFreeV1) => b"N2RFEND2",
+        }
     }
 
     fn copy_source(&self, range: &SelectedRange) -> Option<u64> {
@@ -858,7 +942,29 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    Ok(prepare_inner(source, candidate, journal, plan, false, false)?.ticket)
+    Ok(prepare_inner(source, candidate, journal, plan, false, false, None)?.ticket)
+}
+
+/// Explicit opt-in to N2RFRE02's redundant write-once lifecycle layout. All
+/// source/candidate reads and pins are the format-five checks. This API does
+/// not establish physical sector independence or strengthen the backend's
+/// flush/readback contract; no native conversion caller opts in yet.
+pub fn prepare_redundant_source_free<R: ReadSeek, S: ReadSeek, J: DurableIo>(
+    source: &mut R,
+    candidate: &mut S,
+    journal: &mut J,
+    plan: &SelectedPlan,
+) -> Result<SelectedTicket> {
+    Ok(prepare_inner(
+        source,
+        candidate,
+        journal,
+        plan,
+        false,
+        false,
+        Some(SelectedMarkerProfile::RedundantSourceFreeV1),
+    )?
+    .ticket)
 }
 
 /// Prepare under continuous exclusive ownership of the new journal. The
@@ -880,7 +986,7 @@ pub(crate) fn prepare_exclusive<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    Ok(prepare_inner(source, candidate, journal, plan, true, false)?.ticket)
+    Ok(prepare_inner(source, candidate, journal, plan, true, false, None)?.ticket)
 }
 
 /// Only complete post-flush validation can produce these operation-local
@@ -913,7 +1019,7 @@ pub(crate) fn prepare_exclusive_owned<'a, R: ReadSeek, S: ReadSeek, J: DurableIo
     plan: &'a SelectedPlan,
 ) -> Result<PreparedExclusiveJournal<'a, J>> {
     let PreparedContents { ticket, records } =
-        prepare_inner(source, candidate, journal, plan, true, false)?;
+        prepare_inner(source, candidate, journal, plan, true, false, None)?;
     Ok(PreparedExclusiveJournal {
         journal,
         plan,
@@ -946,7 +1052,7 @@ pub(crate) fn prepare_exclusive_owned_source_backed<'a, S: Read + Seek, J: Durab
         "paired COPY scope differs from the complete plan"
     );
     let PreparedContents { ticket, records } =
-        prepare_inner(source, candidate, journal, plan, true, true)?;
+        prepare_inner(source, candidate, journal, plan, true, true, None)?;
     ensure!(
         candidate.paired_source_state(source, events)? == before,
         "paired source/complement changed during journal preparation"
@@ -993,12 +1099,14 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     plan: &SelectedPlan,
     exclusive_readback: bool,
     same_native_source: bool,
+    marker_profile: Option<SelectedMarkerProfile>,
 ) -> Result<PreparedContents> {
     ensure!(
         !same_native_source || exclusive_readback,
         "same-source construction proof requires the complete exclusive readback"
     );
-    let (changed, journal_length) = plan.validate()?;
+    let (changed, journal_length) = plan.validate_marker_profile(marker_profile)?;
+    let body = marker_body(marker_profile);
     ensure!(
         source.byte_len()? == plan.image_length
             && candidate.byte_len()? == plan.image_length
@@ -1010,14 +1118,14 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     let copy_encoded = plan.copy_encoded();
     let source_free_encoded = plan.source_free_encoded();
     let old_zero_encoded = plan.old_zero_encoded() || source_free_encoded;
-    header[..8].copy_from_slice(plan.magic());
-    put_u32(&mut header, 8, plan.format());
+    header[..8].copy_from_slice(plan.magic_with_markers(marker_profile));
+    put_u32(&mut header, 8, plan.format_with_markers(marker_profile));
     put_u32(&mut header, 12, u32::try_from(plan.ranges.len())?);
     put_u64(&mut header, 16, plan.image_length);
     put_u64(&mut header, 24, changed);
     put_u64(&mut header, 32, journal_length);
     journal.seek(SeekFrom::Start(0))?;
-    journal.write_all(&[0; BODY as usize])?;
+    journal.write_all(&vec![0; body as usize])?;
     journal.write_all(&header)?;
     let mut old_selected = aggregate_pin_hash()?;
     let mut old_restored = source_free_encoded.then(aggregate_pin_hash).transpose()?;
@@ -1138,7 +1246,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     drop(data_buffer);
     drop(copy_buffer);
     let mut footer = [0u8; FOOTER];
-    footer[..8].copy_from_slice(plan.footer_magic());
+    footer[..8].copy_from_slice(plan.footer_magic_with_markers(marker_profile));
     footer[8..40].copy_from_slice(&old_selected_sha256);
     footer[40..72].copy_from_slice(&new_selected_sha256);
     put_u64(&mut footer, 72, journal_length);
@@ -1146,7 +1254,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     if let Some(restored) = old_restored_selected_sha256 {
         header[40..72].copy_from_slice(&restored);
         put_u64(&mut header, 72, plan.source_free_bytes()?);
-        journal.seek(SeekFrom::Start(BODY))?;
+        journal.seek(SeekFrom::Start(body))?;
         journal.write_all(&header)?;
         journal.seek(SeekFrom::Start(journal_length))?;
     }
@@ -1165,6 +1273,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         // This internal value is never returned or persisted before the
         // validating readback supplies the actual digest below.
         immutable_sha256: [0; 32],
+        marker_profile,
         old_selected_sha256,
         old_restored_selected_sha256,
         new_selected_sha256,
@@ -1176,7 +1285,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         ticket.immutable_sha256 = immutable_sha256;
         records
     } else {
-        ticket.immutable_sha256 = hash_range(journal, BODY, journal_length - BODY)?;
+        ticket.immutable_sha256 = hash_range(journal, body, journal_length - body)?;
         validate_body(
             journal,
             plan,
@@ -1186,7 +1295,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
         )?
         .0
     };
-    let mut markers = [0u8; BODY as usize];
+    let mut markers = vec![0u8; body as usize];
     at(journal, 0, &mut markers)?;
     ensure!(
         markers.iter().all(|&b| b == 0),
@@ -1226,7 +1335,8 @@ fn validate_body<J: ReadSeek>(
     expected_immutable: Option<&[u8; 32]>,
     zero_digests: &mut ZeroDigests,
 ) -> Result<(Vec<JournalRecord>, [u8; 32])> {
-    let (changed, journal_length) = plan.validate()?;
+    let (changed, journal_length) = plan.validate_marker_profile(ticket.marker_profile)?;
+    let body = ticket.body_offset();
     ensure!(
         !ticket.whole_image_verified
             && ticket.old_restored_selected_sha256.is_some() == plan.source_free_encoded()
@@ -1239,15 +1349,15 @@ fn validate_body<J: ReadSeek>(
     );
     let mut immutable = aggregate_pin_hash()?;
     let mut header = [0u8; HEADER];
-    at(journal, BODY, &mut header)?;
+    at(journal, body, &mut header)?;
     immutable.update(&header)?;
     let zero_encoded = plan.zero_encoded();
     let copy_encoded = plan.copy_encoded();
     let source_free_encoded = plan.source_free_encoded();
     let old_zero_encoded = plan.old_zero_encoded() || source_free_encoded;
     ensure!(
-        &header[..8] == plan.magic()
-            && get_u32(&header, 8) == plan.format()
+        &header[..8] == plan.magic_with_markers(ticket.marker_profile)
+            && get_u32(&header, 8) == plan.format_with_markers(ticket.marker_profile)
             && get_u32(&header, 12) == ticket.range_count
             && get_u64(&header, 16) == plan.image_length
             && get_u64(&header, 24) == changed
@@ -1470,7 +1580,7 @@ fn validate_body<J: ReadSeek>(
     journal.read_exact(&mut footer)?;
     immutable.update(&footer)?;
     ensure!(
-        &footer[..8] == plan.footer_magic()
+        &footer[..8] == plan.footer_magic_with_markers(ticket.marker_profile)
             && footer[8..40] == ticket.old_selected_sha256
             && footer[40..72] == ticket.new_selected_sha256
             && get_u64(&footer, 72) == journal_length
@@ -1547,7 +1657,138 @@ fn marker(kind: &[u8; 8], ticket: &SelectedTicket, digest: &[u8; 32]) -> [u8; GR
     marker
 }
 
+#[derive(Clone, Copy)]
+enum MarkerKind {
+    Apply,
+    Rollback,
+    Handoff,
+    Aborted,
+}
+
+impl MarkerKind {
+    fn first_slot(self) -> u64 {
+        match self {
+            Self::Apply => 0,
+            Self::Rollback => 2,
+            Self::Handoff => 4,
+            Self::Aborted => 6,
+        }
+    }
+
+    fn magic(self, redundant: bool) -> &'static [u8; 8] {
+        match (self, redundant) {
+            (Self::Apply, false) => b"N2RSAP01",
+            (Self::Rollback, false) => b"N2RSRB01",
+            (Self::Handoff, false) => b"N2RSHN01",
+            (Self::Aborted, false) => b"N2RSAB01",
+            (Self::Apply, true) => b"N2RSAP02",
+            (Self::Rollback, true) => b"N2RSRB02",
+            (Self::Handoff, true) => b"N2RSHN02",
+            (Self::Aborted, true) => b"N2RSAB02",
+        }
+    }
+
+    fn digest(self, ticket: &SelectedTicket) -> &[u8; 32] {
+        match self {
+            Self::Apply | Self::Handoff => &ticket.new_selected_sha256,
+            Self::Rollback | Self::Aborted => &ticket.old_selected_sha256,
+        }
+    }
+}
+
+fn redundant_marker(
+    kind: MarkerKind,
+    copy: u32,
+    ticket: &SelectedTicket,
+) -> [u8; GRANULE as usize] {
+    let mut value = [0u8; GRANULE as usize];
+    value[..8].copy_from_slice(kind.magic(true));
+    put_u32(&mut value, 8, REDUNDANT_SOURCE_FREE_FORMAT);
+    put_u32(&mut value, 12, copy);
+    value[16..48].copy_from_slice(&ticket.immutable_sha256);
+    // The original complete old identity is retained even when ABT verifies
+    // only restore-required bytes. Neither that subset nor its hash replaces it.
+    value[48..80].copy_from_slice(&ticket.old_selected_sha256);
+    value[80..112].copy_from_slice(&ticket.new_selected_sha256);
+    put_u64(&mut value, 112, ticket.journal_length);
+    put_u64(&mut value, 120, ticket.image_length);
+    put_u64(&mut value, 128, ticket.selected_bytes);
+    put_u32(&mut value, 136, ticket.range_count);
+    let hash: [u8; 32] = Sha256::digest(&value[..GRANULE as usize - 32]).into();
+    value[GRANULE as usize - 32..].copy_from_slice(&hash);
+    value
+}
+
+fn marker_self_hash_valid(value: &[u8; GRANULE as usize]) -> bool {
+    let hash: [u8; 32] = Sha256::digest(&value[..GRANULE as usize - 32]).into();
+    value[GRANULE as usize - 32..] == hash
+}
+
+/// A positive exact copy can recover a peer with a damaged self hash. A valid
+/// foreign identity/copy/kind is a conflict, never something to outvote. Zero
+/// plus damage supplies no authenticated state and conservatively refuses.
+fn read_marker_pair<J: Read + Seek>(
+    journal: &mut J,
+    ticket: &SelectedTicket,
+    kind: MarkerKind,
+) -> Result<bool> {
+    let mut valid = false;
+    let mut damaged = false;
+    for copy in 1..=2 {
+        let mut observed = [0u8; GRANULE as usize];
+        at(
+            journal,
+            (kind.first_slot() + u64::from(copy - 1)) * GRANULE,
+            &mut observed,
+        )?;
+        if observed == redundant_marker(kind, copy, ticket) {
+            valid = true;
+        } else if observed.iter().any(|&byte| byte != 0) {
+            ensure!(
+                !marker_self_hash_valid(&observed),
+                "redundant selected marker has a valid conflicting identity or kind"
+            );
+            damaged = true;
+        }
+    }
+    ensure!(
+        valid || !damaged,
+        "redundant selected marker has no authenticated intact copy"
+    );
+    Ok(valid)
+}
+
+fn classify_redundant<J: Read + Seek>(
+    journal: &mut J,
+    ticket: &SelectedTicket,
+) -> Result<SelectedLifecycle> {
+    // Read every pair before choosing a terminal state. HND/ABT never hide
+    // damage or a conflicting state elsewhere in the marker body.
+    let apply = read_marker_pair(journal, ticket, MarkerKind::Apply)?;
+    let rollback = read_marker_pair(journal, ticket, MarkerKind::Rollback)?;
+    let handoff = read_marker_pair(journal, ticket, MarkerKind::Handoff)?;
+    let aborted = read_marker_pair(journal, ticket, MarkerKind::Aborted)?;
+    match (apply, rollback, handoff, aborted) {
+        (false, false, false, false) => Ok(SelectedLifecycle::PreparedClear),
+        (true, false, false, false) => Ok(SelectedLifecycle::ApplyIntent),
+        (true, true, false, false) => Ok(SelectedLifecycle::RollbackIntent),
+        (true, false, true, false) => Ok(SelectedLifecycle::Handoff),
+        (false, false, false, true) | (true, true, false, true) => Ok(SelectedLifecycle::Aborted),
+        _ => anyhow::bail!("redundant selected lifecycle markers conflict"),
+    }
+}
+
 fn read_markers<J: Read + Seek>(journal: &mut J, ticket: &SelectedTicket) -> Result<(bool, bool)> {
+    if ticket.marker_profile.is_some() {
+        return match classify_redundant(journal, ticket)? {
+            SelectedLifecycle::PreparedClear => Ok((false, false)),
+            SelectedLifecycle::ApplyIntent => Ok((true, false)),
+            SelectedLifecycle::RollbackIntent => Ok((true, true)),
+            SelectedLifecycle::Handoff | SelectedLifecycle::Aborted => {
+                anyhow::bail!("selected replay is closed")
+            }
+        };
+    }
     let mut completed = [0u8; GRANULE as usize];
     let mut intent = [0u8; GRANULE as usize];
     at(journal, 0, &mut completed)?;
@@ -1580,6 +1821,44 @@ fn write_marker<J: DurableIo>(
     let mut observed = [0u8; GRANULE as usize];
     at(journal, offset, &mut observed)?;
     ensure!(&observed == value, "selected marker readback differs");
+    Ok(())
+}
+
+fn write_lifecycle_marker<J: DurableIo>(
+    journal: &mut J,
+    ticket: &SelectedTicket,
+    kind: MarkerKind,
+) -> Result<()> {
+    if ticket.marker_profile.is_none() {
+        let offset = match kind {
+            MarkerKind::Apply | MarkerKind::Rollback => GRANULE,
+            MarkerKind::Handoff | MarkerKind::Aborted => 0,
+        };
+        return write_marker(
+            journal,
+            offset,
+            &marker(kind.magic(false), ticket, kind.digest(ticket)),
+        );
+    }
+    // The caller has already classified the full lifecycle and checked the
+    // complete required target bytes. Slots are write-once by kind: RB can
+    // never tear or replace AP. An authenticated peer permits repair only
+    // with these same bytes. No target write/online may pass the two barriers.
+    read_marker_pair(journal, ticket, kind)?;
+    for copy in 1..=2 {
+        let value = redundant_marker(kind, copy, ticket);
+        let offset = (kind.first_slot() + u64::from(copy - 1)) * GRANULE;
+        let mut observed = [0u8; GRANULE as usize];
+        at(journal, offset, &mut observed)?;
+        if observed == value {
+            // Never put the sole intact copy at risk while repairing its peer.
+            journal.sync_all()?;
+            at(journal, offset, &mut observed)?;
+            ensure!(observed == value, "selected marker readback differs");
+        } else {
+            write_marker(journal, offset, &value)?;
+        }
+    }
     Ok(())
 }
 
@@ -1989,12 +2268,15 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         fresh.then_some(&ticket.old_selected_sha256),
         fresh,
     )?;
-    let intent = if forward {
-        marker(b"N2RSAP01", ticket, &ticket.new_selected_sha256)
-    } else {
-        marker(b"N2RSRB01", ticket, &ticket.old_selected_sha256)
-    };
-    write_marker(journal, GRANULE, &intent)?;
+    write_lifecycle_marker(
+        journal,
+        ticket,
+        if forward {
+            MarkerKind::Apply
+        } else {
+            MarkerKind::Rollback
+        },
+    )?;
     let mut replay_buffers = ReplayBuffers::new();
     for record in records {
         let skip = if record.range.offset == 0 { GRANULE } else { 0 };
@@ -2038,13 +2320,16 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
     };
     if recheck_immutable {
         ensure!(
-            hash_range(journal, BODY, ticket.journal_length - BODY)? == ticket.immutable_sha256,
+            hash_range(
+                journal,
+                ticket.body_offset(),
+                ticket.journal_length - ticket.body_offset()
+            )? == ticket.immutable_sha256,
             "selected journal changed during target writes"
         );
     }
     if !forward {
-        let completed = marker(b"N2RSAB01", ticket, expected);
-        write_marker(journal, 0, &completed)?;
+        write_lifecycle_marker(journal, ticket, MarkerKind::Aborted)?;
     }
     Ok(SelectedResult {
         selected_sha256,
@@ -2170,8 +2455,7 @@ impl<'a, T: DurableIo, J: DurableIo> FreshExclusiveApply<'a, T, J> {
         mut self,
         after_apply: F,
     ) -> Result<(SelectedResult, SelectedResult)> {
-        let intent = marker(b"N2RSAP01", self.ticket, &self.ticket.new_selected_sha256);
-        write_marker(self.journal, GRANULE, &intent)?;
+        write_lifecycle_marker(self.journal, self.ticket, MarkerKind::Apply)?;
         let mut after = vec![0; BUFFER];
         for index in 0..self.records.len() {
             let record = &self.records[index];
@@ -2205,11 +2489,10 @@ impl<'a, T: DurableIo, J: DurableIo> FreshExclusiveApply<'a, T, J> {
         after_apply(&applied)?;
         // The owner retains both mutable borrows through receipt persistence
         // and HND. After a completed intent write, data/check/callback errors
-        // leave that intent open. Marker-write failures keep existing torn-
-        // marker semantics; this owner adds no marker-recovery guarantee.
+        // leave that intent open. Marker-write failures use their selected
+        // profile's classification; this owner adds no backend durability proof.
         self.target.sync_all()?;
-        let completed = marker(b"N2RSHN01", self.ticket, &digest);
-        write_marker(self.journal, 0, &completed)?;
+        write_lifecycle_marker(self.journal, self.ticket, MarkerKind::Handoff)?;
         let handed_off = SelectedResult {
             replay_closed: true,
             ..applied
@@ -2401,8 +2684,8 @@ impl<J: DurableIo> ExclusiveRecoveryJournal<'_, J> {
     }
 }
 
-/// Classify the markers of a fully verified journal. Foreign or torn markers
-/// refuse; this never writes.
+/// Classify the markers of a fully verified journal. Legacy torn markers refuse;
+/// the redundant profile requires an authenticated intact peer. This never writes.
 pub fn lifecycle<J: ReadSeek>(
     journal: &mut J,
     plan: &SelectedPlan,
@@ -2413,6 +2696,9 @@ pub fn lifecycle<J: ReadSeek>(
 }
 
 fn classify<J: Read + Seek>(journal: &mut J, ticket: &SelectedTicket) -> Result<SelectedLifecycle> {
+    if ticket.marker_profile.is_some() {
+        return classify_redundant(journal, ticket);
+    }
     let mut completed = [0u8; GRANULE as usize];
     let mut intent = [0u8; GRANULE as usize];
     at(journal, 0, &mut completed)?;
@@ -2472,8 +2758,7 @@ fn abandon_loaded<T: DurableIo, J: DurableIo>(
         Some(&ticket.old_selected_sha256),
         true,
     )?;
-    let completed = marker(b"N2RSAB01", ticket, &ticket.old_selected_sha256);
-    write_marker(journal, 0, &completed)?;
+    write_lifecycle_marker(journal, ticket, MarkerKind::Aborted)?;
     Ok(SelectedResult {
         selected_sha256: ticket
             .old_restored_selected_sha256
@@ -2575,12 +2860,15 @@ fn handoff_loaded<T: DurableIo, J: DurableIo>(
     )?;
     if recheck_immutable {
         ensure!(
-            hash_range(journal, BODY, ticket.journal_length - BODY)? == ticket.immutable_sha256,
+            hash_range(
+                journal,
+                ticket.body_offset(),
+                ticket.journal_length - ticket.body_offset()
+            )? == ticket.immutable_sha256,
             "selected journal changed during handoff verification"
         );
     }
-    let completed = marker(b"N2RSHN01", ticket, &ticket.new_selected_sha256);
-    write_marker(journal, 0, &completed)?;
+    write_lifecycle_marker(journal, ticket, MarkerKind::Handoff)?;
     Ok(SelectedResult {
         selected_sha256,
         selected_bytes: ticket.selected_bytes,

@@ -24,7 +24,7 @@ const VOLUME_EXTENTS: u32 = 0x00560000;
 #[repr(C, align(8))]
 struct InfoBuffer([u8; 24]);
 
-fn information<const N: usize>(
+pub(super) fn information<const N: usize>(
     file: &File,
     class: FILE_INFO_BY_HANDLE_CLASS,
 ) -> io::Result<[u8; N]> {
@@ -51,7 +51,7 @@ fn file_observation(file: &File) -> io::Result<(String, JournalFileEvidence)> {
     file_observation_with_profile(file, JournalProfile::LegacyV1)
 }
 
-fn file_observation_with_profile(
+pub(super) fn file_observation_with_profile(
     file: &File,
     profile: JournalProfile,
 ) -> io::Result<(String, JournalFileEvidence)> {
@@ -109,7 +109,7 @@ pub fn observe_ordinary_file_handle(file: &File) -> io::Result<OrdinaryFileSnaps
     Ok(snapshot)
 }
 
-fn query(file: &File, code: u32, input: &[u8], capacity: usize) -> io::Result<Vec<u8>> {
+pub(super) fn query(file: &File, code: u32, input: &[u8], capacity: usize) -> io::Result<Vec<u8>> {
     require(
         input.len() <= 12 && (1..=65536).contains(&capacity),
         "journal observation query exceeds budget",
@@ -145,7 +145,11 @@ fn query(file: &File, code: u32, input: &[u8], capacity: usize) -> io::Result<Ve
     Ok(output)
 }
 
-fn storage_observation(volume: &File, disk: &File, e: &mut JournalFileEvidence) -> io::Result<()> {
+pub(super) fn storage_observation(
+    volume: &File,
+    disk: &File,
+    e: &mut JournalFileEvidence,
+) -> io::Result<()> {
     e.volume_extents = query(volume, VOLUME_EXTENTS, &[], 32)?;
     e.disk_device_number = query(disk, DEVICE, &[], 12)?;
     e.disk_length = query(disk, LENGTH, &[], 8)?;

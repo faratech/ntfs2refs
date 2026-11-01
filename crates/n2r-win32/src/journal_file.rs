@@ -629,6 +629,13 @@ fn finish_observation(
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
+mod marker_native;
+#[cfg(windows)]
+pub use marker_native::{
+    MarkerJournalFile, MarkerStorageObservation, UnbufferedJournalFile,
+    MARKER_STORAGE_NATIVE_QUALIFIED,
+};
+#[cfg(windows)]
 pub use native::{
     observe_general_journal_file, observe_general_journal_file_with_profile, observe_journal_file,
     observe_ordinary_file_handle,

@@ -27,3 +27,17 @@ File readback and distinct logical offsets cannot establish those claims.
 Source review and focused compilation passed. Native backend integration,
 single-peer read-error policy, terminal-peer online policy and VM/hardware
 power-loss qualification remain pending. No unit tests were added or run.
+
+The pending Win32 adapter now owns an exclusive NO_BUFFERING|WRITE_THROUGH NTFS
+file, bounded aligned body cache and exact logical EOF. Its sealing step binds
+actual file/device identity, actual storage granules, retrieval/base mappings,
+eight disjoint marker granules and handle-local protected allocation. Scoped
+volume-management privilege is restored after handles close. Sealed writes are
+limited to full marker slots and read back through the uncached handle.
+
+This adapter is compiled and source-reviewed, with its native-qualified flag
+still false. It is not wired into production creation or recovery. Retaining the
+existing prepared-journal proof requires an in-place sealing hook; generic
+format6 support alone cannot authorize a buffered native backend. These checks
+bound reported storage-interface granules, not hardware FTL separation or host
+power-failure behavior.

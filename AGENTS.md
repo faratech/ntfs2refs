@@ -44,6 +44,12 @@ Implemented/pushed performance source is58be22c. Optimized builds, legacy/free
 owned-file recovery and foreign-granule refusal passed; native COPY reuse and a
 complete new-format volume conversion/recovery remain pending. Exact pins and
 saved-plan sizing are in evidence/native-shadow-performance-20261101.json.
+CURRENT: the prior8GiB normal branch was metadata-archived (88 files/219773456B)
+and preserved at26c844d0-ed7e-49dd-a867-9b5a5ce33130, parent8329. Fresh process
+verified Off/RAM0/47 checkpoints. Its performance-transition-archive.json and
+preserved-checkpoint.json are under the original actual-byte-capacity-normal-
+27ae9824f5794fe98a96d69c66cfc10b host directory. Do not repeat the checkpoint.
+The new source-free performance controller is PS5 parsed, not yet dispatched.
 The older conversion state below remains a last observation. The resumed turn
 read-only confirmed the VM Running/4GiB, original wrapper/producer absent and
 its exact task Ready, with terminal/postcheck files present. Full archival and

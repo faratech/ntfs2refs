@@ -1498,8 +1498,9 @@ fn execute<T: DurableIo, J: DurableIo>(
     )
 }
 
-/// Legacy, fault and recovery execution retains every per-span membership
-/// check and rehashes the immutable body after its own writes.
+/// Every caller retains all target membership/digest checks. Legacy execution
+/// rehashes the immutable body afterward; only a live exclusive journal owner
+/// may retain its completed authentication through its own marker writes.
 #[allow(clippy::too_many_arguments)]
 fn execute_loaded<T: DurableIo, J: DurableIo>(
     target: &mut T,
@@ -1817,6 +1818,125 @@ pub enum SelectedLifecycle {
     Aborted,
 }
 
+/// One-shot ownership of a journal authenticated in this process. Exclusivity
+/// concerns the JOURNAL only: the target retains every mixed-byte, per-span and
+/// exact-digest check and requires no new global target-exclusion assumption.
+/// The caller must keep the journal free of writer/delete aliases; native
+/// recovery opens its exact file with share mode zero. No serialized state,
+/// mutable stream accessor or clone can recreate this completed load.
+pub(crate) struct ExclusiveRecoveryJournal<'a, J: DurableIo> {
+    journal: &'a mut J,
+    plan: &'a SelectedPlan,
+    ticket: &'a SelectedTicket,
+    records: Vec<JournalRecord>,
+    state: SelectedLifecycle,
+}
+
+pub(crate) fn authenticate_recovery_exclusive<'a, J: DurableIo>(
+    journal: &'a mut J,
+    plan: &'a SelectedPlan,
+    ticket: &'a SelectedTicket,
+) -> Result<ExclusiveRecoveryJournal<'a, J>> {
+    let records = load(journal, plan, ticket)?;
+    let state = classify(journal, ticket)?;
+    Ok(ExclusiveRecoveryJournal {
+        journal,
+        plan,
+        ticket,
+        records,
+        state,
+    })
+}
+
+impl<J: DurableIo> ExclusiveRecoveryJournal<'_, J> {
+    /// The state comes from actual authenticated journal bytes, not a report.
+    pub(crate) fn lifecycle(&self) -> SelectedLifecycle {
+        self.state
+    }
+
+    pub(crate) fn resume_and_handoff<T: DurableIo, F: FnOnce(&SelectedResult) -> Result<()>>(
+        self,
+        target: &mut T,
+        after_resume: F,
+    ) -> Result<(SelectedResult, SelectedResult)> {
+        ensure!(
+            self.state == SelectedLifecycle::ApplyIntent,
+            "exclusive journal resume requires an observed durable apply intent"
+        );
+        let resumed = execute_loaded(
+            target,
+            self.journal,
+            self.plan,
+            self.ticket,
+            &self.records,
+            true,
+            false,
+            false,
+        )?;
+        after_resume(&resumed)?;
+        // Keep handoff's actual marker rereads, target flush and complete
+        // exact-new target check. Only repeated journal-body authentication
+        // is redundant under the continuously held journal borrow.
+        let handed_off = handoff_loaded(
+            target,
+            self.journal,
+            self.plan,
+            self.ticket,
+            &self.records,
+            false,
+        )?;
+        Ok((resumed, handed_off))
+    }
+
+    pub(crate) fn rollback<T: DurableIo>(self, target: &mut T) -> Result<SelectedResult> {
+        ensure!(
+            matches!(
+                self.state,
+                SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent
+            ),
+            "exclusive journal rollback requires an observed durable operation intent"
+        );
+        execute_loaded(
+            target,
+            self.journal,
+            self.plan,
+            self.ticket,
+            &self.records,
+            false,
+            false,
+            false,
+        )
+    }
+
+    pub(crate) fn abandon<T: DurableIo>(self, target: &mut T) -> Result<SelectedResult> {
+        ensure!(
+            self.state == SelectedLifecycle::PreparedClear,
+            "exclusive journal abandon requires observed clear intent"
+        );
+        abandon_loaded(target, self.journal, self.plan, self.ticket, &self.records)
+    }
+
+    pub(crate) fn verify_closed<T: ReadSeek>(
+        self,
+        target: &mut T,
+    ) -> Result<(SelectedLifecycle, SelectedResult)> {
+        ensure!(
+            matches!(
+                self.state,
+                SelectedLifecycle::Handoff | SelectedLifecycle::Aborted
+            ),
+            "exclusive journal verification requires an observed closed lifecycle"
+        );
+        let result =
+            verify_closed_loaded(target, self.journal, self.plan, self.ticket, &self.records)?;
+        ensure!(
+            result.0 == self.state,
+            "exclusive journal closed lifecycle changed"
+        );
+        Ok(result)
+    }
+}
+
 /// Classify the markers of a fully verified journal. Foreign or torn markers
 /// refuse; this never writes.
 pub fn lifecycle<J: ReadSeek>(
@@ -1864,6 +1984,16 @@ pub fn abandon<T: DurableIo, J: DurableIo>(
     ticket: &SelectedTicket,
 ) -> Result<SelectedResult> {
     let records = load(journal, plan, ticket)?;
+    abandon_loaded(target, journal, plan, ticket, &records)
+}
+
+fn abandon_loaded<T: DurableIo, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+    records: &[JournalRecord],
+) -> Result<SelectedResult> {
     let (apply_intent, rollback_intent) = read_markers(journal, ticket)?;
     ensure!(
         !apply_intent && !rollback_intent,
@@ -1874,7 +2004,7 @@ pub fn abandon<T: DurableIo, J: DurableIo>(
         target,
         journal,
         plan,
-        &records,
+        records,
         Some(&ticket.old_selected_sha256),
     )?;
     let completed = marker(b"N2RSAB01", ticket, &ticket.old_selected_sha256);
@@ -1898,13 +2028,23 @@ pub fn verify_closed<T: ReadSeek, J: ReadSeek>(
     ticket: &SelectedTicket,
 ) -> Result<(SelectedLifecycle, SelectedResult)> {
     let records = load(journal, plan, ticket)?;
+    verify_closed_loaded(target, journal, plan, ticket, &records)
+}
+
+fn verify_closed_loaded<T: ReadSeek, J: ReadSeek>(
+    target: &mut T,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+    records: &[JournalRecord],
+) -> Result<(SelectedLifecycle, SelectedResult)> {
     let state = classify(journal, ticket)?;
     let expected = match state {
         SelectedLifecycle::Handoff => &ticket.new_selected_sha256,
         SelectedLifecycle::Aborted => &ticket.old_selected_sha256,
         _ => anyhow::bail!("selected journal is not closed by HND or ABT"),
     };
-    let selected_sha256 = check_target(target, journal, plan, &records, Some(expected))?;
+    let selected_sha256 = check_target(target, journal, plan, records, Some(expected))?;
     Ok((
         state,
         SelectedResult {
@@ -1926,6 +2066,17 @@ pub fn handoff<T: DurableIo, J: DurableIo>(
     ticket: &SelectedTicket,
 ) -> Result<SelectedResult> {
     let records = load(journal, plan, ticket)?;
+    handoff_loaded(target, journal, plan, ticket, &records, true)
+}
+
+fn handoff_loaded<T: DurableIo, J: DurableIo>(
+    target: &mut T,
+    journal: &mut J,
+    plan: &SelectedPlan,
+    ticket: &SelectedTicket,
+    records: &[JournalRecord],
+    recheck_immutable: bool,
+) -> Result<SelectedResult> {
     let (apply_intent, rollback_intent) = read_markers(journal, ticket)?;
     ensure!(
         apply_intent && !rollback_intent,
@@ -1936,13 +2087,15 @@ pub fn handoff<T: DurableIo, J: DurableIo>(
         target,
         journal,
         plan,
-        &records,
+        records,
         Some(&ticket.new_selected_sha256),
     )?;
-    ensure!(
-        hash_range(journal, BODY, ticket.journal_length - BODY)? == ticket.immutable_sha256,
-        "selected journal changed during handoff verification"
-    );
+    if recheck_immutable {
+        ensure!(
+            hash_range(journal, BODY, ticket.journal_length - BODY)? == ticket.immutable_sha256,
+            "selected journal changed during handoff verification"
+        );
+    }
     let completed = marker(b"N2RSHN01", ticket, &ticket.new_selected_sha256);
     write_marker(journal, 0, &completed)?;
     Ok(SelectedResult {

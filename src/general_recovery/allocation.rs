@@ -247,7 +247,12 @@ pub fn recover_allocation(
         );
         artifacts::save(output, "journal-identity.json", &observed)?;
         phase = "selected-journal-lifecycle";
-        let state = sj::lifecycle(&mut journal, &plan, &ticket)?;
+        // Authenticate the actual share-zero journal once before reopening the
+        // target. The opaque owner keeps this exact mutable journal borrow
+        // through action selection, pin revalidation and replay completion.
+        // It supplies no exclusion claim about the independently reopened target.
+        let recovery_journal = sj::authenticate_recovery_exclusive(&mut journal, &plan, &ticket)?;
+        let state = recovery_journal.lifecycle();
         let action = match (state, rollback) {
             (SelectedLifecycle::ApplyIntent, false) => Action::Resume,
             (SelectedLifecycle::Handoff, false) => Action::VerifyHandoff,
@@ -335,16 +340,16 @@ pub fn recover_allocation(
                 } else {
                     target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
                 }
-                let resumed = sj::resume(&mut target, &mut journal, &plan, &ticket)?;
-                artifacts::save(output, "resume.json", &resumed)?;
-                let handoff = sj::handoff(&mut target, &mut journal, &plan, &ticket)?;
+                let (_, handoff) = recovery_journal.resume_and_handoff(&mut target, |resumed| {
+                    artifacts::save(output, "resume.json", resumed)?;
+                    Ok(())
+                })?;
                 artifacts::save(output, "handoff.json", &handoff)?;
                 verified_refs_closed = Some(handoff);
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::VerifyHandoff => {
-                let (closed_state, verified) =
-                    sj::verify_closed(&mut target, &mut journal, &plan, &ticket)?;
+                let (closed_state, verified) = recovery_journal.verify_closed(&mut target)?;
                 ensure!(
                     closed_state == SelectedLifecycle::Handoff,
                     "ReFS verification requires the actual closed HND lifecycle"
@@ -378,17 +383,17 @@ pub fn recover_allocation(
                 } else {
                     target.arm_encoded_selected_writes(policy, journal_bytes, &mut events)?;
                 }
-                let rolled = sj::rollback(&mut target, &mut journal, &plan, &ticket)?;
+                let rolled = recovery_journal.rollback(&mut target)?;
                 artifacts::save(output, "rollback.json", &rolled)?;
                 AllocationRecoveryOutcome::NtfsRestored
             }
             Action::Abandon => {
-                let closed = sj::abandon(&mut target, &mut journal, &plan, &ticket)?;
+                let closed = recovery_journal.abandon(&mut target)?;
                 artifacts::save(output, "abandon.json", &closed)?;
                 AllocationRecoveryOutcome::NtfsRestored
             }
             Action::VerifyAborted => {
-                let (_, verified) = sj::verify_closed(&mut target, &mut journal, &plan, &ticket)?;
+                let (_, verified) = recovery_journal.verify_closed(&mut target)?;
                 artifacts::save(output, "verified-rollback.json", &verified)?;
                 AllocationRecoveryOutcome::NtfsRestored
             }
@@ -512,6 +517,9 @@ pub fn recover_allocation(
         let mut result = serde_json::json!({
             "schema_version":1,"kind":"allocation-bounded-recovery","success":true,
             "observed_lifecycle":state,"action":action,"outcome":outcome,
+            // Every successful action above consumed the authenticated owner.
+            // This records that code path; it grants no replay authority.
+            "exclusive_recovery_journal_used":true,
             "journal_format":plan.encoding_name(),
             "journal_bytes":journal_bytes,"selected_bytes":selected_bytes,
             "old_zero_bytes":old_zero_bytes,

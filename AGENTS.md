@@ -23,6 +23,21 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+New journal-only recovery owner is implemented/reviewed and passes focused
+library/public/fault/binder compilation (17.68s), natively UNQUALIFIED.
+`authenticate_recovery_exclusive` performs actual full load+classify and holds
+the same share-zero journal borrow/plan/ticket/records until one operation closes.
+All mixed target prechecks, PER-SPAN old/current/new reads, exact post-write AND
+post-callback handoff target digests, flushes/ordering/markers remain. Only
+duplicate authentication of that owned immutable body is omitted. Target reopen
+stays share3; no new target/global alias exclusion is claimed. Callback receives
+only the resumed result and must persist before HND; failure leaves intent open.
+Legacy public APIs retain all independent validation. Successful allocation
+recovery reports actual `exclusive_recovery_journal_used=true`, not authority.
+Code-accounted savings for e4ff plan: Resume34,805,884,512 logical J reads and
+Rollback17,402,942,256; no measured/physical-I/O claim. See
+`docs/journal-exclusive-recovery.md`. This is NOT in the frozen e4ff VM binaries.
+
 New optional capacity-policy implementation is compiled/reviewed, natively
 UNQUALIFIED. `old_zero_actual_bytes_v1` is restricted to fresh schema3 fast
 allocation/CapacityPinnedV3 with pinned literal+combined bounds. It permits a
@@ -48,14 +63,24 @@ index b4a6552b3d13f52eff13ba374846deec028665f17393c673248bb3f3649e0771,
 receipt13a8c256bd1bcee0c5330a283f14f84b619fd74fa950a42ee23ccffdb7fde174.
 After allidle normalstop, root saved original interrupted checkpoint
 `dea902f6-7d3f-49ba-86d2-27ce6dbe9516`, parent8329; freshOff/RAM0/48.
-Cold-started that branch once. Public Resume `d1d45a318a80482eb528a016b0e35b9c`
-dispatched once at2026-11-01T01:18:53Z; terminal/observer are PENDING.
-Root alone owns all VM mutation; do not launch a second recovery or infer death
-from a timeout. Preserve dea for separate Rollback after Resume closure.
+Public Resume `d1d45a31` PASSED: actual5696/birth1793496097001 native0/HND at
+01:28:15.8011963Z (398.8001963s), observer0/all811 at01:33:43.3923390Z.
+Cold shadow6 was absent/no attach. Product maps1084, known157 hashes/119009B,
+654missing/650tails1371388 remain. Closed52files88,764,681B source/copySHAverified,
+indexc83bfec18782b4b288f8c88bd7d7a579543c785cbfd83b02607f9c885b401cc6,
+receipt6f315670b0bf950286a0b99bc441e706d1db60489caa5011ea9526d5e22c3a45.
+After allidle normalstop, saved ReFS033e05bd-447b-450e-9acb-9413feaf00dc,
+parent ORIGINALdea. FreshOff/RAM0/49; receipt6b8f42cdca07b9574c64c4ed0cf56c96be48136dc46d8cf26c0341cd52e5efd2.
+Restored ORIGINALdea once (never replay the HND branch), freshverified thenbooted.
+Public Rollback525621320f8040b6b0a4fe4697bed692 dispatched ONCE at01:38:35Z;
+wrapper988/birth1793497118971 active in pre-native checks, terminal is PENDING.
+Root alone owns VM mutation; no second recovery/death inference from timeout.
 Snapshot receipt SHA0b54d62b257da159148a2e25af338fd6782f4d7de4bc818de2e4f1129c45870f;
 actual303,750,131,935/free41,418,272,768 bytes admitted16GiB Resume forecast under
 the fixed epoch. No HND/ABT replay. Current cold shadow may be absent; never attach
-or rebind it to bypass a refusal. Two checkpoint slots remain (Resume/Rollback).
+or rebind it to bypass a refusal. One slot remains for final Rollback checkpoint.
+At Resume closure actual319,544,893,906/free25,723,949,056 bytes admitted6GiB
+Rollback forecast inside the fixed epoch. Re-admit any later work; no cap reset.
 
 Latest qualified normal runtime is sealed `e4ffb3a` / public `f8c07817`
 (9,899,008 bytes), case `6d9b4cd5` / core `6e91f232`. Actual PID 724 /

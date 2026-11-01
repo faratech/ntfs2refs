@@ -44,30 +44,34 @@ prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move 
 is separate. These are scoped observations, not a controlled physical benchmark.
 See evidence/prepared-source-performance-native-20261101.json.
 
-CURRENT VM is Running/4GiB, original first-write checkpoint
-7721d92e-c80c-4843-983a-d9d3c89bb964, parentcb802669,12 snapshots. Fresh nativefault
-4456/birth1793571035196 exited86 at22:11:33.0920178Z; controlled observer passed
-positiveformat5 F402,669,568/J132,774,832, no Apply/HND. Closed75 metadata files
-185,020,599B were source/copy SHA-verified; final-idle and actual Off/RAM0/checkpoint
-observations produced REAL schema1 checkpoint.json under prepared-source-performance-
-interrupt-7a18009eb7e94c6dbaffc2b9295ace98. Receipt SHA9afc04c396cad6051bde711914227ac394e78aacc5391ef479fdf630cb95d4eb.
-Bundle SHA0b6cc964ac2b3410712b23c99b5247a58a9b9297d4554c052c4312daac35c0fc.
-D-F restore scope143,527,936B (not normal6be's142,114,816B). Actual source offline1;
-shadow offline+readonly3 before stop. No raw journal was opened by the observer.
+CURRENT VM is fresh-confirmed Off/RAM0 at successful Resume
+ d9e580fa-e673-4b30-8fc3-7011cbb918ca, parent ORIGINAL interrupted
+7721d92e-c80c-4843-983a-d9d3c89bb964,13 snapshots. Resume370b4f632703445f80f8f356115bd3b5
+native4688/birth1793571990732 exited0/HND22:26:49.4891244Z in18.7571244s; all811
+independent hashes passed.57 metadata files88,487,120B source/copy SHA-verified
+under prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5/closed-native
+(wrapper and core subfolders). All project tasks/workers terminal before normal
+shutdown/checkpoint. No raw HND replay. See docs/source-free-native-recovery.md
+and evidence/source-free-recovery-native-20261101.json.
 
-RESUME370b4f632703445f80f8f356115bd3b5 is now active using frozen c2c1ef3 public
-runtime, task N2R-PreparedSourceRecovery-resume-370b4f632703445f80f8f356115bd3b5,
-stage C:\ntfs2refs\prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5.
-Inspect actual task/PID+birth/terminal files; no power/restore/retry until closed.
-Original7721 and its recovery material must remain. Once Resume/HND and all811
-checks close, archive/preserve its branch; restore ORIGINAL7721 separately for
-Rollback. Never replay a closed HND or recovered branch. Root matrix receipts
-are under prepared-format5-recovery-matrix-679714c852da493d8b7253e054c30995.
+Original fault4456/birth1793571035196 exited86 after one flushed write;
+75 metadata files185,020,599B archived. ORIGINAL7721 has parentcb802669 and its
+REAL schema1 receipt under prepared-source-performance-interrupt-
+7a18009eb7e94c6dbaffc2b9295ace98/checkpoint.json, SHA
+9afc04c396cad6051bde711914227ac394e78aacc5391ef479fdf630cb95d4eb.
+Bundle0b6cc964ac2b3410712b23c99b5247a58a9b9297d4554c052c4312daac35c0fc.
+D-F143,527,936B/F402,669,568B/J132,774,832B; no Apply/HND. Original source
+was offline1/shadow3. Keep original recovery material. NEXT restore ORIGINAL7721
+only after exact Off/RAM0/graph guards, boot once, run Rollback separately using
+lab/Start-PreparedSourcePerformanceRecovery.ps1 -Rollback. Never use resumedd9
+as rollback origin. Matrix root prepared-format5-recovery-matrix-
+679714c852da493d8b7253e054c30995. Updated recovery controller retains the private
+already-checked tail object instead of repeating its650-row check; actual
+assembled guest syntax must pass before dispatch. Native Rollback is PENDING.
 
-Normal6be is preserved at051b650a-3358-40db-a7ed-8619e6e36760 (Off checkpoint,
-parentcb802669). Closed86 metadata files220,577,341B were SHA-verified. Superseded
-31d7 was retired through Hyper-V after179 old/new archive files were held/verified;
-all host archives remain. User-authorized accidental empty-folder cleanup passed.
+Normal6be remains at051b650a, parentcb802669, with86 verified metadata files.
+Superseded31d7 is retired, all host archives preserved. Accidental empty-folder
+cleanup completed with user authorization. Keep WSL running.
 Preparation82e805b moved5,643,501,568B over385 native requests/222 identities,
 with complete native maps/EOF/identity checks and all811 independent hashes.
 A fresh frozen full raw/native baseline also passed1084 objects/811 streams.
@@ -86,7 +90,7 @@ Original f5de describes PRE-move physical locations and is not admission forcb.
 Conversion uses genuine fresh source inspection/certificate; baseline JSON is
 only independent lab evidence. Original logical-content hashes remain pinned.
 
-NEXT: controlled first-write interruption from restoredcb using
+Completed first-write interruption used
 lab/Start-PreparedSourcePerformanceExperiment.ps1 -InterruptAfterFirstWrite.
 Its exact schema3/8GiB J/256MiB literal/10GiB combined bounds remain; requires
 positive format5 F for the new recovery experiment. Toolset remains sealed
@@ -102,7 +106,7 @@ managed pins. Root must review it before execution. Resume must prove full new
 selected SHA/HND; Rollback proves ticket.old_restored_selected_sha256 over D-F,
 not full old-selected bytes. Marker/footer identity REMAINS original full old SHA.
 Never invent legacy producer fields or recreate fresh Apply authority from JSON.
-Native positive-format5 interruption/Resume/Rollback remain PENDING.
+Native positive-format5 interruption and Resume passed; Rollback remains PENDING.
 
 A delegated Rust read-pass fusion may be in progress; inspect worktree before
 build/commit. Desired optimization consumes actual borrowed closing-read buffers
@@ -113,11 +117,20 @@ Actual remaining bulk is repeated6.18GB native-metadata/required-zero brackets;
 see current target-preservation and phase IO counters. Paged evidence/handle
 windows remain for broad scale. Do not mark the performance goal complete.
 
+
+Sealed new-runtime toolset closing-read-reuse-tools-72b4db0/manifest.json,
+SHA783f1f2a3e0abd3e97e573554a31a5379fd9eae5a4fc1cdd10637e7921b17e6b.
+Public9b371439ecbf9cc374b990ece1d31760bfa25f1e2951bb1e7c96751e5415395a/10344448B;
+producer17931521a6c0488c41c47528784e46fdc94882c9eebcea0a0d400ea675c1f347/7276544B.
+Prepared controller now supports -RequireClosingReadReuse; do not claim measured
+savings until actual new native case. It checks reuse counter, both full raw/zero
+brackets and exact source+shadow+reused byte accounting. Older controllers/helpers
+remain compatible; inherited helper origins retained. No unit tests.
 Root alone mutates VM2401593c-4b30-472e-9b6d-c9534cbaa599,
 ntfs2refs-streaming-v2-20261027;4GiB fixed/4CPU/noNIC. Credentials only Import-Clixml
 .lab/hyperv/win11/secrets/guest-credential.xml, never print. Keep current051b,
 preparedcb, sources8329/6fe2/371a/9c42, guardedf4bf, H cold d939, original old-format
-interrupteddea9 and recovery8087/d40b (11 states). All other older listed IDs were
+interrupteddea9 and recovery8087/d40b, original format5 fault7721 and Resumed9 (13 states). All other older listed IDs were
 retired. Old recovery compatibility evidence is in docs/exclusive-recovery-native.md.
 ## Evidence and current implementations
 

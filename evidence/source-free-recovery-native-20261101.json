@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "kind": "positive-format5-native-recovery-progress",
+  "runtime_source_commit": "c2c1ef3f00c11038a4cf88805de08e10e7ceb4fd",
+  "interruption": {
+    "recovery_sha256": "0b6cc964ac2b3410712b23c99b5247a58a9b9297d4554c052c4312daac35c0fc",
+    "no_handoff": true,
+    "parent": "cb802669-903c-48cc-99e5-57976b149e7d",
+    "source_free_bytes": 402669568,
+    "producer_pid": 4456,
+    "creation_ms": 1793571035196,
+    "first_write_flushed": true,
+    "native_exit": 86,
+    "old_restore_required_bytes": 143527936,
+    "checkpoint": "7721d92e-c80c-4843-983a-d9d3c89bb964"
+  },
+  "resume": {
+    "saved_checkpoint": "d9e580fa-e673-4b30-8fc3-7011cbb918ca",
+    "native_creation_ms": 1793571990732,
+    "source_free_bytes": 402669568,
+    "observed_lifecycle": "apply_intent",
+    "outcome": "refs_completed",
+    "independent_full_stream_hashes": 811,
+    "exclusive_recovery_journal_used": true,
+    "format": "N2RFRE01",
+    "native_exit": 0,
+    "scope": "pinned_extent_identity_v1",
+    "native_wall_seconds": 18.7571244,
+    "success": true,
+    "native_pid": 4688
+  },
+  "rollback_native_qualified": false,
+  "hard_power_loss_qualified": false,
+  "interruption_proves_free_range_was_modified": false,
+  "new_unit_tests_added_or_run": false,
+  "artifacts": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-interrupt-7a18009eb7e94c6dbaffc2b9295ace98\\archive.json",
+      "sha256": "b5814787fe4726d2966888c66d79a6a7100bdb376dce49f45b55fd7f725dcffe",
+      "bytes": 36244
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-performance-interrupt-7a18009eb7e94c6dbaffc2b9295ace98\\checkpoint.json",
+      "sha256": "9afc04c396cad6051bde711914227ac394e78aacc5391ef479fdf630cb95d4eb",
+      "bytes": 2033
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5\\archive.json",
+      "sha256": "b10d862de2c70f664107ea43346ec4af48cc69503f11c51affa8ce3c1154279b",
+      "bytes": 26715
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5\\checkpoint.json",
+      "sha256": "6fe53a4eabcdef486c0d24efe5a32a110d188d643a5a3ed613d0f0d01723f384",
+      "bytes": 230
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5\\closed-native\\wrapper\\wrapper-result.json",
+      "sha256": "fad579977c39804f40454935bc86239ab6d9da867ac265c2cd8be1f872bbf8a3",
+      "bytes": 2353736
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5\\closed-native\\wrapper\\native-terminal.json",
+      "sha256": "ea6d5a9cad1dbbfc9f744945905de66f7fe2fc130f721a54ef7b37888dc85fc1",
+      "bytes": 1197
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5\\closed-native\\core\\result.json",
+      "sha256": "88672a8d1f3e46674744b81b8f7a034443ccaf1f8ce671c20d882c6642c6fc48",
+      "bytes": 1673
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\prepared-source-recovery-resume-370b4f632703445f80f8f356115bd3b5\\closed-native\\core\\handoff.json",
+      "sha256": "f42b53a3d6baafbab56858e55658c4a0bdb9501aea71d4bae4ec39df75341198",
+      "bytes": 452
+    }
+  ]
+}

@@ -78,7 +78,16 @@ function AssemblePreparedSourceRecovery($Config,$Recovery,$Prepared,[string]$Sup
   Need ($errors.Count-eq0-and$ast.EndBlock.Statements.Count-eq1-and$ast.EndBlock.Statements[0]-is[Management.Automation.Language.FunctionDefinitionAst]) 'One exact pinned format-five verifier function required.'
   $definitions.Add($ast.EndBlock.Statements[0].Extent.Text)
  }
- foreach($name in @('AssertActualCapacity','AssertPrepared')){Need ($Prepared.functions.ContainsKey($name)) 'Pinned prepared-source evidence helper missing.';$definitions.Add($Prepared.functions[$name])}
+ foreach($name in @('AssertActualCapacity','AssertPrepared')){
+  Need ($Prepared.functions.ContainsKey($name)) 'Pinned prepared-source evidence helper missing.'
+  $function=$Prepared.functions[$name]
+  if($name-ceq'AssertPrepared'){
+   # Return the actual already-checked object; do not parse JSON as authority
+   # or repeat the same expensive650-tail metadata join a second time.
+   $function=ReplaceOnce $function "Save 'prepared-tail-verification.json' `$tails" "Save 'prepared-tail-verification.json' `$tails`n return `$tails"
+  }
+  $definitions.Add($function)
+ }
  # Timestamp evidence concerns restored allocated metadata, not original free bytes.
  for($i=0;$i-lt$definitions.Count;$i++){if($definitions[$i].StartsWith('function ReconcileRecoveryBaselineAccess(',[StringComparison]::Ordinal)){$definitions[$i]=ReplaceOnce $definitions[$i] 'complete closed old-selected-byte journal proof; independent post-rollback timestamp comparison not claimed' 'closed restore-required allocated-byte journal proof; original free-space contents and independent post-rollback timestamps are not claimed'}}
  $guest=@'
@@ -115,10 +124,9 @@ try{
  $shadowObservation=@{scope='lab-allocation-recovery-optional-current-shadow-v1';shadow_present=($matches.Count-eq1);pinned_binding=$request.pair.shadow;current_disk_number=$null;reattachment_performed=$false;request_rebound=$false;grants_replay_authority=$false}
  if($matches.Count-eq1){$shadow=$matches[0];$id=$request.pair.shadow.identity;Need ($shadow.PartitionStyle.ToString()-ceq'GPT'-and$shadow.Size-eq$id.disk_bytes-and$shadow.LogicalSectorSize-eq$id.logical_sector_bytes-and$shadow.PhysicalSectorSize-eq$id.physical_sector_bytes-and-not$shadow.IsBoot-and-not$shadow.IsSystem-and$shadow.IsOffline-and$shadow.IsReadOnly) 'Present shadow geometry/protection differs.';$parts=@(Get-Partition -DiskNumber $shadow.Number -ErrorAction Stop|Where-Object {$_.PartitionNumber-eq$id.partition_number-and[guid]$_.Guid-eq[guid]$id.partition_guid});Need ($parts.Count-eq1-and$parts[0].Offset-eq$id.partition_offset-and$parts[0].Size-eq$id.partition_bytes) 'Present shadow partition differs.';$image=Get-DiskImage -ImagePath $managed.path -ErrorAction Stop;Need ($image.Attached-and[string]::Equals([string]$image.ImagePath,[string]$managed.path,[StringComparison]::OrdinalIgnoreCase)-and[string]::Equals([string]$image.DevicePath,('\\.\PhysicalDrive'+$shadow.Number),[StringComparison]::OrdinalIgnoreCase)) 'Present shadow provider differs.';$shadowObservation.current_disk_number=[int]$shadow.Number};Save 'current-shadow-observation.json' $shadowObservation
  $fresh=ReadFreshLabSourceBaselineGuest $request.pair.source;Save 'fresh-baseline-preflight.json' @{success=$true;manifest_sha256=$c.fresh_manifest_sha256;descriptor=$fresh.descriptor;grants_product_authority=$false}
- AssertPrepared $expected $request
+ $preparedTailScope=AssertPrepared $expected $request
  $capacityFacts=AssertActualCapacity $request $plan $null
  Need ($capacityFacts.source_free_bytes-gt0-and$capacityFacts.journal_format_version-eq5-and$capacityFacts.format-ceq'N2RFRE01'-and$interruption.capacity.enabled-eq$true-and$interruption.capacity.plan_sha256-ceq$capacityFacts.plan_sha256-and$interruption.capacity.ticket_sha256-ceq$capacityFacts.ticket_sha256-and$interruption.capacity.selected_bytes-eq$capacityFacts.selected_bytes-and$interruption.capacity.old_zero_bytes-eq$capacityFacts.old_zero_bytes-and$interruption.capacity.source_free_bytes-eq$capacityFacts.source_free_bytes-and$interruption.capacity.source_free_hash_table_bytes-eq$capacityFacts.source_free_hash_table_bytes-and$interruption.capacity.old_restore_required_bytes-eq$capacityFacts.old_restore_required_bytes-and$interruption.capacity.journal_bytes-eq$capacityFacts.journal_bytes-and$checkpoint.source_free_bytes-eq$capacityFacts.source_free_bytes-and$checkpoint.old_restore_required_bytes-eq$capacityFacts.old_restore_required_bytes) 'Original controlled format-five/restoration facts differ from the actual pinned plan.'
- $preparedTailScope=AssertLabTailReceipts $expected $c.recovery_directory
  Save 'wrapper-worker.json' @{pid=$PID;creation_ms=([DateTimeOffset](Get-Process -Id $PID).StartTime).ToUnixTimeMilliseconds();run_id=$c.run_id;utc=[DateTime]::UtcNow.ToString('o')}
  $phase='public-recovery';Native 'ntfs2refs.exe' $c.cli 'native' 0 $true;$nativeExit=$script:lastExit;$out=Log (Join-Path $c.stage 'native.stdout.log')
  $phase='closed-recovery-evidence';$line=if($c.operation-ceq'rollback'){'NTFS rollback completed[.]'}else{'ReFS recovery completed[.]'};$done=[regex]::Matches($out.text,'(?m)^'+$line+' Recovery records: (C:\\ProgramData\\ntfs2refs\\runs\\recovery-[0-9a-f]{32})[ \t]*\r?$');Need ($done.Count-eq1) 'Actual requested-direction recovery completion required.'

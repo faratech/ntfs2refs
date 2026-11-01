@@ -380,24 +380,29 @@ pub(super) fn convert_allocation_selected(
             complement_before == source_before && complement_before.disk_attributes == 3,
             "selected preparation complement differs from the admitted source"
         );
-        let prepared = {
+        let (prepared, preparation_source_copy_bytes_reused) = {
             let mut image = proof.image(&mut complement)?;
             if request.verification_policy.is_fast()
                 && ((interrupt_after_writes.is_none() && !interrupt_after_first_copy_write)
                     || fresh_exclusive_v3_first_write_fault)
             {
-                PreparedJournal::Exclusive(sj::prepare_exclusive_owned(
+                let (owner, reused) = sj::prepare_exclusive_owned_source_backed(
                     &mut source,
                     &mut image,
                     &mut journal,
                     &plan,
-                )?)
+                    &mut preparation_events,
+                )?;
+                (PreparedJournal::Exclusive(owner), reused)
             } else {
                 let ticket = sj::prepare(&mut source, &mut image, &mut journal, &plan)?;
-                PreparedJournal::Legacy {
-                    journal: &mut journal,
-                    ticket,
-                }
+                (
+                    PreparedJournal::Legacy {
+                        journal: &mut journal,
+                        ticket,
+                    },
+                    0,
+                )
             }
         };
         let prepared_journal_owner_reused = matches!(&prepared, PreparedJournal::Exclusive(_));
@@ -411,6 +416,18 @@ pub(super) fn convert_allocation_selected(
         );
         drop(complement);
         proof.revalidate_backing()?;
+        qualification::save(
+            output,
+            "preparation-source-copy-reuse.json",
+            &serde_json::json!({
+                "schema_version":1,"scope":"same-frozen-native-source-reference-construction-v1",
+                "actual_source_copy_bytes_reused":preparation_source_copy_bytes_reused,
+                "candidate_bytes_still_read_and_hashed":true,
+                "resolved_journal_copy_readback_retained":true,
+                "fresh_old_target_gate_retained":true,
+                "source_admission_granted":false,
+            }),
+        )?;
         ensure!(
             ticket.selected_bytes == selected_bytes
                 && ticket.journal_length == journal_bytes
@@ -730,6 +747,7 @@ pub(super) fn convert_allocation_selected(
             "actual_full_file_hashes":request.verification_policy.is_full_content(),
             "exclusive_apply_handoff_used":request.verification_policy.is_fast(),
             "prepared_journal_owner_reused":prepared_journal_owner_reused,
+            "preparation_source_copy_bytes_reused":preparation_source_copy_bytes_reused,
             "exclusive_preparation_readback_used":request.verification_policy.is_fast()
                 && interrupt_after_writes.is_none() && !interrupt_after_first_copy_write,
             "journal_path":journal_path,"ticket_sha256":ticket_pin,"plan_sha256":plan_pin,

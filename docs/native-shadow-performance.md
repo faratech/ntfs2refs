@@ -23,8 +23,26 @@ device brackets and journal/target checks remain. Reused bytes are reported as
 The strict saved-capture reader accepts the optional counter and bounds their
 combined value; neither counter supplies write authority.
 
-The recorded grown-F case performed 5,659,303,936 COPY bytes. That is a potential
-capture-read reduction, not a measured reduction for the new native runtime.
+A subsequent native run of58be22c measured all5,659,303,936 bytes reused with
+zero fallback COPY rereads. Native conversion exited0/HND and independent hashes
+matched all811 streams. Native-verified process reads were99,711,691,009 bytes,
+compared with105,470,433,073 in the earlier case. These are logical transfer
+counters, not physical traffic or a controlled timing comparison. Observed
+native wall time was285.8896735s, versus276.7805697s previously; a speedup has
+not been established. CPU/hash work remains a major cost.
+[Exact native scope and archived pins](../evidence/native-capture-copy-reuse-20261101.json).
+
+That source's free destinations were all canonically zero after fine-grained
+capture, so the planner correctly retained exact-restoration format4. Journal
+storage was5,773,344,392 bytes. The format5 native path remains unqualified.
+
+The next preparation candidate uses the same construction fact inside the actual
+`DifferenceImage`: two real native readers must name the same frozen partition,
+and every COPY must resolve to that view's direct original-source branch. Its
+candidate read already reads the source bytes, so it omits the second identical
+source read. Actual candidate hashing, complete post-flush resolved journal
+validation, and every fresh/recovery target gate remain. Generic readers keep
+the original comparison. This later candidate is not qualified by the58be run.
 
 ## Source-free recovery storage
 
@@ -121,10 +139,12 @@ Primary contracts: [snapshot presence](https://learn.microsoft.com/windows/win32
 
 [Recorded scope, artifact pins and results](../evidence/native-shadow-performance-20261101.json).
 
-Focused builds and owned ordinary-file experiments cover the new encoding and
-existing legacy copy/old-zero encoding. These do not qualify a new native volume
-conversion. The read-only owning-Windows VSS probe passed its supported-provider
-absence/storage observation without source disk changes.
+Focused builds and owned ordinary-file experiments cover the new format5 and
+existing legacy copy/old-zero encoding. Native capture-read reuse and clean
+format4 fallback passed the converted-volume/811-stream run described above;
+hash-only format5 originals and its native recovery remain pending. The owning
+Windows VSS API probes and the native run exercised the supported admission
+scopes without a global VSS exclusion claim.
 
 The final optimized owned-file case omitted 8,192 old bytes using 32 hash-table
 bytes, reducing its existing format-4 journal from 41,848 to 33,688 bytes. It

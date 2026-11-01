@@ -803,6 +803,7 @@ fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
     selected: &mut PinHash,
     before: &mut [u8],
     after: &mut [u8],
+    same_native_source: bool,
 ) -> Result<[u8; 32]> {
     frame(selected, range)?;
     let mut hash = pin_hash()?;
@@ -810,6 +811,17 @@ fn verify_copy_selected<R: Read + Seek, S: Read + Seek>(
     while done < range.length {
         let count = usize::try_from((range.length - done).min(BUFFER as u64))?;
         at(candidate, range.offset + done, &mut after[..count])?;
+        if same_native_source {
+            // The typed entry checked both real frozen readers and every
+            // reference against DifferenceImage's actual raw-source branch.
+            // This candidate read already read these exact physical bytes.
+            // Complete resolved J readback still independently authenticates
+            // their equality to the saved old COPY source before ticket issue.
+            selected.update(&after[..count])?;
+            hash.update(&after[..count])?;
+            done += count as u64;
+            continue;
+        }
         let mut cursor = source_offset + done;
         let mut filled = 0usize;
         while filled < count {
@@ -846,7 +858,7 @@ pub fn prepare<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    Ok(prepare_inner(source, candidate, journal, plan, false)?.ticket)
+    Ok(prepare_inner(source, candidate, journal, plan, false, false)?.ticket)
 }
 
 /// Prepare under continuous exclusive ownership of the new journal. The
@@ -868,7 +880,7 @@ pub(crate) fn prepare_exclusive<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
 ) -> Result<SelectedTicket> {
-    Ok(prepare_inner(source, candidate, journal, plan, true)?.ticket)
+    Ok(prepare_inner(source, candidate, journal, plan, true, false)?.ticket)
 }
 
 /// Only complete post-flush validation can produce these operation-local
@@ -890,6 +902,10 @@ pub(crate) struct PreparedExclusiveJournal<'a, J: DurableIo> {
     records: Vec<JournalRecord>,
 }
 
+#[allow(
+    dead_code,
+    reason = "retain generic owned preparation with independent byte comparison"
+)]
 pub(crate) fn prepare_exclusive_owned<'a, R: ReadSeek, S: ReadSeek, J: DurableIo>(
     source: &mut R,
     candidate: &mut S,
@@ -897,13 +913,53 @@ pub(crate) fn prepare_exclusive_owned<'a, R: ReadSeek, S: ReadSeek, J: DurableIo
     plan: &'a SelectedPlan,
 ) -> Result<PreparedExclusiveJournal<'a, J>> {
     let PreparedContents { ticket, records } =
-        prepare_inner(source, candidate, journal, plan, true)?;
+        prepare_inner(source, candidate, journal, plan, true, false)?;
     Ok(PreparedExclusiveJournal {
         journal,
         plan,
         ticket,
         records,
     })
+}
+
+/// The actual DifferenceImage COPY read is the original raw-source read when
+/// both native readers address the same persistently frozen partition. Retain
+/// that construction proof instead of reading the identical bytes twice.
+/// Generic/legacy readers keep their independent source-byte comparisons.
+#[cfg(windows)]
+pub(crate) fn prepare_exclusive_owned_source_backed<'a, S: Read + Seek, J: DurableIo>(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    candidate: &mut crate::refs_hybrid::delta::DifferenceImage<
+        '_,
+        n2r_win32::GeneralFrozenPartition,
+        S,
+    >,
+    journal: &'a mut J,
+    plan: &'a SelectedPlan,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<(PreparedExclusiveJournal<'a, J>, u64)> {
+    plan.validate()?;
+    let before = candidate.paired_source_state(source, events)?;
+    let copies = candidate.require_original_copy_ranges(&plan.new_copy_ranges)?;
+    ensure!(
+        copies == plan.new_copy_bytes()?,
+        "paired COPY scope differs from the complete plan"
+    );
+    let PreparedContents { ticket, records } =
+        prepare_inner(source, candidate, journal, plan, true, true)?;
+    ensure!(
+        candidate.paired_source_state(source, events)? == before,
+        "paired source/complement changed during journal preparation"
+    );
+    Ok((
+        PreparedExclusiveJournal {
+            journal,
+            plan,
+            ticket,
+            records,
+        },
+        copies,
+    ))
 }
 
 impl<J: DurableIo> PreparedExclusiveJournal<'_, J> {
@@ -936,7 +992,12 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
     journal: &mut J,
     plan: &SelectedPlan,
     exclusive_readback: bool,
+    same_native_source: bool,
 ) -> Result<PreparedContents> {
+    ensure!(
+        !same_native_source || exclusive_readback,
+        "same-source construction proof requires the complete exclusive readback"
+    );
     let (changed, journal_length) = plan.validate()?;
     ensure!(
         source.byte_len()? == plan.image_length
@@ -1017,6 +1078,7 @@ fn prepare_inner<R: ReadSeek, S: ReadSeek, J: DurableIo>(
                 &mut new_selected,
                 &mut data_buffer,
                 &mut copy_buffer,
+                same_native_source,
             )?
         } else {
             copy_selected(

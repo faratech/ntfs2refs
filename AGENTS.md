@@ -40,11 +40,20 @@ checkpoint, attach, format or clear protection.
 
 VM `2401593c-4b30-472e-9b6d-c9534cbaa599`, name
 `ntfs2refs-streaming-v2-20261027`: 4 GiB fixed RAM / 4 CPU / no NIC.
-CURRENT VM: fresh-confirmed Off/RAM0/48 snapshots at restored-NTFS checkpoint
+At new-owner matrix closure, VM was fresh-confirmed Off/RAM0/48 snapshots at restored-NTFS checkpoint
 `d40b4b41-be9c-4243-8f91-7f953085e3a3`, parent ORIGINAL interrupted
 `dea902f6-7d3f-49ba-86d2-27ce6dbe9516`, at2026-11-01T02:37:17Z.
 Actual lab292508370854B/free52696043520B remains inside the unchanged epoch.
 No project tasks or workers remain. No raw HND/ABT replay is permitted.
+CURRENT after reviewed slot cleanup02:44:15Z: same Off/RAM0/currentd40,
+46 snapshots. Root removed ONLY superseded old E4ff033e/35c leaves after
+130 complete archive/control/dependency files were rehashed under held reads
+and fresh-process graph guards. NEW8087/d40, ORIGINALdea, normal6bef, sources
+and every other ID/parent remain. Plan02307ecc; completionf0619810 under
+checkpoint-cleanup-two-old-recoveries-90dedad073fa45779610a8735d7b9657.
+Actual274033264527/free71243247616B, fixedmax329374052988/min17179869184
+unchanged. Four slots are reserved for the new8GiB normal/fault/recovery cases.
+Old033e/35c IDs are retired; archived evidence remains, never recreate them.
 A NEW-runtime compatibility Resume passed:
 
 - Run `4b877c53e6204ed38a13b513aef0bb09`, stage
@@ -113,8 +122,7 @@ request and does NOT qualify expanded actual-byte capacity.
   faults or physical-power-loss qualification. See docs/old-zero-recovery-matrix.md
   and evidence/old-zero-recovery-matrix-20261031.json.
 - Preserve new normal6bef3bd2-db31-45fe-9e6c-939c812b7375, interrupteddea902f6,
-  old E4ff Resume033e05bd-447b-450e-9acb-9413feaf00dc,
-  E4ff restored-NTFS35c9a8f8-b646-4d3b-98e9-191b2f12a4a6, clean grown source
+  clean grown source
  83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b, original F source6fe2d6b6, H source371ae756,
   H tail matrix3cbc/119/643/fcc, D1 cold d939 and guarded f4bf5238; also preserve
   new journal-owner ReFS8087 and restored-NTFSd40b until superseded with evidence.

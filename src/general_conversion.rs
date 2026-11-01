@@ -45,6 +45,11 @@ pub struct Request {
         skip_serializing_if = "crate::verification_policy::VerificationPolicy::is_full_content"
     )]
     pub verification_policy: crate::verification_policy::VerificationPolicy,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::selected_capacity::SelectedCapacityPolicy::is_conservative"
+    )]
+    pub selected_capacity_policy: crate::selected_capacity::SelectedCapacityPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_resource_profile: Option<crate::ntfs_admission::ResourceProfile>,
     pub experiment_id: String,
@@ -69,6 +74,20 @@ impl Request {
     }
     pub fn validate(&self) -> Result<()> {
         let profile = self.journal_profile()?;
+        if !self.selected_capacity_policy.is_conservative() {
+            ensure!(
+                self.schema_version == 3
+                    && matches!(profile, JournalProfile::CapacityPinnedV3 { .. })
+                    && self.verification_policy.is_fast()
+                    && self
+                        .source_resource_profile
+                        .is_some_and(|p| p.is_streaming())
+                    && self.max_literal_backing_bytes.is_some()
+                    && self.max_combined_scratch_bytes.is_some()
+                    && !self.verify_existing_shadow,
+                "actual old-zero capacity requires fresh schema3 fast allocation with pinned scratch bounds"
+            );
+        }
         if let Some(
             resources @ crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(
                 admission,
@@ -156,6 +175,46 @@ impl Request {
         )?;
         Ok(())
     }
+
+    pub(crate) fn maximum_selected_changed_bytes(&self) -> Result<u64> {
+        let partition = self.pair.source.identity.partition_bytes / 4096 * 4096;
+        if self.selected_capacity_policy.is_conservative() {
+            Ok(self
+                .max_journal_bytes
+                .checked_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
+                .ok_or_else(|| anyhow::anyhow!("selected journal cannot reserve its metadata"))?
+                .min(partition)
+                / 4096
+                * 4096)
+        } else {
+            Ok(partition)
+        }
+    }
+
+    /// A persisted policy chooses resource accounting, never source admission.
+    /// Expanded write sets must retain the authenticated format-four subset.
+    pub(crate) fn validate_selected_capacity(
+        &self,
+        plan: &crate::selected_journal::SelectedPlan,
+    ) -> Result<()> {
+        let (changed, journal) = plan.validate()?;
+        ensure!(
+            plan.image_length == self.pair.source.identity.partition_bytes
+                && plan.max_journal_bytes == self.max_journal_bytes
+                && journal <= self.max_journal_bytes
+                && changed <= self.maximum_selected_changed_bytes()?,
+            "selected plan exceeds its pinned capacity policy"
+        );
+        if changed > self.journal_profile()?.max_encoded_changed_bytes() {
+            ensure!(
+                !self.selected_capacity_policy.is_conservative()
+                    && plan.old_zero_bytes()? > 0
+                    && plan.encoding_version() == 4,
+                "expanded selected write set requires the explicit actual-byte policy and old-zero encoding"
+            );
+        }
+        Ok(())
+    }
 }
 
 pub fn convert(request: &Request, output: &Path) -> Result<()> {
@@ -174,8 +233,9 @@ pub fn convert_compact_experimental(
     request.validate()?;
     budget.validate(request.pair.source.identity.partition_bytes)?;
     ensure!(
-        request.source_resource_profile
-            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
+        request.selected_capacity_policy.is_conservative()
+            && request.source_resource_profile
+                == Some(crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2)
             && !request.verify_existing_shadow,
         "selected compact conversion requires the explicit streaming profile and a fresh shadow"
     );
@@ -382,6 +442,10 @@ fn convert_profile(
         Interruption::None | Interruption::AfterSourceFreeze => None,
     };
     request.validate()?;
+    ensure!(
+        request.selected_capacity_policy.is_conservative(),
+        "actual old-zero capacity is supported only by allocation conversion"
+    );
     ensure!(
         !request
             .source_resource_profile
@@ -641,6 +705,7 @@ mod tests {
         Request {
             schema_version: 1,
             verification_policy: crate::verification_policy::VerificationPolicy::FullContent,
+            selected_capacity_policy: Default::default(),
             source_resource_profile: None,
             experiment_id: "a".repeat(32),
             pair: GeneralSourceShadowBinding {

@@ -125,6 +125,7 @@ pub fn recover_allocation(
     let mut plan_input = HeldInput::open(&bundle.plan.path, &bundle.plan.sha256, 16 * 1024 * 1024)?;
     let plan: SelectedPlan = serde_json::from_slice(&plan_input.bytes)?;
     let (selected_bytes, journal_bytes) = plan.validate()?;
+    request.validate_selected_capacity(&plan)?;
     let old_zero_bytes = plan.old_zero_bytes()?;
     let mut ticket_input = HeldInput::open(&bundle.ticket.path, &bundle.ticket.sha256, 65536)?;
     let ticket: SelectedTicket = serde_json::from_slice(&ticket_input.bytes)?;
@@ -310,7 +311,19 @@ pub fn recover_allocation(
         let mut verified_refs_closed = None;
         let outcome = match action {
             Action::Resume => {
-                if old_zero_bytes != 0 {
+                if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative() {
+                    ensure!(
+                        plan.encoding_version() == 4,
+                        "actual-byte recovery requires format four"
+                    );
+                    target.arm_old_zero_actual_bytes_v3_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        request.max_journal_bytes,
+                        &mut events,
+                    )?;
+                } else if old_zero_bytes != 0 {
                     target.arm_old_zero_selected_writes(
                         policy,
                         journal_bytes,
@@ -341,7 +354,19 @@ pub fn recover_allocation(
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::Rollback => {
-                if old_zero_bytes != 0 {
+                if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative() {
+                    ensure!(
+                        plan.encoding_version() == 4,
+                        "actual-byte recovery requires format four"
+                    );
+                    target.arm_old_zero_actual_bytes_v3_writes(
+                        policy,
+                        journal_bytes,
+                        old_zero_bytes,
+                        request.max_journal_bytes,
+                        &mut events,
+                    )?;
+                } else if old_zero_bytes != 0 {
                     target.arm_old_zero_selected_writes(
                         policy,
                         journal_bytes,
@@ -494,6 +519,10 @@ pub fn recover_allocation(
             "fresh_apply_authorized":false,"source_admitted":false,
             "general_conversion_qualified":false,
         });
+        if !request.selected_capacity_policy.is_conservative() {
+            result["selected_capacity_policy"] =
+                serde_json::to_value(request.selected_capacity_policy)?;
+        }
         if let Some(receipt) = extent_verification_receipt {
             result["actual_verification_scope"] = "pinned_extent_identity_v1".into();
             result["full_content_hashes_compared"] = false.into();

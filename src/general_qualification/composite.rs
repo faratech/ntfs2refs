@@ -286,11 +286,24 @@ pub(crate) fn prepare_allocation_fresh_selected(
 ) -> Result<QualifiedAllocationTree> {
     budget.validate(pair.source.identity.partition_bytes)?;
     pair.validate_with_resource_profile(resources.native_profile())?;
-    ensure!(
-        (1..=profile
+    let actual_byte_capacity =
+        capture_budget.is_some_and(|budget| !budget.selected_capacity_policy.is_conservative());
+    let changed_limit = if actual_byte_capacity {
+        ensure!(
+            matches!(profile, JournalProfile::CapacityPinnedV3 { .. })
+                && policy.is_fast()
+                && capture_guard.is_some()
+                && max_change_bytes == pair.source.identity.partition_bytes / 4096 * 4096,
+            "actual-byte allocation qualification requires explicit pinned V3 fast capacity"
+        );
+        pair.source.identity.partition_bytes / 4096 * 4096
+    } else {
+        profile
             .max_journal_bytes()
-            .saturating_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE,))
-            .contains(&max_change_bytes)
+            .saturating_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
+    };
+    ensure!(
+        (1..=changed_limit).contains(&max_change_bytes)
             && max_change_bytes <= pair.source.identity.partition_bytes,
         "allocation-bounded qualification changed-byte budget differs"
     );
@@ -302,7 +315,9 @@ pub(crate) fn prepare_allocation_fresh_selected(
         capture_budget.validate(pair.source.identity.partition_bytes)?;
         ensure!(
             capture_budget.max_changed_bytes == max_change_bytes
-                && capture_budget.max_journal_bytes <= profile.max_journal_bytes(),
+                && capture_budget.max_journal_bytes <= profile.max_journal_bytes()
+                && (!actual_byte_capacity
+                    || capture_budget.max_journal_bytes == profile.max_journal_bytes()),
             "allocation capture capacity differs from its journal profile"
         );
     }

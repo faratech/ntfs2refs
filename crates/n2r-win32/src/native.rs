@@ -271,6 +271,21 @@ pub struct WritePolicy {
     pub journal_profile: crate::journal_file::JournalProfile,
 }
 
+enum SelectedWriteCapacity {
+    Encoded {
+        journal_bytes: u64,
+    },
+    OldZero {
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+    },
+    OldZeroActualBytesV3 {
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        pinned_max_journal_bytes: u64,
+    },
+}
+
 impl WritePolicy {
     pub fn validate(&self, length: u64) -> io::Result<()> {
         self.validate_with_byte_limit(length, self.journal_profile.max_changed_bytes())
@@ -314,6 +329,37 @@ impl WritePolicy {
             length,
             reconstructed_capacity.min(self.journal_profile.max_encoded_changed_bytes()),
         )
+    }
+
+    /// Separate capacity admission for an explicitly pinned actual-byte
+    /// policy. The caller must authenticate the complete format-four plan and
+    /// journal; these scalar counts are not source or replay authority.
+    fn validate_old_zero_actual_bytes_v3(
+        &self,
+        length: u64,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        pinned_max_journal_bytes: u64,
+    ) -> io::Result<()> {
+        let expected = crate::journal_file::JournalProfile::from_schema_and_capacity(
+            3,
+            Some(pinned_max_journal_bytes),
+        )?;
+        if self.journal_profile != expected
+            || journal_bytes == 0
+            || journal_bytes > pinned_max_journal_bytes
+            || old_zero_bytes == 0
+            || old_zero_bytes > self.maximum_bytes
+            || !old_zero_bytes.is_multiple_of(GRANULE)
+        {
+            return Err(invalid(
+                "actual-byte selected capacity differs from pinned V3 policy",
+            ));
+        }
+        let reconstructed = journal_bytes
+            .checked_add(old_zero_bytes)
+            .ok_or_else(|| invalid("actual-byte selected capacity overflow"))?;
+        self.validate_with_byte_limit(length, reconstructed.min(length))
     }
 
     fn validate_with_byte_limit(&self, length: u64, byte_limit: u64) -> io::Result<()> {
@@ -2858,7 +2904,11 @@ impl GeneralJournaledPartition {
         journal_bytes: u64,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
-        self.arm_writes_inner(policy, Some((journal_bytes, 0)), events)
+        self.arm_writes_inner(
+            policy,
+            Some(SelectedWriteCapacity::Encoded { journal_bytes }),
+            events,
+        )
     }
 
     /// Canonical old-zero encoding may have a journal shorter than its selected
@@ -2876,23 +2926,67 @@ impl GeneralJournaledPartition {
                 "old-zero write policy requires a nonempty pinned subset",
             ));
         }
-        self.arm_writes_inner(policy, Some((journal_bytes, old_zero_bytes)), events)
+        self.arm_writes_inner(
+            policy,
+            Some(SelectedWriteCapacity::OldZero {
+                journal_bytes,
+                old_zero_bytes,
+            }),
+            events,
+        )
+    }
+
+    /// Explicit new-policy entry; legacy profile helpers retain their limits.
+    /// Pinned request intent, exact format-four facts and actual journal
+    /// authentication must be checked by the caller before arming.
+    pub fn arm_old_zero_actual_bytes_v3_writes(
+        &mut self,
+        policy: WritePolicy,
+        journal_bytes: u64,
+        old_zero_bytes: u64,
+        pinned_max_journal_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.arm_writes_inner(
+            policy,
+            Some(SelectedWriteCapacity::OldZeroActualBytesV3 {
+                journal_bytes,
+                old_zero_bytes,
+                pinned_max_journal_bytes,
+            }),
+            events,
+        )
     }
 
     fn arm_writes_inner(
         &mut self,
         policy: WritePolicy,
-        encoded_journal_bytes: Option<(u64, u64)>,
+        encoded_journal_bytes: Option<SelectedWriteCapacity>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
         if self.policy.is_some() || self.write_poisoned || self.native_write_bytes_requested != 0 {
             return Err(invalid("general journal write policy is already consumed"));
         }
         match encoded_journal_bytes {
-            Some((bytes, 0)) => policy.validate_encoded(self.byte_len(), bytes)?,
-            Some((bytes, old_zero)) => {
-                policy.validate_old_zero_encoded(self.byte_len(), bytes, old_zero)?
+            Some(SelectedWriteCapacity::Encoded { journal_bytes }) => {
+                policy.validate_encoded(self.byte_len(), journal_bytes)?
             }
+            Some(SelectedWriteCapacity::OldZero {
+                journal_bytes,
+                old_zero_bytes,
+            }) => {
+                policy.validate_old_zero_encoded(self.byte_len(), journal_bytes, old_zero_bytes)?
+            }
+            Some(SelectedWriteCapacity::OldZeroActualBytesV3 {
+                journal_bytes,
+                old_zero_bytes,
+                pinned_max_journal_bytes,
+            }) => policy.validate_old_zero_actual_bytes_v3(
+                self.byte_len(),
+                journal_bytes,
+                old_zero_bytes,
+                pinned_max_journal_bytes,
+            )?,
             None => policy.validate(self.byte_len())?,
         }
         if self.state(events)?.disk_attributes != OFFLINE {

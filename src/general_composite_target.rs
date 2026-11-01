@@ -646,7 +646,21 @@ impl FrozenAllocationTargetPreservation {
                 plan.old_zero_ranges.clear();
             }
         }
-        plan.validate()?;
+        let (changed, _) = plan.validate()?;
+        let conservative_limit = max_journal_bytes
+            .checked_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
+            .context("selected journal cannot reserve its metadata")?
+            / 4096
+            * 4096;
+        if changed > conservative_limit {
+            ensure!(
+                self.capture_budget
+                    .is_some_and(|budget| { !budget.selected_capacity_policy.is_conservative() })
+                    && plan.old_zero_bytes()? > 0
+                    && plan.encoding_version() == 4,
+                "expanded captured write set requires actual-byte capacity and profitable old-zero encoding"
+            );
+        }
         Ok(plan)
     }
     /// Read-only candidate over the held backing and a frozen source handle.
@@ -1082,6 +1096,17 @@ fn verify_and_select_inner(
     capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
     policy: crate::verification_policy::VerificationPolicy,
 ) -> Result<FrozenAllocationTargetPreservation> {
+    if let Some(budget) = capture_budget {
+        if !budget.selected_capacity_policy.is_conservative() {
+            ensure!(
+                policy.is_fast()
+                    && capture_guard.is_some()
+                    && max_changed_bytes == pair.source.identity.partition_bytes / 4096 * 4096
+                    && budget.max_changed_bytes == max_changed_bytes,
+                "actual-byte capacity requires fast allocation and the complete partition changed-set bound"
+            );
+        }
+    }
     let ProtectedPrefix {
         length,
         source_before,

@@ -23,6 +23,40 @@ when unchanged evidence already answers the question.
 
 ## Current handoff snapshot — 2026-10-31
 
+New optional capacity-policy implementation is compiled/reviewed, natively
+UNQUALIFIED. `old_zero_actual_bytes_v1` is restricted to fresh schema3 fast
+allocation/CapacityPinnedV3 with pinned literal+combined bounds. It permits a
+partition-sized logical changed set but checks each accepted append using
+`J=(D-O)+literal+16MiB`, real free space and all existing metadata/range limits.
+Whole-range O is updated in O(1); coalescing zero then nonzero revokes the whole
+prior range's credit BEFORE admission/append. Exact final plan, positive O and
+format4 are mandatory beyond the conservative limit; no unprofitable fallback
+can admit an expanded set. A separate native C3 gate checks pinned M, J, J+O
+and partition/ranges. Pinned-request recovery selects it only after full actual
+journal/lifecycle authentication. CLI/binder and omitted policy remain
+conservative; no new mode is enabled in the frozen e4ff VM run. Focused cargo
+check for library/public/fault/binder passed in21.02s, no unit tests. See
+`docs/actual-byte-capacity.md`. A new native experiment is still required.
+
+CURRENT e4ff old-zero recovery matrix: actual producer5208/birth1793495149312
+exited86 after the first flushed write, no Apply/HND, source1attrs1/shadow6attrs3.
+Original bundle `cd919acd5237d3c5087017b2c312ba54cb1d72cea09d634182cebe4e21515f26`
+at `C:\ntfs2refs\envelope-interrupt-d4f9c35229b84373a0ba3ff0887763d1\conversion`.
+O=5,587,685,376 / N=3,547 / D=11,392,847,872 / J=5,849,731,480 bytes (format4).
+Closed80files186,303,850B copied/sourceSHAverified: old-zero-firstwrite-d4f9c352,
+index b4a6552b3d13f52eff13ba374846deec028665f17393c673248bb3f3649e0771,
+receipt13a8c256bd1bcee0c5330a283f14f84b619fd74fa950a42ee23ccffdb7fde174.
+After allidle normalstop, root saved original interrupted checkpoint
+`dea902f6-7d3f-49ba-86d2-27ce6dbe9516`, parent8329; freshOff/RAM0/48.
+Cold-started that branch once. Public Resume `d1d45a318a80482eb528a016b0e35b9c`
+dispatched once at2026-11-01T01:18:53Z; terminal/observer are PENDING.
+Root alone owns all VM mutation; do not launch a second recovery or infer death
+from a timeout. Preserve dea for separate Rollback after Resume closure.
+Snapshot receipt SHA0b54d62b257da159148a2e25af338fd6782f4d7de4bc818de2e4f1129c45870f;
+actual303,750,131,935/free41,418,272,768 bytes admitted16GiB Resume forecast under
+the fixed epoch. No HND/ABT replay. Current cold shadow may be absent; never attach
+or rebind it to bypass a refusal. Two checkpoint slots remain (Resume/Rollback).
+
 Latest qualified normal runtime is sealed `e4ffb3a` / public `f8c07817`
 (9,899,008 bytes), case `6d9b4cd5` / core `6e91f232`. Actual PID 724 /
 creation 1793494088987 exited 0/HND in 276.7805697 s; the separate observer

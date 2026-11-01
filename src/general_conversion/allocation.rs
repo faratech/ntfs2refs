@@ -107,20 +107,15 @@ pub(super) fn convert_allocation_selected(
     let attempted = (|| -> Result<()> {
         record_process_io(output, "start")?;
         let profile = request.journal_profile()?;
-        // Preserve the conservative changed-byte ceiling even when the exact
-        // plan can omit canonical old-zero payloads. Preparation checks every
-        // claimed source byte; exact encoded size is checked before activation.
-        let maximum = request
-            .max_journal_bytes
-            .checked_sub(n2r_win32::journal_file::JOURNAL_OVERHEAD_RESERVE)
-            .context("selected journal cannot reserve its metadata")?
-            .min(request.pair.source.identity.partition_bytes)
-            / 4096
-            * 4096;
+        // Only the explicit actual-byte policy may capture a larger changed
+        // set. Its live guard still charges actual old/literal storage, and
+        // the complete final plan is validated before source activation.
+        let maximum = request.maximum_selected_changed_bytes()?;
         let qualification_root = output.join("qualification");
         let packed_path = qualification_root.join("changed-clusters.bin");
         let capture_budget = request.max_literal_backing_bytes.map(|literal| {
             crate::general_shadow::source_backed::CaptureBudget {
+                selected_capacity_policy: request.selected_capacity_policy,
                 max_changed_bytes: maximum,
                 max_journal_bytes: request.max_journal_bytes,
                 max_literal_backing_bytes: literal,
@@ -264,6 +259,7 @@ pub(super) fn convert_allocation_selected(
         );
         let plan = proof.plan(request.max_journal_bytes)?;
         let (selected_bytes, journal_bytes) = plan.validate()?;
+        request.validate_selected_capacity(&plan)?;
         let new_zero_bytes = plan.new_zero_bytes()?;
         let new_copy_bytes = plan.new_copy_bytes()?;
         let old_zero_bytes = plan.old_zero_bytes()?;
@@ -527,7 +523,19 @@ pub(super) fn convert_allocation_selected(
             maximum_bytes: selected_bytes,
             journal_profile: profile,
         };
-        if old_zero_bytes != 0 {
+        if old_zero_bytes != 0 && !request.selected_capacity_policy.is_conservative() {
+            ensure!(
+                plan.encoding_version() == 4,
+                "actual-byte capacity requires format four"
+            );
+            target.arm_old_zero_actual_bytes_v3_writes(
+                policy,
+                journal_bytes,
+                old_zero_bytes,
+                request.max_journal_bytes,
+                &mut events,
+            )?;
+        } else if old_zero_bytes != 0 {
             target.arm_old_zero_selected_writes(
                 policy,
                 journal_bytes,
@@ -675,38 +683,39 @@ pub(super) fn convert_allocation_selected(
             "allocation-bounded native handoff failed: {:?}",
             finalization.error
         );
-        qualification::save(
-            output,
-            "result.json",
-            &serde_json::json!({
-                "schema_version":1,"kind":"experimental-allocation-bounded-conversion",
-                "success":true,"source_admitted":true,"rollback_closed":true,
-                "verification_policy":request.verification_policy,
-                "actual_source_verification_policy":request.verification_policy,
-                "raw_source_logical_hashes":!expectation.has_extent_only_streams(),
-                "raw_source_extent_only_streams":expectation.objects.iter()
-                    .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence.is_some()).count(),
-                "raw_source_extent_only_partial_streams":expectation.objects.iter()
-                    .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence==Some(crate::shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)).count(),
-                "actual_target_verification_policy":request.verification_policy,
-                "actual_full_file_hashes":request.verification_policy.is_full_content(),
-                "exclusive_apply_handoff_used":request.verification_policy.is_fast(),
-                "prepared_journal_owner_reused":prepared_journal_owner_reused,
-                "exclusive_preparation_readback_used":request.verification_policy.is_fast()
-                    && interrupt_after_writes.is_none() && !interrupt_after_first_copy_write,
-                "journal_path":journal_path,"ticket_sha256":ticket_pin,"plan_sha256":plan_pin,
-                "expected_tree_sha256":expected_tree_sha256,
-                "selected_ranges":plan.ranges.len(),"selected_bytes":selected_bytes,
-                "journal_bytes":journal_bytes,"selection_sha256":proof.selection_sha256(),
-                "packed_bytes":packed_bytes,"new_zero_bytes":new_zero_bytes,
-                "new_copy_bytes":new_copy_bytes,
-                "old_zero_bytes":old_zero_bytes,
-                "old_zero_payload_storage_elided":old_zero_bytes > 0,
-                "zero_payload_storage_elided":new_zero_bytes > 0,
-                "free_space_contents_compared":false,"recovery_bundle_sha256":recovery_pin,
-                "general_conversion_qualified":false,
-            }),
-        )?;
+        let mut result = serde_json::json!({
+            "schema_version":1,"kind":"experimental-allocation-bounded-conversion",
+            "success":true,"source_admitted":true,"rollback_closed":true,
+            "verification_policy":request.verification_policy,
+            "actual_source_verification_policy":request.verification_policy,
+            "raw_source_logical_hashes":!expectation.has_extent_only_streams(),
+            "raw_source_extent_only_streams":expectation.objects.iter()
+                .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence.is_some()).count(),
+            "raw_source_extent_only_partial_streams":expectation.objects.iter()
+                .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence==Some(crate::shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)).count(),
+            "actual_target_verification_policy":request.verification_policy,
+            "actual_full_file_hashes":request.verification_policy.is_full_content(),
+            "exclusive_apply_handoff_used":request.verification_policy.is_fast(),
+            "prepared_journal_owner_reused":prepared_journal_owner_reused,
+            "exclusive_preparation_readback_used":request.verification_policy.is_fast()
+                && interrupt_after_writes.is_none() && !interrupt_after_first_copy_write,
+            "journal_path":journal_path,"ticket_sha256":ticket_pin,"plan_sha256":plan_pin,
+            "expected_tree_sha256":expected_tree_sha256,
+            "selected_ranges":plan.ranges.len(),"selected_bytes":selected_bytes,
+            "journal_bytes":journal_bytes,"selection_sha256":proof.selection_sha256(),
+            "packed_bytes":packed_bytes,"new_zero_bytes":new_zero_bytes,
+            "new_copy_bytes":new_copy_bytes,
+            "old_zero_bytes":old_zero_bytes,
+            "old_zero_payload_storage_elided":old_zero_bytes > 0,
+            "zero_payload_storage_elided":new_zero_bytes > 0,
+            "free_space_contents_compared":false,"recovery_bundle_sha256":recovery_pin,
+            "general_conversion_qualified":false,
+        });
+        if !request.selected_capacity_policy.is_conservative() {
+            result["selected_capacity_policy"] =
+                serde_json::to_value(request.selected_capacity_policy)?;
+        }
+        qualification::save(output, "result.json", &result)?;
         drop(proof);
         Ok(())
     })();

@@ -247,6 +247,7 @@ fn main() -> anyhow::Result<()> {
         .as_deref()
         .unwrap_or(&derived_label);
     let request = ntfs2refs::general_conversion::Request {
+        selected_capacity_policy: Default::default(),
         verification_policy: ntfs2refs::verification_policy::VerificationPolicy::FullContent,
         max_literal_backing_bytes: None,
         max_combined_scratch_bytes: None,

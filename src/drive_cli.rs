@@ -544,6 +544,7 @@ mod windows {
         )?;
         let request = crate::general_conversion::Request {
             verification_policy,
+            selected_capacity_policy: Default::default(),
             schema_version: if allocation_bounded { 3 } else { 2 },
             source_resource_profile: Some(resources),
             experiment_id: id,

@@ -100,6 +100,7 @@ pub mod refs_split_refs;
 pub mod refs_virtual_roots;
 pub mod refs_write_set;
 pub mod retained_compare;
+pub mod selected_capacity;
 pub mod selected_journal;
 #[cfg(windows)]
 pub mod shadow_freeze;

@@ -2,6 +2,7 @@
 //! shadow, full-cluster payload comes from logical NTFS reads at measured ReFS
 //! destinations. No payload-sized image or raw source writer is constructed.
 //! Frozen metadata-graph reconciliation is still required before cutover.
+use crate::selected_capacity::SelectedCapacityPolicy;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition,
@@ -39,6 +40,11 @@ pub struct CaptureBudget {
     pub max_literal_backing_bytes: u64,
     pub max_combined_backing_and_journal_bytes: u64,
     pub minimum_free_bytes: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "SelectedCapacityPolicy::is_conservative"
+    )]
+    pub selected_capacity_policy: SelectedCapacityPolicy,
 }
 
 /// State immediately before accepting a changed run. `changed_bytes` and
@@ -53,6 +59,12 @@ pub struct CaptureProgress {
     pub projected_journal_bytes: u64,
     pub projected_combined_bytes: u64,
     pub minimum_free_bytes: u64,
+    #[serde(skip_serializing_if = "SelectedCapacityPolicy::is_conservative")]
+    pub selected_capacity_policy: SelectedCapacityPolicy,
+    /// Proposed whole-range old-zero bytes. New policy reports Some(0)
+    /// explicitly; historical conservative progress keeps its original shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_zero_bytes: Option<u64>,
 }
 impl CaptureProgress {
     /// Already written backing is reflected in current filesystem free space;
@@ -74,7 +86,10 @@ impl CaptureBudget {
                 && self
                     .max_journal_bytes
                     .checked_sub(overhead)
-                    .is_some_and(|n| self.max_changed_bytes <= n)
+                    .is_some_and(|n| {
+                        !self.selected_capacity_policy.is_conservative()
+                            || self.max_changed_bytes <= n
+                    })
                 && self.max_literal_backing_bytes
                     <= n2r_win32::reference_file::MAX_REFERENCE_FILE_BYTES
                 && self.max_combined_backing_and_journal_bytes >= overhead + 4096,
@@ -86,6 +101,7 @@ impl CaptureBudget {
     fn assess(
         &self,
         changed: u64,
+        old_zero: u64,
         literal: u64,
         append: u64,
         ranges: usize,
@@ -109,7 +125,19 @@ impl CaptureBudget {
         let projected_literal = literal
             .checked_add(append)
             .context("capture literal backing overflow")?;
-        let journal = changed
+        let stored_old = match self.selected_capacity_policy {
+            SelectedCapacityPolicy::ConservativeV1 => changed,
+            SelectedCapacityPolicy::OldZeroActualBytesV1 => {
+                ensure!(
+                    old_zero.is_multiple_of(4096),
+                    "capture old-zero bytes are not granule aligned"
+                );
+                changed
+                    .checked_sub(old_zero)
+                    .context("capture old-zero bytes exceed changed bytes")?
+            }
+        };
+        let journal = stored_old
             .checked_add(projected_literal)
             .and_then(|n| n.checked_add(overhead))
             .context("capture journal capacity overflow")?;
@@ -140,6 +168,8 @@ impl CaptureBudget {
             projected_journal_bytes: journal,
             projected_combined_bytes: combined,
             minimum_free_bytes: self.minimum_free_bytes,
+            selected_capacity_policy: self.selected_capacity_policy,
+            old_zero_bytes: (!self.selected_capacity_policy.is_conservative()).then_some(old_zero),
         })
     }
 }
@@ -964,7 +994,15 @@ impl<'a> SourceBackedShadow<'a> {
         use sha2::{Digest, Sha256};
         use std::io::Write;
         if let Some(capacity) = &mut capacity {
-            (capacity.guard)(capacity.budget.assess(0, 0, 0, 0)?)
+            ensure!(
+                capacity.budget.selected_capacity_policy.is_conservative()
+                    || (copies.is_some()
+                        && zero_payloads
+                        && chunk_digests
+                        && capacity.budget.max_changed_bytes == max_changed_bytes),
+                "actual-old-zero capacity requires the complete reference-aware capture"
+            );
+            (capacity.guard)(capacity.budget.assess(0, 0, 0, 0, 0)?)
                 .context("capture capacity guard refused before backing creation")?;
         }
         let mut file = std::fs::OpenOptions::new()
@@ -1008,6 +1046,10 @@ impl<'a> SourceBackedShadow<'a> {
         };
         let mut packed_digest = Sha256::new();
         let mut changed = 0u64;
+        // Whole-record credit, updated only after an accepted run. Extending
+        // a zero record with nonzero bytes revokes its entire prior credit;
+        // there is no per-run scan of the accumulated interval table.
+        let mut old_zero_bytes = 0u64;
         let mut packed = 0u64;
         let mut compared = 0u64;
         let mut ranges: Vec<ChangedRange> = Vec::new();
@@ -1125,6 +1167,39 @@ impl<'a> SourceBackedShadow<'a> {
                                 _ => false,
                             }
                     });
+                    let previous_length = if extends_previous {
+                        ranges
+                            .last()
+                            .context("extended capture range absent")?
+                            .length
+                    } else {
+                        0
+                    };
+                    let next_range_length = previous_length
+                        .checked_add(bytes as u64)
+                        .context("capture coalesced range length overflow")?;
+                    let next_old_zero_bytes = if extends_previous {
+                        let previous = ranges.last().context("extended capture range absent")?;
+                        if previous.old_is_zero {
+                            if old_is_zero {
+                                old_zero_bytes
+                                    .checked_add(bytes as u64)
+                                    .context("capture old-zero total overflow")?
+                            } else {
+                                old_zero_bytes
+                                    .checked_sub(previous.length)
+                                    .context("capture old-zero revoked credit underflow")?
+                            }
+                        } else {
+                            old_zero_bytes
+                        }
+                    } else if old_is_zero {
+                        old_zero_bytes
+                            .checked_add(bytes as u64)
+                            .context("capture old-zero total overflow")?
+                    } else {
+                        old_zero_bytes
+                    };
                     if let Some(capacity) = &mut capacity {
                         let range_count = ranges
                             .len()
@@ -1135,10 +1210,22 @@ impl<'a> SourceBackedShadow<'a> {
                         } else {
                             0
                         };
-                        let progress = capacity.budget.assess(next, packed, append, range_count)?;
+                        let progress = capacity.budget.assess(
+                            next,
+                            next_old_zero_bytes,
+                            packed,
+                            append,
+                            range_count,
+                        )?;
                         (capacity.guard)(progress).context(
                             "capture capacity guard refused before accepting changed bytes",
                         )?;
+                    }
+                    if !extends_previous {
+                        ensure!(
+                            ranges.len() < 65536,
+                            "delta range budget exhausted before output write"
+                        );
                     }
                     if let Some(source_offset) = copy_source_offset {
                         let check = copy_check
@@ -1163,25 +1250,7 @@ impl<'a> SourceBackedShadow<'a> {
                             &candidate[offset..offset + bytes],
                         );
                     }
-                    if extends_previous {
-                        let previous =
-                            ranges.last_mut().context("extended capture range absent")?;
-                        previous.old_is_zero &= old_is_zero;
-                        previous.length += bytes as u64;
-                    } else {
-                        ensure!(
-                            ranges.len() < 65536,
-                            "delta range budget exhausted before output write"
-                        );
-                        ranges.push(ChangedRange {
-                            offset: address,
-                            length: bytes as u64,
-                            packed_offset: packed,
-                            new_is_zero,
-                            old_is_zero,
-                            copy_source_offset,
-                        });
-                    }
+                    let range_packed_offset = packed;
                     if !new_is_zero && copy_source_offset.is_none() {
                         file.write_all(&candidate[offset..offset + bytes])?;
                         packed_digest.update(&candidate[offset..offset + bytes]);
@@ -1189,7 +1258,23 @@ impl<'a> SourceBackedShadow<'a> {
                             .checked_add(bytes as u64)
                             .context("delta packed byte count overflow")?;
                     }
+                    if extends_previous {
+                        let previous =
+                            ranges.last_mut().context("extended capture range absent")?;
+                        previous.old_is_zero &= old_is_zero;
+                        previous.length = next_range_length;
+                    } else {
+                        ranges.push(ChangedRange {
+                            offset: address,
+                            length: bytes as u64,
+                            packed_offset: range_packed_offset,
+                            new_is_zero,
+                            old_is_zero,
+                            copy_source_offset,
+                        });
+                    }
                     changed = next;
+                    old_zero_bytes = next_old_zero_bytes;
                     offset += bytes;
                 }
                 if let (Some(prefetch), Some(buffer)) = (&prefetch, prefetched) {

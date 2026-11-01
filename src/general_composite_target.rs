@@ -585,7 +585,7 @@ impl FrozenAllocationTargetPreservation {
         let max_journal_bytes = self.capture_budget.map_or(max_journal_bytes, |budget| {
             max_journal_bytes.min(budget.max_journal_bytes)
         });
-        let plan = crate::selected_journal::SelectedPlan {
+        let mut plan = crate::selected_journal::SelectedPlan {
             image_length: self.capture.layout.partition_bytes(),
             ranges: self
                 .capture
@@ -627,6 +627,25 @@ impl FrozenAllocationTargetPreservation {
                 .map(|(offset, length)| crate::selected_journal::SelectedRange { offset, length })
                 .collect(),
         };
+        // Format 4 widens every descriptor. Preserve the capture's actual
+        // zero observations, but select compression only when its omitted
+        // payload exceeds that complete metadata cost. Explicit journal plans
+        // remain format contracts; this is a fresh planner optimization.
+        if !plan.old_zero_ranges.is_empty() {
+            let extra_per_record = if !plan.new_copy_ranges.is_empty() {
+                8_u64
+            } else if !plan.new_zero_ranges.is_empty() {
+                16
+            } else {
+                24
+            };
+            let extra_metadata = u64::try_from(plan.ranges.len())?
+                .checked_mul(extra_per_record)
+                .context("old-zero descriptor cost overflow")?;
+            if plan.old_zero_bytes()? <= extra_metadata {
+                plan.old_zero_ranges.clear();
+            }
+        }
         plan.validate()?;
         Ok(plan)
     }

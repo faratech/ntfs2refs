@@ -33,6 +33,12 @@ and record count `N`, exact journal length is:
 8192 + 80 + 104*N + 2*D - Z - C - O + 80
 ```
 
+The fresh planner chooses this encoding only when omitted old payload exceeds
+the cost of widening every record: 8 bytes per record versus copy format 3,
+16 versus new-zero format 2, or 24 versus literal format 1. Otherwise it keeps
+the previous journal encoding at equal or lower size. Actual capture observations remain in
+the capture report; the pinned selected plan identifies the encoding used.
+
 Old/new selected digests retain their complete logical bytes and original range
 framing. The immutable-body digest covers every byte actually serialized.
 Independent loading checks all descriptors, literal payloads, generated zeros,

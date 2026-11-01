@@ -34,6 +34,9 @@ Exact `J=8352+104*N+2D-Z-C-O`; native new-format gate allows `D<=J+O` with check
 arithmetic and unchanged profile ceiling. Conservative capture `D+literal`
 capacity, selected writes, required ReFS zeros, complete target hashes, owner,
 flush/order/HND/ABT and source-certificate gates stay. No admission-cap lift.
+Fresh planning uses old-zero encoding only when omitted bytes exceed the full
+8/16/24-byte-per-record widening cost; otherwise it keeps the cheaper legacy
+journal while retaining the actual capture observations.
 Focused public/fault/manual-helper release build and independent review pass.
 Existing standalone owned-file experiment passed legacy SEL/ZERO/CPY plus old-zero
 alone and with COPY, persisted short-write Resume/Rollback, false-old-zero refusal
@@ -42,6 +45,14 @@ saved 12,216/16,328 actual journal bytes. Summary under `old-zero-functional-8f3
 SHA `44827ea6397d5ead7b5ecd05c9f4a496753a6a871fddafa138f26b9bb36e2ac4`.
 Native qualification is pending; do not transfer the following sealed results.
 See `docs/old-zero-journal.md`. No unit tests were added or run.
+
+Before the new native attempt, root removed only obsolete inactive leaves
+`2c964314`, `a18bf3a5`, `acb5449f`, `bb8a6475` through Hyper-V after rehashing
+273 unique closed archive/control/dependency files under held read guards.
+Reviewed plan `e7223c3d` and completion `a678c846` remain under `.lab`.
+A fresh process confirmed Off / RAM 0 / 46 snapshots, current `ed6fe063`;
+every other ID/parent and all host evidence were preserved. The prior 50-count
+observations below are historical. New native qualification remains pending.
 
 Latest normal native qualification: sealed `11e8963` / public `2ff60056`
 (9,896,960 bytes), case `79b22a2f` / core `b4135fc9`, actual PID 3944 /

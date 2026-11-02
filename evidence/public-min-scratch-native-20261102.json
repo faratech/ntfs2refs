@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "kind": "actual-public-minimize-scratch-conversion",
+  "runtime_source_commit": "65b117814aa8f187dfefed658b222650c72e08fe",
+  "run_id": "d04360139db64953a53a2d1448018c58",
+  "actual_argv": [
+    "--drive",
+    "F",
+    "--partition",
+    "2",
+    "--minimize-scratch"
+  ],
+  "interactive_affirmative_stdin": true,
+  "source_parent": "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b",
+  "source_not_prearranged_for_this_conversion": true,
+  "native_pid": 1308,
+  "native_creation_ms": 1793575210964,
+  "native_exit": 0,
+  "native_process_metrics": {
+    "includes_native_ntfs_preparation": true,
+    "peak_paged_memory_bytes": null,
+    "guest_c_free_before_bytes": 39618400256,
+    "scope": "actual-public-command-native-process-v1",
+    "logical_write_bytes": 2507543331,
+    "logical_write_operations": 156510,
+    "logical_other_bytes": 164531620,
+    "physical_io_or_speedup_claimed": false,
+    "ntfs_driver_move_io_is_separate": true,
+    "logical_other_operations": 852347,
+    "guest_c_free_after_bytes": 38522155008,
+    "peak_working_set_bytes": null,
+    "native_io_counter_error": null,
+    "logical_read_bytes": 26341046157,
+    "wall_seconds": 131.42012839999998,
+    "native_io_counter_query_succeeded": true,
+    "total_cpu_seconds": 83.09375,
+    "logical_read_operations": 84484
+  },
+  "exact_combined_scratch": {
+    "source_target_vm_checkpoints_and_metadata_not_in_this_sum": true,
+    "journal_bytes": 139901808,
+    "combined_journal_and_literal_bytes": 185015152,
+    "literal_bytes": 45113344
+  },
+  "preparation": {
+    "verified_moves": 385,
+    "native_basic_times_unchanged": true,
+    "moved_bytes": 5643501568,
+    "current_raw_maps_match": true,
+    "streams_checked": 811,
+    "fullmaps_replayed": true,
+    "identities": 222
+  },
+  "directory_case": {
+    "raw": 278,
+    "unknown_raw_flags_preserved": true,
+    "matched_required": 273,
+    "required": 273,
+    "proof_bound": true,
+    "proven_internal_replaced": 5
+  },
+  "metadata_exact_except_existing_cached_access_proof": true,
+  "root_modified_or_mft_times_masked": false,
+  "product_digests_invented": false,
+  "independent_complete_stream_hashes": 811,
+  "native_objects": 1084,
+  "handoff_closed": true,
+  "selected_bytes": 2153390080,
+  "journal_bytes": 139901808,
+  "source_free_bytes": 2009088000,
+  "original_observer_failures_preserved": [
+    "stale sourceNative12/4 tail assertion",
+    "duplicate default-stream metadata compare omitted already-validated cached access proof"
+  ],
+  "native_conversion_or_recovery_replayed": false,
+  "cold_completion_copied_only_actual_terminal_metrics": true,
+  "peak_memory_metrics_available": false,
+  "physical_io_or_controlled_speedup_claimed": false,
+  "saved_checkpoint": "1d7299ff-c616-4bcb-8b29-c1a1ba4a8a33",
+  "exact_runtime_interruption_recovery_qualified": false,
+  "production_or_arbitrary_scale_qualified": false,
+  "new_unit_tests_added_or_run": false,
+  "artifacts": [
+    {
+      "bytes": 51225,
+      "sha256": "a1b0a5807646b5b7ee3d3432133ba406420f4cb7f3e1679587be5ca9b83823ac",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\archive.json"
+    },
+    {
+      "bytes": 240,
+      "sha256": "8442e13b7ea2964d9ce83b6a789f66c051deec40e24d0789b27fb9ccb3f5d748",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\checkpoint.json"
+    },
+    {
+      "bytes": 232,
+      "sha256": "4147cdddc8ce09c0c9badc3988033581b93ad1924a31fd26c7403a4b292a23ca",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\final-idle.json"
+    },
+    {
+      "bytes": 3653,
+      "sha256": "c24f3122e32cdf152f9582683a7c52d8fa1cdc410f8563ffa118837311b18329",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\wrapper\\native-terminal.json"
+    },
+    {
+      "bytes": 412,
+      "sha256": "66b1c96b48c3ebbe6927d04e8fe0902a0e170c5e42541a81bd635fddae3f14a5",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\wrapper\\wrapper-failed.json"
+    },
+    {
+      "bytes": 3863963,
+      "sha256": "7de9391dfc8fbe4f55d2f0d334bf73ea7a17a669009252045065792894b1d1bb",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\wrapper\\readonly-completion-3569935d09754470af1bdfdaf014facb\\wrapper-result.json"
+    },
+    {
+      "bytes": 1160,
+      "sha256": "d8d7dda6e71cff4f25787be01d48af66b9dd997b3be11377f03aa32ba4f0f6d0",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\wrapper\\readonly-completion-3569935d09754470af1bdfdaf014facb\\completion-result.json"
+    },
+    {
+      "bytes": 3790,
+      "sha256": "fa82de0c6e7830d0ec3c536655781f4cea1d3e21f4035cfdbc9636543a2626ba",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\wrapper\\readonly-completion-3569935d09754470af1bdfdaf014facb\\public-preparation-ledger-verification.json"
+    },
+    {
+      "bytes": 419932,
+      "sha256": "1abdefbc68316faaf10df59a4fc1293e0ff3d91bec8308de20d1722e50ce2896",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\wrapper\\readonly-completion-3569935d09754470af1bdfdaf014facb\\independent-target-hashes.json"
+    },
+    {
+      "bytes": 1875,
+      "sha256": "a453279c8f19fa816d634bee86278478cd7390e7a3a88da4777b03250e4c31b5",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\product\\conversion\\result.json"
+    },
+    {
+      "bytes": 447,
+      "sha256": "7f125406fa136f2e4bdf421a2f83b6534f4b42f9f138865119e6a33864bfa4fa",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\product\\conversion\\handoff.json"
+    },
+    {
+      "bytes": 713,
+      "sha256": "846d128533f243e156d732df0fcdd0a5f0851f228df3550fb2a669c903c6a520",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\product\\ntfs-preparation\\result.json"
+    },
+    {
+      "bytes": 4021016,
+      "sha256": "ce894281383efaca023033dd4ce82ec4c865161c341817ef80d1d87117db7f24",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-d04360139db64953a53a2d1448018c58\\closed-native\\product\\ntfs-preparation\\source-before-preparation.json"
+    }
+  ]
+}

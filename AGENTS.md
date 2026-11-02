@@ -44,56 +44,69 @@ prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move 
 is separate. These are scoped observations, not a controlled physical benchmark.
 See evidence/prepared-source-performance-native-20261101.json.
 
-CURRENT VM is fresh-confirmed Off/RAM0 at closing-read success
-f8f7db07-89bf-4c6a-bfe6-81763c4ed6d1, parent preparedcb802669,15 snapshots.
-Native72b4db0 case8437cd4afc2d4308b2e69acb07bbdbb1 exited0/HND; all811 independent
-hashes passed. Actual6,176,772,096 closing bytes reused, extra capture shadow
-reads0. Both full brackets read6,176,772,096B and checked6,048,186,368 zero bytes.
-Native-verified logical reads21,473,893,401B/writes880,350,983B; wall70.5999624s
-versus prior62.2871679s: read reduction22.32%, NO timing speedup established.
-Closed87 metadata files220,578,453B source/copy SHA-verified under prepared-source-
-performance-normal-8437cd4afc2d4308b2e69acb07bbdbb1. See evidence/closing-buffer-native-20261101.json.
-All project tasks/workers terminal before normal shutdown/checkpoint; no HND replay.
+CURRENT VM is fresh-confirmed Off/RAM0 at actual PUBLIC minimize-scratch success
+1d7299ff-c616-4bcb-8b29-c1a1ba4a8a33, parent golden8329,14 snapshots after cleanup.
+Run d04360139db64953a53a2d1448018c58 used real
+ntfs2refs --drive F --partition 2 --minimize-scratch with affirmative stdin,
+runtime65b1178 (not a lab conversion entry). Native1308/birth1793575210964 exited0,
+HND/Complete. Wall131.4201284s INCLUDES385 NTFS moves/5,643,501,568B and new live
+post-move source certificate. Actual journal139,901,808B +literal45,113,344B =
+185,015,152B; processlogicalreads26,341,046,157B/writes2,507,543,331B. Kernel move
+IO/physicaldisk speed and peakRAM are NOT established; peakmetricsnull, never0.
+Original independent811 hashes, exactsemanticmetadata (existingprovedaccess-time
+exceptions only), fullnative move-map replay, security/namespace/fullmap/tails
+all PASSED through readonlycompletion3569935d09754470af1bdfdaf014facb. No native
+conversion/recovery replay. Original schema-tail and duplicate cached-access
+observer failures preserved. Source required273/5 provenreplaced internal dirs
+of278raw, actual$Deleted29error87 remainsUnknown. See docs/public-min-scratch-native.md
+and evidence/public-min-scratch-native-20261102.json.
 
-Positive-format5 c2c1ef3 recovery matrix is COMPLETE for the recorded first flush:
-original7721d92e-c80c-4843-983a-d9d3c89bb964 parentcb802669; Resume d9e580fa and
-Rollback67eda3e4 are separate children. Resume4688/birth1793571990732 exited0/HND
-in18.7571244s; Rollback6052/birth1793572869378 exited0/ABT in9.8437227s. Both all811
-hashes passed. Rollback restore-required SHA c395ac7284dcc32ba73e148957e544d837fc1c7423291f09c1ec32aefac36ceb
-matched143,527,936B; free-space contents intentionally not restored. Rollback
-archive55 files61,767,592B; Resume57 files88,487,120B. Both source/copy verified.
-See docs/source-free-native-recovery.md and its evidence. This does NOT qualify
-72b/new source-case runtime recovery or physical power loss/free-range-first-write.
+Product records: C:\ProgramData\ntfs2refs\runs\0dd148940f0c665732d7e146426ff52c\conversion.
+Closed106 metadata files224,579,123B source/copySHAverified under .lab base
+public-min-scratch-d04360139db64953a53a2d1448018c58/closed-native (wrapper/product).
+Alltasks/workers terminal before normalstop/checkpoint. Oldnormal051b andf8f7 were
+retired viaHyper-V after279 old/newarchivefilesheld/rehashed; receiptfolder
+retire-two-superseded-normal-results-f59aabfec5804818aac3c9756dd0362f. Allarchivesremain.
+Keep current1d729, preparedcb, originalNTFS8329/6fe2/371a/9c42, guardedf4bf,Hcoldd939,
+oldformatinterrupteddea9/recovery8087/d40b, format5original7721/Resumed9/Rollback67 (14 states).
+No rawHND/ABT replay. WSLrunningprotected.
 
-Original fault4456/birth1793571035196 exited86, archived75 files185,020,599B.
-REAL original receipt is prepared-source-performance-interrupt-
-7a18009eb7e94c6dbaffc2b9295ace98/checkpoint.json SHA
-9afc04c396cad6051bde711914227ac394e78aacc5391ef479fdf630cb95d4eb.
-Bundle0b6cc964ac2b3410712b23c99b5247a58a9b9297d4554c052c4312daac35c0fc;
-D-F143,527,936B/F402,669,568B/J132,774,832B, no Apply/HND. Keep original journals.
-Root matrix receipts: prepared-format5-recovery-matrix-679714c852da493d8b7253e054c30995.
+Source65b1178 fixes case applicability after independent bound replacement proof,
+not metadata labels. Actual2e20 predecessor safely refused$Deleted87 before
+certificate/J/writes;40 metadata files94,365,160B preserved atprepared-source-
+performance-normal-7f5da47801b1457cac07a28f0b63bfa6/closed-refusal. No failurewasmasked.
+Alltransferred/root dirs still actual0/0. Preparation savesboundedalready-read
+source-before-preparation.json and pin/length; all4 actualbasic_times retainedand
+verifiedstable in385moveledger. See source-directory-case-admission.md.
 
-NEXT native candidate2e20aa9 adds actual NTFS directory-case evidence before
-source certificate. Full Request5/Report13, fast6/14; legacy remains Unknown.
-Read-attributes-only fallback preserves original broad-open/security failures;
-no ReFS target queries changed. Independent review found/fixed unprofiled13
-bitmap selection and migrated three actual diagnostic/frozen collectors. Focused
-checks5bins and release3bins passed; NO unit tests. See docs/source-directory-case-admission.md.
-New sealed source-case-tools-2e20aa9/manifest.json SHA
-1b4aed14e7f606f0a9c26a7aef7729d660c29b569304fc635d1e468256408b24.
-Sourcecommit2e20aa9e61bd7a006116ae3725d1611370e5c7bd; public10393600B SHA
-acbeb666dc39dde7e1c0629f8f9189571e3b1e37cba5abfdaf079e90863d49df;
-producer7297024B SHA0984be361c40c7b0360d8f0adff8971f2bd9acf509d030edf2e1437d07c5e036.
-Prepared controller supports -RequireClosingReadReuse -RequireSourceDirectoryCase;
-new-source-only assembly switches12/4 assertions to14/6 and checks every actual
-raw directory/sequence against positive0/0 case evidence. Historical11 baseline
-stays unchanged; no JSON grants authority. Native gate qualification is PENDING.
-Final-build normal/recovery and PUBLIC one-command --drive F --minimize-scratch
-coverage remain, plus resource-based scale and approved crash-marker work. Do
-not mark the performance goal complete merely from the bounded corpus.
+Earlier72b4db0 actual closing-reuse8437 PASSEDall811:6,176,772,096B reused,
+extra capture shadowreads0; bothraw/zero brackets unchanged. Reads21,473,893,401B,
+wall70.5999624s vsprior62.2871679s (NO wall speedupclaim). Oldf8f7state retired,
+87-file220,578,453B archive preserved; evidence/closing-buffer-native-20261101.json.
 
-Normal6be remains at051b650a, all host archives retained. Superseded31d7 retired.
-Accidental empty-folder cleanup completed with user authorization. Keep WSL running.
+Positiveformat5 c2c1ef3 first-write/Resume/Rollback matrix passedall811 bothdirections,
+restore-required143,527,936B matchedc395ac7284dcc32ba73e148957e544d837fc1c7423291f09c1ec32aefac36ceb.
+Originalfault7721 parentcb: receiptSHA9afc04c396cad6051bde711914227ac394e78aacc5391ef479fdf630cb95d4eb,
+bundle0b6cc964ac2b3410712b23c99b5247a58a9b9297d4554c052c4312daac35c0fc. NativeResume4688
+18.7571244s/HND,Rollback6052 9.8437227s/ABT. Separatebranchesd9e580fa/67eda3e4 remain.
+This is NOT current65b exact-build recovery, native6 or hard-power qualification.
+
+E3 mechanics c641d8d generic opt-in format6 N2RFRE02, marker_profile RedundantSourceFreeV1,
+body32768/AP/RB/HND/ABT copy pairs; formats1–5 defaultsunchanged. Nativeproduction
+creation UNWIRED; general_recovery/allocation.rs explicitly refusesmarkerprofiles
+BEFORE targetopening. Native adapter670f72f is compiled/source-reviewed only,
+MARKER_STORAGE_NATIVE_QUALIFIED=false. It binds share0 unbufferedwrite-through
+NTFS, exactEOF, aligneddisjointmappedsectors/protectclusters/scopedprivilege,
+uncachedreadback. Stillneeds in-place prepared-owner sealing hook/callerwiring,
+terminalpeer-onlinepolicy and realnative/hard-power qualification. Do notenable
+byflag withouttypedbackendproof. See docs/redundant-selected-markers.md.
+
+NEXT: current-runtime exact-build controlledfault/Resume/Rollback, then
+native6backend/protocolintegration and resource-basedpagedscale. Publiconecommand
+coverage is now real; don'trepeatit withoutnewchanges/failures. Cleancommitted
+release/tag/version remainsopen because usermainhunk MUSTstayuntouched/unstaged;
+qualifiedbuildpins it separately. No units added/run. Do notcall performancegoal
+complete fromthis boundedcorpus; independentwriter research remainsoffcriticalpath.
 Preparation82e805b moved5,643,501,568B over385 native requests/222 identities,
 with complete native maps/EOF/identity checks and all811 independent hashes.
 A fresh frozen full raw/native baseline also passed1084 objects/811 streams.

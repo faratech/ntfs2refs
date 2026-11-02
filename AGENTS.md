@@ -44,8 +44,18 @@ prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move 
 is separate. These are scoped observations, not a controlled physical benchmark.
 See evidence/prepared-source-performance-native-20261101.json.
 
-CURRENT VM is fresh-confirmed Off/RAM0 at actual PUBLIC minimize-scratch success
-1d7299ff-c616-4bcb-8b29-c1a1ba4a8a33, parent golden8329,14 snapshots after cleanup.
+CURRENT VM is fresh-confirmed Off/RAM0 at current65b first-write interruption
+6679708a-2171-4566-b660-312efaab9f73, parent preparedcb802669,11 snapshots.
+Producer4144/birth1793578032909 exited86; actual sole post-flush message,
+noApply/HND,sourceoffline/shadowofflineRO and terminaltasks/workers observed.
+Metadata archive verified; readonlyobserver completed the original failed schema
+observation without replay. Recovery bundle SHA2a86be3408bc784a3b0ac1a8bff2acc1b76099635ed58561114e84724a376944.
+Actual checkpoint receipt atprepared-source-performance-interrupt-d0d30cb0454e4441920df86accf869a7/checkpoint.json,
+SHAf5b631ee591c1c6befd3afd75ddf4bc50d93cfec60d0bc9e8abd89ca7595738c.
+Resume/Rollback of THIS65b interruption remain pending; both must start from
+that original interruption on separate branches. No rawclosedHND/ABT replay.
+Latest PUBLIC minimize-scratch success1d7299ff-c616-4bcb-8b29-c1a1ba4a8a33
+remains saved separately, parent golden8329.
 Run d04360139db64953a53a2d1448018c58 used real
 ntfs2refs --drive F --partition 2 --minimize-scratch with affirmative stdin,
 runtime65b1178 (not a lab conversion entry). Native1308/birth1793575210964 exited0,
@@ -67,8 +77,16 @@ public-min-scratch-d04360139db64953a53a2d1448018c58/closed-native (wrapper/produ
 Alltasks/workers terminal before normalstop/checkpoint. Oldnormal051b andf8f7 were
 retired viaHyper-V after279 old/newarchivefilesheld/rehashed; receiptfolder
 retire-two-superseded-normal-results-f59aabfec5804818aac3c9756dd0362f. Allarchivesremain.
-Keep current1d729, preparedcb, originalNTFS8329/6fe2/371a/9c42, guardedf4bf,Hcoldd939,
-oldformatinterrupteddea9/recovery8087/d40b, format5original7721/Resumed9/Rollback67 (14 states).
+Keep current6679708a, latestpublic1d729, preparedcb, originalNTFS8329/6fe2/371a/9c42,
+guardedf4bf,Hcoldd939, oldformatinterrupteddea9 and format5original7721 (11 states).
+Cleanup20261102 retired ONLY archived recovery-result leaves8087/d40b/d9e580fa/67eda3e4
+through Hyper-V after224 archive files held/rehashed. Freed22,095,781,888 hostbytes
+(20.58GiB), Dfree143,170,375,680B; logical lab201,040,951,068B at00:25UTC.
+Evidence: evidence/obsolete-recovery-snapshot-cleanup-20261102.json. Older keep
+lists below are historical and MUST NOT recreate these retired IDs. Automatic
+approval review blocked three obsolete .lab/development Cargo cache deletions;
+leave those paths alone. Main target is also in use by external cargoPID17220;
+root did not start that test command and must not delete its build directory.
 No rawHND/ABT replay. WSLrunningprotected.
 
 Source65b1178 fixes case applicability after independent bound replacement proof,

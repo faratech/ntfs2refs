@@ -59,6 +59,7 @@ pub mod ntfs_compression;
 pub mod ntfs_data_attestation;
 pub mod ntfs_extended_attributes;
 pub mod ntfs_evacuation;
+pub(crate) mod ntfs_file_attributes;
 #[cfg(windows)]
 pub mod ntfs_preparation;
 #[cfg(windows)]

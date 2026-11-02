@@ -10,7 +10,46 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 22:14 UTC)
+## CURRENT release continuation (2026-11-02 22:51 UTC)
+
+VM fresh-confirmed Off/RAM0,32snapshots, parenta0627dbd-aa3b-4896-bbeb-495f5e372057
+(savedNTFS1534source childgolden8329). ACTIVE writable branch is the FAILED
+read-onlybaseline branch: F remains excluded3. Restorea062 ONCE beforea new
+online freeze/baseline. No VM/build job is currently running. Root alone VMactions.
+
+Added450directories ONLY using closedfixturebdb9bb9c2c0a44fdba275a19b00d6567,
+receiptSHA0bc8de2079ed702d64e7fa43e39cc5db3948594ad84b3963e7177a12e3ad1e1d.
+Savedsourcea062 beforefreeze. New8bin clean2591b5fc91bc0b6e7f011d2dd2344d16cd37c958
+buildmanifestSHAa4d43cc60446fa4298bfa5a1fce4b51a332af6e57a4dd0b76d34910ade2071a7.
+Baselinea6c0728f0fc741e0a403d9be992956be actuallyran inheritedfreezer3372/
+1793658467612/0 thennewcapture1468/1793658468889/1 (19.4870058s). It stopped
+atTree derivation: record1120 unsupportedSIattrs. Closedworker+failedbaseline
+archived, no cert/J/conversion/sourcepayloadwrites. Originalce2helper committed
+59142da worked/archived failures; later3precautionaryedits were saved as
+.lab/development/baseline-launcher-post-dispatch-improvements.patch and helper
+restoredEXACTce2 afterclosure. Do not edit frozen live dispatchers.
+
+Newdiagnostic acc43e2 lab-inspect-frozen-record is read-only, selectedMFTrows,
+fastmetadata/RAW2048 only. BuiltsourceSHA759435432ba71781103b6a2ff0dd903c7f8a863401396d1c3666808000375b7e,
+exeSHA814d4f92621d34e4370cf9615cb4883c8cb62e36753144b371b4b78d95882200.
+Actualprobe5028/1793659290341/0, outputfrozen-record-1120-ec24bfd3dfc34ed8893ea62a1da46884/
+records.json SHA10c2c754e1543e54d836a45c8ce13cd8bfc1c9bda1f59298951ef330e981a3bb.
+1120/1121 ordinarynewemptydirs SI10000000 +MFTdir +residentI30length48; root5SI6
+legacy. Raw1561;109121536nativebytes/94863957streamhashbytes; nofullpayloadscan,
+before/after3. Rawallocation/namespaceconsistent; diagnostic not admission.
+
+NARROW coherent ntfs_file_attributes projection now implemented/reviewed and
+4bincheckpassed15.38s: knownSI10000000 onlyMFTdir+coherentuniqueI30, targetWin32
+Dir10; unknownhighuserflagsrefuse. Source/tree/nativeuser comparison shareit;
+internal$Secure/$Extend observation remainscompatible. Normal80/otherlowmasks
+unchanged. See docs/ntfs-directory-attribute-projection.md. Nativefix PENDING.
+NEXT: commitfix, cleanbuild8bins+seal, NEW versioned directory-attribute full
+baseline launcher(agentpublic_readonly_completion writing; preservece2), restore
+a062fresh/start once, runfixedfullbaseline, thenNEWlargepublicadapter andnew
+Some2pagedbundle recovery. Keep native-shadow/no unit tests/mainc6/WSL/fixedepoch.
+Existing14ec1084nativepass+f3saved result remain valid only their actual source.
+
+## Earlier release continuation (2026-11-02 22:14 UTC)
 
 VM fresh-confirmed Off/RAM0,31snapshots, active saved parent
 f3c1460b-6811-4dd3-908c-12cc2842c35e childgolden8329. This is CLOSED HND/ReFS;

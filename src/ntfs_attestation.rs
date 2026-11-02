@@ -709,10 +709,18 @@ pub(crate) fn check_non_security_snapshot(
         .context("missing raw standard information")?;
     // NTFS $STANDARD_INFORMATION omits the directory bit and carries internal
     // index/view flags in the high nibble, outside Win32 FILE_ATTRIBUTE_*.
-    let mut attrs = default_stream_attributes(
-        file,
-        (si.file_attributes & 0x0fff_ffff) | if file.is_directory { 16 } else { 0 },
-    )?;
+    let projected = if file.record_number == 5
+        || matches!(
+            file.metadata_role,
+            crate::ntfs_inspect::MetadataRole::OutsideExtendCandidate
+        ) {
+        crate::ntfs_file_attributes::project_user(file)?.win32_attributes
+    } else {
+        // Keep the existing observation behavior for recognized internal
+        // indexes such as $Secure. Their replacement admission is separate.
+        (si.file_attributes & 0x0fff_ffff) | if file.is_directory { 16 } else { 0 }
+    };
+    let mut attrs = default_stream_attributes(file, projected)?;
     if attrs == 0 {
         attrs = 128;
     }

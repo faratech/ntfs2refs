@@ -776,9 +776,10 @@ fn derive_profile(
         let reparse = crate::ntfs_reparse::file_point(f)?;
         let ntfs_compression_normalized =
             ordinary && (si.file_attributes & 0x800 != 0 || f.streams.iter().any(|s| s.flags == 1));
+        let projected_attributes = crate::ntfs_file_attributes::project_user(f)?;
         ensure!(
             times.iter().all(|t| *t > 0 && *t < i64::MAX as u64)
-                && si.file_attributes
+                && projected_attributes.source_attributes
                     & !(0x2027
                         | if reparse.is_some() { 0x400 } else { 0 }
                         | if f.streams.iter().any(|s| s.flags == 0x8000) {
@@ -861,7 +862,7 @@ fn derive_profile(
             stored_times: times,
             attributes: crate::ntfs_attestation::default_stream_attributes(
                 f,
-                si.file_attributes | if f.is_directory { 16 } else { 0 },
+                projected_attributes.win32_attributes,
             )? & !if ntfs_compression_normalized {
                 0x800
             } else {

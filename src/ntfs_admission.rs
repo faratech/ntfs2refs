@@ -1210,8 +1210,8 @@ fn user_issues_profile(
     }
     let has_sparse = f.streams.iter().any(|s| s.flags == 0x8000);
     let has_verified_eas = ordinary && crate::ntfs_attestation::has_verified_nonempty_eas(f);
-    if f.standard_information.as_ref().is_none_or(|si| {
-        si.file_attributes
+    if crate::ntfs_file_attributes::project_user(f).map_or(true, |attributes| {
+        attributes.source_attributes
             & !(0x2027
                 | if reparse.is_some() { 0x400 } else { 0 }
                 | if has_sparse && !f.is_directory {

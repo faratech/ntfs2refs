@@ -627,13 +627,17 @@ fn finish_observation(
 }
 
 #[cfg(windows)]
-mod native;
+mod marker_lab_pause;
 #[cfg(windows)]
 mod marker_native;
 #[cfg(windows)]
+mod native;
+#[cfg(windows)]
+pub use marker_lab_pause::{LabMarkerCopy, LabMarkerCopyPause, LabMarkerPauseRequest};
+#[cfg(windows)]
 pub use marker_native::{
-    MarkerJournalFile, MarkerStorageObservation, UnbufferedJournalFile,
-    MARKER_STORAGE_NATIVE_QUALIFIED,
+    MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation,
+    UnbufferedJournalFile,
 };
 #[cfg(windows)]
 pub use native::{

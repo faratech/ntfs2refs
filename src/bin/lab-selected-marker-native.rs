@@ -38,6 +38,12 @@ fn main() -> anyhow::Result<()> {
             /// Exit86 after the first actual flushed selected payload write.
             #[arg(long)]
             first_write_fault: bool,
+            /// LAB ONLY: park forever after this actual durable marker copy.
+            #[arg(long, requires = "pause_signal", conflicts_with = "first_write_fault")]
+            pause_after_marker_copy: Option<n2r_win32::journal_file::LabMarkerCopy>,
+            /// Must be marker-pause.json directly inside the fresh output.
+            #[arg(long, requires = "pause_after_marker_copy")]
+            pause_signal: Option<PathBuf>,
         },
         Recover {
             #[arg(long)]
@@ -48,6 +54,12 @@ fn main() -> anyhow::Result<()> {
             output: PathBuf,
             #[arg(long)]
             rollback: bool,
+            /// LAB ONLY: park forever after this actual durable marker copy.
+            #[arg(long, requires = "pause_signal")]
+            pause_after_marker_copy: Option<n2r_win32::journal_file::LabMarkerCopy>,
+            /// Must be marker-pause.json directly inside the fresh output.
+            #[arg(long, requires = "pause_after_marker_copy")]
+            pause_signal: Option<PathBuf>,
         },
         /// Metadata-only constructor diagnostic. Creates one empty journal
         /// and a JSON report on enrolled C0; this does mutate file metadata.
@@ -266,6 +278,8 @@ fn main() -> anyhow::Result<()> {
             maximum_placement_submissions,
             maximum_exception_bytes,
             first_write_fault,
+            pause_after_marker_copy,
+            pause_signal,
         } => {
             let (_held_request, request) = open_request(&request, &request_sha256)?;
             let budget = ntfs2refs::general_qualification::CompactConstructionBudget {
@@ -278,6 +292,14 @@ fn main() -> anyhow::Result<()> {
                 budget,
                 &output,
                 first_write_fault,
+                pause_after_marker_copy
+                    .zip(pause_signal)
+                    .map(|(marker_copy, signal_path)| {
+                        n2r_win32::journal_file::LabMarkerPauseRequest {
+                            marker_copy,
+                            signal_path,
+                        }
+                    }),
             )
         }
         Operation::Recover {
@@ -285,12 +307,22 @@ fn main() -> anyhow::Result<()> {
             bundle_sha256,
             output,
             rollback,
+            pause_after_marker_copy,
+            pause_signal,
         } => {
             ntfs2refs::general_lab::recover_allocation_redundant_markers(
                 &bundle,
                 &bundle_sha256,
                 rollback,
                 &output,
+                pause_after_marker_copy
+                    .zip(pause_signal)
+                    .map(|(marker_copy, signal_path)| {
+                        n2r_win32::journal_file::LabMarkerPauseRequest {
+                            marker_copy,
+                            signal_path,
+                        }
+                    }),
             )?;
             Ok(())
         }

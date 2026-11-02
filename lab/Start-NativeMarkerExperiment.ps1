@@ -212,8 +212,26 @@ function Protected{
  $g=Get-Disk -Number 4;$p=Get-Partition -DriveLetter G;$v=$p|Get-Volume;$old=Get-Disk -Number 5
  Need ([guid]$g.Guid-eq[guid]'e1f3b9d3-979f-4123-9fee-399640c25092'-and-not$g.IsOffline-and-not$g.IsReadOnly-and$p.DiskNumber-eq4-and$v.FileSystem-ceq'ReFS'-and$v.AllocationUnitSize-eq4096-and[guid]$old.Guid-eq[guid]'ad077674-6305-4767-a2aa-6ded3b707e36'-and$old.IsOffline-and$old.IsReadOnly) 'Protected G4/shadow5 attributes differ.'
 }
+function RecoveryShadow{
+ $inventory=@(Get-Disk -ErrorAction Stop);Need ($inventory.Count-in@(6,7)) 'Complete existing recovery disk inventory required.'
+ $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+ $matches=@(foreach($disk in $inventory){$guid=[guid]::Empty;Need ([guid]::TryParse([string]$disk.Guid,[ref]$guid)-and$guid-ne[guid]::Empty-and$seen.Add($guid.ToString('D'))) 'Unknown or duplicate current recovery disk GUID refused.';if($guid-eq[guid]$c.shadow.identity.disk_guid){$disk}})
+ Need ($matches.Count-le1) 'Duplicate original recovery shadow identity refused.'
+ $image=Get-Item -LiteralPath $c.managed_path -Force;Need (-not$image.PSIsContainer-and$image.Length-gt0) 'Original recovery managed VHDX must remain an existing ordinary file.'
+ $cursor=$image;while($null-ne$cursor){Need (-not($cursor.Attributes-band[IO.FileAttributes]::ReparsePoint)) 'Reparse recovery managed VHDX ancestry refused.';if($cursor-is[IO.DirectoryInfo]){$cursor=$cursor.Parent}else{$cursor=$cursor.Directory}}
+ $provider=Get-DiskImage -ImagePath $c.managed_path -ErrorAction Stop
+ Need ([string]::Equals([string]$provider.ImagePath,$c.managed_path,[StringComparison]::OrdinalIgnoreCase)) 'Original recovery managed VHDX provider route differs.'
+ if($matches.Count-eq1){
+  Need ($inventory.Count-eq7-and$matches[0].Number-eq$c.shadow.disk_number) 'Present original recovery shadow must remain disk6; no rebind is allowed.'
+  $null=Binding $c.shadow $true $true
+  Need ($provider.Attached-and[string]::Equals([string]$provider.DevicePath,'\\.\PhysicalDrive6',[StringComparison]::OrdinalIgnoreCase)) 'Present original recovery shadow requires exact offline/read-only geometry and provider.'
+ }else{
+  Need ($inventory.Count-eq6-and-not$provider.Attached-and@($inventory|Where-Object Number -EQ $c.shadow.disk_number).Count-eq0) 'Absent recovery shadow requires no original GUID/disk6 and the original provider detached; no attach or replacement is allowed.'
+ }
+ return @{scope='allocation-recovery-optional-original-managed-shadow-v1';shadow_present=($matches.Count-eq1);provider_check_applicable=($matches.Count-eq1);original_binding=$c.shadow;provider=@{image_path=[string]$provider.ImagePath;device_path=[string]$provider.DevicePath;attached=[bool]$provider.Attached};original_image_exists=$true;complete_disk_inventory=(Inventory);all_current_disk_guids_unique=$true;reattachment_performed=$false;request_rebound=$false;attributes_changed=$false;raw_journal_opened=$false;grants_source_or_replay_authority=$false}
+}
 function Routes([bool]$Fresh){
- Need ($env:COMPUTERNAME-ceq'N2R-WIN11'-and$env:SystemDrive-ceq'C:'-and@(Get-Disk).Count-eq7) 'Exact owning guest with seven existing disks required.'
+ Need ($env:COMPUTERNAME-ceq'N2R-WIN11'-and$env:SystemDrive-ceq'C:'-and(($Fresh-and@(Get-Disk).Count-eq7)-or(-not$Fresh-and@(Get-Disk).Count-in@(6,7)))) 'Exact owning guest and existing fresh/recovery disk inventory required.'
  $s=$c.source;$h=$c.shadow;$j=$c.journal.disk
  Need ($s.disk_number-eq1-and[guid]$s.volume_guid-eq[guid]'f06075a8-67a2-46b9-8fac-4af4da809617'-and[guid]$s.identity.disk_guid-eq[guid]'1b191872-c372-41ee-a416-e18863996f54'-and$s.identity.partition_number-eq2-and$s.identity.partition_offset-eq16MB-and$s.identity.partition_bytes-eq52GB-and$s.identity.disk_bytes-eq64GB-and$h.disk_number-eq6-and[guid]$h.identity.disk_guid-eq[guid]'b14b46fc-c7f4-4548-9391-52e18f75831b'-and[guid]$h.volume_guid-eq[guid]'6a1efd54-6209-42f1-a6c8-fd5ef88f5759'-and$h.identity.partition_number-eq2-and$h.identity.partition_offset-eq32MB-and$h.identity.partition_bytes-eq52GB-and$h.identity.disk_bytes-eq55901683712-and$j.disk_number-eq0-and[guid]$j.identity.disk_guid-eq[guid]'1f804918-e98f-4a71-9022-fc00c3cb7c26'-and[guid]$j.volume_guid-eq[guid]'c6c3318f-a7c8-47b9-be6d-6dde5e00862f'-and$j.identity.partition_number-eq3-and$j.identity.partition_offset-eq331350016-and$j.identity.partition_bytes-eq66238545920-and$j.identity.disk_bytes-eq64GB-and$c.journal.allow_additional_partitions-eq$true-and$c.journal.externally_enrolled_disk_unique_id-ceq'gpt-1f804918-e98f-4a71-9022-fc00c3cb7c26') 'Only the prepared exact source/shadow/OS routes are enrolled.'
  foreach($b in @($s,$h,$j)){Need ($b.identity.logical_sector_bytes-eq512-and$b.identity.physical_sector_bytes-eq4096) 'Exact sector geometry required.'}
@@ -222,9 +240,15 @@ function Routes([bool]$Fresh){
  $os=Binding $j $false $false;$cp=Get-Partition -DriveLetter C;Need ($cp.DiskNumber-eq0-and$cp.PartitionNumber-eq3) 'Exact OS route required.'
  Need (('\\?\Volume{'+([guid]$j.volume_guid).ToString('D')+'}\')-in@($os.partition.AccessPaths)) 'OS volume GUID access route differs.'
  $cv=$cp|Get-Volume;Need ($cv.FileSystem-ceq'NTFS'-and$cv.SizeRemaining-ge$(if($Fresh){11GB}else{1GB})) 'Existing NTFS journal volume/free reserve differs.'
- $shadow=Binding $h (-not$Fresh) (-not$Fresh)
- $provider=Get-DiskImage -ImagePath $c.managed_path -ErrorAction Stop
- Need ($provider.Attached-and[string]::Equals([string]$provider.ImagePath,$c.managed_path,[StringComparison]::OrdinalIgnoreCase)-and[string]::Equals([string]$provider.DevicePath,'\\.\PhysicalDrive6',[StringComparison]::OrdinalIgnoreCase)) 'Same already attached owned VHDX provider required; no reattachment is performed.'
+ $shadowObservation=$null;$shadowPresent=$true
+ if($Fresh){
+  $shadow=Binding $h $false $false
+  $provider=Get-DiskImage -ImagePath $c.managed_path -ErrorAction Stop
+  Need ($provider.Attached-and[string]::Equals([string]$provider.ImagePath,$c.managed_path,[StringComparison]::OrdinalIgnoreCase)-and[string]::Equals([string]$provider.DevicePath,'\\.\PhysicalDrive6',[StringComparison]::OrdinalIgnoreCase)) 'Same already attached owned VHDX provider required; no reattachment is performed.'
+  $providerFacts=@{image_path=[string]$provider.ImagePath;device_path=[string]$provider.DevicePath;attached=[bool]$provider.Attached}
+ }else{
+  $shadowObservation=RecoveryShadow;$shadowPresent=$shadowObservation.shadow_present;$providerFacts=$shadowObservation.provider
+ }
  $made=OpenPinned (Join-Path $c.stage 'prepared-managed-result.json') $c.prepared_managed_sha256 1MB $true
  Need ((Same $made.binding $h)-and$made.path-ceq$c.managed_path-and[guid]$made.virtual_disk_id-eq[guid]'afd68132-7ad8-4a23-83a4-1cdcc20b927d') 'Prepared managed identity differs.'
  if($Fresh){
@@ -234,7 +258,7 @@ function Routes([bool]$Fresh){
   Need (@($entries|Where-Object {$_.Name-cne'System Volume Information'-or-not$_.PSIsContainer-or($_.Attributes-band[IO.FileAttributes]::ReparsePoint)}).Count-eq0) 'Prepared shadow contains user entries or unknown root metadata; refuse without formatting.'
  }
  Protected
- return @{source_offline=(-not$Fresh);source_readonly=$false;shadow_offline=(-not$Fresh);shadow_readonly=(-not$Fresh);provider=@{image_path=[string]$provider.ImagePath;device_path=[string]$provider.DevicePath;attached=[bool]$provider.Attached};all_disk_attributes=(Inventory);attributes_changed_by_dispatcher=$false;reattached=$false;rebound=$false}
+ return @{source_offline=(-not$Fresh);source_readonly=$false;shadow_present=$shadowPresent;shadow_offline=$(if($shadowPresent){-not$Fresh}else{$null});shadow_readonly=$(if($shadowPresent){-not$Fresh}else{$null});provider=$providerFacts;recovery_shadow_observation=$shadowObservation;all_disk_attributes=(Inventory);attributes_changed_by_dispatcher=$false;reattached=$false;rebound=$false}
 }
 function AdmittedEnvelope($Profile,$Expected,[string]$Directory){
  Need ($null-ne$Profile-and$Profile-is[pscustomobject]-and@($Profile.PSObject.Properties).Count-eq1) 'One explicit admitted V3 profile required.'
@@ -316,8 +340,12 @@ try{
  $phase='terminal-observation';Idle;Protected
  $after=Inventory;$unrelatedBefore=@($before.all_disk_attributes|Where-Object number -NotIn @(1,6));$unrelatedAfter=@($after|Where-Object number -NotIn @(1,6));Need (Same $unrelatedBefore $unrelatedAfter) 'An unrelated disk identity/provider/attribute changed.'
  Need ($null-ne$nativeExit-and$nativeExit-eq$c.expected_exit) 'Actual process fault/unexpected exit; preserve all material without retry.'
- $null=Binding $c.shadow $true $true;$provider=Get-DiskImage -ImagePath $c.managed_path -ErrorAction Stop
- Need ($provider.Attached-and[string]::Equals([string]$provider.ImagePath,$c.managed_path,[StringComparison]::OrdinalIgnoreCase)-and[string]::Equals([string]$provider.DevicePath,'\\.\PhysicalDrive6',[StringComparison]::OrdinalIgnoreCase)) 'Original shadow provider must remain attached and offline/read-only after native work.'
+ if($c.operation-ceq'Recover'){
+  $shadowTerminal=RecoveryShadow;Save 'recovery-shadow-terminal.json' $shadowTerminal
+ }else{
+  $null=Binding $c.shadow $true $true;$provider=Get-DiskImage -ImagePath $c.managed_path -ErrorAction Stop
+  Need ($provider.Attached-and[string]::Equals([string]$provider.ImagePath,$c.managed_path,[StringComparison]::OrdinalIgnoreCase)-and[string]::Equals([string]$provider.DevicePath,'\\.\PhysicalDrive6',[StringComparison]::OrdinalIgnoreCase)) 'Original shadow provider must remain attached and offline/read-only after native work.'
+ }
  if($c.operation-ceq'Fresh'){
   $bundlePath=Join-Path $c.output 'allocation-recovery-bundle.json';$bundleSha=Pin $bundlePath;$facts=Artifacts $c.output $bundleSha
   Need ($facts.request.experiment_id-ceq$c.run_id) 'Actual fresh product request must retain the new experiment identity.'

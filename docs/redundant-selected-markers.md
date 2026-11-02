@@ -88,3 +88,26 @@ depending on a later PID lookup to observe a short-lived constructor probe.
 The first standalone probe's observation parent stalled after writing its actual
 constructor result; that metadata-only observer was retired with its exact PID
 and creation identity. Its native exit code remains explicitly unobserved.
+
+The explicit lab CLI now accepts paired `--pause-after-marker-copy` and
+`--pause-signal` options for VM power interruption. Copies AP1/AP2, RB1/RB2,
+HND1/HND2 and ABT1/ABT2 can be selected. Production callers pass no pause request.
+The signal must be `marker-pause.json` directly inside the fresh C0 lab output.
+Its 32 KiB file, buffer and process identity are reserved before source
+construction or activation; the existing read-only device preflight runs first.
+Sealing completes its bounded receipt before activation.
+
+The hook runs only after the actual selected 4 KiB copy's write, flush, uncached
+readback equality and storage revalidation. It fills the actual marker digest,
+synchronizes the signal, closes only that signal handle and parks indefinitely
+with journal/source owners retained. Already-intact copies produce no signal.
+Signal write/sync failure parks with the signal still locked, so it cannot
+publish a readable receipt claiming successful synchronization.
+
+The host must verify the actual live process ID and creation identity plus the
+closed synchronized receipt before deliberately powering off the disposable VM.
+A timeout, receipt flag or missing output alone never authorizes power action.
+This is the specific intentional-fault exception to the ordinary requirement
+that every project worker be terminal before VM power operations. It grants no
+fresh source or replay authority. Source review and focused compilation passed;
+native power-interruption qualification remains pending.

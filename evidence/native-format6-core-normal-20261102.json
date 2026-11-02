@@ -4,7 +4,7 @@
   "utc": "2026-11-02T02:16:48.0480704Z",
   "source_commit": "010316ded73a076747036198bd9036cf51dc082e",
   "core_success": true,
-  "observer_completed": false,
+  "observer_completed": true,
   "observer_failure_preserved": true,
   "observer_failure_reason": "Saved admitted resource descriptor differs from input planningNone; observer also needs64MiB finalization reader",
   "native_marker_qualified": false,
@@ -144,6 +144,26 @@
       "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\process-io-start.json",
       "bytes": 480,
       "sha256": "d5bfe880c101c25eff542015e7131c628a726bad47e02a5cb5f5f8761fa51722"
+    },
+    {
+      "sha256": "ed7e227d67bba31287cc3eeab375c2d80edc483e88e4b461e122ebadcc051fec",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-observations\\complete1078\\completion-result.json",
+      "bytes": 705
+    },
+    {
+      "sha256": "53bb2fb88cba32a3414eadce3fc2615d4d17fa3d4064ed8896c18dfa22c36e29",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-observations\\complete1078\\native-marker-ticket-observation.json",
+      "bytes": 23325
+    },
+    {
+      "sha256": "a710572e7a38117be4d95415457ccb24619fc83a5d309e51126181d5f77049ef",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-observations\\complete1078\\native-completion-observation.json",
+      "bytes": 2969
+    },
+    {
+      "sha256": "daa50f03f522c6b4c9e2098cd7cb85f3b8fa66d4b2256116a491b47d7031fa26",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-observations\\complete1078\\optional-shadow-observation.json",
+      "bytes": 7128
     }
   ],
   "limits": [
@@ -151,5 +171,21 @@
     "Process counters are logical IO, not physical disk traffic. Peak memory was unavailable, not zero.",
     "Bounded prepared811stream source, not arbitrary volume count/size or universalhardware qualification."
   ],
-  "unit_tests_added_or_run": false
+  "unit_tests_added_or_run": false,
+  "readonly_completion": {
+    "stage": "C:\\ntfs2refs\\native-marker-observation-1078caf077ae4c51a76d8e2110c5a74e",
+    "completed_utc": "2026-11-02T02:34:30.5132533Z",
+    "original_native_pid": 3944,
+    "original_native_creation_ms": 1793585096824,
+    "original_native_exit": 0,
+    "new_native_process_started": false,
+    "source_payload_bytes_read": 0,
+    "raw_journal_opened": false,
+    "original_failure_preserved": true,
+    "shadow_present": false,
+    "shadow_reattached": false,
+    "archive_files": 10,
+    "archive_bytes": 89357,
+    "archive_sha256": "33d74cd86c502b0fd602febd2671b082905df9d2f98496e816050144feee2d1b"
+  }
 }

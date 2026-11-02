@@ -67,6 +67,7 @@ pub(super) fn convert_allocation_selected(
         interrupt_after_first_copy_write,
         fresh_exclusive_v3_first_write_fault,
         None,
+        None,
     )
 }
 
@@ -76,6 +77,7 @@ pub(crate) fn convert_allocation_redundant_for_lab(
     construction: qualification::CompactConstructionBudget,
     output: &Path,
     first_write_fault: bool,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
 ) -> Result<()> {
     ensure!(
         request.schema_version == 3
@@ -87,6 +89,10 @@ pub(crate) fn convert_allocation_redundant_for_lab(
         "native redundant marker lab conversion requires fresh schema3 fast source-free planning None"
     );
     construction.validate(request.pair.source.identity.partition_bytes)?;
+    ensure!(
+        pause.is_none() || !first_write_fault,
+        "marker pause and first-write exit fault are mutually exclusive"
+    );
     convert_allocation_selected_inner(
         request,
         construction,
@@ -95,6 +101,7 @@ pub(crate) fn convert_allocation_redundant_for_lab(
         false,
         first_write_fault,
         Some(sj::SelectedMarkerProfile::RedundantSourceFreeV1),
+        pause,
     )
 }
 
@@ -106,6 +113,7 @@ fn convert_allocation_selected_inner(
     interrupt_after_first_copy_write: bool,
     fresh_exclusive_v3_first_write_fault: bool,
     marker_profile: Option<sj::SelectedMarkerProfile>,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
 ) -> Result<()> {
     request.validate()?;
     ensure!(
@@ -132,6 +140,21 @@ fn convert_allocation_selected_inner(
     announce_conversion_phase("checking request and device identities");
     let preflight = composite::selected_device_preflight(request)?;
     qualification::create_output(output)?;
+    ensure!(
+        pause.is_none() || marker_profile == Some(sj::SelectedMarkerProfile::RedundantSourceFreeV1),
+        "marker pause requires the explicit native format-six lab route"
+    );
+    let lab_pause = if let Some(pause) = pause {
+        Some(pause.reserve(
+            output,
+            &request.journal,
+            &request.pair.source,
+            &request.pair.shadow,
+            request.journal_profile()?,
+        )?)
+    } else {
+        None
+    };
     qualification::save(output, "selected-device-preflight.json", &preflight)?;
     qualification::save(
         output,
@@ -400,6 +423,7 @@ fn convert_allocation_selected_inner(
             &request.journal,
             profile,
             marker_profile,
+            lab_pause,
         )?;
         qualification::save(
             output,

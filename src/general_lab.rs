@@ -146,6 +146,7 @@ pub fn convert_fresh_allocation_redundant_markers(
     budget: crate::general_qualification::CompactConstructionBudget,
     output: &std::path::Path,
     first_write_fault: bool,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
 ) -> Result<()> {
     ensure!(
         std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11"),
@@ -156,6 +157,7 @@ pub fn convert_fresh_allocation_redundant_markers(
         budget,
         output,
         first_write_fault,
+        pause,
     )
 }
 
@@ -166,6 +168,7 @@ pub fn recover_allocation_redundant_markers(
     bundle_sha256: &str,
     rollback: bool,
     output: &std::path::Path,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
 ) -> Result<crate::general_recovery::AllocationRecoveryOutcome> {
     ensure!(
         std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11"),
@@ -176,6 +179,7 @@ pub fn recover_allocation_redundant_markers(
         bundle_sha256,
         rollback,
         output,
+        pause,
     )
 }
 

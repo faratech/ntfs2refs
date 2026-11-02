@@ -118,7 +118,7 @@ pub fn recover_allocation(
     rollback: bool,
     output: &Path,
 ) -> Result<AllocationRecoveryOutcome> {
-    recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, false)
+    recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, false, None)
 }
 
 /// Only the explicitly enrolled lab entry may request the native marker type.
@@ -127,8 +127,9 @@ pub(crate) fn recover_allocation_redundant_for_lab(
     bundle_sha256: &str,
     rollback: bool,
     output: &Path,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
 ) -> Result<AllocationRecoveryOutcome> {
-    recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, true)
+    recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, true, pause)
 }
 
 fn recover_allocation_inner(
@@ -137,6 +138,7 @@ fn recover_allocation_inner(
     rollback: bool,
     output: &Path,
     native_marker_lab: bool,
+    pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
 ) -> Result<AllocationRecoveryOutcome> {
     let (mut bundle_input, bundle) = open_bundle(bundle_path, bundle_sha256)?;
     let mut request_input = HeldInput::open(
@@ -272,6 +274,21 @@ fn recover_allocation_inner(
         }
     }
     artifacts::create_output(output)?;
+    ensure!(
+        pause.is_none() || native_marker_lab,
+        "marker pause requires the explicit native lab recovery route"
+    );
+    let lab_pause = if let Some(pause) = pause {
+        Some(pause.reserve(
+            output,
+            &request.journal,
+            &request.pair.source,
+            &request.pair.shadow,
+            request.journal_profile()?,
+        )?)
+    } else {
+        None
+    };
     Artifact::Bundle.copy_for_recovery(output, &bundle_input.bytes)?;
     Artifact::Request.copy_for_recovery(output, &request_input.bytes)?;
     Artifact::Plan.copy_for_recovery(output, &plan_input.bytes)?;
@@ -320,6 +337,7 @@ fn recover_allocation_inner(
             profile,
             &ticket,
             bundle.marker_storage_identity.as_ref(),
+            lab_pause,
         )?;
         artifacts::save(output, "journal-identity.json", &observed)?;
         phase = "selected-journal-lifecycle";

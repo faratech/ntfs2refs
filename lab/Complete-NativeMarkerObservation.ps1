@@ -53,6 +53,33 @@ try{
   $observer.Add($node.Extent.Text)
  }
  Need ($faultBranches-eq1) 'Remove exactly the original fault observer branch from this closed-success completion.'
+ # A cold boot can leave the already-closed conversion's guest-managed VHDX
+ # detached. Observe that absence only after all original HND/native proofs;
+ # this completion never reconstructs a live conversion or shadow attachment.
+ $shadowStarts=@();for($i=0;$i-lt$observer.Count;$i++){if($observer[$i]-ceq'$null=Binding $c.shadow $true $true'){$shadowStarts+=,$i}}
+ Need ($shadowStarts.Count-eq1) 'One original required-shadow observer block required.';$at=$shadowStarts[0]
+ Need ($observer[$at+1].StartsWith('$provider=Get-DiskImage ',[StringComparison]::Ordinal)-and$observer[$at+2].Contains('Original shadow provider must remain attached and offline/read-only after native work.')) 'Exact original three-statement shadow observer block required.'
+ for($i=0;$i-lt3;$i++){$observer.RemoveAt($at)}
+ $optionalShadow=@'
+Need ($c.operation-ceq'Fresh'-and-not$c.rollback-and$nativeExit-eq0-and$result.success-eq$true-and$completion.success-eq$true-and$completion.rollback_closed-eq$true-and$closed.replay_closed-eq$true-and(Same $closed.selected_sha256 $facts.ticket.new_selected_sha256)) 'Optional original shadow applies only after this actual closed HND/ReFS completion.'
+$inventory=@(Get-Disk -ErrorAction Stop);Need ($inventory.Count-gt0) 'Complete actual disk inventory required.'
+$seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase);$matches=@(foreach($disk in $inventory){$guid=[guid]::Empty;Need ([guid]::TryParse([string]$disk.Guid,[ref]$guid)-and$guid-ne[guid]::Empty-and$seen.Add($guid.ToString('D'))) 'Unknown or duplicate current disk GUID refused.';if($guid-eq[guid]$c.shadow.identity.disk_guid){$disk}})
+Need ($matches.Count-le1) 'Duplicate original shadow identity refused.'
+$imageItem=Get-Item -LiteralPath $c.managed_path -Force;Need (-not$imageItem.PSIsContainer-and$imageItem.Length-gt0) 'Original managed VHDX must remain an existing ordinary file.'
+$cursor=$imageItem;while($null-ne$cursor){Need (-not($cursor.Attributes-band[IO.FileAttributes]::ReparsePoint)) 'Reparse original managed VHDX ancestry refused.';if($cursor-is[IO.DirectoryInfo]){$cursor=$cursor.Parent}else{$cursor=$cursor.Directory}}
+$provider=Get-DiskImage -ImagePath $c.managed_path -ErrorAction Stop
+Need ([string]::Equals([string]$provider.ImagePath,$c.managed_path,[StringComparison]::OrdinalIgnoreCase)) 'Original managed VHDX provider route differs.'
+if($matches.Count-eq1){
+ Need ($matches[0].Number-eq$c.shadow.disk_number) 'Present original shadow disk number differs; no rebind is allowed.'
+ $null=Binding $c.shadow $true $true
+ Need ($provider.Attached-and[string]::Equals([string]$provider.DevicePath,'\\.\PhysicalDrive6',[StringComparison]::OrdinalIgnoreCase)) 'Present original shadow requires exact offline/read-only geometry and provider.'
+}else{
+ Need (-not$provider.Attached-and@($inventory|Where-Object Number -EQ $c.shadow.disk_number).Count-eq0) 'Absent original shadow requires the original provider detached and original disk number absent; no attach or replacement is allowed.'
+}
+Save 'optional-shadow-observation.json' @{scope='closed-handoff-optional-original-managed-shadow-v1';original_binding=$c.shadow;shadow_present=($matches.Count-eq1);provider_check_applicable=($matches.Count-eq1);original_image_path=[string]$provider.ImagePath;original_image_exists=$true;original_provider_attached=[bool]$provider.Attached;current_disk_inventory=(Inventory);all_current_disk_guids_unique=$true;original_shadow_binding_changed=$false;reattachment_performed=$false;attributes_changed=$false;closed_handoff_already_verified=$true;raw_journal_opened=$false;grants_source_or_replay_authority=$false;utc=[DateTime]::UtcNow.ToString('o')}
+'@
+ $completionStarts=@();for($i=0;$i-lt$observer.Count;$i++){if($observer[$i].StartsWith("Save 'native-completion-observation.json' ",[StringComparison]::Ordinal)){$completionStarts+=,$i}}
+ Need ($completionStarts.Count-eq1) 'One original successful native-completion observation required.';$observer.Insert($completionStarts[0],$optionalShadow)
  $guest=@'
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -82,7 +109,7 @@ try{
  Need ((Pin $bundlePath)-ceq'7296ac5c02ec6dfd3292e78f12d8dee48e3d08870faaf025a8f1976aa50723bd') 'Actual original closed conversion bundle pin required.'
  Save 'completion-origin.json' @{schema_version=1;kind='native-marker-readonly-metadata-completion-origin';original_run_id=$c.run_id;original_stage=$origin;original_output=$c.output;original_wrapper_sha256='5858063989f6fc5e971c195d96d35093b6fceb44a9b4e99ed2d7e627e29c4cf3';original_configuration_sha256='58b6d08af3e514c051c8cf6ecdb5d593652f1c28a5f77272967fac1267a5a6e6';original_process_sha256='bd3b3ce2ed055a1890dc738042543b0025c94bb24a950d9c47ab012bd63eac78';original_terminal_sha256='f536c7db6fa0d9a646f63e9093dde5f2107a6b7de8c615e0b0bec9d186bced50';original_preflight_sha256='eda5b4b2297068d6b11a3b60e9e3c5ab21d01dd85a1cd5a94c295deb1d2423e7';original_failure_sha256='9d3c88a90c246d0aa1d9897db77eaa6705d0f74ae1f0700ef59f0d378ba8d637';original_native_pid=$nativePid;original_native_creation_ms=$birth;original_native_exit=$nativeExit;original_wall_seconds=$terminal.wall_seconds;original_peak_working_set_bytes=$terminal.peak_working_set_bytes;original_peak_paged_memory_bytes=$terminal.peak_paged_memory_bytes;corrected_controller_sha256='__CONTROLLER_SHA__';original_failure_preserved=$true;new_native_process_started=$false;raw_journal_opened=$false;native_marker_qualified=$false;hard_power_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}
 __OBSERVER__
- Save 'completion-result.json' @{schema_version=1;kind='native-marker-readonly-metadata-completion';observation_passed=$true;original_run_id=$c.run_id;original_native_pid=$nativePid;original_native_creation_ms=$birth;original_native_exit=$nativeExit;new_native_process_started=$false;source_payload_bytes_read=0;independent_content_hashes_run=$false;raw_journal_opened=$false;original_failure_preserved=$true;native_marker_qualified=$false;hard_power_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}
+ Save 'completion-result.json' @{schema_version=1;kind='native-marker-readonly-metadata-completion';observation_passed=$true;original_run_id=$c.run_id;original_native_pid=$nativePid;original_native_creation_ms=$birth;original_native_exit=$nativeExit;new_native_process_started=$false;source_payload_bytes_read=0;independent_content_hashes_run=$false;raw_journal_opened=$false;original_failure_preserved=$true;optional_shadow_observation='optional-shadow-observation.json';native_marker_qualified=$false;hard_power_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}
 }catch{
  Save 'completion-failed.json' @{observation_passed=$false;phase=$phase;error=$_.Exception.ToString();original_failure_preserved=$true;new_native_process_started=$false;raw_journal_opened=$false;automatic_retry_recover_restore_cleanup=$false;worker_death_inferred=$false;native_marker_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}
  exit 1

@@ -44,8 +44,20 @@ prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move 
 is separate. These are scoped observations, not a controlled physical benchmark.
 See evidence/prepared-source-performance-native-20261101.json.
 
-CURRENT VM is fresh-confirmed Off/RAM0 at native format6 CORE SUCCESS
+CURRENT VM is fresh-confirmed Off/RAM0 at the saved native format6 success branch
 eba55c48-5dc2-42c5-9ecb-84d696b85a78, parent preparedcb802669,14 snapshots.
+Only metadata observers ran after boot; no new conversion or raw replay. All
+tasks/workers were terminal before the final normal shutdown;14snapshots remain.
+Read-only completion1078caf077ae4c51a76d8e2110c5a74e PASSED Ready/0 with original
+native3944/birth1793585096824/exit0. Original operator failure and earlier6037
+cold-shadow refusal are preserved. Source payload scanned0, new nativeprocess0,
+rawJopenedfalse. Detached shadow6 is affirmed absent only AFTER closedHND/full
+recorded native proofs; image exists/Attachedfalse/allcurrentGUIDsunique, no
+reattach/rebind/attributechanges. Closed10observerfiles89,357B verified; archiveSHA
+33d74cd86c502b0fd602febd2671b082905df9d2f98496e816050144feee2d1b.
+VM start initially failed for hostRAM. WSL cache-only reclaim (sync/drop_caches)
+released about38GiB Linuxcache and enabled the unchanged4GiB VM; no Linux process
+was stopped and no persistent memory/privilege setting changed. Keep WSL running.
 Run e330512f550a49dda07e5700f5c4bb6a used sealed runtime010316d, native3944/
 birth1793585096824 exited0 in69.7858092s, HND/ReFS, actual sealed unbuffered NTFS
 journal format6/131,669,328B, selected545,095,680B, eight aligned distinct marker
@@ -55,16 +67,16 @@ supplies affirmative ordinary-file proof. Both terminal barriers passed before
 native online exposure. This is normal CORE success, not a completed native6
 matrix or hardware qualification. Independent full-content hashes were not run.
 Original metadata observer failed AFTER native0 because saved admitted V3Some
-was incorrectly required to remain planningNone. Its finalization reader also
-needs64MiB (actual27,174,509B). Fix source + readonlycompletion only; NEVER replay
-this HND or rerun its converter. Current agent marker_lab_dispatch is preparing
-lab/Complete-NativeMarkerObservation.ps1 for this already-closed e330 case.
+was incorrectly required to remain planningNone. Its corrected finalization
+reader uses64MiB (actual27,174,509B). Readonlycompletion is now complete; NEVER
+replay this HND or rerun its converter. The generator and original failures stay.
 Closed67files157,375,432B source/copySHAverified; archiveSHA
 d9bdf0ba3bbe3ee2c1d57b5fb2d3b2604600dae865a2cf7e79b6275c7b2c9167.
 Bundle7296ac5c02ec6dfd3292e78f12d8dee48e3d08870faaf025a8f1976aa50723bd.
 Evidence evidence/native-format6-core-normal-20261102.json. Logical process read
 delta21,619,924,280B/write922,583,523B; physicalIO and peakRAM remain unmeasured.
-Normal stop and fresh snapshot verification completed; no native job is active.
+The core success checkpoint was normally stopped/fresh verified before current
+read-only observer boot. No native conversion/recovery job is active now.
 
 Earlier completed current65b Rollback remains saved at
 9a01516b-1279-4266-9923-fe17d2610090, parent original6679708a.
@@ -176,14 +188,27 @@ SHA857e4003cc4c367a0bf3fba2c45461f30dfcdd261608b286400ff1bee31c5fad
 has4 standard roles plus separately pinned lab marker tool. It predates934ffa8;
 do not relabel it as latest or nativequalified. Details metadata-memory-reduction.md.
 
-NEXT: complete e330 metadata observation read-only from saved native6success,
-then native6 controlled interruption/Resume/Rollback and hard-power qualification,
+NEXT: native6 controlled interruption/Resume/Rollback and hard-power qualification,
 then resource-basedpagedscale. The65b matrix is closed; do not repeat it without a
 new failure or relevant change. Publiconecommand
 coverage is now real; don'trepeatit withoutnewchanges/failures. Cleancommitted
 release/tag/version remainsopen because usermainhunk MUSTstayuntouched/unstaged;
 qualifiedbuildpins it separately. No units added/run. Do notcall performancegoal
 complete fromthis boundedcorpus; independentwriter research remainsoffcriticalpath.
+Lab-only marker-copy pause instrumentation is now source-reviewed and compiled,
+but not natively qualified. Eight8slots selectable through paired
+--pause-after-marker-copy/--pause-signal options; signal is preallocated32KiB
+marker-pause.json directlyinsideindependentC0output. Actual selectedcopy must
+completewrite/flush/uncachedreadback/storagevalidation before syncedsignal closes;
+then source/journalownersparkforever. Signalwrite/syncerrorparks withsignalstill
+share0locked. No nextslot/target/callback advances, no timeoutautocontinue, all
+productionpathsNone. HostmustverifylivePID/birth+readableclosedactualreceipt before
+the intentionaldisposableVM hard-power exception; timeoutalone is NEVERauthority.
+Rootfocusedcheck3bins passed23.32s; no unit tests. Build/freeze a newruntime before
+pausecases; existing010316dsealedtools have NOpausefeature. Controlledprocessfault
+matrix can use010316d from preparedcb with correcteddispatcher. Recover-only
+dispatcher now allows affirmed originalshadowabsence aftercoldboot, without
+attach/rebind/attrchanges; Fresh stillrequiresoriginalemptyattachedshadow6.
 Preparation82e805b moved5,643,501,568B over385 native requests/222 identities,
 with complete native maps/EOF/identity checks and all811 independent hashes.
 A fresh frozen full raw/native baseline also passed1084 objects/811 streams.

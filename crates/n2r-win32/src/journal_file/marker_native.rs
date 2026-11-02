@@ -145,6 +145,7 @@ pub struct UnbufferedJournalFile {
 pub struct MarkerJournalFile {
     io: UnbufferedJournalFile,
     observation: MarkerStorageObservation,
+    lab_pause: Option<LabMarkerCopyPause>,
 }
 
 fn profile_capacity(profile: JournalProfile) -> io::Result<u64> {
@@ -718,6 +719,7 @@ impl UnbufferedJournalFile {
         Ok(MarkerJournalFile {
             io: self,
             observation: before,
+            lab_pause: None,
         })
     }
 
@@ -827,6 +829,18 @@ impl Seek for UnbufferedJournalFile {
 }
 
 impl MarkerJournalFile {
+    /// Only the explicit enrolled lab flow supplies this pre-reserved owner.
+    /// Attaching neither writes a marker nor changes any journal checks.
+    pub fn attach_lab_copy_pause(&mut self, mut pause: LabMarkerCopyPause) -> io::Result<()> {
+        require(
+            self.lab_pause.is_none(),
+            "marker lab pause already attached",
+        )?;
+        pause.bind(&self.observation)?;
+        self.lab_pause = Some(pause);
+        Ok(())
+    }
+
     /// Recovery requires the independently pinned file identity and exact
     /// ticket length, plus fresh observations through the newly owned handle.
     /// Descriptive saved slot addresses never grant this capability.
@@ -945,6 +959,12 @@ impl Write for MarkerJournalFile {
         if let Err(error) = result {
             self.io.poisoned = true;
             return Err(error);
+        }
+        if let Some(pause) = &mut self.lab_pause {
+            if let Err(error) = pause.after_validated_copy(offset, input) {
+                self.io.poisoned = true;
+                return Err(error);
+            }
         }
         self.io.position += GRANULE as u64;
         Ok(GRANULE)

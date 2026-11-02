@@ -7,8 +7,9 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use n2r_win32::journal_file::{
-    GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile, MarkerJournalFile,
-    MarkerStorageObservation, UnbufferedJournalFile, observe_general_journal_file_with_profile,
+    GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile, LabMarkerCopyPause,
+    MarkerJournalFile, MarkerStorageObservation, UnbufferedJournalFile,
+    observe_general_journal_file_with_profile,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -19,6 +20,7 @@ use std::{
 
 pub(crate) struct NativeSelectedJournal {
     storage: Storage,
+    lab_pause: Option<LabMarkerCopyPause>,
 }
 
 enum Storage {
@@ -38,6 +40,7 @@ impl NativeSelectedJournal {
         binding: &GeneralJournalStorageBinding,
         profile: JournalProfile,
         markers: Option<sj::SelectedMarkerProfile>,
+        lab_pause: Option<LabMarkerCopyPause>,
     ) -> Result<(Self, JournalFileIdentity)> {
         if markers.is_some() {
             let file = UnbufferedJournalFile::create_new(path, binding, profile)?;
@@ -45,10 +48,15 @@ impl NativeSelectedJournal {
             return Ok((
                 Self {
                     storage: Storage::Constructing(file),
+                    lab_pause,
                 },
                 identity,
             ));
         }
+        ensure!(
+            lab_pause.is_none(),
+            "marker pause requires explicit native format six"
+        );
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -64,6 +72,7 @@ impl NativeSelectedJournal {
         Ok((
             Self {
                 storage: Storage::Buffered(file),
+                lab_pause: None,
             },
             observed.identity,
         ))
@@ -75,6 +84,7 @@ impl NativeSelectedJournal {
         profile: JournalProfile,
         ticket: &sj::SelectedTicket,
         marker_identity: Option<&JournalFileIdentity>,
+        lab_pause: Option<LabMarkerCopyPause>,
     ) -> Result<(Self, serde_json::Value)> {
         if ticket.marker_profile.is_some() {
             let identity = marker_identity.ok_or_else(|| {
@@ -82,24 +92,28 @@ impl NativeSelectedJournal {
                     "native marker recovery needs its independently pinned file identity"
                 )
             })?;
-            let file = MarkerJournalFile::open_recovery(
+            let mut file = MarkerJournalFile::open_recovery(
                 path,
                 binding,
                 profile,
                 identity,
                 ticket.journal_length,
             )?;
+            if let Some(pause) = lab_pause {
+                file.attach_lab_copy_pause(pause)?;
+            }
             let observed = serde_json::to_value(file.observation())?;
             return Ok((
                 Self {
                     storage: Storage::Sealed(file),
+                    lab_pause: None,
                 },
                 observed,
             ));
         }
         ensure!(
-            marker_identity.is_none(),
-            "legacy journal has marker storage identity"
+            marker_identity.is_none() && lab_pause.is_none(),
+            "legacy journal has marker storage identity or lab pause"
         );
         let file = OpenOptions::new()
             .read(true)
@@ -115,6 +129,7 @@ impl NativeSelectedJournal {
         Ok((
             Self {
                 storage: Storage::Buffered(file),
+                lab_pause: None,
             },
             serde_json::to_value(observed)?,
         ))
@@ -131,7 +146,11 @@ impl NativeSelectedJournal {
         let Storage::Constructing(file) = construction else {
             anyhow::bail!("native marker sealing requires its actual construction owner");
         };
-        self.storage = Storage::Sealed(file.seal_marker_storage(ticket.journal_length)?);
+        let mut file = file.seal_marker_storage(ticket.journal_length)?;
+        if let Some(pause) = self.lab_pause.take() {
+            file.attach_lab_copy_pause(pause)?;
+        }
+        self.storage = Storage::Sealed(file);
         Ok(())
     }
 

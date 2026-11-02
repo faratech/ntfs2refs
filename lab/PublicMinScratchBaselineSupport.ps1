@@ -1,5 +1,33 @@
 # Function-only independent observation of public --minimize-scratch preparation.
 # Saved maps and receipts never confer source, conversion or recovery authority.
+function PublicPreparationReadBoundedLedgerRow([IO.StreamReader]$Reader){
+ # Keep the original UTF-16 character limit, CR rejection and mandatory final
+ # LF. Run the character loop in the CLR rather than millions of PS calls.
+ if(-not('N2RPublicBoundedLedgerV1'-as[type])){
+  $source=@"
+using System.IO;
+using System.Text;
+public static class N2RPublicBoundedLedgerV1 {
+ public static string Read(StreamReader reader) {
+  StringBuilder line=new StringBuilder();
+  while(true) {
+   int value=reader.Read();
+   if(value<0 || value==10) {
+    if(line.Length==0 || value!=10)
+     throw new InvalidDataException("Preparation JSONL requires complete nonempty newline-terminated rows.");
+    return line.ToString();
+   }
+   if(value==13 || line.Length>=32*1024*1024)
+    throw new InvalidDataException("Preparation JSONL row exceeds reserved bound or contains CR.");
+   line.Append((char)value);
+  }
+ }
+}
+"@
+  Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop
+ }
+ return [N2RPublicBoundedLedgerV1]::Read($Reader)
+}
 function PublicPreparationPin([string]$Path,[long]$Maximum){
  $full=[IO.Path]::GetFullPath($Path);Need ($full-ceq$Path) 'Absolute public preparation path required.'
  $item=Get-Item -LiteralPath $full -Force;Need (-not$item.PSIsContainer-and$item.Length-ge0-and$item.Length-le$Maximum) 'Public preparation artifact exceeds its bound.'
@@ -84,7 +112,7 @@ function ReadPublicPreparationLedger($Expected,$Request,[string]$Records,$Baseli
  $ledgerPath=Join-Path $preparation 'moves.jsonl';$ledgerPin=PublicPreparationPin $ledgerPath 64MB;Need ($ledgerPin.bytes-eq$report.receipt_bytes-and$ledgerPin.sha256-ceq$report.receipt_sha256) 'Actual move ledger bytes/SHA differ from both preparation results.';$pins.moves=$ledgerPin
  $file=[IO.File]::Open($ledgerPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$reader=$null;$count=0L;$moved=0L;$pages=0L;$cachedAccess=[Collections.Generic.List[object]]::new()
  try{Need ($file.Length-eq$ledgerPin.bytes) 'Held preparation ledger length differs.';$hash=[Security.Cryptography.SHA256]::Create();try{$actual=([BitConverter]::ToString($hash.ComputeHash($file))).Replace('-','').ToLowerInvariant()}finally{$hash.Dispose()};Need ($actual-ceq$ledgerPin.sha256) 'Held preparation ledger SHA differs.';$file.Position=0;$reader=[IO.StreamReader]::new($file,[Text.UTF8Encoding]::new($false,$true),$true,4096,$true)
-  while(-not$reader.EndOfStream){$line=[Text.StringBuilder]::new();while($true){$char=$reader.Read();if($char-lt0-or$char-eq10){break};Need ($char-ne13-and$line.Length-lt32MB) 'Preparation JSONL row exceeds reserved bound or contains CR.';$null=$line.Append([char]$char)};Need ($line.Length-gt0-and$char-eq10) 'Preparation JSONL requires complete nonempty newline-terminated rows.';$row=$line.ToString()|ConvertFrom-Json;$count++;Need ($count-le32768-and$row.schema_version-eq1-and$row.submitted-eq$true-and$null-eq$row.native_error-and$null-eq$row.flush_error-and$null-eq$row.post_route_error-and$row.identity_and_eof_unchanged-eq$true-and$row.mapping_outside_requested_vcns_unchanged-eq$true-and$row.requested_destination_observed-eq$true-and$row.verified-eq$true-and$row.source_owner_poisoned-eq$false-and$row.source_admitted-eq$false-and$row.retry_or_undo_performed-eq$false-and@($row.before.errors).Count-eq0-and@($row.after.errors).Count-eq0) 'Move ledger contains unverified/failed/authority-bearing observations.'
+  while(-not$reader.EndOfStream){$row=(PublicPreparationReadBoundedLedgerRow $reader)|ConvertFrom-Json;$count++;Need ($count-le32768-and$row.schema_version-eq1-and$row.submitted-eq$true-and$null-eq$row.native_error-and$null-eq$row.flush_error-and$null-eq$row.post_route_error-and$row.identity_and_eof_unchanged-eq$true-and$row.mapping_outside_requested_vcns_unchanged-eq$true-and$row.requested_destination_observed-eq$true-and$row.verified-eq$true-and$row.source_owner_poisoned-eq$false-and$row.source_admitted-eq$false-and$row.retry_or_undo_performed-eq$false-and@($row.before.errors).Count-eq0-and@($row.after.errors).Count-eq0) 'Move ledger contains unverified/failed/authority-bearing observations.'
    $r=$row.request;$key=PublicPreparationStreamKey $r.identity @();Need ($states.ContainsKey($key)) 'Move ledger identity is absent from the original user-stream baseline.';$state=$states[$key];$s=$state.old;$f=$state.old_file;$start=PublicPreparationInteger $r.starting_vcn;$source=PublicPreparationInteger $r.expected_source_lcn;$dest=PublicPreparationInteger $r.destination_lcn;$clusters=PublicPreparationInteger $r.cluster_count;$length=PublicPreparationInteger $r.length_bytes;$end=[decimal]$start+$clusters
    Need (-not$s.resident-and$s.flags-eq0-and$s.initialized_size-eq$s.logical_size-and$s.name-ceq''-and@($s.name_utf16).Count-eq0-and$r.expected_logical_bytes-eq$s.logical_size-and$clusters-gt0-and$length-eq[decimal]$clusters*$cluster-and$length-le64MB-and$end*$cluster-le$s.logical_size-and[decimal]$source+$clusters-le$totalClusters-and[decimal]$dest+$clusters-le$totalClusters-and([decimal]$source+$clusters-le$dest-or[decimal]$dest+$clusters-le$source)) 'Move ledger request is outside the exact plain initialized unnamed DATA domain.'
    $recordKey=LabRecordKey $r.identity.record_number $r.identity.sequence_number;Need ($planned.ContainsKey($recordKey)) 'Actual native move is absent from the complete preparation plan.';$suggestions=@($planned[$recordKey]|Where-Object {$start-ge$_.starting_vcn-and$end-le[decimal]$_.starting_vcn+$_.cluster_count-and$source-eq[decimal]$_.source_lcn+$start-$_.starting_vcn-and$dest-eq[decimal]$_.destination_lcn+$start-$_.starting_vcn});Need ($suggestions.Count-eq1-and$suggestions[0].stream_index-ge0-and$suggestions[0].stream_index-lt@($f.streams).Count-and@($f.streams[$suggestions[0].stream_index].name_utf16).Count-eq0) 'Actual native move is not an exact bounded subdivision of its unnamed-DATA plan suggestion.'

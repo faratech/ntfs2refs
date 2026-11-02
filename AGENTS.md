@@ -10,7 +10,32 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release block (2026-11-02 UTC)
+## CURRENT release continuation (2026-11-02 17:32 UTC)
+
+This block supersedes the earlier VM and pending-public labels below.
+VM is fresh-confirmed Off/RAM0 at clean233 public success checkpoint
+efa60a3e-e1ca-4840-9328-2c542e44ee6b, parent golden8329, 27 snapshots.
+The exact clean233 public CLI completed normal conversion on the unprepared
+source: native4704/birth1793602537416/exit0 in139.0057165s including385 NTFS
+moves/5,643,501,568B. All811 independent hashes,1084objects and complete native
+preparation-map replay passed. Journal142,496,384B +literal43,900,928B =
+186,397,312B. Logical process reads29,258,514,077B/writes3,483,167,219B;
+physical I/O and peakRAM unmeasured. Observer Ready/0; all project workers
+terminal before normal shutdown. Closed97files244,192,950B archiveSHA
+de470b5d436ab73aa461307eaa3ea181150aa3cd3ab5e108e24a89d2fc4067f5.
+See evidence/clean233-public-native-20261102.json. NEVER replay its closed HND.
+
+The new recover-only enrolled-lab fault facility accepts only an already valid
+first marker plus zero second peer, checked before target opening and at the
+selected write. Corrupt-peer flips one fixed second-copy self-hash bit and parks
+after actual flush/readback; synthetic write/flush/readback errors poison and
+return actual Err. They are explicitly not hardware error claims. Signals are
+preallocated before journal/target open. Focused3bin Windows check passed;
+no unit tests added/run. Native damaged-peer/error execution remains pending.
+The public production qualification flag remainsFALSE; do not flip or claim
+stable release from these bounded cases. Preserve approved mainc6 bytes.
+
+## Earlier release checkpoint (2026-11-02 UTC)
 
 This block supersedes older CURRENT/LIVE and pending-power labels below.
 CURRENT VM is fresh-confirmed Off/RAM0 at ABT1 closed-verification checkpoint

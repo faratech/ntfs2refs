@@ -36,3 +36,16 @@ fixed version1/mask0x6000 request. The query contract rejects invalid request
 versions/masks; it does not promise echoes. Raw response fields remain recorded.
 API errors, short/oversized replies and contradictory designation/trust remain
 unknown. The failed attempt is preserved and the source remained online NTFS.
+
+Clean05c1abd then passed native conversion and all811 independent stream hashes/
+1084objects. The shadow was positively developer/trusted while the SOURCE was
+independently developer/untrusted, with designation matching the request. See
+[the corrected native case](../evidence/corrected-devdrive-public-05c1abd-20261102.json).
+
+An explicit `--target-format standard` run on a separately restored source then
+received format.com exit4 and “ReFS file system is not supported on this device.”
+The source remained online NTFS and no source preparation, freeze, certificate
+or journal was reached. No alternate format was attempted. This records the
+device's formatter refusal, not a successful standard-ReFS conversion or a
+universal claim about Windows editions. Standard qualification remains open.
+See [the refusal](../evidence/standard-format-refusal-05c1abd-20261102.json).

@@ -10,7 +10,47 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 20:48 UTC)
+## CURRENT release continuation (2026-11-02 21:03 UTC)
+
+This block supersedes all older CURRENT/LIVE labels. VM is confirmed Off/RAM0,
+parentgolden8329,32snapshots after explicitstandard-profile refusal. No VM/host
+build is live. HEAD05c1abd source is built/sealed; later commits are lab/evidence.
+Cleanbuild r05c1abd manifestSHA8c26a1d1e6242c5d8d95f6c898c4191eca2096dc3ad58143294c99f3c007adda;
+source05c1abd8e9b274cf7bd26ecaa93cb690dbd98e68. Native-marker-tools-05c1abd
+manifestSHAee288bbfaa52550ca1074271a60cf8351ec94b469951823080d102ca5cb51ccc.
+
+CorrecteddefaultDev case7868b792 PASSED native5332/birth1793652600258/0,
+119.6812554s, all811independenthashes/1084objects/fullpreparationreplay. Journal+
+literal184,273,712B; logicalreads28,549,568,333/writes3,285,385,657 (notphysicalIO).
+ActualQUERY success16bytes/flags0x6000/zeroechoes nowKnownDev=true/Trusted=true on
+shadow; independently queried SOURCE KnownDev=true/Trusted=false/flags0x2000.
+No trust/filter/registry setter. Requesteddesignationmatched; HNDclosed.
+Saved577b09be-973e-4823-ab10-b2d8e07d774a childgolden; NEVERreplayclosedHND.
+Archive100files244,303,060B SHAd2e73c54801f71951fc4dd0abd9a3e201670c19c31ed8e704032624d19403383.
+
+ThenFRESHgolden standardcase5a5ace3d actuallyran --target-formatstandard via
+reviewednewhelperf32265c6a1e13e88079304fa1688198c6f06dbb90513b95a0fe8d362286cf429.
+Native5324/birth1793653187749/1; format.comexit4 explicitlyreported
+'ReFS file system is not supported on this device.' NO fallback/conversion,
+FstayedonlineNTFS, no sourceprep/freeze/cert/J. ObserverReady/0 means SAFE
+FORMATTERREFUSAL only; standardprofile_qualified=false, unsupported_capability_proven=false.
+Don't infer universalOS/edition cause. Archive28files73,444,222B SHA
+2a07de4d4bb65f1a84b17fda819a5000b2d9f42854a8066e0ffc68f740640501.
+See corrected-devdrive-public and standard-format-refusal05cevidence.
+
+NEXT realcode slice: resource-budgeted complete paged ExpectedTree/object/map
+manifests endtoend through native constructor +fastverification +recovery, remove
+1280semantic limit while initiallykeeping2048rawidentity domain. All counts/keys/
+pagehashes/ownership handles must close BEFOREactivation; neverfeedpageddata into
+old1280limitedvectors orliftconstants alone. Qualify~1500simpleobjects andboth
+recoverydirections. Productionmarker flag remainsFALSE: explicit r70lab matrix
+is not productionownerformat6 qualification; exactcandidate creation/recovery+
+outofprofile refusal stillneeded. Standardprofile remainsunqualified here.
+
+No unit tests/main edits/WSL shutdown/newpersistentprivileges. Mainc6 unchanged;
+keep native-shadow and fixed50GBepoch; rootaloneVM actions. No stable/tag claim.
+
+## Earlier release continuation (2026-11-02 20:48 UTC)
 
 This block supersedes older CURRENT/LIVE labels. VM is confirmed Off/RAM0,
 parentgolden8329,31snapshots after preserved13433 pre-source refusal. No VM job

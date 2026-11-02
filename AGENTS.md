@@ -44,8 +44,30 @@ prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move 
 is separate. These are scoped observations, not a controlled physical benchmark.
 See evidence/prepared-source-performance-native-20261101.json.
 
-CURRENT VM is fresh-confirmed Off/RAM0 at completed current65b Rollback
-9a01516b-1279-4266-9923-fe17d2610090, parent original6679708a,13 snapshots.
+CURRENT VM is fresh-confirmed Off/RAM0 at native format6 CORE SUCCESS
+eba55c48-5dc2-42c5-9ecb-84d696b85a78, parent preparedcb802669,14 snapshots.
+Run e330512f550a49dda07e5700f5c4bb6a used sealed runtime010316d, native3944/
+birth1793585096824 exited0 in69.7858092s, HND/ReFS, actual sealed unbuffered NTFS
+journal format6/131,669,328B, selected545,095,680B, eight aligned distinct marker
+device offsets,1084 complete native map bindings and650partial/1,371,388tailB.
+WOFquery1 remains unsupported/absence=false; samehandle directreparse4390/tag0
+supplies affirmative ordinary-file proof. Both terminal barriers passed before
+native online exposure. This is normal CORE success, not a completed native6
+matrix or hardware qualification. Independent full-content hashes were not run.
+Original metadata observer failed AFTER native0 because saved admitted V3Some
+was incorrectly required to remain planningNone. Its finalization reader also
+needs64MiB (actual27,174,509B). Fix source + readonlycompletion only; NEVER replay
+this HND or rerun its converter. Current agent marker_lab_dispatch is preparing
+lab/Complete-NativeMarkerObservation.ps1 for this already-closed e330 case.
+Closed67files157,375,432B source/copySHAverified; archiveSHA
+d9bdf0ba3bbe3ee2c1d57b5fb2d3b2604600dae865a2cf7e79b6275c7b2c9167.
+Bundle7296ac5c02ec6dfd3292e78f12d8dee48e3d08870faaf025a8f1976aa50723bd.
+Evidence evidence/native-format6-core-normal-20261102.json. Logical process read
+delta21,619,924,280B/write922,583,523B; physicalIO and peakRAM remain unmeasured.
+Normal stop and fresh snapshot verification completed; no native job is active.
+
+Earlier completed current65b Rollback remains saved at
+9a01516b-1279-4266-9923-fe17d2610090, parent original6679708a.
 Rollback5b38b6a74a61429abd60829507b0e7c1 PASSED native6124/birth1793580685000
 exit0/ABT/NTFS and all811 independent hashes. Restore-required144,560,128B digest
 3f2be98dfc6a5cf8f12a818593fa8df8cc9a0e89c7aa3637891039b040588c22 matched;
@@ -95,9 +117,9 @@ public-min-scratch-d04360139db64953a53a2d1448018c58/closed-native (wrapper/produ
 Alltasks/workers terminal before normalstop/checkpoint. Oldnormal051b andf8f7 were
 retired viaHyper-V after279 old/newarchivefilesheld/rehashed; receiptfolder
 retire-two-superseded-normal-results-f59aabfec5804818aac3c9756dd0362f. Allarchivesremain.
-Keep original6679708a, newResume19f5d614, newRollback9a01516b, latestpublic1d729, preparedcb,
+Keep latestnative6eba55c48, original6679708a, newResume19f5d614, newRollback9a01516b, latestpublic1d729, preparedcb,
 originalNTFS8329/6fe2/371a/9c42, guardedf4bf,Hcoldd939, oldformatinterrupteddea9
-and format5original7721 (13 states, current Off at9a01516b).
+and format5original7721 (14 states, current Off ateba55c48).
 Cleanup20261102 retired ONLY archived recovery-result leaves8087/d40b/d9e580fa/67eda3e4
 through Hyper-V after224 archive files held/rehashed. Freed22,095,781,888 hostbytes
 (20.58GiB), Dfree143,170,375,680B; logical lab201,040,951,068B at00:25UTC.
@@ -154,8 +176,9 @@ SHA857e4003cc4c367a0bf3fba2c45461f30dfcdd261608b286400ff1bee31c5fad
 has4 standard roles plus separately pinned lab marker tool. It predates934ffa8;
 do not relabel it as latest or nativequalified. Details metadata-memory-reduction.md.
 
-NEXT: native6 qualification with a newly built latest runtime, then
-resource-basedpagedscale. The65b matrix is closed; do not repeat it without a
+NEXT: complete e330 metadata observation read-only from saved native6success,
+then native6 controlled interruption/Resume/Rollback and hard-power qualification,
+then resource-basedpagedscale. The65b matrix is closed; do not repeat it without a
 new failure or relevant change. Publiconecommand
 coverage is now real; don'trepeatit withoutnewchanges/failures. Cleancommitted
 release/tag/version remainsopen because usermainhunk MUSTstayuntouched/unstaged;

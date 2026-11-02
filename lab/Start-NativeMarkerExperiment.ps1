@@ -236,6 +236,19 @@ function Routes([bool]$Fresh){
  Protected
  return @{source_offline=(-not$Fresh);source_readonly=$false;shadow_offline=(-not$Fresh);shadow_readonly=(-not$Fresh);provider=@{image_path=[string]$provider.ImagePath;device_path=[string]$provider.DevicePath;attached=[bool]$provider.Attached};all_disk_attributes=(Inventory);attributes_changed_by_dispatcher=$false;reattached=$false;rebound=$false}
 }
+function AdmittedEnvelope($Profile,$Expected,[string]$Directory){
+ Need ($null-ne$Profile-and$Profile-is[pscustomobject]-and@($Profile.PSObject.Properties).Count-eq1) 'One explicit admitted V3 profile required.'
+ $property=$Profile.PSObject.Properties['experimental_object_envelope_v3'];Need ($null-ne$property-and$null-ne$property.Value) 'Saved admitted V3 Some descriptor required; fresh planning None remains only an input intent.';$a=$property.Value
+ foreach($name in @('schema_version','raw_identities','files','directories','data_streams','object_slots','raw_identity_slots','data_stream_slots','maximum_expected_tree_bytes','maximum_inspection_bytes','maximum_native_report_bytes','projected_owned_handle_slots','maximum_owned_handle_slots','maximum_constructor_input_metadata_bytes')){Need ([string]$a.$name-cmatch'\A(?:0|[1-9][0-9]*)\z') 'Exact nonnegative integer descriptor fields required.'}
+ $expectedPath=Join-Path $Directory 'expectation.json';$basisPath=Join-Path $Directory 'qualification\source-basis.json';$nativePath=Join-Path $Directory 'qualification\native-source.json'
+ $basis=Json $basisPath 64MB;$native=Json $nativePath 64MB
+ $files=@($Expected.objects|Where-Object {-not$_.directory}).Count;$dirs=@($Expected.objects|Where-Object {$_.directory}).Count;$streams=$files
+ foreach($object in $Expected.objects){$named=$object.PSObject.Properties['named_streams'];if($null-ne$named){$streams+=@($named.Value).Count}}
+ $units=@($a.source_inspection_sha256);Need ($units.Count-eq32-and@($units|Where-Object {[string]$_-cnotmatch'\A(?:0|[1-9][0-9]*)\z'-or[decimal]$_-gt255}).Count-eq0) 'Exact32-byte actual source inspection pin required.';$pin=([BitConverter]::ToString([byte[]]$units)).Replace('-','').ToLowerInvariant()
+ Need ($a.schema_version-eq1-and$a.raw_identities-eq@($basis.ntfs.files).Count-and$a.files-eq$files-and$a.directories-eq$dirs-and$a.data_streams-eq$streams-and$files+$dirs-eq@($Expected.objects).Count-and$files+$dirs-le$a.object_slots-and$a.object_slots-le1280-and$a.object_slots-gt0-and$a.raw_identities-le$a.raw_identity_slots-and$a.raw_identity_slots-le2048-and$a.raw_identity_slots-gt0-and$a.data_streams-le$a.data_stream_slots-and$a.data_stream_slots-le16384-and$a.data_stream_slots-gt0-and$pin-ceq$basis.canonical_inspection_sha256-and$pin-ceq$native.request.source_inspection_sha256-and$a.raw_identities-eq@($native.request.files).Count-and(Same $Profile $native.request.resource_profile)) 'Actual saved V3 counts/descriptor must bind current canonical and native source evidence.'
+ Need ($a.maximum_expected_tree_bytes-gt0-and$a.maximum_expected_tree_bytes-le16MB-and(Get-Item -LiteralPath $expectedPath).Length-le$a.maximum_expected_tree_bytes-and$a.maximum_constructor_input_metadata_bytes-gt0-and$a.maximum_constructor_input_metadata_bytes-le16MB-and$a.maximum_inspection_bytes-gt0-and$a.maximum_inspection_bytes-le64MB-and(Get-Item -LiteralPath $basisPath).Length-le$a.maximum_inspection_bytes-and$a.maximum_native_report_bytes-gt0-and$a.maximum_native_report_bytes-le64MB-and(Get-Item -LiteralPath $nativePath).Length-le$a.maximum_native_report_bytes-and$a.projected_owned_handle_slots-eq($files+$dirs+2*$streams+8)-and$a.projected_owned_handle_slots-le$a.maximum_owned_handle_slots-and$a.maximum_owned_handle_slots-le34056) 'Actual saved V3 byte/handle ceilings differ.'
+ return @{raw_identities=$a.raw_identities;files=$files;directories=$dirs;data_streams=$streams;objects=$files+$dirs;source_inspection_sha256=$pin;descriptor=$a;basis_sha256=(Pin $basisPath);native_sha256=(Pin $nativePath);grants_source_or_replay_authority=$false}
+}
 function Artifacts([string]$Directory,[string]$BundleSha){
  $path=Join-Path $Directory 'allocation-recovery-bundle.json';$bundle=OpenPinned $path $BundleSha 65536 $true
  Need ($bundle.schema_version-eq1-and$bundle.kind-ceq'allocation-bounded-recovery-bundle'-and$bundle.serialized_bundle_grants_recovery_authority-eq$false-and(Same $bundle.source $c.source)) 'Actual pinned routing-only recovery bundle differs.'
@@ -244,9 +257,10 @@ function Artifacts([string]$Directory,[string]$BundleSha){
   $p=Join-Path $Directory $spec.leaf;$b=$bundle.($spec.key);Need ($b.path-ceq$p) 'Exact original artifact routes required.';$values[$spec.key]=OpenPinned $p $b.sha256 $spec.max $true;$pins[$spec.key]=$b.sha256
  }
  $r=$values.request;$t=$values.ticket;$location=Json (Join-Path $Directory 'journal-location.json')
- Need ((Same $r.pair.source $c.source)-and(Same $r.pair.shadow $c.shadow)-and(Same $r.journal $c.journal)-and$r.schema_version-eq3-and$r.verification_policy-ceq'extent_identity_v1'-and$r.selected_capacity_policy-ceq'source_free_actual_bytes_v1'-and$null-eq$r.source_resource_profile.experimental_object_envelope_v3-and$r.max_journal_bytes-eq8GB-and$r.max_literal_backing_bytes-eq256MB-and$r.max_combined_scratch_bytes-eq10GB-and$r.verify_existing_shadow-eq$false) 'Actual original admitted request routes/policy differ.'
+ Need ((Same $r.pair.source $c.source)-and(Same $r.pair.shadow $c.shadow)-and(Same $r.journal $c.journal)-and$r.schema_version-eq3-and$r.verification_policy-ceq'extent_identity_v1'-and$r.selected_capacity_policy-ceq'source_free_actual_bytes_v1'-and$r.max_journal_bytes-eq8GB-and$r.max_literal_backing_bytes-eq256MB-and$r.max_combined_scratch_bytes-eq10GB-and$r.verify_existing_shadow-eq$false) 'Actual original admitted request routes/policy differ.'
+ $admitted=AdmittedEnvelope $r.source_resource_profile $values.expectation $Directory
  Need ($t.marker_profile-ceq'redundant_source_free_v1'-and$t.whole_image_verified-eq$false-and$t.selected_bytes-gt0-and$t.range_count-gt0-and$t.journal_length-gt32768-and@($t.immutable_sha256).Count-eq32-and@($t.old_selected_sha256).Count-eq32-and@($t.old_restored_selected_sha256).Count-eq32-and@($t.new_selected_sha256).Count-eq32-and$location.format-ceq'N2RFRE02'-and$location.journal_format_version-eq6-and$location.path-ceq$bundle.journal-and(Same $bundle.marker_storage_identity $location.identity)) 'Actual format6/profile/independently pinned marker-storage identity required.'
- return @{bundle=$bundle;ticket=$t;request=$r;values=$values;pins=$pins;location=$location;bundle_sha256=$BundleSha}
+ return @{bundle=$bundle;ticket=$t;request=$r;values=$values;pins=$pins;location=$location;bundle_sha256=$BundleSha;admitted_source_observation=$admitted}
 }
 function Marker($Observation,$Facts){
  Need ($Observation.native_qualified-eq$false-and$Observation.journal_length-eq$Facts.ticket.journal_length-and(Same $Observation.identity $Facts.bundle.marker_storage_identity)-and$Observation.logical_sector_bytes-eq512-and$Observation.physical_sector_bytes-eq4096-and$Observation.cluster_bytes-gt0-and@($Observation.file_storage_info).Count-eq7-and@($Observation.marker_device_offsets).Count-eq8) 'Actual native marker storage observation differs; native qualification remains false.'
@@ -293,7 +307,7 @@ try{
  $stdoutDrain=$stdoutPipe.CopyToAsync($stdoutStream,65536);$stderrDrain=$stderrPipe.CopyToAsync($stderrStream,65536)
  Save 'native-process.json' @{pid=$nativePid;creation_ms=$birth;parent_pid=$PID;binary=$binary;binary_sha256=$producer.sha256;argv=$argv;expected_exit=$c.expected_exit;process_handle_retained_before_wait=$true;utc=[DateTime]::UtcNow.ToString('o')}
  $process.WaitForExit();$clock.Stop();$process.Refresh();$nativeExit=$process.ExitCode
- $stdoutDrain.GetAwaiter().GetResult();$stderrDrain.GetAwaiter().GetResult()
+ $null=$stdoutDrain.GetAwaiter().GetResult();$null=$stderrDrain.GetAwaiter().GetResult()
  $stdoutStream.Flush($true);$stderrStream.Flush($true)
  $stdoutStream.Dispose();$stdoutStream=$null;$stderrStream.Dispose();$stderrStream=$null
  $peakWorking=$null;$peakPrivate=$null;try{$peakWorking=[long]$process.PeakWorkingSet64}catch{};try{$peakPrivate=[long]$process.PeakPagedMemorySize64}catch{}
@@ -310,7 +324,7 @@ try{
   $printed=Log $stdout;$matches=[regex]::Matches($printed.text,'(?m)^Recovery checksum: ([0-9a-f]{64})\r?$');$dirs=[regex]::Matches($printed.text,'(?m)^Recovery directory: (.+?)\r?$');Need ($matches.Count-eq1-and$dirs.Count-eq1-and$matches[0].Groups[1].Value-ceq$bundleSha-and$dirs[0].Groups[1].Value-ceq$c.output) 'Actual product bundle publication differs.'
   $marker=Json (Join-Path $c.output 'native-marker-storage.json');Marker $marker $facts
  }else{$bundlePath=$c.bundle_path;$bundleSha=$c.bundle_sha256;$marker=Json (Join-Path $c.output 'journal-identity.json');Marker $marker $facts}
- $proof=@{format=$facts.location.format;journal_format_version=$facts.location.journal_format_version;marker_profile=$facts.ticket.marker_profile;marker_storage=$marker;bundle_path=$bundlePath;bundle_sha256=$bundleSha;ticket_sha256=$facts.pins.ticket;ticket=$facts.ticket;raw_journal_opened=$false;grants_product_authority=$false}
+ $proof=@{format=$facts.location.format;journal_format_version=$facts.location.journal_format_version;marker_profile=$facts.ticket.marker_profile;marker_storage=$marker;bundle_path=$bundlePath;bundle_sha256=$bundleSha;ticket_sha256=$facts.pins.ticket;ticket=$facts.ticket;admitted_source_observation=$facts.admitted_source_observation;raw_journal_opened=$false;grants_product_authority=$false}
  Save 'native-marker-ticket-observation.json' $proof
  if($nativeExit-eq86){
   $null=Binding $c.source $true $false;$null=Binding $c.shadow $true $true
@@ -322,11 +336,11 @@ try{
  $result=Json (Join-Path $c.output 'result.json');Need ($result.success-eq$true) 'Actual product success artifact required in addition to exit0.'
  $source=Binding $c.source $false $false;$volume=$source.partition|Get-Volume
  if($c.rollback){
-  $closed=Json (Join-Path $c.output 'rollback.json');$completion=Json (Join-Path $c.output 'completion.json') 16MB
+  $closed=Json (Join-Path $c.output 'rollback.json');$completion=Json (Join-Path $c.output 'completion.json') 64MB
   Need ($result.action-ceq'rollback'-and$result.observed_lifecycle-ceq'apply_intent'-and$result.outcome-ceq'ntfs_restored'-and$result.exclusive_recovery_journal_used-eq$true-and$completion.mounted_filesystem-ceq'NTFS'-and$volume.FileSystem-ceq'NTFS'-and$closed.replay_closed-eq$true-and(Same $closed.selected_sha256 $facts.ticket.old_restored_selected_sha256)) 'Actual original interrupted NTFS restore-required selected digest/ABT proof differs.'
  }else{
   $leaf=if($c.operation-ceq'Fresh'){'finalization.json'}else{'completion.json'};$extentLeaf=if($c.operation-ceq'Fresh'){'extent-verification.json'}else{'recovery-extent-verification.json'}
-  $completion=Json (Join-Path $c.output $leaf) 16MB;$extent=Json (Join-Path $c.output $extentLeaf);$closed=Json (Join-Path $c.output 'handoff.json')
+  $completion=Json (Join-Path $c.output $leaf) 64MB;$extent=Json (Join-Path $c.output $extentLeaf);$closed=Json (Join-Path $c.output 'handoff.json')
   Need ($completion.success-eq$true-and$completion.rollback_closed-eq$true-and$volume.FileSystem-ceq'ReFS'-and$volume.AllocationUnitSize-eq4096-and$closed.replay_closed-eq$true-and(Same $closed.selected_sha256 $facts.ticket.new_selected_sha256)-and$extent.all_complete_maps_identical-eq$true-and$extent.handoff_replay_closed-eq$true-and$extent.stream_and_directory_bindings-gt0) 'Actual product full metadata/namespace/maps/tails and closed HND proof required.'
   if($c.operation-ceq'Fresh'){Need ($extent.resident_and_residual_bytes_bound_by_selected_image-eq$true-and$extent.materialized_extent_tail_bytes_verified-ge0) 'Fresh product residual/tail verification required.'}else{Need ($extent.extent_only_partial_tail_bytes-ge0-and$extent.extent_only_partial_streams-ge0) 'Recovery product tail accounting required.'}
   $native=$completion.native;$scope=$native.content_observation

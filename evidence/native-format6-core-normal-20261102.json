@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "kind": "native-format6-normal-core-success",
+  "utc": "2026-11-02T02:16:48.0480704Z",
+  "source_commit": "010316ded73a076747036198bd9036cf51dc082e",
+  "core_success": true,
+  "observer_completed": false,
+  "observer_failure_preserved": true,
+  "observer_failure_reason": "Saved admitted resource descriptor differs from input planningNone; observer also needs64MiB finalization reader",
+  "native_marker_qualified": false,
+  "hard_power_qualified": false,
+  "independent_content_hashes_run": false,
+  "native_pid": 3944,
+  "native_creation_ms": 1793585096824,
+  "native_exit": 0,
+  "native_wall_seconds": 69.7858092,
+  "native_process_peak_working_set_bytes": null,
+  "journal_format": "N2RFRE02",
+  "journal_bytes": 131669328,
+  "selected_bytes": 545095680,
+  "source_free_bytes": 402669568,
+  "marker_profile": "redundant_source_free_v1",
+  "marker_device_offsets": [
+    21277118464,
+    21277122560,
+    21277126656,
+    21277130752,
+    21277134848,
+    21277138944,
+    21277143040,
+    21277147136
+  ],
+  "file_storage_info": [
+    512,
+    4096,
+    4096,
+    4096,
+    11,
+    0,
+    0
+  ],
+  "ordinary_storage": {
+    "file_attribute_tag_info_before": [
+      32,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "file_attribute_tag_info_after": [
+      32,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "reparse_query_error": 4390,
+    "explicit_no_reparse_point": true,
+    "external_backing_query_error": 1,
+    "external_backing_absence_reported": false,
+    "external_backing_query_unsupported": true
+  },
+  "stream_and_directory_bindings": 1084,
+  "extent_only_partial_streams": 650,
+  "materialized_extent_tail_bytes": 1371388,
+  "handoff_closed": true,
+  "all_complete_maps_identical": true,
+  "process_logical_reads_observed": 21619930468,
+  "process_logical_writes_observed": 922634762,
+  "process_logical_read_delta": 21619924280,
+  "process_logical_write_delta": 922583523,
+  "io_scope": "process_io_transfer_counters_not_physical_disk_io",
+  "checkpoint": "eba55c48-5dc2-42c5-9ecb-84d696b85a78",
+  "checkpoint_parent": "cb802669-903c-48cc-99e5-57976b149e7d",
+  "vm_state": "Off",
+  "vm_memory_bytes": 0,
+  "snapshot_count": 14,
+  "archive_files": 67,
+  "archive_bytes": 157375432,
+  "archive_sha256": "d9bdf0ba3bbe3ee2c1d57b5fb2d3b2604600dae865a2cf7e79b6275c7b2c9167",
+  "artifacts": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\native-process.json",
+      "bytes": 1226,
+      "sha256": "bd3b3ce2ed055a1890dc738042543b0025c94bb24a950d9c47ab012bd63eac78"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\native-terminal.json",
+      "bytes": 1391,
+      "sha256": "f536c7db6fa0d9a646f63e9093dde5f2107a6b7de8c615e0b0bec9d186bced50"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\wrapper-failed.json",
+      "bytes": 548,
+      "sha256": "9d3c88a90c246d0aa1d9897db77eaa6705d0f74ae1f0700ef59f0d378ba8d637"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\result.json",
+      "bytes": 1872,
+      "sha256": "1fab22233405d1d4ebc5d0902588ec371262ffca994e58bcc3e67e709079bae0"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\selected-ticket.json",
+      "bytes": 1436,
+      "sha256": "f1feeb07e8e6bbd1ad531cfc64ac674583c5654dea2d10fcfff29606909222a2"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\native-marker-storage.json",
+      "bytes": 1941,
+      "sha256": "e6e2224d12a28bd7081f5f3f97b012321e9f1e23715618ed9ab7fc547cac2760"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\journal-location.json",
+      "bytes": 1283,
+      "sha256": "b0b78808d8286f8b0a3e6d0b471a4bbd5aa0cd75202457e515f8980217777ca1"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\handoff.json",
+      "bytes": 450,
+      "sha256": "daac41512bb68db73f940651053c5588714479889abee832ac4ce3159b48f66a"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\extent-verification.json",
+      "bytes": 759,
+      "sha256": "c130e0dd12407af9d1a207da71f09852a8984f8bbc0de7717cd5ee59b3075c7f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\finalization.json",
+      "bytes": 27174509,
+      "sha256": "a727f8e896c4f6f49582fb5f4381e2322c9ddad872fe91d45d9034c77bb7af6b"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\process-io-native-verified.json",
+      "bytes": 526,
+      "sha256": "7f446b87e345596bbf5edd51086188750d32ea7191ce85045fc647c9df33ed40"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-e330512f550a49dda07e5700f5c4bb6a\\closed-native\\conversion\\process-io-start.json",
+      "bytes": 480,
+      "sha256": "d5bfe880c101c25eff542015e7131c628a726bad47e02a5cb5f5f8761fa51722"
+    }
+  ],
+  "limits": [
+    "Normal conversion core success only; collector completion and format6 interruption/recovery/hard-power matrix remain.",
+    "Process counters are logical IO, not physical disk traffic. Peak memory was unavailable, not zero.",
+    "Bounded prepared811stream source, not arbitrary volume count/size or universalhardware qualification."
+  ],
+  "unit_tests_added_or_run": false
+}

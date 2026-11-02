@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "kind": "native-format6-controlled-recovery-matrix",
+  "utc": "2026-11-02T03:04:25.5930675Z",
+  "source_commit": "010316ded73a076747036198bd9036cf51dc082e",
+  "controlled_process_matrix_complete": true,
+  "power_cut_matrix_complete": false,
+  "native_marker_qualified": false,
+  "original_fault_checkpoint": "5d2517e5-59f9-4c26-b9e0-e6775d175f68",
+  "original_fault_pid": 840,
+  "original_fault_creation_ms": 1793587745932,
+  "original_fault_exit": 86,
+  "first_source_write_flushed": true,
+  "original_bundle_sha256": "70ef71dc498e887d4810660913b61189b564811a46f5e063ce9fbe15b290c97d",
+  "original_no_handoff": true,
+  "independent_full_content_hashes_run": false,
+  "operations": {
+    "resume": {
+      "pid": 4604,
+      "creation_ms": 1793588211332,
+      "exit": 0,
+      "wall_seconds": 15.8797041,
+      "core_and_observer_passed": true,
+      "action": "resume",
+      "observed_lifecycle": "apply_intent",
+      "outcome": "refs_completed",
+      "journal_format": "N2RFRE02",
+      "journal_bytes": 131635728,
+      "selected_bytes": 545026048,
+      "source_free_bytes": 402669568,
+      "checkpoint": "43d445cb-0d6e-4647-aa43-2664ee78b424",
+      "shadow_absence_handled_without_reattachment": true,
+      "complete_map_bindings": 1084,
+      "all_complete_maps_identical": true
+    },
+    "rollback": {
+      "pid": 4572,
+      "creation_ms": 1793588475205,
+      "exit": 0,
+      "wall_seconds": 11.518564399999999,
+      "core_and_observer_passed": true,
+      "action": "rollback",
+      "observed_lifecycle": "apply_intent",
+      "outcome": "ntfs_restored",
+      "journal_format": "N2RFRE02",
+      "journal_bytes": 131635728,
+      "selected_bytes": 545026048,
+      "source_free_bytes": 402669568,
+      "checkpoint": "200aaa68-6a12-482d-910e-60e5b1f20b63",
+      "shadow_absence_handled_without_reattachment": true,
+      "old_restoration_bytes": 142356480,
+      "restore_required_digest": "96a4400a2f6e7fc07e2c337b5e82a1e61346776ee3ae2f87a1e0704f497362b4",
+      "full_old_marker_digest": "a384a01e7b9ba6999372fe85dd451fb070e94c7af42fc187b846ea95bf2677b0"
+    }
+  },
+  "artifacts": [
+    {
+      "bytes": 9140,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-resume-d81599eff2bb42a48f1bcf7ecbca9f63\\archive.json",
+      "sha256": "ab6e1ab17958bc265062869c399e1d723d541668b9126f2793d21f3169789c8e"
+    },
+    {
+      "bytes": 289,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-resume-d81599eff2bb42a48f1bcf7ecbca9f63\\checkpoint.json",
+      "sha256": "cdb5cde07dcb322c2dbecdd4ecc8e4a8a254f886cbb11e30623f93e1253fba42"
+    },
+    {
+      "bytes": 1311,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-resume-d81599eff2bb42a48f1bcf7ecbca9f63\\closed-native\\native-process.json",
+      "sha256": "9942aaffe91819f8a4adbf83541207d01917319f00c481b6a5fdb929263d65bf"
+    },
+    {
+      "bytes": 823,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-resume-d81599eff2bb42a48f1bcf7ecbca9f63\\closed-native\\native-terminal.json",
+      "sha256": "1f60f0df029233820c4dfaca9785e69fe5e501a9f8f6d7c86650469e3f65905d"
+    },
+    {
+      "bytes": 519,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-resume-d81599eff2bb42a48f1bcf7ecbca9f63\\closed-native\\wrapper-result.json",
+      "sha256": "06cb8521cbeb5906d3c9ffa350ea5b281da7ede426a465fdf29841adc9c5d276"
+    },
+    {
+      "bytes": 1752,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-resume-d81599eff2bb42a48f1bcf7ecbca9f63\\closed-native\\recovery\\result.json",
+      "sha256": "ea6df7418c78a842b6b2fc73f109d01b7d4c316219070b90a80247fba9b89228"
+    },
+    {
+      "bytes": 7188,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-resume-d81599eff2bb42a48f1bcf7ecbca9f63\\closed-native\\recovery-shadow-terminal.json",
+      "sha256": "0796a0578d81efa0de56a675685cc7f4ba5e27ca388cd53344e3ae57d5ed6eb1"
+    },
+    {
+      "bytes": 8610,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-rollback-37f15c4a4f5044c4978f0e8afac535e6\\archive.json",
+      "sha256": "c5808258657d526a5887781891b0418b9e253b1a97d7ebd22818f92014fad8dd"
+    },
+    {
+      "bytes": 289,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-rollback-37f15c4a4f5044c4978f0e8afac535e6\\checkpoint.json",
+      "sha256": "feaa75a9b63ed33302daed5a4f49b29dfac0109b7e3c6ac0283f6ac83f60dec4"
+    },
+    {
+      "bytes": 1347,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-rollback-37f15c4a4f5044c4978f0e8afac535e6\\closed-native\\native-process.json",
+      "sha256": "a12d12f668c2119146fd9b4649f6faaf841bb7089c317a8e6e7d41b99cfe420c"
+    },
+    {
+      "bytes": 831,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-rollback-37f15c4a4f5044c4978f0e8afac535e6\\closed-native\\native-terminal.json",
+      "sha256": "21286038738164bf177c4f53fc2aaf6863d72b40ec6b87562227ffedc442018e"
+    },
+    {
+      "bytes": 518,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-rollback-37f15c4a4f5044c4978f0e8afac535e6\\closed-native\\wrapper-result.json",
+      "sha256": "db8301983e069d8e083839a7f8324fdcc95ecab1e246e17f3b38142f14c01c86"
+    },
+    {
+      "bytes": 810,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-rollback-37f15c4a4f5044c4978f0e8afac535e6\\closed-native\\recovery\\result.json",
+      "sha256": "4535992bd4757029d791b0cebbb4f99af85d68edbdaa2a7f6cf50a11c70af134"
+    },
+    {
+      "bytes": 7188,
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-rollback-37f15c4a4f5044c4978f0e8afac535e6\\closed-native\\recovery-shadow-terminal.json",
+      "sha256": "0796a0578d81efa0de56a675685cc7f4ba5e27ca388cd53344e3ae57d5ed6eb1"
+    },
+    {
+      "bytes": 19727,
+      "sha256": "013838fbaf4131aad4671198a2e204b0fc746f4eaa7dcc629891b9af422a2f69",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-fault-76ce2bc519f74493a29832b8c7f1db4f\\fault-archive.json"
+    },
+    {
+      "bytes": 1403,
+      "sha256": "b3fc860f1d04a645db01c593ba0c9661f20d65bac2d1ce0c9cc1b1165b92ddbe",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-fault-76ce2bc519f74493a29832b8c7f1db4f\\checkpoint.json"
+    },
+    {
+      "bytes": 1477,
+      "sha256": "4550e48e7c5acc39c65109d349a63ae87340ca55820b66627adec6e12b1e6105",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-fault-76ce2bc519f74493a29832b8c7f1db4f\\closed-fault\\native-marker-fault-observation.json"
+    },
+    {
+      "bytes": 1427,
+      "sha256": "db5bd5f6d732b77114d8972c3f8323465340b46539bcdac322f244079773df32",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-fault-76ce2bc519f74493a29832b8c7f1db4f\\closed-fault\\native-terminal.json"
+    },
+    {
+      "bytes": 1435,
+      "sha256": "dbde26cacb5734beec2b46f38f6b0fa8458c6c2f30ef9b35b3bfc785e3c97c64",
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-fresh-fault-76ce2bc519f74493a29832b8c7f1db4f\\closed-fault\\conversion\\selected-ticket.json"
+    }
+  ],
+  "final_state": "Off",
+  "final_memory_bytes": 0,
+  "final_checkpoint": "200aaa68-6a12-482d-910e-60e5b1f20b63",
+  "snapshot_count": 17,
+  "unit_tests_added_or_run": false,
+  "limits": [
+    "Controlled process interruption plus clean reboot; no VM hard-power or physical-power qualification.",
+    "Built-in complete native metadata/maps/storage checks and restored selected-byte proof; no extra full-content rescan.",
+    "Bounded prepared811stream corpus; broader scale/feature/geometry qualification remains.",
+    "HND/ABT close raw replay; original source-free contents are not restored by policy."
+  ]
+}

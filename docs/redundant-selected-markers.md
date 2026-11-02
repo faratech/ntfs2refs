@@ -111,3 +111,14 @@ This is the specific intentional-fault exception to the ordinary requirement
 that every project worker be terminal before VM power operations. It grants no
 fresh source or replay authority. Source review and focused compilation passed;
 native power-interruption qualification remains pending.
+
+Format6 closed recovery now verifies the complete committed target through the
+authenticated exclusive journal owner, repairs only a missing/corrupt matching
+terminal peer, and repeats the complete target and lifecycle checks. Its target
+type remains read-only; it cannot replay raw target writes. The native two-peer
+barrier still precedes online exposure. Public `verify_closed` remains read-only,
+and legacy formats retain their original single-pass behavior. Format6 rollback
+also repairs an authenticated existing AP peer after its complete mixed-target
+precheck, before RB or payload writes; it never invents an absent intent.
+These changes have source review and focused compilation, with power-cut native
+qualification pending.

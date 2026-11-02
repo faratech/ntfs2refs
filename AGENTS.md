@@ -44,10 +44,23 @@ prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move 
 is separate. These are scoped observations, not a controlled physical benchmark.
 See evidence/prepared-source-performance-native-20261101.json.
 
-CURRENT VM is fresh-confirmed Off/RAM0 at the saved native format6 success branch
-eba55c48-5dc2-42c5-9ecb-84d696b85a78, parent preparedcb802669,14 snapshots.
-Only metadata observers ran after boot; no new conversion or raw replay. All
-tasks/workers were terminal before the final normal shutdown;14snapshots remain.
+CURRENT VM is fresh-confirmed Off/RAM0 at native format6 controlled Rollback
+200aaa68-6a12-482d-910e-60e5b1f20b63, parent originalfault5d2517e5,17snapshots.
+Runtime010316d matrix PASSED: fault76ce2bc519f74493a29832b8c7f1db4f native840/
+birth1793587745932/exit86 afterfirstflushedsourcewrite; originalcheckpoint
+5d2517e5-59f9-4c26-b9e0-e6775d175f68 parentpreparedcb802669, receiptSHA
+b3fc860f1d04a645db01c593ba0c9661f20d65bac2d1ce0c9cc1b1165b92ddbe,
+bundle70ef71dc498e887d4810660913b61189b564811a46f5e063ce9fbe15b290c97d.
+Separate Resume d81599ef... native4604/birth1793588211332/exit0 HND/ReFS15.8797041s,
+1084completebindings, checkpoint43d445cb-0d6e-4647-aa43-2664ee78b424.
+Separate Rollback37f15c4a... native4572/birth1793588475205/exit0 ABT/NTFS11.5185644s,
+142,356,480restoredB digest96a4400a2f6e7fc07e2c337b5e82a1e61346776ee3ae2f87a1e0704f497362b4.
+Both collectorspassed, shadowabsentafterboot/neverreattached, originalJSONisnot
+newsourceauth, noextrafullcontentscan. Archives: fault62/130227192B,
+Resume31/29770192B, Rollback29/2643077B, length/SHAverified. Normalstoponlyafter
+allprojecttasks/workersterminal. Evidence/native-format6-controlled-matrix-20261102.json.
+Power-cut/hardwarequalification stillpending. NEVERreplayresultHND/ABT; useonly
+original5d2517e5 foranotherdirection. Originalnormal format6 eba55c48 remains saved.
 Read-only completion1078caf077ae4c51a76d8e2110c5a74e PASSED Ready/0 with original
 native3944/birth1793585096824/exit0. Original operator failure and earlier6037
 cold-shadow refusal are preserved. Source payload scanned0, new nativeprocess0,
@@ -188,8 +201,8 @@ SHA857e4003cc4c367a0bf3fba2c45461f30dfcdd261608b286400ff1bee31c5fad
 has4 standard roles plus separately pinned lab marker tool. It predates934ffa8;
 do not relabel it as latest or nativequalified. Details metadata-memory-reduction.md.
 
-NEXT: native6 controlled interruption/Resume/Rollback and hard-power qualification,
-then resource-basedpagedscale. The65b matrix is closed; do not repeat it without a
+NEXT: native6 hard-power qualification usingexplicitpause, thenresource-basedpagedscale.
+Native010controlledmatrix and65bmatrix areclosed; do not repeatwithouta
 new failure or relevant change. Publiconecommand
 coverage is now real; don'trepeatit withoutnewchanges/failures. Cleancommitted
 release/tag/version remainsopen because usermainhunk MUSTstayuntouched/unstaged;
@@ -206,7 +219,16 @@ productionpathsNone. HostmustverifylivePID/birth+readableclosedactualreceipt bef
 the intentionaldisposableVM hard-power exception; timeoutalone is NEVERauthority.
 Rootfocusedcheck3bins passed23.32s; no unit tests. Build/freeze a newruntime before
 pausecases; existing010316dsealedtools have NOpausefeature. Controlledprocessfault
-matrix can use010316d from preparedcb with correcteddispatcher. Recover-only
+matrix haspassed010316d. Sealedpausebuildaba19c9 at native-marker-tools-aba19c9/
+manifest.json SHA96a7edf0ac89878e7098299e27362395e734eb09e38546db27aa521ddd227ab7,
+sourceaba19c9b06b2d3ebfbcc921bd5090cec77cf97da, markerexe4ea48b265dc4c49fec76b9fc63d5870fee346198e9da930b65e2fdad91896230.
+It predates the newly source-reviewed/compiled terminal-peer repair; build/freeze
+latestbefore HND1powerrecoveryqualification. NewexclusiveclosedReadSeek-only path
+checksfullcommittedtarget, repairsonlymatchingterminalpeer, rechecksfulltarget+
+unchangedlifecycle beforeexistingnativebothpeerbarrier; publicread-onlyverify
+andlegacyNone remainunchanged. Rollbackformat6 repairs actualexistingAPafter
+fullmixedtargetprecheck beforeRB/payload, neverinventingintent. No nativeevidence
+forthisrepairyet; focusedcheck17.57s/source-independentreviewpassed. Recover-only
 dispatcher now allows affirmed originalshadowabsence aftercoldboot, without
 attach/rebind/attrchanges; Fresh stillrequiresoriginalemptyattachedshadow6.
 Preparation82e805b moved5,643,501,568B over385 native requests/222 identities,

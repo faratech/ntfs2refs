@@ -458,7 +458,8 @@ fn recover_allocation_inner(
                 AllocationRecoveryOutcome::RefsCompleted
             }
             Action::VerifyHandoff => {
-                let (closed_state, verified) = recovery_journal.verify_closed(&mut target)?;
+                let (closed_state, verified) =
+                    recovery_journal.verify_closed_and_repair(&mut target)?;
                 ensure!(
                     closed_state == SelectedLifecycle::Handoff,
                     "ReFS verification requires the actual closed HND lifecycle"
@@ -517,7 +518,7 @@ fn recover_allocation_inner(
                 AllocationRecoveryOutcome::NtfsRestored
             }
             Action::VerifyAborted => {
-                let (_, verified) = recovery_journal.verify_closed(&mut target)?;
+                let (_, verified) = recovery_journal.verify_closed_and_repair(&mut target)?;
                 artifacts::save(output, "verified-rollback.json", &verified)?;
                 AllocationRecoveryOutcome::NtfsRestored
             }

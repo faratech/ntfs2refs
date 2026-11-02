@@ -2340,6 +2340,20 @@ fn execute_loaded<T: DurableIo, J: DurableIo>(
         fresh.then_some(&ticket.old_selected_sha256),
         fresh,
     )?;
+    if !forward && ticket.marker_profile.is_some() {
+        // A redundant rollback already requires an authenticated AP. Restore
+        // its missing peer before RB or target writes without creating an
+        // intent for a PreparedClear journal or reopening forward replay.
+        ensure!(
+            apply_intent && read_marker_pair(journal, ticket, MarkerKind::Apply)?,
+            "redundant rollback cannot repair an absent apply intent"
+        );
+        write_lifecycle_marker(journal, ticket, MarkerKind::Apply)?;
+        ensure!(
+            read_markers(journal, ticket)? == (apply_intent, rollback_intent),
+            "selected lifecycle changed during apply peer repair"
+        );
+    }
     write_lifecycle_marker(
         journal,
         ticket,
@@ -2735,7 +2749,11 @@ impl<J: DurableIo> ExclusiveRecoveryJournal<'_, J> {
         abandon_loaded(target, self.journal, self.plan, self.ticket, &self.records)
     }
 
-    pub(crate) fn verify_closed<T: ReadSeek>(
+    /// Verify the committed target before repairing a redundant terminal peer,
+    /// then verify the complete committed target again. Target access remains
+    /// read-only: a closed lifecycle never re-enters raw target replay. Legacy
+    /// formats retain the original verification-only behavior.
+    pub(crate) fn verify_closed_and_repair<T: ReadSeek>(
         self,
         target: &mut T,
     ) -> Result<(SelectedLifecycle, SelectedResult)> {
@@ -2752,6 +2770,30 @@ impl<J: DurableIo> ExclusiveRecoveryJournal<'_, J> {
             result.0 == self.state,
             "exclusive journal closed lifecycle changed"
         );
+        if self.ticket.marker_profile.is_some() {
+            ensure!(
+                classify(self.journal, self.ticket)? == self.state,
+                "exclusive journal closed lifecycle changed after target verification"
+            );
+            write_lifecycle_marker(
+                self.journal,
+                self.ticket,
+                match self.state {
+                    SelectedLifecycle::Handoff => MarkerKind::Handoff,
+                    SelectedLifecycle::Aborted => MarkerKind::Aborted,
+                    _ => unreachable!("closed lifecycle checked above"),
+                },
+            )?;
+            let rechecked =
+                verify_closed_loaded(target, self.journal, self.plan, self.ticket, &self.records)?;
+            ensure!(
+                rechecked.0 == self.state
+                    && rechecked.1.selected_sha256 == result.1.selected_sha256
+                    && classify(self.journal, self.ticket)? == self.state,
+                "committed target or closed lifecycle changed during terminal peer repair"
+            );
+            return Ok(rechecked);
+        }
         Ok(result)
     }
 }

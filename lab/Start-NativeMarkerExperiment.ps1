@@ -4,6 +4,9 @@
 # Recovery requires an actual root-authored checkpoint receipt, schema1/kind
 # native-marker-first-write-checkpoint-v1. Its fields are checked below; obtain
 # process/terminal/fault pins from the original native-marker-fault-observation.
+# Fresh pause dispatch supports only reachable AP/HND copies. Its SYSTEM wrapper
+# retains the native process handle and waits indefinitely; root alone validates
+# the actual closed signal and live process before any deliberate power action.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][ValidateSet('Fresh','Recover')][string]$Operation,
@@ -20,6 +23,7 @@ param(
     [switch]$AcknowledgeEnrolledDisposableDevices,
     [switch]$AcknowledgeUnqualifiedNativeMarkers,
     [switch]$FirstWriteFault,
+    [ValidateSet('AP1','AP2','RB1','RB2','HND1','HND2','ABT1','ABT2')][string]$PauseAfterMarkerCopy,
     [string]$RecoveryBundlePath,
     [ValidatePattern('\A[0-9a-f]{64}\z')][string]$RecoveryBundleSha256,
     [string]$InterruptedCheckpointReceiptPath,
@@ -36,9 +40,14 @@ $protectedMain = 'c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e0434
 $managedSha = '184aad57e2c8c8616adb4ad57ed82e40aba31949c530015ebcc5f7b681bcf876'
 $managedPath = 'C:\ntfs2refs\ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e\managed-shadow\shadow.vhdx'
 $run = [guid]::NewGuid().ToString('N')
-$mode = if ($Operation -ceq 'Fresh') { if ($FirstWriteFault) { 'fresh-fault' } else { 'fresh' } } else { if ($Rollback) { 'rollback' } else { 'resume' } }
+$deliberatePause = -not [string]::IsNullOrEmpty($PauseAfterMarkerCopy)
+if ($deliberatePause) { $PauseAfterMarkerCopy = $PauseAfterMarkerCopy.ToUpperInvariant() }
+$mode = if ($Operation -ceq 'Fresh') { if ($deliberatePause) { 'fresh-power-' + $PauseAfterMarkerCopy.ToLowerInvariant() } elseif ($FirstWriteFault) { 'fresh-fault' } else { 'fresh' } } else { if ($Rollback) { 'rollback' } else { 'resume' } }
 $root = Join-Path $base ('native-marker-' + $mode + '-' + $run)
 $stage = 'C:\ntfs2refs\native-marker-' + $mode + '-' + $run
+$output = Join-Path $stage $(if ($Operation -ceq 'Fresh') { 'conversion' } else { 'recovery' })
+$pauseSignalPath = if ($deliberatePause) { Join-Path $output 'marker-pause.json' } else { $null }
+$pauseMarkerSlot = if ($deliberatePause) { [array]::IndexOf(@('AP1','AP2','RB1','RB2','HND1','HND2','ABT1','ABT2'), $PauseAfterMarkerCopy) } else { $null }
 $task = 'N2R-NativeMarker-' + $run
 $ids = @($ExpectedCheckpointIds | ForEach-Object { $_.ToString('D') })
 $held = [Collections.Generic.List[IO.FileStream]]::new()
@@ -96,6 +105,8 @@ function HostGuard {
 }
 try {
     Need ($AcknowledgeEnrolledDisposableDevices -and $AcknowledgeUnqualifiedNativeMarkers) 'Both explicit enrolled-device and unqualified-marker acknowledgments required.'
+    Need (-not $deliberatePause -or ($Operation -ceq 'Fresh' -and -not $FirstWriteFault)) 'Marker pause dispatch is Fresh only and mutually exclusive with FirstWriteFault and Recover.'
+    Need (-not $deliberatePause -or $PauseAfterMarkerCopy -cin @('AP1','AP2','HND1','HND2')) 'Fresh cannot reach RB/ABT copies; power recovery requires a separate actual-power checkpoint contract.'
     Need ($ids.Count -gt 0 -and $ids.Count -le 50 -and @($ids | Sort-Object -Unique).Count -eq $ids.Count -and
         $preparedId.ToString('D') -in $ids -and $ExpectedParent.ToString('D') -in $ids -and [guid]::Empty.ToString('D') -notin $ids) 'Exact nonempty checkpoint set required.'
     Need (($Operation -ceq 'Fresh' -and $ExpectedParent -eq $preparedId -and -not $Rollback -and
@@ -163,11 +174,13 @@ try {
     $requestSha = (Get-FileHash -LiteralPath (Join-Path $root 'request.json') -Algorithm SHA256).Hash.ToLowerInvariant()
     $null = OpenPinned (Join-Path $root 'request.json') $requestSha 131072 $false
     $config = [ordered]@{schema_version=1; run_id=$run; operation=$Operation; mode=$mode; task=$task; stage=$stage
-        output=(Join-Path $stage $(if ($Operation -ceq 'Fresh') { 'conversion' } else { 'recovery' }))
+        output=$output
         tools=$tools; source_commit=$SourceCommit; manifest_sha256=$ToolsetManifestSha256
         request_sha256=$requestSha; routing_seed_sha256=$SourceRequestSha256; source=$seed.pair.source; shadow=$seed.pair.shadow; journal=$seed.journal
         prepared_managed_sha256=$managedSha; managed_path=$managedPath; first_write_fault=[bool]$FirstWriteFault; rollback=[bool]$Rollback
-        expected_exit=$(if ($FirstWriteFault) { 86 } else { 0 }); bundle_path=$RecoveryBundlePath; bundle_sha256=$RecoveryBundleSha256
+        deliberate_pause=$deliberatePause; pause_after_marker_copy=$(if ($deliberatePause) { $PauseAfterMarkerCopy } else { $null })
+        pause_marker_slot=$pauseMarkerSlot; pause_signal_path=$pauseSignalPath; pause_signal_bytes=$(if ($deliberatePause) { 32768 } else { $null })
+        expected_exit=$(if ($deliberatePause) { $null } elseif ($FirstWriteFault) { 86 } else { 0 }); bundle_path=$RecoveryBundlePath; bundle_sha256=$RecoveryBundleSha256
         checkpoint=$checkpoint; checkpoint_sha256=$InterruptedCheckpointReceiptSha256
         maximum_placement_bytes=16GB; maximum_placement_submissions=32768; maximum_exception_bytes=16MB}
     Save 'configuration.json' $config
@@ -294,6 +307,7 @@ function Marker($Observation,$Facts){
 try{
  $configPath=Join-Path '__STAGE__' 'configuration.json';$c=OpenPinned $configPath '__CONFIG_SHA__' 1MB $true
  Need ($c.stage-ceq'__STAGE__'-and$c.maximum_placement_bytes-eq16GB-and$c.maximum_placement_submissions-eq32768-and$c.maximum_exception_bytes-eq16MB) 'Pinned experiment configuration differs.'
+ Need (($c.deliberate_pause-and$c.operation-ceq'Fresh'-and-not$c.first_write_fault-and-not$c.rollback-and$c.pause_after_marker_copy-cin@('AP1','AP2','HND1','HND2')-and$c.pause_marker_slot-eq[array]::IndexOf(@('AP1','AP2','RB1','RB2','HND1','HND2','ABT1','ABT2'),$c.pause_after_marker_copy)-and$c.mode-ceq('fresh-power-'+$c.pause_after_marker_copy.ToLowerInvariant())-and$c.pause_signal_path-ceq(Join-Path $c.output 'marker-pause.json')-and$c.pause_signal_bytes-eq32768-and$null-eq$c.expected_exit)-or(-not$c.deliberate_pause-and$null-eq$c.pause_after_marker_copy-and$null-eq$c.pause_marker_slot-and$null-eq$c.pause_signal_path-and$null-eq$c.pause_signal_bytes)) 'Pinned pause must be an explicit reachable Fresh copy and exact output signal route; recovery pause is not supported.'
  Idle;$before=Routes ($c.operation-ceq'Fresh');Save 'preflight.json' $before
  foreach($tool in $c.tools){$path=Join-Path $c.stage $tool.name;$null=OpenPinned $path $tool.sha256 64MB $false;Need ((Get-Item -LiteralPath $path).Length-eq$tool.bytes) 'Staged executable length differs.'}
  $requestPath=Join-Path $c.stage 'request.json';$request=OpenPinned $requestPath $c.request_sha256 131072 $true;$requestPin=$c.request_sha256
@@ -312,11 +326,11 @@ try{
  Save 'wrapper-worker.json' @{pid=$PID;creation_ms=([DateTimeOffset](Get-Process -Id $PID).StartTime).ToUnixTimeMilliseconds();run_id=$c.run_id;utc=[DateTime]::UtcNow.ToString('o')}
  Idle;$null=Routes ($c.operation-ceq'Fresh');Need (-not(Test-Path -LiteralPath $c.output)) 'Native output must be a fresh directory.'
  $argv=@('--acknowledge-enrolled-disposable-devices','--acknowledge-unqualified-native-markers')
- if($c.operation-ceq'Fresh'){$argv+=@('fresh','--request',$requestPath,'--request-sha256',$requestPin,'--output',$c.output,'--maximum-placement-bytes','17179869184','--maximum-placement-submissions','32768','--maximum-exception-bytes','16777216');if($c.first_write_fault){$argv+='--first-write-fault'}}else{$argv+=@('recover','--bundle',$c.bundle_path,'--bundle-sha256',$c.bundle_sha256,'--output',$c.output);if($c.rollback){$argv+='--rollback'}}
+ if($c.operation-ceq'Fresh'){$argv+=@('fresh','--request',$requestPath,'--request-sha256',$requestPin,'--output',$c.output,'--maximum-placement-bytes','17179869184','--maximum-placement-submissions','32768','--maximum-exception-bytes','16777216');if($c.first_write_fault){$argv+='--first-write-fault'};if($c.deliberate_pause){$argv+=@('--pause-after-marker-copy',$c.pause_after_marker_copy,'--pause-signal',$c.pause_signal_path)}}else{$argv+=@('recover','--bundle',$c.bundle_path,'--bundle-sha256',$c.bundle_sha256,'--output',$c.output);if($c.rollback){$argv+='--rollback'}}
  $arguments=($argv|ForEach-Object {Need ($_-cnotmatch'["\r\n\x00]') 'Unsafe native argument.';$tail=$_.Length-$_.TrimEnd('\').Length;'"'+$_+('\'*$tail)+'"'})-join' '
  $binary=Join-Path $c.stage 'lab-selected-marker-native.exe';$producer=@($c.tools|Where-Object name -CEQ 'lab-selected-marker-native.exe')[0]
  $stdout=Join-Path $c.stage 'native.stdout.log';$stderr=Join-Path $c.stage 'native.stderr.log'
- Save 'native-dispatch-intent.json' @{binary=$binary;binary_sha256=$producer.sha256;argv=$argv;expected_exit=$c.expected_exit;source_certificate_must_be_live=($c.operation-ceq'Fresh');saved_json_grants_authority=$false;utc=[DateTime]::UtcNow.ToString('o')}
+ Save 'native-dispatch-intent.json' @{binary=$binary;binary_sha256=$producer.sha256;argv=$argv;expected_exit=$c.expected_exit;deliberate_pause=[bool]$c.deliberate_pause;pause_after_marker_copy=$c.pause_after_marker_copy;pause_marker_slot=$c.pause_marker_slot;pause_signal_path=$c.pause_signal_path;pause_signal_bytes=$c.pause_signal_bytes;native_exit_expected=(-not$c.deliberate_pause);pause_automatic_continue=$false;completion_inferred=$false;source_certificate_must_be_live=($c.operation-ceq'Fresh');saved_json_grants_authority=$false;utc=[DateTime]::UtcNow.ToString('o')}
  # Start retains the CreateProcess-owned handle even for a short-lived child.
  $startInfo=[Diagnostics.ProcessStartInfo]::new();$startInfo.UseShellExecute=$false;$startInfo.CreateNoWindow=$true
  $startInfo.FileName=$binary;$startInfo.Arguments=$arguments;$startInfo.WorkingDirectory=$c.stage
@@ -329,7 +343,9 @@ try{
  $stdoutPipe=$process.StandardOutput.BaseStream;$stderrPipe=$process.StandardError.BaseStream
  # Drain raw bytes concurrently with bounded buffers before waiting for exit.
  $stdoutDrain=$stdoutPipe.CopyToAsync($stdoutStream,65536);$stderrDrain=$stderrPipe.CopyToAsync($stderrStream,65536)
- Save 'native-process.json' @{pid=$nativePid;creation_ms=$birth;parent_pid=$PID;binary=$binary;binary_sha256=$producer.sha256;argv=$argv;expected_exit=$c.expected_exit;process_handle_retained_before_wait=$true;utc=[DateTime]::UtcNow.ToString('o')}
+ Save 'native-process.json' @{pid=$nativePid;creation_ms=$birth;parent_pid=$PID;binary=$binary;binary_sha256=$producer.sha256;argv=$argv;expected_exit=$c.expected_exit;deliberate_pause=[bool]$c.deliberate_pause;pause_after_marker_copy=$c.pause_after_marker_copy;pause_marker_slot=$c.pause_marker_slot;pause_signal_path=$c.pause_signal_path;pause_signal_bytes=$c.pause_signal_bytes;native_exit_expected=(-not$c.deliberate_pause);pause_automatic_continue=$false;completion_inferred=$false;process_handle_retained_before_wait=$true;utc=[DateTime]::UtcNow.ToString('o')}
+ # A deliberate pause leaves this SYSTEM wrapper and its retained process/log
+ # owners running here. No timeout, terminal receipt or power action is inferred.
  $process.WaitForExit();$clock.Stop();$process.Refresh();$nativeExit=$process.ExitCode
  $null=$stdoutDrain.GetAwaiter().GetResult();$null=$stderrDrain.GetAwaiter().GetResult()
  $stdoutStream.Flush($true);$stderrStream.Flush($true)
@@ -337,6 +353,7 @@ try{
  $peakWorking=$null;$peakPrivate=$null;try{$peakWorking=[long]$process.PeakWorkingSet64}catch{};try{$peakPrivate=[long]$process.PeakPagedMemorySize64}catch{}
  if($null-ne$peakWorking-and$peakWorking-le0){$peakWorking=$null};if($null-ne$peakPrivate-and$peakPrivate-le0){$peakPrivate=$null}
  Save 'native-terminal.json' @{pid=$nativePid;creation_ms=$birth;native_exit=$nativeExit;native_exit_observed=($null-ne$nativeExit);process_handle_retained_through_terminal=$true;wall_seconds=$clock.Elapsed.TotalSeconds;peak_working_set_bytes=$peakWorking;peak_paged_memory_bytes=$peakPrivate;peak_metrics_source='retained-System.Diagnostics.Process; null when unavailable';stdout=(Log $stdout);stderr=(Log $stderr);utc=[DateTime]::UtcNow.ToString('o')}
+ Need (-not$c.deliberate_pause) 'A deliberately parked native process actually exited; this is not a completed pause or power interruption. Preserve the actual terminal evidence without retry.'
  $phase='terminal-observation';Idle;Protected
  $after=Inventory;$unrelatedBefore=@($before.all_disk_attributes|Where-Object number -NotIn @(1,6));$unrelatedAfter=@($after|Where-Object number -NotIn @(1,6));Need (Same $unrelatedBefore $unrelatedAfter) 'An unrelated disk identity/provider/attribute changed.'
  Need ($null-ne$nativeExit-and$nativeExit-eq$c.expected_exit) 'Actual process fault/unexpected exit; preserve all material without retry.'
@@ -407,7 +424,7 @@ try{
     if($Operation -ceq 'Recover'){Copy-Item -LiteralPath $InterruptedCheckpointReceiptPath -ToSession $session -Destination (Join-Path $stage 'original-fault-checkpoint.json')}
     Copy-Item -LiteralPath $wrapper -ToSession $session -Destination (Join-Path $stage 'wrapper.ps1')
     HostGuard
-    Save 'dispatch.json' @{schema_version=1;kind='unqualified-native-marker-experiment-dispatch';run_id=$run;operation=$Operation;mode=$mode;source_commit=$SourceCommit;manifest_sha256=$ToolsetManifestSha256;parent_id=$ExpectedParent;checkpoint_ids=$ids;task_name=$task;guest_stage=$stage;output=$config.output;wrapper_sha256=$wrapperSha;configuration_sha256=$configSha;expected_exit=$config.expected_exit;completion_inferred=$false;native_marker_qualified=$false;hard_power_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}
+    Save 'dispatch.json' @{schema_version=1;kind='unqualified-native-marker-experiment-dispatch';run_id=$run;operation=$Operation;mode=$mode;source_commit=$SourceCommit;manifest_sha256=$ToolsetManifestSha256;parent_id=$ExpectedParent;checkpoint_ids=$ids;task_name=$task;guest_stage=$stage;output=$config.output;wrapper_sha256=$wrapperSha;configuration_sha256=$configSha;expected_exit=$config.expected_exit;deliberate_pause=$deliberatePause;pause_after_marker_copy=$config.pause_after_marker_copy;pause_marker_slot=$config.pause_marker_slot;pause_signal_path=$config.pause_signal_path;pause_signal_bytes=$config.pause_signal_bytes;native_exit_expected=(-not$deliberatePause);guest_wrapper_waits_indefinitely_for_native_exit=$deliberatePause;pause_automatic_continue=$false;completion_inferred=$false;native_marker_qualified=$false;hard_power_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}
     # Stage checks execute the same literal preflight functions, never the body
     # containing native process launch. All checks finish before the task is registered.
     $preflightTokens=$null;$preflightErrors=$null;$ast=[Management.Automation.Language.Parser]::ParseInput($guest,[ref]$preflightTokens,[ref]$preflightErrors)
@@ -438,7 +455,7 @@ try{
             Start-ScheduledTask -TaskName $Task -ErrorAction Stop
         }finally{foreach($stream in $held){$stream.Dispose()}}
     }
-    Save 'start.json' @{start_issued_once=$true;task_name=$task;guest_stage=$stage;expected_exit=$config.expected_exit;completion_inferred=$false;automatic_retry_restore_cleanup=$false;utc=[DateTime]::UtcNow.ToString('o')}
+    Save 'start.json' @{start_issued_once=$true;task_name=$task;guest_stage=$stage;expected_exit=$config.expected_exit;deliberate_pause=$deliberatePause;pause_after_marker_copy=$config.pause_after_marker_copy;pause_marker_slot=$config.pause_marker_slot;pause_signal_path=$config.pause_signal_path;pause_signal_bytes=$config.pause_signal_bytes;native_exit_expected=(-not$deliberatePause);guest_wrapper_waits_indefinitely_for_native_exit=$deliberatePause;pause_automatic_continue=$false;completion_inferred=$false;automatic_retry_restore_cleanup=$false;utc=[DateTime]::UtcNow.ToString('o')}
     Get-Content -LiteralPath (Join-Path $root 'dispatch.json') -Raw
 }catch{
     if($created-and-not(Test-Path -LiteralPath (Join-Path $root 'dispatch-failed.json'))){Save 'dispatch-failed.json' @{observation_passed=$false;error=$_.Exception.ToString();automatic_retry_restore_cleanup=$false;worker_death_inferred=$false;native_marker_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}}

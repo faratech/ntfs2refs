@@ -14,13 +14,12 @@ pub fn observed_tree(
     raw: &crate::ntfs_inspect::NtfsInspection,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<(crate::shadow_tree::Tree, crate::ntfs_source_view::Analysis)> {
-    use sha2::{Digest, Sha256};
     let before = source.state(events)?;
     ensure!(
         before.disk_attributes == 3,
         "source must remain excluded during descriptor capture"
     );
-    let pin = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
+    let pin = crate::general_qualification::canonical_json_sha256(raw)?;
     let request =
         crate::ntfs_attestation::request_for_general_inspection(raw, &pin, source.binding())?;
     let observed = source.observe_ntfs_files(&request, events)?;
@@ -62,7 +61,15 @@ pub fn native_named_streams(
 }
 
 pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_native::Input<'_>> {
-    tree.objects
+    native_inputs_from_objects(&tree.objects)
+}
+
+/// Borrow canonical objects directly when an expected tree already owns them.
+/// The native input table retains the same per-object metadata and source runs.
+pub(crate) fn native_inputs_from_objects(
+    objects: &[crate::shadow_tree::Object],
+) -> Vec<n2r_win32::shadow_native::Input<'_>> {
+    objects
         .iter()
         .map(|object| n2r_win32::shadow_native::Input {
             components: &object.path,

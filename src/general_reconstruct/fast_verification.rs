@@ -3,7 +3,9 @@
 use super::*;
 use crate::{
     general_composite_target::FrozenAllocationTargetPreservation,
-    general_source_admission::AllocationCertificate, selected_journal,
+    general_qualification::{canonical_json_sha256, pretty_json_sha256},
+    general_source_admission::AllocationCertificate,
+    selected_journal,
 };
 use anyhow::{Context, ensure};
 use n2r_win32::{attestation::Snapshot, shadow_native::Report};
@@ -371,8 +373,7 @@ impl FreshPayloadProof {
         plan: &selected_journal::SelectedPlan,
         ticket: &selected_journal::SelectedTicket,
     ) -> Result<Self> {
-        let expected_tree_sha256 =
-            hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?));
+        let expected_tree_sha256 = pretty_json_sha256(expected)?;
         ensure!(
             certificate.binds(proof)
                 && proof.data_ties_verified()
@@ -437,8 +438,8 @@ impl FreshPayloadProof {
             new_selected_sha256: ticket.new_selected_sha256,
             selected_bytes,
             range_count: ticket.range_count,
-            plan_sha256: hex::encode(Sha256::digest(serde_json::to_vec(plan)?)),
-            ticket_sha256: hex::encode(Sha256::digest(serde_json::to_vec(ticket)?)),
+            plan_sha256: canonical_json_sha256(plan)?,
+            ticket_sha256: canonical_json_sha256(ticket)?,
             tail_extent_streams,
             tail_payload_bytes_verified,
         })
@@ -482,8 +483,7 @@ impl FreshPayloadProof {
         ensure!(
             scope.pair.source == self.source
                 && native.pair.source.identity == self.source.identity
-                && hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?))
-                    == self.expected_tree_sha256,
+                && pretty_json_sha256(expected)? == self.expected_tree_sha256,
             "fresh payload source or expected tree changed at handoff"
         );
         for result in [applied, handoff] {
@@ -565,10 +565,9 @@ impl RecoveryPayloadProof {
                 && !facts.grants_write_authority
                 && !facts.initial_retained_content_digests_available
                 && &facts.source == source
-                && facts.expected_tree_sha256
-                    == hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?))
-                && facts.plan_sha256 == hex::encode(Sha256::digest(serde_json::to_vec(plan)?))
-                && facts.ticket_sha256 == hex::encode(Sha256::digest(serde_json::to_vec(ticket)?))
+                && facts.expected_tree_sha256 == pretty_json_sha256(expected)?
+                && facts.plan_sha256 == canonical_json_sha256(plan)?
+                && facts.ticket_sha256 == canonical_json_sha256(ticket)?
                 && ticket.image_length == source.identity.partition_bytes
                 && !ticket.whole_image_verified
                 && ticket.selected_bytes == selected_bytes
@@ -638,8 +637,7 @@ pub(crate) fn verify_native_recovery_extents_scoped(
             && closed.selected_sha256 == facts.new_selected_sha256
             && closed.selected_bytes == facts.selected_bytes
             && closed.range_count == facts.range_count
-            && facts.expected_tree_sha256
-                == hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?)),
+            && facts.expected_tree_sha256 == pretty_json_sha256(expected)?,
         "recovery requires the actual closed selected-target result for its pinned maps"
     );
     let native = observe_native_metadata(scope, expected, report, restored_label)?;
@@ -722,16 +720,7 @@ fn observe_native_metadata(
 ) -> Result<shadow_native::GeneralConvertedReport> {
     let mut pair = scope.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, &mut report.events)?;
-    let tree = shadow_tree::Tree {
-        profile: scope
-            .source_resource_profile
-            .unwrap_or_default()
-            .ordinary_shadow_profile(),
-        objects: expected.objects.clone(),
-        logical_bytes: expected.logical_bytes,
-        internal_replacement_pending: expected.internal_replacement_pending.clone(),
-    };
-    let input = crate::general_shadow::native_inputs(&tree);
+    let input = crate::general_shadow::native_inputs_from_objects(&expected.objects);
     Ok(
         shadow_native::verify_general_converted_known_contents_with_resource_profile(
             pair,
@@ -765,16 +754,7 @@ pub(crate) fn verify_native_extents_scoped(
 ) -> Result<Value> {
     let mut pair = scope.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, &mut report.events)?;
-    let tree = shadow_tree::Tree {
-        profile: scope
-            .source_resource_profile
-            .unwrap_or_default()
-            .ordinary_shadow_profile(),
-        objects: expected.objects.clone(),
-        logical_bytes: expected.logical_bytes,
-        internal_replacement_pending: expected.internal_replacement_pending.clone(),
-    };
-    let input = crate::general_shadow::native_inputs(&tree);
+    let input = crate::general_shadow::native_inputs_from_objects(&expected.objects);
     let native = shadow_native::observe_general_converted_metadata_with_resource_profile(
         pair,
         &input,

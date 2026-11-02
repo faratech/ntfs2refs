@@ -115,11 +115,19 @@ pub(crate) fn save_bounded(
     Ok(hex::encode(actual_hash))
 }
 
-fn canonical_json_sha256(value: &impl Serialize) -> Result<String> {
+pub(crate) fn canonical_json_sha256(value: &impl Serialize) -> Result<String> {
     // Compact serialization is the same byte stream used by to_vec, without
     // its additional inventory-sized allocation. This reads no device bytes.
     let mut output = BoundedJson::new(io::sink(), usize::MAX);
     serde_json::to_writer(&mut output, value)?;
+    Ok(hex::encode(output.hash.finalize()))
+}
+
+/// Hash the exact pretty-JSON artifact bytes without retaining a serialization.
+/// Artifact writers and callers still enforce their existing byte ceilings.
+pub(crate) fn pretty_json_sha256(value: &impl Serialize) -> Result<String> {
+    let mut output = BoundedJson::new(io::sink(), usize::MAX);
+    serde_json::to_writer_pretty(&mut output, value)?;
     Ok(hex::encode(output.hash.finalize()))
 }
 

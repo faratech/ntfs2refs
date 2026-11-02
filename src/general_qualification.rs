@@ -13,7 +13,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, BufWriter, Read, Write},
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
 };
@@ -32,16 +32,31 @@ pub use compact_construction::CompactConstructionBudget;
 
 const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 
-/// Bound serialization before opening the destination. `to_vec_pretty` followed
-/// by a length check can allocate an arbitrarily large buffer before refusing.
-struct BoundedJson {
-    bytes: Vec<u8>,
+/// Count and hash the serializer's exact output without retaining an artifact.
+/// The first pass is a sink, so an oversize value still refuses before the
+/// destination is opened. The second pass writes the same bytes through one
+/// fixed-size buffer and must match the first pass before returning its pin.
+struct BoundedJson<W> {
+    output: W,
+    bytes: usize,
     limit: usize,
+    hash: Sha256,
 }
 
-impl Write for BoundedJson {
+impl<W: Write> BoundedJson<W> {
+    fn new(output: W, limit: usize) -> Self {
+        Self {
+            output,
+            bytes: 0,
+            limit,
+            hash: Sha256::new(),
+        }
+    }
+}
+
+impl<W: Write> Write for BoundedJson<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let needed = self.bytes.len().checked_add(bytes.len()).ok_or_else(|| {
+        let needed = self.bytes.checked_add(bytes.len()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "qualification artifact exceeds bound",
@@ -53,25 +68,23 @@ impl Write for BoundedJson {
                 "qualification artifact exceeds bound",
             ));
         }
-        if needed > self.bytes.capacity() {
-            let desired = self
-                .bytes
-                .capacity()
-                .saturating_mul(2)
-                .max(4096)
-                .max(needed)
-                .min(self.limit);
-            self.bytes
-                .try_reserve_exact(desired - self.bytes.len())
-                .map_err(|_| io::Error::other("qualification artifact allocation failed"))?;
-        }
-        self.bytes.extend_from_slice(bytes);
+        self.output.write_all(bytes)?;
+        self.hash.update(bytes);
+        self.bytes = needed;
         Ok(bytes.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+        self.output.flush()
     }
+}
+
+/// Apply the artifact's existing pretty-JSON byte ceiling without allocating
+/// its complete serialization. This reads only the supplied in-memory value.
+pub(crate) fn serialized_len_bounded(value: &impl Serialize, limit: usize) -> Result<usize> {
+    let mut output = BoundedJson::new(io::sink(), limit);
+    serde_json::to_writer_pretty(&mut output, value)?;
+    Ok(output.bytes)
 }
 
 pub(crate) fn save_bounded(
@@ -80,21 +93,34 @@ pub(crate) fn save_bounded(
     value: &impl Serialize,
     limit: usize,
 ) -> Result<String> {
-    let mut output = BoundedJson {
-        bytes: Vec::new(),
-        limit,
-    };
-    serde_json::to_writer_pretty(&mut output, value)?;
-    let bytes = output.bytes;
-    let mut file = OpenOptions::new()
+    let mut counted = BoundedJson::new(io::sink(), limit);
+    serde_json::to_writer_pretty(&mut counted, value)?;
+    let expected_bytes = counted.bytes;
+    let expected_hash = counted.hash.finalize();
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .share_mode(0)
         .custom_flags(0x0020_0000)
         .open(root.join(name))?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    Ok(hex::encode(Sha256::digest(&bytes)))
+    let mut output = BoundedJson::new(BufWriter::with_capacity(64 * 1024, file), expected_bytes);
+    serde_json::to_writer_pretty(&mut output, value)?;
+    output.flush()?;
+    let actual_hash = output.hash.finalize();
+    ensure!(
+        output.bytes == expected_bytes && actual_hash == expected_hash,
+        "qualification artifact serialization changed between sizing and writing"
+    );
+    output.output.get_ref().sync_all()?;
+    Ok(hex::encode(actual_hash))
+}
+
+fn canonical_json_sha256(value: &impl Serialize) -> Result<String> {
+    // Compact serialization is the same byte stream used by to_vec, without
+    // its additional inventory-sized allocation. This reads no device bytes.
+    let mut output = BoundedJson::new(io::sink(), usize::MAX);
+    serde_json::to_writer(&mut output, value)?;
+    Ok(hex::encode(output.hash.finalize()))
 }
 
 pub(crate) fn save(root: &Path, name: &str, value: &impl Serialize) -> Result<String> {
@@ -330,7 +356,7 @@ fn prepare_source_context(
     let source_label_frozen =
         crate::source_volume_label::verify(&mut source, &raw, source_label.label())?;
     save(output, "source-label-frozen.json", &source_label_frozen)?;
-    let pin = hex::encode(Sha256::digest(serde_json::to_vec(&raw)?));
+    let pin = canonical_json_sha256(&raw)?;
     let resources = resources.admit_inspection(&raw, &pin)?;
     if let Some(admission) = resources.count_admission()? {
         save(

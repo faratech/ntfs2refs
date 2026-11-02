@@ -7,13 +7,17 @@ use crate::{
 };
 use anyhow::{Context, ensure};
 use n2r_win32::{attestation::Snapshot, shadow_native::Report};
+use serde::ser::SerializeSeq;
 use serde_json::Value;
 use std::collections::BTreeMap;
+
+type StreamKey = (Vec<String>, Vec<u16>);
+type StreamMaps = BTreeMap<StreamKey, StreamMap>;
 
 pub(crate) struct FreshPayloadProof {
     expected_tree_sha256: String,
     source: n2r_win32::general_layout::GeneralDiskBinding,
-    maps: BTreeMap<(Vec<String>, Vec<u16>), StreamMap>,
+    maps: StreamMaps,
     base_sectors: u64,
     new_selected_sha256: [u8; 32],
     selected_bytes: u64,
@@ -36,13 +40,40 @@ struct StreamMap {
     integrity: Vec<u8>,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum StreamStandard {
     Data([u8; 22]),
     // Directory tree storage may grow for the separately verified post-mount
     // indexer cache. It is not retained file payload; namespace stays checked.
     DirectoryLinksAndType([u8; 6]),
+}
+
+/// A scalar snapshot and borrowed variable-sized buffers. Comparing an already
+/// collected native report must not duplicate its retrieval and integrity data.
+#[derive(PartialEq, Eq)]
+struct StreamMapRef<'a> {
+    file_id: [u8; 16],
+    standard: StreamStandard,
+    retrieval: &'a [u8],
+    complete_page_proof: bool,
+    resident: bool,
+    sparse: Option<&'a n2r_win32::sparse_layout::SparseLayout>,
+    integrity: &'a [u8],
+}
+
+impl StreamMap {
+    fn as_ref(&self) -> StreamMapRef<'_> {
+        StreamMapRef {
+            file_id: self.file_id,
+            standard: self.standard,
+            retrieval: &self.retrieval,
+            complete_page_proof: self.complete_page_proof,
+            resident: self.resident,
+            sparse: self.sparse.as_ref(),
+            integrity: &self.integrity,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -73,9 +104,62 @@ pub(crate) struct RecoveryPayloadManifest {
     initial_retained_content_digests_available: bool,
 }
 
+/// Same field order and JSON sequence representation as the owned reader
+/// schema, borrowing the canonical proof instead of cloning a second map set.
+#[derive(Serialize)]
+pub(crate) struct RecoveryPayloadManifestRef<'a> {
+    schema_version: u32,
+    kind: &'static str,
+    source: &'a n2r_win32::general_layout::GeneralDiskBinding,
+    expected_tree_sha256: &'a str,
+    plan_sha256: &'a str,
+    ticket_sha256: &'a str,
+    base_sectors: u64,
+    new_selected_sha256: [u8; 32],
+    selected_bytes: u64,
+    range_count: u32,
+    bindings: MapEntriesRef<'a>,
+    grants_write_authority: bool,
+    initial_retained_content_digests_available: bool,
+}
+
+struct MapEntriesRef<'a>(&'a StreamMaps);
+
+#[derive(Serialize)]
+struct MapEntryRef<'a> {
+    components: &'a [String],
+    name_utf16: &'a [u16],
+    map: &'a StreamMap,
+}
+
+impl Serialize for MapEntriesRef<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut entries = serializer.serialize_seq(Some(self.0.len()))?;
+        for ((components, name_utf16), map) in self.0 {
+            entries.serialize_element(&MapEntryRef {
+                components,
+                name_utf16,
+                map,
+            })?;
+        }
+        entries.end()
+    }
+}
+
+/// Only scalar facts are needed after parsing and checking the complete pinned
+/// manifest. Its binding buffers move into the proof's sole canonical map.
+struct RecoveryPayloadHeader {
+    source: n2r_win32::general_layout::GeneralDiskBinding,
+    expected_tree_sha256: String,
+    base_sectors: u64,
+    new_selected_sha256: [u8; 32],
+    selected_bytes: u64,
+    range_count: u32,
+}
+
 pub(crate) struct RecoveryPayloadProof {
-    facts: RecoveryPayloadManifest,
-    maps: BTreeMap<(Vec<String>, Vec<u16>), StreamMap>,
+    facts: RecoveryPayloadHeader,
+    maps: StreamMaps,
 }
 
 fn query(snapshot: &Snapshot, class: i32) -> Result<&[u8]> {
@@ -88,6 +172,34 @@ fn query(snapshot: &Snapshot, class: i32) -> Result<&[u8]> {
     Ok(&value.bytes)
 }
 
+fn stream_map_ref<'a>(
+    snapshot: &Snapshot,
+    retrieval: &'a [u8],
+    paged: bool,
+    resident: bool,
+    sparse: Option<&'a n2r_win32::sparse_layout::SparseLayout>,
+    integrity: &'a [u8],
+) -> Result<StreamMapRef<'a>> {
+    let identity = query(snapshot, 18)?;
+    let standard = query(snapshot, 1)?;
+    ensure!(standard[20] == 0, "fast stream is delete pending");
+    // File identities live in the copied ReFS metadata graph. Volume paths and
+    // disk numbers change at cutover; neither substitutes for the 128-bit ID.
+    Ok(StreamMapRef {
+        file_id: identity[8..].try_into()?,
+        standard: if standard[21] == 0 {
+            StreamStandard::Data(standard[..22].try_into()?)
+        } else {
+            StreamStandard::DirectoryLinksAndType(standard[16..22].try_into()?)
+        },
+        retrieval,
+        complete_page_proof: paged,
+        resident,
+        sparse,
+        integrity,
+    })
+}
+
 fn stream_map(
     snapshot: &Snapshot,
     retrieval: &[u8],
@@ -96,27 +208,19 @@ fn stream_map(
     sparse: Option<&n2r_win32::sparse_layout::SparseLayout>,
     integrity: &[u8],
 ) -> Result<StreamMap> {
-    let identity = query(snapshot, 18)?;
-    let standard = query(snapshot, 1)?;
-    ensure!(standard[20] == 0, "fast stream is delete pending");
-    // File identities live in the copied ReFS metadata graph. Volume paths and
-    // disk numbers change at cutover; neither substitutes for the 128-bit ID.
+    let value = stream_map_ref(snapshot, retrieval, paged, resident, sparse, integrity)?;
     Ok(StreamMap {
-        file_id: identity[8..].try_into()?,
-        standard: if standard[21] == 0 {
-            StreamStandard::Data(standard[..22].try_into()?)
-        } else {
-            StreamStandard::DirectoryLinksAndType(standard[16..22].try_into()?)
-        },
-        retrieval: retrieval.to_vec(),
-        complete_page_proof: paged,
-        resident,
-        sparse: sparse.cloned(),
-        integrity: integrity.to_vec(),
+        file_id: value.file_id,
+        standard: value.standard,
+        retrieval: value.retrieval.to_vec(),
+        complete_page_proof: value.complete_page_proof,
+        resident: value.resident,
+        sparse: value.sparse.cloned(),
+        integrity: value.integrity.to_vec(),
     })
 }
 
-fn maps(report: &Report) -> Result<BTreeMap<(Vec<String>, Vec<u16>), StreamMap>> {
+fn maps(report: &Report) -> Result<StreamMaps> {
     let mut maps = BTreeMap::new();
     for object in &report.objects {
         ensure!(
@@ -162,6 +266,73 @@ fn maps(report: &Report) -> Result<BTreeMap<(Vec<String>, Vec<u16>), StreamMap>>
         }
     }
     Ok(maps)
+}
+
+/// Compare every reported binding without constructing another owning map.
+/// The sorted index borrows keys and values from the proof; one seen flag per
+/// binding preserves duplicate detection and complete-set equality.
+fn maps_match(report: &Report, expected: &StreamMaps) -> Result<bool> {
+    let mut bindings: Vec<_> = expected
+        .iter()
+        .map(|(key, value)| (key, value, false))
+        .collect();
+    let mut match_stream = |components: &[String], name: &[u16], value: StreamMapRef<'_>| {
+        let found = bindings.binary_search_by(|(key, _, _)| {
+            key.0
+                .as_slice()
+                .cmp(components)
+                .then_with(|| key.1.as_slice().cmp(name))
+        });
+        let Ok(index) = found else {
+            return Ok(false);
+        };
+        let (_, expected, seen) = &mut bindings[index];
+        ensure!(!*seen, "duplicate fast canonical stream");
+        *seen = true;
+        Ok(expected.as_ref() == value)
+    };
+    for object in &report.objects {
+        ensure!(
+            object.before == object.after,
+            "fast object metadata changed during observation"
+        );
+        if !match_stream(
+            &object.components,
+            &[],
+            stream_map_ref(
+                &object.before,
+                &object.retrieval,
+                object.retrieval_page_proof.is_some(),
+                object.resident_data,
+                object.sparse.as_ref().map(|sparse| &sparse.expected),
+                &object.integrity,
+            )?,
+        )? {
+            return Ok(false);
+        }
+        for stream in &object.named_streams {
+            ensure!(
+                stream.before == stream.after,
+                "fast named stream metadata changed"
+            );
+            ensure!(!stream.name_utf16.is_empty(), "duplicate fast named stream");
+            if !match_stream(
+                &object.components,
+                &stream.name_utf16,
+                stream_map_ref(
+                    &stream.before,
+                    &stream.retrieval,
+                    stream.retrieval_page_proof.is_some(),
+                    stream.resident_data,
+                    stream.sparse.as_ref().map(|sparse| &sparse.expected),
+                    &stream.integrity,
+                )?,
+            )? {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(bindings.iter().all(|(_, _, seen)| *seen))
 }
 
 impl FreshPayloadProof {
@@ -240,34 +411,24 @@ impl FreshPayloadProof {
         })
     }
 
-    pub(crate) fn recovery_manifest(&self) -> Result<RecoveryPayloadManifest> {
-        let manifest = RecoveryPayloadManifest {
+    pub(crate) fn recovery_manifest(&self) -> Result<RecoveryPayloadManifestRef<'_>> {
+        let manifest = RecoveryPayloadManifestRef {
             schema_version: 1,
-            kind: "protected-target-stream-map-facts-v1".into(),
-            source: self.source.clone(),
-            expected_tree_sha256: self.expected_tree_sha256.clone(),
-            plan_sha256: self.plan_sha256.clone(),
-            ticket_sha256: self.ticket_sha256.clone(),
+            kind: "protected-target-stream-map-facts-v1",
+            source: &self.source,
+            expected_tree_sha256: &self.expected_tree_sha256,
+            plan_sha256: &self.plan_sha256,
+            ticket_sha256: &self.ticket_sha256,
             base_sectors: self.base_sectors,
             new_selected_sha256: self.new_selected_sha256,
             selected_bytes: self.selected_bytes,
             range_count: self.range_count,
-            bindings: self
-                .maps
-                .iter()
-                .map(|((components, name_utf16), map)| MapEntry {
-                    components: components.clone(),
-                    name_utf16: name_utf16.clone(),
-                    map: map.clone(),
-                })
-                .collect(),
+            bindings: MapEntriesRef(&self.maps),
             grants_write_authority: false,
             initial_retained_content_digests_available: false,
         };
-        ensure!(
-            serde_json::to_vec_pretty(&manifest)?.len() <= 64 * 1024 * 1024,
-            "recovery map facts exceed the bounded metadata artifact"
-        );
+        crate::general_qualification::serialized_len_bounded(&manifest, 64 * 1024 * 1024)
+            .context("recovery map facts exceed the bounded metadata artifact")?;
         Ok(manifest)
     }
 
@@ -310,7 +471,7 @@ impl FreshPayloadProof {
                 && observation.complete_stream_mappings_observed
                 && observation.data_storage_validity_checked
                 && native.native.base_sectors == self.base_sectors
-                && maps(&native.native)? == self.maps,
+                && maps_match(&native.native, &self.maps)?,
             "mounted file identities, complete physical maps or storage validity differ from the protected candidate"
         );
         Ok(
@@ -376,9 +537,9 @@ impl RecoveryPayloadProof {
         );
         let mut expected_keys = std::collections::BTreeSet::new();
         for object in &expected.objects {
-            expected_keys.insert((object.path.clone(), Vec::new()));
+            expected_keys.insert((object.path.as_slice(), &[] as &[u16]));
             for stream in &object.named_streams {
-                expected_keys.insert((object.path.clone(), stream.name_utf16.clone()));
+                expected_keys.insert((object.path.as_slice(), stream.name_utf16.as_slice()));
             }
         }
         ensure!(
@@ -386,19 +547,30 @@ impl RecoveryPayloadProof {
             "recovery map binding count differs"
         );
         let mut maps = BTreeMap::new();
-        for entry in &facts.bindings {
-            let key = (entry.components.clone(), entry.name_utf16.clone());
+        for entry in facts.bindings {
             ensure!(
-                expected_keys.contains(&key)
-                    && entry.map.file_id != [0; 16]
-                    && maps.insert(key, entry.map.clone()).is_none(),
+                expected_keys.contains(&(entry.components.as_slice(), entry.name_utf16.as_slice()))
+                    && entry.map.file_id != [0; 16],
                 "duplicate or unexpected recovery map binding"
             );
             ensure!(
                 entry.map.retrieval.len() <= n2r_win32::retrieval_paging::MAX_RETURNED_BYTES,
                 "recovery stream map exceeds retrieval bound"
             );
+            ensure!(
+                maps.insert((entry.components, entry.name_utf16), entry.map)
+                    .is_none(),
+                "duplicate or unexpected recovery map binding"
+            );
         }
+        let facts = RecoveryPayloadHeader {
+            source: facts.source,
+            expected_tree_sha256: facts.expected_tree_sha256,
+            base_sectors: facts.base_sectors,
+            new_selected_sha256: facts.new_selected_sha256,
+            selected_bytes: facts.selected_bytes,
+            range_count: facts.range_count,
+        };
         Ok(Self { facts, maps })
     }
 }
@@ -471,7 +643,7 @@ pub(crate) fn verify_native_recovery_extents_scoped(
             && known.streams_without_content_baseline == unknown_streams
             && native.pair.source.identity == facts.source.identity
             && native.native.base_sectors == facts.base_sectors
-            && maps(&native.native)? == proof.maps,
+            && maps_match(&native.native, &proof.maps)?,
         "recovery mounted metadata, storage validity or complete maps differ from pinned target facts"
     );
     record_mount_paths_scoped(scope, &native, report);

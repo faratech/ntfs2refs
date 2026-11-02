@@ -1,5 +1,12 @@
 # Scaling budget gaps
 
+The November 2 memory implementation streams qualification artifact writes and
+inspection hashing, borrows the fresh recovery map manifest, moves parsed map
+buffers into the recovery lookup, and compares mounted maps without copying their
+payloads. See [metadata memory reduction](metadata-memory-reduction.md). This
+removes several full serialization/map copies described by the historical audit
+below. Artifact/count ceilings and complete paged-evidence work remain unchanged.
+
 Subsequent implementation `f32c0f6` adds a pinned count envelope for fresh fast
 allocation conversion: files and directories share the existing 1,280 object
 slots. Full-content and legacy profiles keep their original split. This removes

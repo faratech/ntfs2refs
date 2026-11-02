@@ -30,3 +30,16 @@ Focused Windows compilation and independent source review passed. No unit tests
 were added or run. Native runtime qualification remains separate. This change
 reduces memory duplication; complete paged evidence and resource-based scale
 remain open in [the scaling plan](scaling-budget-gaps.md).
+
+Selected conversion and recovery now share `selected_artifacts::Artifact` limits
+for every pinned input. Plan, expectation and payload-map artifacts retain the
+writer's existing 64 MiB ceiling; recovery opening and copying use that same
+ceiling. Previously plan/expectation opening and all input copying had a separate
+16 MiB limit, so a saved conversion artifact could be refused by recovery.
+Request, ticket, bundle and verification saves now enforce their existing reader
+ceilings before activation. Input copies retain their original bytes and pins;
+the recovery bundle's historical `bundle.json` copy name is unchanged.
+
+This closes a size-contract mismatch before larger-count work. It does not lift
+object, stream, extent or selected-range limits, add paging, or establish native
+qualification for large artifacts. Focused compilation passed; no unit tests ran.

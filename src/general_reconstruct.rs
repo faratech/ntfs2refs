@@ -31,6 +31,7 @@ use std::{
 pub(crate) mod compact;
 pub(crate) mod compact_finalize;
 pub(crate) mod fast_verification;
+pub(crate) mod selected_artifacts;
 pub(crate) mod selected_native_journal;
 
 fn observe_journal(file: &File, request: &Request) -> Result<JournalFileSnapshot> {

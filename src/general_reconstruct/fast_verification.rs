@@ -427,8 +427,11 @@ impl FreshPayloadProof {
             grants_write_authority: false,
             initial_retained_content_digests_available: false,
         };
-        crate::general_qualification::serialized_len_bounded(&manifest, 64 * 1024 * 1024)
-            .context("recovery map facts exceed the bounded metadata artifact")?;
+        crate::general_qualification::serialized_len_bounded(
+            &manifest,
+            super::selected_artifacts::Artifact::PayloadMap.maximum_bytes(),
+        )
+        .context("recovery map facts exceed the bounded metadata artifact")?;
         Ok(manifest)
     }
 
@@ -501,7 +504,7 @@ impl RecoveryPayloadProof {
         resources: crate::ntfs_admission::ResourceProfile,
     ) -> Result<Self> {
         ensure!(
-            bytes.len() <= 64 * 1024 * 1024,
+            bytes.len() <= super::selected_artifacts::Artifact::PayloadMap.maximum_bytes(),
             "recovery map artifact exceeds bound"
         );
         resources.count_admission()?;

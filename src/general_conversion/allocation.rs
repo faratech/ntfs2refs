@@ -7,6 +7,7 @@ use super::*;
 use crate::selected_journal as sj;
 use anyhow::Context;
 use n2r_win32::{GeneralFrozenPartition, WritePolicy};
+use reconstruct::selected_artifacts::Artifact;
 use reconstruct::selected_native_journal::NativeSelectedJournal;
 
 /// The fresh alternative exposes no mutable journal between completed
@@ -316,7 +317,7 @@ fn convert_allocation_selected_inner(
             "allocation-bounded certificate does not bind the live proof"
         );
         let expectation: crate::shadow_tree::ExpectedTree = serde_json::from_slice(&expected)?;
-        let expectation_pin = qualification::save(output, "expectation.json", &expectation)?;
+        let expectation_pin = Artifact::Expectation.save(output, &expectation)?;
         ensure!(
             expectation_pin == expected_tree_sha256,
             "saved expectation differs from the admitted target"
@@ -329,7 +330,7 @@ fn convert_allocation_selected_inner(
         let old_zero_bytes = plan.old_zero_bytes()?;
         let source_free_bytes = plan.source_free_bytes()?;
         let packed_bytes = proof.capture().layout.packed_bytes();
-        let plan_pin = qualification::save(output, "selected-plan.json", &plan)?;
+        let plan_pin = Artifact::Plan.save(output, &plan)?;
         let copy_interruption_target = if interrupt_after_first_copy_write {
             let copy = plan.new_copy_ranges.first().context(
                 "first-copy interruption requires a qualified old-payload reference; source writes have not started",
@@ -503,7 +504,7 @@ fn convert_allocation_selected_inner(
             "selected ticket differs from the admitted plan"
         );
         qualification::save(output, "preparation-events.json", &preparation_events)?;
-        let ticket_pin = qualification::save(output, "selected-ticket.json", &ticket)?;
+        let ticket_pin = Artifact::Ticket.save(output, &ticket)?;
         let fresh_payload_proof = request
             .verification_policy
             .is_fast()
@@ -523,17 +524,16 @@ fn convert_allocation_selected_inner(
                 .context("hash-free source requires the original fresh payload proof")?
                 .recovery_manifest()?;
             let path = output.join("recovery-payload-manifest.json");
-            let sha256 = qualification::save(output, "recovery-payload-manifest.json", &manifest)?;
+            let sha256 = Artifact::PayloadMap.save(output, &manifest)?;
             Some(serde_json::json!({"path":path,"sha256":sha256}))
         } else {
             None
         };
         // Publish one checksummed locator before activation. It carries pins
         // only; the recovery engine rechecks the journal and device itself.
-        let request_pin = qualification::save(output, "request.json", request)?;
-        let verification_pin = qualification::save(
+        let request_pin = Artifact::Request.save(output, request)?;
+        let verification_pin = Artifact::Verification.save(
             output,
-            "verification.json",
             &serde_json::json!({
                 "expected_mount_paths":mount_paths.paths,
                 "expected_source_label":source_label.label(),
@@ -557,8 +557,7 @@ fn convert_allocation_selected_inner(
             // own typed native handle and fully authenticate actual J bytes.
             recovery_bundle["marker_storage_identity"] = serde_json::to_value(&journal_identity)?;
         }
-        let recovery_pin =
-            qualification::save(output, "allocation-recovery-bundle.json", &recovery_bundle)?;
+        let recovery_pin = Artifact::Bundle.save(output, &recovery_bundle)?;
         if fresh_exclusive_v3_first_write_fault {
             request
                 .source_resource_profile

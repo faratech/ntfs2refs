@@ -8,6 +8,7 @@ use n2r_win32::{
     WritePolicy, general_layout::GeneralDiskBinding, mounted_filesystem_general,
     rediscover_general_volume_wait, volume_label::VolumeLabel,
 };
+use protocol::selected_artifacts::Artifact;
 use protocol::selected_native_journal::NativeSelectedJournal;
 use serde::Deserialize;
 use std::path::Component;
@@ -74,7 +75,11 @@ fn open_bundle(bundle_path: &Path, bundle_sha256: &str) -> Result<(HeldInput, Bu
         ordinary_absolute(bundle_path),
         "allocation recovery bundle path must be absolute without traversal"
     );
-    let held = HeldInput::open(bundle_path, bundle_sha256, 65536)?;
+    let held = HeldInput::open(
+        bundle_path,
+        bundle_sha256,
+        Artifact::Bundle.maximum_bytes() as u64,
+    )?;
     let bundle: Bundle = serde_json::from_slice(&held.bytes)?;
     ensure!(
         bundle.schema_version == 1
@@ -134,7 +139,11 @@ fn recover_allocation_inner(
     native_marker_lab: bool,
 ) -> Result<AllocationRecoveryOutcome> {
     let (mut bundle_input, bundle) = open_bundle(bundle_path, bundle_sha256)?;
-    let mut request_input = HeldInput::open(&bundle.request.path, &bundle.request.sha256, 131072)?;
+    let mut request_input = HeldInput::open(
+        &bundle.request.path,
+        &bundle.request.sha256,
+        Artifact::Request.maximum_bytes() as u64,
+    )?;
     let request: crate::general_conversion::Request = serde_json::from_slice(&request_input.bytes)?;
     request.validate()?;
     request
@@ -145,13 +154,21 @@ fn recover_allocation_inner(
         request.pair.source == bundle.source,
         "bundle source differs from its pinned request"
     );
-    let mut plan_input = HeldInput::open(&bundle.plan.path, &bundle.plan.sha256, 16 * 1024 * 1024)?;
+    let mut plan_input = HeldInput::open(
+        &bundle.plan.path,
+        &bundle.plan.sha256,
+        Artifact::Plan.maximum_bytes() as u64,
+    )?;
     let plan: SelectedPlan = serde_json::from_slice(&plan_input.bytes)?;
     plan.validate()?;
     request.validate_selected_capacity(&plan)?;
     let old_zero_bytes = plan.old_zero_bytes()?;
     let source_free_bytes = plan.source_free_bytes()?;
-    let mut ticket_input = HeldInput::open(&bundle.ticket.path, &bundle.ticket.sha256, 65536)?;
+    let mut ticket_input = HeldInput::open(
+        &bundle.ticket.path,
+        &bundle.ticket.sha256,
+        Artifact::Ticket.maximum_bytes() as u64,
+    )?;
     let ticket: SelectedTicket = serde_json::from_slice(&ticket_input.bytes)?;
     if native_marker_lab {
         ensure!(
@@ -184,7 +201,7 @@ fn recover_allocation_inner(
     let mut expectation_input = HeldInput::open(
         &bundle.expectation.path,
         &bundle.expectation.sha256,
-        16 * 1024 * 1024,
+        Artifact::Expectation.maximum_bytes() as u64,
     )?;
     let expectation: crate::shadow_tree::ExpectedTree =
         serde_json::from_slice(&expectation_input.bytes)?;
@@ -203,7 +220,13 @@ fn recover_allocation_inner(
     let mut recovery_payload_input = bundle
         .recovery_payload_manifest
         .as_ref()
-        .map(|pin| HeldInput::open(&pin.path, &pin.sha256, 64 * 1024 * 1024))
+        .map(|pin| {
+            HeldInput::open(
+                &pin.path,
+                &pin.sha256,
+                Artifact::PayloadMap.maximum_bytes() as u64,
+            )
+        })
         .transpose()?;
     let recovery_payload_proof = recovery_payload_input
         .as_ref()
@@ -221,7 +244,7 @@ fn recover_allocation_inner(
     let mut verification_input = HeldInput::open(
         &bundle.verification.path,
         &bundle.verification.sha256,
-        65536,
+        Artifact::Verification.maximum_bytes() as u64,
     )?;
     let verification: Verification = serde_json::from_slice(&verification_input.bytes)?;
     // Recovery metadata cannot live on a volume that must stay excluded or that
@@ -249,12 +272,12 @@ fn recover_allocation_inner(
         }
     }
     artifacts::create_output(output)?;
-    save_bytes(output, "bundle.json", &bundle_input.bytes)?;
-    save_bytes(output, "request.json", &request_input.bytes)?;
-    save_bytes(output, "selected-plan.json", &plan_input.bytes)?;
-    save_bytes(output, "selected-ticket.json", &ticket_input.bytes)?;
+    Artifact::Bundle.copy_for_recovery(output, &bundle_input.bytes)?;
+    Artifact::Request.copy_for_recovery(output, &request_input.bytes)?;
+    Artifact::Plan.copy_for_recovery(output, &plan_input.bytes)?;
+    Artifact::Ticket.copy_for_recovery(output, &ticket_input.bytes)?;
     if let Some(held) = &recovery_payload_input {
-        save_bytes(output, "recovery-payload-manifest.json", &held.bytes)?;
+        Artifact::PayloadMap.copy_for_recovery(output, &held.bytes)?;
     }
     artifacts::save(
         output,

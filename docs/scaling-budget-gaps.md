@@ -5,7 +5,11 @@ inspection hashing, borrows the fresh recovery map manifest, moves parsed map
 buffers into the recovery lookup, and compares mounted maps without copying their
 payloads. See [metadata memory reduction](metadata-memory-reduction.md). This
 removes several full serialization/map copies described by the historical audit
-below. Artifact/count ceilings and complete paged-evidence work remain unchanged.
+below. The selected writer, recovery readers and recovery input copies now use
+one artifact-size contract: the existing 64 MiB plan/expectation/map writer
+ceiling also governs recovery, replacing its inconsistent 16 MiB limits. Fresh
+request/ticket/bundle/verification saves obey their existing reader ceilings
+before activation. Count ceilings and complete paged-evidence work remain open.
 
 Subsequent implementation `f32c0f6` adds a pinned count envelope for fresh fast
 allocation conversion: files and directories share the existing 1,280 object

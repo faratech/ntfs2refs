@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "kind": "clean-committed-source-build",
+  "source_commit": "f69614b41e177d7884e1059a05474f4ff4cc5a45",
+  "source_tree": "b1aaab78d61359c4a8f98716da85ab60843a95c5",
+  "source_file_count": 284,
+  "manifest_path": "D:\\code\\ntfs2refs\\.lab\\development\\release-candidates\\rf69614b\\manifest.json",
+  "manifest_sha256": "84a9c977a66bb860eac059624fa92aaf8088a434732703a9a20ae0dfb078076f",
+  "observed_working_bytes": 518309632,
+  "locked_dependencies": true,
+  "offline_build": true,
+  "working_tree_inputs_used": false,
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 10830336,
+      "sha256": "749d107057311437c7a7d421a02573dccd7acc50848e5985834dd7126ca42d16"
+    },
+    {
+      "name": "lab-selected-marker-native",
+      "path": "bin/lab-selected-marker-native.exe",
+      "bytes": 7159296,
+      "sha256": "01ecf520685a90b1ad16e515540194e3714256416b308f402845660f972315bf"
+    },
+    {
+      "name": "lab-convert-native-composite",
+      "path": "bin/lab-convert-native-composite.exe",
+      "bytes": 7593472,
+      "sha256": "2e5f26a4759a0ebe69cd3bc885e7b80addb1630568c8c4dbbf33a10e0b567363"
+    },
+    {
+      "name": "lab-recover-native-composite",
+      "path": "bin/lab-recover-native-composite.exe",
+      "bytes": 3203072,
+      "sha256": "26a5977b66bc5f255295fe48b8cc7b5873d977c79bf01fa3eda65caf5388f4a7"
+    },
+    {
+      "name": "lab-content-digest",
+      "path": "bin/lab-content-digest.exe",
+      "bytes": 323584,
+      "sha256": "c53e52e4643b6f2f6e7197e0028773c0f36c34822b66f35c2d25c425c6918b21"
+    },
+    {
+      "name": "lab-managed-shadow",
+      "path": "bin/lab-managed-shadow.exe",
+      "bytes": 1067520,
+      "sha256": "bbc94f188a758dfa28f861f78954cb20d13c1e4163cdcbec6bf1088ed634cffe"
+    }
+  ],
+  "unit_tests_run": false,
+  "native_tools_invoked": false,
+  "qualification_inherited": false,
+  "native_marker_qualified": false,
+  "stable_release": false,
+  "toolset_manifest": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-tools-f69614b\\manifest.json",
+  "toolset_manifest_sha256": "d5ea3fc7ae2612f4c32c867de157f56f4999efafb2eae739153963235a6a5c05",
+  "note": "Closing source fingerprint read reuse; no check-domain or journal format change. Native counter qualification remains separate."
+}

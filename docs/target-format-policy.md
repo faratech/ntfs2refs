@@ -27,3 +27,12 @@ was not trusted on the machine; see [the observation](../evidence/converted-volu
 This fact is not standard-ReFS qualification. The new native query's returned
 mask behavior, both target choices and post-handoff reporting require native
 execution before release claims. No unit tests were added or run.
+
+The first native query returned success and16 bytes with VolumeFlags0x6000,
+while its other three response DWORDs were zero. Requiring request mask/version
+echoes incorrectly refused the fresh shadow before source preparation. The
+reader now interprets only VolumeFlags from an exact successful response to its
+fixed version1/mask0x6000 request. The query contract rejects invalid request
+versions/masks; it does not promise echoes. Raw response fields remain recorded.
+API errors, short/oversized replies and contradictory designation/trust remain
+unknown. The failed attempt is preserved and the source remained online NTFS.

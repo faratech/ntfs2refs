@@ -40,8 +40,8 @@ pub struct QueryError {
 }
 
 /// Descriptive native facts only, not source admission or policy authority.
-/// A false designation/trust value is present only when that returned mask bit
-/// was actually supported in a complete, recognized successful query response.
+/// A false designation/trust value is present only after a complete successful
+/// query for that requested bit. Request mask/version are not response echoes.
 #[derive(Clone, Debug, Serialize)]
 pub struct Observation {
     pub schema_version: u32,
@@ -199,27 +199,22 @@ pub fn observe(
     } else if returned != 16 {
         reply_issue = Some("persistent policy reply is not exactly four ULONGs");
         QueryStatus::InvalidReply
-    } else if output[2] != QUERY_VERSION || output[3] != 0 {
-        reply_issue = Some("persistent policy reply version or reserved field is unrecognized");
-        QueryStatus::InvalidReply
     } else {
-        if output[1] & DEV_VOLUME != 0 {
-            developer_volume = Some(output[0] & DEV_VOLUME != 0);
-        }
-        if output[1] & TRUSTED_VOLUME != 0 {
-            trusted_volume = Some(output[0] & TRUSTED_VOLUME != 0);
-        }
+        // The mask and version constrain the REQUEST. The documented query
+        // rejects invalid masks/versions; it does not promise their echo in
+        // the output. Native ReFS3.14 returns sixteen bytes containing valid
+        // VolumeFlags and zero in all other DWORDs. Preserve those raw fields
+        // diagnostically, and interpret only bits from our successful request.
+        // API errors/short replies above still supply no known policy values.
+        developer_volume = Some(output[0] & DEV_VOLUME != 0);
+        trusted_volume = Some(output[0] & TRUSTED_VOLUME != 0);
         if developer_volume == Some(false) && trusted_volume == Some(true) {
             developer_volume = None;
             trusted_volume = None;
             reply_issue = Some("trusted-volume reply contradicts the developer-volume designation");
             QueryStatus::InvalidReply
-        } else if developer_volume.is_some() && trusted_volume.is_some() {
-            QueryStatus::Known
         } else {
-            reply_issue =
-                Some("persistent policy returned mask does not cover both requested bits");
-            QueryStatus::Partial
+            QueryStatus::Known
         }
     };
     Ok(Observation {

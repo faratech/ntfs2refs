@@ -108,6 +108,21 @@ fn key(path: &[String], name: &[u16]) -> (Vec<String>, Vec<u16>) {
 }
 
 pub fn capture(input: CaptureInput, output: &Path) -> Result<serde_json::Value> {
+    capture_mode(input, output, false)
+}
+
+/// Explicit lab-only paged metadata baseline. This still performs both full
+/// raw and native logical reads; pages confer no source or write admission.
+/// Legacy capture/default manifests and serialization remain unchanged.
+pub fn capture_paged_metadata(input: CaptureInput, output: &Path) -> Result<serde_json::Value> {
+    capture_mode(input, output, true)
+}
+
+fn capture_mode(
+    input: CaptureInput,
+    output: &Path,
+    paged_metadata: bool,
+) -> Result<serde_json::Value> {
     n2r_win32::layout::guid_bytes(&input.source_checkpoint)?;
     ordinary(output, false)?;
     let (_binding_file, binding_bytes) = held(&input.binding, 16384)?;
@@ -182,8 +197,12 @@ pub fn capture(input: CaptureInput, output: &Path) -> Result<serde_json::Value> 
             ),
         )?;
         let inspection_pin = hex::encode(Sha256::digest(serde_json::to_vec(&raw)?));
-        let resources = ResourceProfile::ExperimentalObjectEnvelopeV3(None)
-            .admit_inspection(&raw, &inspection_pin)?;
+        let planning = ResourceProfile::ExperimentalObjectEnvelopeV3(None);
+        let resources = if paged_metadata {
+            planning.admit_inspection_paged(&raw, &inspection_pin)?
+        } else {
+            planning.admit_inspection(&raw, &inspection_pin)?
+        };
         let admission = resources
             .count_admission()?
             .context("complete source count admission absent")?;
@@ -324,6 +343,49 @@ pub fn capture(input: CaptureInput, output: &Path) -> Result<serde_json::Value> 
             );
             original_rows.push(serde_json::json!({"path":path,"length":file.length,"historical_fixture_sha256_expectation":file.sha256,"historical_actual_xxh3_128":old[0].sha256,"fresh_actual_xxh3_128":actual["actual_raw_content_digest"],"fresh_sha256_claimed":false}));
         }
+        let expected_pages = if paged_metadata {
+            ensure!(
+                admission.requires_paged_metadata(),
+                "explicit paged baseline requires version-two resource facts"
+            );
+            let budget = admission.expected_page_budget()?;
+            let semantic_budget = u64::from(admission.maximum_expected_tree_bytes);
+            let semantic_pin = general_qualification::pretty_json_sha256(&expected)?;
+            let path = output.join("expectation.pages");
+            let receipt = shadow_tree::PagedExpectedTree::create_with_limits(
+                &expected,
+                &path,
+                budget,
+                semantic_budget,
+            )?;
+            ensure!(
+                receipt.semantic_sha256 == semantic_pin,
+                "paged full baseline differs from complete expected-tree semantics"
+            );
+            let pages = shadow_tree::PagedExpectedTree::open_with_limits(
+                &path,
+                &receipt.file_sha256,
+                &semantic_pin,
+                budget,
+                semantic_budget,
+            )?;
+            pages.validate_with_resource_profile(resources)?;
+            let counts = pages.counts();
+            admission.validate_tree(
+                usize::try_from(counts.files)?,
+                usize::try_from(counts.directories)?,
+                usize::try_from(counts.data_streams)?,
+            )?;
+            ensure!(
+                usize::try_from(counts.objects)? == expected.objects.len()
+                    && usize::try_from(counts.data_streams)? == matched
+                    && pages.object(0)?.path.is_empty(),
+                "complete paged baseline object or stream domain differs"
+            );
+            Some((receipt, pages))
+        } else {
+            None
+        };
         let after = source.state(&mut events)?;
         ensure!(
             after == before && after.disk_attributes == 3,
@@ -338,17 +400,59 @@ pub fn capture(input: CaptureInput, output: &Path) -> Result<serde_json::Value> 
             ("native-source.json", serde_json::to_value(native)?),
             ("source-views.json", serde_json::to_value(&views)?),
             ("strict-comparison.json", serde_json::to_value(&comparison)?),
-            ("expectation.json", serde_json::to_value(&expected)?),
+            (
+                "expectation.json",
+                if paged_metadata {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::to_value(&expected)?
+                },
+            ),
             (
                 "independent-content.json",
                 serde_json::json!({"success":true,"scope":"fresh-full-raw-and-independent-native-source-content-v1","content_algorithm":"xxh3-128","actual_raw_logical_passes":1,"actual_native_content_passes":1,"native_after_content_capture_is_mirror":true,"streams":matched,"original_fixture_files_matched":808,"fresh_sha256_of_original_files_claimed":false,"streams_actual":content.values().collect::<Vec<_>>(),"original_user_content_reference":original_rows}),
             ),
             ("observation-events.json", serde_json::to_value(&events)?),
         ] {
-            let sha = general_qualification::save(output, name, &value)?;
+            // The explicit new mode uses the typed legacy serializer so the
+            // actual file pin equals the reconstructed page semantic pin.
+            // Legacy mode keeps its historical serde_json::Value encoding.
+            let sha = if paged_metadata && name == "expectation.json" {
+                general_qualification::save(output, name, &expected)?
+            } else {
+                general_qualification::save(output, name, &value)?
+            };
             artifacts.insert(name,serde_json::json!({"path":output.join(name),"bytes":fs::metadata(output.join(name))?.len(),"sha256":sha}));
         }
-        let manifest = serde_json::json!({"schema_version":1,"kind":"lab-full-source-content-baseline-v1","success":true,"source_checkpoint":input.source_checkpoint,"source_binding":binding,"directory_growth_receipt":input.directory_growth,"original_fixture":input.original_fixture,"historical_full_content_reference":input.historical_full_expectation,"source_resource_profile":resources,"source_inspection_sha256":inspection_pin,"objects":expected.objects.len(),"files":admission.files,"directories":admission.directories,"data_streams":admission.data_streams,"created_directories":created.len(),"raw_logical_hash_bytes":raw.stream_hash_bytes,"native_logical_read_audit":native.logical_data.as_ref().map(|l|&l.audit),"actual_raw_logical_passes":1,"actual_native_content_passes":1,"actual_fresh_stream_hashes_matched":matched,"original808_content_matches_historical_actual_xxh3":true,"historical_fixture_sha256_rehashed":false,"source_before":before,"source_after":after,"source_payload_writes":0,"extent_moves":0,"source_admitted":false,"certificate_issued":false,"conversion_authorized":false,"replay_authorized":false,"full_image_sha256_computed":false,"artifacts":artifacts});
+        if let Some((receipt, pages)) = &expected_pages {
+            pages.revalidate()?;
+            let expected_pin = artifacts
+                .get("expectation.json")
+                .context("full baseline expectation artifact absent")?;
+            ensure!(
+                expected_pin["sha256"].as_str() == Some(receipt.semantic_sha256.as_str()),
+                "saved complete expectation does not match the authenticated page semantics"
+            );
+            let receipt_sha =
+                general_qualification::save(output, "expectation-pages.json", receipt)?;
+            artifacts.insert(
+                "expectation.pages",
+                serde_json::json!({"path":receipt.path,
+                "bytes":pages.byte_len(),"sha256":receipt.file_sha256}),
+            );
+            artifacts.insert("expectation-pages.json", serde_json::json!({
+                "path":output.join("expectation-pages.json"),
+                "bytes":fs::metadata(output.join("expectation-pages.json"))?.len(),"sha256":receipt_sha}));
+        }
+        let mut manifest = serde_json::json!({"schema_version":1,"kind":"lab-full-source-content-baseline-v1","success":true,"source_checkpoint":input.source_checkpoint,"source_binding":binding,"directory_growth_receipt":input.directory_growth,"original_fixture":input.original_fixture,"historical_full_content_reference":input.historical_full_expectation,"source_resource_profile":resources,"source_inspection_sha256":inspection_pin,"objects":expected.objects.len(),"files":admission.files,"directories":admission.directories,"data_streams":admission.data_streams,"created_directories":created.len(),"raw_logical_hash_bytes":raw.stream_hash_bytes,"native_logical_read_audit":native.logical_data.as_ref().map(|l|&l.audit),"actual_raw_logical_passes":1,"actual_native_content_passes":1,"actual_fresh_stream_hashes_matched":matched,"original808_content_matches_historical_actual_xxh3":true,"historical_fixture_sha256_rehashed":false,"source_before":before,"source_after":after,"source_payload_writes":0,"extent_moves":0,"source_admitted":false,"certificate_issued":false,"conversion_authorized":false,"replay_authorized":false,"full_image_sha256_computed":false,"artifacts":artifacts});
+        if let Some((receipt, pages)) = &expected_pages {
+            pages.revalidate()?;
+            manifest["schema_version"] = 2.into();
+            manifest["kind"] = "lab-full-source-content-baseline-pages-v2".into();
+            manifest["paged_metadata_lab_mode"] = true.into();
+            manifest["expectation_pages"] = serde_json::to_value(receipt)?;
+            manifest["complete_paged_expected_domain_verified"] = true.into();
+        }
         general_qualification::save(output, "baseline-manifest.json", &manifest)?;
         Ok(manifest)
     })();

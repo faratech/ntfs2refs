@@ -17,6 +17,10 @@ pub struct DriveArgs {
     /// Optional working directory on the Windows OS volume.
     #[arg(long, requires = "drive")]
     pub scratch_directory: Option<PathBuf>,
+    /// Native target format: dev-drive (experimental default) or standard ReFS.
+    /// Standard formatting must be supported by Windows; no fallback is used.
+    #[arg(long, requires = "drive", value_parser = ["dev-drive", "standard"])]
+    pub target_format: Option<String>,
     /// Recover an interrupted run using its original saved conversion directory.
     #[arg(long, requires = "recovery_sha256", conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
@@ -402,6 +406,22 @@ mod windows {
             size(Some(before.binding.identity.partition_bytes)),
             clean(&before.label)
         );
+        let target_format: n2r_win32::managed_shadow::TargetFormatProfile = args
+            .target_format
+            .as_deref()
+            .unwrap_or("dev-drive")
+            .parse()?;
+        println!(
+            "Requested target: {} (ReFS, 4 KiB clusters).",
+            if target_format.is_dev_drive() {
+                "Dev Drive; experimental default"
+            } else {
+                "standard ReFS; Windows formatter support required"
+            }
+        );
+        println!(
+            "Windows will report the converted volume's actual developer designation and trust state."
+        );
         let allocation_bounded = !args.whole_image_verification;
         let verification_policy = if allocation_bounded && !args.verify_full_content {
             crate::verification_policy::VerificationPolicy::ExtentIdentityV1
@@ -451,6 +471,7 @@ mod windows {
             allocation_bounded,
             verification_policy,
             args.minimize_scratch,
+            target_format,
         )
     }
     fn convert_selected(
@@ -461,6 +482,7 @@ mod windows {
         allocation_bounded: bool,
         verification_policy: crate::verification_policy::VerificationPolicy,
         minimize_scratch: bool,
+        target_format: n2r_win32::managed_shadow::TargetFormatProfile,
     ) -> Result<u8> {
         let system = std::env::var("SystemRoot").context("Windows system path unavailable")?;
         let os_root = format!(
@@ -532,17 +554,18 @@ mod windows {
         fs::create_dir(&run)?;
         save_new(
             &run.join("drive-selection.json"),
-            &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"source_write_authority":false}),
+            &serde_json::json!({"selected":selected,"source":before,"confirmation":"interactive affirmative","journal_budget_bytes":journal_bytes,"requested_target_format":target_format,"explicit_trust_or_filter_configuration_requested":false,"source_write_authority":false}),
         )?;
         println!(
             "Preparing temporary ReFS metadata storage. Recovery files: {}",
             run.display()
         );
-        let staged = n2r_win32::managed_shadow::create(
+        let staged = n2r_win32::managed_shadow::create_with_profile(
             &run.join("shadow.vhdx"),
             before.binding.identity.partition_bytes,
             before.binding.identity.logical_sector_bytes,
             before.binding.identity.physical_sector_bytes,
+            target_format,
         )?;
         // Record the provider identity as well as the disk identity: a guest
         // reboot can remove the attachment while leaving the recovery backing
@@ -556,6 +579,17 @@ mod windows {
                 "path": staged.path,
                 "virtual_disk_id": staged.virtual_disk_id,
                 "binding": staged.binding,
+            }),
+        )?;
+        save_new(
+            &run.join("managed-shadow-policy.json"),
+            &serde_json::json!({
+                "schema_version":1,"kind":"requested-and-observed-shadow-format-policy",
+                "requested_target_format":target_format,"shadow_binding":staged.binding,
+                "actual_shadow_policy":staged.format_policy(),
+                "requested_designation_verified":true,"explicit_trust_or_filter_configuration_changed":false,
+                "source_trust_inferred_from_shadow":false,
+                "grants_source_or_replay_authority":false,
             }),
         )?;
         if minimize_scratch {
@@ -622,6 +656,53 @@ mod windows {
         drop(staged);
         match result {
             Ok(()) => {
+                // The source's actual post-handoff policy is independent of the
+                // temporary shadow's trust. Observation/report errors cannot
+                // reopen raw replay or invalidate an already closed handoff.
+                let mut policy_events = Vec::new();
+                let actual_policy =
+                    n2r_win32::volume_policy::observe(&before.binding, &mut policy_events);
+                let developer = actual_policy
+                    .as_ref()
+                    .ok()
+                    .and_then(|policy| policy.developer_volume);
+                let trusted = actual_policy
+                    .as_ref()
+                    .ok()
+                    .and_then(|policy| policy.trusted_volume);
+                let designation = match developer {
+                    Some(true) => "Dev Drive (ReFS)",
+                    Some(false) => "standard ReFS",
+                    None => "unknown",
+                };
+                let trust = match trusted {
+                    Some(true) => "trusted",
+                    Some(false) => "not marked trusted",
+                    None => "unknown",
+                };
+                println!("Windows reports the converted source: {designation}; trust: {trust}.");
+                if developer.is_some_and(|value| value != target_format.is_dev_drive()) {
+                    eprintln!(
+                        "The observed source designation differs from the requested target format; raw rollback remains closed."
+                    );
+                }
+                if let Err(error) = save_new(
+                    &run.join("source-volume-policy.json"),
+                    &serde_json::json!({
+                        "schema_version":1,"kind":"post-handoff-source-volume-policy",
+                        "requested_target_format":target_format,
+                        "actual_source_policy":actual_policy.as_ref().ok(),
+                        "observation_error":actual_policy.as_ref().err().map(ToString::to_string),
+                        "requested_designation_matches":developer.map(|value| value == target_format.is_dev_drive()),
+                        "events":policy_events,"source_trust_inferred_from_shadow":false,
+                        "explicit_trust_or_filter_configuration_changed":false,
+                        "handoff_remains_closed":true,"grants_source_or_replay_authority":false,
+                    }),
+                ) {
+                    eprintln!(
+                        "Conversion completed; the source policy report could not be saved: {error}"
+                    );
+                }
                 println!(
                     "Conversion completed. Recovery records: {}",
                     output.display()

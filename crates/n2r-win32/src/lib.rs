@@ -44,6 +44,10 @@ pub mod namespace_layout;
 #[cfg(windows)]
 mod namespace_native;
 #[cfg(windows)]
+pub mod ntfs_preparation;
+#[cfg(windows)]
+pub mod preparation_shadow;
+#[cfg(windows)]
 pub mod process_io;
 pub mod reference_file;
 #[cfg(windows)]
@@ -73,11 +77,9 @@ pub mod tree_resources;
 pub mod txf_native;
 pub mod volume_label;
 #[cfg(windows)]
+pub mod volume_policy;
+#[cfg(windows)]
 pub mod vss_observation;
-#[cfg(windows)]
-pub mod ntfs_preparation;
-#[cfg(windows)]
-pub mod preparation_shadow;
 #[cfg(windows)]
 pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]

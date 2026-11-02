@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "kind": "actual-converted-volume-developer-policy-query",
+  "source_commit": "4d8ca993cf660ea7430b9cc8b229553946add82b",
+  "checkpoint_id": "afb9afa4-859e-471d-8600-2ba4abb9d2dd",
+  "command": "fsutil devdrv query F:",
+  "exit": 0,
+  "output": "The volume is formatted as a developer volume but is not trusted on this machine.",
+  "filesystem": "ReFS",
+  "disk_number": 1,
+  "partition_number": 2,
+  "partition_guid": "{f06075a8-67a2-46b9-8fac-4af4da809617}",
+  "observed_developer_volume": true,
+  "observed_trusted_on_this_machine": false,
+  "query_only": true,
+  "trust_filter_registry_or_disk_attribute_changes": false,
+  "raw_query_artifact": ".lab\\hyperv\\streaming-v2-20261027\\public-min-scratch-0cf3676b6409471dbe237e61053bb876\\actual-source-devdrv-query.json",
+  "raw_query_artifact_sha256": "c47d89e6346ea8a5848a21d45ca303ae3ef85aeda1f98b5fab778a2439009b62",
+  "utc": "2026-11-02T20:11:46.9291624Z",
+  "stable_release": false
+}

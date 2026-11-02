@@ -8,10 +8,15 @@ use crate::{
     layout::{self, PartitionIdentity, invalid},
     native,
 };
+use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write}, mem,
-    os::windows::{fs::{MetadataExt, OpenOptionsExt}, io::AsRawHandle},
+    io::{self, Write},
+    mem,
+    os::windows::{
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawHandle,
+    },
     path::{Component, Path, PathBuf, Prefix},
     process::{Command, Stdio},
     ptr,
@@ -42,12 +47,58 @@ const MAX_LAYOUT: usize = 48 + 128 * 144;
 mod recovery;
 pub use recovery::{ReattachedShadow, reattach_existing};
 
+/// Requested native formatter profile, not a trust or compatibility claim.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub enum TargetFormatProfile {
+    #[default]
+    #[serde(rename = "dev-drive")]
+    DevDrive,
+    #[serde(rename = "standard")]
+    StandardReFs,
+}
+
+impl TargetFormatProfile {
+    pub const fn is_dev_drive(self) -> bool {
+        matches!(self, Self::DevDrive)
+    }
+}
+
+impl std::fmt::Display for TargetFormatProfile {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str(match self {
+            Self::DevDrive => "dev-drive",
+            Self::StandardReFs => "standard",
+        })
+    }
+}
+
+impl std::str::FromStr for TargetFormatProfile {
+    type Err = io::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "dev-drive" => Ok(Self::DevDrive),
+            "standard" => Ok(Self::StandardReFs),
+            _ => Err(invalid("target format must be dev-drive or standard")),
+        }
+    }
+}
+
 pub struct ManagedShadow {
     pub binding: GeneralDiskBinding,
     pub path: PathBuf,
     pub virtual_disk_id: String,
+    format_policy: crate::volume_policy::Observation,
     // Closing a permanently attached virtual handle does not detach it.
     _attachment: AttachedDisk,
+}
+
+impl ManagedShadow {
+    /// Actual read-only observation on this newly formatted owned volume.
+    /// Its trust result is not inherited by the converted source volume.
+    pub fn format_policy(&self) -> &crate::volume_policy::Observation {
+        &self.format_policy
+    }
 }
 struct VirtualHandle(HANDLE);
 impl Drop for VirtualHandle {
@@ -254,7 +305,11 @@ impl AttachedDisk {
         }
         Ok(())
     }
-    fn initialize(&self, partition_bytes: u64, stage_path: &Path) -> io::Result<GeneralDiskBinding> {
+    fn initialize(
+        &self,
+        partition_bytes: u64,
+        stage_path: &Path,
+    ) -> io::Result<GeneralDiskBinding> {
         self.verify_provider()?;
         if native::current_windows_disk(&mut Vec::new())? == self.number {
             return Err(invalid("new staging provider routes to Windows disk"));
@@ -357,41 +412,57 @@ impl AttachedDisk {
 }
 
 fn sidecar(path: &Path, phase: &str) -> io::Result<File> {
-    OpenOptions::new().write(true).create_new(true).share_mode(1)
-        .custom_flags(0x0020_0000).open(path.with_extension(phase))
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(path.with_extension(phase))
 }
 
 /// Each native attempt keeps its full per-call controls and identity checks.
 /// Diagnostic JSONL is bounded and never creates/replays an authority token.
 fn rediscover_stage(
-    binding: GeneralDiskBinding, path: &Path, phase: &str,
+    binding: GeneralDiskBinding,
+    path: &Path,
+    phase: &str,
 ) -> io::Result<GeneralDiskBinding> {
-    let mut report=sidecar(path,&format!("{phase}.jsonl"))?;
-    let started=Instant::now();let mut written=0usize;
+    let mut report = sidecar(path, &format!("{phase}.jsonl"))?;
+    let started = Instant::now();
+    let mut written = 0usize;
     for attempt in 0..60 {
-        let mut events=Vec::new();
-        let observed=native::rediscover_general_volume(binding.clone(),&mut events);
-        let record=serde_json::json!({"kind":"managed-shadow-volume-discovery-attempt",
+        let mut events = Vec::new();
+        let observed = native::rediscover_general_volume(binding.clone(), &mut events);
+        let record = serde_json::json!({"kind":"managed-shadow-volume-discovery-attempt",
             "phase":phase,"attempt":attempt+1,"elapsed_milliseconds":started.elapsed().as_millis(),
             "requested_binding":binding,"observed_binding":observed.as_ref().ok(),
             "error":observed.as_ref().err().map(ToString::to_string),"events":events,
             "diagnostic_only":true,"serialized_observation_is_not_authority":true});
-        let bytes=serde_json::to_vec(&record).map_err(io::Error::other)?;
-        written=written.checked_add(bytes.len()+1)
-            .filter(|count|*count<=16*1024*1024)
-            .ok_or_else(||invalid("staging discovery diagnostic exceeds 16 MiB"))?;
-        report.write_all(&bytes)?;report.write_all(b"\n")?;report.sync_all()?;
+        let bytes = serde_json::to_vec(&record).map_err(io::Error::other)?;
+        written = written
+            .checked_add(bytes.len() + 1)
+            .filter(|count| *count <= 16 * 1024 * 1024)
+            .ok_or_else(|| invalid("staging discovery diagnostic exceeds 16 MiB"))?;
+        report.write_all(&bytes)?;
+        report.write_all(b"\n")?;
+        report.sync_all()?;
         match observed {
-            Ok(actual)=>return Ok(actual),
-            Err(error) if error.kind()==io::ErrorKind::NotFound
-                && attempt<59 && started.elapsed()<Duration::from_secs(15)=>{
-                    let remaining=Duration::from_secs(15).saturating_sub(started.elapsed());
-                    std::thread::sleep(remaining.min(Duration::from_millis(250)));
-                },
-            Err(error)=>return Err(error),
+            Ok(actual) => return Ok(actual),
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && attempt < 59
+                    && started.elapsed() < Duration::from_secs(15) =>
+            {
+                let remaining = Duration::from_secs(15).saturating_sub(started.elapsed());
+                std::thread::sleep(remaining.min(Duration::from_millis(250)));
+            }
+            Err(error) => return Err(error),
         }
     }
-    Err(io::Error::new(io::ErrorKind::TimedOut,"owned staging volume was not published; attachment retained"))
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "owned staging volume was not published; attachment retained",
+    ))
 }
 
 fn ready_layout(raw: &[u8], disk: &GUID, bytes: u64) -> io::Result<Option<(Vec<u8>, Vec<u8>)>> {
@@ -443,7 +514,10 @@ fn ready_layout(raw: &[u8], disk: &GUID, bytes: u64) -> io::Result<Option<(Vec<u
     if msr.is_none() {
         let offset = first.max(1 << 20).div_ceil(1 << 20) * (1 << 20);
         let length = 16u64 << 20;
-        if offset.checked_add(length).is_none_or(|v| v > OFFSET || v > end) {
+        if offset
+            .checked_add(length)
+            .is_none_or(|v| v > OFFSET || v > end)
+        {
             return Err(invalid("owned staging GPT has no room for an MSR"));
         }
         let mut entry = vec![0u8; 144];
@@ -466,6 +540,24 @@ pub fn create(
     partition_bytes: u64,
     logical_sector: u32,
     physical_sector: u32,
+) -> io::Result<ManagedShadow> {
+    create_with_profile(
+        path,
+        partition_bytes,
+        logical_sector,
+        physical_sector,
+        TargetFormatProfile::DevDrive,
+    )
+}
+
+/// Format exactly the requested profile. Unsupported native formatting never
+/// retries another profile or touches the source volume.
+pub fn create_with_profile(
+    path: &Path,
+    partition_bytes: u64,
+    logical_sector: u32,
+    physical_sector: u32,
+    target_format: TargetFormatProfile,
 ) -> io::Result<ManagedShadow> {
     if partition_bytes < 4096
         || !partition_bytes.is_multiple_of(4096)
@@ -580,18 +672,15 @@ pub fn create(
     .join("format.com");
     // This volume route derives ONLY from the newly created provider handle.
     // No shell, caller-selected physical device, stdin answer, or source enters.
-    let stdout=sidecar(path,"format.stdout.log")?;
-    let stderr=sidecar(path,"format.stderr.log")?;
+    let stdout = sidecar(path, "format.stdout.log")?;
+    let stderr = sidecar(path, "format.stderr.log")?;
+    let mut format_args = vec![binding.volume_path()?, "/FS:ReFS".into()];
+    if target_format.is_dev_drive() {
+        format_args.push("/DevDrv".into());
+    }
+    format_args.extend(["/Q", "/A:4096", "/V:n2r-retained-shadow", "/Y"].map(String::from));
     let status = Command::new(formatter)
-        .args([
-            binding.volume_path()?,
-            "/FS:ReFS".into(),
-            "/DevDrv".into(),
-            "/Q".into(),
-            "/A:4096".into(),
-            "/V:n2r-retained-shadow".into(),
-            "/Y".into(),
-        ])
+        .args(&format_args)
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?))
@@ -600,7 +689,7 @@ pub fn create(
     stderr.sync_all()?;
     if !status.success() {
         return Err(io::Error::other(format!(
-            "owned staging native format refused ({status}); backing retained at {}",
+            "owned staging {target_format} native format refused ({status}); no fallback; backing retained at {}",
             path.display()
         )));
     }
@@ -632,10 +721,33 @@ pub fn create(
             "formatted owned staging is not the selected ReFS3.14 profile",
         ));
     }
+    let mut policy_events = Vec::new();
+    let observed_policy = crate::volume_policy::observe(&binding, &mut policy_events);
+    let mut policy_file = sidecar(path, "volume-policy.json")?;
+    serde_json::to_writer_pretty(
+        &mut policy_file,
+        &serde_json::json!({
+            "schema_version":1,"kind":"owned-shadow-format-policy",
+            "requested_target_format":target_format,
+            "actual_policy":observed_policy.as_ref().ok(),
+            "observation_error":observed_policy.as_ref().err().map(ToString::to_string),
+            "events":policy_events,"explicit_trust_or_filter_configuration_changed":false,
+            "grants_source_or_replay_authority":false,
+        }),
+    )
+    .map_err(io::Error::other)?;
+    policy_file.sync_all()?;
+    let format_policy = observed_policy?;
+    if format_policy.developer_volume != Some(target_format.is_dev_drive()) {
+        return Err(invalid(
+            "formatted owned staging developer-volume designation is unknown or differs from the requested target format",
+        ));
+    }
     Ok(ManagedShadow {
         binding,
         path: path.to_owned(),
         virtual_disk_id: guid_text(&id),
+        format_policy,
         _attachment: attached,
     })
 }

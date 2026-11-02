@@ -44,16 +44,34 @@ prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move 
 is separate. These are scoped observations, not a controlled physical benchmark.
 See evidence/prepared-source-performance-native-20261101.json.
 
-CURRENT VM is fresh-confirmed Off/RAM0 at current65b first-write interruption
-6679708a-2171-4566-b660-312efaab9f73, parent preparedcb802669,11 snapshots.
+CURRENT VM is fresh-confirmed Off/RAM0 at completed current65b Rollback
+9a01516b-1279-4266-9923-fe17d2610090, parent original6679708a,13 snapshots.
+Rollback5b38b6a74a61429abd60829507b0e7c1 PASSED native6124/birth1793580685000
+exit0/ABT/NTFS and all811 independent hashes. Restore-required144,560,128B digest
+3f2be98dfc6a5cf8f12a818593fa8df8cc9a0e89c7aa3637891039b040588c22 matched;
+original full-old marker identity3f01c92ba134075ddf517702704bc7b517dbeb5b1cb4728e389815d2bb89e6bc
+is unchanged. Original free bytes and post-rollback maps/timestamps are not claimed.
+Closed57 files61,769,941B, archiveSHA92b00fca5022290a2c5e2d38b5e77ce2a156e0552754643b0d5a8b537180fc69.
+All tasks/workers terminal before normal shutdown. No active native job remains.
+Resume5ccce67524a64c58a2c89b8c37a990cd PASSED native852/birth1793579665500 exit0,
+HND/ReFS, all811 independent hashes,1084 metadata/maps,273 required directory checks.
+Normal stop and fresh checkpoint19f5d614-e7a0-42d7-9d32-c8e1c55c1065 saved it,
+parent6679708a. Closed59 metadata files88,491,263B; archiveSHA50a778825b18064165c66bbe062832fe747dc08028a91e15dcd179b16f04d687.
+The first resume harnessaa991 refused before native launch because host PS7
+normalized a timestamp; its failure is archived. Controller8097683 preserves
+timestamp strings and both current-source14/6 adaptations; historical11 remains.
+Original first-write checkpoint6679708a is Off/RAM0, parent preparedcb802669.
 Producer4144/birth1793578032909 exited86; actual sole post-flush message,
 noApply/HND,sourceoffline/shadowofflineRO and terminaltasks/workers observed.
 Metadata archive verified; readonlyobserver completed the original failed schema
 observation without replay. Recovery bundle SHA2a86be3408bc784a3b0ac1a8bff2acc1b76099635ed58561114e84724a376944.
 Actual checkpoint receipt atprepared-source-performance-interrupt-d0d30cb0454e4441920df86accf869a7/checkpoint.json,
 SHAf5b631ee591c1c6befd3afd75ddf4bc50d93cfec60d0bc9e8abd89ca7595738c.
-Resume/Rollback of THIS65b interruption remain pending; both must start from
-that original interruption on separate branches. No rawclosedHND/ABT replay.
+The controlled current65b first-write/Resume/Rollback matrix is now complete;
+both directions started from original6679708a on separate branches. Birth-to-
+terminal observations13.247s Resume/8.089s Rollback include parent observation;
+the slower PS lab metadata/full-content observers are separate. Evidence:
+evidence/current65b-recovery-matrix-20261102.json. No rawclosedHND/ABT replay.
 Latest PUBLIC minimize-scratch success1d7299ff-c616-4bcb-8b29-c1a1ba4a8a33
 remains saved separately, parent golden8329.
 Run d04360139db64953a53a2d1448018c58 used real
@@ -77,8 +95,9 @@ public-min-scratch-d04360139db64953a53a2d1448018c58/closed-native (wrapper/produ
 Alltasks/workers terminal before normalstop/checkpoint. Oldnormal051b andf8f7 were
 retired viaHyper-V after279 old/newarchivefilesheld/rehashed; receiptfolder
 retire-two-superseded-normal-results-f59aabfec5804818aac3c9756dd0362f. Allarchivesremain.
-Keep current6679708a, latestpublic1d729, preparedcb, originalNTFS8329/6fe2/371a/9c42,
-guardedf4bf,Hcoldd939, oldformatinterrupteddea9 and format5original7721 (11 states).
+Keep original6679708a, newResume19f5d614, newRollback9a01516b, latestpublic1d729, preparedcb,
+originalNTFS8329/6fe2/371a/9c42, guardedf4bf,Hcoldd939, oldformatinterrupteddea9
+and format5original7721 (13 states, current Off at9a01516b).
 Cleanup20261102 retired ONLY archived recovery-result leaves8087/d40b/d9e580fa/67eda3e4
 through Hyper-V after224 archive files held/rehashed. Freed22,095,781,888 hostbytes
 (20.58GiB), Dfree143,170,375,680B; logical lab201,040,951,068B at00:25UTC.
@@ -106,8 +125,9 @@ Positiveformat5 c2c1ef3 first-write/Resume/Rollback matrix passedall811 bothdire
 restore-required143,527,936B matchedc395ac7284dcc32ba73e148957e544d837fc1c7423291f09c1ec32aefac36ceb.
 Originalfault7721 parentcb: receiptSHA9afc04c396cad6051bde711914227ac394e78aacc5391ef479fdf630cb95d4eb,
 bundle0b6cc964ac2b3410712b23c99b5247a58a9b9297d4554c052c4312daac35c0fc. NativeResume4688
-18.7571244s/HND,Rollback6052 9.8437227s/ABT. Separatebranchesd9e580fa/67eda3e4 remain.
-This is NOT current65b exact-build recovery, native6 or hard-power qualification.
+18.7571244s/HND,Rollback6052 9.8437227s/ABT. Old resultbranchesd9e580fa/67eda3e4
+were retired after full archive rehash; evidence remains. This old matrix is not
+native6 or hard-power qualification. Current65b Resume now passed separately.
 
 E3 mechanics c641d8d generic opt-in format6 N2RFRE02, marker_profile RedundantSourceFreeV1,
 body32768/AP/RB/HND/ABT copy pairs; formats1–5 defaultsunchanged. Nativeproduction
@@ -115,12 +135,28 @@ creation UNWIRED; general_recovery/allocation.rs explicitly refusesmarkerprofile
 BEFORE targetopening. Native adapter670f72f is compiled/source-reviewed only,
 MARKER_STORAGE_NATIVE_QUALIFIED=false. It binds share0 unbufferedwrite-through
 NTFS, exactEOF, aligneddisjointmappedsectors/protectclusters/scopedprivilege,
-uncachedreadback. Stillneeds in-place prepared-owner sealing hook/callerwiring,
-terminalpeer-onlinepolicy and realnative/hard-power qualification. Do notenable
-byflag withouttypedbackendproof. See docs/redundant-selected-markers.md.
+uncachedreadback. Integration7859cea adds the same-owner postvalidation sealing
+hook and both-terminal-peer online barrier behind ONLY explicit enrolled lab
+lab-selected-marker-native acknowledgments. Independent source review and focused
+build passed. One valid terminal closes replay; degraded peers stay offline.
+Native/hard-power qualification remains open; production defaults unchanged.
+See docs/redundant-selected-markers.md.
 
-NEXT: current-runtime exact-build controlledfault/Resume/Rollback, then
-native6backend/protocolintegration and resource-basedpagedscale. Publiconecommand
+Memory codee596322 streams bounded artifact saves/hashing, borrows exported maps,
+moves parsed maps into recovery lookup and directly compares mounted bindings.
+Focusedcheck/releasebuild and independent review passed; no new native evidence
+for this runtime. Shared selected artifact limits934ffa8 fix writer64MiB versus
+recovery16MiB opening/copy mismatch; small fresh saves obey existingread limits
+beforeactivation. No object/range caps lifted. The separate lab readonly observer
+still has16MiB expectation/report limits; reconcile before larger-corpus claims.
+Sealed e596 runtime toolsetnative-marker-memory-tools-e596322/manifest.json
+SHA857e4003cc4c367a0bf3fba2c45461f30dfcdd261608b286400ff1bee31c5fad
+has4 standard roles plus separately pinned lab marker tool. It predates934ffa8;
+do not relabel it as latest or nativequalified. Details metadata-memory-reduction.md.
+
+NEXT: native6 qualification with a newly built latest runtime, then
+resource-basedpagedscale. The65b matrix is closed; do not repeat it without a
+new failure or relevant change. Publiconecommand
 coverage is now real; don'trepeatit withoutnewchanges/failures. Cleancommitted
 release/tag/version remainsopen because usermainhunk MUSTstayuntouched/unstaged;
 qualifiedbuildpins it separately. No units added/run. Do notcall performancegoal

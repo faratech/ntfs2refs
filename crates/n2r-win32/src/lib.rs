@@ -40,6 +40,8 @@ pub mod layout;
 pub mod logical_hash;
 #[cfg(windows)]
 pub mod managed_shadow;
+#[cfg(windows)]
+pub mod metadata_pages;
 pub mod namespace_layout;
 #[cfg(windows)]
 mod namespace_native;

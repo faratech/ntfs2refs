@@ -180,6 +180,7 @@ pub struct MarkerJournalFile {
     io: UnbufferedJournalFile,
     observation: MarkerStorageObservation,
     lab_pause: Option<LabMarkerCopyPause>,
+    lab_fault: Option<LabMarkerFault>,
 }
 
 fn profile_capacity(profile: JournalProfile) -> io::Result<u64> {
@@ -766,6 +767,7 @@ impl UnbufferedJournalFile {
             io: self,
             observation: before,
             lab_pause: None,
+            lab_fault: None,
         })
     }
 
@@ -887,12 +889,139 @@ impl MarkerJournalFile {
     /// Attaching neither writes a marker nor changes any journal checks.
     pub fn attach_lab_copy_pause(&mut self, mut pause: LabMarkerCopyPause) -> io::Result<()> {
         require(
-            self.lab_pause.is_none(),
-            "marker lab pause already attached",
+            self.lab_pause.is_none() && self.lab_fault.is_none(),
+            "marker lab control already attached",
         )?;
         pause.bind(&self.observation)?;
         self.lab_pause = Some(pause);
         Ok(())
+    }
+
+    /// Only an explicitly enrolled recovery route may attach this prepared
+    /// control. Its codec images and signal resources exist before journal open.
+    pub fn attach_lab_marker_fault(&mut self, mut fault: LabMarkerFault) -> io::Result<()> {
+        require(
+            self.io.use_policy == MarkerStorageUse::EnrolledUnqualifiedLab
+                && self.lab_pause.is_none()
+                && self.lab_fault.is_none(),
+            "marker fault requires one explicit unqualified lab control",
+        )?;
+        fault.bind(&self.observation)?;
+        // This recover-only facility repairs an already degraded pair. Reject
+        // an unreachable selector before any target is opened, rather than
+        // silently completing recovery without exercising the requested fault.
+        self.revalidate_storage()?;
+        let peer_offset = fault.copy().slot() as u64 * GRANULE as u64;
+        self.io.read_block(peer_offset - GRANULE as u64, GRANULE)?;
+        require(
+            self.io.cache.0[..GRANULE] == fault.first()[..],
+            "lab marker fault requires its current intact first peer before target opening",
+        )?;
+        self.io.read_block(peer_offset, GRANULE)?;
+        require(
+            self.io.cache.0[..GRANULE].iter().all(|byte| *byte == 0),
+            "lab marker fault requires its current inactive zero peer before target opening",
+        )?;
+        self.revalidate_storage()?;
+        self.io.cache_at = None;
+        self.lab_fault = Some(fault);
+        Ok(())
+    }
+
+    fn execute_lab_marker_fault(
+        &mut self,
+        offset: u64,
+        input: &[u8],
+        mut fault: LabMarkerFault,
+    ) -> io::Result<usize> {
+        use sha2::{Digest, Sha256};
+
+        let result = (|| {
+            require(
+                offset == fault.copy().slot() as u64 * GRANULE as u64 && input == &fault.peer()[..],
+                "lab marker fault canonical second-copy input differs",
+            )?;
+            let first_offset = offset - GRANULE as u64;
+            self.io.cache_at = None;
+            self.io.read_block(first_offset, GRANULE)?;
+            require(
+                self.io.cache.0[..GRANULE] == fault.first()[..],
+                "lab marker fault requires the exact intact canonical first peer",
+            )?;
+            let intact_first: [u8; 32] = Sha256::digest(&self.io.cache.0[..GRANULE]).into();
+            self.io.read_block(offset, GRANULE)?;
+            require(
+                self.io.cache.0[..GRANULE].iter().all(|byte| *byte == 0),
+                "lab marker fault requires an inactive exact-zero second peer",
+            )?;
+            let zero_peer: [u8; 32] = Sha256::digest(&self.io.cache.0[..GRANULE]).into();
+            let requested_peer: [u8; 32] = Sha256::digest(input).into();
+            self.revalidate_storage()?;
+
+            if fault.kind() == LabMarkerFaultKind::CorruptPeer {
+                // Only the engine-generated second copy with one fixed bad
+                // self-hash bit is written. No body or source write is exposed.
+                self.io.cache.0[..GRANULE].copy_from_slice(&fault.corrupt()[..]);
+                self.io.write_block(offset, GRANULE)?;
+                self.io.file.sync_all()?;
+                self.revalidate_storage()?;
+                self.io.read_block(offset, GRANULE)?;
+                require(
+                    self.io.cache.0[..GRANULE] == fault.corrupt()[..],
+                    "lab corrupted-peer uncached readback differs",
+                )?;
+                let observed_peer: [u8; 32] = Sha256::digest(&self.io.cache.0[..GRANULE]).into();
+                self.io.read_block(first_offset, GRANULE)?;
+                require(
+                    self.io.cache.0[..GRANULE] == fault.first()[..],
+                    "lab corrupted-peer write changed the intact first copy",
+                )?;
+                self.revalidate_storage()?;
+                fault.publish(intact_first, requested_peer, Some(observed_peer), false)?;
+                // The caller's actual journal and target owners remain held;
+                // no canonical replacement, next target write or callback runs.
+                loop {
+                    std::thread::park();
+                }
+            }
+
+            let (operation_name, observed_peer) = match fault.kind() {
+                LabMarkerFaultKind::WriteError => (
+                    "LAB-INJECTED marker WriteFile skipped; synthetic ERROR_IO_DEVICE",
+                    Some(zero_peer),
+                ),
+                LabMarkerFaultKind::FlushError | LabMarkerFaultKind::ReadbackError => {
+                    self.io.cache.0[..GRANULE].copy_from_slice(input);
+                    self.io.write_block(offset, GRANULE)?;
+                    if fault.kind() == LabMarkerFaultKind::ReadbackError {
+                        self.io.file.sync_all()?;
+                        self.revalidate_storage()?;
+                        (
+                            "LAB-INJECTED marker ReadFile skipped; synthetic ERROR_IO_DEVICE",
+                            None,
+                        )
+                    } else {
+                        (
+                            "LAB-INJECTED marker FlushFileBuffers skipped; synthetic ERROR_IO_DEVICE",
+                            None,
+                        )
+                    }
+                }
+                LabMarkerFaultKind::CorruptPeer => unreachable!("corrupt mode parks above"),
+            };
+            // No further journal operation follows poisoning. Only the
+            // independent preallocated signal is published before genuine Err.
+            self.io.poisoned = true;
+            fault.publish(intact_first, requested_peer, observed_peer, true)?;
+            Err(operation(
+                operation_name,
+                io::Error::from_raw_os_error(1117),
+            ))
+        })();
+        if result.is_err() {
+            self.io.poisoned = true;
+        }
+        result
     }
 
     /// Recovery requires the independently pinned file identity and exact
@@ -999,6 +1128,17 @@ impl Write for MarkerJournalFile {
             "sealed journal accepts only one complete 4 KiB marker slot",
         )?;
         self.revalidate_storage()?;
+        if self
+            .lab_fault
+            .as_ref()
+            .is_some_and(|fault| offset == fault.copy().slot() as u64 * GRANULE as u64)
+        {
+            let fault = self
+                .lab_fault
+                .take()
+                .expect("matched actual lab fault owner");
+            return self.execute_lab_marker_fault(offset, input, fault);
+        }
         self.io.cache_at = None;
         self.io.cache.0[..GRANULE].copy_from_slice(input);
         let result = (|| {

@@ -118,7 +118,15 @@ pub fn recover_allocation(
     rollback: bool,
     output: &Path,
 ) -> Result<AllocationRecoveryOutcome> {
-    recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, false, None)
+    recover_allocation_inner(
+        bundle_path,
+        bundle_sha256,
+        rollback,
+        output,
+        false,
+        None,
+        None,
+    )
 }
 
 /// Explicit enrolled-lab entry, independent of production qualification.
@@ -128,8 +136,17 @@ pub(crate) fn recover_allocation_redundant_for_lab(
     rollback: bool,
     output: &Path,
     pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
+    fault: Option<n2r_win32::journal_file::LabMarkerFaultRequest>,
 ) -> Result<AllocationRecoveryOutcome> {
-    recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, true, pause)
+    recover_allocation_inner(
+        bundle_path,
+        bundle_sha256,
+        rollback,
+        output,
+        true,
+        pause,
+        fault,
+    )
 }
 
 fn recover_allocation_inner(
@@ -139,6 +156,7 @@ fn recover_allocation_inner(
     output: &Path,
     native_marker_lab: bool,
     pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
+    fault: Option<n2r_win32::journal_file::LabMarkerFaultRequest>,
 ) -> Result<AllocationRecoveryOutcome> {
     let (mut bundle_input, bundle) = open_bundle(bundle_path, bundle_sha256)?;
     let mut request_input = HeldInput::open(
@@ -294,8 +312,12 @@ fn recover_allocation_inner(
     }
     artifacts::create_output(output)?;
     ensure!(
-        pause.is_none() || native_marker_lab,
-        "marker pause requires the explicit native lab recovery route"
+        (pause.is_none() && fault.is_none()) || native_marker_lab,
+        "marker controls require the explicit native lab recovery route"
+    );
+    ensure!(
+        pause.is_none() || fault.is_none(),
+        "marker pause and marker fault are mutually exclusive"
     );
     let lab_pause = if let Some(pause) = pause {
         Some(pause.reserve(
@@ -304,6 +326,21 @@ fn recover_allocation_inner(
             &request.pair.source,
             &request.pair.shadow,
             request.journal_profile()?,
+        )?)
+    } else {
+        None
+    };
+    let lab_fault = if let Some(fault) = fault {
+        let (first, peer, corrupt) = sj::lab_fault_peer_images(&ticket, fault.marker_copy.label())?;
+        Some(fault.reserve(
+            output,
+            &request.journal,
+            &request.pair.source,
+            &request.pair.shadow,
+            request.journal_profile()?,
+            first,
+            peer,
+            corrupt,
         )?)
     } else {
         None
@@ -362,6 +399,7 @@ fn recover_allocation_inner(
                 MarkerStorageUse::QualifiedProduction
             },
             lab_pause,
+            lab_fault,
         )?;
         artifacts::save(output, "journal-identity.json", &observed)?;
         phase = "selected-journal-lifecycle";

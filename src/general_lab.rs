@@ -169,6 +169,7 @@ pub fn recover_allocation_redundant_markers(
     rollback: bool,
     output: &std::path::Path,
     pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
+    fault: Option<n2r_win32::journal_file::LabMarkerFaultRequest>,
 ) -> Result<crate::general_recovery::AllocationRecoveryOutcome> {
     ensure!(
         std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11"),
@@ -180,6 +181,7 @@ pub fn recover_allocation_redundant_markers(
         rollback,
         output,
         pause,
+        fault,
     )
 }
 

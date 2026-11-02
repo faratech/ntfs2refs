@@ -627,11 +627,17 @@ fn finish_observation(
 }
 
 #[cfg(windows)]
+mod marker_lab_fault;
+#[cfg(windows)]
 mod marker_lab_pause;
 #[cfg(windows)]
 mod marker_native;
 #[cfg(windows)]
 mod native;
+#[cfg(windows)]
+pub use marker_lab_fault::{
+    LabMarkerFault, LabMarkerFaultCopy, LabMarkerFaultKind, LabMarkerFaultRequest,
+};
 #[cfg(windows)]
 pub use marker_lab_pause::{LabMarkerCopy, LabMarkerCopyPause, LabMarkerPauseRequest};
 #[cfg(windows)]

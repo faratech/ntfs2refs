@@ -9,8 +9,8 @@ use crate::{
 use anyhow::{Result, ensure};
 use n2r_win32::journal_file::{
     GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile, LabMarkerCopyPause,
-    MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation, MarkerStorageUse,
-    UnbufferedJournalFile, observe_general_journal_file_with_profile,
+    LabMarkerFault, MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation,
+    MarkerStorageUse, UnbufferedJournalFile, observe_general_journal_file_with_profile,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -100,7 +100,12 @@ impl NativeSelectedJournal {
         marker_identity: Option<&JournalFileIdentity>,
         marker_use: MarkerStorageUse,
         lab_pause: Option<LabMarkerCopyPause>,
+        lab_fault: Option<LabMarkerFault>,
     ) -> Result<(Self, serde_json::Value)> {
+        ensure!(
+            lab_pause.is_none() || lab_fault.is_none(),
+            "marker pause and marker fault are mutually exclusive"
+        );
         if ticket.marker_profile.is_some() {
             let identity = marker_identity.ok_or_else(|| {
                 anyhow::anyhow!(
@@ -118,6 +123,9 @@ impl NativeSelectedJournal {
             if let Some(pause) = lab_pause {
                 file.attach_lab_copy_pause(pause)?;
             }
+            if let Some(fault) = lab_fault {
+                file.attach_lab_marker_fault(fault)?;
+            }
             let observed = serde_json::to_value(file.observation())?;
             return Ok((
                 Self {
@@ -128,8 +136,8 @@ impl NativeSelectedJournal {
             ));
         }
         ensure!(
-            marker_identity.is_none() && lab_pause.is_none(),
-            "legacy journal has marker storage identity or lab pause"
+            marker_identity.is_none() && lab_pause.is_none() && lab_fault.is_none(),
+            "legacy journal has marker storage identity or lab control"
         );
         let file = OpenOptions::new()
             .read(true)

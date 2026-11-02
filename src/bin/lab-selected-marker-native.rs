@@ -55,11 +55,19 @@ fn main() -> anyhow::Result<()> {
             #[arg(long)]
             rollback: bool,
             /// LAB ONLY: park forever after this actual durable marker copy.
-            #[arg(long, requires = "pause_signal")]
+            #[arg(long, requires = "pause_signal", conflicts_with = "marker_fault_copy")]
             pause_after_marker_copy: Option<n2r_win32::journal_file::LabMarkerCopy>,
             /// Must be marker-pause.json directly inside the fresh output.
             #[arg(long, requires = "pause_after_marker_copy")]
             pause_signal: Option<PathBuf>,
+            /// LAB ONLY: fault one inactive second marker copy during recovery.
+            #[arg(long, requires_all = ["marker_fault_kind", "marker_fault_signal"], conflicts_with_all = ["pause_after_marker_copy", "pause_signal"])]
+            marker_fault_copy: Option<n2r_win32::journal_file::LabMarkerFaultCopy>,
+            #[arg(long, requires_all = ["marker_fault_copy", "marker_fault_signal"])]
+            marker_fault_kind: Option<n2r_win32::journal_file::LabMarkerFaultKind>,
+            /// Must be marker-fault.json directly inside the fresh recovery output.
+            #[arg(long, requires_all = ["marker_fault_copy", "marker_fault_kind"])]
+            marker_fault_signal: Option<PathBuf>,
         },
         /// Metadata-only constructor diagnostic. Creates one empty journal
         /// and a JSON report on enrolled C0; this does mutate file metadata.
@@ -314,6 +322,9 @@ fn main() -> anyhow::Result<()> {
             rollback,
             pause_after_marker_copy,
             pause_signal,
+            marker_fault_copy,
+            marker_fault_kind,
+            marker_fault_signal,
         } => {
             ntfs2refs::general_lab::recover_allocation_redundant_markers(
                 &bundle,
@@ -325,6 +336,16 @@ fn main() -> anyhow::Result<()> {
                     .map(|(marker_copy, signal_path)| {
                         n2r_win32::journal_file::LabMarkerPauseRequest {
                             marker_copy,
+                            signal_path,
+                        }
+                    }),
+                marker_fault_copy
+                    .zip(marker_fault_kind)
+                    .zip(marker_fault_signal)
+                    .map(|((marker_copy, kind), signal_path)| {
+                        n2r_win32::journal_file::LabMarkerFaultRequest {
+                            marker_copy,
+                            kind,
                             signal_path,
                         }
                     }),

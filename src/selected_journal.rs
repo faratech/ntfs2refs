@@ -1766,6 +1766,40 @@ fn marker_self_hash_valid(value: &[u8; GRANULE as usize]) -> bool {
     value[GRANULE as usize - 32..] == hash
 }
 
+/// Fixed lab-only codec images for an inactive second marker copy. These are
+/// not journal authority: recovery must still authenticate the actual journal,
+/// and the native owner must verify the intact first copy and zero peer before
+/// using them. No caller-supplied byte mutation or offset is accepted.
+pub(crate) fn lab_fault_peer_images(
+    ticket: &SelectedTicket,
+    peer_label: &str,
+) -> Result<(
+    [u8; GRANULE as usize],
+    [u8; GRANULE as usize],
+    [u8; GRANULE as usize],
+)> {
+    ensure!(
+        ticket.marker_profile == Some(SelectedMarkerProfile::RedundantSourceFreeV1),
+        "lab marker fault requires the format-six codec"
+    );
+    let kind = match peer_label {
+        "AP2" => MarkerKind::Apply,
+        "RB2" => MarkerKind::Rollback,
+        "HND2" => MarkerKind::Handoff,
+        "ABT2" => MarkerKind::Aborted,
+        _ => anyhow::bail!("lab marker fault permits only an inactive second copy"),
+    };
+    let first = redundant_marker(kind, 1, ticket);
+    let peer = redundant_marker(kind, 2, ticket);
+    let mut corrupt = peer;
+    corrupt[GRANULE as usize - 1] ^= 1;
+    ensure!(
+        !marker_self_hash_valid(&corrupt),
+        "lab marker fault codec did not damage the self hash"
+    );
+    Ok((first, peer, corrupt))
+}
+
 /// A positive exact copy can recover a peer with a damaged self hash. A valid
 /// foreign identity/copy/kind is a conflict, never something to outvote. Zero
 /// plus damage supplies no authenticated state and conservatively refuses.

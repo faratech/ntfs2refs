@@ -6,13 +6,15 @@ Actual AP1 VM power-cut recovery now passed in both directions from the same
 original interrupted checkpoint: Resume completed ReFS/HND in 16.26 seconds;
 Rollback restored NTFS/ABT in 11.66 seconds. Both results are archived and saved
 separately. See [the power-recovery record](native-format6-power-recovery.md).
-HND/RB/ABT power boundaries, physical storage qualification and final exact-build
-qualification remain open; these AP1 results do not establish a stable release.
+HND1, RB1 and ABT1 first-copy VM power boundaries subsequently passed as well.
+These cover missing-peer lifecycle recovery; they do not establish native
+corrupted-peer/error-branch coverage, physical power-loss safety or a stable
+release. Final exact public-build qualification remains open.
 
 A clean offline build now produced six tools from 283 committed source files at
 `378860e`, with locked dependencies, explicit tool/configuration pins and no
 working-tree source inputs. It is a build candidate, not the separately qualified
-`7cd6870` native runtime. The protected capabilities edit remains uncommitted.
+`7cd6870` native runtime. The capabilities edit was committed unchanged with user approval at `b87867e`.
 See [the build record](../evidence/clean-committed-build-20261102.json).
 Resource scale and compatibility remain bounded by the
 [current implementation limits](scaling-budget-gaps.md). No stable tag or release

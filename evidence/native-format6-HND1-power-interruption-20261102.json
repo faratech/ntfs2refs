@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "kind": "native-format6-HND1-hard-power-interruption",
+  "utc": "2026-11-02T05:10:40.2198198Z",
+  "power_cut_issued": true,
+  "cut_at_actual_durable_copy": "HND1",
+  "original_native_pid": 6104,
+  "original_native_creation_ms": 1793595917550,
+  "original_native_exit_observed": false,
+  "original_native_exit": null,
+  "live_owner_and_running_task_verified_twice": true,
+  "closed_synced_signal_sha256": "ddc4b0f0ad863bde51b2cfb184913f0fd475178ed98dac4aefa1cfb890e3ec7f",
+  "signal_bytes": 32768,
+  "marker_slot": 4,
+  "journal_format": "N2RFRE02",
+  "producer_source_commit": "7cd68709e3cd2e4cb1d5227d01fd6137c93ea13f",
+  "producer_sha256": "e21888922313aaf591ed8d54c930ae2bd9639eca41f28dfcb6a0dd959e8dfaab",
+  "original_checkpoint": "bfd2dfbe-b497-455d-95dd-9d7347145691",
+  "original_checkpoint_parent": "cb802669-903c-48cc-99e5-57976b149e7d",
+  "poweroff_issued_utc": "2026-11-02T05:08:28.3713679Z",
+  "off_observed_utc": "2026-11-02T05:09:39.5386232Z",
+  "original_bundle_sha256": "f953d24082565c9e087d8ae8e1683efc9d19b8fb27cbb0f42c1e02bbd782f5e0",
+  "original_ticket_sha256": "252cf9c6c7939fd4b9b1a843738183dde8a4175238e43680792c65d49ec373f3",
+  "recovery_action_required": "verify_handoff",
+  "rollback_permitted": false,
+  "power_recovery_complete": false,
+  "native_marker_qualified": false,
+  "physical_hardware_power_loss_qualified": false,
+  "artifacts": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\checkpoint.json",
+      "bytes": 3066,
+      "sha256": "a8438e8af131c337c53d4f9c87afa54d569f14d279b5b33bdefd1cdd5351756f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\before-power-observation.json",
+      "bytes": 6909,
+      "sha256": "2c5dd5d36a925d7686fafc2fd747d215f15da2aae381178988115350399688bf"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\last-live-check.json",
+      "bytes": 289,
+      "sha256": "ad5dde69a200b63e81d9d1eef0c7c5236de640ae62351387aec5ed97a0da3827"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\poweroff-issued.json",
+      "bytes": 159,
+      "sha256": "2cf21c2979cfa757d9e0ffc6cad0105b0196fdb8ffed699b685d30d953203f58"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\poweroff-observed.json",
+      "bytes": 238,
+      "sha256": "4d109998ad469fe902e44d298a63118666f57a3b4b7a869b6d0690387f600da9"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\marker-pause.json",
+      "bytes": 32768,
+      "sha256": "ddc4b0f0ad863bde51b2cfb184913f0fd475178ed98dac4aefa1cfb890e3ec7f"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\native-process.json",
+      "bytes": 1894,
+      "sha256": "0569592b040987b1cbbfeb3168e89b467ea9a2a758595f6b4454e4de0369edd9"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\allocation-recovery-bundle.json",
+      "bytes": 3157,
+      "sha256": "f953d24082565c9e087d8ae8e1683efc9d19b8fb27cbb0f42c1e02bbd782f5e0"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-power-hnd1-5a556f0ebfad46c7871b1b439c8a5d6e\\selected-ticket.json",
+      "bytes": 1421,
+      "sha256": "252cf9c6c7939fd4b9b1a843738183dde8a4175238e43680792c65d49ec373f3"
+    }
+  ],
+  "unit_tests_added_or_run": false
+}

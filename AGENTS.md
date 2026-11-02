@@ -13,26 +13,43 @@ Old CURRENT/LIVE labels and preserve-all instructions in those archives are hist
 ## CURRENT release block (2026-11-02 UTC)
 
 This block supersedes older CURRENT/LIVE and pending-power labels below.
-CURRENT VM is fresh-confirmed Off/RAM0 at AP1 power Rollback checkpoint
-44c0074b-b5c4-4614-b957-a96842436cbf, parent8d4192fe, 20 snapshots.
-Runtime7cd6870 passed actual AP1 power Resume (native3064/birth1793594871253/0,
-16.2593027s, HND/ReFS, 1084 maps) and separate original-state Rollback
-(native2588/birth1793595236914/0, 11.6591231s, ABT/NTFS, 142004224 restoredB).
-Original power checkpoint8d4192fe-003b-441f-8591-f0b271028841 is a child of
-preparedcb802669; original producer exit remains UNOBSERVED. Resume is saved
-at fccec765-f271-4dd5-88c6-6e6e5bd29181, parent8d. Both results/archives are
-closed and verified; NEVER replay their HND/ABT. No extra 811-stream full hash scan.
-Power helper df88c9d563d1abc488e67322c966dcaced0a332936490e83fc14658193ed2def
-retains the actual absent-shadow Read/ShareNone guard through native/terminal
-checks, without AccessDenied-to-absence fallback or detached VHDX identity claim.
-Commit378860e memory changes compiled. Clean offline candidate r378860e-c built
-283 source files/6 binaries, workspace 517209397B, manifestSHA
-cbf9c8d8b328e7a6aa8cd42e62c895ce6f40e2c6c2fc53707565bde84a1091f3.
-It inherits no native/power qualification. HND/RB/ABT power cases, final exact-build
-qualification and release remain OPEN; production markers stay gated. Protected
-main c6bc5c52... removal of obsolete capability fields was explicitly approved
-for unchanged commit by the user on November 2; no other main edits are authorized.
-See docs/native-format6-power-recovery.md and the AP1 power evidence JSONs.
+CURRENT VM is fresh-confirmed Off/RAM0 at ABT1 closed-verification checkpoint
+0a3a2a49-44cd-45a0-8817-41767231d7b2, parent83354c86, 26 snapshots. All project
+workers/tasks were terminal before normal shutdown. No conversion is active.
+Runtime7cd6870 passed all FOUR first-copy VM power-cut states:
+- AP1 Resume3064/birth1793594871253/0,16.2593027s,HND/ReFS and separate original
+  Rollback2588/birth1793595236914/0,11.6591231s,ABT/NTFS. Savedfccec765/44c0074b;
+  original8d4192fe childpreparedcb802669. Original producer6000 exitUNOBSERVED.
+- HND1 producer6104/birth1793595917550 actualcut; originalbfd2dfbe childcb.
+  Verify_handoff1752/birth1793596303139/0,10.2369122s,1084maps; saved2d62e6da.
+- RB1 pausedRecoverRollback5948/birth1793596998366 actualcut; original291c825f
+  child8d. Rollback3868/birth1793597267167/0,9.6930208s; saved450eb572.
+- ABT1 pausedRecoverRollback3060/birth1793597984026 actualcut; original83354c86
+  child8d. Verify_aborted2488/birth1793598793045/0,6.7257683s; saved0a3a2a49.
+NEVER replay any successful HND/ABT result; use the respective original power
+checkpoint for another direction. Cuts followed actual closed/synced32KiB signal
+and two matching livePID/birth/task observations. Original exits are unobserved.
+These prove four first-copy/zero-peer states, not native damaged-peer bytes,
+Win32 I/O-error injection, physical power-loss safety or general stable release.
+Archives are closed/pinned; no extra811-stream scan or peakRAM claim. See
+native-format6-power-recovery.md and per-state evidence JSONs.
+ExistingPowerRecoverydf88 remains frozen. NewRollbackPause3107ef and nested
+RollbackPowerRecoveryebedbc controllers passed actual RB1/ABT1 dispatch; the
+nested receipts bind child->original8d->preparedcb and originalAP1 bundle/ticket,
+with the new producer's own process/config/signal. No fakeexit86/freshcertificate.
+User approved unchanged mainc6 capability edit; committedb87867e. Preserve its
+bytes; no other main edits authorized. Shared plan-aware production gate7abadeb
+keeps legacy fallback forF0/tightmarkerbudget. Backup-boot fixa545bbe reserves
+final4KiB regardlessbitmap and rejects unsafeformat5/6plans beforetargetopen.
+Typed storage policy1316ac9 requires production qualification from actual owned
+V3 journal C4096/L512/P4096/FileStorageInfo, with explicit unqualified lab use.
+The globalqualification flag remainsFALSE. Native cases above use sealed7cd,
+not later source. Focused Windows builds of public/marker/composite bins passed;
+no unit tests were added or run. Final exact public build/matrix, remaining
+qualification and broader resource-scale/compatibility scope remain OPEN.
+Old clean candidate r378860e-c (283sourcefiles/6bins,517209397B,manifestSHA
+cbf9c8d8b328e7a6aa8cd42e62c895ce6f40e2c6c2fc53707565bde84a1091f3) is build
+provenance only and predates current source. Do not inherit its qualification.
 
 ## Objective and user constraints
 

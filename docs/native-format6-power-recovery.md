@@ -2,7 +2,9 @@
 
 Status at 2026-11-02 UTC: actual AP1 VM power interruption has passed separate
 Resume and Rollback runs with runtime `7cd6870`. Both are archived and saved
-after normal stop. HND, RB and ABT power cases and qualification of the final exact release build remain open.
+after normal stop. HND1, RB1 and ABT1 also passed after actual VM power cuts.
+These complete the four first-copy/missing-peer lifecycle cases. Qualification
+of the final exact public build and the wider release scope remains open.
 This is bounded owning-guest evidence, not hardware power-loss qualification.
 
 ## Actual interrupted state and results
@@ -39,6 +41,49 @@ closed HND/ABT. Rollback's 40-file/29649071-byte archive has receipt SHA256
 `531d904623d9911d75ebda89c34f0f9a3628abf7ea244ded0b7456f6fd2dbdd0`.
 The current VM is fresh-confirmed Off/RAM0 at Rollback checkpoint
 `44c0074b-b5c4-4614-b957-a96842436cbf`, parent8d, 20 snapshots.
+
+## HND1 closed-handoff power case
+
+Root confirmed the closed, synchronized HND1 signal and the same live native
+PID6104/birth1793595917550 before `Stop-VM -TurnOff`. Original checkpoint
+`bfd2dfbe-b497-455d-95dd-9d7347145691` is a child of preparedcb802669. No original
+native exit is claimed. The restarted process selected `verify_handoff` with
+actual lifecycle `handoff`; it did not reopen raw target replay or permit rollback.
+The native process PID1752/birth1793596303139 exited0 in10.2369122 seconds,
+with1084 complete map bindings and the native metadata/namespace/storage checks.
+
+Result checkpoint `2d62e6da-38b0-4c88-972d-750b1fc8eb31` is saved Off/RAM0.
+The41-file/56804081-byte archive receipt is
+`4cad6c65852ae60a94835434f7a87fed9f39093db18476e364d7297eaed8c3d6`.
+See [the interruption](../evidence/native-format6-HND1-power-interruption-20261102.json)
+and [the closed verification](../evidence/native-format6-HND1-power-recovery-20261102.json).
+
+## Rollback-intent and abort-completion power cases
+
+The new [pause adapter](../lab/Start-NativeRollbackMarkerPause.ps1) starts an
+explicit rollback from original AP1 checkpoint8d. Root cuts power only after
+the selected RB1 or ABT1 copy has been flushed/read back and its closed32KiB
+signal matches the actual live process twice. The
+[nested recovery helper](../lab/Start-NativeRollbackPowerRecovery.ps1) binds
+both power receipts and checkpoint ancestry, keeping the original AP1 bundle
+separate from the new paused producer's process/configuration/signal.
+
+| Cut | Original checkpoint | Recovery | Saved result |
+| --- | --- | --- | --- |
+| RB1, PID5948/birth1793596998366 |291c825f-3368-4039-ace3-2d9fbf10cc11 |PID3868/birth1793597267167/exit0,9.6930208s; rollback/rollback_intent |450eb572-db48-470d-9921-ccd9976e74e6 |
+| ABT1, PID3060/birth1793597984026 |83354c86-1103-4b0d-a99a-e23a8a78fdc8 |PID2488/birth1793598793045/exit0,6.7257683s; verify_aborted/aborted |0a3a2a49-44cd-45a0-8817-41767231d7b2 |
+
+Both originals are children of8d, which is a child of preparedcb. Original
+producer exits remain unobserved. RB1 continues rollback; ABT1 verifies the
+already closed old state using `verified-rollback.json`, without target replay.
+The42-file archives contain29668035 and29663283 bytes, respectively. Recorded
+proof covers selected restoration, NTFS mount/label/path and closed barriers;
+it does not claim a separate semantic/content rescan or restoration of free
+space. The first-copy cuts exercise missing peers, not actual damaged-peer
+bytes, failing Win32 I/O calls or physical storage power loss.
+
+See the [RB1 recovery](../evidence/native-format6-RB1-power-recovery-20261102.json)
+and [ABT1 verification](../evidence/native-format6-ABT1-power-recovery-20261102.json).
 
 ## Native and host guard changes
 
@@ -88,11 +133,20 @@ Its manifest SHA256 is
 `cbf9c8d8b328e7a6aa8cd42e62c895ce6f40e2c6c2fc53707565bde84a1091f3`;
 workspace observation was 517209397 bytes. It used no working-tree source inputs,
 ran no unit tests/native tools and inherits no qualification. The protected
-working `src/main.rs` hunk remains unchanged and unstaged.
+working `src/main.rs` hunk was subsequently committed unchanged with explicit
+user approval at `b87867e`.
 
 Actual AP1 evidence above belongs to 7cd binaries, not that newer candidate.
-Complete HND/RB/ABT power cases and qualify the final exact binaries before any
-release claim. Production creation still selects no marker profile; production
-recovery still refuses format6 outside the explicit lab route, and
-`MARKER_STORAGE_NATIVE_QUALIFIED` remains false. Broader storage/hardware,
+Qualify the final exact public binaries before any release claim. Commit
+`7abadeb` makes production creation and recovery share one
+plan-aware compiled gate. It remains false: public creation still selects the
+legacy profile and public recovery still refuses format6. Empty source-free
+plans and plans without the extra marker budget retain legacy eligibility;
+the explicit lab profile remains strict. Commit `1316ac9` retains a typed use
+policy in the actual owner and binds production qualification to the observed
+NTFS journal geometry:4KiB clusters,512-byte logical and4096-byte physical
+sectors, with matching actual FileStorageInfo. The global flag remains false.
+The [backup-boot correction](backup-boot-restoration.md) also requires a final
+build; the recorded fixture was already protected by its conservative tail.
+Broader storage/hardware,
 resource-scale and NTFS compatibility requirements remain open.

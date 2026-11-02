@@ -176,7 +176,7 @@ try {
     $body = @'
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
-$held=[Collections.Generic.List[IO.FileStream]]::new();$process=$null;$nativeExit=$null;$requestPin=$null;$phase='staged-preflight'
+$held=[Collections.Generic.List[IO.FileStream]]::new();$process=$null;$stdoutStream=$null;$stderrStream=$null;$stdoutPipe=$null;$stderrPipe=$null;$nativeExit=$null;$requestPin=$null;$phase='staged-preflight'
 function Need([bool]$Ok,[string]$Message){if(-not$Ok){throw $Message}}
 function ParseJson([string]$Text){$options=@{};if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$options.DateKind='String'};return ($Text|ConvertFrom-Json @options)}
 function Same($A,$B){
@@ -279,11 +279,23 @@ try{
  $binary=Join-Path $c.stage 'lab-selected-marker-native.exe';$producer=@($c.tools|Where-Object name -CEQ 'lab-selected-marker-native.exe')[0]
  $stdout=Join-Path $c.stage 'native.stdout.log';$stderr=Join-Path $c.stage 'native.stderr.log'
  Save 'native-dispatch-intent.json' @{binary=$binary;binary_sha256=$producer.sha256;argv=$argv;expected_exit=$c.expected_exit;source_certificate_must_be_live=($c.operation-ceq'Fresh');saved_json_grants_authority=$false;utc=[DateTime]::UtcNow.ToString('o')}
+ # Start retains the CreateProcess-owned handle even for a short-lived child.
+ $startInfo=[Diagnostics.ProcessStartInfo]::new();$startInfo.UseShellExecute=$false;$startInfo.CreateNoWindow=$true
+ $startInfo.FileName=$binary;$startInfo.Arguments=$arguments;$startInfo.WorkingDirectory=$c.stage
+ $startInfo.RedirectStandardOutput=$true;$startInfo.RedirectStandardError=$true
+ $process=[Diagnostics.Process]::new();$process.StartInfo=$startInfo
+ $stdoutStream=[IO.File]::Open($stdout,'CreateNew','Write','Read');$stderrStream=[IO.File]::Open($stderr,'CreateNew','Write','Read')
  $phase='native-process';$clock=[Diagnostics.Stopwatch]::StartNew()
- $process=Start-Process -FilePath $binary -ArgumentList $arguments -WorkingDirectory $c.stage -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
+ Need ($process.Start()) 'Native CreateProcess did not return an owned process.'
  $null=$process.Handle;$birth=([DateTimeOffset]$process.StartTime).ToUnixTimeMilliseconds();$nativePid=$process.Id
+ $stdoutPipe=$process.StandardOutput.BaseStream;$stderrPipe=$process.StandardError.BaseStream
+ # Drain raw bytes concurrently with bounded buffers before waiting for exit.
+ $stdoutDrain=$stdoutPipe.CopyToAsync($stdoutStream,65536);$stderrDrain=$stderrPipe.CopyToAsync($stderrStream,65536)
  Save 'native-process.json' @{pid=$nativePid;creation_ms=$birth;parent_pid=$PID;binary=$binary;binary_sha256=$producer.sha256;argv=$argv;expected_exit=$c.expected_exit;process_handle_retained_before_wait=$true;utc=[DateTime]::UtcNow.ToString('o')}
  $process.WaitForExit();$clock.Stop();$process.Refresh();$nativeExit=$process.ExitCode
+ $stdoutDrain.GetAwaiter().GetResult();$stderrDrain.GetAwaiter().GetResult()
+ $stdoutStream.Flush($true);$stderrStream.Flush($true)
+ $stdoutStream.Dispose();$stdoutStream=$null;$stderrStream.Dispose();$stderrStream=$null
  $peakWorking=$null;$peakPrivate=$null;try{$peakWorking=[long]$process.PeakWorkingSet64}catch{};try{$peakPrivate=[long]$process.PeakPagedMemorySize64}catch{}
  if($null-ne$peakWorking-and$peakWorking-le0){$peakWorking=$null};if($null-ne$peakPrivate-and$peakPrivate-le0){$peakPrivate=$null}
  Save 'native-terminal.json' @{pid=$nativePid;creation_ms=$birth;native_exit=$nativeExit;native_exit_observed=($null-ne$nativeExit);process_handle_retained_through_terminal=$true;wall_seconds=$clock.Elapsed.TotalSeconds;peak_working_set_bytes=$peakWorking;peak_paged_memory_bytes=$peakPrivate;peak_metrics_source='retained-System.Diagnostics.Process; null when unavailable';stdout=(Log $stdout);stderr=(Log $stderr);utc=[DateTime]::UtcNow.ToString('o')}
@@ -327,7 +339,10 @@ try{
 }catch{
  if($null-ne(Get-Variable c -ErrorAction SilentlyContinue)) {Save 'wrapper-failed.json' @{observation_passed=$false;phase=$phase;native_exit=$nativeExit;native_exit_observed=($null-ne$nativeExit);process_fault_observed=($null-ne$nativeExit-and$nativeExit-ne0);error=$_.Exception.ToString();native_marker_qualified=$false;hard_power_qualified=$false;raw_journal_opened=$false;automatic_retry_recovery_restore_cleanup=$false;worker_death_inferred=$false;utc=[DateTime]::UtcNow.ToString('o')}}
  exit 1
-}finally{if($null-ne$process){$process.Dispose()};foreach($stream in $held){$stream.Dispose()}}
+}finally{
+ foreach($stream in @($stdoutPipe,$stderrPipe,$stdoutStream,$stderrStream)){if($null-ne$stream){try{$stream.Dispose()}catch{}}}
+ try{if($null-ne$process){$process.Dispose()}}finally{foreach($stream in $held){$stream.Dispose()}}
+}
 '@
     $guest = $body.Replace('__STAGE__',$stage).Replace('__CONFIG_SHA__',$configSha)
     $tokens=$null; $errors=$null; $null=[Management.Automation.Language.Parser]::ParseInput($guest,[ref]$tokens,[ref]$errors)
@@ -352,7 +367,7 @@ try{
     HostGuard
     Save 'dispatch.json' @{schema_version=1;kind='unqualified-native-marker-experiment-dispatch';run_id=$run;operation=$Operation;mode=$mode;source_commit=$SourceCommit;manifest_sha256=$ToolsetManifestSha256;parent_id=$ExpectedParent;checkpoint_ids=$ids;task_name=$task;guest_stage=$stage;output=$config.output;wrapper_sha256=$wrapperSha;configuration_sha256=$configSha;expected_exit=$config.expected_exit;completion_inferred=$false;native_marker_qualified=$false;hard_power_qualified=$false;utc=[DateTime]::UtcNow.ToString('o')}
     # Stage checks execute the same literal preflight functions, never the body
-    # containing Start-Process. All checks finish before the task is registered.
+    # containing native process launch. All checks finish before the task is registered.
     $preflightTokens=$null;$preflightErrors=$null;$ast=[Management.Automation.Language.Parser]::ParseInput($guest,[ref]$preflightTokens,[ref]$preflightErrors)
     $definitions=@($ast.EndBlock.Statements|Where-Object {$_ -is [Management.Automation.Language.FunctionDefinitionAst]}|ForEach-Object {$_.Extent.Text})-join[Environment]::NewLine
     Invoke-Command -Session $session -ArgumentList $stage,$task,$wrapperSha,$configSha,$actionArguments,$definitions -ScriptBlock {param($Stage,$Task,$WrapperSha,$ConfigSha,$ActionArguments,$Definitions)

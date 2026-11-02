@@ -63,4 +63,28 @@ the actual constructor without reading source/shadow data, constructing ReFS,
 writing journal payload, sealing markers or acquiring volume privileges. This
 isolates setup failures without repeating the full source and shadow work.
 It creates filesystem metadata and therefore is not a disk-write-free operation.
-Unsupported queries still refuse; probe output supplies no storage capability.
+Unsupported queries supply no affirmative absence evidence; probe output
+supplies no storage capability.
+
+The constructor probe isolated the failure to `FSCTL_GET_EXTERNAL_BACKING`.
+Windows returned error 1, which describes an unavailable backing service rather
+than a negative backing observation. The backend now requires an affirmative
+same-handle `FSCTL_GET_REPARSE_POINT` result of `ERROR_NOT_A_REPARSE_POINT`, on
+the already verified NTFS volume, with unchanged non-reparse attributes and zero
+tag before and after. This excludes the documented WOF/dedup reparse forms.
+Only then may external-backing status 1 proceed; it remains recorded as
+unsupported with `external_backing_absence_reported = false`. All other errors
+still refuse, and all ordinary-file, compression, geometry, mapping and marker
+checks remain. Sealed-storage revalidation compares the new observation too.
+See Microsoft's [reparse reply](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d86a4c4d-a996-403a-8b92-9c0e1a300e22),
+[provider status](https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/fsctl-get-external-backing)
+and [WOF/dedup tags](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/c8e77b37-3909-4fe6-a4ea-2b9d423b1ee4).
+
+The lab dispatcher now starts the native process through an owned
+`System.Diagnostics.Process`, retaining its original process handle even for
+very short failures. It drains raw stdout/stderr concurrently with fixed 64 KiB
+buffers and synchronizes the log files before terminal hashing. This avoids
+depending on a later PID lookup to observe a short-lived constructor probe.
+The first standalone probe's observation parent stalled after writing its actual
+constructor result; that metadata-only observer was retired with its exact PID
+and creation identity. Its native exit code remains explicitly unobserved.

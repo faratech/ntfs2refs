@@ -22,7 +22,10 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::{ERROR_MORE_DATA, ERROR_OBJECT_NOT_EXTERNALLY_BACKED},
+    Foundation::{
+        ERROR_INVALID_FUNCTION, ERROR_MORE_DATA, ERROR_NOT_A_REPARSE_POINT,
+        ERROR_OBJECT_NOT_EXTERNALLY_BACKED,
+    },
     Storage::FileSystem::{
         FILE_BEGIN, FILE_END_OF_FILE_INFO, FILE_FLAG_NO_BUFFERING, FILE_FLAG_OPEN_REPARSE_POINT,
         FILE_FLAG_WRITE_THROUGH, FILE_STORAGE_INFO, FileAlignmentInfo, FileEndOfFileInfo,
@@ -32,8 +35,8 @@ use windows_sys::Win32::{
     System::{
         IO::DeviceIoControl,
         Ioctl::{
-            FSCTL_GET_COMPRESSION, FSCTL_GET_EXTERNAL_BACKING, FSCTL_MARK_HANDLE, MARK_HANDLE_INFO,
-            MARK_HANDLE_PROTECT_CLUSTERS,
+            FSCTL_GET_COMPRESSION, FSCTL_GET_EXTERNAL_BACKING, FSCTL_GET_REPARSE_POINT,
+            FSCTL_MARK_HANDLE, MARK_HANDLE_INFO, MARK_HANDLE_PROTECT_CLUSTERS,
         },
     },
 };
@@ -75,6 +78,23 @@ fn operation(operation: &'static str, source: io::Error) -> io::Error {
 #[repr(C, align(4096))]
 struct AlignedBlock([u8; BLOCK]);
 
+/// Descriptive same-handle exclusion of reparse-backed NTFS storage, including
+/// IO_REPARSE_TAG_WOF and dedup tags. An unavailable WOF service is not evidence
+/// of an unbacked file: explicit reparse absence supplies the equivalent direct
+/// exclusion while supported external backing and every other error refuse.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct OrdinaryStorageObservation {
+    pub file_attribute_tag_info_before: [u8; 8],
+    pub file_attribute_tag_info_after: [u8; 8],
+    pub reparse_query_error: u32,
+    pub explicit_no_reparse_point: bool,
+    /// The actual WOF query status, including ERROR_INVALID_FUNCTION when the
+    /// backing service is absent. That status is never a negative WOF answer.
+    pub external_backing_query_error: u32,
+    pub external_backing_absence_reported: bool,
+    pub external_backing_query_unsupported: bool,
+}
+
 /// Descriptive native observations only. This value cannot authorize markers.
 /// `MarkerJournalFile`, which retains its original handle, is the capability.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -87,6 +107,7 @@ pub struct MarkerStorageObservation {
     pub retrieval_base_bytes: u64,
     /// Exact FileStorageInfo fields, including filesystem atomicity and offsets.
     pub file_storage_info: [u32; 7],
+    pub ordinary_storage: OrdinaryStorageObservation,
     /// Offsets on the one bound disk, not merely offsets within the file.
     pub marker_device_offsets: [u64; SLOTS],
     pub native_qualified: bool,
@@ -111,6 +132,7 @@ pub struct UnbufferedJournalFile {
     cache_at: Option<u64>,
     dirty: bool,
     poisoned: bool,
+    ordinary_storage: Option<OrdinaryStorageObservation>,
     // Fields drop in declaration order: the owned file (and its cluster
     // protection), volume and disk close before restoring this token state.
     // Keeping the guard here also preserves that order on every sealing error.
@@ -246,7 +268,7 @@ impl UnbufferedJournalFile {
             .share_mode(3)
             .open(format!("\\\\.\\PhysicalDrive{}", binding.disk.disk_number))
             .map_err(|error| operation("open_owned.OpenOptions disk", error))?;
-        let result = Self {
+        let mut result = Self {
             file,
             volume,
             disk,
@@ -261,17 +283,19 @@ impl UnbufferedJournalFile {
             cache_at: None,
             dirty: false,
             poisoned: false,
+            ordinary_storage: None,
             privileges: None,
         };
         result
             .observe_owned()
             .map_err(|error| operation("open_owned.observe_owned", error))?;
-        result
+        let geometry = result
             .ntfs_geometry()
             .map_err(|error| operation("open_owned.ntfs_geometry", error))?;
-        result
-            .require_plain_storage()
+        let (_, ordinary) = result
+            .require_plain_storage(&geometry)
             .map_err(|error| operation("open_owned.require_plain_storage", error))?;
+        result.ordinary_storage = Some(ordinary);
         Ok(result)
     }
 
@@ -291,6 +315,14 @@ impl UnbufferedJournalFile {
     /// Actual constructor observation, retained privately for this handle.
     pub fn identity(&self) -> &JournalFileIdentity {
         &self.identity
+    }
+
+    /// Facts from this constructor's actual same-handle metadata checks. No
+    /// handle, sealing capability, privilege or source authority is exposed.
+    pub fn ordinary_storage_observation(&self) -> &OrdinaryStorageObservation {
+        self.ordinary_storage
+            .as_ref()
+            .expect("only the checked constructor publishes an unbuffered journal")
     }
 
     fn observe_owned(&self) -> io::Result<JournalFileSnapshot> {
@@ -319,15 +351,22 @@ impl UnbufferedJournalFile {
             .map_err(|error| operation("observe_owned.finish_observation", error))
     }
 
-    fn require_plain_storage(&self) -> io::Result<[u32; 7]> {
+    fn require_plain_storage(
+        &self,
+        // Both private callers must first check NTFS/no shared blocks and the
+        // complete native geometry through these same retained handles.
+        _ntfs_geometry: &(u32, u64),
+    ) -> io::Result<([u32; 7], OrdinaryStorageObservation)> {
         let (_, evidence) = native::file_observation_with_profile(&self.file, self.profile)
             .map_err(|error| operation("require_plain_storage.native::file_observation", error))?;
         // Reparse includes dedup/WOF. Also reject recall/offline/virtual and
         // integrity streams; no provider or filesystem transform is admitted.
-        const EXTRA_FORBIDDEN: u32 = 0x1000 | 0x8000 | 0x10000 | 0x40000 | 0x400000;
+        const EXTRA_FORBIDDEN: u32 =
+            0x200 | 0x800 | 0x1000 | 0x4000 | 0x8000 | 0x10000 | 0x40000 | 0x400000;
         require(
-            u32_at(&evidence.file_attribute_tag_info, 0)? & EXTRA_FORBIDDEN == 0,
-            "marker journal has offline, recall, virtual or integrity storage",
+            u32_at(&evidence.file_attribute_tag_info, 0)? & (EXTRA_FORBIDDEN | 0x400) == 0
+                && u32_at(&evidence.file_attribute_tag_info, 4)? == 0,
+            "marker journal has sparse, compressed, encrypted, offline, recall, virtual, integrity or reparse storage/tag",
         )?;
         require(
             native::query(&self.file, FSCTL_GET_COMPRESSION, &[], 2)
@@ -335,19 +374,45 @@ impl UnbufferedJournalFile {
                 == [0, 0],
             "marker journal has native file compression",
         )?;
-        // A refusal other than the documented explicit unbacked result is not
-        // affirmative evidence. Unsupported or inaccessible WOF queries refuse.
-        match native::query(&self.file, FSCTL_GET_EXTERNAL_BACKING, &[], 4096) {
-            Err(error)
-                if error.raw_os_error() == Some(ERROR_OBJECT_NOT_EXTERNALLY_BACKED as i32) => {}
+        // On the already verified NTFS volume, require a direct answer from
+        // the file opened with OPEN_REPARSE_POINT, irrespective of whether a
+        // WOF/dedup filter service is installed. Any returned reparse data or
+        // any error other than explicit NOT_A_REPARSE_POINT refuses.
+        // https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-point-operations
+        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d86a4c4d-a996-403a-8b92-9c0e1a300e22
+        match native::query(&self.file, FSCTL_GET_REPARSE_POINT, &[], 16 * 1024) {
+            Err(error) if error.raw_os_error() == Some(ERROR_NOT_A_REPARSE_POINT as i32) => {}
             Err(error) => {
                 return Err(operation(
-                    "require_plain_storage.FSCTL_GET_EXTERNAL_BACKING",
+                    "require_plain_storage.FSCTL_GET_REPARSE_POINT",
                     error,
                 ));
             }
-            Ok(_) => return Err(invalid("marker journal has external backing")),
+            Ok(_) => return Err(invalid("marker journal has a reparse point")),
         }
+        // INVALID_FUNCTION describes an absent/not-started backing service,
+        // not an unbacked file. Only the independent direct no-reparse proof
+        // above excludes WOF/dedup storage in that case; retain the actual WOF
+        // status rather than manufacturing a negative provider observation.
+        // https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/fsctl-get-external-backing
+        let external_backing_query_error =
+            match native::query(&self.file, FSCTL_GET_EXTERNAL_BACKING, &[], 4096) {
+                Err(error)
+                    if error.raw_os_error() == Some(ERROR_OBJECT_NOT_EXTERNALLY_BACKED as i32) =>
+                {
+                    ERROR_OBJECT_NOT_EXTERNALLY_BACKED
+                }
+                Err(error) if error.raw_os_error() == Some(ERROR_INVALID_FUNCTION as i32) => {
+                    ERROR_INVALID_FUNCTION
+                }
+                Err(error) => {
+                    return Err(operation(
+                        "require_plain_storage.FSCTL_GET_EXTERNAL_BACKING",
+                        error,
+                    ));
+                }
+                Ok(_) => return Err(invalid("marker journal has external backing")),
+            };
         let alignment = native::information::<4>(&self.file, FileAlignmentInfo)
             .map_err(|error| operation("require_plain_storage.FileAlignmentInfo", error))?;
         let mask = u32_at(&alignment, 0)?;
@@ -392,7 +457,33 @@ impl UnbufferedJournalFile {
                 && values[6] == 0,
             "marker file storage atomicity, performance or sector alignment exceeds its contract",
         )?;
-        Ok(values)
+        let (_, after) =
+            native::file_observation_with_profile(&self.file, self.profile).map_err(|error| {
+                operation(
+                    "require_plain_storage.native::file_observation after",
+                    error,
+                )
+            })?;
+        require(
+            evidence.file_attribute_tag_info == after.file_attribute_tag_info
+                && u32_at(&after.file_attribute_tag_info, 0)? & 0x400 == 0
+                && u32_at(&after.file_attribute_tag_info, 4)? == 0,
+            "marker journal attributes or reparse tag changed during ordinary-storage checks",
+        )?;
+        Ok((
+            values,
+            OrdinaryStorageObservation {
+                file_attribute_tag_info_before: evidence.file_attribute_tag_info,
+                file_attribute_tag_info_after: after.file_attribute_tag_info,
+                reparse_query_error: ERROR_NOT_A_REPARSE_POINT,
+                explicit_no_reparse_point: true,
+                external_backing_query_error,
+                external_backing_absence_reported: external_backing_query_error
+                    == ERROR_OBJECT_NOT_EXTERNALLY_BACKED,
+                external_backing_query_unsupported: external_backing_query_error
+                    == ERROR_INVALID_FUNCTION,
+            },
+        ))
     }
 
     fn ntfs_geometry(&self) -> io::Result<(u32, u64)> {
@@ -636,8 +727,8 @@ impl UnbufferedJournalFile {
             snapshot.file_bytes == self.logical_length && snapshot.file_bytes >= MARKER_BYTES + 160,
             "marker file body or exact EOF is incomplete",
         )?;
-        let file_storage_info = self.require_plain_storage()?;
         let (cluster, base) = self.ntfs_geometry()?;
+        let (file_storage_info, ordinary_storage) = self.require_plain_storage(&(cluster, base))?;
         let offsets = marker_offsets(&self.file, &self.identity, cluster, base)?;
         Ok(MarkerStorageObservation {
             identity: self.identity.clone(),
@@ -647,6 +738,7 @@ impl UnbufferedJournalFile {
             cluster_bytes: cluster,
             retrieval_base_bytes: base,
             file_storage_info,
+            ordinary_storage,
             marker_device_offsets: offsets,
             native_qualified: MARKER_STORAGE_NATIVE_QUALIFIED,
         })

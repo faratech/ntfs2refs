@@ -209,12 +209,13 @@ fn main() -> anyhow::Result<()> {
             let journal = UnbufferedJournalFile::create_new(journal_path, binding, profile)?;
             let length = journal.byte_len()?;
             let identity = journal.identity().clone();
+            let ordinary_storage = journal.ordinary_storage_observation().clone();
             ensure!(
                 length == 0,
                 "new constructor probe journal must remain empty"
             );
             drop(journal);
-            Ok((length, identity))
+            Ok((length, identity, ordinary_storage))
         })();
         let chain = attempted.as_ref().err().map(|error| {
             error
@@ -234,8 +235,9 @@ fn main() -> anyhow::Result<()> {
             "success":attempted.is_ok(),"request_sha256":request_sha256,
             "journal_path":journal_path,"journal_binding":binding,
             "journal_profile":"CapacityPinnedV3","maximum_journal_bytes":profile.max_journal_bytes(),
-            "journal_length":attempted.as_ref().ok().map(|(length,_)| *length),
-            "journal_identity":attempted.as_ref().ok().map(|(_,identity)| identity),
+            "journal_length":attempted.as_ref().ok().map(|(length,_,_)| *length),
+            "journal_identity":attempted.as_ref().ok().map(|(_,identity,_)| identity),
+            "ordinary_storage":attempted.as_ref().ok().map(|(_,_,ordinary)| ordinary),
             "error_chain":chain,"native_marker_qualified":false,
             "scope":"metadata-only empty-file constructor diagnostic; creates journal and JSON report metadata",
             "no_source_io":true,"source_opened":false,"shadow_opened":false,

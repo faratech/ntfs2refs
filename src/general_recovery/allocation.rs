@@ -629,7 +629,7 @@ fn recover_allocation_inner(
             // Every successful action above consumed the authenticated owner.
             // This records that code path; it grants no replay authority.
             "exclusive_recovery_journal_used":true,
-            "journal_format":plan.encoding_name(),
+            "journal_format":if ticket.marker_profile.is_some() { "N2RFRE02" } else { plan.encoding_name() },
             "journal_bytes":journal_bytes,"selected_bytes":selected_bytes,
             "old_zero_bytes":old_zero_bytes,
             "old_zero_payload_storage_elided":old_zero_bytes > 0,
@@ -643,6 +643,10 @@ fn recover_allocation_inner(
         if !request.selected_capacity_policy.is_conservative() {
             result["selected_capacity_policy"] =
                 serde_json::to_value(request.selected_capacity_policy)?;
+        }
+        if let Some(marker_profile) = ticket.marker_profile {
+            result["marker_profile"] = serde_json::to_value(marker_profile)?;
+            result["journal_format_version"] = 6.into();
         }
         if let Some(receipt) = extent_verification_receipt {
             result["actual_verification_scope"] = "pinned_extent_identity_v1".into();

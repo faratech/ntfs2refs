@@ -57,9 +57,8 @@ Ordinary recovery on that same active branch then exited0 in14.8922902s and
 verified HND/ReFS with1084bindings. Its42file metadata archive is pinned in the
 same case receipt. The remaining fault kinds are separate evidence.
 
-These cases do not qualify physical power loss, other marker lifecycle states,
-other storage geometries or a stable general release. The production gate
-remains false.
+These cases do not qualify physical power loss, other storage geometries or a
+stable general release. The production gate remains false.
 
 The remaining AP2 API-failure cases also passed. A deliberately skipped
 WriteFile returned native1 in9.273028s with neither marker write nor flush
@@ -73,3 +72,25 @@ The [write case](../evidence/native-marker-ap2-write-error-20261102.json) and
 [flush case](../evidence/native-marker-ap2-flush-error-20261102.json) pin their
 native processes and independently copied metadata archives. They do not extend
 AP2 results to RB2, HND2 or ABT2.
+
+The other three marker states subsequently passed actual self-hash corruption,
+VM TurnOff/reboot and ordinary recovery on the same damaged active branches.
+No checkpoint restore occurred between each corruption and its recovery.
+
+| Damaged peer | Ordinary recovery action | Native seconds | Result |
+|---|---|---:|---|
+| HND2 | verify_handoff | 9.264905 | ReFS handoff verified;1084 map bindings |
+| RB2 | rollback | 9.4060466 | selected source restored and NTFS mounted |
+| ABT2 | verify_aborted | 6.5163473 | closed rollback verified and NTFS mounted |
+
+The [HND2](../evidence/native-marker-hnd2-corruption-20261102.json),
+[RB2](../evidence/native-marker-rb2-corruption-20261102.json) and
+[ABT2](../evidence/native-marker-abt2-corruption-20261102.json) receipts preserve
+actual producer/recovery PID births, signal and power pins, result scope and
+closed metadata archives. Rollback checks do not claim an additional semantic
+re-enumeration or preservation of source-free bytes.
+
+Together with AP2, all four second-peer corruption states now have native VM
+results on clean runtime70c10cc. Synthetic WriteFile/FlushFileBuffers/ReadFile
+failure coverage belongs to AP2 and the shared poison path. This does not enable
+the production flag or qualify a later public build automatically.

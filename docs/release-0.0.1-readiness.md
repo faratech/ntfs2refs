@@ -13,8 +13,12 @@ a VM TurnOff/reboot and ordinary recovery. All three AP2 synthetic API failures
 exclusion, and then passed ordinary recovery on their respective same branches.
 These deliberately skipped API calls are not physical hardware error evidence.
 See [marker fault qualification](native-marker-fault-qualification.md).
-Remaining marker states, final exact public qualification, and the resource and
-compatibility gaps below still prevent a stable release claim.
+HND2, RB2 and ABT2 corruption/recovery subsequently passed on that same pinned
+runtime. A code review also found and fixed a VSS admission bypass for
+conservative scratch and whole-image policies; all fresh certificate paths now
+require affirmative VSS evidence. See [the fix](vss-fresh-admission.md).
+The new clean4d8ca99 build contains that fix. Its final public qualification and
+the resource and compatibility gaps below still prevent a stable release claim.
 
 The older paragraphs below retain their original scope; their pending native
 run statements do not supersede the pinned results above.

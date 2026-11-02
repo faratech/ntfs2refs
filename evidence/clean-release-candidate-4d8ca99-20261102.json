@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "kind": "clean-committed-source-build",
+  "source_commit": "4d8ca993cf660ea7430b9cc8b229553946add82b",
+  "source_tree": "6fc58837d2ed5422e74d1caddc18aa5e0db95b84",
+  "source_file_count": 284,
+  "manifest_path": "D:\\code\\ntfs2refs\\.lab\\development\\release-candidates\\r4d8ca99\\manifest.json",
+  "manifest_sha256": "5d09d4faa51afc21e2d0fd67c21b9f485ad6b0e485111a82f4801ab0a5330ae2",
+  "observed_working_bytes": 518841270,
+  "locked_dependencies": true,
+  "offline_build": true,
+  "working_tree_inputs_used": false,
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 10853376,
+      "sha256": "413e51f6165d9d48d6abcd707127ab2f94e6a78f0a4f9e1446c963476bd4db06"
+    },
+    {
+      "name": "lab-selected-marker-native",
+      "path": "bin/lab-selected-marker-native.exe",
+      "bytes": 7170048,
+      "sha256": "2a4cbc46e0437d706818b1ac6c0f8ef8f2961fed55d90a4087677a9acfbab6f7"
+    },
+    {
+      "name": "lab-convert-native-composite",
+      "path": "bin/lab-convert-native-composite.exe",
+      "bytes": 7605248,
+      "sha256": "a477ebaa21fe4f2dc2d4a64f484223027bc6375de44739f223053d8c2f28fffa"
+    },
+    {
+      "name": "lab-recover-native-composite",
+      "path": "bin/lab-recover-native-composite.exe",
+      "bytes": 3213824,
+      "sha256": "2146e50d1779272f7605e1b1bac917d42aaecbfadd8d673b5520ace2490635e2"
+    },
+    {
+      "name": "lab-content-digest",
+      "path": "bin/lab-content-digest.exe",
+      "bytes": 323584,
+      "sha256": "21e307806086441760192c3d0ce4fe50d71139b98c3579e11d60a81d3165e1a2"
+    },
+    {
+      "name": "lab-managed-shadow",
+      "path": "bin/lab-managed-shadow.exe",
+      "bytes": 1067520,
+      "sha256": "3836ce0f19bd27a0eb3392cdd7643e7c3cb10482a491dbac2c7eb095c849d16a"
+    }
+  ],
+  "unit_tests_run": false,
+  "native_tools_invoked": false,
+  "qualification_inherited": false,
+  "native_marker_qualified": false,
+  "stable_release": false,
+  "toolset_manifest": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-tools-4d8ca99\\manifest.json",
+  "toolset_manifest_sha256": "77edb210f6236d3e22ec18a2f6cccd043ea0f784ec9a2041afec7be0aba3b396",
+  "note": "Includes mandatory VSS evidence on all three fresh qualification paths. Native observations from earlier runtimes are not inherited."
+}

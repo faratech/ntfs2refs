@@ -47,6 +47,12 @@ The globalqualification flag remainsFALSE. Native cases above use sealed7cd,
 not later source. Focused Windows builds of public/marker/composite bins passed;
 no unit tests were added or run. Final exact public build/matrix, remaining
 qualification and broader resource-scale/compatibility scope remain OPEN.
+Latest clean candidate r233c2a3 built all6bins from283 committedsourcefiles,
+517927162B workingbytes, manifestSHA
+659b9534941eb950e63e912c1a0d46f56d5f7c35aac7417bc6897c8fbbaf700e;
+publicCLI --help exited0. It includes the approved main, gate and two fixes.
+No native conversion/recovery has run on that candidate; do not inherit7cd
+native qualification. Build record evidence/clean-release-candidate-233c2a3-20261102.json.
 Old clean candidate r378860e-c (283sourcefiles/6bins,517209397B,manifestSHA
 cbf9c8d8b328e7a6aa8cd42e62c895ce6f40e2c6c2fc53707565bde84a1091f3) is build
 provenance only and predates current source. Do not inherit its qualification.

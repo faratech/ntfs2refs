@@ -11,11 +11,13 @@ These cover missing-peer lifecycle recovery; they do not establish native
 corrupted-peer/error-branch coverage, physical power-loss safety or a stable
 release. Final exact public-build qualification remains open.
 
-A clean offline build now produced six tools from 283 committed source files at
-`378860e`, with locked dependencies, explicit tool/configuration pins and no
-working-tree source inputs. It is a build candidate, not the separately qualified
-`7cd6870` native runtime. The capabilities edit was committed unchanged with user approval at `b87867e`.
-See [the build record](../evidence/clean-committed-build-20261102.json).
+A new clean offline build produced six tools from 283 committed source files at
+`233c2a3`, including the approved capabilities edit, actual-geometry policy and
+backup-boot restoration fix. Dependencies, tools and configuration are pinned;
+public CLI help launches successfully. This candidate has no native run yet and
+does not inherit the separately recorded `7cd6870` qualification. See
+[the current build record](../evidence/clean-release-candidate-233c2a3-20261102.json).
+
 Resource scale and compatibility remain bounded by the
 [current implementation limits](scaling-budget-gaps.md). No stable tag or release
 has been created. Older measurements and pending statements below retain their

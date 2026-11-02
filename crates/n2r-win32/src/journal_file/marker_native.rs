@@ -42,6 +42,39 @@ use windows_sys::Win32::{
 };
 
 pub const MARKER_STORAGE_NATIVE_QUALIFIED: bool = false;
+
+/// A source-selected use, never a serialized qualification or storage proof.
+/// Lab callers may exercise admitted profiles without qualifying them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkerStorageUse {
+    QualifiedProduction,
+    EnrolledUnqualifiedLab,
+}
+
+impl MarkerStorageUse {
+    fn require_qualification(self, qualified: bool) -> io::Result<()> {
+        require(
+            self == Self::EnrolledUnqualifiedLab || qualified,
+            "production native markers require the qualified NTFS 4KiB-cluster/512-logical/4KiB-physical storage profile",
+        )
+    }
+}
+
+fn native_marker_geometry_qualified(
+    profile: JournalProfile,
+    logical: u32,
+    physical: u32,
+    cluster: u32,
+    file_storage_info: &[u32; 7],
+) -> bool {
+    MARKER_STORAGE_NATIVE_QUALIFIED
+        && matches!(profile, JournalProfile::CapacityPinnedV3 { .. })
+        && cluster == 4096
+        && logical == 512
+        && physical == 4096
+        && file_storage_info[..4] == [512, 4096, 4096, 4096]
+}
+
 const GRANULE: usize = 4096;
 const SLOTS: usize = 8;
 const MARKER_BYTES: u64 = (SLOTS * GRANULE) as u64;
@@ -123,6 +156,7 @@ pub struct UnbufferedJournalFile {
     disk: File,
     binding: GeneralJournalStorageBinding,
     profile: JournalProfile,
+    use_policy: MarkerStorageUse,
     identity: JournalFileIdentity,
     final_path: String,
     logical_length: u64,
@@ -171,14 +205,16 @@ impl UnbufferedJournalFile {
         path: &Path,
         binding: &GeneralJournalStorageBinding,
         profile: JournalProfile,
+        use_policy: MarkerStorageUse,
     ) -> io::Result<Self> {
-        Self::open_owned(path, binding, profile, None)
+        Self::open_owned(path, binding, profile, use_policy, None)
     }
 
     fn open_owned(
         path: &Path,
         binding: &GeneralJournalStorageBinding,
         profile: JournalProfile,
+        use_policy: MarkerStorageUse,
         recovery: Option<(&JournalFileIdentity, u64)>,
     ) -> io::Result<Self> {
         binding
@@ -275,6 +311,7 @@ impl UnbufferedJournalFile {
             disk,
             binding: binding.clone(),
             profile,
+            use_policy,
             identity: snapshot.identity,
             final_path: snapshot.final_path,
             logical_length: snapshot.file_bytes,
@@ -293,9 +330,18 @@ impl UnbufferedJournalFile {
         let geometry = result
             .ntfs_geometry()
             .map_err(|error| operation("open_owned.ntfs_geometry", error))?;
-        let (_, ordinary) = result
+        let (file_storage_info, ordinary) = result
             .require_plain_storage(&geometry)
             .map_err(|error| operation("open_owned.require_plain_storage", error))?;
+        result
+            .use_policy
+            .require_qualification(native_marker_geometry_qualified(
+                result.profile,
+                result.identity.logical_sector_bytes,
+                result.identity.physical_sector_bytes,
+                geometry.0,
+                &file_storage_info,
+            ))?;
         result.ordinary_storage = Some(ordinary);
         Ok(result)
     }
@@ -731,6 +777,14 @@ impl UnbufferedJournalFile {
         )?;
         let (cluster, base) = self.ntfs_geometry()?;
         let (file_storage_info, ordinary_storage) = self.require_plain_storage(&(cluster, base))?;
+        let native_qualified = native_marker_geometry_qualified(
+            self.profile,
+            self.identity.logical_sector_bytes,
+            self.identity.physical_sector_bytes,
+            cluster,
+            &file_storage_info,
+        );
+        self.use_policy.require_qualification(native_qualified)?;
         let offsets = marker_offsets(&self.file, &self.identity, cluster, base)?;
         Ok(MarkerStorageObservation {
             identity: self.identity.clone(),
@@ -742,7 +796,7 @@ impl UnbufferedJournalFile {
             file_storage_info,
             ordinary_storage,
             marker_device_offsets: offsets,
-            native_qualified: MARKER_STORAGE_NATIVE_QUALIFIED,
+            native_qualified,
         })
     }
 }
@@ -848,6 +902,7 @@ impl MarkerJournalFile {
         path: &Path,
         binding: &GeneralJournalStorageBinding,
         profile: JournalProfile,
+        use_policy: MarkerStorageUse,
         identity: &JournalFileIdentity,
         expected_length: u64,
     ) -> io::Result<Self> {
@@ -855,6 +910,7 @@ impl MarkerJournalFile {
             path,
             binding,
             profile,
+            use_policy,
             Some((identity, expected_length)),
         )?
         .seal_marker_storage(expected_length)

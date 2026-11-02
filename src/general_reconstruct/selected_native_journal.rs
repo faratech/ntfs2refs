@@ -9,7 +9,7 @@ use crate::{
 use anyhow::{Result, ensure};
 use n2r_win32::journal_file::{
     GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile, LabMarkerCopyPause,
-    MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation,
+    MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation, MarkerStorageUse,
     UnbufferedJournalFile, observe_general_journal_file_with_profile,
 };
 use std::{
@@ -53,10 +53,11 @@ impl NativeSelectedJournal {
         binding: &GeneralJournalStorageBinding,
         profile: JournalProfile,
         markers: Option<sj::SelectedMarkerProfile>,
+        marker_use: MarkerStorageUse,
         lab_pause: Option<LabMarkerCopyPause>,
     ) -> Result<(Self, JournalFileIdentity)> {
         if markers.is_some() {
-            let file = UnbufferedJournalFile::create_new(path, binding, profile)?;
+            let file = UnbufferedJournalFile::create_new(path, binding, profile, marker_use)?;
             let identity = file.identity().clone();
             return Ok((
                 Self {
@@ -97,6 +98,7 @@ impl NativeSelectedJournal {
         profile: JournalProfile,
         ticket: &sj::SelectedTicket,
         marker_identity: Option<&JournalFileIdentity>,
+        marker_use: MarkerStorageUse,
         lab_pause: Option<LabMarkerCopyPause>,
     ) -> Result<(Self, serde_json::Value)> {
         if ticket.marker_profile.is_some() {
@@ -109,6 +111,7 @@ impl NativeSelectedJournal {
                 path,
                 binding,
                 profile,
+                marker_use,
                 identity,
                 ticket.journal_length,
             )?;

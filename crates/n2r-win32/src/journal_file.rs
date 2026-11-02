@@ -636,7 +636,7 @@ mod native;
 pub use marker_lab_pause::{LabMarkerCopy, LabMarkerCopyPause, LabMarkerPauseRequest};
 #[cfg(windows)]
 pub use marker_native::{
-    MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation,
+    MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation, MarkerStorageUse,
     UnbufferedJournalFile,
 };
 #[cfg(windows)]

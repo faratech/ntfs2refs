@@ -144,7 +144,7 @@ fn main() -> anyhow::Result<()> {
         journal_path: &Path,
         output: &Path,
     ) -> anyhow::Result<()> {
-        use n2r_win32::journal_file::{JournalProfile, UnbufferedJournalFile};
+        use n2r_win32::journal_file::{JournalProfile, MarkerStorageUse, UnbufferedJournalFile};
         ensure!(
             std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11"),
             "native constructor probe requires the enrolled disposable owning guest"
@@ -218,7 +218,12 @@ fn main() -> anyhow::Result<()> {
         // No source/shadow constructor, payload Read/Write, sealing, cluster
         // protection or privilege acquisition is called on this branch.
         let attempted = (|| -> anyhow::Result<_> {
-            let journal = UnbufferedJournalFile::create_new(journal_path, binding, profile)?;
+            let journal = UnbufferedJournalFile::create_new(
+                journal_path,
+                binding,
+                profile,
+                MarkerStorageUse::EnrolledUnqualifiedLab,
+            )?;
             let length = journal.byte_len()?;
             let identity = journal.identity().clone();
             let ordinary_storage = journal.ordinary_storage_observation().clone();

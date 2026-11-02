@@ -6,7 +6,7 @@
 use super::*;
 use crate::selected_journal as sj;
 use anyhow::Context;
-use n2r_win32::{GeneralFrozenPartition, WritePolicy};
+use n2r_win32::{GeneralFrozenPartition, WritePolicy, journal_file::MarkerStorageUse};
 use reconstruct::selected_artifacts::Artifact;
 use reconstruct::selected_native_journal::NativeSelectedJournal;
 
@@ -435,6 +435,11 @@ fn convert_allocation_selected_inner(
             &request.journal,
             profile,
             marker_profile,
+            if production_markers {
+                MarkerStorageUse::QualifiedProduction
+            } else {
+                MarkerStorageUse::EnrolledUnqualifiedLab
+            },
             lab_pause,
         )?;
         qualification::save(

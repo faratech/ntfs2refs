@@ -5,8 +5,8 @@
 use super::{compact::HeldInput, *};
 use crate::selected_journal::{self as sj, SelectedLifecycle, SelectedPlan, SelectedTicket};
 use n2r_win32::{
-    WritePolicy, general_layout::GeneralDiskBinding, mounted_filesystem_general,
-    rediscover_general_volume_wait, volume_label::VolumeLabel,
+    WritePolicy, general_layout::GeneralDiskBinding, journal_file::MarkerStorageUse,
+    mounted_filesystem_general, rediscover_general_volume_wait, volume_label::VolumeLabel,
 };
 use protocol::selected_artifacts::Artifact;
 use protocol::selected_native_journal::NativeSelectedJournal;
@@ -356,6 +356,11 @@ fn recover_allocation_inner(
             profile,
             &ticket,
             bundle.marker_storage_identity.as_ref(),
+            if native_marker_lab {
+                MarkerStorageUse::EnrolledUnqualifiedLab
+            } else {
+                MarkerStorageUse::QualifiedProduction
+            },
             lab_pause,
         )?;
         artifacts::save(output, "journal-identity.json", &observed)?;

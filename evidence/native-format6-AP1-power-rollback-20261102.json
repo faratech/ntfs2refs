@@ -61,7 +61,9 @@
     "conversion_qualified": false,
     "old_restoration_bytes": 142004224
   },
-  "native_metadata_namespace_security_and_storage_checks_passed": true,
+  "selected_restore_digest_matches_original_ticket": true,
+  "ntfs_mount_label_and_path_checked": true,
+  "separate_native_semantic_reenumeration_run": false,
   "fresh_source_admission_recreated": false,
   "all_project_tasks_terminal_and_workers_absent_before_normal_stop": true,
   "archive_files": 40,

@@ -74,7 +74,7 @@ mod windows {
     use sha2::{Digest, Sha256};
     use std::{
         fs,
-        io::{self, IsTerminal, Read, Write},
+        io::{self, BufRead, IsTerminal, Read, Write},
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
     fn clean(value: &str) -> String {
@@ -427,9 +427,14 @@ mod windows {
         println!("Convert this partition to ReFS in place, preserving supported files? [y/N]");
         print!("> ");
         io::stdout().flush()?;
+        let input = io::stdin();
+        // Match recovery: an overlong response cannot become affirmative.
+        let mut bounded = input.lock().take(65);
         let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        bounded.read_line(&mut answer)?;
+        drop(bounded);
+        if answer.len() >= 65 || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        {
             println!("Cancelled. No conversion started.");
             return Ok(0);
         }

@@ -35,6 +35,28 @@ are reserved before journal/target opening. A signal publication failure parks
 with the signal handle still exclusive rather than exposing partial evidence.
 
 Focused Windows builds of the public, marker and composite entry points passed.
-No unit tests were added or run. Native fault executions remain a separate
-qualification requirement; source inspection and a successful build do not
-qualify recovery or enable format six in production.
+No unit tests were added or run. Source inspection and a successful build do
+not qualify recovery or enable format six in production.
+
+The clean committed runtime at `70c10cc` then exercised actual AP2 corruption
+from the original AP1 interruption. Native5068/birth1793641119368 wrote and
+verified the corrupted peer, retained the owners, and was interrupted by an
+actual Hyper-V TurnOff. The same damaged branch rebooted without restoration.
+Ordinary recovery through the unchanged dispatcher exited0 in17.272784s,
+reached ReFS handoff, and verified1084 stream/directory bindings. Its closed
+result is saved at checkpoint2c7ff0ea-8fe8-4fe9-bce9-0a3fbb4883a1.
+See [the pinned case](../evidence/native-marker-ap2-corruption-20261102.json).
+
+The readback-error case deliberately skipped the selected ReadFile after
+actual marker write/flush. Native5556/birth1793641538060 exited1 in7.3740063s,
+reported the LAB-INJECTED1117 failure through the existing recovery error path,
+left the source offline and created no success output. The observer completed
+Ready/0 because the expected failure was observed; it did not claim successful
+native recovery. See [its receipt](../evidence/native-marker-ap2-readback-error-20261102.json).
+Ordinary recovery on that same active branch then exited0 in14.8922902s and
+verified HND/ReFS with1084bindings. Its42file metadata archive is pinned in the
+same case receipt. The remaining fault kinds are separate evidence.
+
+These cases do not qualify physical power loss, other marker lifecycle states,
+other storage geometries or a stable general release. The production gate
+remains false.

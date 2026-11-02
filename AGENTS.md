@@ -10,7 +10,43 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 17:32 UTC)
+## CURRENT release continuation (2026-11-02 17:49 UTC)
+
+VM is fresh-confirmed Off/RAM0 after readback-error recovery9bd6cd42004b46c98ebc0e9ff57a671e,
+with active parent8d4192fe and28 snapshots. The ACTIVE writable branch is closed
+HND/ReFS, not the original AP1 state. NEVER recover/replay it again. Restore
+original8d before the next independent fault. All project tasks/workers were
+terminal before normal stop. No conversion or recovery is currently running.
+
+Clean runtime70c10cc built284sourcefiles/all6bins,518875518B. ManifestSHA
+e418f4a206fef25f5f03248a057b9612f5d2bb35de50f52868e5b97ac41667ed;
+sealed toolsetSHA b2c4962495d0da9f477ef425f2cf5d2a49b8fd133a647f2f92613d0fc4c767f0.
+Native AP2corrupt case752b1197:5068/birth1793641119368 parked after actual
+badselfhash-peer write/flush/uncachedreadback +intactAP1/storage proof. Root
+TurnOff then same-branch boot with NO restore. Ordinary df88 recoverya8a1e454:
+5732/birth1793641287536/0,17.272784s, HND/ReFS/1084bindings, archived42files
+56822707B SHAe66bb0eb90149236deaa061ca32451b7a0897f5f2865c5afe99ade9d1443126b.
+Saved checkpoint2c7ff0ea-8fe8-4fe9-bce9-0a3fbb4883a1 child8d. Original fault
+producer exitUNOBSERVED. Corruption/power evidence is separate from AP1 receipt.
+
+Native AP2synthetic ReadFile error case4f526787:5556/birth1793641538060/1,
+7.3740063s; actual write/flush, skippedReadFile,1117/poison/failed.json, source
+offline/no success output. ObserverReady/0 means expected failure observed.
+Its38file29682528B archiveSHA609f85c718e5c98ded161e249ee7684130fed79ecea1a7aa306d8d385bf18abd.
+Samebranch ordinary recovery9bd6cd42:868/birth1793641614761/0,14.8922902s,
+HND/ReFS/1084bindings. Its42file56822697B archiveSHA
+9b9f6f2cf32bc875f11962d6d951fdd02791161ed0124afb85b3ab6dc48c8970.
+No extra checkpoint retained for this reproducible closed result; host evidence
+is preserved. These are actual VM/failure-path observations, not hardware power
+qualification. See native-marker-ap2-{corruption,readback-error}-20261102.json.
+
+Next: run synthetic WriteFile/FlushFileBuffers fault cases from original8d,
+remaining marker-state damaged-peer cases, then final exact public qualification.
+Use frozen new fault controller58884f76e2e13e1467235868b00ab52ea23f17ab704f1c6ebb758c2376857007
+and unchanged df88 normal recovery. Globalqualification remainsFALSE. No unit
+tests added/run. Broader compatibility/resource scale remains open.
+
+## Earlier clean public result (2026-11-02 17:32 UTC)
 
 This block supersedes the earlier VM and pending-public labels below.
 VM is fresh-confirmed Off/RAM0 at clean233 public success checkpoint

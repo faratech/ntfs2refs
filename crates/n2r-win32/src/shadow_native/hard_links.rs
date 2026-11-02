@@ -1,5 +1,6 @@
 //! Hard-link namespaces over one canonical native file. Link creation uses
 //! only the constructor-owned file and destination-directory handles.
+use super::input_domain::{InputDomain, ObjectInput, SliceInputs};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use windows_sys::Win32::{Foundation::HANDLE, System::IO::IO_STATUS_BLOCK};
@@ -37,16 +38,29 @@ pub(super) fn validate(
     maximum_names: usize,
     valid_component: impl Fn(&str) -> bool,
 ) -> io::Result<()> {
-    if input.iter().all(|i| i.additional_names.is_empty()) {
+    validate_domain(&SliceInputs(input), maximum_names, valid_component)
+}
+
+pub(super) fn validate_domain(
+    input: &impl InputDomain,
+    maximum_names: usize,
+    valid_component: impl Fn(&str) -> bool,
+) -> io::Result<()> {
+    if !input.any(|i| !i.additional_names.is_empty())? {
         return Ok(());
     }
-    let directories: BTreeSet<_> = input
-        .iter()
-        .filter(|i| i.directory)
-        .map(|i| crate::shadow_names::conservative_path_key(i.components))
-        .collect();
+    let mut directories = BTreeSet::new();
+    input.for_each(|_, item| {
+        if item.directory {
+            directories.insert(crate::shadow_names::conservative_path_key(item.components));
+        }
+        Ok(())
+    })?;
     let mut names = BTreeSet::new();
-    for item in input {
+    for index in 0..input.len() {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        let item = &view;
         count(item)?;
         if !item.additional_names.is_empty()
             && item
@@ -218,20 +232,40 @@ pub(super) fn create_owned(
     input: &[Input<'_>],
     handles: &BTreeMap<usize, File>,
 ) -> io::Result<Vec<serde_json::Value>> {
-    if input.iter().all(|i| i.additional_names.is_empty()) {
+    create_owned_domain(&SliceInputs(input), handles)
+}
+
+pub(super) fn create_owned_domain(
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+) -> io::Result<Vec<serde_json::Value>> {
+    if !input.any(|i| !i.additional_names.is_empty())? {
         return Ok(Vec::new());
     }
-    validate(
+    validate_domain(
         input,
         MAX_NAMES,
         crate::shadow_names::valid_unicode_component,
     )?;
+    let mut directories = BTreeMap::new();
+    input.for_each(|index, item| {
+        if item.directory
+            && directories
+                .insert(item.components.to_vec(), index)
+                .is_some()
+        {
+            return Err(invalid("duplicate canonical hard-link parent"));
+        }
+        Ok(())
+    })?;
     let mut created = Vec::new();
-    for (index, item) in input
-        .iter()
-        .enumerate()
-        .filter(|(_, i)| !i.additional_names.is_empty())
-    {
+    for index in 0..input.len() {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        let item = &view;
+        if item.additional_names.is_empty() {
+            continue;
+        }
         let file = handles
             .get(&index)
             .ok_or_else(|| invalid("owned canonical link handle missing"))?;
@@ -242,10 +276,8 @@ pub(super) fn create_owned(
         }
         for (number, path) in item.additional_names.iter().enumerate() {
             let parent_path = &path[..path.len() - 1];
-            let (parent_index, _) = input
-                .iter()
-                .enumerate()
-                .find(|(_, i)| i.directory && i.components == parent_path)
+            let parent_index = *directories
+                .get(parent_path)
                 .ok_or_else(|| invalid("hard-link parent is not a canonical owned directory"))?;
             let parent = handles
                 .get(&parent_index)

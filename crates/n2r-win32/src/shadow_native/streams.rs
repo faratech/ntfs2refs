@@ -168,14 +168,18 @@ pub(super) fn view<'a>(input: &'a [Input<'_>], key: &StreamKey) -> io::Result<In
     let object = input
         .get(key.object_index)
         .ok_or_else(|| invalid("stream object index absent"))?;
-    let named = if key.name_utf16.is_empty() {
+    view_object(object, &key.name_utf16)
+}
+
+pub(super) fn view_object<'a>(object: &'a Input<'_>, name: &[u16]) -> io::Result<Input<'a>> {
+    let named = if name.is_empty() {
         None
     } else {
         Some(
             object
                 .named_streams
                 .iter()
-                .find(|s| s.name_utf16 == key.name_utf16)
+                .find(|s| s.name_utf16 == name)
                 .ok_or_else(|| invalid("named stream input absent"))?,
         )
     };

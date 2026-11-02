@@ -364,7 +364,10 @@ fn prepare_source_context(
         crate::source_volume_label::verify(&mut source, &raw, source_label.label())?;
     save(output, "source-label-frozen.json", &source_label_frozen)?;
     let pin = canonical_json_sha256(&raw)?;
-    let resources = resources.admit_inspection(&raw, &pin)?;
+    let resources = match digest_kind {
+        SourceDigest::NtfsAllocated => resources.admit_inspection_paged(&raw, &pin)?,
+        SourceDigest::WholeImage => resources.admit_inspection(&raw, &pin)?,
+    };
     if let Some(admission) = resources.count_admission()? {
         save(
             output,

@@ -327,6 +327,7 @@ fn convert_allocation_selected_inner(
             mut proof,
             certificate,
             expected,
+            expected_pages,
             mount_paths,
             source_label,
         } = qualified?;
@@ -344,12 +345,48 @@ fn convert_allocation_selected_inner(
             certificate.binds(&proof) && certificate.expected_tree_sha256() == expected_tree_sha256,
             "allocation-bounded certificate does not bind the live proof"
         );
-        let expectation: crate::shadow_tree::ExpectedTree = serde_json::from_slice(&expected)?;
+        let inline_expectation = if expected_pages.is_none() {
+            Some(serde_json::from_slice::<crate::shadow_tree::ExpectedTree>(
+                &expected,
+            )?)
+        } else {
+            None
+        };
+        let expectation = match (&expected_pages, &inline_expectation) {
+            (Some(pages), None) => crate::shadow_tree::pages::ExpectedTreeView::Paged(pages),
+            (None, Some(tree)) => crate::shadow_tree::pages::ExpectedTreeView::Inline(tree),
+            _ => anyhow::bail!("fresh expectation ownership is ambiguous"),
+        };
+        use crate::shadow_tree::ExpectedObjectDomain as _;
+        expectation.revalidate_domain()?;
         let expectation_pin = Artifact::Expectation.save(output, &expectation)?;
         ensure!(
             expectation_pin == expected_tree_sha256,
             "saved expectation differs from the admitted target"
         );
+        drop(expected);
+        let paged_admission = resources
+            .count_admission()?
+            .filter(|a| a.requires_paged_metadata());
+        let expectation_pages_pin = if let Some(admission) = paged_admission {
+            let pages = expected_pages.as_ref().context(
+                "admitted paged resources require the actual held expected-object owner",
+            )?;
+            ensure!(
+                pages.budget() == admission.expected_page_budget()?
+                    && pages.semantic_byte_budget()
+                        == u64::from(admission.maximum_expected_tree_bytes)
+                    && pages.semantic_sha256() == expectation_pin,
+                "held expectation pages differ from the admitted resource or semantic pin"
+            );
+            let path = output.join("expectation.pages");
+            pages.copy_to(&path)?;
+            Some(serde_json::json!({"path":path,"sha256":pages.file_sha256()}))
+        } else {
+            None
+        };
+        let (extent_streams, partial_extent_streams) =
+            reconstruct::fast_verification::extent_stream_counts(&expectation)?;
         let plan = proof.plan(request.max_journal_bytes)?;
         let marker_profile = if production_markers {
             reconstruct::selected_native_journal::production_marker_profile(&plan)
@@ -430,6 +467,7 @@ fn convert_allocation_selected_inner(
         );
         fs::create_dir(&directory)?;
         let journal_path = directory.join("selected.journal");
+        expectation.revalidate_domain()?;
         let (mut journal, journal_identity) = NativeSelectedJournal::create_new(
             &journal_path,
             &request.journal,
@@ -556,16 +594,16 @@ fn convert_allocation_selected_inner(
                     &expectation,
                     &plan,
                     &ticket,
+                    resources,
                 )
             })
             .transpose()?;
-        let recovery_payload_manifest = if expectation.has_extent_only_streams() {
-            let manifest = fresh_payload_proof
+        let recovery_payload_manifest = if expectation.has_extent_only_streams()? {
+            let path = output.join(reconstruct::fast_verification::PAGED_MAP_FILENAME);
+            let sha256 = fresh_payload_proof
                 .as_ref()
                 .context("hash-free source requires the original fresh payload proof")?
-                .recovery_manifest()?;
-            let path = output.join("recovery-payload-manifest.json");
-            let sha256 = Artifact::PayloadMap.save(output, &manifest)?;
+                .write_recovery_manifest(&path)?;
             Some(serde_json::json!({"path":path,"sha256":sha256}))
         } else {
             None
@@ -590,6 +628,9 @@ fn convert_allocation_selected_inner(
             "journal":journal_path,"source":request.pair.source,
             "serialized_bundle_grants_recovery_authority":false,
         });
+        if let Some(pin) = expectation_pages_pin {
+            recovery_bundle["expectation_pages"] = pin;
+        }
         if let Some(manifest) = recovery_payload_manifest {
             recovery_bundle["recovery_payload_manifest"] = manifest;
         }
@@ -647,6 +688,7 @@ fn convert_allocation_selected_inner(
             certificate.binds(&proof),
             "original live certificate no longer binds the allocation-bounded proof"
         );
+        expectation.revalidate_domain()?;
         let mut events = Vec::<NativeEvent>::new();
         let shadow_before = native_target.state(&mut events)?;
         let activation = if request.verification_policy.is_fast() {
@@ -784,6 +826,7 @@ fn convert_allocation_selected_inner(
             }
         };
         qualification::save(output, "handoff.json", &handoff)?;
+        expectation.revalidate_domain()?;
         journal.require_native_mount_barriers(&ticket)?;
         record_process_io(output, "handoff")?;
         proof.revalidate_backing()?;
@@ -852,11 +895,9 @@ fn convert_allocation_selected_inner(
             "success":true,"source_admitted":true,"rollback_closed":true,
             "verification_policy":request.verification_policy,
             "actual_source_verification_policy":request.verification_policy,
-            "raw_source_logical_hashes":!expectation.has_extent_only_streams(),
-            "raw_source_extent_only_streams":expectation.objects.iter()
-                .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence.is_some()).count(),
-            "raw_source_extent_only_partial_streams":expectation.objects.iter()
-                .flat_map(|o|o.data_streams()).filter(|s|s.source_evidence==Some(crate::shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)).count(),
+            "raw_source_logical_hashes":!expectation.has_extent_only_streams()?,
+            "raw_source_extent_only_streams":extent_streams,
+            "raw_source_extent_only_partial_streams":partial_extent_streams,
             "actual_target_verification_policy":request.verification_policy,
             "actual_full_file_hashes":request.verification_policy.is_full_content(),
             "exclusive_apply_handoff_used":request.verification_policy.is_fast(),

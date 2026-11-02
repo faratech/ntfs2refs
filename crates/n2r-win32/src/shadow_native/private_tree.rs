@@ -1,6 +1,7 @@
 //! Allocation-only user namespace on an independently bound fresh ReFS shadow.
 //! The files stay SYSTEM-only and contain no admitted payload yet. A live tree
 //! exposes placement operations, never source writes or conversion authority.
+use super::input_domain::{DomainMetadata, InputDomain, ObjectInput, SliceInputs};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 mod enrollment;
@@ -52,6 +53,7 @@ pub struct PrivateTree {
     // Directories/root stay open without DELETE sharing for the whole session.
     metadata_targets: BTreeMap<usize, File>,
     metadata_input_sha256: [u8; 32],
+    metadata_object_limit: usize,
     construction_enrollment: Option<serde_json::Value>,
 }
 
@@ -191,6 +193,18 @@ impl PrivateTree {
             Ok(item)
         }
     }
+    fn placement_view_object<'a>(
+        &self,
+        object: &'a Input<'_>,
+        key: &StreamKey,
+    ) -> io::Result<Input<'a>> {
+        let item = streams::view_object(object, &key.name_utf16)?;
+        if let Some(target) = self.sparse_targets.get(key) {
+            target.placement_view(item)
+        } else {
+            Ok(item)
+        }
+    }
     fn finish_sparse_streams(
         &mut self,
     ) -> io::Result<(
@@ -268,6 +282,32 @@ impl PrivateTree {
     /// Consumes the owner even on partial failure: no retry/placement authority
     /// is returned. Source-backed prefixes are not logical-content verified by
     /// this operation, and the returned diagnostic grants no write authority.
+    pub fn complete_source_metadata_domain(
+        self,
+        input: &impl InputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    ) -> io::Result<serde_json::Value> {
+        metadata::complete_domain(self, input, same_security)
+    }
+
+    pub fn materialize_system_payloads_domain(
+        &mut self,
+        input: &impl InputDomain,
+        writer: &mut dyn FnMut(usize, &mut File) -> io::Result<()>,
+    ) -> io::Result<serde_json::Value> {
+        self.require_bound_input_domain(input)?;
+        system_payloads::run_domain(self, input, writer)
+    }
+
+    pub fn place_source_prefixes_domain(
+        &mut self,
+        input: &impl InputDomain,
+        bytes: u64,
+        moves: usize,
+    ) -> io::Result<serde_json::Value> {
+        placement::run_domain(self, input, bytes, moves)
+    }
+
     pub fn complete_source_metadata(
         self,
         input: &[Input<'_>],
@@ -781,7 +821,10 @@ impl PrivateTree {
     }
 
     fn require_bound_input(&self, input: &[Input<'_>]) -> io::Result<()> {
-        if metadata::input_digest(input) != self.metadata_input_sha256 {
+        self.require_bound_input_domain(&SliceInputs(input))
+    }
+    fn require_bound_input_domain(&self, input: &impl InputDomain) -> io::Result<()> {
+        if metadata::input_digest_domain(input)? != self.metadata_input_sha256 {
             return Err(invalid("private constructor source input changed"));
         }
         Ok(())
@@ -1050,23 +1093,80 @@ fn allocate_checked(
     enrollment: Option<ConstructionEnrollment<'_>>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<PrivateTree> {
-    super::hard_links::validate(
+    allocate_domain(pair, &SliceInputs(input), enrollment, resource_profile)
+}
+
+/// Consume one authenticated object at a time while retaining all native
+/// handles and the complete source-input fingerprint through completion.
+pub fn allocate_enrolled_domain(
+    mut enrollment: ConstructionEnrollment<'_>,
+    input: &impl InputDomain,
+    profile: crate::attestation::ResourceProfile,
+) -> io::Result<PrivateTree> {
+    enrollment.revalidate()?;
+    profile.count_admission()?;
+    let pair = enrollment.pair.clone();
+    allocate_domain(&pair, input, Some(enrollment), Some(profile))
+}
+
+fn allocate_domain(
+    pair: &GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    enrollment: Option<ConstructionEnrollment<'_>>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<PrivateTree> {
+    let admission = resource_profile
+        .map(crate::attestation::ResourceProfile::count_admission)
+        .transpose()?
+        .flatten();
+    if let Some(value) = admission.filter(|value| value.requires_paged_metadata()) {
+        input.require_paged_metadata(
+            value.expected_page_budget()?,
+            u64::from(value.maximum_expected_tree_bytes),
+        )?;
+    }
+    let maximum_objects = admission.map_or(1280, |value| value.object_slots as usize);
+    if input.is_empty() || input.len() > maximum_objects {
+        return Err(invalid("private tree root or object bound differs"));
+    }
+    super::hard_links::validate_domain(
         input,
         super::hard_links::MAX_NAMES,
         crate::shadow_names::valid_unicode_component,
     )?;
-    streams::validate(input, pair.shadow.identity.partition_bytes)?;
+    let mut stream_count = 0usize;
+    input.for_each(|_, item| {
+        stream_count = stream_count
+            .checked_add(usize::from(!item.directory))
+            .and_then(|count| count.checked_add(item.named_streams.len()))
+            .filter(|count| *count <= streams::MAX_STREAMS)
+            .ok_or_else(|| invalid("constructor complete stream domain exceeds bound"))?;
+        streams::validate(
+            std::slice::from_ref(item),
+            pair.shadow.identity.partition_bytes,
+        )
+    })?;
+    let root_owner = if input.is_empty() {
+        return Err(invalid("private tree root or object bound differs"));
+    } else {
+        input.object(0)?
+    };
+    let root_input = root_owner.input();
     if input.is_empty()
-        || input.len() > 1280
-        || !input[0].directory
-        || !input[0].components.is_empty()
+        || input.len() > maximum_objects
+        || !root_input.directory
+        || !root_input.components.is_empty()
     {
         return Err(invalid("private tree root or object bound differs"));
     }
+    drop(root_input);
+    drop(root_owner);
     let mut names = BTreeSet::new();
     let mut directories = BTreeSet::new();
     let mut total = 0u64;
-    for item in input {
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
         let key = crate::shadow_names::conservative_path_key(item.components);
         if item.components.len() > 16
             || item
@@ -1100,18 +1200,13 @@ fn allocate_checked(
             }
         }
     }
-    let admission = resource_profile
-        .map(crate::attestation::ResourceProfile::count_admission)
-        .transpose()?
-        .flatten();
     if let Some(admission) = admission {
-        let streams = input.iter().try_fold(0usize, |n, i| {
-            n.checked_add(usize::from(!i.directory))
-                .and_then(|n| n.checked_add(i.named_streams.len()))
-                .ok_or_else(|| invalid("constructor stream count overflow"))
-        })?;
-        admission.validate_tree(input.len() - directories.len(), directories.len(), streams)?;
-        admission.validate_constructor_metadata(&input)?;
+        admission.validate_tree(
+            input.len() - directories.len(),
+            directories.len(),
+            stream_count,
+        )?;
+        admission.validate_constructor_metadata(&DomainMetadata(input))?;
     }
     if total > pair.shadow.identity.partition_bytes
         || (admission.is_none()
@@ -1173,14 +1268,12 @@ fn allocate_checked(
             ])?;
             (privileges, open(&root, true, true)?, None, None)
         };
-    let reparse_privileges = if input
-        .iter()
-        .any(|item| item.reparse.is_some_and(|point| point.tag() == 0xa000000c))
-    {
-        Some(Privileges::enable_for(&["SeCreateSymbolicLinkPrivilege"])?)
-    } else {
-        None
-    };
+    let reparse_privileges =
+        if input.any(|item| item.reparse.is_some_and(|point| point.tag() == 0xa000000c))? {
+            Some(Privileges::enable_for(&["SeCreateSymbolicLinkPrivilege"])?)
+        } else {
+            None
+        };
     let initial = enumerate(&root_handle)?;
     if initial.iter().any(|entry| {
         entry.name_utf16 != [46]
@@ -1199,9 +1292,7 @@ fn allocate_checked(
             == "System Volume Information"
                 .encode_utf16()
                 .collect::<Vec<_>>()
-    }) && !input
-        .iter()
-        .any(|i| i.directory && i.components == ["System Volume Information"])
+    }) && !input.any(|i| i.directory && i.components == ["System Volume Information"])?
     {
         return Err(invalid(
             "existing system namespace must be explicitly represented",
@@ -1210,7 +1301,8 @@ fn allocate_checked(
     // Reuse the existing narrow formatter-cache preflight; unknown SVI entries
     // refuse. Target-only IndexerVolumeGuid normalization is already scoped to
     // these enrolled disks and never touches the excluded source.
-    let system_identities = existing_system_entries(&root, &initial, input, true, &mut events)?;
+    let system_identities =
+        existing_system_entries_domain(&root, &initial, input, true, &mut events)?;
     let volume = if let Some(volume) = enrolled_volume {
         volume
     } else {
@@ -1224,13 +1316,13 @@ fn allocate_checked(
         .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
     let mut files = BTreeMap::new();
     let mut sparse_targets = BTreeMap::new();
-    let needs_carriers = input.iter().any(|item| {
+    let needs_carriers = input.any(|item| {
         item.sparse.is_some_and(|s| !s.allocated.is_empty())
             || item.named_streams.iter().any(|s| {
                 (s.sparse.is_none() && s.expected_length >= 4096)
                     || s.sparse.is_some_and(|v| !v.allocated.is_empty())
             })
-    });
+    })?;
     let carrier_directory = if needs_carriers {
         Some(sparse_stream::CarrierDirectory::create(&root)?)
     } else {
@@ -1240,7 +1332,9 @@ fn allocate_checked(
     metadata_targets.insert(0, root_handle);
     // Pin every formatter object the constructor admitted. Subsequent system
     // supply must update these same objects, not a caller-selected path.
-    for (index, item) in input.iter().enumerate() {
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
         if let Some(id) = system_identities.get(item.components) {
             let handle = open(
                 &format!("{root}{}", item.components.join("\\")),
@@ -1259,7 +1353,9 @@ fn allocate_checked(
     // Reuse a private file's atomic descriptor to create private directories.
     // Its descriptor is constant rather than derived from source ACLs.
     let sd = private_descriptor()?;
-    for (index, item) in input.iter().enumerate() {
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
         let system = item
             .components
             .first()
@@ -1430,7 +1526,8 @@ fn allocate_checked(
         system_payloads_started: false,
         system_payloads_complete: false,
         metadata_targets,
-        metadata_input_sha256: metadata::input_digest(input),
+        metadata_input_sha256: metadata::input_digest_domain(input)?,
+        metadata_object_limit: admission.map_or(1280, |value| value.object_slots as usize),
         construction_enrollment,
     };
     tree.require_source_excluded()?;

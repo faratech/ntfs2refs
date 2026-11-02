@@ -13,6 +13,92 @@ pub const NATIVE_REPORT_BYTES: usize = 64 * 1024 * 1024;
 // <=two per DATA stream; eight slots cover volume/root/carrier/temporary opens.
 pub const OWNED_HANDLE_SLOTS: usize = OBJECT_SLOTS + 2 * DATA_STREAMS + 8;
 
+/// Page/chunk sizes bound transient storage; they are not filesystem count caps.
+pub const METADATA_PAGE_BYTES: u32 = 4 * 1024 * 1024;
+pub const METADATA_RECORDS_PER_PAGE: u32 = 128;
+pub const EXPECTED_CHUNK_BYTES: u32 = 768 * 1024;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataPageBudget {
+    pub max_page_bytes: u32,
+    pub max_records_per_page: u32,
+    pub max_records: u64,
+    pub max_pages: u64,
+    pub max_file_bytes: u64,
+}
+
+impl MetadataPageBudget {
+    #[cfg(windows)]
+    fn native(self) -> io::Result<crate::metadata_pages::PageBudget> {
+        let budget = crate::metadata_pages::PageBudget {
+            max_page_bytes: self.max_page_bytes,
+            max_records_per_page: self.max_records_per_page,
+            max_records: self.max_records,
+            max_pages: self.max_pages,
+            max_file_bytes: self.max_file_bytes,
+        };
+        budget.validate()?;
+        Ok(budget)
+    }
+}
+
+/// Pinned wire budgets for the active paged constructor/expected-tree and
+/// recovery-map domains. These facts do not prove that a caller uses those
+/// domains; the actual owning APIs must require paged inputs for schema two.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagedResourceBudget {
+    pub schema_version: u32,
+    pub expected_chunk_bytes: u32,
+    pub expected_tree_pages: MetadataPageBudget,
+    pub recovery_map_pages: MetadataPageBudget,
+}
+
+impl PagedResourceBudget {
+    fn for_counts(objects: u64, dirs: u64, streams: u64, semantic_bytes: u64) -> io::Result<Self> {
+        let overflow = || io::Error::other("paged resource budget overflow");
+        // Sum ceil(object_bytes/chunk) is bounded by object count plus the
+        // complete semantic byte budget divided by chunk size. One global
+        // header and one conservative final-chunk slot are included.
+        let records = objects
+            .checked_add(semantic_bytes / u64::from(EXPECTED_CHUNK_BYTES))
+            .and_then(|n| n.checked_add(2))
+            .ok_or_else(overflow)?;
+        // Exact public chunk-wire bound: base64 + per-record key/frame overhead,
+        // at most one page/index frame per record, one page of slack, footer.
+        // This wire capacity is separate from the unchanged semantic 16MiB cap.
+        let wire_bytes = semantic_bytes
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(2))
+            .map(|n| n / 3)
+            .and_then(|n| records.checked_mul(32).and_then(|r| n.checked_add(r)))
+            .and_then(|n| records.checked_mul(128).and_then(|r| n.checked_add(r)))
+            .and_then(|n| n.checked_add(u64::from(METADATA_PAGE_BYTES)))
+            .and_then(|n| n.checked_add(192))
+            .ok_or_else(overflow)?;
+        let map_records = dirs
+            .checked_add(streams)
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(overflow)?;
+        let file_budget = |records, bytes| MetadataPageBudget {
+            max_page_bytes: METADATA_PAGE_BYTES,
+            max_records_per_page: METADATA_RECORDS_PER_PAGE,
+            max_records: records,
+            max_pages: records,
+            max_file_bytes: bytes,
+        };
+        Ok(Self {
+            schema_version: 1,
+            expected_chunk_bytes: EXPECTED_CHUNK_BYTES,
+            expected_tree_pages: file_budget(records, wire_bytes),
+            // Same 64MiB complete recovery-map artifact ceiling as the legacy
+            // reader; no count-derived payload or journal space is granted.
+            recovery_map_pages: file_budget(map_records, NATIVE_REPORT_BYTES as u64),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CountAdmission {
@@ -31,6 +117,8 @@ pub struct CountAdmission {
     pub projected_owned_handle_slots: u32,
     pub maximum_owned_handle_slots: u32,
     pub maximum_constructor_input_metadata_bytes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paged_resources: Option<PagedResourceBudget>,
 }
 
 impl CountAdmission {
@@ -64,14 +152,92 @@ impl CountAdmission {
             )?,
             maximum_owned_handle_slots: OWNED_HANDLE_SLOTS as u32,
             maximum_constructor_input_metadata_bytes: EXPECTED_TREE_BYTES as u32,
+            paged_resources: None,
         };
         value.validate()?;
         Ok(value)
     }
 
+    /// Select schema two only from complete actual source counts. The caller
+    /// still needs the live frozen source and active paged owning consumers.
+    pub fn new_paged(
+        source_inspection_sha256: [u8; 32],
+        raw: usize,
+        files: usize,
+        dirs: usize,
+        streams: usize,
+    ) -> io::Result<Self> {
+        let narrow = |n| u32::try_from(n).map_err(io::Error::other);
+        let stream_handles = streams
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(8))
+            .ok_or_else(|| io::Error::other("owning handle projection overflow"))?;
+        let object_slots = raw.min(
+            OWNED_HANDLE_SLOTS
+                .checked_sub(stream_handles)
+                .ok_or_else(|| {
+                    io::Error::other("streams exhaust the existing owned-handle budget")
+                })?,
+        );
+        let objects = files
+            .checked_add(dirs)
+            .ok_or_else(|| io::Error::other("complete object count overflow"))?;
+        let value = Self {
+            schema_version: 2,
+            source_inspection_sha256,
+            raw_identities: narrow(raw)?,
+            files: narrow(files)?,
+            directories: narrow(dirs)?,
+            data_streams: narrow(streams)?,
+            object_slots: narrow(object_slots)?,
+            raw_identity_slots: RAW_IDENTITIES as u32,
+            data_stream_slots: DATA_STREAMS as u32,
+            maximum_expected_tree_bytes: EXPECTED_TREE_BYTES as u32,
+            maximum_inspection_bytes: INSPECTION_BYTES as u32,
+            maximum_native_report_bytes: NATIVE_REPORT_BYTES as u32,
+            projected_owned_handle_slots: narrow(
+                objects
+                    .checked_add(stream_handles)
+                    .ok_or_else(|| io::Error::other("owning handle projection overflow"))?,
+            )?,
+            maximum_owned_handle_slots: OWNED_HANDLE_SLOTS as u32,
+            maximum_constructor_input_metadata_bytes: EXPECTED_TREE_BYTES as u32,
+            paged_resources: Some(PagedResourceBudget::for_counts(
+                objects as u64,
+                dirs as u64,
+                streams as u64,
+                EXPECTED_TREE_BYTES as u64,
+            )?),
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    pub const fn requires_paged_metadata(&self) -> bool {
+        self.schema_version == 2
+    }
+
+    #[cfg(windows)]
+    pub fn expected_page_budget(&self) -> io::Result<crate::metadata_pages::PageBudget> {
+        self.validate()?;
+        self.paged_resources
+            .ok_or_else(|| io::Error::other("legacy admission has no paged budget"))?
+            .expected_tree_pages
+            .native()
+    }
+
+    #[cfg(windows)]
+    pub fn map_page_budget(&self) -> io::Result<crate::metadata_pages::PageBudget> {
+        self.validate()?;
+        self.paged_resources
+            .ok_or_else(|| io::Error::other("legacy admission has no paged budget"))?
+            .recovery_map_pages
+            .native()
+    }
+
     pub fn validate(&self) -> io::Result<()> {
         let objects = u64::from(self.files) + u64::from(self.directories);
-        if self.schema_version != 1
+        if !matches!(self.schema_version, 1 | 2)
             || self.source_inspection_sha256 == [0; 32]
             || self.directories == 0
             || self.raw_identities == 0
@@ -81,7 +247,12 @@ impl CountAdmission {
             || self.data_streams > self.data_stream_slots
             || self.raw_identities > self.raw_identity_slots
             || self.object_slots == 0
-            || self.object_slots as usize > OBJECT_SLOTS
+            || self.object_slots as usize
+                > if self.schema_version == 1 {
+                    OBJECT_SLOTS
+                } else {
+                    RAW_IDENTITIES
+                }
             || self.raw_identity_slots == 0
             || self.raw_identity_slots as usize > RAW_IDENTITIES
             || self.data_stream_slots == 0
@@ -103,6 +274,30 @@ impl CountAdmission {
                 io::ErrorKind::InvalidInput,
                 "invalid bounded tree count admission",
             ));
+        }
+        if self.schema_version == 1 {
+            if self.paged_resources.is_some() {
+                return Err(io::Error::other(
+                    "legacy count admission cannot claim paged resources",
+                ));
+            }
+        } else {
+            let remaining = u64::from(self.maximum_owned_handle_slots)
+                .checked_sub(2 * u64::from(self.data_streams) + 8)
+                .ok_or_else(|| io::Error::other("paged stream handles exhaust the owned budget"))?;
+            let expected = PagedResourceBudget::for_counts(
+                objects,
+                u64::from(self.directories),
+                u64::from(self.data_streams),
+                u64::from(self.maximum_expected_tree_bytes),
+            )?;
+            if u64::from(self.object_slots) != u64::from(self.raw_identities).min(remaining)
+                || self.paged_resources != Some(expected)
+            {
+                return Err(io::Error::other(
+                    "paged count/resource budget differs from the complete domain",
+                ));
+            }
         }
         Ok(())
     }

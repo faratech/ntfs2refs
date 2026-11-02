@@ -2,6 +2,7 @@
 //! source disk, manufactures ReFS bytes or grants conversion authority.
 pub mod cache_refresh;
 mod hard_links;
+pub mod input_domain;
 mod sparse_stream;
 mod streams;
 pub use hard_links::Observation as HardLinkObservation;
@@ -20,6 +21,7 @@ use crate::{
     native::{self, NativeEvent},
     stream_layout,
 };
+use input_domain::{DomainMetadata, InputDomain, ObjectInput, SliceInputs};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -61,7 +63,7 @@ pub(crate) fn query_refs_314_volume_data(volume: &File, partition_bytes: u64) ->
     Ok(layout::u64_at(&data, 32)?)
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Input<'a> {
     pub components: &'a [String],
     pub additional_names: &'a [Vec<String>],
@@ -85,7 +87,7 @@ pub struct Input<'a> {
     pub named_streams: Vec<NamedStreamInput<'a>>,
     pub sparse: Option<&'a crate::sparse_layout::SparseLayout>,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct NamedStreamInput<'a> {
     pub name_utf16: &'a [u16],
     pub expected_length: u64,
@@ -1321,13 +1323,39 @@ fn validate_existing_content_profile(
     verify_contents: bool,
     allow_post_mount_svi: bool,
 ) -> io::Result<()> {
+    validate_existing_content_domain(
+        report,
+        &SliceInputs(input),
+        same,
+        before_restore,
+        root_basic_after_mutation,
+        verify_contents,
+        allow_post_mount_svi,
+    )
+}
+
+fn validate_existing_content_domain(
+    report: &Report,
+    input: &impl InputDomain,
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    before_restore: bool,
+    root_basic_after_mutation: Option<&[u8; 40]>,
+    verify_contents: bool,
+    allow_post_mount_svi: bool,
+) -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     if report.objects.len() != input.len() {
         return Err(invalid("existing shadow object coverage differs"));
     }
     let mut identities = BTreeMap::new();
     let mut unique = BTreeSet::new();
-    for (i, o) in input.iter().zip(&report.objects) {
+    let mut directories = Vec::new();
+    let mut expected_children: BTreeMap<Vec<String>, BTreeMap<Vec<u16>, (usize, u32)>> =
+        BTreeMap::new();
+    for (index, o) in report.objects.iter().enumerate() {
+        let owner = input.object(index)?;
+        let item = owner.input();
+        let i = &item;
         let expected_content = if verify_contents && !i.directory {
             Some(i.logical_sha256().ok_or_else(|| {
                 invalid("full existing-tree verification requires a content expectation")
@@ -1400,6 +1428,24 @@ fn validate_existing_content_profile(
         {
             return Err(invalid("duplicate existing shadow identity"));
         }
+        if i.directory {
+            directories.push((index, i.components.to_vec(), i.reparse.is_some()));
+        }
+        let attributes = i.attributes | if has_sparse(i) { 0x200 } else { 0 };
+        for path in hard_links::paths(i).filter(|path| !path.is_empty()) {
+            let children = expected_children
+                .entry(path[..path.len() - 1].to_vec())
+                .or_default();
+            if children
+                .insert(
+                    path.last().unwrap().encode_utf16().collect(),
+                    (index, attributes),
+                )
+                .is_some()
+            {
+                return Err(invalid("duplicate expected namespace name"));
+            }
+        }
         let standard = query_bytes(&o.before, 1, 24)?;
         if layout::u32_at(standard, 16)? != hard_links::count(i)?
             || standard[20] != 0
@@ -1450,26 +1496,21 @@ fn validate_existing_content_profile(
             ));
         }
     }
-    for (i, o) in input
-        .iter()
-        .zip(&report.objects)
-        .filter(|(i, _)| i.directory && i.reparse.is_none())
-    {
-        let expected: BTreeMap<_, _> = input
-            .iter()
-            .flat_map(|c| hard_links::paths(c).map(move |path| (c, path)))
-            .filter(|(_, path)| {
-                path.len() == i.components.len() + 1 && path.starts_with(i.components)
-            })
-            .map(|(c, path)| (path.last().unwrap().encode_utf16().collect::<Vec<_>>(), c))
-            .collect();
+    for (index, path, reparse) in directories {
+        if reparse {
+            continue;
+        }
+        let components = path.as_slice();
+        let o = &report.objects[index];
+        let empty = BTreeMap::new();
+        let expected = expected_children.get(components).unwrap_or(&empty);
         let mut seen = BTreeSet::new();
         let mut cache_seen = false;
         for entry in &o.namespace {
             if entry.name_utf16 == [46] || entry.name_utf16 == [46, 46] {
                 continue;
             }
-            if i.components == ["System Volume Information"]
+            if components == ["System Volume Information"]
                 && entry.name_utf16 == "IndexerVolumeGuid".encode_utf16().collect::<Vec<_>>()
                 && report
                     .post_mount_indexer_cache
@@ -1486,7 +1527,7 @@ fn validate_existing_content_profile(
                 cache_seen = true;
                 continue;
             }
-            if i.components.is_empty()
+            if components.is_empty()
                 && allow_post_mount_svi
                 && !expected.contains_key(&entry.name_utf16)
                 && entry.name_utf16
@@ -1498,20 +1539,17 @@ fn validate_existing_content_profile(
             {
                 continue;
             }
-            let child = expected
+            let &(child_index, expected_attributes) = expected
                 .get(&entry.name_utf16)
                 .ok_or_else(|| invalid("unexpected existing shadow directory entry"))?;
-            // Directory enumeration reports the file's aggregate sparse bit,
-            // including sparse ADS. The unnamed handle is checked separately
-            // against the default stream's exact attributes.
-            let expected_attributes = child.attributes | if has_sparse(child) { 0x200 } else { 0 };
+            let child_components = report.objects[child_index].components.as_slice();
             let duplicate = !seen.insert(entry.name_utf16.clone());
             let identity_matches = identities
-                .get(child.components)
+                .get(child_components)
                 .is_some_and(|id| id.as_slice() == entry.file_id);
             if duplicate || entry.attributes != expected_attributes || !identity_matches {
                 let context = serde_json::json!({
-                    "path": child.components,
+                    "path": child_components,
                     "duplicate": duplicate,
                     "actual_attributes": entry.attributes,
                     "expected_attributes": expected_attributes,
@@ -1525,7 +1563,7 @@ fn validate_existing_content_profile(
         if seen.len() != expected.len() {
             return Err(invalid("missing existing shadow directory entry"));
         }
-        if i.components == ["System Volume Information"]
+        if components == ["System Volume Information"]
             && report.post_mount_indexer_cache.is_some()
             && !cache_seen
         {
@@ -1820,13 +1858,21 @@ fn observe_post_mount_indexer_cache(
     input: &[Input<'_>],
     objects: &[ObjectReport],
 ) -> io::Result<Option<PostMountIndexerCache>> {
+    observe_post_mount_indexer_cache_domain(root, &SliceInputs(input), objects)
+}
+
+fn observe_post_mount_indexer_cache_domain(
+    root: &str,
+    input: &impl InputDomain,
+    objects: &[ObjectReport],
+) -> io::Result<Option<PostMountIndexerCache>> {
     let system = "System Volume Information";
     let name = "IndexerVolumeGuid";
-    if input.iter().any(|i| {
+    if input.any(|i| {
         i.components.len() == 2
             && i.components[0].eq_ignore_ascii_case(system)
             && i.components[1].eq_ignore_ascii_case(name)
-    }) {
+    })? {
         return Ok(None);
     }
     let Some(parent_observation) = objects.iter().find(|o| o.components == [system]) else {
@@ -1953,15 +1999,38 @@ fn existing_system_entries(
     normalize_indexer_cache: bool,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<std::collections::BTreeMap<Vec<String>, Vec<u8>>> {
+    existing_system_entries_domain(
+        root,
+        initial,
+        &input_domain::SliceInputs(input),
+        normalize_indexer_cache,
+        events,
+    )
+}
+
+fn existing_system_entries_domain(
+    root: &str,
+    initial: &[namespace_layout::Entry],
+    input: &impl input_domain::InputDomain,
+    normalize_indexer_cache: bool,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<std::collections::BTreeMap<Vec<String>, Vec<u8>>> {
     let system = "System Volume Information";
     let mut existing = std::collections::BTreeMap::new();
-    if !input
-        .iter()
-        .any(|i| i.components == [system] && i.directory)
-    {
+    if !input.any(|i| i.components == [system] && i.directory)? {
         return Ok(existing);
     }
-    source_formatter_cache_bounds(input)?;
+    input.for_each(|_, i| {
+        if i.components.len() == 2
+            && i.components[0] == system
+            && !i.directory
+            && formatter_cache_name(&i.components[1])
+            && i.logical_length() > 1024 * 1024
+        {
+            return Err(invalid("source formatter cache exceeds bounded profile"));
+        }
+        Ok(())
+    })?;
     if !initial
         .iter()
         .any(|e| e.name_utf16 == system.encode_utf16().collect::<Vec<_>>())
@@ -1981,7 +2050,7 @@ fn existing_system_entries(
         let name = String::from_utf16(&entry.name_utf16)
             .map_err(|_| invalid("invalid target system filename"))?;
         let path = vec![system.into(), name.clone()];
-        let source_expected = input.iter().any(|i| i.components == path && !i.directory);
+        let source_expected = input.any(|i| i.components == path && !i.directory)?;
         if normalize_indexer_cache && name == "IndexerVolumeGuid" && !source_expected {
             // Only the separately enrolled streaming shadow may discard this
             // formatter-generated identity cache. Never infer that arbitrary
@@ -2357,6 +2426,22 @@ pub(crate) fn verify_general_ordinary_readonly_with_resource_profile(
     protected: &native::GeneralReadonlyRefsVolume<'_>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralReport> {
+    verify_general_ordinary_readonly_domain(
+        pair,
+        &SliceInputs(input),
+        same_security,
+        protected,
+        resource_profile,
+    )
+}
+
+pub(crate) fn verify_general_ordinary_readonly_domain(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if protected.binding() != &pair.shadow {
         return Err(invalid(
@@ -2368,7 +2453,7 @@ pub(crate) fn verify_general_ordinary_readonly_with_resource_profile(
         volume_guid: pair.shadow.volume_guid.clone(),
         identity: pair.shadow.identity.clone(),
     };
-    let native = run_role_profile(
+    let native = run_role_content_domain(
         binding,
         pair.source.disk_number,
         input,
@@ -2381,8 +2466,10 @@ pub(crate) fn verify_general_ordinary_readonly_with_resource_profile(
         None,
         Some(protected),
         resource_profile,
+        true,
+        None,
     )?;
-    validate_existing(&native, input, &same_security, false, None)?;
+    validate_existing_content_domain(&native, input, &same_security, false, None, true, true)?;
     Ok(GeneralReport {
         pair,
         native,
@@ -2401,6 +2488,22 @@ pub(crate) fn observe_general_layout_readonly_with_resource_profile(
     protected: &native::GeneralReadonlyRefsVolume<'_>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralLayoutReport> {
+    observe_general_layout_readonly_domain(
+        pair,
+        &SliceInputs(input),
+        same_security,
+        protected,
+        resource_profile,
+    )
+}
+
+pub(crate) fn observe_general_layout_readonly_domain(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralLayoutReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if protected.binding() != &pair.shadow {
         return Err(invalid("protected ReFS layout lease binding differs"));
@@ -2410,7 +2513,7 @@ pub(crate) fn observe_general_layout_readonly_with_resource_profile(
         volume_guid: pair.shadow.volume_guid.clone(),
         identity: pair.shadow.identity.clone(),
     };
-    let native = run_role_profile(
+    let native = run_role_content_domain(
         binding,
         pair.source.disk_number,
         input,
@@ -2423,20 +2526,27 @@ pub(crate) fn observe_general_layout_readonly_with_resource_profile(
         None,
         Some(protected),
         resource_profile,
+        true,
+        None,
     )?;
-    validate_existing_profile(&native, input, &same_security, false, None, false)?;
+    validate_existing_content_domain(&native, input, &same_security, false, None, false, false)?;
     if native.payload_bytes_written != 0 || native.conversion_qualified {
         return Err(invalid(
             "protected layout observer granted mutation authority",
         ));
     }
+    let mut expected_stream_sha256 = Vec::new();
+    expected_stream_sha256
+        .try_reserve_exact(input.len())
+        .map_err(io::Error::other)?;
+    input.for_each(|_, item| {
+        expected_stream_sha256.push((!item.directory).then(|| item.logical_sha256()).flatten());
+        Ok(())
+    })?;
     Ok(GeneralLayoutReport {
         pair,
         native: Arc::new(native),
-        expected_stream_sha256: input
-            .iter()
-            .map(|item| (!item.directory).then(|| item.logical_sha256()).flatten())
-            .collect(),
+        expected_stream_sha256,
         metadata_and_namespace_verified: true,
         complete_stream_mappings_verified: true,
         storage_validity_verified: true,
@@ -2462,7 +2572,25 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
     protected: &native::GeneralReadonlyRefsVolume<'_>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralLayoutReport> {
-    let mut report = observe_general_layout_readonly_with_resource_profile(
+    observe_general_layout_residuals_readonly_domain(
+        pair,
+        &SliceInputs(input),
+        residuals,
+        same_security,
+        protected,
+        resource_profile,
+    )
+}
+
+pub(crate) fn observe_general_layout_residuals_readonly_domain(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    residuals: &[LayoutResidualExpectation],
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralLayoutReport> {
+    let mut report = observe_general_layout_readonly_domain(
         pair,
         input,
         &same_security,
@@ -2470,7 +2598,13 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
         resource_profile,
     )?;
     let mut required = Vec::new();
-    for (index, item) in input.iter().enumerate().filter(|(_, i)| !i.directory) {
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let view = owner.input();
+        let item = &view;
+        if item.directory {
+            continue;
+        }
         if item.logical_length() % 4096 != 0
             && item.sparse.is_none_or(|s| {
                 s.allocated.iter().any(|r| {
@@ -2692,6 +2826,22 @@ pub fn observe_general_converted_metadata_with_resource_profile(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralConvertedReport> {
+    observe_general_converted_metadata_domain(
+        pair,
+        &SliceInputs(input),
+        expected_label,
+        same_security,
+        resource_profile,
+    )
+}
+
+pub fn observe_general_converted_metadata_domain(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if let Some(label) = expected_label {
         label.validate()?;
@@ -2701,7 +2851,7 @@ pub fn observe_general_converted_metadata_with_resource_profile(
         volume_guid: pair.source.volume_guid.clone(),
         identity: pair.source.identity.clone(),
     };
-    let native = run_role_content_profile(
+    let native = run_role_content_domain(
         binding,
         pair.source.disk_number,
         input,
@@ -2715,11 +2865,12 @@ pub fn observe_general_converted_metadata_with_resource_profile(
         None,
         resource_profile,
         false,
+        None,
     )?;
     // Keep the converted observer's existing namespace policy independently
     // of whether admitted payload bytes were read. Protected shadow layout
     // observation keeps its stricter original namespace policy.
-    validate_existing_content_profile(&native, input, &same_security, false, None, false, true)?;
+    validate_existing_content_domain(&native, input, &same_security, false, None, false, true)?;
     if native.objects.iter().any(|object| {
         object.logical_sha256.is_some()
             || object
@@ -2731,11 +2882,14 @@ pub fn observe_general_converted_metadata_with_resource_profile(
             "metadata observation unexpectedly reports an admitted content hash",
         ));
     }
-    let default_streams_observed = input.iter().filter(|item| !item.directory).count();
-    let named_streams_observed = input.iter().try_fold(0usize, |count, item| {
-        count
+    let mut default_streams_observed = 0usize;
+    let mut named_streams_observed = 0usize;
+    input.for_each(|_, item| {
+        default_streams_observed += usize::from(!item.directory);
+        named_streams_observed = named_streams_observed
             .checked_add(item.named_streams.len())
-            .ok_or_else(|| invalid("metadata-observed stream count overflow"))
+            .ok_or_else(|| invalid("metadata-observed stream count overflow"))?;
+        Ok(())
     })?;
     Ok(GeneralConvertedReport {
         pair,
@@ -2766,7 +2920,23 @@ pub fn verify_general_converted_known_contents_with_resource_profile(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralConvertedReport> {
-    let mut report = observe_general_converted_metadata_with_resource_profile(
+    verify_general_converted_known_contents_domain(
+        pair,
+        &SliceInputs(input),
+        expected_label,
+        same_security,
+        resource_profile,
+    )
+}
+
+pub fn verify_general_converted_known_contents_domain(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
+    let mut report = observe_general_converted_metadata_domain(
         pair,
         input,
         expected_label,
@@ -2782,7 +2952,10 @@ pub fn verify_general_converted_known_contents_with_resource_profile(
     let mut count = 0usize;
     let mut skipped = 0usize;
     let mut bytes = 0u64;
-    for (item, object) in input.iter().zip(&mut report.native.objects) {
+    for (index, object) in report.native.objects.iter_mut().enumerate() {
+        let owner = input.object(index)?;
+        let expected = owner.input();
+        let item = &expected;
         if item.directory {
             continue;
         }
@@ -2848,6 +3021,49 @@ pub fn verify_general_converted_known_contents_with_resource_profile(
         privilege_states: privileges.audit().to_vec(),
     });
     Ok(report)
+}
+
+/// Full converted-volume verification over one authenticated expected object
+/// at a time. The complete native report and original namespace checks remain.
+pub fn verify_general_converted_ordinary_domain(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralConvertedReport> {
+    pair.validate_with_resource_profile(resource_profile)?;
+    if let Some(label) = expected_label {
+        label.validate()?;
+    }
+    let binding = DiskBinding {
+        disk_number: pair.source.disk_number,
+        volume_guid: pair.source.volume_guid.clone(),
+        identity: pair.source.identity.clone(),
+    };
+    let native = run_role_content_domain(
+        binding,
+        pair.source.disk_number,
+        input,
+        Mode::Verify,
+        &same_security,
+        true,
+        true,
+        None,
+        Some(&pair.source),
+        expected_label,
+        None,
+        resource_profile,
+        true,
+        None,
+    )?;
+    validate_existing_content_domain(&native, input, &same_security, false, None, true, true)?;
+    Ok(GeneralConvertedReport {
+        pair,
+        native,
+        content_observation: None,
+        conversion_qualified: false,
+    })
 }
 
 fn observe_general_converted_label_profile(
@@ -3183,12 +3399,46 @@ fn run_role_content_profile(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     converted: bool,
     ordinary: bool,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    general_shadow: Option<&GeneralDiskBinding>,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    hash_file_contents: bool,
+) -> io::Result<Report> {
+    run_role_content_domain(
+        binding,
+        source_disk,
+        &SliceInputs(input),
+        mode,
+        same_security,
+        converted,
+        ordinary,
+        payload_writer,
+        general_shadow,
+        expected_label,
+        protected,
+        resource_profile,
+        hash_file_contents,
+        Some(input),
+    )
+}
+
+fn run_role_content_domain(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &impl InputDomain,
+    mode: Mode,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    converted: bool,
+    ordinary: bool,
     mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
     protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
     hash_file_contents: bool,
+    legacy_input: Option<&[Input<'_>]>,
 ) -> io::Result<Report> {
     if !hash_file_contents
         && (!converted
@@ -3220,20 +3470,33 @@ fn run_role_content_profile(
                     "large-tree shadow profile requires an ordinary general volume",
                 ));
             }
-            let directories = input.iter().filter(|item| item.directory).count();
+            let mut directories = 0usize;
+            let mut stream_count = 0usize;
+            input.for_each(|_, item| {
+                directories += usize::from(item.directory);
+                stream_count = stream_count
+                    .checked_add(usize::from(!item.directory))
+                    .and_then(|n| n.checked_add(item.named_streams.len()))
+                    .ok_or_else(|| invalid("native stream count overflow"))?;
+                Ok(())
+            })?;
             let admission = profile.count_admission()?;
             if let Some(admission) = admission {
-                let streams = input.iter().try_fold(0usize, |n, i| {
-                    n.checked_add(usize::from(!i.directory))
-                        .and_then(|n| n.checked_add(i.named_streams.len()))
-                        .ok_or_else(|| invalid("native stream count overflow"))
-                })?;
-                admission.validate_tree(input.len() - directories, directories, streams)?;
-                admission.validate_constructor_metadata(&input)?;
+                if admission.requires_paged_metadata() {
+                    input.require_paged_metadata(
+                        admission.expected_page_budget()?,
+                        u64::from(admission.maximum_expected_tree_bytes),
+                    )?;
+                }
+                admission.validate_tree(input.len() - directories, directories, stream_count)?;
+                admission.validate_constructor_metadata(&DomainMetadata(input))?;
             } else if directories > 256 || input.len() - directories > 1024 {
                 return Err(invalid("large-tree shadow object budget exceeded"));
             }
-            (1280usize, profile.limits().maximum_stream_bytes)
+            (
+                admission.map_or(1280usize, |value| value.object_slots as usize),
+                profile.limits().maximum_stream_bytes,
+            )
         }
     };
     if protected.is_some() {
@@ -3298,37 +3561,49 @@ fn run_role_content_profile(
             "streaming payload callback is restricted to ordinary shadow construction",
         ));
     }
-    hard_links::validate(input, hard_links::MAX_NAMES, |part| {
+    hard_links::validate_domain(input, hard_links::MAX_NAMES, |part| {
         if resource_profile.is_some_and(|p| p.is_streaming()) {
             crate::shadow_names::valid_unicode_component(part)
         } else {
             valid_shadow_component(part)
         }
     })?;
-    streams::validate(input, binding.identity.partition_bytes)?;
+    let mut all_streams = 0usize;
+    input.for_each(|_, item| {
+        all_streams = all_streams
+            .checked_add(usize::from(!item.directory))
+            .and_then(|n| n.checked_add(item.named_streams.len()))
+            .filter(|n| *n <= streams::MAX_STREAMS)
+            .ok_or_else(|| invalid("native complete stream count exceeds bound"))?;
+        streams::validate(std::slice::from_ref(item), binding.identity.partition_bytes)
+    })?;
     if verify_file_contents
-        && input
-            .iter()
-            .flat_map(|item| &item.named_streams)
-            .any(|stream| stream.expected_sha256.is_none())
+        && input.any(|item| {
+            item.named_streams
+                .iter()
+                .any(|stream| stream.expected_sha256.is_none())
+        })?
     {
         return Err(invalid(
             "full named-stream verification requires content expectations",
         ));
     }
-    if input.iter().any(|i| !i.named_streams.is_empty())
+    if input.any(|i| !i.named_streams.is_empty())?
         && matches!(mode, Mode::Construct | Mode::ConstructRetaining)
     {
         return Err(invalid(
             "named-stream construction requires the private owning tree path",
         ));
     }
-    if input.iter().any(has_sparse) && matches!(mode, Mode::Construct | Mode::ConstructRetaining) {
+    if input.any(has_sparse)? && matches!(mode, Mode::Construct | Mode::ConstructRetaining) {
         return Err(invalid("sparse construction requires private carrier path"));
     }
     let mut total = 0u64;
     let mut source_allocations = Vec::new();
-    for i in input {
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
+        let i = &item;
         if i.source_offset.is_some() && !i.source_runs.is_empty() {
             return Err(invalid("mixed single and fragmented source placement"));
         }
@@ -3457,10 +3732,14 @@ fn run_role_content_profile(
     {
         return Err(invalid("source placement allocations overlap"));
     }
-    if input.iter().filter(|i| i.components.is_empty()).count() != 1
-        || !input[0].components.is_empty()
-        || !input[0].directory
-    {
+    let mut roots = 0usize;
+    input.for_each(|_, i| {
+        roots += usize::from(i.components.is_empty());
+        Ok(())
+    })?;
+    let root_owner = input.object(0)?;
+    let root_input = root_owner.input();
+    if roots != 1 || !root_input.components.is_empty() || !root_input.directory {
         return Err(invalid("one first directory root required"));
     }
     let mut events = vec![];
@@ -3582,7 +3861,7 @@ fn run_role_content_profile(
         open(&root, true, true)?
     };
     let root_state = snapshot(&root_handle);
-    let matched_before = security_matches(&input[0], &root_state, &same_security)?;
+    let matched_before = security_matches(&root_input, &root_state, &same_security)?;
     let mut root_security = RootSecurity {
         before: root_state.clone(),
         after: root_state,
@@ -3624,6 +3903,8 @@ fn run_role_content_profile(
         });
     }
     if constructing || mode == Mode::RestoreRootOnly {
+        let input = legacy_input
+            .ok_or_else(|| invalid("paged domain is restricted to native observation"))?;
         let initial = enumerate(&root_handle)?;
         if initial.iter().any(|e| {
             let n = String::from_utf16_lossy(&e.name_utf16);
@@ -3930,9 +4211,9 @@ fn run_role_content_profile(
     // These maps are immutable for the complete verification pass. Hash each
     // only once even if many files report a source-placement candidate. Move
     // attempts above still collect and recheck fresh native bitmaps separately.
-    let candidate_views = if let Some((legacy_bitmap, metadata_bitmap)) = bitmaps
-        .as_ref()
-        .filter(|_| input.iter().any(|i| i.source_offset.is_some()))
+    let source_offsets = input.any(|i| i.source_offset.is_some())?;
+    let candidate_views = if let Some((legacy_bitmap, metadata_bitmap)) =
+        bitmaps.as_ref().filter(|_| source_offsets)
     {
         Some((
             legacy_bitmap.view(binding.identity.partition_bytes)?,
@@ -4171,10 +4452,22 @@ fn run_role_content_profile(
                 .transpose()?,
         })
     };
-    let objects = observe_in_parallel(input, observe)?;
+    let objects = if let Some(legacy) = legacy_input {
+        observe_in_parallel(legacy, observe)?
+    } else {
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(input.len())
+            .map_err(io::Error::other)?;
+        input.for_each(|_, item| {
+            result.push(observe(item)?);
+            Ok(())
+        })?;
+        result
+    };
     let post_mount_indexer_cache =
         if converted && resource_profile.is_some_and(|p| p.is_streaming()) {
-            observe_post_mount_indexer_cache(&root, input, &objects)?
+            observe_post_mount_indexer_cache_domain(&root, input, &objects)?
         } else {
             None
         };

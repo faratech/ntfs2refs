@@ -36,6 +36,61 @@ pub(super) fn construct(
     resources: crate::ntfs_admission::ResourceProfile,
     selected_devices: bool,
 ) -> Result<GeneralFrozenPartition> {
+    construct_domain(
+        source,
+        pair,
+        raw,
+        tree,
+        &general_shadow::TreeInputs(tree),
+        output,
+        limits,
+        resources,
+        selected_devices,
+    )
+}
+
+pub(super) fn construct_paged(
+    source: &mut GeneralFrozenPartition,
+    pair: &GeneralSourceShadowBinding,
+    raw: &ntfs_inspect::NtfsInspection,
+    tree: &shadow_tree::Tree,
+    expected: &shadow_tree::PagedExpectedTree,
+    output: &Path,
+    limits: CompactConstructionBudget,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<GeneralFrozenPartition> {
+    expected.revalidate()?;
+    expected.validate_with_resource_profile(resources)?;
+    ensure!(
+        expected.semantic_sha256() == pretty_json_sha256(tree)?,
+        "paged constructor expectation differs from the complete frozen source tree"
+    );
+    let result = construct_domain(
+        source,
+        pair,
+        raw,
+        tree,
+        &general_shadow::PagedInputs(expected),
+        output,
+        limits,
+        resources,
+        true,
+    )?;
+    expected.revalidate()?;
+    Ok(result)
+}
+
+fn construct_domain(
+    source: &mut GeneralFrozenPartition,
+    pair: &GeneralSourceShadowBinding,
+    raw: &ntfs_inspect::NtfsInspection,
+    tree: &shadow_tree::Tree,
+    input: &impl n2r_win32::shadow_native::input_domain::InputDomain,
+    output: &Path,
+    limits: CompactConstructionBudget,
+    resources: crate::ntfs_admission::ResourceProfile,
+    selected_devices: bool,
+) -> Result<GeneralFrozenPartition> {
     ensure!(
         resources.is_streaming() && source.binding() == &pair.source,
         "fresh compact construction requires the explicit streaming source profile"
@@ -156,16 +211,13 @@ pub(super) fn construct(
             "residual source bytes differ from the fresh canonical tree"
         );
     }
-    let input = general_shadow::native_inputs(tree);
     let mut private = if selected_devices {
-        general_shadow::allocate_private_tree_enrolled_with_resource_profile(
-            source, pair, tree, resources,
-        )?
+        general_shadow::allocate_private_tree_enrolled_domain(source, pair, input, resources)?
     } else {
         general_shadow::allocate_private_tree(pair, tree)?
     };
-    let placement = private.place_source_prefixes_with_limits(
-        &input,
+    let placement = private.place_source_prefixes_domain(
+        input,
         limits.maximum_placement_bytes,
         limits.maximum_placement_submissions,
     );
@@ -196,10 +248,11 @@ pub(super) fn construct(
             &mut transfer,
         )?);
     }
-    let (system, _indexer_payload) = general_shadow::materialize_private_system_payloads(
+    let (system, _indexer_payload) = general_shadow::materialize_private_system_payloads_domain(
         source,
         raw,
         tree,
+        input,
         &mut private,
         &mut transfer,
     )?;
@@ -213,7 +266,7 @@ pub(super) fn construct(
         }),
     )?;
     save(output, "construction-private.json", &private.report()?)?;
-    let metadata = private.complete_source_metadata(&input, |left, right| {
+    let metadata = private.complete_source_metadata_domain(input, |left, right| {
         ntfs_attestation::same_security(left, right).map_err(io::Error::other)
     })?;
     save(output, "construction-metadata.json", &metadata)?;

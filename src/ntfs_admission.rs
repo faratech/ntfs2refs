@@ -142,11 +142,11 @@ impl ResourceProfile {
             Self::ExperimentalObjectEnvelopeV3(admission) => ResourceLimits {
                 maximum_files: match admission {
                     Some(a) => a.files as usize,
-                    None => n2r_win32::tree_resources::OBJECT_SLOTS,
+                    None => n2r_win32::tree_resources::RAW_IDENTITIES,
                 },
                 maximum_directories: match admission {
                     Some(a) => a.directories as usize,
-                    None => n2r_win32::tree_resources::OBJECT_SLOTS,
+                    None => n2r_win32::tree_resources::RAW_IDENTITIES,
                 },
                 maximum_logical_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
                 maximum_stream_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
@@ -185,7 +185,11 @@ impl ResourceProfile {
     }
     pub fn maximum_objects(self) -> usize {
         match self {
-            Self::ExperimentalObjectEnvelopeV3(_) => n2r_win32::tree_resources::OBJECT_SLOTS,
+            Self::ExperimentalObjectEnvelopeV3(Some(a)) if a.requires_paged_metadata() => {
+                (a.object_slots as usize).min(n2r_win32::tree_resources::RAW_IDENTITIES)
+            }
+            Self::ExperimentalObjectEnvelopeV3(None) => n2r_win32::tree_resources::RAW_IDENTITIES,
+            Self::ExperimentalObjectEnvelopeV3(Some(_)) => n2r_win32::tree_resources::OBJECT_SLOTS,
             _ => self.limits().maximum_files + self.limits().maximum_directories,
         }
     }
@@ -205,12 +209,32 @@ impl ResourceProfile {
         raw: &ntfs::NtfsInspection,
         pin: &str,
     ) -> anyhow::Result<Self> {
+        self.admit_inspection_mode(raw, pin, false)
+    }
+
+    /// Only the owning pipeline that actually constructs from authenticated
+    /// pages may choose this version. It is not a deserializable authority flag.
+    pub(crate) fn admit_inspection_paged(
+        self,
+        raw: &ntfs::NtfsInspection,
+        pin: &str,
+    ) -> anyhow::Result<Self> {
+        self.admit_inspection_mode(raw, pin, true)
+    }
+
+    fn admit_inspection_mode(
+        self,
+        raw: &ntfs::NtfsInspection,
+        pin: &str,
+        paged: bool,
+    ) -> anyhow::Result<Self> {
         if !self.is_envelope() {
             return Ok(self);
         }
         ntfs::validate_record_coverage(raw)?;
         anyhow::ensure!(
-            has_unique_sorted_records(raw)
+            raw.files.len() <= n2r_win32::tree_resources::RAW_IDENTITIES
+                && has_unique_sorted_records(raw)
                 && matches!(
                     raw.allocation_reconciliation.as_ref().map(|r| &r.status),
                     Some(ntfs::AllocationReconciliationStatus::ConsistentRawModel)
@@ -252,22 +276,31 @@ impl ResourceProfile {
         let bytes: [u8; 32] = hex::decode(pin)?
             .try_into()
             .map_err(|_| anyhow::anyhow!("source inspection pin length differs"))?;
-        let mut admitted = n2r_win32::tree_resources::CountAdmission::new(
-            bytes,
-            raw.files.len(),
-            files,
-            dirs,
-            streams,
-        )?;
-        if let Self::ExperimentalObjectEnvelopeV3(Some(previous)) = self {
+        let admitted = if let Self::ExperimentalObjectEnvelopeV3(Some(previous)) = self {
             previous.validate_tree(files, dirs, streams)?;
             anyhow::ensure!(
                 previous.source_inspection_sha256 == bytes
                     && previous.raw_identities as usize == raw.files.len(),
                 "supplied count admission differs from current complete source"
             );
-            admitted = previous;
-        }
+            previous
+        } else if paged {
+            n2r_win32::tree_resources::CountAdmission::new_paged(
+                bytes,
+                raw.files.len(),
+                files,
+                dirs,
+                streams,
+            )?
+        } else {
+            n2r_win32::tree_resources::CountAdmission::new(
+                bytes,
+                raw.files.len(),
+                files,
+                dirs,
+                streams,
+            )?
+        };
         admitted.validate_inspection_bytes(raw)?;
         Ok(Self::ExperimentalObjectEnvelopeV3(Some(admitted)))
     }

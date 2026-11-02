@@ -34,6 +34,23 @@ pub(crate) mod fast_verification;
 pub(crate) mod selected_artifacts;
 pub(crate) mod selected_native_journal;
 
+/// Read-only inspection of complete pinned recovery metadata. This opens no
+/// journal or source device and supplies no source or replay authority.
+#[allow(clippy::too_many_arguments)]
+pub fn inspect_pinned_recovery_pages(
+    path: &std::path::Path,
+    sha256: &str,
+    source: &n2r_win32::general_layout::GeneralDiskBinding,
+    expected: &shadow_tree::PagedExpectedTree,
+    plan: &crate::selected_journal::SelectedPlan,
+    ticket: &crate::selected_journal::SelectedTicket,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<serde_json::Value> {
+    fast_verification::inspect_pinned_recovery_pages(
+        path, sha256, source, expected, plan, ticket, resources,
+    )
+}
+
 fn observe_journal(file: &File, request: &Request) -> Result<JournalFileSnapshot> {
     Ok(observe_general_journal_file_with_profile(
         file,
@@ -1090,9 +1107,9 @@ impl Request {
 
 /// Verify the mounted tree, then mount paths and the restored label, exactly as
 /// the compact handoff does after its target is brought online.
-pub(crate) fn verify_native_scoped(
+pub(crate) fn verify_native_scoped<D: shadow_tree::ExpectedObjectDomain>(
     scope: &NativeVerificationScope<'_>,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &D,
     report: &mut Finalization,
     restored_label: bool,
 ) {
@@ -1499,80 +1516,33 @@ fn verify_converted_tree(
     )
 }
 
-fn verify_converted_tree_scoped(
+fn verify_converted_tree_scoped<D: shadow_tree::ExpectedObjectDomain>(
     scope: &NativeVerificationScope<'_>,
-    expectation: &shadow_tree::ExpectedTree,
+    expectation: &D,
     events: &mut Vec<NativeEvent>,
     restored_label: bool,
 ) -> std::io::Result<shadow_native::GeneralConvertedReport> {
+    expectation
+        .revalidate_domain()
+        .map_err(std::io::Error::other)?;
     let mut pair = scope.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, events)?;
-    let input: Vec<_> = expectation
-        .objects
-        .iter()
-        .map(|object| shadow_native::Input {
-            components: &object.path,
-            additional_names: &object.additional_names,
-            sparse: object.sparse.as_ref(),
-            named_streams: crate::general_shadow::native_named_streams(object),
-            directory: object.directory,
-            times: object.stored_times,
-            attributes: object.attributes,
-            security: &object.security,
-            expected_api_security: object.api_security.as_deref(),
-            extended_attributes: object.extended_attributes.as_ref(),
-            reparse: object.reparse.as_ref(),
-            payload: &[],
-            expected_length: if object.directory {
-                None
-            } else {
-                Some(object.length)
-            },
-            expected_sha256: if object.directory {
-                None
-            } else {
-                object.sha256.as_deref()
-            },
-            source_offset: object.source_offset,
-            source_runs: object
-                .source_extents
-                .iter()
-                .map(|run| shadow_native::SourceRun {
-                    logical_offset: run.logical_offset,
-                    physical_offset: run.physical_offset,
-                    length: run.length,
-                })
-                .collect(),
-        })
-        .collect();
+    let inputs = crate::general_shadow::ExpectedInputs(expectation);
     let same_security = |a: &[u8], b: &[u8]| {
         ntfs_attestation::same_security(a, b)
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
-    if restored_label && let Some(label) = scope.expected_source_label {
-        shadow_native::verify_general_converted_ordinary_with_label_and_resource_profile(
-            pair,
-            &input,
-            label,
-            same_security,
-            scope
-                .source_resource_profile
-                .unwrap_or_default()
-                .native_profile(),
-        )
-    } else {
-        shadow_native::verify_general_converted_ordinary_with_resource_profile(
-            pair,
-            &input,
-            same_security,
-            scope
-                .source_resource_profile
-                .unwrap_or_default()
-                .native_profile(),
-        )
-    }
+    shadow_native::verify_general_converted_ordinary_domain(
+        pair,
+        &inputs,
+        scope.expected_source_label.filter(|_| restored_label),
+        same_security,
+        scope
+            .source_resource_profile
+            .unwrap_or_default()
+            .native_profile(),
+    )
 }
-
 fn restore_source_label(request: &Request, report: &mut Finalization) {
     restore_source_label_scoped(&request.verification_scope(), report)
 }

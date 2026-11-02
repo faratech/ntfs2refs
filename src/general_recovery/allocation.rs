@@ -29,6 +29,8 @@ struct Bundle {
     plan: Pin,
     ticket: Pin,
     expectation: Pin,
+    #[serde(default)]
+    expectation_pages: Option<Pin>,
     verification: Pin,
     #[serde(default)]
     recovery_payload_manifest: Option<Pin>,
@@ -97,6 +99,7 @@ fn open_bundle(bundle_path: &Path, bundle_sha256: &str) -> Result<(HeldInput, Bu
     ]
     .into_iter()
     .chain(bundle.recovery_payload_manifest.iter().map(|pin| &pin.path))
+    .chain(bundle.expectation_pages.iter().map(|pin| &pin.path))
     {
         ensure!(
             ordinary_absolute(path),
@@ -242,44 +245,98 @@ fn recover_allocation_inner(
         &bundle.expectation.sha256,
         Artifact::Expectation.maximum_bytes() as u64,
     )?;
-    let expectation: crate::shadow_tree::ExpectedTree =
-        serde_json::from_slice(&expectation_input.bytes)?;
-    expectation
-        .validate_with_resource_profile(request.source_resource_profile.unwrap_or_default())?;
+    let resources = request.source_resource_profile.unwrap_or_default();
+    let paged_admission = resources
+        .count_admission()?
+        .filter(|a| a.requires_paged_metadata());
     ensure!(
-        !expectation.has_extent_only_streams() || request.verification_policy.is_fast(),
+        bundle.expectation_pages.is_some() == paged_admission.is_some(),
+        "expected-object page ownership must match the admitted resource descriptor"
+    );
+    let expectation_pages = if let Some(admission) = paged_admission {
+        let pin = bundle
+            .expectation_pages
+            .as_ref()
+            .context("paged expectation pin absent")?;
+        ensure!(
+            expectation_input.bytes.len() as u64
+                <= u64::from(admission.maximum_expected_tree_bytes),
+            "legacy expectation bytes exceed admitted semantic resource budget"
+        );
+        let pages = crate::shadow_tree::PagedExpectedTree::open_with_limits(
+            &pin.path,
+            &pin.sha256,
+            &bundle.expectation.sha256,
+            admission.expected_page_budget()?,
+            u64::from(admission.maximum_expected_tree_bytes),
+        )?;
+        Some(pages)
+    } else {
+        None
+    };
+    let inline_expectation = if expectation_pages.is_none() {
+        Some(serde_json::from_slice::<crate::shadow_tree::ExpectedTree>(
+            &expectation_input.bytes,
+        )?)
+    } else {
+        None
+    };
+    let expectation = match (&expectation_pages, &inline_expectation) {
+        (Some(pages), None) => crate::shadow_tree::pages::ExpectedTreeView::Paged(pages),
+        (None, Some(tree)) => crate::shadow_tree::pages::ExpectedTreeView::Inline(tree),
+        _ => anyhow::bail!("recovery expectation ownership is ambiguous"),
+    };
+    use crate::shadow_tree::ExpectedObjectDomain as _;
+    crate::shadow_tree::validate_expected_domain(&expectation, resources)?;
+    expectation.revalidate_domain()?;
+    ensure!(
+        !expectation.has_extent_only_streams()? || request.verification_policy.is_fast(),
         "hash-free recovery expectation requires the explicit fast verification policy"
     );
     let needs_payload_manifest =
-        request.verification_policy.is_fast() && expectation.has_extent_only_streams();
+        request.verification_policy.is_fast() && expectation.has_extent_only_streams()?;
     ensure!(
         bundle.recovery_payload_manifest.is_some() == needs_payload_manifest,
         "recovery payload manifest must match the fast hash-free expectation profile"
     );
-    let mut recovery_payload_input = bundle
-        .recovery_payload_manifest
-        .as_ref()
-        .map(|pin| {
-            HeldInput::open(
+    let mut recovery_payload_input: Option<HeldInput> = None;
+    let recovery_payload_proof = if let Some(pin) = &bundle.recovery_payload_manifest {
+        if n2r_win32::metadata_pages::has_magic(&pin.path)? {
+            Some(
+                protocol::fast_verification::RecoveryPayloadProof::from_pinned_pages(
+                    &pin.path,
+                    &pin.sha256,
+                    &request.pair.source,
+                    &expectation,
+                    &plan,
+                    &ticket,
+                    request.source_resource_profile.unwrap_or_default(),
+                )?,
+            )
+        } else {
+            ensure!(
+                paged_admission.is_none(),
+                "admitted paged resources require a paged recovery map manifest"
+            );
+            let held = HeldInput::open(
                 &pin.path,
                 &pin.sha256,
                 Artifact::PayloadMap.maximum_bytes() as u64,
-            )
-        })
-        .transpose()?;
-    let recovery_payload_proof = recovery_payload_input
-        .as_ref()
-        .map(|held| {
-            protocol::fast_verification::RecoveryPayloadProof::from_pinned_manifest(
+            )?;
+            let proof = protocol::fast_verification::RecoveryPayloadProof::from_pinned_manifest(
                 &held.bytes,
                 &request.pair.source,
                 &expectation,
                 &plan,
                 &ticket,
                 request.source_resource_profile.unwrap_or_default(),
-            )
-        })
-        .transpose()?;
+            )?;
+            recovery_payload_input = Some(held);
+            Some(proof)
+        }
+    } else {
+        None
+    };
     let mut verification_input = HeldInput::open(
         &bundle.verification.path,
         &bundle.verification.sha256,
@@ -309,6 +366,31 @@ fn recover_allocation_inner(
                 "allocation recovery inputs must be outside the two data volumes"
             );
         }
+    }
+    if let Some(pages) = &expectation_pages {
+        let path = pages.final_path();
+        for binding in [&request.pair.source, &request.pair.shadow] {
+            ensure!(
+                !path
+                    .to_ascii_lowercase()
+                    .starts_with(&(binding.volume_path()?.to_ascii_lowercase() + "\\")),
+                "paged expected-object input must be outside the two data volumes"
+            );
+        }
+        pages.revalidate()?;
+    }
+    if let Some(proof) = &recovery_payload_proof {
+        if let Some(path) = proof.paged_final_path() {
+            for binding in [&request.pair.source, &request.pair.shadow] {
+                ensure!(
+                    !path
+                        .to_ascii_lowercase()
+                        .starts_with(&(binding.volume_path()?.to_ascii_lowercase() + "\\")),
+                    "paged recovery map input must be outside the two data volumes"
+                );
+            }
+        }
+        proof.revalidate_paged_manifest()?;
     }
     artifacts::create_output(output)?;
     ensure!(
@@ -351,6 +433,12 @@ fn recover_allocation_inner(
     Artifact::Ticket.copy_for_recovery(output, &ticket_input.bytes)?;
     if let Some(held) = &recovery_payload_input {
         Artifact::PayloadMap.copy_for_recovery(output, &held.bytes)?;
+    }
+    if let Some(proof) = &recovery_payload_proof {
+        proof.copy_paged_manifest(output)?;
+    }
+    if let Some(pages) = &expectation_pages {
+        pages.copy_to(&output.join("expectation.pages"))?;
     }
     // Parsed facts own their storage and all required original-byte copies are
     // complete. Keep the exact handles and pins through every later recheck.
@@ -458,6 +546,10 @@ fn recover_allocation_inner(
         .chain(recovery_payload_input.iter_mut())
         {
             held.revalidate()?;
+        }
+        expectation.revalidate_domain()?;
+        if let Some(proof) = &recovery_payload_proof {
+            proof.revalidate_paged_manifest()?;
         }
         let policy = WritePolicy {
             allowed: plan.ranges.iter().map(|r| (r.offset, r.length)).collect(),
@@ -598,6 +690,10 @@ fn recover_allocation_inner(
         .chain(recovery_payload_input.iter_mut())
         {
             held.revalidate()?;
+        }
+        expectation.revalidate_domain()?;
+        if let Some(proof) = &recovery_payload_proof {
+            proof.revalidate_paged_manifest()?;
         }
         // One intact terminal peer already closes raw replay. Keep the target
         // excluded unless both terminal copies pass the native barriers.

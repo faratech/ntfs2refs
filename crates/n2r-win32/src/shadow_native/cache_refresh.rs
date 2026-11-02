@@ -1,5 +1,6 @@
 //! Small-cache and metadata synchronization on an existing disposable shadow.
 //! User payloads are never rewritten; complete conversion admission follows.
+use super::input_domain::{InputDomain, ObjectInput, SliceInputs};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -134,20 +135,45 @@ pub(super) fn complete_owned_metadata(
     handles: &BTreeMap<usize, File>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
-    super::hard_links::validate(
+    complete_owned_metadata_domain(
+        pair,
+        source_before,
+        volume,
+        &SliceInputs(input),
+        handles,
+        1280,
+        same_security,
+    )
+}
+
+pub(super) fn complete_owned_metadata_domain(
+    pair: &GeneralSourceShadowBinding,
+    source_before: &native::GeneralDiskState,
+    volume: &File,
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+    maximum_objects: usize,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<serde_json::Value> {
+    super::hard_links::validate_domain(
         input,
         super::hard_links::MAX_NAMES,
         crate::shadow_names::valid_unicode_component,
     )?;
     if input.is_empty()
-        || input.len() > 1280
+        || maximum_objects == 0
+        || input.len() > maximum_objects
         || handles.len() != input.len()
-        || !input[0].directory
-        || !input[0].components.is_empty()
         || source_before.disk_attributes != 3
     {
         return Err(invalid("complete owning metadata capability required"));
     }
+    let root_owned = input.object(0)?;
+    let root_view = root_owned.input();
+    if !root_view.directory || !root_view.components.is_empty() {
+        return Err(invalid("complete owning metadata root is absent"));
+    }
+    drop(root_owned);
     pair.shadow
         .validate_volume_extent(&ctl(volume, 0x00560000, &[], 1024)?)?;
     let mut events = Vec::new();
@@ -167,7 +193,14 @@ pub(super) fn complete_owned_metadata(
     let mut unique = BTreeSet::new();
     let mut mappings = BTreeMap::new();
     let mut paths = BTreeSet::new();
-    for (index, item) in input.iter().enumerate() {
+    // Only namespace scalars remain resident. Looking up a child must not
+    // decode every paged object for every native directory entry.
+    let mut namespace_index = BTreeMap::new();
+    let mut expected_children: BTreeMap<Vec<String>, BTreeSet<Vec<String>>> = BTreeMap::new();
+    for index in 0..input.len() {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        let item = &view;
         if item.components.len() > 16
             || item
                 .components
@@ -185,6 +218,23 @@ pub(super) fn complete_owned_metadata(
         descriptor(item.security)?;
         if let Some(api) = item.expected_api_security {
             descriptor(api)?;
+        }
+        for path in super::hard_links::paths(item) {
+            if namespace_index
+                .insert(
+                    path.to_vec(),
+                    (index, item.directory, item.reparse.is_some()),
+                )
+                .is_some()
+            {
+                return Err(invalid("duplicate owned metadata namespace path"));
+            }
+            if !path.is_empty() {
+                expected_children
+                    .entry(path[..path.len() - 1].to_vec())
+                    .or_default()
+                    .insert(path.to_vec());
+            }
         }
         let handle = handles
             .get(&index)
@@ -212,15 +262,21 @@ pub(super) fn complete_owned_metadata(
                 return Err(invalid("owned metadata stream shape differs"));
             }
             if item.logical_length() != 0 && layout::u64_at(&standard, 0)? >= 4096 {
-                mappings.insert(
-                    index,
-                    crate::stream_native::retrieval_capture(handle)?.canonical,
-                );
+                let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
+                // Keep the full-query comparison, retaining only its exact
+                // length and SHA-256 between metadata phases. A paged object
+                // domain must not retain every variable-sized retrieval map.
+                mappings.insert(index, (canonical.len(), Sha256::digest(&canonical)));
             }
         }
     }
     let namespace = |points_installed: bool| -> io::Result<()> {
-        for (index, directory) in input.iter().enumerate().filter(|(_, i)| i.directory) {
+        for index in 0..input.len() {
+            let owned = input.object(index)?;
+            let directory = owned.input();
+            if !directory.directory {
+                continue;
+            }
             if points_installed && directory.reparse.is_some() {
                 continue;
             }
@@ -234,43 +290,46 @@ pub(super) fn complete_owned_metadata(
                     .map_err(|_| invalid("owned metadata namespace UTF-16 differs"))?;
                 let mut path = directory.components.to_vec();
                 path.push(name);
-                let (child_index, child) = super::hard_links::find(input, &path)
+                let &(child_index, child_directory, child_reparse) = namespace_index
+                    .get(&path)
                     .ok_or_else(|| invalid("unexpected owned metadata namespace entry"))?;
                 if !seen.insert(path.clone())
-                    || (entry.attributes & 16 != 0) != child.directory
-                    || (entry.attributes & 0x400 != 0)
-                        != (points_installed && child.reparse.is_some())
+                    || (entry.attributes & 16 != 0) != child_directory
+                    || (entry.attributes & 0x400 != 0) != (points_installed && child_reparse)
                     || entry.file_id.as_slice() != &identities[&child_index][8..24]
                 {
                     return Err(invalid("owned metadata namespace identity or type differs"));
                 }
             }
-            if input
-                .iter()
-                .flat_map(super::hard_links::paths)
-                .filter(|path| {
-                    path.len() == directory.components.len() + 1
-                        && path.starts_with(directory.components)
-                })
-                .any(|path| !seen.contains(path))
-            {
+            let complete = match expected_children.get(directory.components) {
+                Some(expected) => expected == &seen,
+                None => seen.is_empty(),
+            };
+            if !complete {
                 return Err(invalid("missing owned metadata namespace entry"));
             }
         }
         Ok(())
     };
     namespace(false)?;
-    let mut ordered: Vec<_> = input.iter().enumerate().collect();
-    ordered.sort_by_key(|(_, i)| i.components.len());
+    let mut ordered = Vec::new();
+    input.for_each(|index, item| {
+        ordered.push((index, item.components.len(), item.directory));
+        Ok(())
+    })?;
+    ordered.sort_by_key(|(_, depth, _)| *depth);
     let mut dacl_protection_updates = 0usize;
     let mut sacl_protection_updates = 0usize;
     // Finish every directory's inheritance propagation before restoring any
     // file. A shallow canonical file may also have a name under a deep parent.
-    for &(index, item) in ordered
+    for &(index, _, _) in ordered
         .iter()
-        .filter(|(_, item)| item.directory)
-        .chain(ordered.iter().filter(|(_, item)| !item.directory))
+        .filter(|(_, _, directory)| *directory)
+        .chain(ordered.iter().filter(|(_, _, directory)| !*directory))
     {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        let item = &view;
         let handle = &handles[&index];
         if info(handle, 18, 24)? != identities[&index] {
             return Err(invalid(
@@ -294,7 +353,10 @@ pub(super) fn complete_owned_metadata(
     // hard-link name. Native mutation precedes final timestamp restoration.
     let mut ea_objects = 0usize;
     let mut ea_entries = 0usize;
-    for &(index, item) in &ordered {
+    for &(index, _, _) in &ordered {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        let item = &view;
         if let Some(expected) = item.extended_attributes {
             let handle = &handles[&index];
             if info(handle, 18, 24)? != identities[&index] {
@@ -310,7 +372,10 @@ pub(super) fn complete_owned_metadata(
     // Install points only after all parent-first ACL propagation has finished;
     // no security operation may traverse a newly installed junction target.
     let mut reparse_objects = 0usize;
-    for &(index, item) in &ordered {
+    for &(index, _, _) in &ordered {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        let item = &view;
         if let Some(point) = item.reparse {
             let handle = &handles[&index];
             if info(handle, 18, 24)? != identities[&index] {
@@ -328,7 +393,10 @@ pub(super) fn complete_owned_metadata(
         }
     }
     // Reverse depth order finalizes root last, using the same held handles.
-    for &(index, item) in ordered.iter().rev() {
+    for &(index, _, _) in ordered.iter().rev() {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        let item = &view;
         let handle = &handles[&index];
         if info(handle, 18, 24)? != identities[&index] {
             return Err(invalid("owned identity changed before basic restoration"));
@@ -340,7 +408,10 @@ pub(super) fn complete_owned_metadata(
     }
     volume.sync_all()?;
     namespace(true)?;
-    for (index, item) in input.iter().enumerate() {
+    for index in 0..input.len() {
+        let owned = input.object(index)?;
+        let view = owned.input();
+        let item = &view;
         let handle = &handles[&index];
         let actual = metadata_snapshot(handle, item);
         if query_bytes(&actual, 18, 24)? != identities[&index]
@@ -352,7 +423,8 @@ pub(super) fn complete_owned_metadata(
             return Err(invalid("final owned source metadata readback differs"));
         }
         if let Some(mapping) = mappings.get(&index) {
-            if crate::stream_native::retrieval_capture(handle)?.canonical != *mapping {
+            let canonical = crate::stream_native::retrieval_capture(handle)?.canonical;
+            if canonical.len() != mapping.0 || Sha256::digest(&canonical) != mapping.1 {
                 return Err(invalid(
                     "payload mapping changed during owned metadata completion",
                 ));

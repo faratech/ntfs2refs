@@ -1,10 +1,19 @@
 //! Supply recognized small system streams before final source metadata is
 //! restored. User prefixes remain private/source-backed and are not rewritten.
+use super::super::input_domain::{InputDomain, ObjectInput, SliceInputs};
 use super::*;
 
 pub(super) fn run(
     tree: &mut PrivateTree,
     input: &[Input<'_>],
+    writer: &mut dyn FnMut(usize, &mut File) -> io::Result<()>,
+) -> io::Result<serde_json::Value> {
+    run_domain(tree, &SliceInputs(input), writer)
+}
+
+pub(super) fn run_domain(
+    tree: &mut PrivateTree,
+    input: &impl InputDomain,
     writer: &mut dyn FnMut(usize, &mut File) -> io::Result<()>,
 ) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
@@ -18,10 +27,12 @@ pub(super) fn run(
     }
     let system = "System Volume Information";
     let mut total = 0u64;
-    for item in input
-        .iter()
-        .filter(|i| i.components.first().is_some_and(|s| s == system))
-    {
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
+        if !item.components.first().is_some_and(|s| s == system) {
+            continue;
+        }
         if item.directory {
             if item.components != [system] {
                 return Err(invalid("nested system directory unsupported"));
@@ -48,9 +59,7 @@ pub(super) fn run(
     let root = format!("{}\\", tree.pair.shadow.volume_path()?);
     let private = private_descriptor()?;
     let mut receipts = Vec::new();
-    if input
-        .iter()
-        .any(|i| i.directory && i.components == [system])
+    if input.any(|i| i.directory && i.components == [system])?
         && !tree.system_identities.contains_key(&vec![system.into()])
     {
         let components = vec![system.to_owned()];
@@ -79,17 +88,17 @@ pub(super) fn run(
             query_bytes(&snapshot(&file), 18, 24)?[8..24].to_vec(),
         );
         let index = input
-            .iter()
-            .position(|i| i.directory && i.components == [system])
+            .position(|i| i.directory && i.components == [system])?
             .ok_or_else(|| invalid("system directory input absent"))?;
         tree.metadata_targets
             .insert(index, open(&format!("{root}{system}"), true, true)?);
     }
-    for (index, item) in input
-        .iter()
-        .enumerate()
-        .filter(|(_, i)| !i.directory && i.components.first().is_some_and(|s| s == system))
-    {
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
+        if item.directory || !item.components.first().is_some_and(|s| s == system) {
+            continue;
+        }
         let path = format!("{root}{}", item.components.join("\\"));
         if let Some(id) = tree.system_identities.get(item.components) {
             let mut file = open(&path, false, true)?;

@@ -348,6 +348,7 @@ pub fn verify_and_capture(
         None,
         crate::verification_policy::VerificationPolicy::FullContent,
         None,
+        None,
     )?;
     let capture = SourceBackedShadow::new(
         source,
@@ -1016,6 +1017,7 @@ pub fn verify_and_select(
         None,
         None,
         crate::verification_policy::VerificationPolicy::FullContent,
+        None,
     )
 }
 
@@ -1050,6 +1052,7 @@ pub fn verify_and_select_with_budget(
         Some(budget),
         Some(guard),
         crate::verification_policy::VerificationPolicy::FullContent,
+        None,
     )
 }
 
@@ -1070,6 +1073,43 @@ pub fn verify_and_select_with_policy(
     capture_budget: Option<CaptureBudget>,
     capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
     policy: crate::verification_policy::VerificationPolicy,
+) -> Result<FrozenAllocationTargetPreservation> {
+    verify_and_select_with_paged_policy(
+        source,
+        target,
+        pair,
+        raw,
+        source_views,
+        source_sha256,
+        resources,
+        packed_path,
+        max_changed_bytes,
+        events,
+        capture_budget,
+        capture_guard,
+        policy,
+        None,
+    )
+}
+
+/// The fresh allocation constructor transfers its actual held expected-page
+/// owner through the protected target observation; reports cannot replace it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_and_select_with_paged_policy(
+    source: &mut GeneralFrozenPartition,
+    target: &mut GeneralFrozenPartition,
+    pair: GeneralSourceShadowBinding,
+    raw: &ntfs_inspect::NtfsInspection,
+    source_views: &ntfs_source_view::Analysis,
+    source_sha256: &str,
+    resources: ResourceProfile,
+    packed_path: &Path,
+    max_changed_bytes: u64,
+    events: &mut Vec<NativeEvent>,
+    capture_budget: Option<CaptureBudget>,
+    capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
+    policy: crate::verification_policy::VerificationPolicy,
+    expected_pages: Option<&shadow_tree::PagedExpectedTree>,
 ) -> Result<FrozenAllocationTargetPreservation> {
     ensure!(
         capture_budget.is_some() == capture_guard.is_some(),
@@ -1096,6 +1136,7 @@ pub fn verify_and_select_with_policy(
         capture_budget,
         capture_guard,
         policy,
+        expected_pages,
     )
 }
 
@@ -1114,6 +1155,7 @@ fn verify_and_select_inner(
     capture_budget: Option<CaptureBudget>,
     mut capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
     policy: crate::verification_policy::VerificationPolicy,
+    expected_pages: Option<&shadow_tree::PagedExpectedTree>,
 ) -> Result<FrozenAllocationTargetPreservation> {
     if let Some(budget) = capture_budget {
         if !budget.selected_capacity_policy.is_conservative() {
@@ -1155,6 +1197,7 @@ fn verify_and_select_inner(
             budget: capture_budget,
             guard: capture_guard.take(),
         }),
+        expected_pages,
     )?;
     let ClosingAllocationCapture {
         selection,
@@ -1426,6 +1469,7 @@ fn protected_prefix(
     max_literal_backing_bytes: Option<u64>,
     policy: crate::verification_policy::VerificationPolicy,
     closing_request: Option<AllocationCaptureRequest<'_>>,
+    expected_pages: Option<&shadow_tree::PagedExpectedTree>,
 ) -> Result<ProtectedPrefix> {
     pair.validate_with_resource_profile(resources.native_profile())?;
     ensure!(
@@ -1486,9 +1530,26 @@ fn protected_prefix(
     let source_views_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(source_views)?));
     let mut tree = shadow_tree::derive_ordinary_with_resource_profile(raw, resources)?;
     tree.bind_security_views(source_views)?;
-    let expected = shadow_tree::ExpectedTree::from(&tree);
-    expected.validate_with_resource_profile(resources)?;
-    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(&expected)?));
+    // Tree and ExpectedTree have the same canonical field order. Compare the
+    // independently reconstructed source semantics with the actual held pages
+    // without cloning the complete object collection into another tree.
+    let expected_tree_sha256 = crate::general_qualification::pretty_json_sha256(&tree)?;
+    let inline_expected = expected_pages
+        .is_none()
+        .then(|| shadow_tree::ExpectedTree::from(&tree));
+    let expected = match (expected_pages, &inline_expected) {
+        (Some(pages), None) => {
+            pages.revalidate()?;
+            ensure!(
+                pages.semantic_sha256() == expected_tree_sha256,
+                "protected target pages differ from the complete source-derived semantics"
+            );
+            shadow_tree::ExpectedTreeView::Paged(pages)
+        }
+        (None, Some(inline)) => shadow_tree::ExpectedTreeView::Inline(inline),
+        _ => anyhow::bail!("protected target expectation ownership is ambiguous"),
+    };
+    shadow_tree::validate_expected_domain(&expected, resources)?;
     let limits = resources.limits();
     let mut residual_budget = ntfs_inspect::StreamTransferBudget::new(
         limits.maximum_stream_bytes,

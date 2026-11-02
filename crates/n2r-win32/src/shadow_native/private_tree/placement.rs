@@ -1,5 +1,6 @@
 //! Tree-wide zero-VDL allocation and original-coordinate placement. Only the
 //! independent shadow moves; source data and conversion authority are absent.
+use super::super::input_domain::{InputDomain, ObjectInput, SliceInputs};
 use super::*;
 use crate::{bitmap_observation::Observation, retention_layout, shadow_evacuation};
 
@@ -152,7 +153,7 @@ fn placement_path(tree: &PrivateTree, key: &StreamKey, item: &Input<'_>) -> io::
 /// Slots are temporary planner IDs. A default stream keeps its historical
 /// object index; every named stream has a distinct synthetic slot. No two
 /// slots may reach the same placeholder or discard a placeholder entirely.
-fn validate_stream_slots(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<()> {
+fn validate_stream_slots(tree: &PrivateTree, input: &impl InputDomain) -> io::Result<()> {
     if tree.stream_slots.len() != tree.files.len() {
         return Err(invalid(
             "stream placement slot/placeholder coverage differs",
@@ -169,13 +170,15 @@ fn validate_stream_slots(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<
         {
             return Err(invalid("stream placement slot is ambiguous or misbound"));
         }
-        let original = streams::view(input, key)?;
+        let owner = input.object(key.object_index)?;
+        let object = owner.input();
+        let original = streams::view_object(&object, &key.name_utf16)?;
         let needs_carrier = original.sparse.is_some()
             || (!key.name_utf16.is_empty() && original.logical_length() >= 4096);
         if needs_carrier != tree.sparse_targets.contains_key(key) {
             return Err(invalid("stream and carrier association differs"));
         }
-        let stream = tree.placement_view(input, key)?;
+        let stream = tree.placement_view_object(&object, key)?;
         if stream.directory || stream.sparse.is_some() {
             return Err(invalid("directory carries a data placement slot"));
         }
@@ -184,7 +187,9 @@ fn validate_stream_slots(tree: &PrivateTree, input: &[Input<'_>]) -> io::Result<
         return Err(invalid("stream placement omits a placeholder"));
     }
     for (key, target) in &tree.sparse_targets {
-        let original = streams::view(input, key)?;
+        let owner = input.object(key.object_index)?;
+        let object = owner.input();
+        let original = streams::view_object(&object, &key.name_utf16)?;
         target.layout.validate(target.logical_length)?;
         let layout_matches = if target.sparse_mode {
             original.sparse == Some(&target.layout)
@@ -836,8 +841,17 @@ pub(super) fn run(
     max_move_bytes: u64,
     max_moves: usize,
 ) -> io::Result<serde_json::Value> {
+    run_domain(tree, &SliceInputs(input), max_move_bytes, max_moves)
+}
+
+pub(super) fn run_domain(
+    tree: &mut PrivateTree,
+    input: &impl InputDomain,
+    max_move_bytes: u64,
+    max_moves: usize,
+) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
-    tree.require_bound_input(input)?;
+    tree.require_bound_input_domain(input)?;
     validate_limits(max_move_bytes, max_moves)?;
     if tree.placement_started {
         return Err(invalid(
@@ -911,7 +925,9 @@ pub(super) fn run(
             .files
             .get(key)
             .ok_or_else(|| invalid("stream placement placeholder absent"))?;
-        let item = tree.placement_view(input, key)?;
+        let owner = input.object(key.object_index)?;
+        let object = owner.input();
+        let item = tree.placement_view_object(&object, key)?;
         let path = placement_path(tree, key, &item)?;
         if item.directory
             || file.path != path

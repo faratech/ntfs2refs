@@ -20,6 +20,24 @@ use std::{
 mod allocation;
 pub use allocation::{CapturedDeltaAllocationDiagnostic, ProtectedAllocationCoverage};
 
+fn validate_expected_owner(
+    expected: &impl shadow_tree::ExpectedObjectDomain,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<()> {
+    expected.revalidate_domain()?;
+    shadow_tree::validate_expected_domain(expected, resources)?;
+    if let Some(admission) = resources
+        .count_admission()?
+        .filter(|a| a.requires_paged_metadata())
+    {
+        expected.require_paged_metadata(
+            admission.expected_page_budget()?,
+            u64::from(admission.maximum_expected_tree_bytes),
+        )?;
+    }
+    Ok(())
+}
+
 fn bracket_image<R: Read + Seek, T>(
     image: &mut R,
     length: u64,
@@ -121,7 +139,7 @@ impl ProtectedTargetLayout {
 pub fn verify_frozen_layout_with_resource_profile(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     resources: crate::ntfs_admission::ResourceProfile,
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetLayout> {
@@ -133,7 +151,7 @@ pub fn verify_frozen_layout_with_resource_profile(
 pub fn verify_frozen_layout_residuals_with_resource_profile(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     resources: crate::ntfs_admission::ResourceProfile,
     residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
     events: &mut Vec<NativeEvent>,
@@ -144,13 +162,13 @@ pub fn verify_frozen_layout_residuals_with_resource_profile(
 fn verify_frozen_layout_profile(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     resources: crate::ntfs_admission::ResourceProfile,
     residuals: Option<&[n2r_win32::shadow_native::LayoutResidualExpectation]>,
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetLayout> {
     pair.validate_with_resource_profile(resources.native_profile())?;
-    expected.validate_with_resource_profile(resources)?;
+    validate_expected_owner(expected, resources)?;
     ensure!(
         target.binding() == &pair.shadow,
         "protected layout target binding differs"
@@ -160,14 +178,8 @@ fn verify_frozen_layout_profile(
         before.disk_attributes == 3,
         "layout observation requires a frozen target"
     );
-    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?));
-    let tree = shadow_tree::Tree {
-        profile: resources.ordinary_shadow_profile(),
-        objects: expected.objects.clone(),
-        logical_bytes: expected.logical_bytes,
-        internal_replacement_pending: expected.internal_replacement_pending.clone(),
-    };
-    let input = general_shadow::native_inputs(&tree);
+    let expected_tree_sha256 = crate::general_qualification::pretty_json_sha256(expected)?;
+    let input = general_shadow::ExpectedInputs(expected);
     let length = target.byte_len();
     let ((native, anchors), raw_sha256) =
         bracket_image_with_resource_profile(target, length, resources, |target| {
@@ -176,7 +188,7 @@ fn verify_frozen_layout_profile(
                     .map_err(|error| std::io::Error::other(error.to_string()))
             };
             let native = match residuals {
-                Some(residuals) => target.observe_refs_layout_residuals_with_resource_profile(
+                Some(residuals) => target.observe_refs_layout_residuals_domain(
                     pair.clone(),
                     &input,
                     residuals,
@@ -184,7 +196,7 @@ fn verify_frozen_layout_profile(
                     resources.native_profile(),
                     events,
                 )?,
-                None => target.observe_refs_layout_with_resource_profile(
+                None => target.observe_refs_layout_domain(
                     pair.clone(),
                     &input,
                     same_security,
@@ -211,6 +223,7 @@ fn verify_frozen_layout_profile(
     let routes =
         n2r_win32::shadow_native::private_tree::SourceBackedRoutes::from_protected_layout(&native)?;
     let allocation_coverage = allocation::reconcile(&native, anchors, &raw_sha256, length)?;
+    expected.revalidate_domain()?;
     Ok(ProtectedTargetLayout {
         native,
         raw_sha256,
@@ -371,13 +384,13 @@ fn close_allocated_bracket(
 pub fn verify_frozen_layout_residuals_allocation_closed(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     resources: crate::ntfs_admission::ResourceProfile,
     residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetLayout> {
     pair.validate_with_resource_profile(resources.native_profile())?;
-    expected.validate_with_resource_profile(resources)?;
+    validate_expected_owner(expected, resources)?;
     ensure!(
         target.binding() == &pair.shadow,
         "protected layout target binding differs"
@@ -387,14 +400,8 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
         before.disk_attributes == 3,
         "layout observation requires a frozen target"
     );
-    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?));
-    let tree = shadow_tree::Tree {
-        profile: resources.ordinary_shadow_profile(),
-        objects: expected.objects.clone(),
-        logical_bytes: expected.logical_bytes,
-        internal_replacement_pending: expected.internal_replacement_pending.clone(),
-    };
-    let input = general_shadow::native_inputs(&tree);
+    let expected_tree_sha256 = crate::general_qualification::pretty_json_sha256(expected)?;
+    let input = general_shadow::ExpectedInputs(expected);
     let length = target.byte_len();
     let witness = target.observe_refs_allocation_readonly(resources.native_profile(), events)?;
     target.validate_readonly_allocation_witness(&witness, events)?;
@@ -412,7 +419,7 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
         ntfs_attestation::same_security(a, b)
             .map_err(|error| std::io::Error::other(error.to_string()))
     };
-    let native = target.observe_refs_layout_residuals_with_resource_profile(
+    let native = target.observe_refs_layout_residuals_domain(
         pair.clone(),
         &input,
         residuals,
@@ -452,6 +459,7 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
         target.state(events)? == before,
         "protected allocation bracket changed persistent exclusion"
     );
+    expected.revalidate_domain()?;
     Ok(ProtectedTargetLayout {
         native,
         raw_sha256,
@@ -485,7 +493,7 @@ pub fn verify_frozen_layout_residuals_allocation_closed(
 pub fn verify_frozen_layout_residuals_allocation_closed_with_policy(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     resources: crate::ntfs_admission::ResourceProfile,
     residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
     events: &mut Vec<NativeEvent>,
@@ -800,7 +808,7 @@ impl crate::general_shadow::source_backed::ClosingShadowBytes for ClosingShadowC
 fn verify_nonrouted_allocation_closed(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     resources: crate::ntfs_admission::ResourceProfile,
     residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
     events: &mut Vec<NativeEvent>,
@@ -820,7 +828,7 @@ fn verify_nonrouted_allocation_closed(
 pub(crate) fn verify_nonrouted_allocation_closed_with_consumption<T>(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     resources: crate::ntfs_admission::ResourceProfile,
     residuals: &[n2r_win32::shadow_native::LayoutResidualExpectation],
     events: &mut Vec<NativeEvent>,
@@ -832,7 +840,7 @@ pub(crate) fn verify_nonrouted_allocation_closed_with_consumption<T>(
     ) -> Result<T>,
 ) -> Result<(ProtectedTargetLayout, T)> {
     pair.validate_with_resource_profile(resources.native_profile())?;
-    expected.validate_with_resource_profile(resources)?;
+    validate_expected_owner(expected, resources)?;
     ensure!(
         target.binding() == &pair.shadow,
         "protected layout target binding differs"
@@ -843,14 +851,8 @@ pub(crate) fn verify_nonrouted_allocation_closed_with_consumption<T>(
         "layout observation requires a frozen target"
     );
     let length = target.byte_len();
-    let expected_tree_sha256 = hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?));
-    let tree = shadow_tree::Tree {
-        profile: resources.ordinary_shadow_profile(),
-        objects: expected.objects.clone(),
-        logical_bytes: expected.logical_bytes,
-        internal_replacement_pending: expected.internal_replacement_pending.clone(),
-    };
-    let input = general_shadow::native_inputs(&tree);
+    let expected_tree_sha256 = crate::general_qualification::pretty_json_sha256(expected)?;
+    let input = general_shadow::ExpectedInputs(expected);
     let same_security = |a: &[u8], b: &[u8]| {
         ntfs_attestation::same_security(a, b)
             .map_err(|error| std::io::Error::other(error.to_string()))
@@ -858,7 +860,7 @@ pub(crate) fn verify_nonrouted_allocation_closed_with_consumption<T>(
     // Routes must exist before exclusions are chosen. A preliminary full
     // native metadata observation replaces no bracket; the second complete
     // observation below is still enclosed by both raw consumed-byte passes.
-    let preliminary = target.observe_refs_layout_residuals_with_resource_profile(
+    let preliminary = target.observe_refs_layout_residuals_domain(
         pair.clone(),
         &input,
         residuals,
@@ -970,7 +972,7 @@ pub(crate) fn verify_nonrouted_allocation_closed_with_consumption<T>(
     })?;
     let (raw_sha256, opening_hash_counts) =
         hash_consumed_chunks(target, length, &excluded_payload_map_sha256, &chunks)?;
-    let native = target.observe_refs_layout_residuals_with_resource_profile(
+    let native = target.observe_refs_layout_residuals_domain(
         pair.clone(),
         &input,
         residuals,
@@ -1035,6 +1037,7 @@ pub(crate) fn verify_nonrouted_allocation_closed_with_consumption<T>(
         "protected layout observation changed identity or exclusion"
     );
     allocation_coverage.bind_routed_payload_bracket(&raw_sha256, &excluded_payload_map_sha256);
+    expected.revalidate_domain()?;
     Ok((
         ProtectedTargetLayout {
             native,
@@ -1082,7 +1085,7 @@ pub(crate) fn verify_nonrouted_allocation_closed_with_consumption<T>(
 pub fn verify_frozen_tree(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetSemantics> {
     verify_frozen_tree_with_resource_profile(
@@ -1097,12 +1100,12 @@ pub fn verify_frozen_tree(
 pub fn verify_frozen_tree_with_resource_profile(
     target: &mut GeneralFrozenPartition,
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     resources: crate::ntfs_admission::ResourceProfile,
     events: &mut Vec<NativeEvent>,
 ) -> Result<ProtectedTargetSemantics> {
     pair.validate_with_resource_profile(resources.native_profile())?;
-    expected.validate_with_resource_profile(resources)?;
+    validate_expected_owner(expected, resources)?;
     ensure!(
         target.binding() == &pair.shadow,
         "protected target binding differs"
@@ -1112,16 +1115,10 @@ pub fn verify_frozen_tree_with_resource_profile(
         before.disk_attributes == 3,
         "target must be frozen before semantic observation"
     );
-    let tree = shadow_tree::Tree {
-        profile: resources.ordinary_shadow_profile(),
-        objects: expected.objects.clone(),
-        logical_bytes: expected.logical_bytes,
-        internal_replacement_pending: expected.internal_replacement_pending.clone(),
-    };
-    let input = general_shadow::native_inputs(&tree);
+    let input = general_shadow::ExpectedInputs(expected);
     let length = target.byte_len();
     let observe = |target: &mut GeneralFrozenPartition| {
-        Ok(target.observe_refs_files_with_resource_profile(
+        Ok(target.observe_refs_files_domain(
             pair,
             &input,
             |a, b| {
@@ -1142,10 +1139,11 @@ pub fn verify_frozen_tree_with_resource_profile(
         native.before() == &before && native.after() == &before && target.state(events)? == before,
         "protected target observation changed persistent exclusion"
     );
+    expected.revalidate_domain()?;
     Ok(ProtectedTargetSemantics {
         native,
         target_sha256,
-        expected_tree_sha256: hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?)),
+        expected_tree_sha256: crate::general_qualification::pretty_json_sha256(expected)?,
         frozen_state: before,
     })
 }
@@ -1153,19 +1151,19 @@ pub fn verify_frozen_tree_with_resource_profile(
 /// Qualify the same protected contract without source admission or writes.
 pub fn observe_frozen_run(
     pair: GeneralSourceShadowBinding,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     output: &Path,
 ) -> Result<()> {
     use crate::general_qualification as artifacts;
     pair.validate()?;
-    expected.validate()?;
+    validate_expected_owner(expected, crate::ntfs_admission::ResourceProfile::AlphaV1)?;
     artifacts::create_output(output)?;
     artifacts::save(
         output,
         "intent.json",
         &serde_json::json!({
         "kind":"protected-frozen-target-observation-intent","pair":pair,
-        "expected_tree_sha256":hex::encode(Sha256::digest(serde_json::to_vec_pretty(expected)?)),
+        "expected_tree_sha256":crate::general_qualification::pretty_json_sha256(expected)?,
         "source_admission_authorized":false,"raw_writes_authorized":false}),
     )?;
     let mut events = Vec::new();
@@ -1186,7 +1184,7 @@ pub fn observe_frozen_run(
             "result.json",
             &serde_json::json!({
             "kind":"protected-frozen-target-observation","success":true,
-            "target_sha256":proof.target_sha256(),"objects":expected.objects.len(),
+            "target_sha256":proof.target_sha256(),"objects":expected.object_count(),
             "frozen_image_unchanged":true,"disk_left_offline_read_only":true,
             "source_admission_authorized":false,"raw_writes_authorized":false}),
         )?;
@@ -1300,7 +1298,7 @@ pub fn verify_and_freeze(
     let mut tree = shadow_tree::derive_ordinary_with_resource_profile(raw, resources)?;
     tree.bind_security_views(source_views)?;
     let expected = shadow_tree::ExpectedTree::from(&tree);
-    expected.validate_with_resource_profile(resources)?;
+    validate_expected_owner(&expected, resources)?;
     let mut target = if reuse_frozen {
         ensure!(
             resources == crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2,
@@ -1412,7 +1410,7 @@ pub fn verify_and_freeze(
         inspection_sha256,
         source_sha256: source_sha256.into(),
         target_sha256,
-        expected_tree_sha256: hex::encode(Sha256::digest(serde_json::to_vec_pretty(&expected)?)),
+        expected_tree_sha256: crate::general_qualification::pretty_json_sha256(&expected)?,
         native,
         target_sha256_before_observation,
         before,

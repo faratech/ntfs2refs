@@ -69,39 +69,142 @@ pub fn native_inputs(tree: &crate::shadow_tree::Tree) -> Vec<n2r_win32::shadow_n
 pub(crate) fn native_inputs_from_objects(
     objects: &[crate::shadow_tree::Object],
 ) -> Vec<n2r_win32::shadow_native::Input<'_>> {
-    objects
-        .iter()
-        .map(|object| n2r_win32::shadow_native::Input {
-            components: &object.path,
-            additional_names: &object.additional_names,
-            sparse: object.sparse.as_ref(),
-            named_streams: native_named_streams(object),
-            directory: object.directory,
-            times: object.stored_times,
-            attributes: object.attributes,
-            security: &object.security,
-            expected_api_security: object.api_security.as_deref(),
-            extended_attributes: object.extended_attributes.as_ref(),
-            reparse: object.reparse.as_ref(),
-            payload: &[],
-            expected_length: (!object.directory).then_some(object.length),
-            expected_sha256: if object.directory {
-                None
-            } else {
-                object.sha256.as_deref()
-            },
-            source_offset: object.source_offset,
-            source_runs: object
-                .source_extents
-                .iter()
-                .map(|run| n2r_win32::shadow_native::SourceRun {
-                    logical_offset: run.logical_offset,
-                    physical_offset: run.physical_offset,
-                    length: run.length,
-                })
-                .collect(),
-        })
-        .collect()
+    objects.iter().map(native_object_input).collect()
+}
+
+fn native_object_input(object: &crate::shadow_tree::Object) -> n2r_win32::shadow_native::Input<'_> {
+    n2r_win32::shadow_native::Input {
+        components: &object.path,
+        additional_names: &object.additional_names,
+        sparse: object.sparse.as_ref(),
+        named_streams: native_named_streams(object),
+        directory: object.directory,
+        times: object.stored_times,
+        attributes: object.attributes,
+        security: &object.security,
+        expected_api_security: object.api_security.as_deref(),
+        extended_attributes: object.extended_attributes.as_ref(),
+        reparse: object.reparse.as_ref(),
+        payload: &[],
+        expected_length: (!object.directory).then_some(object.length),
+        expected_sha256: if object.directory {
+            None
+        } else {
+            object.sha256.as_deref()
+        },
+        source_offset: object.source_offset,
+        source_runs: object
+            .source_extents
+            .iter()
+            .map(|run| n2r_win32::shadow_native::SourceRun {
+                logical_offset: run.logical_offset,
+                physical_offset: run.physical_offset,
+                length: run.length,
+            })
+            .collect(),
+    }
+}
+
+impl n2r_win32::shadow_native::input_domain::ObjectInput for crate::shadow_tree::Object {
+    fn input(&self) -> n2r_win32::shadow_native::Input<'_> {
+        native_object_input(self)
+    }
+}
+impl n2r_win32::shadow_native::input_domain::ObjectInput for &crate::shadow_tree::Object {
+    fn input(&self) -> n2r_win32::shadow_native::Input<'_> {
+        native_object_input(self)
+    }
+}
+
+pub(crate) struct TreeInputs<'a>(pub &'a crate::shadow_tree::Tree);
+impl<'a> n2r_win32::shadow_native::input_domain::InputDomain for TreeInputs<'a> {
+    type Object = &'a crate::shadow_tree::Object;
+    fn len(&self) -> usize {
+        self.0.objects.len()
+    }
+    fn object(&self, index: usize) -> std::io::Result<Self::Object> {
+        self.0
+            .objects
+            .get(index)
+            .ok_or_else(|| std::io::Error::other("canonical object ordinal absent"))
+    }
+}
+
+pub(crate) struct PagedInputs<'a>(pub &'a crate::shadow_tree::PagedExpectedTree);
+impl n2r_win32::shadow_native::input_domain::InputDomain for PagedInputs<'_> {
+    type Object = crate::shadow_tree::Object;
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn object(&self, index: usize) -> std::io::Result<Self::Object> {
+        self.0.object(index).map_err(std::io::Error::other)
+    }
+    fn require_paged_metadata(
+        &self,
+        budget: n2r_win32::metadata_pages::PageBudget,
+        semantic_bytes: u64,
+    ) -> std::io::Result<()> {
+        if self.0.budget() != budget || self.0.semantic_byte_budget() != semantic_bytes {
+            return Err(std::io::Error::other(
+                "paged constructor resource ownership differs from source admission",
+            ));
+        }
+        self.0.revalidate().map_err(std::io::Error::other)
+    }
+}
+
+/// Native views borrow inline objects or own one decoded paged object. The
+/// expected domain retains its authenticated owner throughout each operation.
+pub(crate) struct ExpectedInputs<'a, D: crate::shadow_tree::ExpectedObjectDomain>(pub &'a D);
+
+pub(crate) struct ExpectedObject<'a>(std::borrow::Cow<'a, crate::shadow_tree::Object>);
+impl n2r_win32::shadow_native::input_domain::ObjectInput for ExpectedObject<'_> {
+    fn input(&self) -> n2r_win32::shadow_native::Input<'_> {
+        native_object_input(self.0.as_ref())
+    }
+}
+
+impl<'a, D: crate::shadow_tree::ExpectedObjectDomain>
+    n2r_win32::shadow_native::input_domain::InputDomain for ExpectedInputs<'a, D>
+{
+    type Object = ExpectedObject<'a>;
+    fn len(&self) -> usize {
+        self.0.object_count()
+    }
+    fn object(&self, index: usize) -> std::io::Result<Self::Object> {
+        let domain: &'a D = self.0;
+        domain
+            .object(index)
+            .map(ExpectedObject)
+            .map_err(std::io::Error::other)
+    }
+    fn require_paged_metadata(
+        &self,
+        budget: n2r_win32::metadata_pages::PageBudget,
+        semantic_bytes: u64,
+    ) -> std::io::Result<()> {
+        self.0
+            .require_paged_metadata(budget, semantic_bytes)
+            .map_err(std::io::Error::other)
+    }
+}
+
+pub(crate) fn allocate_private_tree_enrolled_domain(
+    source: &n2r_win32::GeneralFrozenPartition,
+    pair: &GeneralSourceShadowBinding,
+    input: &impl n2r_win32::shadow_native::input_domain::InputDomain,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<n2r_win32::shadow_native::private_tree::PrivateTree> {
+    let enrollment = n2r_win32::shadow_native::private_tree::enroll(source, pair)?;
+    Ok(
+        n2r_win32::shadow_native::private_tree::allocate_enrolled_domain(
+            enrollment,
+            input,
+            resources
+                .native_profile()
+                .context("enrolled construction requires a native resource profile")?,
+        )?,
+    )
 }
 
 /// Allocation-only staging on the enrolled shadow, never source admission or
@@ -165,6 +268,24 @@ pub fn materialize_private_system_payloads(
     source: &mut n2r_win32::GeneralFrozenPartition,
     raw: &crate::ntfs_inspect::NtfsInspection,
     tree: &crate::shadow_tree::Tree,
+    template: &mut n2r_win32::shadow_native::private_tree::PrivateTree,
+    budget: &mut crate::ntfs_inspect::StreamTransferBudget,
+) -> Result<(serde_json::Value, Vec<u8>)> {
+    materialize_private_system_payloads_domain(
+        source,
+        raw,
+        tree,
+        &TreeInputs(tree),
+        template,
+        budget,
+    )
+}
+
+pub(crate) fn materialize_private_system_payloads_domain(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    raw: &crate::ntfs_inspect::NtfsInspection,
+    tree: &crate::shadow_tree::Tree,
+    input: &impl n2r_win32::shadow_native::input_domain::InputDomain,
     template: &mut n2r_win32::shadow_native::private_tree::PrivateTree,
     budget: &mut crate::ntfs_inspect::StreamTransferBudget,
 ) -> Result<(serde_json::Value, Vec<u8>)> {
@@ -247,7 +368,7 @@ pub fn materialize_private_system_payloads(
         receipts.push(proof);
         Ok(())
     };
-    let native = template.materialize_system_payloads(&native_inputs(tree), &mut writer)?;
+    let native = template.materialize_system_payloads_domain(input, &mut writer)?;
     drop(writer);
     let cache = selected
         .iter()

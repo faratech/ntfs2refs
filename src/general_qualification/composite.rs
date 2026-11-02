@@ -265,6 +265,7 @@ pub(crate) struct QualifiedAllocationTree {
     pub proof: general_composite_target::FrozenAllocationTargetPreservation,
     pub certificate: general_source_admission::AllocationCertificate,
     pub expected: Vec<u8>,
+    pub expected_pages: Option<shadow_tree::PagedExpectedTree>,
     pub mount_paths: n2r_win32::MountPathObservation,
     pub source_label: n2r_win32::volume_label::SourceLabel,
 }
@@ -361,17 +362,76 @@ pub(crate) fn prepare_allocation_fresh_selected(
             SourceDigest::NtfsAllocated,
             policy,
         )?;
+        // The paged owner remains held throughout construction and source
+        // certification. Native loops receive one authenticated object at a
+        // time; no Vec<Input> is reconstructed from these pages.
+        phase = "paged-native-expectation";
+        let count_admission = resources.count_admission()?;
+        let paged_admission = count_admission.filter(|value| value.requires_paged_metadata());
+        let expected_pages = if policy.is_fast() || paged_admission.is_some() {
+            let path = output.join("expectation.pages");
+            let receipt = if let Some(admission) = paged_admission {
+                shadow_tree::PagedExpectedTree::create_with_limits(
+                    &expected,
+                    &path,
+                    admission.expected_page_budget()?,
+                    u64::from(admission.maximum_expected_tree_bytes),
+                )?
+            } else {
+                let budget = n2r_win32::metadata_pages::PageBudget {
+                    max_page_bytes: 4 * 1024 * 1024,
+                    max_records_per_page: 128,
+                    max_records: u64::try_from(resources.maximum_objects())?
+                        .checked_add(1)
+                        .context("expected record budget overflow")?,
+                    max_pages: u64::try_from(resources.maximum_objects())?
+                        .checked_add(1)
+                        .context("expected page budget overflow")?,
+                    max_file_bytes: n2r_win32::tree_resources::EXPECTED_TREE_BYTES as u64,
+                };
+                shadow_tree::PagedExpectedTree::create(&expected, &path, budget)?
+            };
+            ensure!(
+                receipt.semantic_sha256 == expected_sha256,
+                "paged projection differs from the saved legacy expectation"
+            );
+            save(output, "expectation-pages.json", &receipt)?;
+            let pages = shadow_tree::PagedExpectedTree::open_with_limits(
+                &path,
+                &receipt.file_sha256,
+                &expected_sha256,
+                receipt.page_budget,
+                receipt.semantic_byte_budget,
+            )?;
+            pages.validate_with_resource_profile(resources)?;
+            Some(pages)
+        } else {
+            None
+        };
         phase = "native-shadow-construction";
-        let mut native_target = super::compact_construction::construct(
-            &mut source,
-            &pair,
-            &raw,
-            &tree,
-            output,
-            budget,
-            resources,
-            true,
-        )?;
+        let mut native_target = if let Some(pages) = &expected_pages {
+            super::compact_construction::construct_paged(
+                &mut source,
+                &pair,
+                &raw,
+                &tree,
+                pages,
+                output,
+                budget,
+                resources,
+            )?
+        } else {
+            super::compact_construction::construct(
+                &mut source,
+                &pair,
+                &raw,
+                &tree,
+                output,
+                budget,
+                resources,
+                true,
+            )?
+        };
         save(output, "target-freeze-events.json", &events)?;
         events.clear();
         phase = "allocation-bounded-target-preservation";
@@ -380,7 +440,7 @@ pub(crate) fn prepare_allocation_fresh_selected(
             .source_view
             .as_ref()
             .context("live allocation-bounded source views absent")?;
-        let proof = general_composite_target::verify_and_select_with_policy(
+        let proof = general_composite_target::verify_and_select_with_paged_policy(
             &mut source,
             &mut native_target,
             pair.clone(),
@@ -394,6 +454,7 @@ pub(crate) fn prepare_allocation_fresh_selected(
             capture_budget,
             capture_guard,
             policy,
+            expected_pages.as_ref(),
         )?;
         ensure!(
             proof.expected_tree_sha256() == expected_sha256,
@@ -403,6 +464,9 @@ pub(crate) fn prepare_allocation_fresh_selected(
         save(output, "target-events.json", &events)?;
         events.clear();
         phase = "allocation-bounded-source-certificate";
+        if let Some(pages) = &expected_pages {
+            pages.revalidate()?;
+        }
         let certificate = assessment.qualify_allocation_target(&raw, &proof)?;
         let certificate_sha256 = save(output, "certificate.json", &certificate)?;
         save(output, "admitted-assessment.json", &assessment)?;
@@ -428,6 +492,7 @@ pub(crate) fn prepare_allocation_fresh_selected(
             proof,
             certificate,
             expected: serde_json::to_vec_pretty(&expected)?,
+            expected_pages,
             mount_paths,
             source_label,
         })

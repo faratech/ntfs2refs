@@ -2603,6 +2603,122 @@ impl GeneralFrozenPartition {
         })
     }
 
+    pub fn observe_refs_files_domain(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsObservation> {
+        if let Some(admission) = resource_profile
+            .map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .filter(|value| value.requires_paged_metadata())
+        {
+            input.require_paged_metadata(
+                admission.expected_page_budget()?,
+                u64::from(admission.maximum_expected_tree_bytes),
+            )?;
+        }
+
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::verify_general_ordinary_readonly_domain(
+                    pair.clone(),
+                    input,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        Ok(GeneralLiveRefsObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    pub fn observe_refs_layout_domain(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        if let Some(admission) = resource_profile
+            .map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .filter(|value| value.requires_paged_metadata())
+        {
+            input.require_paged_metadata(
+                admission.expected_page_budget()?,
+                u64::from(admission.maximum_expected_tree_bytes),
+            )?;
+        }
+
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::observe_general_layout_readonly_domain(
+                    pair.clone(),
+                    input,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
+    pub fn observe_refs_layout_residuals_domain(
+        &mut self,
+        pair: crate::general_layout::GeneralSourceShadowBinding,
+        input: &impl crate::shadow_native::input_domain::InputDomain,
+        residuals: &[crate::shadow_native::LayoutResidualExpectation],
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        resource_profile: Option<crate::attestation::ResourceProfile>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveRefsLayoutObservation> {
+        if let Some(admission) = resource_profile
+            .map(crate::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten()
+            .filter(|value| value.requires_paged_metadata())
+        {
+            input.require_paged_metadata(
+                admission.expected_page_budget()?,
+                u64::from(admission.maximum_expected_tree_bytes),
+            )?;
+        }
+
+        let (report, before, observed_readonly, after) =
+            self.with_readonly_refs_observation(&pair, resource_profile, events, |protected| {
+                crate::shadow_native::observe_general_layout_residuals_readonly_domain(
+                    pair.clone(),
+                    input,
+                    residuals,
+                    &same_security,
+                    protected,
+                    resource_profile,
+                )
+            })?;
+        Ok(GeneralLiveRefsLayoutObservation {
+            report,
+            before,
+            observed_readonly,
+            after,
+        })
+    }
+
     fn with_readonly_refs_observation<T>(
         &mut self,
         pair: &crate::general_layout::GeneralSourceShadowBinding,

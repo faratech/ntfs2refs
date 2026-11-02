@@ -10,7 +10,31 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 21:03 UTC)
+## CURRENT release continuation (2026-11-02 21:48 UTC)
+
+VM fresh-confirmed Off/RAM0, parentgolden8329,32snapshots. No VM run is active.
+Authenticated metadata-page storage committed/pushed1379f04. The subsequent
+paged schema2 integration compiles for public CLI, native converter/recovery and
+lab-inspect-paged-metadata; NO unit tests added/run. Native qualification is
+PENDING; do not transfer the05c native result to this new source.
+
+New actual held expectation.pages owner flows through constructor, protected
+target proof, conversion, native readback and recovery. Objects span bounded
+chunks, preserving legacy16MiB semantic acceptance with separate wire budget.
+Fast recovery maps are paged; schema1JSON remains readable. Schema2budgets bind
+actual complete frozen raw counts/pin, available owning handles and exact page
+limits. LegacyWholeImage/full-baseline None stillchoosesSome1; allocationNone
+choosesSome2. Raw2048 domain and other memory/byte/range caps remain explicit.
+Actualpaged owner requiredSome2; noJSONflag can replace it. No handle batching.
+Namespace scalarindexes avoid repeatedwholeobjectdecodes perchild/directory.
+
+NEXT: finish NEW page-aware public observer controller (existing sealedhelpers
+unchanged), cleanbuild/seal exact committed source, qualify fresh native
+conversion then >1280object tree and independent original-state resume/rollback.
+See docs/paged-resource-metadata.md. All older evidence retained. Globalproduction
+marker flag staysFALSE; no stable/tag/broadscale claim. Mainc6unchanged.
+
+## Earlier release continuation (2026-11-02 21:03 UTC)
 
 This block supersedes all older CURRENT/LIVE labels. VM is confirmed Off/RAM0,
 parentgolden8329,32snapshots after explicitstandard-profile refusal. No VM/host

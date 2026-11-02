@@ -71,6 +71,18 @@ impl ResourceProfile {
         )
     }
 
+    /// Planning None is not native admission. It only permits the complete raw
+    /// inventory to be counted before a versioned descriptor is selected.
+    pub fn maximum_objects(self) -> usize {
+        match self {
+            Self::ExperimentalObjectEnvelopeV3(Some(a)) if a.requires_paged_metadata() => {
+                (a.object_slots as usize).min(crate::tree_resources::RAW_IDENTITIES)
+            }
+            Self::ExperimentalObjectEnvelopeV3(None) => crate::tree_resources::RAW_IDENTITIES,
+            _ => crate::tree_resources::OBJECT_SLOTS,
+        }
+    }
+
     pub fn count_admission(self) -> io::Result<Option<crate::tree_resources::CountAdmission>> {
         match self {
             Self::ExperimentalObjectEnvelopeV3(Some(admission)) => {

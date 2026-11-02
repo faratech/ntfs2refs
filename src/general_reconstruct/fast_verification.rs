@@ -8,10 +8,14 @@ use crate::{
     selected_journal,
 };
 use anyhow::{Context, ensure};
-use n2r_win32::{attestation::Snapshot, shadow_native::Report};
-use serde::ser::SerializeSeq;
+use n2r_win32::{attestation::Snapshot, metadata_pages, shadow_native::Report};
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+};
 
 type StreamKey = (Vec<String>, Vec<u16>);
 type StreamMaps = BTreeMap<StreamKey, StreamMap>;
@@ -29,6 +33,7 @@ pub(crate) struct FreshPayloadProof {
     ticket_sha256: String,
     tail_extent_streams: usize,
     tail_payload_bytes_verified: u64,
+    map_page_budget: metadata_pages::PageBudget,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,52 +112,328 @@ pub(crate) struct RecoveryPayloadManifest {
     initial_retained_content_digests_available: bool,
 }
 
-/// Same field order and JSON sequence representation as the owned reader
-/// schema, borrowing the canonical proof instead of cloning a second map set.
-#[derive(Serialize)]
-pub(crate) struct RecoveryPayloadManifestRef<'a> {
+const MAP_PAGE_PURPOSE: [u8; 8] = *b"MAPREF01";
+pub(crate) const PAGED_MAP_FILENAME: &str = "recovery-payload-manifest.pages";
+
+fn map_page_budget(
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<metadata_pages::PageBudget> {
+    if let Some(admission) = resources
+        .count_admission()?
+        .filter(|a| a.requires_paged_metadata())
+    {
+        return Ok(admission.map_page_budget()?);
+    }
+    Ok(metadata_pages::PageBudget {
+        max_page_bytes: 4 * 1024 * 1024,
+        max_records_per_page: 128,
+        max_records: (n2r_win32::tree_resources::OBJECT_SLOTS
+            + n2r_win32::tree_resources::DATA_STREAMS
+            + 1) as u64,
+        max_pages: (n2r_win32::tree_resources::OBJECT_SLOTS
+            + n2r_win32::tree_resources::DATA_STREAMS
+            + 1) as u64,
+        max_file_bytes: super::selected_artifacts::Artifact::PayloadMap.maximum_bytes() as u64,
+    })
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MapManifestHeader {
     schema_version: u32,
-    kind: &'static str,
-    source: &'a n2r_win32::general_layout::GeneralDiskBinding,
-    expected_tree_sha256: &'a str,
-    plan_sha256: &'a str,
-    ticket_sha256: &'a str,
+    kind: String,
+    source: n2r_win32::general_layout::GeneralDiskBinding,
+    expected_tree_sha256: String,
+    plan_sha256: String,
+    ticket_sha256: String,
     base_sectors: u64,
     new_selected_sha256: [u8; 32],
     selected_bytes: u64,
     range_count: u32,
-    bindings: MapEntriesRef<'a>,
+    bindings_count: u64,
     grants_write_authority: bool,
     initial_retained_content_digests_available: bool,
-}
-
-struct MapEntriesRef<'a> {
-    native: &'a Report,
-    bindings: &'a [StreamLocation],
 }
 
 #[derive(Serialize)]
 struct MapEntryRef<'a> {
     components: &'a [String],
     name_utf16: &'a [u16],
-    map: StreamMapRef<'a>,
+    map: PagedStreamMapRef<'a>,
 }
 
-impl Serialize for MapEntriesRef<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut entries = serializer.serialize_seq(Some(self.bindings.len()))?;
-        for location in self.bindings {
-            let ((components, name_utf16), map) = location
-                .view(self.native)
-                .map_err(serde::ser::Error::custom)?;
-            entries.serialize_element(&MapEntryRef {
-                components,
-                name_utf16,
-                map,
-            })?;
+// The legacy byte-array JSON expands complete fragmented maps beyond one page.
+// This wire form preserves every byte and sparse range in less than 3MiB at
+// the existing native bounds; it is not an alternate mapping or admission.
+struct Base64Bytes<'a>(&'a [u8]);
+struct Base64Ranges<'a>(&'a [n2r_win32::sparse_layout::LogicalRange]);
+struct Base64Display<I>(I);
+impl<I: Iterator<Item = u8> + Clone> std::fmt::Display for Base64Display<I> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bytes = self.0.clone();
+        while let Some(a) = bytes.next() {
+            let b = bytes.next();
+            let c = bytes.next();
+            let encoded = [
+                ABC[(a >> 2) as usize],
+                ABC[(((a & 3) << 4) | (b.unwrap_or(0) >> 4)) as usize],
+                b.map_or(b'=', |b| {
+                    ABC[(((b & 15) << 2) | (c.unwrap_or(0) >> 6)) as usize]
+                }),
+                c.map_or(b'=', |c| ABC[(c & 63) as usize]),
+            ];
+            f.write_str(std::str::from_utf8(&encoded).map_err(|_| std::fmt::Error)?)?;
         }
-        entries.end()
+        Ok(())
     }
+}
+impl Serialize for Base64Bytes<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.collect_str(&Base64Display(self.0.iter().copied()))
+    }
+}
+impl Serialize for Base64Ranges<'_> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.collect_str(&Base64Display(self.0.iter().flat_map(|r| {
+            r.offset
+                .to_le_bytes()
+                .into_iter()
+                .chain(r.length.to_le_bytes())
+        })))
+    }
+}
+fn decode_base64(value: &str, maximum: usize) -> Result<Vec<u8>> {
+    let input = value.as_bytes();
+    ensure!(input.len().is_multiple_of(4), "map base64 length differs");
+    let padding = input.iter().rev().take_while(|b| **b == b'=').count();
+    ensure!(padding <= 2, "map base64 padding differs");
+    let length = input
+        .len()
+        .checked_div(4)
+        .and_then(|n| n.checked_mul(3))
+        .and_then(|n| n.checked_sub(padding))
+        .context("map base64 length overflow")?;
+    ensure!(length <= maximum, "decoded map field exceeds native bound");
+    let digit = |b: u8| -> Result<u8> {
+        Ok(match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => anyhow::bail!("noncanonical map base64 alphabet"),
+        })
+    };
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .context("decoded map storage unavailable")?;
+    for (index, chunk) in input.chunks_exact(4).enumerate() {
+        let last = index + 1 == input.len() / 4;
+        let a = digit(chunk[0])?;
+        let b = digit(chunk[1])?;
+        bytes.push((a << 2) | (b >> 4));
+        if chunk[2] == b'=' {
+            ensure!(
+                last && chunk[3] == b'=' && b & 15 == 0,
+                "noncanonical map base64 padding bits"
+            );
+        } else {
+            let c = digit(chunk[2])?;
+            bytes.push((b << 4) | (c >> 2));
+            if chunk[3] == b'=' {
+                ensure!(last && c & 3 == 0, "noncanonical map base64 padding bits");
+            } else {
+                bytes.push((c << 6) | digit(chunk[3])?);
+            }
+        }
+    }
+    ensure!(bytes.len() == length, "decoded map length differs");
+    Ok(bytes)
+}
+
+#[derive(Serialize)]
+struct PagedSparseRef<'a> {
+    initialized_length: u64,
+    allocated: Base64Ranges<'a>,
+    holes: Base64Ranges<'a>,
+}
+#[derive(Serialize)]
+struct PagedStreamMapRef<'a> {
+    file_id: [u8; 16],
+    standard: StreamStandard,
+    retrieval: Base64Bytes<'a>,
+    complete_page_proof: bool,
+    resident: bool,
+    sparse: Option<PagedSparseRef<'a>>,
+    integrity: Base64Bytes<'a>,
+}
+impl<'a> PagedStreamMapRef<'a> {
+    fn new(map: StreamMapRef<'a>) -> Result<Self> {
+        ensure!(
+            map.retrieval.len() <= n2r_win32::stream_layout::COMPLETE_RETRIEVAL_CAPACITY
+                && map.integrity.len() <= 16,
+            "native map wire field exceeds complete bound"
+        );
+        if let Some(sparse) = map.sparse {
+            ensure!(
+                sparse
+                    .allocated
+                    .len()
+                    .checked_add(sparse.holes.len())
+                    .is_some_and(|n| n <= n2r_win32::sparse_layout::MAX_LAYOUT_RANGES),
+                "native sparse map wire exceeds complete bound"
+            );
+        }
+        Ok(Self {
+            file_id: map.file_id,
+            standard: map.standard,
+            retrieval: Base64Bytes(map.retrieval),
+            complete_page_proof: map.complete_page_proof,
+            resident: map.resident,
+            integrity: Base64Bytes(map.integrity),
+            sparse: map.sparse.map(|s| PagedSparseRef {
+                initialized_length: s.initialized_length,
+                allocated: Base64Ranges(&s.allocated),
+                holes: Base64Ranges(&s.holes),
+            }),
+        })
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PagedSparse {
+    initialized_length: u64,
+    allocated: String,
+    holes: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PagedStreamMap {
+    file_id: [u8; 16],
+    standard: StreamStandard,
+    retrieval: String,
+    complete_page_proof: bool,
+    resident: bool,
+    sparse: Option<PagedSparse>,
+    integrity: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PagedMapEntry {
+    components: Vec<String>,
+    name_utf16: Vec<u16>,
+    map: PagedStreamMap,
+}
+fn decode_ranges(value: &str) -> Result<Vec<n2r_win32::sparse_layout::LogicalRange>> {
+    let bytes = decode_base64(value, n2r_win32::sparse_layout::MAX_LAYOUT_RANGES * 16)?;
+    ensure!(
+        bytes.len().is_multiple_of(16),
+        "packed sparse map length differs"
+    );
+    let mut ranges = Vec::new();
+    ranges
+        .try_reserve_exact(bytes.len() / 16)
+        .context("sparse map storage unavailable")?;
+    for pair in bytes.chunks_exact(16) {
+        ranges.push(n2r_win32::sparse_layout::LogicalRange {
+            offset: u64::from_le_bytes(pair[..8].try_into()?),
+            length: u64::from_le_bytes(pair[8..].try_into()?),
+        });
+    }
+    Ok(ranges)
+}
+impl PagedMapEntry {
+    fn decode(bytes: &[u8]) -> Result<MapEntry> {
+        let entry: Self = serde_json::from_slice(bytes)?;
+        let map = entry.map;
+        let sparse = map
+            .sparse
+            .map(|s| -> Result<_> {
+                let allocated = decode_ranges(&s.allocated)?;
+                let holes = decode_ranges(&s.holes)?;
+                ensure!(
+                    allocated
+                        .len()
+                        .checked_add(holes.len())
+                        .is_some_and(|n| n <= n2r_win32::sparse_layout::MAX_LAYOUT_RANGES),
+                    "decoded sparse map exceeds combined native bound"
+                );
+                Ok(n2r_win32::sparse_layout::SparseLayout {
+                    initialized_length: s.initialized_length,
+                    allocated,
+                    holes,
+                })
+            })
+            .transpose()?;
+        Ok(MapEntry {
+            components: entry.components,
+            name_utf16: entry.name_utf16,
+            map: StreamMap {
+                file_id: map.file_id,
+                standard: map.standard,
+                retrieval: decode_base64(
+                    &map.retrieval,
+                    n2r_win32::stream_layout::COMPLETE_RETRIEVAL_CAPACITY,
+                )?,
+                complete_page_proof: map.complete_page_proof,
+                resident: map.resident,
+                sparse,
+                integrity: decode_base64(&map.integrity, 16)?,
+            },
+        })
+    }
+}
+
+/// Prefix-free keys preserve the existing (component strings, UTF16 name)
+/// tuple order. Header key is empty; every stream key starts with tag1.
+fn encoded_stream_key(components: &[String], name: &[u16]) -> Result<Vec<u8>> {
+    let mut key = vec![1];
+    for component in components {
+        ensure!(
+            !component.is_empty() && !component.as_bytes().contains(&0),
+            "invalid recovery map component key"
+        );
+        key.extend_from_slice(component.as_bytes());
+        key.push(0);
+    }
+    key.push(0);
+    for unit in name {
+        ensure!(*unit != 0, "invalid recovery map stream key");
+        key.extend_from_slice(&unit.to_be_bytes());
+    }
+    key.extend_from_slice(&[0, 0]);
+    Ok(key)
+}
+
+fn record_json(value: &impl Serialize) -> Result<Vec<u8>> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .filter(|n| *n <= 4 * 1024 * 1024)
+                .ok_or_else(|| std::io::Error::other("recovery map record exceeds page budget"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(count.0)
+        .context("recovery map record storage unavailable")?;
+    serde_json::to_writer(&mut bytes, value)?;
+    ensure!(
+        bytes.len() == count.0,
+        "borrowed recovery map record changed during serialization"
+    );
+    Ok(bytes)
 }
 
 /// Only scalar facts are needed after parsing and checking the complete pinned
@@ -160,15 +441,34 @@ impl Serialize for MapEntriesRef<'_> {
 struct RecoveryPayloadHeader {
     source: n2r_win32::general_layout::GeneralDiskBinding,
     expected_tree_sha256: String,
+    plan_sha256: String,
+    ticket_sha256: String,
     base_sectors: u64,
     new_selected_sha256: [u8; 32],
     selected_bytes: u64,
     range_count: u32,
 }
 
+enum RecoveryMaps {
+    Legacy(StreamMaps),
+    Paged {
+        reader: RefCell<metadata_pages::Reader>,
+        index: Vec<(StreamKey, u64)>,
+    },
+}
+
+impl RecoveryMaps {
+    fn len(&self) -> usize {
+        match self {
+            Self::Legacy(maps) => maps.len(),
+            Self::Paged { index, .. } => index.len(),
+        }
+    }
+}
+
 pub(crate) struct RecoveryPayloadProof {
     facts: RecoveryPayloadHeader,
-    maps: StreamMaps,
+    maps: RecoveryMaps,
 }
 
 fn query(snapshot: &Snapshot, class: i32) -> Result<&[u8]> {
@@ -369,10 +669,12 @@ impl FreshPayloadProof {
     pub(crate) fn new(
         proof: &FrozenAllocationTargetPreservation,
         certificate: &AllocationCertificate,
-        expected: &shadow_tree::ExpectedTree,
+        expected: &impl shadow_tree::ExpectedObjectDomain,
         plan: &selected_journal::SelectedPlan,
         ticket: &selected_journal::SelectedTicket,
+        resources: crate::ntfs_admission::ResourceProfile,
     ) -> Result<Self> {
+        expected.revalidate_domain()?;
         let expected_tree_sha256 = pretty_json_sha256(expected)?;
         ensure!(
             certificate.binds(proof)
@@ -403,7 +705,8 @@ impl FreshPayloadProof {
         let protected = proof.protected_layout().native().report();
         let mut tail_extent_streams = 0usize;
         let mut tail_payload_bytes_verified = 0u64;
-        for (object_index, object) in expected.objects.iter().enumerate() {
+        for object_index in 0..expected.object_count() {
+            let object = expected.object(object_index)?;
             for stream in object.data_streams().filter(|s| {
                 s.source_evidence
                     == Some(shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
@@ -442,40 +745,47 @@ impl FreshPayloadProof {
             ticket_sha256: canonical_json_sha256(ticket)?,
             tail_extent_streams,
             tail_payload_bytes_verified,
+            map_page_budget: map_page_budget(resources)?,
         })
     }
 
-    pub(crate) fn recovery_manifest(&self) -> Result<RecoveryPayloadManifestRef<'_>> {
-        let manifest = RecoveryPayloadManifestRef {
-            schema_version: 1,
-            kind: "protected-target-stream-map-facts-v1",
-            source: &self.source,
-            expected_tree_sha256: &self.expected_tree_sha256,
-            plan_sha256: &self.plan_sha256,
-            ticket_sha256: &self.ticket_sha256,
+    /// Stream one borrowed native binding at a time. The bundle pins the
+    /// finished immutable page file, never a serialized capability.
+    pub(crate) fn write_recovery_manifest(&self, path: &Path) -> Result<String> {
+        let header = MapManifestHeader {
+            schema_version: 2,
+            kind: "protected-target-stream-map-pages-v2".into(),
+            source: self.source.clone(),
+            expected_tree_sha256: self.expected_tree_sha256.clone(),
+            plan_sha256: self.plan_sha256.clone(),
+            ticket_sha256: self.ticket_sha256.clone(),
             base_sectors: self.base_sectors,
             new_selected_sha256: self.new_selected_sha256,
             selected_bytes: self.selected_bytes,
             range_count: self.range_count,
-            bindings: MapEntriesRef {
-                native: &self.native,
-                bindings: &self.maps,
-            },
+            bindings_count: self.maps.len() as u64,
             grants_write_authority: false,
             initial_retained_content_digests_available: false,
         };
-        crate::general_qualification::serialized_len_bounded(
-            &manifest,
-            super::selected_artifacts::Artifact::PayloadMap.maximum_bytes(),
-        )
-        .context("recovery map facts exceed the bounded metadata artifact")?;
-        Ok(manifest)
+        let mut writer = metadata_pages::Writer::new(path, MAP_PAGE_PURPOSE, self.map_page_budget)?;
+        writer.push(&[], &record_json(&header)?)?;
+        for location in &self.maps {
+            let ((components, name_utf16), map) = location.view(&self.native)?;
+            let key = encoded_stream_key(components, name_utf16)?;
+            let entry = MapEntryRef {
+                components,
+                name_utf16,
+                map: PagedStreamMapRef::new(map)?,
+            };
+            writer.push(&key, &record_json(&entry)?)?;
+        }
+        Ok(writer.finish()?.sha256)
     }
 
     fn verify(
         &self,
         scope: &NativeVerificationScope<'_>,
-        expected: &shadow_tree::ExpectedTree,
+        expected: &impl shadow_tree::ExpectedObjectDomain,
         applied: &selected_journal::SelectedResult,
         handoff: &selected_journal::SelectedResult,
         native: &shadow_native::GeneralConvertedReport,
@@ -533,13 +843,125 @@ impl FreshPayloadProof {
     }
 }
 
+fn expected_map_keys(
+    expected: &impl shadow_tree::ExpectedObjectDomain,
+) -> Result<BTreeSet<Vec<u8>>> {
+    let mut keys = BTreeSet::new();
+    for index in 0..expected.object_count() {
+        let object = expected.object(index)?;
+        ensure!(
+            keys.insert(encoded_stream_key(&object.path, &[])?),
+            "duplicate expected map object"
+        );
+        for stream in &object.named_streams {
+            ensure!(
+                keys.insert(encoded_stream_key(&object.path, &stream.name_utf16)?),
+                "duplicate expected map stream"
+            );
+        }
+    }
+    Ok(keys)
+}
+
+pub(crate) fn extent_stream_counts(
+    expected: &impl shadow_tree::ExpectedObjectDomain,
+) -> Result<(usize, usize)> {
+    let (mut extents, mut partials) = (0usize, 0usize);
+    for index in 0..expected.object_count() {
+        let object = expected.object(index)?;
+        for stream in object.data_streams() {
+            if stream.source_evidence.is_some() {
+                extents = extents
+                    .checked_add(1)
+                    .context("extent stream count overflow")?;
+            }
+            if stream.source_evidence
+                == Some(shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
+            {
+                partials = partials
+                    .checked_add(1)
+                    .context("partial extent stream count overflow")?;
+            }
+        }
+    }
+    Ok((extents, partials))
+}
+
+fn validate_map_entry(entry: &MapEntry, expected_keys: &BTreeSet<Vec<u8>>) -> Result<()> {
+    ensure!(
+        expected_keys
+            .contains(encoded_stream_key(&entry.components, &entry.name_utf16)?.as_slice())
+            && entry.map.file_id != [0; 16],
+        "unexpected recovery map binding"
+    );
+    ensure!(
+        entry.map.retrieval.len() <= n2r_win32::retrieval_paging::MAX_RETURNED_BYTES,
+        "recovery stream map exceeds retrieval bound"
+    );
+    Ok(())
+}
+
+fn validate_map_header(
+    facts: &MapManifestHeader,
+    schema_version: u32,
+    kind: &str,
+    source: &n2r_win32::general_layout::GeneralDiskBinding,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
+    plan: &selected_journal::SelectedPlan,
+    ticket: &selected_journal::SelectedTicket,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<()> {
+    resources.count_admission()?;
+    ensure!(
+        resources.is_streaming(),
+        "recovery map facts require the pinned streaming resource profile"
+    );
+    expected.revalidate_domain()?;
+    shadow_tree::validate_expected_domain(expected, resources)?;
+    let (selected_bytes, journal_bytes) = plan.validate_marker_profile(ticket.marker_profile)?;
+    ensure!(
+        expected.has_extent_only_streams()?
+            && facts.schema_version == schema_version
+            && facts.kind == kind
+            && !facts.grants_write_authority
+            && !facts.initial_retained_content_digests_available
+            && &facts.source == source
+            && facts.expected_tree_sha256 == pretty_json_sha256(expected)?
+            && facts.plan_sha256 == canonical_json_sha256(plan)?
+            && facts.ticket_sha256 == canonical_json_sha256(ticket)?
+            && ticket.image_length == source.identity.partition_bytes
+            && !ticket.whole_image_verified
+            && ticket.selected_bytes == selected_bytes
+            && ticket.journal_length == journal_bytes
+            && ticket.range_count as usize == plan.ranges.len()
+            && facts.new_selected_sha256 == ticket.new_selected_sha256
+            && facts.selected_bytes == selected_bytes
+            && facts.range_count == ticket.range_count
+            && facts.bindings_count == expected_map_keys(expected)?.len() as u64,
+        "pinned recovery map facts differ from tree, source, selected plan or trusted ticket"
+    );
+    Ok(())
+}
+
+fn proof_header(facts: MapManifestHeader) -> RecoveryPayloadHeader {
+    RecoveryPayloadHeader {
+        source: facts.source,
+        expected_tree_sha256: facts.expected_tree_sha256,
+        plan_sha256: facts.plan_sha256,
+        ticket_sha256: facts.ticket_sha256,
+        base_sectors: facts.base_sectors,
+        new_selected_sha256: facts.new_selected_sha256,
+        selected_bytes: facts.selected_bytes,
+        range_count: facts.range_count,
+    }
+}
+
 impl RecoveryPayloadProof {
-    /// Call only with the separately pinned, write/delete-excluded artifact.
-    /// This validates facts; actual SJ lifecycle/checksums remain mandatory.
+    /// Legacy JSON1 remains readable with its original pinned-input protocol.
     pub(crate) fn from_pinned_manifest(
         bytes: &[u8],
         source: &n2r_win32::general_layout::GeneralDiskBinding,
-        expected: &shadow_tree::ExpectedTree,
+        expected: &impl shadow_tree::ExpectedObjectDomain,
         plan: &selected_journal::SelectedPlan,
         ticket: &selected_journal::SelectedTicket,
         resources: crate::ntfs_admission::ResourceProfile,
@@ -548,74 +970,218 @@ impl RecoveryPayloadProof {
             bytes.len() <= super::selected_artifacts::Artifact::PayloadMap.maximum_bytes(),
             "recovery map artifact exceeds bound"
         );
-        resources.count_admission()?;
-        ensure!(
-            resources.is_streaming(),
-            "recovery map facts require the pinned streaming resource profile"
-        );
-        expected.validate_with_resource_profile(resources)?;
-        let facts: RecoveryPayloadManifest = serde_json::from_slice(bytes)?;
-        // The explicit ticket profile chooses the exact marker-body length.
-        let (selected_bytes, journal_bytes) =
-            plan.validate_marker_profile(ticket.marker_profile)?;
-        ensure!(
-            expected.has_extent_only_streams()
-                && facts.schema_version == 1
-                && facts.kind == "protected-target-stream-map-facts-v1"
-                && !facts.grants_write_authority
-                && !facts.initial_retained_content_digests_available
-                && &facts.source == source
-                && facts.expected_tree_sha256 == pretty_json_sha256(expected)?
-                && facts.plan_sha256 == canonical_json_sha256(plan)?
-                && facts.ticket_sha256 == canonical_json_sha256(ticket)?
-                && ticket.image_length == source.identity.partition_bytes
-                && !ticket.whole_image_verified
-                && ticket.selected_bytes == selected_bytes
-                && ticket.journal_length == journal_bytes
-                && ticket.range_count as usize == plan.ranges.len()
-                && facts.new_selected_sha256 == ticket.new_selected_sha256
-                && facts.selected_bytes == selected_bytes
-                && facts.range_count == ticket.range_count,
-            "pinned recovery map facts differ from tree, source, selected plan or trusted ticket"
-        );
-        let mut expected_keys = std::collections::BTreeSet::new();
-        for object in &expected.objects {
-            expected_keys.insert((object.path.as_slice(), &[] as &[u16]));
-            for stream in &object.named_streams {
-                expected_keys.insert((object.path.as_slice(), stream.name_utf16.as_slice()));
-            }
-        }
-        ensure!(
-            facts.bindings.len() == expected_keys.len(),
-            "recovery map binding count differs"
-        );
+        let old: RecoveryPayloadManifest = serde_json::from_slice(bytes)?;
+        let header = MapManifestHeader {
+            schema_version: old.schema_version,
+            kind: old.kind,
+            source: old.source,
+            expected_tree_sha256: old.expected_tree_sha256,
+            plan_sha256: old.plan_sha256,
+            ticket_sha256: old.ticket_sha256,
+            base_sectors: old.base_sectors,
+            new_selected_sha256: old.new_selected_sha256,
+            selected_bytes: old.selected_bytes,
+            range_count: old.range_count,
+            bindings_count: old.bindings.len() as u64,
+            grants_write_authority: old.grants_write_authority,
+            initial_retained_content_digests_available: old
+                .initial_retained_content_digests_available,
+        };
+        validate_map_header(
+            &header,
+            1,
+            "protected-target-stream-map-facts-v1",
+            source,
+            expected,
+            plan,
+            ticket,
+            resources,
+        )?;
+        let keys = expected_map_keys(expected)?;
         let mut maps = BTreeMap::new();
-        for entry in facts.bindings {
-            ensure!(
-                expected_keys.contains(&(entry.components.as_slice(), entry.name_utf16.as_slice()))
-                    && entry.map.file_id != [0; 16],
-                "duplicate or unexpected recovery map binding"
-            );
-            ensure!(
-                entry.map.retrieval.len() <= n2r_win32::retrieval_paging::MAX_RETURNED_BYTES,
-                "recovery stream map exceeds retrieval bound"
-            );
+        for entry in old.bindings {
+            validate_map_entry(&entry, &keys)?;
             ensure!(
                 maps.insert((entry.components, entry.name_utf16), entry.map)
                     .is_none(),
-                "duplicate or unexpected recovery map binding"
+                "duplicate recovery map binding"
             );
         }
-        let facts = RecoveryPayloadHeader {
-            source: facts.source,
-            expected_tree_sha256: facts.expected_tree_sha256,
-            base_sectors: facts.base_sectors,
-            new_selected_sha256: facts.new_selected_sha256,
-            selected_bytes: facts.selected_bytes,
-            range_count: facts.range_count,
-        };
-        Ok(Self { facts, maps })
+        Ok(Self {
+            facts: proof_header(header),
+            maps: RecoveryMaps::Legacy(maps),
+        })
     }
+
+    /// Full file/page/header/map-set closure precedes journal or target opening.
+    /// Only keys/ordinals survive; retrieval/sparse/integrity buffers are decoded
+    /// one record at a time from the exact held immutable page owner.
+    pub(crate) fn from_pinned_pages(
+        path: &Path,
+        expected_sha256: &str,
+        source: &n2r_win32::general_layout::GeneralDiskBinding,
+        expected: &impl shadow_tree::ExpectedObjectDomain,
+        plan: &selected_journal::SelectedPlan,
+        ticket: &selected_journal::SelectedTicket,
+        resources: crate::ntfs_admission::ResourceProfile,
+    ) -> Result<Self> {
+        let mut reader = metadata_pages::Reader::open(
+            path,
+            expected_sha256,
+            MAP_PAGE_PURPOSE,
+            map_page_budget(resources)?,
+        )?;
+        let record = reader.get(0)?;
+        ensure!(
+            record.key.is_empty(),
+            "paged recovery map header key differs"
+        );
+        let header: MapManifestHeader = serde_json::from_slice(&record.payload)?;
+        validate_map_header(
+            &header,
+            2,
+            "protected-target-stream-map-pages-v2",
+            source,
+            expected,
+            plan,
+            ticket,
+            resources,
+        )?;
+        ensure!(
+            header.bindings_count.checked_add(1) == Some(reader.len()),
+            "paged recovery map record count differs"
+        );
+        let keys = expected_map_keys(expected)?;
+        let mut index: Vec<(StreamKey, u64)> = Vec::new();
+        index
+            .try_reserve_exact(usize::try_from(header.bindings_count)?)
+            .context("recovery map index storage unavailable")?;
+        for ordinal in 1..reader.len() {
+            let record = reader.get(ordinal)?;
+            let entry = PagedMapEntry::decode(&record.payload)?;
+            validate_map_entry(&entry, &keys)?;
+            ensure!(
+                record.key == encoded_stream_key(&entry.components, &entry.name_utf16)?,
+                "paged recovery map key differs from its payload"
+            );
+            let key = (entry.components, entry.name_utf16);
+            ensure!(
+                index.last().is_none_or(|(previous, _)| previous < &key),
+                "paged recovery maps are duplicated or out of order"
+            );
+            index.push((key, ordinal));
+        }
+        ensure!(
+            index.len() == keys.len(),
+            "complete paged recovery map set differs"
+        );
+        reader.revalidate()?;
+        Ok(Self {
+            facts: proof_header(header),
+            maps: RecoveryMaps::Paged {
+                reader: RefCell::new(reader),
+                index,
+            },
+        })
+    }
+
+    pub(crate) fn paged_final_path(&self) -> Option<String> {
+        match &self.maps {
+            RecoveryMaps::Paged { reader, .. } => Some(reader.borrow().final_path().to_owned()),
+            RecoveryMaps::Legacy(_) => None,
+        }
+    }
+
+    pub(crate) fn revalidate_paged_manifest(&self) -> Result<()> {
+        if let RecoveryMaps::Paged { reader, .. } = &self.maps {
+            reader.borrow_mut().revalidate()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn copy_paged_manifest(&self, output: &Path) -> Result<()> {
+        if let RecoveryMaps::Paged { reader, .. } = &self.maps {
+            reader
+                .borrow_mut()
+                .copy_to(&output.join(PAGED_MAP_FILENAME))?;
+        }
+        Ok(())
+    }
+
+    fn maps_match(&self, report: &Report) -> Result<bool> {
+        match &self.maps {
+            RecoveryMaps::Legacy(expected) => maps_match(
+                report,
+                expected,
+                |(key, _)| (key.0.as_slice(), key.1.as_slice()),
+                |(_, map)| Ok(map.as_ref()),
+            ),
+            RecoveryMaps::Paged { reader, index } => {
+                let actual = maps(report)?;
+                if actual.len() != index.len() {
+                    return Ok(false);
+                }
+                let mut reader = reader.borrow_mut();
+                for (location, (expected_key, ordinal)) in actual.iter().zip(index) {
+                    let ((components, name), value) = location.view(report)?;
+                    if components != expected_key.0.as_slice() || name != expected_key.1.as_slice()
+                    {
+                        return Ok(false);
+                    }
+                    let record = reader.get(*ordinal)?;
+                    let entry = PagedMapEntry::decode(&record.payload)?;
+                    ensure!(
+                        record.key == encoded_stream_key(&entry.components, &entry.name_utf16)?
+                            && entry.components == expected_key.0
+                            && entry.name_utf16 == expected_key.1,
+                        "held paged recovery map key changed"
+                    );
+                    if value != entry.map.as_ref() {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+        }
+    }
+}
+
+/// Lab metadata inspection only. Full page and semantic closure is required;
+/// this opens no journal or source device and returns no execution capability.
+pub(crate) fn inspect_pinned_recovery_pages(
+    path: &Path,
+    sha256: &str,
+    source: &n2r_win32::general_layout::GeneralDiskBinding,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
+    plan: &selected_journal::SelectedPlan,
+    ticket: &selected_journal::SelectedTicket,
+    resources: crate::ntfs_admission::ResourceProfile,
+) -> Result<Value> {
+    expected.revalidate_domain()?;
+    let proof = RecoveryPayloadProof::from_pinned_pages(
+        path, sha256, source, expected, plan, ticket, resources,
+    )?;
+    proof.revalidate_paged_manifest()?;
+    expected.revalidate_domain()?;
+    let RecoveryMaps::Paged { reader, index } = &proof.maps else {
+        anyhow::bail!("paged metadata inspection requires a page owner");
+    };
+    let reader = reader.borrow();
+    Ok(serde_json::json!({
+        "schema_version":1,"kind":"read-only-pinned-recovery-map-pages-inspection",
+        "file_sha256":sha256,"actual_final_path":reader.final_path(),
+        "bytes":reader.byte_len(),"pages":reader.page_count(),"records":reader.len(),
+        "bindings":index.len(),"complete_paged_and_expected_map_set_validated":true,
+        "source":proof.facts.source,
+        "expected_tree_sha256":proof.facts.expected_tree_sha256,
+        "plan_sha256":proof.facts.plan_sha256,"ticket_sha256":proof.facts.ticket_sha256,
+        "base_sectors":proof.facts.base_sectors,
+        "new_selected_sha256":proof.facts.new_selected_sha256,
+        "selected_bytes":proof.facts.selected_bytes,"range_count":proof.facts.range_count,
+        "grants_source_admission":false,"grants_write_authority":false,
+        "initial_retained_content_digests_available":false,
+        "journal_opened":false,"source_device_opened":false,
+    }))
 }
 
 /// Recovery never reissues a fresh source certificate. Its existing journal
@@ -623,7 +1189,7 @@ impl RecoveryPayloadProof {
 /// this routine then compares all mounted maps against independently pinned facts.
 pub(crate) fn verify_native_recovery_extents_scoped(
     scope: &NativeVerificationScope<'_>,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     report: &mut Finalization,
     proof: &RecoveryPayloadProof,
     closed: &selected_journal::SelectedResult,
@@ -654,7 +1220,8 @@ pub(crate) fn verify_native_recovery_extents_scoped(
     let mut known_bytes = 0u64;
     let mut unknown_partial_streams = 0usize;
     let mut unknown_partial_tail_bytes = 0u64;
-    for object in &expected.objects {
+    for index in 0..expected.object_count() {
+        let object = expected.object(index)?;
         for stream in object.data_streams() {
             if stream.sha256.is_some() {
                 known_streams += 1;
@@ -685,12 +1252,7 @@ pub(crate) fn verify_native_recovery_extents_scoped(
             && known.streams_without_content_baseline == unknown_streams
             && native.pair.source.identity == facts.source.identity
             && native.native.base_sectors == facts.base_sectors
-            && maps_match(
-                &native.native,
-                &proof.maps,
-                |(key, _)| (key.0.as_slice(), key.1.as_slice()),
-                |(_, map)| Ok(map.as_ref()),
-            )?,
+            && proof.maps_match(&native.native)?,
         "recovery mounted metadata, storage validity or complete maps differ from pinned target facts"
     );
     record_mount_paths_scoped(scope, &native, report);
@@ -714,15 +1276,16 @@ pub(crate) fn verify_native_recovery_extents_scoped(
 
 fn observe_native_metadata(
     scope: &NativeVerificationScope<'_>,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     report: &mut Finalization,
     restored_label: bool,
 ) -> Result<shadow_native::GeneralConvertedReport> {
     let mut pair = scope.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, &mut report.events)?;
-    let input = crate::general_shadow::native_inputs_from_objects(&expected.objects);
+    expected.revalidate_domain()?;
+    let input = crate::general_shadow::ExpectedInputs(expected);
     Ok(
-        shadow_native::verify_general_converted_known_contents_with_resource_profile(
+        shadow_native::verify_general_converted_known_contents_domain(
             pair,
             &input,
             if restored_label {
@@ -746,7 +1309,7 @@ fn observe_native_metadata(
 /// actual Apply/HND results. Recovery uses its distinct pinned-fact protocol.
 pub(crate) fn verify_native_extents_scoped(
     scope: &NativeVerificationScope<'_>,
-    expected: &shadow_tree::ExpectedTree,
+    expected: &impl shadow_tree::ExpectedObjectDomain,
     report: &mut Finalization,
     proof: &FreshPayloadProof,
     applied: &selected_journal::SelectedResult,
@@ -754,8 +1317,9 @@ pub(crate) fn verify_native_extents_scoped(
 ) -> Result<Value> {
     let mut pair = scope.pair.clone();
     pair.source = rediscover_general_volume_wait(pair.source, &mut report.events)?;
-    let input = crate::general_shadow::native_inputs_from_objects(&expected.objects);
-    let native = shadow_native::observe_general_converted_metadata_with_resource_profile(
+    expected.revalidate_domain()?;
+    let input = crate::general_shadow::ExpectedInputs(expected);
+    let native = shadow_native::observe_general_converted_metadata_domain(
         pair,
         &input,
         None,

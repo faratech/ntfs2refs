@@ -1,8 +1,16 @@
 //! Semantic input for an independent, native-created ReFS shadow. This is not
 //! source admission, a conversion plan or authority to modify the NTFS source.
+#[cfg(windows)]
+pub mod pages;
 use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security, ntfs_stream_plan};
 use anyhow::{Context, Result, ensure};
 pub use n2r_win32::sparse_layout::{LogicalRange, SparseLayout};
+#[cfg(windows)]
+pub(crate) use pages::ExpectedTreeView;
+#[cfg(windows)]
+pub use pages::{
+    ExpectedTreePageCounts, ExpectedTreePageHeader, ExpectedTreePageReceipt, PagedExpectedTree,
+};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet};
@@ -215,279 +223,363 @@ impl ExpectedTree {
         &self,
         resources: ntfs_admission::ResourceProfile,
     ) -> Result<()> {
-        let limits = resources.limits();
-        let object_limit = resources.maximum_objects();
-        ensure!(
-            self.profile == resources.ordinary_shadow_profile()
-                && !self.objects.is_empty()
-                && self.objects.len() <= object_limit
-                && self.objects[0].directory
-                && self.objects[0].path.is_empty()
-                && self
-                    .objects
-                    .iter()
-                    .filter(|object| object.path.is_empty())
-                    .count()
-                    == 1,
-            "expected general tree profile or root differs"
-        );
-        let mut paths = BTreeMap::new();
-        let mut identities = BTreeSet::new();
-        let mut bytes = 0u64;
-        let mut name_count = 0usize;
-        let mut stream_count = 0usize;
-        let mut source_ranges = Vec::new();
-        for object in &self.objects {
-            if object.source_evidence.is_some()
-                || object
-                    .named_streams
-                    .iter()
-                    .any(|s| s.source_evidence.is_some())
-            {
-                ensure!(
-                    resources.is_streaming() && !object.directory && object.reparse.is_none(),
-                    "extent-only evidence requires the ordinary streaming source profile (record {})",
-                    object.record_number
-                );
-                // Compression normalization is recorded per file when any
-                // sibling stream is compressed. Each extent-only stream has
-                // its own plain-DATA proof; encoded siblings retain digests
-                // and are materialized through their existing decoder path.
-            }
-            name_count = name_count
-                .checked_add(1)
-                .and_then(|n| n.checked_add(object.additional_names.len()))
-                .context("expected name count overflow")?;
-            ensure!(
-                name_count <= crate::ntfs_namespace::MAX_ENTRIES,
-                "expected namespace name count exceeds the raw namespace bound"
-            );
-            if let Some(api) = &object.api_security {
-                ensure!(api.len() <= 65536, "API descriptor exceeds bound");
-                ntfs_security::parse_descriptor(api)?;
-            }
-            if let Some(eas) = &object.extended_attributes {
-                eas.validate()?;
-            }
-            if let Some(point) = &object.reparse {
-                point.validate()?;
-                ensure!(
-                    !object.path.is_empty(),
-                    "volume root reparse point is unsupported"
-                );
-                ensure!(
-                    object
-                        .extended_attributes
-                        .as_ref()
-                        .is_none_or(|ea| ea.is_empty()),
-                    "reparse points and EAs are mutually exclusive"
-                );
-                ensure!(
-                    object.directory
-                        || (object.length == 0
-                            && object.named_streams.is_empty()
-                            && object.sparse.is_none()),
-                    "file-link DATA streams exceed the initial reparse profile"
-                );
-                ensure!(
-                    point.tag() != 0xa0000003 || object.directory,
-                    "junction must be a directory"
-                );
-            }
-            ntfs_security::parse_descriptor(&object.security)?;
-            n2r_win32::security_descriptor::validate(&object.security)?;
-            let path_key = destination_key(&object.path, resources);
-            ensure!(
-                object.path.len() <= 16
-                    && object
-                        .path
-                        .iter()
-                        .all(|part| valid_component_with_resources(part, resources))
-                    && object
-                        .stored_times
-                        .iter()
-                        .all(|time| *time > 0 && *time < i64::MAX as u64)
-                    && object.attributes
-                        & !(0x2037
-                            | if object.reparse.is_some() { 0x400 } else { 0 }
-                            | if object.sparse.is_some()
-                                || object.named_streams.iter().any(|s| s.sparse.is_some())
-                            {
-                                0x200
-                            } else {
-                                0
-                            })
-                        == 0
-                    && (object.attributes & 16 != 0) == object.directory
-                    && (object.attributes & 0x400 != 0) == object.reparse.is_some()
-                    && identities.insert((object.record_number, object.sequence_number))
-                    && !paths.contains_key(&path_key),
-                "expected general tree object is invalid or duplicated"
-            );
-            if !object.path.is_empty() {
-                ensure!(
-                    !self.objects.iter().any(|parent| parent.reparse.is_some()
-                        && object.path.len() > parent.path.len()
-                        && destination_key(&object.path[..parent.path.len()], resources)
-                            == destination_key(&parent.path, resources)),
-                    "namespace descends through a reparse object"
-                );
-                let parent = destination_key(&object.path[..object.path.len() - 1], resources);
-                ensure!(
-                    paths.get(&parent) == Some(&true),
-                    "expected tree parent is missing, is not a directory, or follows its child"
-                );
-            }
-            paths.insert(path_key, object.directory);
-            ensure!(
-                !object.directory || object.additional_names.is_empty(),
-                "directory hard links are unsupported"
-            );
-            if object.sparse.is_some()
-                || object
-                    .named_streams
-                    .iter()
-                    .any(|stream| stream.sparse.is_some())
-            {
-                ensure!(
-                    !object.directory
-                        && std::iter::once(&object.path)
-                            .chain(object.additional_names.iter())
-                            .all(|path| {
-                                path.first().is_none_or(|name| {
-                                    !name.eq_ignore_ascii_case("System Volume Information")
-                                })
-                            }),
-                    "sparse system-managed or directory streams are unsupported"
-                );
-            }
-            for alias in &object.additional_names {
-                ensure!(
-                    !self.objects.iter().any(|parent| parent.reparse.is_some()
-                        && alias.len() > parent.path.len()
-                        && destination_key(&alias[..parent.path.len()], resources)
-                            == destination_key(&parent.path, resources)),
-                    "additional name descends through a reparse object"
-                );
-                ensure!(
-                    !alias.is_empty()
-                        && alias.len() <= 16
-                        && alias
-                            .iter()
-                            .all(|part| valid_component_with_resources(part, resources))
-                        && !paths.contains_key(&destination_key(alias, resources)),
-                    "expected additional file name is invalid or collides"
-                );
-                paths.insert(destination_key(alias, resources), false);
-            }
-            if !object.directory {
-                stream_count = stream_count
-                    .checked_add(1)
-                    .and_then(|count| count.checked_add(object.named_streams.len()))
-                    .context("expected DATA stream count overflow")?;
-                ensure!(
-                    stream_count <= ntfs_admission::MAX_DATA_STREAMS,
-                    "expected total DATA stream count exceeds 16,384"
-                );
-                ensure!(
-                    object.named_streams.is_empty()
-                        || std::iter::once(&object.path)
-                            .chain(object.additional_names.iter())
-                            .all(|path| {
-                                path.first().is_none_or(|part| {
-                                    !part.eq_ignore_ascii_case("System Volume Information")
-                                })
-                            }),
-                    "named streams on System Volume Information objects are unsupported"
-                );
-                ensure!(
-                    object.length <= limits.maximum_stream_bytes,
-                    "expected stream exceeds selected resource profile"
-                );
-                validate_stream_evidence(object.stream(&[]).context("default stream absent")?)?;
-                bytes = bytes
-                    .checked_add(object.length)
-                    .context("expected byte overflow")?;
-                ensure!(
-                    object.named_streams.len() < n2r_win32::stream_layout::MAX_STREAMS,
-                    "expected named stream count exceeds the native stream-list bound"
-                );
-                let mut exact_names = BTreeSet::new();
-                let mut folded_names = BTreeSet::new();
-                for stream in &object.named_streams {
-                    ensure!(
-                        ntfs_admission::valid_named_stream_name(&stream.name_utf16)
-                            && exact_names.insert(stream.name_utf16.as_slice())
-                            && folded_names
-                                .insert(String::from_utf16(&stream.name_utf16)?.to_uppercase())
-                            && stream.length <= limits.maximum_stream_bytes,
-                        "expected named stream identity, size or digest differs"
-                    );
-                    validate_stream_evidence(
-                        object
-                            .stream(&stream.name_utf16)
-                            .context("named stream absent")?,
-                    )?;
-                    bytes = bytes
-                        .checked_add(stream.length)
-                        .context("named stream byte overflow")?;
-                }
-            } else {
-                ensure!(
-                    object.length == 0
-                        && object.sha256.is_none()
-                        && object.source_evidence.is_none()
-                        && object.source_offset.is_none()
-                        && object.source_extents.is_empty()
-                        && object.named_streams.is_empty()
-                        && object.sparse.is_none(),
-                    "expected directory carries stream data"
-                );
-            }
-            for stream in object.data_streams() {
-                validate_stream_source(stream, &mut source_ranges)?;
-            }
-        }
-        // Additional names are created after all canonical objects. Their
-        // directory parents may therefore occur later than the file's primary
-        // path, but must still be real canonical directories, never aliases.
-        for object in &self.objects {
-            for alias in &object.additional_names {
-                let parent = destination_key(&alias[..alias.len() - 1], resources);
-                ensure!(
-                    paths.get(&parent) == Some(&true),
-                    "expected additional name has no directory parent"
-                );
-            }
-        }
-        validate_source_overlap(&mut source_ranges)?;
-        ensure!(
-            bytes == self.logical_bytes && bytes <= limits.maximum_logical_bytes,
-            "expected logical byte total differs"
-        );
-        if resources != ntfs_admission::ResourceProfile::AlphaV1 {
-            let directories = self
-                .objects
-                .iter()
-                .filter(|object| object.directory)
-                .count();
-            ensure!(
-                directories <= limits.maximum_directories
-                    && self.objects.len() - directories <= limits.maximum_files,
-                "expected file/directory counts exceed selected resource profile"
-            );
-            if let Some(admission) = resources.count_admission()? {
-                admission.validate_tree(
-                    self.objects.len() - directories,
-                    directories,
-                    stream_count,
-                )?;
-                admission.validate_expected_bytes(self)?;
-            }
-        }
-        Ok(())
+        validate_expected_domain(self, resources)
     }
 }
+
+/// Complete object access, never a deserializable admission capability. Paged
+/// implementations return one owned object; inline trees borrow their objects.
+mod expected_domain_sealed {
+    pub trait Sealed {}
+    impl Sealed for super::ExpectedTree {}
+    #[cfg(windows)]
+    impl Sealed for super::PagedExpectedTree {}
+    #[cfg(windows)]
+    impl Sealed for super::ExpectedTreeView<'_> {}
+}
+pub trait ExpectedObjectDomain: Serialize + expected_domain_sealed::Sealed {
+    fn object_count(&self) -> usize;
+    fn object(&self, index: usize) -> Result<std::borrow::Cow<'_, Object>>;
+    fn profile(&self) -> &str;
+    fn logical_bytes(&self) -> u64;
+    fn has_extent_only_streams(&self) -> Result<bool> {
+        for index in 0..self.object_count() {
+            if self
+                .object(index)?
+                .data_streams()
+                .any(|stream| stream.source_evidence.is_some())
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    fn revalidate_domain(&self) -> Result<()> {
+        Ok(())
+    }
+    #[cfg(windows)]
+    fn require_paged_metadata(
+        &self,
+        _budget: n2r_win32::metadata_pages::PageBudget,
+        _semantic_bytes: u64,
+    ) -> Result<()> {
+        anyhow::bail!("source admission requires authenticated paged metadata ownership")
+    }
+}
+
+impl ExpectedObjectDomain for ExpectedTree {
+    fn object_count(&self) -> usize {
+        self.objects.len()
+    }
+    fn object(&self, index: usize) -> Result<std::borrow::Cow<'_, Object>> {
+        self.objects
+            .get(index)
+            .map(std::borrow::Cow::Borrowed)
+            .context("expected object index is outside the complete domain")
+    }
+    fn profile(&self) -> &str {
+        &self.profile
+    }
+    fn logical_bytes(&self) -> u64 {
+        self.logical_bytes
+    }
+}
+
+pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
+    domain: &T,
+    resources: ntfs_admission::ResourceProfile,
+) -> Result<()> {
+    let limits = resources.limits();
+    let object_limit = resources.maximum_objects();
+    let count = domain.object_count();
+    ensure!(
+        domain.profile() == resources.ordinary_shadow_profile()
+            && count != 0
+            && count <= object_limit,
+        "expected general tree profile or root differs"
+    );
+    let first = domain.object(0)?;
+    ensure!(
+        first.directory && first.path.is_empty(),
+        "expected root is absent or invalid"
+    );
+    drop(first);
+    // Only scalar path indexes survive an object/page boundary. This first
+    // complete pass retains the old global reparse-ancestor check without
+    // loading every object's streams or descriptors into memory.
+    let mut reparse_paths = BTreeSet::new();
+    for index in 0..count {
+        let object = domain.object(index)?;
+        if object.reparse.is_some() {
+            reparse_paths.insert(destination_key(&object.path, resources));
+        }
+    }
+    let mut directories = 0usize;
+    let mut roots = 0usize;
+    let mut paths = BTreeMap::new();
+    let mut identities = BTreeSet::new();
+    let mut bytes = 0u64;
+    let mut name_count = 0usize;
+    let mut stream_count = 0usize;
+    let mut source_ranges = Vec::new();
+    for index in 0..count {
+        let owned = domain.object(index)?;
+        let object = owned.as_ref();
+        directories += usize::from(object.directory);
+        roots += usize::from(object.path.is_empty());
+        if object.source_evidence.is_some()
+            || object
+                .named_streams
+                .iter()
+                .any(|s| s.source_evidence.is_some())
+        {
+            ensure!(
+                resources.is_streaming() && !object.directory && object.reparse.is_none(),
+                "extent-only evidence requires the ordinary streaming source profile (record {})",
+                object.record_number
+            );
+            // Compression normalization is recorded per file when any
+            // sibling stream is compressed. Each extent-only stream has
+            // its own plain-DATA proof; encoded siblings retain digests
+            // and are materialized through their existing decoder path.
+        }
+        name_count = name_count
+            .checked_add(1)
+            .and_then(|n| n.checked_add(object.additional_names.len()))
+            .context("expected name count overflow")?;
+        ensure!(
+            name_count <= crate::ntfs_namespace::MAX_ENTRIES,
+            "expected namespace name count exceeds the raw namespace bound"
+        );
+        if let Some(api) = &object.api_security {
+            ensure!(api.len() <= 65536, "API descriptor exceeds bound");
+            ntfs_security::parse_descriptor(api)?;
+        }
+        if let Some(eas) = &object.extended_attributes {
+            eas.validate()?;
+        }
+        if let Some(point) = &object.reparse {
+            point.validate()?;
+            ensure!(
+                !object.path.is_empty(),
+                "volume root reparse point is unsupported"
+            );
+            ensure!(
+                object
+                    .extended_attributes
+                    .as_ref()
+                    .is_none_or(|ea| ea.is_empty()),
+                "reparse points and EAs are mutually exclusive"
+            );
+            ensure!(
+                object.directory
+                    || (object.length == 0
+                        && object.named_streams.is_empty()
+                        && object.sparse.is_none()),
+                "file-link DATA streams exceed the initial reparse profile"
+            );
+            ensure!(
+                point.tag() != 0xa0000003 || object.directory,
+                "junction must be a directory"
+            );
+        }
+        ntfs_security::parse_descriptor(&object.security)?;
+        n2r_win32::security_descriptor::validate(&object.security)?;
+        let path_key = destination_key(&object.path, resources);
+        ensure!(
+            object.path.len() <= 16
+                && object
+                    .path
+                    .iter()
+                    .all(|part| valid_component_with_resources(part, resources))
+                && object
+                    .stored_times
+                    .iter()
+                    .all(|time| *time > 0 && *time < i64::MAX as u64)
+                && object.attributes
+                    & !(0x2037
+                        | if object.reparse.is_some() { 0x400 } else { 0 }
+                        | if object.sparse.is_some()
+                            || object.named_streams.iter().any(|s| s.sparse.is_some())
+                        {
+                            0x200
+                        } else {
+                            0
+                        })
+                    == 0
+                && (object.attributes & 16 != 0) == object.directory
+                && (object.attributes & 0x400 != 0) == object.reparse.is_some()
+                && identities.insert((object.record_number, object.sequence_number))
+                && !paths.contains_key(&path_key),
+            "expected general tree object is invalid or duplicated"
+        );
+        if !object.path.is_empty() {
+            ensure!(
+                (1..object.path.len()).all(|depth| !reparse_paths
+                    .contains(&destination_key(&object.path[..depth], resources))),
+                "namespace descends through a reparse object"
+            );
+            let parent = destination_key(&object.path[..object.path.len() - 1], resources);
+            ensure!(
+                paths.get(&parent) == Some(&true),
+                "expected tree parent is missing, is not a directory, or follows its child"
+            );
+        }
+        paths.insert(path_key, object.directory);
+        ensure!(
+            !object.directory || object.additional_names.is_empty(),
+            "directory hard links are unsupported"
+        );
+        if object.sparse.is_some()
+            || object
+                .named_streams
+                .iter()
+                .any(|stream| stream.sparse.is_some())
+        {
+            ensure!(
+                !object.directory
+                    && std::iter::once(&object.path)
+                        .chain(object.additional_names.iter())
+                        .all(|path| {
+                            path.first().is_none_or(|name| {
+                                !name.eq_ignore_ascii_case("System Volume Information")
+                            })
+                        }),
+                "sparse system-managed or directory streams are unsupported"
+            );
+        }
+        for alias in &object.additional_names {
+            // Reject an oversized path before allocating/checking prefixes.
+            ensure!(
+                !alias.is_empty()
+                    && alias.len() <= 16
+                    && alias
+                        .iter()
+                        .all(|part| valid_component_with_resources(part, resources)),
+                "expected additional file name is invalid or collides"
+            );
+            ensure!(
+                (1..alias.len())
+                    .all(|depth| !reparse_paths
+                        .contains(&destination_key(&alias[..depth], resources))),
+                "additional name descends through a reparse object"
+            );
+            ensure!(
+                !alias.is_empty()
+                    && alias.len() <= 16
+                    && alias
+                        .iter()
+                        .all(|part| valid_component_with_resources(part, resources))
+                    && !paths.contains_key(&destination_key(alias, resources)),
+                "expected additional file name is invalid or collides"
+            );
+            paths.insert(destination_key(alias, resources), false);
+        }
+        if !object.directory {
+            stream_count = stream_count
+                .checked_add(1)
+                .and_then(|count| count.checked_add(object.named_streams.len()))
+                .context("expected DATA stream count overflow")?;
+            ensure!(
+                stream_count <= ntfs_admission::MAX_DATA_STREAMS,
+                "expected total DATA stream count exceeds 16,384"
+            );
+            ensure!(
+                object.named_streams.is_empty()
+                    || std::iter::once(&object.path)
+                        .chain(object.additional_names.iter())
+                        .all(|path| {
+                            path.first().is_none_or(|part| {
+                                !part.eq_ignore_ascii_case("System Volume Information")
+                            })
+                        }),
+                "named streams on System Volume Information objects are unsupported"
+            );
+            ensure!(
+                object.length <= limits.maximum_stream_bytes,
+                "expected stream exceeds selected resource profile"
+            );
+            validate_stream_evidence(object.stream(&[]).context("default stream absent")?)?;
+            bytes = bytes
+                .checked_add(object.length)
+                .context("expected byte overflow")?;
+            ensure!(
+                object.named_streams.len() < n2r_win32::stream_layout::MAX_STREAMS,
+                "expected named stream count exceeds the native stream-list bound"
+            );
+            let mut exact_names = BTreeSet::new();
+            let mut folded_names = BTreeSet::new();
+            for stream in &object.named_streams {
+                ensure!(
+                    ntfs_admission::valid_named_stream_name(&stream.name_utf16)
+                        && exact_names.insert(stream.name_utf16.as_slice())
+                        && folded_names
+                            .insert(String::from_utf16(&stream.name_utf16)?.to_uppercase())
+                        && stream.length <= limits.maximum_stream_bytes,
+                    "expected named stream identity, size or digest differs"
+                );
+                validate_stream_evidence(
+                    object
+                        .stream(&stream.name_utf16)
+                        .context("named stream absent")?,
+                )?;
+                bytes = bytes
+                    .checked_add(stream.length)
+                    .context("named stream byte overflow")?;
+            }
+        } else {
+            ensure!(
+                object.length == 0
+                    && object.sha256.is_none()
+                    && object.source_evidence.is_none()
+                    && object.source_offset.is_none()
+                    && object.source_extents.is_empty()
+                    && object.named_streams.is_empty()
+                    && object.sparse.is_none(),
+                "expected directory carries stream data"
+            );
+        }
+        for stream in object.data_streams() {
+            validate_stream_source(stream, &mut source_ranges)?;
+        }
+    }
+    // Additional names are created after all canonical objects. Their
+    // directory parents may therefore occur later than the file's primary
+    // path, but must still be real canonical directories, never aliases.
+    for index in 0..count {
+        let owned = domain.object(index)?;
+        let object = owned.as_ref();
+        for alias in &object.additional_names {
+            let parent = destination_key(&alias[..alias.len() - 1], resources);
+            ensure!(
+                paths.get(&parent) == Some(&true),
+                "expected additional name has no directory parent"
+            );
+        }
+    }
+    ensure!(
+        roots == 1,
+        "expected tree must contain exactly one canonical root"
+    );
+    validate_source_overlap(&mut source_ranges)?;
+    ensure!(
+        bytes == domain.logical_bytes() && bytes <= limits.maximum_logical_bytes,
+        "expected logical byte total differs"
+    );
+    if resources != ntfs_admission::ResourceProfile::AlphaV1 {
+        ensure!(
+            directories <= limits.maximum_directories
+                && count - directories <= limits.maximum_files,
+            "expected file/directory counts exceed selected resource profile"
+        );
+        if let Some(admission) = resources.count_admission()? {
+            admission.validate_tree(count - directories, directories, stream_count)?;
+            admission.validate_expected_bytes(domain)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {
     derive_profile(raw, false, ntfs_admission::ResourceProfile::AlphaV1)
 }

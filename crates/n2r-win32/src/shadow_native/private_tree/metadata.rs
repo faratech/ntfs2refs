@@ -1,11 +1,16 @@
 //! Consuming metadata completion for a live, constructor-owned private tree.
 //! No path/report can manufacture this capability; no payload is read here.
+use super::super::input_domain::{InputDomain, ObjectInput, SliceInputs};
 use super::*;
 use windows_sys::Win32::Storage::FileSystem::ReOpenFile;
 
 // Bind source semantics as well as names. Length-prefix every variable field
 // and retain Option discriminants; report JSON is never used as authority.
 pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
+    input_digest_domain(&SliceInputs(input)).expect("in-memory input ordinal domain")
+}
+
+pub(super) fn input_digest_domain(input: &impl InputDomain) -> io::Result<[u8; 32]> {
     fn bytes(hash: &mut Sha256, value: &[u8]) {
         hash.update((value.len() as u64).to_le_bytes());
         hash.update(value);
@@ -17,7 +22,9 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"n2r-private-source-input-v1");
     hash.update((input.len() as u64).to_le_bytes());
-    for item in input {
+    for index in 0..input.len() {
+        let owner = input.object(index)?;
+        let item = owner.input();
         hash.update((item.components.len() as u64).to_le_bytes());
         for part in item.components {
             bytes(&mut hash, part.as_bytes());
@@ -46,9 +53,11 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             hash.update(run.length.to_le_bytes());
         }
     }
-    if input.iter().any(|i| !i.additional_names.is_empty()) {
+    if input.any(|i| !i.additional_names.is_empty())? {
         hash.update(b"n2r-private-hard-links-v1");
-        for item in input {
+        for index in 0..input.len() {
+            let owner = input.object(index)?;
+            let item = owner.input();
             hash.update((item.additional_names.len() as u64).to_le_bytes());
             for path in item.additional_names {
                 hash.update((path.len() as u64).to_le_bytes());
@@ -58,18 +67,20 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             }
         }
     }
-    if input.iter().any(|i| !i.named_streams.is_empty()) {
-        let optional_content = input.iter().any(|item| {
+    if input.any(|i| !i.named_streams.is_empty())? {
+        let optional_content = input.any(|item| {
             item.named_streams
                 .iter()
                 .any(|stream| stream.expected_sha256.is_none())
-        });
+        })?;
         if optional_content {
             hash.update(b"n2r-private-named-streams-optional-content-v1".as_slice());
         } else {
             hash.update(b"n2r-private-named-streams-v1".as_slice());
         }
-        for item in input {
+        for index in 0..input.len() {
+            let owner = input.object(index)?;
+            let item = owner.input();
             hash.update((item.named_streams.len() as u64).to_le_bytes());
             for stream in &item.named_streams {
                 hash.update((stream.name_utf16.len() as u64).to_le_bytes());
@@ -94,12 +105,11 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             }
         }
     }
-    if input
-        .iter()
-        .any(|i| i.sparse.is_some() || i.named_streams.iter().any(|s| s.sparse.is_some()))
-    {
+    if input.any(|i| i.sparse.is_some() || i.named_streams.iter().any(|s| s.sparse.is_some()))? {
         hash.update(b"n2r-private-sparse-streams-v1");
-        for item in input {
+        for index in 0..input.len() {
+            let owner = input.object(index)?;
+            let item = owner.input();
             hash.update([u8::from(item.sparse.is_some())]);
             if let Some(s) = item.sparse {
                 bytes(
@@ -118,9 +128,11 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             }
         }
     }
-    if input.iter().any(|item| item.extended_attributes.is_some()) {
+    if input.any(|item| item.extended_attributes.is_some())? {
         hash.update(b"n2r-private-extended-attributes-v1");
-        for item in input {
+        for index in 0..input.len() {
+            let owner = input.object(index)?;
+            let item = owner.input();
             hash.update([u8::from(item.extended_attributes.is_some())]);
             if let Some(set) = item.extended_attributes {
                 bytes(
@@ -130,16 +142,18 @@ pub(super) fn input_digest(input: &[Input<'_>]) -> [u8; 32] {
             }
         }
     }
-    if input.iter().any(|item| item.reparse.is_some()) {
+    if input.any(|item| item.reparse.is_some())? {
         hash.update(b"n2r-private-reparse-v1");
-        for item in input {
+        for index in 0..input.len() {
+            let owner = input.object(index)?;
+            let item = owner.input();
             hash.update([u8::from(item.reparse.is_some())]);
             if let Some(point) = item.reparse {
                 bytes(&mut hash, &point.buffer);
             }
         }
     }
-    hash.finalize().into()
+    Ok(hash.finalize().into())
 }
 
 fn reopen(file: &File, access: u32) -> io::Result<File> {
@@ -157,11 +171,19 @@ fn reopen(file: &File, access: u32) -> io::Result<File> {
 }
 
 pub(super) fn complete(
-    mut tree: PrivateTree,
+    tree: PrivateTree,
     input: &[Input<'_>],
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
-    tree.require_bound_input(input)?;
+    complete_domain(tree, &SliceInputs(input), same_security)
+}
+
+pub(super) fn complete_domain(
+    mut tree: PrivateTree,
+    input: &impl InputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<serde_json::Value> {
+    tree.require_bound_input_domain(input)?;
     tree.require_source_excluded()?;
     if !tree.placement_complete || !tree.system_payloads_complete {
         return Err(invalid(
@@ -173,7 +195,9 @@ pub(super) fn complete(
     ))?;
     let mut extent_only_tails = Vec::new();
     for (key, file) in &tree.files {
-        let item = streams::view(input, key)?;
+        let owner = input.object(key.object_index)?;
+        let object = owner.input();
+        let item = streams::view_object(&object, &key.name_utf16)?;
         let expected = tree
             .sparse_targets
             .get(key)
@@ -246,16 +270,17 @@ pub(super) fn complete(
         }
     }
     tree.require_source_excluded()?;
-    let links = super::super::hard_links::create_owned(input, &tree.metadata_targets)?;
+    let links = super::super::hard_links::create_owned_domain(input, &tree.metadata_targets)?;
     tree.require_source_excluded()?;
     // This consumes the only tree owner on success AND failure. A diagnostic
     // return cannot resume a partially public/private metadata transition.
-    let mut report = super::super::cache_refresh::complete_owned_metadata(
+    let mut report = super::super::cache_refresh::complete_owned_metadata_domain(
         &tree.pair,
         &tree.source_before,
         &tree.volume,
         input,
         &tree.metadata_targets,
+        tree.metadata_object_limit,
         same_security,
     )?;
     tree.require_source_excluded()?;

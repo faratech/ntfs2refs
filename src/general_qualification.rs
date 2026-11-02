@@ -250,24 +250,23 @@ fn prepare_source_context(
     after_source_freeze: impl FnOnce(&GeneralFrozenPartition, &str, &str) -> Result<()>,
     digest_kind: SourceDigest,
     verification_policy: crate::verification_policy::VerificationPolicy,
-    vss_storage_before: Option<&n2r_win32::vss_observation::Observation>,
 ) -> Result<PreparedSourceContext> {
-    let require_vss = vss_storage_before.is_some();
-    if let Some(before) = vss_storage_before {
-        before.require_observed_catalog_clear()?;
-        ensure!(
-            before
-                .source_volume_guid
-                .eq_ignore_ascii_case(&format!("{}\\", pair.source.volume_path()?)),
-            "pre-freeze VSS storage observation differs from the source route"
-        );
-    }
+    // Every newly issued source certificate needs affirmative VSS evidence,
+    // independently of scratch policy or full/extent content verification.
+    // Hosted storage is queried while the source is still online; only source
+    // presence can be queried later inside the existing protected native view.
+    *phase = "source-vss-catalog-before-freeze";
+    let source_volume = format!("{}\\", pair.source.volume_path()?);
+    let vss_storage_before = n2r_win32::vss_observation::observe_catalog(&source_volume)?;
+    save(output, "source-vss-before-freeze.json", &vss_storage_before)?;
+    vss_storage_before.require_observed_catalog_clear()?;
     ensure!(
-        !require_vss
-            || (matches!(digest_kind, SourceDigest::NtfsAllocated)
-                && verification_policy.is_fast()),
-        "source-free VSS admission requires fresh fast allocation"
+        vss_storage_before
+            .source_volume_guid
+            .eq_ignore_ascii_case(&source_volume),
+        "pre-freeze VSS storage observation differs from the source route"
     );
+    *phase = "source-freeze";
     let mut online = n2r_win32::GeneralPartitionReader::open(pair.source.clone(), events)?;
     let mut boot = [0; 512];
     online.read_exact(&mut boot)?;
@@ -394,26 +393,20 @@ fn prepare_source_context(
     // observation over the frozen, read-only source, so one content pass is
     // enough; the whole-image path keeps both passes.
     let observed = match digest_kind {
-        SourceDigest::WholeImage => source.observe_ntfs_files(&request, events)?,
+        SourceDigest::WholeImage => source.observe_ntfs_files_with_vss(&request, events)?,
         SourceDigest::NtfsAllocated => {
-            if require_vss {
-                source.observe_ntfs_files_single_content_pass_with_vss(&request, events)?
-            } else {
-                source.observe_ntfs_files_single_content_pass(&request, events)?
-            }
+            source.observe_ntfs_files_single_content_pass_with_vss(&request, events)?
         }
     };
-    if require_vss {
-        let observation = observed.vss_observation().context(
-            "source-free admission requires VSS evidence from the protected native lease",
-        )?;
-        ensure!(
-            vss_storage_before
-                .is_some_and(|before| before.same_source_and_provider_inventory(observation)),
-            "VSS source/provider inventory changed across frozen admission"
-        );
-        save(output, "source-vss-after-freeze.json", observation)?;
-    }
+    let observation = observed
+        .vss_observation()
+        .context("fresh source admission requires VSS evidence from the protected native lease")?;
+    save(output, "source-vss-after-freeze.json", observation)?;
+    observation.require_observed_snapshot_absence()?;
+    ensure!(
+        vss_storage_before.same_source_and_provider_inventory(observation),
+        "VSS source/provider inventory changed across frozen admission"
+    );
     save(output, "native-source.json", observed.report())?;
     let assessment = match &fingerprint {
         None => general_source_admission::assess(
@@ -536,7 +529,6 @@ pub(crate) fn prepare_with_budget_and_source_freeze_hook(
             after_source_freeze,
             SourceDigest::WholeImage,
             crate::verification_policy::VerificationPolicy::FullContent,
-            None,
         )?;
         let views = assessment
             .assessment

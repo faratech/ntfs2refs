@@ -2190,6 +2190,17 @@ impl GeneralFrozenPartition {
         self.observe_ntfs_files_with_passes(request, events, false, false)
     }
 
+    /// Keep the original two content passes and additionally observe VSS inside
+    /// the existing physically READ_ONLY view. The caller must separately bind
+    /// a fresh pre-freeze hosted-storage catalog; this adds no extra mount.
+    pub fn observe_ntfs_files_with_vss(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLiveNtfsObservation> {
+        self.observe_ntfs_files_with_passes(request, events, false, true)
+    }
+
     /// As `observe_ntfs_files`, reading each stream's content once. Only for a
     /// caller that brackets the whole observation over this frozen source.
     pub fn observe_ntfs_files_single_content_pass(

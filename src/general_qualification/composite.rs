@@ -154,7 +154,6 @@ fn prepare_composite(
             after_source_freeze,
             SourceDigest::WholeImage,
             crate::verification_policy::VerificationPolicy::FullContent,
-            None,
         )?;
         phase = "native-shadow-construction-or-freeze";
         let mut native_target = if let Some(budget) = construction {
@@ -340,21 +339,6 @@ pub(crate) fn prepare_allocation_fresh_selected(
     save(output, "intent.json", &intent)?;
     let mut phase = "source-freeze";
     let attempted = (|| -> Result<QualifiedAllocationTree> {
-        let source_free_policy = capture_budget
-            .is_some_and(|budget| budget.selected_capacity_policy.allows_source_free());
-        let vss_before = if source_free_policy {
-            phase = "source-free-vss-catalog-before-freeze";
-            let observation = n2r_win32::vss_observation::observe_catalog(&format!(
-                "{}\\",
-                pair.source.volume_path()?
-            ))?;
-            save(output, "source-vss-before-freeze.json", &observation)?;
-            observation.require_observed_catalog_clear()?;
-            Some(observation)
-        } else {
-            None
-        };
-        phase = "source-freeze";
         let mut events = Vec::<NativeEvent>::new();
         let PreparedSourceContext {
             resources,
@@ -376,7 +360,6 @@ pub(crate) fn prepare_allocation_fresh_selected(
             |_, _, _| Ok(()),
             SourceDigest::NtfsAllocated,
             policy,
-            vss_before.as_ref(),
         )?;
         phase = "native-shadow-construction";
         let mut native_target = super::compact_construction::construct(

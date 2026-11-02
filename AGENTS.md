@@ -10,7 +10,45 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 19:00 UTC)
+## CURRENT release continuation (2026-11-02 20:48 UTC)
+
+This block supersedes older CURRENT/LIVE labels. VM is confirmed Off/RAM0,
+parentgolden8329,31snapshots after preserved13433 pre-source refusal. No VM job
+is live. Host cleanbuild r05c1abd is ACTIVE unifiedexecsession51545; actualcargo
+PID10024/rustc46060,29392 confirmed live. Poll SAMEhandle; do not restart on timeout.
+
+CurrentHEAD05c1abd corrects volume-policy request-echo assumptions. Native13433
+fd88f53a had API success/16bytes/flags0x6000 but mask/version/reserved0; oldreader
+refused before sourcepreparation/freeze (F stayedonlineNTFS). Source/query-only
+fix uses successful fixedversion1/mask6000 request +exact16bytes, rawflagsonly;
+errors/short/contradictoryflags stillUnknown. Focused3bincheck passed34.38s and
+independentreview passed. Failurearchive29files73,480,786B SHA05c85e95e6e0c61dd8a61ea3ff3aacfc1f5f1fd343c366263e83fb9bf7eff53d.
+NEXT: seal05c build, restoregolden8329 fresh, nativequery/defaultprofile run then
+standardprofile capability/conversion test. Never weaken unknown/error handling.
+New--target-formatdev-drive|standard (defaultDev) and readonlyvolume_policy were
+committed13433; no trust/filter/registry setter, no fallback. Actual4d source
+fsutilquery confirmeddeveloper/untrusted, notordinaryReFS. Mainc6 unchanged.
+
+Readreusef696 passed113.1028816s/publicnative5316/birth1793650872220/0 andall811
+independenthashes/1084objects. Completeclosingfingerprint123,539,456B =113,623,040
+actualcapturebytes reused+9,916,416 gapreads,4MiB scratch; no checksomitted or
+physicalspeedupclaimed. Journal+literal186,955,512B. Savedc2a5d174-8634-437e-940d-18d93cdfb37d
+parentgolden. Archive97files244,083,872B SHA11b1bbe18e71df96386ca446ebc01974c236483bd432f4ca106aa8788bb68080.
+
+4d publicmutation/coldboot passed1084originalobjects/811independentXXH3streams
+plus258newfileSHAchecks/256directoryentries; no ReFS warnings/errorssincebaseline.
+Saved265b5c2c-9215-4216-bb92-896db06fbd51 childafb9. Public4d --recover fromoriginal667
+then passed separateResume6080/1793648201357/0,13.9658835s andRollback6012/
+1793649245898/0,8.8482228s; bothall811fullhashes. Archives/evidence checked in.
+NEVER replay those HND/ABT results; originals667 (format5),8d/bfd/291c/833(format6)
+remain recovery origins. HelpersCurrentPublicMutation5971..., CurrentPublicRecovery989e...
+are frozen; fullexacthashes/evidence in their files/history. Rootalone VM actions.
+
+No unit tests/main edits/WSL shutdown/persistentprivilege changes. Native-shadow
+continues. Globalproductionmarkerqualification staysFALSE, scale/compatibility
+remain open; do not mark stable from bounded VM evidence. Fixed50GBepoch remains.
+
+## Earlier release continuation (2026-11-02 19:00 UTC)
 
 This block supersedes all older CURRENT/LIVE labels below. Actual VM is Off/RAM0,
 29 snapshots, saved at afb9afa4-859e-471d-8600-2ba4abb9d2dd (parent golden8329),

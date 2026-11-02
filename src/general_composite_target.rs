@@ -533,6 +533,8 @@ pub struct FrozenAllocationTargetPreservation {
     frozen_source_inventory_basis: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_fingerprint_kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closing_source_fingerprint_reuse: Option<crate::source_fingerprint::ClosingReuseReport>,
     source_views_bound: bool,
     logical_payload_tied_to_frozen_source: bool,
     allocation_bounded_selection_compared: bool,
@@ -1160,6 +1162,7 @@ fn verify_and_select_inner(
         in_place_bytes,
         source_allocation,
         mut capture,
+        source_fingerprint_reuse,
     } = match closing_capture {
         Some(captured) => captured,
         None => capture_selected_allocation(
@@ -1176,6 +1179,7 @@ fn verify_and_select_inner(
             max_changed_bytes,
             capture_budget,
             capture_guard,
+            None,
             None,
         )?,
     };
@@ -1247,6 +1251,7 @@ fn verify_and_select_inner(
         source_fingerprint_kind: policy
             .is_fast()
             .then_some(crate::source_fingerprint::EXTENT_KIND),
+        closing_source_fingerprint_reuse: source_fingerprint_reuse,
         source_views_bound: true,
         logical_payload_tied_to_frozen_source: true,
         allocation_bounded_selection_compared: true,
@@ -1269,6 +1274,7 @@ struct ClosingAllocationCapture {
     in_place_bytes: u64,
     source_allocation: Option<crate::selected_ownership::ReconciledSourceAllocation>,
     capture: DifferenceCapture,
+    source_fingerprint_reuse: Option<crate::source_fingerprint::ClosingReuseReport>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1285,6 +1291,7 @@ fn capture_selected_allocation<'a>(
     capture_budget: Option<CaptureBudget>,
     capture_guard: Option<&mut dyn FnMut(CaptureProgress) -> Result<()>>,
     closing_bytes: Option<&'a mut dyn crate::general_shadow::source_backed::ClosingShadowBytes>,
+    closing_fingerprint: Option<(&crate::source_fingerprint::SourceFingerprint, &str)>,
 ) -> Result<ClosingAllocationCapture> {
     let length = source.byte_len();
     // Payload that stayed at its NTFS location is the same physical bytes in
@@ -1320,6 +1327,9 @@ fn capture_selected_allocation<'a>(
         raw.allocated_byte_ranges(length).ok()
     };
     let copy_candidates = payload_copy_candidates(length, &source_index, tree, routes)?;
+    let mut source_fingerprint = closing_fingerprint
+        .map(|(fingerprint, _)| fingerprint.closing_reuse(source))
+        .transpose()?;
     let view = SourceBackedShadow::new(
         source,
         target,
@@ -1336,6 +1346,10 @@ fn capture_selected_allocation<'a>(
     });
     let view = match closing_bytes {
         Some(bytes) => view.with_closing_bytes(bytes),
+        None => view,
+    };
+    let view = match &mut source_fingerprint {
+        Some(fingerprint) => view.with_closing_source_bytes(fingerprint),
         None => view,
     };
     let capture = match (capture_budget, capture_guard) {
@@ -1357,12 +1371,25 @@ fn capture_selected_allocation<'a>(
         )?,
         _ => anyhow::bail!("capture capacity budget and live guard must be supplied together"),
     };
+    let source_fingerprint_reuse = match (source_fingerprint, closing_fingerprint) {
+        (Some(fingerprint), Some((_, expected))) => {
+            let (actual, report) = fingerprint.finish(source)?;
+            ensure!(
+                actual == expected,
+                "composite frozen source fingerprint changed during closing capture"
+            );
+            Some(report)
+        }
+        (None, None) => None,
+        _ => anyhow::bail!("closing source fingerprint state differs"),
+    };
     Ok(ClosingAllocationCapture {
         selection,
         compared,
         in_place_bytes,
         source_allocation,
         capture,
+        source_fingerprint_reuse,
     })
 }
 
@@ -1422,16 +1449,24 @@ fn protected_prefix(
         "composite preparation requires both devices persistently frozen"
     );
     let inspection_sha256 = hex::encode(Sha256::digest(serde_json::to_vec(raw)?));
-    if allocation_closed_bracket {
+    let source_fingerprint = if allocation_closed_bracket {
         // Reproduce the exact source basis selected before native collection.
         // Extent mode has an explicitly different domain and omission set;
         // it never relabels a metadata fingerprint as a full content digest.
         let fingerprint =
             crate::source_fingerprint::SourceFingerprint::for_inspection(raw, length, policy)?;
-        ensure!(
-            fingerprint.hash(source)? == source_sha256,
-            "composite frozen source fingerprint changed"
-        );
+        if closing_request.is_none() {
+            ensure!(
+                fingerprint.hash(source)? == source_sha256,
+                "composite frozen source fingerprint changed"
+            );
+            None
+        } else {
+            // Fast closing capture instead consumes actual old-source buffers
+            // and reads every fingerprint gap. It releases no proof until the
+            // same range/piece/raw-inspection fingerprint matches below.
+            Some(fingerprint)
+        }
     } else {
         let actual = ntfs_inspect::inspect_with_limits(
             source,
@@ -1442,7 +1477,8 @@ fn protected_prefix(
             hex::encode(Sha256::digest(serde_json::to_vec(&actual)?)) == inspection_sha256,
             "composite frozen source inventory changed"
         );
-    }
+        None
+    };
     ensure!(
         source_views.binds_live_source(&inspection_sha256, source_sha256),
         "composite requires the same bound live source views"
@@ -1534,6 +1570,12 @@ fn protected_prefix(
                         request.budget,
                         request.guard,
                         Some(closing),
+                        Some((
+                            source_fingerprint
+                                .as_ref()
+                                .context("closing source fingerprint basis absent")?,
+                            source_sha256,
+                        )),
                     )
                 },
             )?;

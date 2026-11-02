@@ -730,10 +730,24 @@ pub(crate) trait ClosingShadowBytes {
     ) -> Result<u64>;
 }
 
+/// Observe only the immutable original bytes already read by this capture,
+/// before its prefetch buffer is recycled. The supplied owner is the same
+/// frozen source that created those read lanes; it has no Write implementation
+/// or online/attribute setter. Consumers may read missing coverage through it.
+pub(crate) trait ClosingSourceBytes {
+    fn observe_original(
+        &mut self,
+        source: &mut GeneralFrozenPartition,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<()>;
+}
+
 pub struct SourceBackedShadow<'a> {
     source: &'a mut GeneralFrozenPartition,
     shadow: &'a mut GeneralFrozenPartition,
     closing_bytes: Option<&'a mut dyn ClosingShadowBytes>,
+    closing_source_bytes: Option<&'a mut dyn ClosingSourceBytes>,
     raw: &'a crate::ntfs_inspect::NtfsInspection,
     tree: &'a crate::shadow_tree::Tree,
     routes: &'a SourceBackedRoutes,
@@ -812,6 +826,7 @@ impl<'a> SourceBackedShadow<'a> {
             source,
             shadow,
             closing_bytes: None,
+            closing_source_bytes: None,
             raw,
             tree,
             routes,
@@ -831,6 +846,14 @@ impl<'a> SourceBackedShadow<'a> {
 
     pub(crate) fn with_closing_bytes(mut self, bytes: &'a mut dyn ClosingShadowBytes) -> Self {
         self.closing_bytes = Some(bytes);
+        self
+    }
+
+    pub(crate) fn with_closing_source_bytes(
+        mut self,
+        bytes: &'a mut dyn ClosingSourceBytes,
+    ) -> Self {
+        self.closing_source_bytes = Some(bytes);
         self
     }
 
@@ -1312,6 +1335,9 @@ impl<'a> SourceBackedShadow<'a> {
                     }
                 };
                 let original: &[u8] = prefetched.as_deref().unwrap_or(&original[..count]);
+                if let Some(observer) = &mut self.closing_source_bytes {
+                    observer.observe_original(self.source, at, original)?;
+                }
                 source_digest.chunk(original)?;
                 if let Some(digest) = &mut source_raw {
                     digest.update(original)?;

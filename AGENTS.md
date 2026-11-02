@@ -10,7 +10,48 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 21:48 UTC)
+## CURRENT release continuation (2026-11-02 22:14 UTC)
+
+VM fresh-confirmed Off/RAM0,31snapshots, active saved parent
+f3c1460b-6811-4dd3-908c-12cc2842c35e childgolden8329. This is CLOSED HND/ReFS;
+NEVER replay its journal. No VM/build job is running. Root alone VM mutations.
+
+Clean14ec1f8136d8b11f843b76347feb44768536d891 build7bins passed. Manifest
+1fead6f5e9b5ea15a19646a2c3c68bf0aef51ce6ecc2040f6377eebab3299e0e;
+sealed5role paged-tools-14ec1f8 manifest
+7c40e81f62aeda5a554caae10fad22fa9698fb28e3de437573f8ab278bf92585.
+Publiccaseeb251870789c45b988e167f6b4228807 native5756/birth1793656474443/0,
+105.854466s including385NTFS moves5,643,501,568B. All811 independent hashes and
+1084objects/fullprepmapreplay passed. ActualSome2 has1111raw/objectslots;
+expected.pages1,876,145B/9pages +map.pages487,863B/9pages independently typed
+verified. J137,120,208 +literal42,799,104 =179,919,312B. Processlogicalreads
+26,093,083,915/writes2,382,989,259B; physicalIO/causalspeedup/fullpeakRAM unclaimed.
+EngineC:\ProgramData\ntfs2refs\runs\d1741da2e123856b25d2c80fe47e0525.
+Archive109files249,337,084B SHAaa0131d711ea240967791ba5d6198075b055b66f810fe1351fd00cf1e35909a9.
+See evidence/paged-metadata-public-14ec1f8-20261102.json and paged-resource-metadata.md.
+
+Retired ONLY superseded leaf results577b09be andc2a5d174 throughHyper-V after
+197archivedfiles488,386,932B fully rehashed +replacement saved. Bothhostarchives
+retained. f4bf/alloriginalrecoveryroots preserved. Delayedspace release closed:
+lab286,930,463,472B/free53,643,284,480B; reclaimed26,776,781,471B lab and
+26,772,975,616B hostfree. Fixed50GBepoch/max329374052988/min17179869184 unchanged.
+Do not resurrect retired IDs from older guidance.
+
+99fadf7 adds optional --paged-metadata fullbaseline capture: actualSome2/pages,
+allfullraw+nativeEOF/security/namespace/immutability checks/noauthority; default
+Some1 artifacts unchanged. Focusedcheck passed17.93s; no tests/nativecase yet.
+NEWlarge-source fixture/controller/support are in progress under source-only
+release_status_review agent: add450dirs only tooriginalgolden, source1534objects/
+723dirs/811streams, raw~1561<=2048. Rootmustrestoregolden once theninvokeguarded
+New-PagedDirectoryFixture.ps1, save source checkpoint, seal fullbaseline binary
+using Build-ReleaseCandidate -IncludeFullSourceBaseline, capture explicit new
+baseline, then NEWlarge public adapter. Do not run fixture against savedReFS.
+After >1280normalcase, qualify newSome2pagedbundle interruption/resume/rollback.
+Other public recovery originals remain; globalproductionmarker flag staysFALSE.
+No stable/tag/arbitraryscale claim. No unit tests/main edits/WSL shutdown/new
+persistent privileges. Mainc6 unchanged; independentwriter offcriticalpath.
+
+## Earlier release continuation (2026-11-02 21:48 UTC)
 
 VM fresh-confirmed Off/RAM0, parentgolden8329,32snapshots. No VM run is active.
 Authenticated metadata-page storage committed/pushed1379f04. The subsequent

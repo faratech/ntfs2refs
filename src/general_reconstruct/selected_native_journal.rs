@@ -1,5 +1,6 @@
 //! Private journal owner used by selected allocation orchestration. Only the
-//! explicit lab route constructs native marker storage. No handle or mutable
+//! explicit lab route currently constructs native marker storage; production
+//! selection shares the compiled qualification gate below. No handle or mutable
 //! inner accessor can turn a buffered File into the sealed capability.
 use crate::{
     lab_reconstruct::{DurableIo, ReadSeek},
@@ -8,8 +9,8 @@ use crate::{
 use anyhow::{Result, ensure};
 use n2r_win32::journal_file::{
     GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile, LabMarkerCopyPause,
-    MarkerJournalFile, MarkerStorageObservation, UnbufferedJournalFile,
-    observe_general_journal_file_with_profile,
+    MARKER_STORAGE_NATIVE_QUALIFIED, MarkerJournalFile, MarkerStorageObservation,
+    UnbufferedJournalFile, observe_general_journal_file_with_profile,
 };
 use std::{
     fs::{File, OpenOptions},
@@ -17,6 +18,18 @@ use std::{
     os::windows::fs::OpenOptionsExt,
     path::Path,
 };
+
+/// Shared production format selection, never a storage capability or fresh
+/// source authority. Only a source change backed by native qualification can
+/// enable this; saved requests/tickets and lab options cannot change the gate.
+/// Ineligible plans retain the legacy format. The caller must still validate
+/// the selected profile, so an invalid plan cannot gain a fallback write path.
+pub(crate) fn production_marker_profile(
+    plan: &sj::SelectedPlan,
+) -> Option<sj::SelectedMarkerProfile> {
+    (MARKER_STORAGE_NATIVE_QUALIFIED && plan.validate_redundant_source_free().is_ok())
+        .then_some(sj::SelectedMarkerProfile::RedundantSourceFreeV1)
+}
 
 pub(crate) struct NativeSelectedJournal {
     storage: Storage,

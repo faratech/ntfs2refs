@@ -268,7 +268,21 @@ pub fn convert_allocation_experimental(
             && !request.verify_existing_shadow,
         "allocation-bounded conversion requires the explicit streaming profile and a fresh shadow"
     );
-    allocation::convert_allocation_selected(request, budget, output, None, false, false)
+    let production_markers = request.schema_version == 3
+        && request.verification_policy.is_fast()
+        && request.source_resource_profile
+            == Some(crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(None))
+        && request.selected_capacity_policy.allows_source_free()
+        && !request.verify_existing_shadow;
+    allocation::convert_allocation_selected(
+        request,
+        budget,
+        output,
+        None,
+        false,
+        false,
+        production_markers,
+    )
 }
 
 /// Lab-only selected-device fault entry for the allocation-bounded backend.
@@ -295,6 +309,7 @@ pub(crate) fn convert_allocation_selected_for_lab(
         interrupt_after_writes,
         false,
         false,
+        false,
     )
 }
 
@@ -315,7 +330,7 @@ pub(crate) fn convert_allocation_exclusive_v3_first_write_for_lab(
             && !request.verify_existing_shadow,
         "exclusive V3 fault requires fresh schema3 fast planning None, never restored admission"
     );
-    allocation::convert_allocation_selected(request, budget, output, Some(1), false, true)
+    allocation::convert_allocation_selected(request, budget, output, Some(1), false, true, false)
 }
 
 /// Semantic lab fault, derived from the actual qualified copy map rather than
@@ -334,7 +349,7 @@ pub(crate) fn convert_allocation_first_copy_interrupted_for_lab(
             && !request.verify_existing_shadow,
         "copy-write lab exercise requires the explicit streaming profile and a fresh shadow"
     );
-    allocation::convert_allocation_selected(request, budget, output, None, true, false)
+    allocation::convert_allocation_selected(request, budget, output, None, true, false, false)
 }
 
 /// Explicit owning-guest exercise: synchronize the known small source cache

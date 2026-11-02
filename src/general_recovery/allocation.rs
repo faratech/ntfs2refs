@@ -121,7 +121,7 @@ pub fn recover_allocation(
     recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, false, None)
 }
 
-/// Only the explicitly enrolled lab entry may request the native marker type.
+/// Explicit enrolled-lab entry, independent of production qualification.
 pub(crate) fn recover_allocation_redundant_for_lab(
     bundle_path: &Path,
     bundle_sha256: &str,
@@ -172,7 +172,13 @@ fn recover_allocation_inner(
         Artifact::Ticket.maximum_bytes() as u64,
     )?;
     let ticket: SelectedTicket = serde_json::from_slice(&ticket_input.bytes)?;
-    if native_marker_lab {
+    if native_marker_lab || ticket.marker_profile.is_some() {
+        ensure!(
+            native_marker_lab
+                || ticket.marker_profile
+                    == protocol::selected_native_journal::production_marker_profile(&plan),
+            "redundant selected markers require a qualified native marker I/O backend"
+        );
         ensure!(
             ticket.marker_profile == Some(sj::SelectedMarkerProfile::RedundantSourceFreeV1)
                 && bundle.marker_storage_identity.is_some()
@@ -182,12 +188,25 @@ fn recover_allocation_inner(
                     .source_resource_profile
                     .is_some_and(|p| p.is_envelope())
                 && request.selected_capacity_policy.allows_source_free(),
-            "native marker lab recovery requires the pinned format-six source-free profile and identity"
+            "native marker recovery requires the pinned format-six source-free profile and identity"
         );
+        if !native_marker_lab {
+            ensure!(
+                matches!(
+                    request.source_resource_profile,
+                    Some(
+                        crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(Some(
+                            _
+                        ))
+                    )
+                ),
+                "production native marker recovery requires the original admitted source descriptor"
+            );
+        }
     } else {
         ensure!(
-            ticket.marker_profile.is_none() && bundle.marker_storage_identity.is_none(),
-            "redundant selected markers require a qualified native marker I/O backend"
+            bundle.marker_storage_identity.is_none(),
+            "legacy selected journal cannot carry a native marker storage identity"
         );
     }
     let (selected_bytes, journal_bytes) = plan.validate_marker_profile(ticket.marker_profile)?;

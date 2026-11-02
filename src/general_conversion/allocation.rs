@@ -58,6 +58,7 @@ pub(super) fn convert_allocation_selected(
     interrupt_after_writes: Option<u32>,
     interrupt_after_first_copy_write: bool,
     fresh_exclusive_v3_first_write_fault: bool,
+    production_markers: bool,
 ) -> Result<()> {
     convert_allocation_selected_inner(
         request,
@@ -67,11 +68,13 @@ pub(super) fn convert_allocation_selected(
         interrupt_after_first_copy_write,
         fresh_exclusive_v3_first_write_fault,
         None,
+        production_markers,
         None,
     )
 }
 
-/// Explicit enrolled-lab entry only; production callers cannot select markers.
+/// Explicit enrolled-lab entry; its marker profile remains independent of the
+/// production qualification gate.
 pub(crate) fn convert_allocation_redundant_for_lab(
     request: &Request,
     construction: qualification::CompactConstructionBudget,
@@ -101,6 +104,7 @@ pub(crate) fn convert_allocation_redundant_for_lab(
         false,
         first_write_fault,
         Some(sj::SelectedMarkerProfile::RedundantSourceFreeV1),
+        false,
         pause,
     )
 }
@@ -113,6 +117,7 @@ fn convert_allocation_selected_inner(
     interrupt_after_first_copy_write: bool,
     fresh_exclusive_v3_first_write_fault: bool,
     marker_profile: Option<sj::SelectedMarkerProfile>,
+    production_markers: bool,
     pause: Option<n2r_win32::journal_file::LabMarkerPauseRequest>,
 ) -> Result<()> {
     request.validate()?;
@@ -346,6 +351,13 @@ fn convert_allocation_selected_inner(
             "saved expectation differs from the admitted target"
         );
         let plan = proof.plan(request.max_journal_bytes)?;
+        let marker_profile = if production_markers {
+            reconstruct::selected_native_journal::production_marker_profile(&plan)
+        } else {
+            marker_profile
+        };
+        // Every profile, including a production fallback to legacy, retains
+        // the complete plan and exact selected journal capacity validation.
         let (selected_bytes, journal_bytes) = plan.validate_marker_profile(marker_profile)?;
         request.validate_selected_capacity(&plan)?;
         let new_zero_bytes = plan.new_zero_bytes()?;

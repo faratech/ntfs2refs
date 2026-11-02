@@ -36,7 +36,9 @@ param(
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$PreparedManagedReceiptSha256,
  [Parameter(Mandatory)][ValidatePattern('\A[0-9a-f]{64}\z')][string]$BaselineSupportSha256,
  [Parameter(Mandatory)][ValidateRange(1,50000000000)][long]$ForecastAdditionalBytes,
- [switch]$Rollback
+ [switch]$Rollback,
+ [switch]$RequireClosingReadReuse,
+ [switch]$RequireSourceDirectoryCase
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -54,7 +56,7 @@ function OpenPinned([string]$Path,[string]$Sha,[long]$Maximum,[bool]$Parse){
  $a=$f;while($null-ne$a){Need (-not($a.Attributes-band[IO.FileAttributes]::ReparsePoint)) 'Reparse input ancestry refused.';if($a-is[IO.DirectoryInfo]){$a=$a.Parent}else{$a=$a.Directory}}
  $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$held.Add($stream)
  Need ($stream.Length-eq$f.Length) 'Opened input length differs.';$h=[Security.Cryptography.SHA256]::Create();try{$actual=([BitConverter]::ToString($h.ComputeHash($stream))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()};Need ($actual-ceq$Sha) 'Held input SHA differs.';$stream.Position=0;$value=$null
- if($Parse){$reader=[IO.StreamReader]::new($stream,[Text.UTF8Encoding]::new($false),$true,4096,$true);try{$value=$reader.ReadToEnd()|ConvertFrom-Json}finally{$reader.Dispose()}}
+ if($Parse){$reader=[IO.StreamReader]::new($stream,[Text.UTF8Encoding]::new($false),$true,4096,$true);try{$jsonOptions=@{};if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$jsonOptions.DateKind='String'};$value=$reader.ReadToEnd()|ConvertFrom-Json @jsonOptions}finally{$reader.Dispose()}}
  return @{item=$f;value=$value;pin=@{path=$Path;bytes=$f.Length;sha256=$actual}}
 }
 function Save([string]$Name,$Value){$bytes=[Text.UTF8Encoding]::new($false).GetBytes(($Value|ConvertTo-Json -Depth 32));Need ($bytes.Length-le4MB) 'Bounded host receipt required.';$f=[IO.File]::Open((Join-Path $root $Name),'CreateNew','Write','Read');try{$f.Write($bytes,0,$bytes.Length);$f.Flush($true)}finally{$f.Dispose()}}
@@ -159,6 +161,10 @@ try{
 finally{foreach($entry in $script:closedJsonCache.Values){$entry.stream.Dispose()};$script:closedJsonCache.Clear();$script:labIndexes.Clear()}
 '@
  $guest=$SupportText+[Environment]::NewLine+$guest.Replace('__FUNCTIONS__',($definitions-join[Environment]::NewLine))
+ if($Config.require_source_directory_case){
+  $guest=$guest.Replace('$native.schema_version-eq12-and$native.request.schema_version-eq4','$native.schema_version-eq14-and$native.request.schema_version-eq6')
+  $guest=$guest.Replace('$sourceNative.schema_version-eq12-and$sourceNative.request.schema_version-eq4','$sourceNative.schema_version-eq14-and$sourceNative.request.schema_version-eq6')
+ }
  $guest=$guest.Replace('__CONFIG__',[Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes(($Config|ConvertTo-Json -Depth 32 -Compress))))
  $t=$null;$e=$null;$null=[Management.Automation.Language.Parser]::ParseInput($guest,[ref]$t,[ref]$e);Need ($e.Count-eq0-and$guest.IndexOf('__FUNCTIONS__')-lt0) 'Assembled recovery guest syntax differs.';return $guest
 }
@@ -180,7 +186,7 @@ try{
  $recovery=ReadPinnedController 'Start-EnvelopeRecovery.ps1' $RecoveryControllerSha256 'body';$preparedSource=ReadPinnedController 'Start-PreparedSourcePerformanceExperiment.ps1' $PreparedControllerSha256 'guest'
  Import-Module (Join-Path $PSScriptRoot 'Lab.psm1') -Force;$configuration=Get-LabConfiguration -WorkspaceRoot $workspace;$capacity=Get-LabCapacity -Configuration $configuration;Need ($capacity.MaximumActualBytes-eq329374052988-and$capacity.MinimumFreeBytes-eq17179869184) 'Fixed storage epoch differs.';Assert-LabCapacity -Capacity $capacity -AdditionalBytes $ForecastAdditionalBytes
  HostGuard;Need (-not(Test-Path -LiteralPath $root)) 'Fresh host case required.';New-Item -ItemType Directory -Path $root|Out-Null;$created=$true
- $c=@{stage=$stage;task=$task;run_id=$run;operation=$operation;source_commit=$SourceCommit;tools=$tools;output=$RecoveryDirectory;recovery_directory=$RecoveryDirectory;recovery_sha256=$RecoverySha256;interrupted_checkpoint=$checkpoint;interrupted_checkpoint_receipt_sha256=$InterruptedCheckpointReceiptSha256;fresh_baseline_enabled=$true;baseline_enabled=$true;fresh_baseline_files=$baseline.files;fresh_manifest_sha256=$FreshBaselineManifestSha256;fresh_source_checkpoint=$sourceCheckpoint.ToString('D');fresh_source_binding=$baseline.provenance.source_binding;prepared_managed_receipt_sha256=$PreparedManagedReceiptSha256;prepared_managed_path=$preparedManaged.path;require_preparation_copy_reuse=$true;baseline_sha256=$baseline.sha256;baseline_basis_sha256=$baseline.basis_sha256;baseline_request_sha256='';baseline_result_sha256='';minimum_tail_extent_only_streams=650;minimum_extent_only_streams=654;cli=@('--recover',$RecoveryDirectory,'--recovery-sha256',$RecoverySha256)};if($Rollback){$c.cli+='--rollback'}
+ $c=@{stage=$stage;task=$task;run_id=$run;operation=$operation;source_commit=$SourceCommit;tools=$tools;output=$RecoveryDirectory;recovery_directory=$RecoveryDirectory;recovery_sha256=$RecoverySha256;interrupted_checkpoint=$checkpoint;interrupted_checkpoint_receipt_sha256=$InterruptedCheckpointReceiptSha256;fresh_baseline_enabled=$true;baseline_enabled=$true;fresh_baseline_files=$baseline.files;fresh_manifest_sha256=$FreshBaselineManifestSha256;fresh_source_checkpoint=$sourceCheckpoint.ToString('D');fresh_source_binding=$baseline.provenance.source_binding;prepared_managed_receipt_sha256=$PreparedManagedReceiptSha256;prepared_managed_path=$preparedManaged.path;require_preparation_copy_reuse=$true;require_closing_read_reuse=[bool]$RequireClosingReadReuse;require_source_directory_case=[bool]$RequireSourceDirectoryCase;baseline_sha256=$baseline.sha256;baseline_basis_sha256=$baseline.basis_sha256;baseline_request_sha256='';baseline_result_sha256='';minimum_tail_extent_only_streams=650;minimum_extent_only_streams=654;cli=@('--recover',$RecoveryDirectory,'--recovery-sha256',$RecoverySha256)};if($Rollback){$c.cli+='--rollback'}
  Save 'intent.json' @{kind='prepared-source-performance-public-recovery-intent';configuration=$c;parent_id=$ExpectedParent;checkpoint_ids=$ids;toolset_manifest=$ToolsetManifest;toolset_manifest_sha256=$ToolsetManifestSha256;interrupted_checkpoint_receipt=$InterruptedCheckpointReceiptPath;interrupted_checkpoint_receipt_sha256=$InterruptedCheckpointReceiptSha256;source_functions=@($recovery.pin,$preparedSource.pin,$support.pin);declared_adaptations=@('JournalFacts16GiB->8GiB','Reuse pinned prepared-source format5/capacity/VSS/tail verifiers without dropping checks','Bind actual prepared-source firstwrite and preexisting ownedshadow receipts','Rollback compares restore-required digest; original AP/RB/ABT marker identity is unchanged');forecast_bytes=$ForecastAdditionalBytes;capacity=$capacity;root_owns_vm_mutation=$true;grants_replay_authority=$false}
  $guest=AssemblePreparedSourceRecovery $c $recovery $preparedSource ([IO.File]::ReadAllText($supportPath));$wrapper=Join-Path $root 'guest-wrapper.ps1';[IO.File]::WriteAllText($wrapper,$guest,[Text.UTF8Encoding]::new($false));$wrapperPin=(Get-FileHash -LiteralPath $wrapper).Hash.ToLowerInvariant()
  $session=New-PSSession -VMId $vmId -Credential (Import-Clixml (Join-Path $workspace '.lab\hyperv\win11\secrets\guest-credential.xml'))

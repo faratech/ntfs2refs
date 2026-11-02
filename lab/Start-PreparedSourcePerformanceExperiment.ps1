@@ -367,13 +367,13 @@ try {
 finally{if($null-ne$process){$process.Dispose()};foreach($e in $script:closedJsonCache.Values){$e.stream.Dispose()};$script:closedJsonCache.Clear();$script:labIndexes.Clear()}
 '@
     $guest = [IO.File]::ReadAllText($supportPath) + [Environment]::NewLine + $guest
+    $guest = $guest.Replace('__FUNCTIONS__', ($definitions -join [Environment]::NewLine)).Replace('__NORMAL_OBSERVER__', $observer)
     if($RequireSourceDirectoryCase){
         # New-source-only schema adaptation. Historical baseline report11 stays
         # unchanged, and positive per-directory evidence is checked separately.
         $guest=$guest.Replace('$native.schema_version-eq12-and$native.request.schema_version-eq4','$native.schema_version-eq14-and$native.request.schema_version-eq6')
         $guest=$guest.Replace('$sourceNative.schema_version-eq12-and$sourceNative.request.schema_version-eq4','$sourceNative.schema_version-eq14-and$sourceNative.request.schema_version-eq6')
     }
-    $guest = $guest.Replace('__FUNCTIONS__', ($definitions -join [Environment]::NewLine)).Replace('__NORMAL_OBSERVER__', $observer)
     $guest = $guest.Replace('__CONFIG__', [Convert]::ToBase64String([Text.UTF8Encoding]::new($false).GetBytes(($c | ConvertTo-Json -Depth 32 -Compress))))
     $tokens=$null; $errors=$null; $null=[Management.Automation.Language.Parser]::ParseInput($guest,[ref]$tokens,[ref]$errors)
     Need ($errors.Count -eq 0 -and $guest.IndexOf('__NORMAL_OBSERVER__') -lt 0) 'Generated guest syntax/template differs.'

@@ -31,6 +31,7 @@ use std::{
         io::{AsRawHandle, FromRawHandle},
     },
     ptr,
+    sync::Arc,
 };
 use windows_sys::Win32::{
     Foundation::{FILETIME, INVALID_HANDLE_VALUE},
@@ -317,7 +318,7 @@ pub struct GeneralReport {
 #[derive(Debug, Serialize)]
 pub struct GeneralLayoutReport {
     pair: GeneralSourceShadowBinding,
-    native: Report,
+    native: Arc<Report>,
     expected_stream_sha256: Vec<Option<String>>,
     metadata_and_namespace_verified: bool,
     complete_stream_mappings_verified: bool,
@@ -338,6 +339,11 @@ impl GeneralLayoutReport {
     }
     pub fn native(&self) -> &Report {
         &self.native
+    }
+    /// Share immutable observation facts without cloning their buffers. The
+    /// report carries no native handles, lease or source/write authority.
+    pub fn native_observation(&self) -> Arc<Report> {
+        Arc::clone(&self.native)
     }
     pub fn residuals(&self) -> &[LayoutResidualExpectation] {
         &self.residuals
@@ -2426,7 +2432,7 @@ pub(crate) fn observe_general_layout_readonly_with_resource_profile(
     }
     Ok(GeneralLayoutReport {
         pair,
-        native,
+        native: Arc::new(native),
         expected_stream_sha256: input
             .iter()
             .map(|item| (!item.directory).then(|| item.logical_sha256()).flatten())
@@ -2508,11 +2514,15 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
             ));
         }
     }
-    let binding = &report.native.binding;
-    let before = protected.snapshot(binding, &mut report.native.events)?;
+    // This constructor has not exported its observation yet. Require unique
+    // ownership before the existing residual reads and native audit updates.
+    let native = Arc::get_mut(&mut report.native)
+        .ok_or_else(|| invalid("composite residual observation already shared"))?;
+    let binding = &native.binding;
+    let before = protected.snapshot(binding, &mut native.events)?;
     if before.disk_attributes != 2
-        || before.device != report.native.before.device
-        || before.layout != report.native.before.layout
+        || before.device != native.before.device
+        || before.layout != native.before.layout
     {
         return Err(invalid("composite residual native binding changed"));
     }
@@ -2521,7 +2531,7 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
     let mut buffer = [0u8; 4096];
     let mut bytes_read = 0u64;
     for expected in residuals {
-        let object = &report.native.objects[expected.object_index];
+        let object = &native.objects[expected.object_index];
         let path = streams::path(&root, &object.components, &expected.stream_name_utf16)?;
         let (before_stream, after_stream) = if expected.stream_name_utf16.is_empty() {
             (&object.before, &object.after)
@@ -2555,11 +2565,10 @@ pub(crate) fn observe_general_layout_residuals_readonly_with_resource_profile(
             .ok_or_else(|| invalid("composite residual byte count overflow"))?;
     }
     privileges.restore()?;
-    report
-        .native
+    native
         .privilege_states
         .extend_from_slice(privileges.audit());
-    let after = protected.snapshot(binding, &mut report.native.events)?;
+    let after = protected.snapshot(binding, &mut native.events)?;
     if serde_json::to_vec(&before)? != serde_json::to_vec(&after)? {
         return Err(invalid("composite residual protection changed"));
     }

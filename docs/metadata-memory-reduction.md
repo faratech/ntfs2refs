@@ -43,3 +43,18 @@ the recovery bundle's historical `bundle.json` copy name is unchanged.
 This closes a size-contract mismatch before larger-count work. It does not lift
 object, stream, extent or selected-range limits, add paging, or establish native
 qualification for large artifacts. Focused compilation passed; no unit tests ran.
+
+Fresh payload verification now shares the original immutable native observation
+through `Arc<Report>` and retains a sorted numeric stream index. Its manifest and
+mounted comparisons borrow the original path and map buffers. The existing
+mutable backing-file revalidation stays in place. The report's residual-read
+constructor requires unique ownership before its existing reads and audit
+updates; sharing observation facts grants no handle or write authority.
+
+Selected recovery also releases the raw serialized input buffers once parsing
+and original-byte copies finish, before opening the journal or target. The same
+input handles, identities, timestamps, SHA pins and subsequent full rehashes stay
+held. Legacy compact finalization retains the expectation buffer it still needs.
+These changes remove further duplicate storage without additional device reads.
+Focused compilation and independent source review passed; native peak-RAM
+measurements and complete paged evidence remain separate work.

@@ -279,6 +279,21 @@ fn recover_allocation_inner(
     if let Some(held) = &recovery_payload_input {
         Artifact::PayloadMap.copy_for_recovery(output, &held.bytes)?;
     }
+    // Parsed facts own their storage and all required original-byte copies are
+    // complete. Keep the exact handles and pins through every later recheck.
+    for held in [
+        &mut bundle_input,
+        &mut request_input,
+        &mut plan_input,
+        &mut ticket_input,
+        &mut expectation_input,
+        &mut verification_input,
+    ]
+    .into_iter()
+    .chain(recovery_payload_input.iter_mut())
+    {
+        held.release_bytes();
+    }
     artifacts::save(
         output,
         "intent.json",

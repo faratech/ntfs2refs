@@ -139,6 +139,11 @@ impl HeldInput {
         held.revalidate()?;
         Ok(held)
     }
+    /// Release parsed/copied serialization while retaining the same file and
+    /// every identity, metadata and SHA-256 pin used by revalidation.
+    pub(super) fn release_bytes(&mut self) {
+        drop(std::mem::take(&mut self.bytes));
+    }
     pub(super) fn revalidate(&mut self) -> Result<()> {
         ensure!(
             reference_file::observe_reference_file_handle(&self.file)? == self.snapshot

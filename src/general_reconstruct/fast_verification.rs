@@ -9,7 +9,7 @@ use anyhow::{Context, ensure};
 use n2r_win32::{attestation::Snapshot, shadow_native::Report};
 use serde::ser::SerializeSeq;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 type StreamKey = (Vec<String>, Vec<u16>);
 type StreamMaps = BTreeMap<StreamKey, StreamMap>;
@@ -17,7 +17,8 @@ type StreamMaps = BTreeMap<StreamKey, StreamMap>;
 pub(crate) struct FreshPayloadProof {
     expected_tree_sha256: String,
     source: n2r_win32::general_layout::GeneralDiskBinding,
-    maps: StreamMaps,
+    native: Arc<Report>,
+    maps: Vec<StreamLocation>,
     base_sectors: u64,
     new_selected_sha256: [u8; 32],
     selected_bytes: u64,
@@ -51,7 +52,7 @@ enum StreamStandard {
 
 /// A scalar snapshot and borrowed variable-sized buffers. Comparing an already
 /// collected native report must not duplicate its retrieval and integrity data.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Serialize)]
 struct StreamMapRef<'a> {
     file_id: [u8; 16],
     standard: StreamStandard,
@@ -123,19 +124,25 @@ pub(crate) struct RecoveryPayloadManifestRef<'a> {
     initial_retained_content_digests_available: bool,
 }
 
-struct MapEntriesRef<'a>(&'a StreamMaps);
+struct MapEntriesRef<'a> {
+    native: &'a Report,
+    bindings: &'a [StreamLocation],
+}
 
 #[derive(Serialize)]
 struct MapEntryRef<'a> {
     components: &'a [String],
     name_utf16: &'a [u16],
-    map: &'a StreamMap,
+    map: StreamMapRef<'a>,
 }
 
 impl Serialize for MapEntriesRef<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut entries = serializer.serialize_seq(Some(self.0.len()))?;
-        for ((components, name_utf16), map) in self.0 {
+        let mut entries = serializer.serialize_seq(Some(self.bindings.len()))?;
+        for location in self.bindings {
+            let ((components, name_utf16), map) = location
+                .view(self.native)
+                .map_err(serde::ser::Error::custom)?;
             entries.serialize_element(&MapEntryRef {
                 components,
                 name_utf16,
@@ -200,96 +207,117 @@ fn stream_map_ref<'a>(
     })
 }
 
-fn stream_map(
-    snapshot: &Snapshot,
-    retrieval: &[u8],
-    paged: bool,
-    resident: bool,
-    sparse: Option<&n2r_win32::sparse_layout::SparseLayout>,
-    integrity: &[u8],
-) -> Result<StreamMap> {
-    let value = stream_map_ref(snapshot, retrieval, paged, resident, sparse, integrity)?;
-    Ok(StreamMap {
-        file_id: value.file_id,
-        standard: value.standard,
-        retrieval: value.retrieval.to_vec(),
-        complete_page_proof: value.complete_page_proof,
-        resident: value.resident,
-        sparse: value.sparse.cloned(),
-        integrity: value.integrity.to_vec(),
-    })
+type StreamKeyRef<'a> = (&'a [String], &'a [u16]);
+type StreamBindingRef<'a> = (StreamKeyRef<'a>, StreamMapRef<'a>);
+
+/// Numeric indexes into the shared immutable observation; paths and variable
+/// map buffers remain owned only by that original native report.
+#[derive(Clone, Copy)]
+struct StreamLocation {
+    object: usize,
+    named: Option<usize>,
 }
 
-fn maps(report: &Report) -> Result<StreamMaps> {
+impl StreamLocation {
+    fn key(self, report: &Report) -> StreamKeyRef<'_> {
+        let object = &report.objects[self.object];
+        let name = self.named.map_or(&[] as &[u16], |index| {
+            object.named_streams[index].name_utf16.as_slice()
+        });
+        (object.components.as_slice(), name)
+    }
+
+    fn view(self, report: &Report) -> Result<StreamBindingRef<'_>> {
+        let object = &report.objects[self.object];
+        let (name, snapshot, retrieval, paged, resident, sparse, integrity) =
+            if let Some(index) = self.named {
+                let stream = &object.named_streams[index];
+                (
+                    stream.name_utf16.as_slice(),
+                    &stream.before,
+                    stream.retrieval.as_slice(),
+                    stream.retrieval_page_proof.is_some(),
+                    stream.resident_data,
+                    stream.sparse.as_ref().map(|sparse| &sparse.expected),
+                    stream.integrity.as_slice(),
+                )
+            } else {
+                (
+                    &[] as &[u16],
+                    &object.before,
+                    object.retrieval.as_slice(),
+                    object.retrieval_page_proof.is_some(),
+                    object.resident_data,
+                    object.sparse.as_ref().map(|sparse| &sparse.expected),
+                    object.integrity.as_slice(),
+                )
+            };
+        Ok((
+            (object.components.as_slice(), name),
+            stream_map_ref(snapshot, retrieval, paged, resident, sparse, integrity)?,
+        ))
+    }
+}
+
+fn maps(report: &Report) -> Result<Vec<StreamLocation>> {
+    // Borrowed slice tuples have the same lexicographic ordering as the old
+    // owned Vec tuples, preserving the exact manifest binding sequence.
     let mut maps = BTreeMap::new();
-    for object in &report.objects {
+    for (object_index, object) in report.objects.iter().enumerate() {
         ensure!(
             object.before == object.after,
             "fast object metadata changed during observation"
         );
-        let value = stream_map(
-            &object.before,
-            &object.retrieval,
-            object.retrieval_page_proof.is_some(),
-            object.resident_data,
-            object.sparse.as_ref().map(|sparse| &sparse.expected),
-            &object.integrity,
-        )?;
+        let location = StreamLocation {
+            object: object_index,
+            named: None,
+        };
+        let (key, _) = location.view(report)?;
         ensure!(
-            maps.insert((object.components.clone(), Vec::new()), value)
-                .is_none(),
+            maps.insert(key, location).is_none(),
             "duplicate fast canonical object"
         );
-        for stream in &object.named_streams {
+        for (stream_index, stream) in object.named_streams.iter().enumerate() {
             ensure!(
                 stream.before == stream.after,
                 "fast named stream metadata changed"
             );
-            let value = stream_map(
-                &stream.before,
-                &stream.retrieval,
-                stream.retrieval_page_proof.is_some(),
-                stream.resident_data,
-                stream.sparse.as_ref().map(|sparse| &sparse.expected),
-                &stream.integrity,
-            )?;
+            let location = StreamLocation {
+                object: object_index,
+                named: Some(stream_index),
+            };
+            let (key, _) = location.view(report)?;
             ensure!(
-                !stream.name_utf16.is_empty()
-                    && maps
-                        .insert(
-                            (object.components.clone(), stream.name_utf16.clone()),
-                            value
-                        )
-                        .is_none(),
+                !stream.name_utf16.is_empty() && maps.insert(key, location).is_none(),
                 "duplicate fast named stream"
             );
         }
     }
-    Ok(maps)
+    Ok(maps.into_values().collect())
 }
 
 /// Compare every reported binding without constructing another owning map.
-/// The sorted index borrows keys and values from the proof; one seen flag per
+/// The sorted index borrows keys and buffers from the proof; one seen flag per
 /// binding preserves duplicate detection and complete-set equality.
-fn maps_match(report: &Report, expected: &StreamMaps) -> Result<bool> {
-    let mut bindings: Vec<_> = expected
-        .iter()
-        .map(|(key, value)| (key, value, false))
-        .collect();
+fn maps_match<'a, T>(
+    report: &Report,
+    expected: impl IntoIterator<Item = T>,
+    key: impl Fn(&T) -> StreamKeyRef<'a>,
+    map: impl Fn(&T) -> Result<StreamMapRef<'a>>,
+) -> Result<bool> {
+    let mut bindings: Vec<_> = expected.into_iter().map(|value| (value, false)).collect();
     let mut match_stream = |components: &[String], name: &[u16], value: StreamMapRef<'_>| {
-        let found = bindings.binary_search_by(|(key, _, _)| {
-            key.0
-                .as_slice()
-                .cmp(components)
-                .then_with(|| key.1.as_slice().cmp(name))
+        let found = bindings.binary_search_by(|(binding, _)| {
+            let key = key(binding);
+            key.0.cmp(components).then_with(|| key.1.cmp(name))
         });
         let Ok(index) = found else {
             return Ok(false);
         };
-        let (_, expected, seen) = &mut bindings[index];
+        let (expected, seen) = &mut bindings[index];
         ensure!(!*seen, "duplicate fast canonical stream");
         *seen = true;
-        Ok(expected.as_ref() == value)
+        Ok(map(expected)? == value)
     };
     for object in &report.objects {
         ensure!(
@@ -332,7 +360,7 @@ fn maps_match(report: &Report, expected: &StreamMaps) -> Result<bool> {
             }
         }
     }
-    Ok(bindings.iter().all(|(_, _, seen)| *seen))
+    Ok(bindings.iter().all(|(_, seen)| *seen))
 }
 
 impl FreshPayloadProof {
@@ -366,7 +394,11 @@ impl FreshPayloadProof {
                 && ticket.new_selected_sha256 != ticket.old_selected_sha256,
             "fresh payload ticket differs from its prepared plan"
         );
-        let native = proof.protected_layout().native().report().native();
+        let native = proof
+            .protected_layout()
+            .native()
+            .report()
+            .native_observation();
         let protected = proof.protected_layout().native().report();
         let mut tail_extent_streams = 0usize;
         let mut tail_payload_bytes_verified = 0u64;
@@ -399,8 +431,9 @@ impl FreshPayloadProof {
         Ok(Self {
             expected_tree_sha256,
             source: proof.pair().source.clone(),
-            maps: maps(native)?,
+            maps: maps(&native)?,
             base_sectors: native.base_sectors,
+            native,
             new_selected_sha256: ticket.new_selected_sha256,
             selected_bytes,
             range_count: ticket.range_count,
@@ -423,7 +456,10 @@ impl FreshPayloadProof {
             new_selected_sha256: self.new_selected_sha256,
             selected_bytes: self.selected_bytes,
             range_count: self.range_count,
-            bindings: MapEntriesRef(&self.maps),
+            bindings: MapEntriesRef {
+                native: &self.native,
+                bindings: &self.maps,
+            },
             grants_write_authority: false,
             initial_retained_content_digests_available: false,
         };
@@ -474,7 +510,12 @@ impl FreshPayloadProof {
                 && observation.complete_stream_mappings_observed
                 && observation.data_storage_validity_checked
                 && native.native.base_sectors == self.base_sectors
-                && maps_match(&native.native, &self.maps)?,
+                && maps_match(
+                    &native.native,
+                    &self.maps,
+                    |location| location.key(&self.native),
+                    |location| Ok(location.view(&self.native)?.1),
+                )?,
             "mounted file identities, complete physical maps or storage validity differ from the protected candidate"
         );
         Ok(
@@ -646,7 +687,12 @@ pub(crate) fn verify_native_recovery_extents_scoped(
             && known.streams_without_content_baseline == unknown_streams
             && native.pair.source.identity == facts.source.identity
             && native.native.base_sectors == facts.base_sectors
-            && maps_match(&native.native, &proof.maps)?,
+            && maps_match(
+                &native.native,
+                &proof.maps,
+                |(key, _)| (key.0.as_slice(), key.1.as_slice()),
+                |(_, map)| Ok(map.as_ref()),
+            )?,
         "recovery mounted metadata, storage validity or complete maps differ from pinned target facts"
     );
     record_mount_paths_scoped(scope, &native, report);

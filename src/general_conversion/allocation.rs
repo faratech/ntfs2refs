@@ -7,13 +7,14 @@ use super::*;
 use crate::selected_journal as sj;
 use anyhow::Context;
 use n2r_win32::{GeneralFrozenPartition, WritePolicy};
+use reconstruct::selected_native_journal::NativeSelectedJournal;
 
 /// The fresh alternative exposes no mutable journal between completed
 /// preparation and handoff. Legacy execution retains its original stream APIs.
 enum PreparedJournal<'a> {
-    Exclusive(sj::PreparedExclusiveJournal<'a, fs::File>),
+    Exclusive(sj::PreparedExclusiveJournal<'a, NativeSelectedJournal>),
     Legacy {
-        journal: &'a mut fs::File,
+        journal: &'a mut NativeSelectedJournal,
         ticket: sj::SelectedTicket,
     },
 }
@@ -56,6 +57,54 @@ pub(super) fn convert_allocation_selected(
     interrupt_after_writes: Option<u32>,
     interrupt_after_first_copy_write: bool,
     fresh_exclusive_v3_first_write_fault: bool,
+) -> Result<()> {
+    convert_allocation_selected_inner(
+        request,
+        construction,
+        output,
+        interrupt_after_writes,
+        interrupt_after_first_copy_write,
+        fresh_exclusive_v3_first_write_fault,
+        None,
+    )
+}
+
+/// Explicit enrolled-lab entry only; production callers cannot select markers.
+pub(crate) fn convert_allocation_redundant_for_lab(
+    request: &Request,
+    construction: qualification::CompactConstructionBudget,
+    output: &Path,
+    first_write_fault: bool,
+) -> Result<()> {
+    ensure!(
+        request.schema_version == 3
+            && request.verification_policy.is_fast()
+            && request.source_resource_profile
+                == Some(crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(None))
+            && request.selected_capacity_policy.allows_source_free()
+            && !request.verify_existing_shadow,
+        "native redundant marker lab conversion requires fresh schema3 fast source-free planning None"
+    );
+    construction.validate(request.pair.source.identity.partition_bytes)?;
+    convert_allocation_selected_inner(
+        request,
+        construction,
+        output,
+        first_write_fault.then_some(1),
+        false,
+        first_write_fault,
+        Some(sj::SelectedMarkerProfile::RedundantSourceFreeV1),
+    )
+}
+
+fn convert_allocation_selected_inner(
+    request: &Request,
+    construction: qualification::CompactConstructionBudget,
+    output: &Path,
+    interrupt_after_writes: Option<u32>,
+    interrupt_after_first_copy_write: bool,
+    fresh_exclusive_v3_first_write_fault: bool,
+    marker_profile: Option<sj::SelectedMarkerProfile>,
 ) -> Result<()> {
     request.validate()?;
     ensure!(
@@ -273,7 +322,7 @@ pub(super) fn convert_allocation_selected(
             "saved expectation differs from the admitted target"
         );
         let plan = proof.plan(request.max_journal_bytes)?;
-        let (selected_bytes, journal_bytes) = plan.validate()?;
+        let (selected_bytes, journal_bytes) = plan.validate_marker_profile(marker_profile)?;
         request.validate_selected_capacity(&plan)?;
         let new_zero_bytes = plan.new_zero_bytes()?;
         let new_copy_bytes = plan.new_copy_bytes()?;
@@ -345,26 +394,19 @@ pub(super) fn convert_allocation_selected(
         );
         fs::create_dir(&directory)?;
         let journal_path = directory.join("selected.journal");
-        let mut journal = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .share_mode(0)
-            .custom_flags(0x0020_0000)
-            .open(&journal_path)?;
-        let observed =
-            observe_general_journal_file_with_profile(&journal, &request.journal, profile)?;
-        ensure!(
-            observed.file_bytes == 0,
-            "fresh empty selected journal required"
-        );
+        let (mut journal, journal_identity) = NativeSelectedJournal::create_new(
+            &journal_path,
+            &request.journal,
+            profile,
+            marker_profile,
+        )?;
         qualification::save(
             output,
             "journal-location.json",
             &serde_json::json!({
-                "path":journal_path,"identity":observed.identity,
-                "format":plan.encoding_name(),
-                "journal_format_version":plan.encoding_version(),
+                "path":journal_path,"identity":journal_identity,
+                "format":if marker_profile.is_some() { "N2RFRE02" } else { plan.encoding_name() },
+                "journal_format_version":if marker_profile.is_some() { 6 } else { plan.encoding_version() },
                 "journal_record_bytes":plan.journal_record_bytes(),
                 "old_zero_bytes":old_zero_bytes,
             }),
@@ -386,15 +428,41 @@ pub(super) fn convert_allocation_selected(
                 && ((interrupt_after_writes.is_none() && !interrupt_after_first_copy_write)
                     || fresh_exclusive_v3_first_write_fault)
             {
-                let (owner, reused) = sj::prepare_exclusive_owned_source_backed(
-                    &mut source,
-                    &mut image,
-                    &mut journal,
-                    &plan,
-                    &mut preparation_events,
-                )?;
+                let (owner, reused) = if marker_profile.is_some() {
+                    sj::prepare_exclusive_owned_source_backed_sealed(
+                        &mut source,
+                        &mut image,
+                        &mut journal,
+                        &plan,
+                        &mut preparation_events,
+                        marker_profile,
+                        |journal, ticket| {
+                            journal.seal_redundant(ticket)?;
+                            qualification::save(
+                                output,
+                                "native-marker-storage.json",
+                                journal
+                                    .marker_observation()
+                                    .context("native marker storage not sealed")?,
+                            )?;
+                            Ok(())
+                        },
+                    )?
+                } else {
+                    sj::prepare_exclusive_owned_source_backed(
+                        &mut source,
+                        &mut image,
+                        &mut journal,
+                        &plan,
+                        &mut preparation_events,
+                    )?
+                };
                 (PreparedJournal::Exclusive(owner), reused)
             } else {
+                ensure!(
+                    marker_profile.is_none(),
+                    "native markers require exclusive sealed preparation"
+                );
                 let ticket = sj::prepare(&mut source, &mut image, &mut journal, &plan)?;
                 (
                     PreparedJournal::Legacy {
@@ -483,6 +551,11 @@ pub(super) fn convert_allocation_selected(
         });
         if let Some(manifest) = recovery_payload_manifest {
             recovery_bundle["recovery_payload_manifest"] = manifest;
+        }
+        if marker_profile.is_some() {
+            // A pinned locator fact only. Recovery must reopen and bind its
+            // own typed native handle and fully authenticate actual J bytes.
+            recovery_bundle["marker_storage_identity"] = serde_json::to_value(&journal_identity)?;
         }
         let recovery_pin =
             qualification::save(output, "allocation-recovery-bundle.json", &recovery_bundle)?;
@@ -671,6 +744,7 @@ pub(super) fn convert_allocation_selected(
             }
         };
         qualification::save(output, "handoff.json", &handoff)?;
+        journal.require_native_mount_barriers(&ticket)?;
         record_process_io(output, "handoff")?;
         proof.revalidate_backing()?;
         ensure!(

@@ -8,6 +8,7 @@ use n2r_win32::{
     WritePolicy, general_layout::GeneralDiskBinding, mounted_filesystem_general,
     rediscover_general_volume_wait, volume_label::VolumeLabel,
 };
+use protocol::selected_native_journal::NativeSelectedJournal;
 use serde::Deserialize;
 use std::path::Component;
 
@@ -31,6 +32,8 @@ struct Bundle {
     #[serde(default)]
     recovery_payload_manifest: Option<Pin>,
     journal: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    marker_storage_identity: Option<n2r_win32::journal_file::JournalFileIdentity>,
     source: GeneralDiskBinding,
     serialized_bundle_grants_recovery_authority: bool,
 }
@@ -110,6 +113,26 @@ pub fn recover_allocation(
     rollback: bool,
     output: &Path,
 ) -> Result<AllocationRecoveryOutcome> {
+    recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, false)
+}
+
+/// Only the explicitly enrolled lab entry may request the native marker type.
+pub(crate) fn recover_allocation_redundant_for_lab(
+    bundle_path: &Path,
+    bundle_sha256: &str,
+    rollback: bool,
+    output: &Path,
+) -> Result<AllocationRecoveryOutcome> {
+    recover_allocation_inner(bundle_path, bundle_sha256, rollback, output, true)
+}
+
+fn recover_allocation_inner(
+    bundle_path: &Path,
+    bundle_sha256: &str,
+    rollback: bool,
+    output: &Path,
+    native_marker_lab: bool,
+) -> Result<AllocationRecoveryOutcome> {
     let (mut bundle_input, bundle) = open_bundle(bundle_path, bundle_sha256)?;
     let mut request_input = HeldInput::open(&bundle.request.path, &bundle.request.sha256, 131072)?;
     let request: crate::general_conversion::Request = serde_json::from_slice(&request_input.bytes)?;
@@ -124,16 +147,31 @@ pub fn recover_allocation(
     );
     let mut plan_input = HeldInput::open(&bundle.plan.path, &bundle.plan.sha256, 16 * 1024 * 1024)?;
     let plan: SelectedPlan = serde_json::from_slice(&plan_input.bytes)?;
-    let (selected_bytes, journal_bytes) = plan.validate()?;
+    plan.validate()?;
     request.validate_selected_capacity(&plan)?;
     let old_zero_bytes = plan.old_zero_bytes()?;
     let source_free_bytes = plan.source_free_bytes()?;
     let mut ticket_input = HeldInput::open(&bundle.ticket.path, &bundle.ticket.sha256, 65536)?;
     let ticket: SelectedTicket = serde_json::from_slice(&ticket_input.bytes)?;
-    ensure!(
-        ticket.marker_profile.is_none(),
-        "redundant selected markers require a qualified native marker I/O backend"
-    );
+    if native_marker_lab {
+        ensure!(
+            ticket.marker_profile == Some(sj::SelectedMarkerProfile::RedundantSourceFreeV1)
+                && bundle.marker_storage_identity.is_some()
+                && request.schema_version == 3
+                && request.verification_policy.is_fast()
+                && request
+                    .source_resource_profile
+                    .is_some_and(|p| p.is_envelope())
+                && request.selected_capacity_policy.allows_source_free(),
+            "native marker lab recovery requires the pinned format-six source-free profile and identity"
+        );
+    } else {
+        ensure!(
+            ticket.marker_profile.is_none() && bundle.marker_storage_identity.is_none(),
+            "redundant selected markers require a qualified native marker I/O backend"
+        );
+    }
+    let (selected_bytes, journal_bytes) = plan.validate_marker_profile(ticket.marker_profile)?;
     ensure!(
         ticket.selected_bytes == selected_bytes
             && ticket.journal_length == journal_bytes
@@ -237,19 +275,14 @@ pub fn recover_allocation(
                 && metadata.len() == ticket.journal_length,
             "selected journal is not the expected bounded ordinary file"
         );
-        let mut journal = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .share_mode(0)
-            .custom_flags(0x0020_0000)
-            .open(&bundle.journal)?;
         let profile = request.journal_profile()?;
-        let observed =
-            observe_general_journal_file_with_profile(&journal, &request.journal, profile)?;
-        ensure!(
-            observed.file_bytes == ticket.journal_length,
-            "opened selected journal length differs from the pinned ticket"
-        );
+        let (mut journal, observed) = NativeSelectedJournal::open_recovery(
+            &bundle.journal,
+            &request.journal,
+            profile,
+            &ticket,
+            bundle.marker_storage_identity.as_ref(),
+        )?;
         artifacts::save(output, "journal-identity.json", &observed)?;
         phase = "selected-journal-lifecycle";
         // Authenticate the actual share-zero journal once before reopening the
@@ -447,6 +480,9 @@ pub fn recover_allocation(
         {
             held.revalidate()?;
         }
+        // One intact terminal peer already closes raw replay. Keep the target
+        // excluded unless both terminal copies pass the native barriers.
+        journal.require_native_mount_barriers(&ticket)?;
         phase = "native-mount";
         let mut extent_verification_receipt = None;
         match outcome {

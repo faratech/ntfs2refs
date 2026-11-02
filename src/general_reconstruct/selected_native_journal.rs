@@ -1,0 +1,217 @@
+//! Private journal owner used by selected allocation orchestration. Only the
+//! explicit lab route constructs native marker storage. No handle or mutable
+//! inner accessor can turn a buffered File into the sealed capability.
+use crate::{
+    lab_reconstruct::{DurableIo, ReadSeek},
+    selected_journal as sj,
+};
+use anyhow::{Result, ensure};
+use n2r_win32::journal_file::{
+    GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile, MarkerJournalFile,
+    MarkerStorageObservation, UnbufferedJournalFile, observe_general_journal_file_with_profile,
+};
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom, Write},
+    os::windows::fs::OpenOptionsExt,
+    path::Path,
+};
+
+pub(crate) struct NativeSelectedJournal {
+    storage: Storage,
+}
+
+enum Storage {
+    Buffered(File),
+    Constructing(UnbufferedJournalFile),
+    Sealed(MarkerJournalFile),
+    Unavailable,
+}
+
+fn unavailable() -> io::Error {
+    io::Error::other("selected journal owner unavailable after failed sealing")
+}
+
+impl NativeSelectedJournal {
+    pub(crate) fn create_new(
+        path: &Path,
+        binding: &GeneralJournalStorageBinding,
+        profile: JournalProfile,
+        markers: Option<sj::SelectedMarkerProfile>,
+    ) -> Result<(Self, JournalFileIdentity)> {
+        if markers.is_some() {
+            let file = UnbufferedJournalFile::create_new(path, binding, profile)?;
+            let identity = file.identity().clone();
+            return Ok((
+                Self {
+                    storage: Storage::Constructing(file),
+                },
+                identity,
+            ));
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        let observed = observe_general_journal_file_with_profile(&file, binding, profile)?;
+        ensure!(
+            observed.file_bytes == 0,
+            "fresh empty selected journal required"
+        );
+        Ok((
+            Self {
+                storage: Storage::Buffered(file),
+            },
+            observed.identity,
+        ))
+    }
+
+    pub(crate) fn open_recovery(
+        path: &Path,
+        binding: &GeneralJournalStorageBinding,
+        profile: JournalProfile,
+        ticket: &sj::SelectedTicket,
+        marker_identity: Option<&JournalFileIdentity>,
+    ) -> Result<(Self, serde_json::Value)> {
+        if ticket.marker_profile.is_some() {
+            let identity = marker_identity.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "native marker recovery needs its independently pinned file identity"
+                )
+            })?;
+            let file = MarkerJournalFile::open_recovery(
+                path,
+                binding,
+                profile,
+                identity,
+                ticket.journal_length,
+            )?;
+            let observed = serde_json::to_value(file.observation())?;
+            return Ok((
+                Self {
+                    storage: Storage::Sealed(file),
+                },
+                observed,
+            ));
+        }
+        ensure!(
+            marker_identity.is_none(),
+            "legacy journal has marker storage identity"
+        );
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        let observed = observe_general_journal_file_with_profile(&file, binding, profile)?;
+        ensure!(
+            observed.file_bytes == ticket.journal_length,
+            "opened selected journal length differs from the pinned ticket"
+        );
+        Ok((
+            Self {
+                storage: Storage::Buffered(file),
+            },
+            serde_json::to_value(observed)?,
+        ))
+    }
+
+    /// Called only before the prepared owner is published. On failure the
+    /// original owner is dropped and this wrapper becomes permanently unusable.
+    pub(crate) fn seal_redundant(&mut self, ticket: &sj::SelectedTicket) -> Result<()> {
+        ensure!(
+            ticket.marker_profile == Some(sj::SelectedMarkerProfile::RedundantSourceFreeV1),
+            "native sealing requires explicit redundant source-free markers"
+        );
+        let construction = std::mem::replace(&mut self.storage, Storage::Unavailable);
+        let Storage::Constructing(file) = construction else {
+            anyhow::bail!("native marker sealing requires its actual construction owner");
+        };
+        self.storage = Storage::Sealed(file.seal_marker_storage(ticket.journal_length)?);
+        Ok(())
+    }
+
+    pub(crate) fn marker_observation(&self) -> Option<&MarkerStorageObservation> {
+        match &self.storage {
+            Storage::Sealed(file) => Some(file.observation()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn require_native_mount_barriers(
+        &mut self,
+        ticket: &sj::SelectedTicket,
+    ) -> Result<()> {
+        if ticket.marker_profile.is_none() {
+            return Ok(());
+        }
+        ensure!(
+            matches!(&self.storage, Storage::Sealed(_)),
+            "native markers require actual sealed storage"
+        );
+        sj::require_redundant_terminal_barriers(self, ticket)
+    }
+}
+
+impl Read for NativeSelectedJournal {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        match &mut self.storage {
+            Storage::Buffered(file) => file.read(bytes),
+            Storage::Constructing(file) => file.read(bytes),
+            Storage::Sealed(file) => file.read(bytes),
+            Storage::Unavailable => Err(unavailable()),
+        }
+    }
+}
+impl Write for NativeSelectedJournal {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match &mut self.storage {
+            Storage::Buffered(file) => file.write(bytes),
+            Storage::Constructing(file) => file.write(bytes),
+            Storage::Sealed(file) => file.write(bytes),
+            Storage::Unavailable => Err(unavailable()),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match &mut self.storage {
+            Storage::Buffered(file) => file.flush(),
+            Storage::Constructing(file) => file.flush(),
+            Storage::Sealed(file) => file.flush(),
+            Storage::Unavailable => Err(unavailable()),
+        }
+    }
+}
+impl Seek for NativeSelectedJournal {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        match &mut self.storage {
+            Storage::Buffered(file) => file.seek(from),
+            Storage::Constructing(file) => file.seek(from),
+            Storage::Sealed(file) => file.seek(from),
+            Storage::Unavailable => Err(unavailable()),
+        }
+    }
+}
+impl ReadSeek for NativeSelectedJournal {
+    fn byte_len(&mut self) -> io::Result<u64> {
+        match &mut self.storage {
+            Storage::Buffered(file) => Ok(file.metadata()?.len()),
+            Storage::Constructing(file) => file.byte_len(),
+            Storage::Sealed(file) => file.byte_len(),
+            Storage::Unavailable => Err(unavailable()),
+        }
+    }
+}
+impl DurableIo for NativeSelectedJournal {
+    fn sync_all(&mut self) -> io::Result<()> {
+        match &mut self.storage {
+            Storage::Buffered(file) => file.sync_all(),
+            Storage::Constructing(file) => file.sync_all(),
+            Storage::Sealed(file) => file.sync_all(),
+            Storage::Unavailable => Err(unavailable()),
+        }
+    }
+}

@@ -455,7 +455,7 @@ impl SelectedPlan {
         self.validate_marker_profile(Some(SelectedMarkerProfile::RedundantSourceFreeV1))
     }
 
-    fn validate_marker_profile(
+    pub(crate) fn validate_marker_profile(
         &self,
         profile: Option<SelectedMarkerProfile>,
     ) -> Result<(u64, u64)> {
@@ -1044,7 +1044,40 @@ pub(crate) fn prepare_exclusive_owned_source_backed<'a, S: Read + Seek, J: Durab
     plan: &'a SelectedPlan,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<(PreparedExclusiveJournal<'a, J>, u64)> {
-    plan.validate()?;
+    prepare_exclusive_owned_source_backed_sealed(
+        source,
+        candidate,
+        journal,
+        plan,
+        events,
+        None,
+        |_, _| Ok(()),
+    )
+}
+
+/// Complete the unchanged readback and paired-source checks before a native
+/// construction owner is sealed in place. A failed hook publishes no prepared
+/// owner. The hook is crate-private and never exposes an already-issued owner.
+#[cfg(windows)]
+pub(crate) fn prepare_exclusive_owned_source_backed_sealed<
+    'a,
+    S: Read + Seek,
+    J: DurableIo,
+    F: FnOnce(&mut J, &SelectedTicket) -> Result<()>,
+>(
+    source: &mut n2r_win32::GeneralFrozenPartition,
+    candidate: &mut crate::refs_hybrid::delta::DifferenceImage<
+        '_,
+        n2r_win32::GeneralFrozenPartition,
+        S,
+    >,
+    journal: &'a mut J,
+    plan: &'a SelectedPlan,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    marker_profile: Option<SelectedMarkerProfile>,
+    seal: F,
+) -> Result<(PreparedExclusiveJournal<'a, J>, u64)> {
+    plan.validate_marker_profile(marker_profile)?;
     let before = candidate.paired_source_state(source, events)?;
     let copies = candidate.require_original_copy_ranges(&plan.new_copy_ranges)?;
     ensure!(
@@ -1052,11 +1085,12 @@ pub(crate) fn prepare_exclusive_owned_source_backed<'a, S: Read + Seek, J: Durab
         "paired COPY scope differs from the complete plan"
     );
     let PreparedContents { ticket, records } =
-        prepare_inner(source, candidate, journal, plan, true, true, None)?;
+        prepare_inner(source, candidate, journal, plan, true, true, marker_profile)?;
     ensure!(
         candidate.paired_source_state(source, events)? == before,
         "paired source/complement changed during journal preparation"
     );
+    seal(journal, &ticket)?;
     Ok((
         PreparedExclusiveJournal {
             journal,
@@ -1859,6 +1893,44 @@ fn write_lifecycle_marker<J: DurableIo>(
             write_marker(journal, offset, &value)?;
         }
     }
+    Ok(())
+}
+
+/// Classification closes replay with one intact terminal peer. Native online
+/// exposure is stricter: both closing copies must survive independent flush
+/// and actual readback. A degraded terminal pair stays closed and offline;
+/// this read-only check does not repair it or recreate replay authority.
+pub(crate) fn require_redundant_terminal_barriers<J: DurableIo>(
+    journal: &mut J,
+    ticket: &SelectedTicket,
+) -> Result<()> {
+    ensure!(
+        ticket.marker_profile.is_some(),
+        "redundant terminal profile required"
+    );
+    let state = classify(journal, ticket)?;
+    let kind = match state {
+        SelectedLifecycle::Handoff => MarkerKind::Handoff,
+        SelectedLifecycle::Aborted => MarkerKind::Aborted,
+        _ => anyhow::bail!("native mount requires a closed selected journal"),
+    };
+    for copy in 1..=2 {
+        journal.sync_all()?;
+        let mut observed = [0u8; GRANULE as usize];
+        at(
+            journal,
+            (kind.first_slot() + u64::from(copy - 1)) * GRANULE,
+            &mut observed,
+        )?;
+        ensure!(
+            observed == redundant_marker(kind, copy, ticket),
+            "closed selected journal lacks both durable terminal copies; replay stays closed and target offline"
+        );
+    }
+    ensure!(
+        classify(journal, ticket)? == state,
+        "selected terminal lifecycle changed"
+    );
     Ok(())
 }
 

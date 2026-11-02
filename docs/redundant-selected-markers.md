@@ -24,9 +24,14 @@ backend binding retained file/device ownership, actual alignment and independent
 allocated marker granules, ordered flushes and uncached readback. Ordinary cached
 File readback and distinct logical offsets cannot establish those claims.
 
-Source review and focused compilation passed. Native backend integration,
-single-peer read-error policy, terminal-peer online policy and VM/hardware
-power-loss qualification remain pending. No unit tests were added or run.
+Source review and focused compilation passed. The native backend is now wired
+only into the explicit `lab-selected-marker-native` entry. It requires both
+`--acknowledge-enrolled-disposable-devices` and
+`--acknowledge-unqualified-native-markers`. Its `fresh` command uses the real
+source admission and allocation conversion path; `recover` uses the actual
+pinned recovery journal. Production creation and recovery defaults are unchanged.
+No native or hardware power-loss qualification is claimed. No unit tests were
+added or run.
 
 The pending Win32 adapter now owns an exclusive NO_BUFFERING|WRITE_THROUGH NTFS
 file, bounded aligned body cache and exact logical EOF. Its sealing step binds
@@ -35,9 +40,13 @@ eight disjoint marker granules and handle-local protected allocation. Scoped
 volume-management privilege is restored after handles close. Sealed writes are
 limited to full marker slots and read back through the uncached handle.
 
-This adapter is compiled and source-reviewed, with its native-qualified flag
-still false. It is not wired into production creation or recovery. Retaining the
-existing prepared-journal proof requires an in-place sealing hook; generic
-format6 support alone cannot authorize a buffered native backend. These checks
-bound reported storage-interface granules, not hardware FTL separation or host
-power-failure behavior.
+The native-qualified flag remains false. A fallible sealing hook runs after
+the full flushed body readback, clear-marker checks and paired-source checks,
+before publishing the prepared journal owner. It retains the same exclusive
+native handle. Native online exposure additionally requires both terminal peers
+to authenticate through uncached readback. One intact terminal still closes raw
+replay; degraded terminal storage stays offline rather than reopening replay.
+A read I/O error refuses instead of treating an unread peer as a zero slot.
+These checks bind reported storage-interface granules, not hardware FTL
+separation or host power-failure behavior. The next required evidence is an
+owning-guest format6 normal/fault/recovery run and hard-power interruption matrix.

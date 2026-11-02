@@ -183,7 +183,9 @@ impl FreshPayloadProof {
                     == serde_json::to_vec(&proof.plan(plan.max_journal_bytes)?)?,
             "fresh payload proof differs from the original live certificate or exact selected plan"
         );
-        let (selected_bytes, journal_bytes) = plan.validate()?;
+        // The explicit ticket profile chooses the exact marker-body length.
+        let (selected_bytes, journal_bytes) =
+            plan.validate_marker_profile(ticket.marker_profile)?;
         ensure!(
             ticket.image_length == proof.pair().source.identity.partition_bytes
                 && ticket.selected_bytes == selected_bytes
@@ -348,7 +350,9 @@ impl RecoveryPayloadProof {
         );
         expected.validate_with_resource_profile(resources)?;
         let facts: RecoveryPayloadManifest = serde_json::from_slice(bytes)?;
-        let (selected_bytes, journal_bytes) = plan.validate()?;
+        // The explicit ticket profile chooses the exact marker-body length.
+        let (selected_bytes, journal_bytes) =
+            plan.validate_marker_profile(ticket.marker_profile)?;
         ensure!(
             expected.has_extent_only_streams()
                 && facts.schema_version == 1

@@ -18,6 +18,7 @@ use std::{
 };
 
 mod allocation;
+pub(crate) use allocation::recover_allocation_redundant_for_lab;
 pub use allocation::{AllocationRecoveryOutcome, preview_allocation, recover_allocation};
 mod compact;
 pub use compact::{

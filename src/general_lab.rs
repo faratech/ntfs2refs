@@ -139,6 +139,46 @@ pub fn convert_fresh_allocation_exclusive_v3_first_write(
     )
 }
 
+/// Unqualified native format-six experiment. This route still obtains the
+/// original live certificate and all ordinary allocation conversion checks.
+pub fn convert_fresh_allocation_redundant_markers(
+    request: &crate::general_conversion::Request,
+    budget: crate::general_qualification::CompactConstructionBudget,
+    output: &std::path::Path,
+    first_write_fault: bool,
+) -> Result<()> {
+    ensure!(
+        std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11"),
+        "native marker experiment requires the enrolled disposable owning guest"
+    );
+    crate::general_conversion::convert_allocation_redundant_for_lab(
+        request,
+        budget,
+        output,
+        first_write_fault,
+    )
+}
+
+/// Reopens an existing journal with the actual typed native backend; saved
+/// observations never become storage capability or fresh Apply authority.
+pub fn recover_allocation_redundant_markers(
+    bundle: &std::path::Path,
+    bundle_sha256: &str,
+    rollback: bool,
+    output: &std::path::Path,
+) -> Result<crate::general_recovery::AllocationRecoveryOutcome> {
+    ensure!(
+        std::env::var("COMPUTERNAME").ok().as_deref() == Some("N2R-WIN11"),
+        "native marker recovery requires the enrolled disposable owning guest"
+    );
+    crate::general_recovery::recover_allocation_redundant_for_lab(
+        bundle,
+        bundle_sha256,
+        rollback,
+        output,
+    )
+}
+
 /// Stop after the first actual native target write into the first qualified
 /// old-payload-copy destination. The selected plan determines the destination.
 pub fn convert_fresh_allocation_selected_after_first_copy(

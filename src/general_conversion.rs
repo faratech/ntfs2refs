@@ -22,6 +22,7 @@ use std::{
 };
 
 mod allocation;
+pub(crate) use allocation::convert_allocation_redundant_for_lab;
 #[allow(
     dead_code,
     reason = "composite orchestration awaits native qualification before CLI exposure"

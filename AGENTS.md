@@ -10,7 +10,48 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 22:51 UTC)
+## CURRENT release continuation (2026-11-02 23:20 UTC)
+
+VM fresh-confirmed Off/RAM0,33snapshots, currentparent
+5ce766b0-c6e9-4007-b16d-363944240c51 childa0621534source. This is CLOSED HND/ReFS;
+NEVER replay currentjournal. No VM/build job is running. Root alone VMmutations.
+
+Corrected7feb4c06d21e9de73bb88961197f5b745463e490 clean8bin buildmanifest
+d4afec214f672fe4eb3b12c5e82a5315ccbee25f92f9222ef426605948f54814;
+sealed5roles directory-attribute-tools-7feb4c0 manifest
+b0f6fe5fd4e02046739e9c177c838c1675c5a746b8662eec493402cca9e5e521.
+Actualfixedfullbaselinefb8592bb3b044c3aa3879c46afd326af passed capture4984/
+1793660209770/0,21.570304s. Manifestd6a958631a570b3a2cdd3f0077148b571330719988f6f0e430d8e80a22e72d09,
+schema2/9artifacts/1534objects723dirs811fullstreams, before/after3/noauthority.
+Immutablecorrectedbaselinehelper5ce43...751ce is committed3371e97; ce2 unchanged.
+
+PUBLIC1534 case608071c1ad524d07b1ef94237996cc6c PASSED native4164/birth
+1793660834450/0 in129.4563482s includingnativeNTFSpreparation. All811 independent
+hashes+1534objects/fullprepmapreplay andSome2typedpages passed; wrapper4592/birth
+1793660713935 terminal/Ready0, allworkersabsentbefore normalshutdown. Sourceattrs
+10000000→Dir10 fix is now nativelyqualified for this source/profile.
+Expectedpages2,753,825B/map616,436B; J155,932,464+literal55,382,016=211,314,480B.
+Selected3,497,697,280B/3954ranges. Processlogicalreads30,751,950,216/writes3,936,193,515B;
+physicalIO/causalperformance/fullpeakRAM unclaimed. EngineC:\ProgramData\ntfs2refs\runs\4a1bad035614748a2fb5b77d649b2c00.
+Archive113files328,266,646B SHA97b2e173906a5602b7baa953798c1ee52b85d7417f6f83ec923a8a14acc49475.
+See evidence/paged-metadata-public1534-7feb4c0-20261102.json.
+
+NEXT actualnewSome2paged interruption/resume/rollback. Bsource-onlyproducer
+Start-PagedEnvelopeInterruption.ps1 SHA87f2e7e9c822e9f57ed7a805499b5846dae028b498e2f349b187d96cd9937481;
+shared PagedEnvelopeBaselineSupport.ps1 SHA10537d42164c33bd2d5c32fa724c9529e7a16163c8aa8017f9adc69342d2cf4c.
+Both NEW/no nativeexecutionyet. Actualreserveguard correctedto17179869184,
+separate J8GiB/literal256MiB/combined10GiB. Aindependentreviewinprogress, Cwriting
+NEW Start-PagedEnvelopeRecovery.ps1. Actualfirstwrite86 mustbeobserved/flushed,
+thenrootoff/saveoriginalchilda062+flatCPreceipt withallactualpins. JSONlocates,
+neverauthorizes; recovercoremustactualJ/device/lifecycle checks. Rootwillrestore
+same originalindependentlyforResume/Rollback, neverclosedHND/ABTresults. Current
+large success5ce is NOT that original. Useclean7feb/b0toolset/d6fullbaseline +
+additional450receipt0bc. See agents forfullreceiptcontract. No oldhelper edits.
+Globalproductionmarker flag remainsFALSE; no stable/tag/arbitraryscaleclaim.
+Mainc6/no unit tests/keepWSL/fixed50GBepoch unchanged. Sourcea062 originalNTFS
+mustrestoreONCE afterallclosedbeforefreshproducer; don'tclearprotection/replay.
+
+## Earlier release continuation (2026-11-02 22:51 UTC)
 
 VM fresh-confirmed Off/RAM0,32snapshots, parenta0627dbd-aa3b-4896-bbeb-495f5e372057
 (savedNTFS1534source childgolden8329). ACTIVE writable branch is the FAILED

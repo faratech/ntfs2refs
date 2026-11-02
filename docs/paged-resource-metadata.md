@@ -64,8 +64,14 @@ independent full-content baseline for a larger directory domain. Its default
 retains the old schema and serialization. The new lab mode keeps both full raw
 and native content/EOF passes, creates and validates a held paged projection,
 and issues no source, certificate or write authority. It has a focused build
-check; native qualification above 1,280 objects and new paged-bundle recovery
-remain pending. No unit tests were added or run. Source inspection and native
+check. After fixing the raw NTFS directory-marker projection, the `7feb4c0`
+public CLI passed a fresh 1,534-object tree (723 directories and 811 files),
+including all 811 independent stream hashes, in 129.4563482 seconds. Its expected
+metadata used 2,753,825 encoded bytes and its recovery maps 616,436 bytes; journal
+plus literal backing used 211,314,480 bytes. See the separate 1,534-object evidence
+report. This exceeds the previous 1,280-object gate under the admitted resource
+budget; the raw 2,048-identity bound remains. New paged-bundle recovery remains
+pending. No unit tests were added or run. Source inspection and native
 reports still have bounded in-memory collections, and the existing 16 MiB
 semantic, 64 MiB inspection/report/map and stream/range budgets remain. Further
 scaling requires paging those domains and a separate owning-handle design.

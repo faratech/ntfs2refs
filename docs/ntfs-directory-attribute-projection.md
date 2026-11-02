@@ -34,6 +34,14 @@ SI flags. The shared `ntfs_file_attributes` projection closes that disagreement:
   EA, sparse and reparse policies. Recognized filesystem-internal observation
   retains its separate existing treatment.
 
-The focused four-binary check passed; no unit tests were added or run. The
-corrected 1,534-object baseline and subsequent native conversion/recovery runs
-remain pending. The earlier 1,084-object result does not qualify this fix.
+The focused four-binary check and clean eight-binary `7feb4c0` build passed. The
+corrected full baseline then passed for 1,534 objects, including all 811 full raw
+and native stream comparisons. The public CLI converted that existing tree in
+129.4563482 seconds; the independent observer matched all 811 stream hashes and
+all 1,534 objects. The result is saved at checkpoint
+`5ce766b0-c6e9-4007-b16d-363944240c51`, with a closed handoff. Its 113-file archive
+contains both paged inputs and comparison receipts. See
+`evidence/paged-metadata-public1534-7feb4c0-20261102.json`.
+
+New paged-bundle interruption/resume/rollback qualification remains pending. No
+unit tests were added or run; these results qualify the stated VM source/profile.

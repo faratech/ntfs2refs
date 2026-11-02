@@ -247,6 +247,10 @@ impl SelectedPlan {
         if self.source_free_ranges.is_empty() {
             return Ok(0);
         }
+        let backup_granule = self
+            .image_length
+            .checked_sub(GRANULE)
+            .context("source-free image lacks a backup boot granule")?;
         // COPY destinations are ordered, but their source addresses need not
         // be. Merge their source union once rather than scanning C for each F.
         let mut protected = self
@@ -297,6 +301,10 @@ impl SelectedPlan {
                 .offset
                 .checked_add(free.length)
                 .context("source-free range overflow")?;
+            ensure!(
+                end <= backup_granule,
+                "source-free range covers the reserved backup boot granule"
+            );
             let first = protected.partition_point(|&(_, source_end)| source_end <= free.offset);
             ensure!(
                 protected.get(first).is_none_or(|&(start, _)| start >= end),

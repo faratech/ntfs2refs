@@ -4,7 +4,9 @@
 //! about contents, VDL or current target allocation. It is not source admission:
 //! the caller must bind this model/pin to its original opaque live source
 //! context before using the plan. Neither this type nor its JSON is write or
-//! replay authority. Recognized/replaced NTFS internals keep their allocations.
+//! replay authority. Recognized/replaced NTFS internals keep their allocations;
+//! the backup boot granule always requires restoration, even inside a bitmap
+//! domain that marks the final cluster free.
 use crate::{
     ntfs_inspect::{AllocationReconciliationStatus, NtfsInspection},
     selected_journal::{SelectedCopyRange, SelectedPlan, SelectedRange},
@@ -73,6 +75,8 @@ pub struct Counts {
     pub restore_required_bytes: u64,
     pub source_free_bytes: u64,
     /// These three causes may overlap; do not add them to derive the union.
+    /// NTFS storage includes the reserved backup boot granule independently
+    /// of its allocation-bitmap bit.
     pub ntfs_allocated_selected_bytes: u64,
     pub protected_copy_source_selected_bytes: u64,
     pub discovery_selected_bytes: u64,
@@ -224,10 +228,13 @@ impl ReconciledSourceAllocation {
             domain > 0 && domain <= partition_bytes,
             "ownership cluster domain leaves partition"
         );
+        let backup_granule = partition_bytes - GRANULE;
         // Budget the exact iterator used by allocated_byte_ranges BEFORE that
-        // existing model helper materializes its vector. Reuse its ownership
-        // semantics, including nonresident attribute-list storage and tails.
+        // existing model helper materializes its vector. A partial tail or
+        // extent overlap already rounds to protect the complete final granule;
+        // otherwise reserve one additional interval for the backup boot sector.
         let mut interval_count = 0usize;
+        let mut backup_protected = domain < partition_bytes;
         for attribute in raw
             .files
             .iter()
@@ -238,9 +245,14 @@ impl ReconciledSourceAllocation {
                 continue;
             }
             for extent in &attribute.extents {
-                if extent.physical_offset.is_none() {
+                let Some(physical) = extent.physical_offset else {
                     continue;
-                }
+                };
+                let finish = physical
+                    .checked_add(extent.length)
+                    .context("ownership physical allocation interval overflow")?;
+                backup_protected |=
+                    extent.length != 0 && physical < partition_bytes && finish > backup_granule;
                 interval_count = interval_count
                     .checked_add(1)
                     .filter(|count| *count <= limits.maximum_allocation_intervals)
@@ -251,10 +263,17 @@ impl ReconciledSourceAllocation {
             interval_count == reconciliation.physical_intervals
                 && interval_count
                     .checked_add(usize::from(domain < partition_bytes))
+                    .and_then(|count| count.checked_add(usize::from(!backup_protected)))
                     .is_some_and(|count| count <= limits.maximum_allocation_intervals),
-            "ownership allocation interval count or tail budget differs"
+            "ownership allocation interval count, tail or backup reserve budget differs"
         );
-        let intervals = raw.allocated_byte_ranges(partition_bytes)?;
+        let mut intervals = raw.allocated_byte_ranges(partition_bytes)?;
+        if !backup_protected {
+            intervals
+                .try_reserve_exact(1)
+                .context("backup boot protection interval storage unavailable")?;
+            intervals.push((backup_granule, GRANULE));
+        }
         ensure!(
             intervals.len() <= limits.maximum_allocation_intervals,
             "merged ownership allocation interval budget exceeded"
@@ -275,7 +294,9 @@ impl ReconciledSourceAllocation {
     }
 
     /// Conservative complete-granule coverage of the reconciled raw model.
-    /// All original allocation bytes remain covered; partial granules expand.
+    /// All original allocation bytes and the backup boot sector remain covered;
+    /// partial granules expand. Capture capacity and final plan refinement use
+    /// this same conservative coverage.
     pub fn allocated_byte_ranges(&self) -> &[(u64, u64)] {
         &self.allocated
     }

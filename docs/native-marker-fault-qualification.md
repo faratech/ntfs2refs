@@ -60,3 +60,16 @@ same case receipt. The remaining fault kinds are separate evidence.
 These cases do not qualify physical power loss, other marker lifecycle states,
 other storage geometries or a stable general release. The production gate
 remains false.
+
+The remaining AP2 API-failure cases also passed. A deliberately skipped
+WriteFile returned native1 in9.273028s with neither marker write nor flush
+issued; ordinary recovery then completed in17.4603415s. A deliberately skipped
+FlushFileBuffers returned native1 in8.0022936s after the marker write; ordinary
+recovery then completed in15.3704614s. Both failure paths poisoned the journal,
+left the source offline and created no success outputs. Both follow-ups used
+their same active branches and verified HND/ReFS with1084bindings.
+
+The [write case](../evidence/native-marker-ap2-write-error-20261102.json) and
+[flush case](../evidence/native-marker-ap2-flush-error-20261102.json) pin their
+native processes and independently copied metadata archives. They do not extend
+AP2 results to RB2, HND2 or ABT2.

@@ -2,6 +2,23 @@
 
 ## Current update — 2026-11-02
 
+The clean `233c2a3` public command subsequently passed on the independently
+populated, unprepared source:139 seconds including native NTFS preparation,
+186397312 bytes combined journal/literal storage,811 independent content hashes
+and1084 native object checks. See [the exact public run](../evidence/clean233-public-native-20261102.json).
+
+Clean runtime `70c10cc` then passed actual AP2 self-hash corruption followed by
+a VM TurnOff/reboot and ordinary recovery. All three AP2 synthetic API failures
+(write, flush and readback) returned actual native exit1, retained source
+exclusion, and then passed ordinary recovery on their respective same branches.
+These deliberately skipped API calls are not physical hardware error evidence.
+See [marker fault qualification](native-marker-fault-qualification.md).
+Remaining marker states, final exact public qualification, and the resource and
+compatibility gaps below still prevent a stable release claim.
+
+The older paragraphs below retain their original scope; their pending native
+run statements do not supersede the pinned results above.
+
 Actual AP1 VM power-cut recovery now passed in both directions from the same
 original interrupted checkpoint: Resume completed ReFS/HND in 16.26 seconds;
 Rollback restored NTFS/ABT in 11.66 seconds. Both results are archived and saved

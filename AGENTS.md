@@ -30,7 +30,8 @@ Commit378860e memory changes compiled. Clean offline candidate r378860e-c built
 cbf9c8d8b328e7a6aa8cd42e62c895ce6f40e2c6c2fc53707565bde84a1091f3.
 It inherits no native/power qualification. HND/RB/ABT power cases, final exact-build
 qualification and release remain OPEN; production markers stay gated. Protected
-main c6bc5c52... remains unchanged/unstaged; the permission question is unanswered.
+main c6bc5c52... removal of obsolete capability fields was explicitly approved
+for unchanged commit by the user on November 2; no other main edits are authorized.
 See docs/native-format6-power-recovery.md and the AP1 power evidence JSONs.
 
 ## Objective and user constraints
@@ -48,7 +49,7 @@ Do not redefine completion as the existing small-corpus success.
   existing owned-file experiments and necessary native checks are allowed.
   Avoid repeating expensive scans answered by unchanged evidence.
 - Commit task-owned stable source/docs regularly and push normally; never force-push.
-- **NEVER edit, format, stage, reset or clean the user-owned src/main.rs hunk.**
+- Preserve the exact approved src/main.rs bytes; do not edit, format, reset or clean them. The user explicitly authorized committing the existing capability-field removal unchanged on November 2.
   Its SHA-256 is `c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b`.
   Stage exact owned paths, never `git add .` or workspace-wide formatting.
 - User authorized obsolete-checkpoint deletion and cleanup. Preserve active

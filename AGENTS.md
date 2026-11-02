@@ -10,6 +10,29 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
+## CURRENT release block (2026-11-02 UTC)
+
+This block supersedes older CURRENT/LIVE and pending-power labels below.
+CURRENT VM is fresh-confirmed Off/RAM0 at AP1 power Rollback checkpoint
+44c0074b-b5c4-4614-b957-a96842436cbf, parent8d4192fe, 20 snapshots.
+Runtime7cd6870 passed actual AP1 power Resume (native3064/birth1793594871253/0,
+16.2593027s, HND/ReFS, 1084 maps) and separate original-state Rollback
+(native2588/birth1793595236914/0, 11.6591231s, ABT/NTFS, 142004224 restoredB).
+Original power checkpoint8d4192fe-003b-441f-8591-f0b271028841 is a child of
+preparedcb802669; original producer exit remains UNOBSERVED. Resume is saved
+at fccec765-f271-4dd5-88c6-6e6e5bd29181, parent8d. Both results/archives are
+closed and verified; NEVER replay their HND/ABT. No extra 811-stream full hash scan.
+Power helper df88c9d563d1abc488e67322c966dcaced0a332936490e83fc14658193ed2def
+retains the actual absent-shadow Read/ShareNone guard through native/terminal
+checks, without AccessDenied-to-absence fallback or detached VHDX identity claim.
+Commit378860e memory changes compiled. Clean offline candidate r378860e-c built
+283 source files/6 binaries, workspace 517209397B, manifestSHA
+cbf9c8d8b328e7a6aa8cd42e62c895ce6f40e2c6c2fc53707565bde84a1091f3.
+It inherits no native/power qualification. HND/RB/ABT power cases, final exact-build
+qualification and release remain OPEN; production markers stay gated. Protected
+main c6bc5c52... remains unchanged/unstaged; the permission question is unanswered.
+See docs/native-format6-power-recovery.md and the AP1 power evidence JSONs.
+
 ## Objective and user constraints
 
 Finish the Rust in-place NTFS-to-ReFS converter, with efficient reads, scratch

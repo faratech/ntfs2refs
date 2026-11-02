@@ -58,3 +58,10 @@ held. Legacy compact finalization retains the expectation buffer it still needs.
 These changes remove further duplicate storage without additional device reads.
 Focused compilation and independent source review passed; native peak-RAM
 measurements and complete paged evidence remain separate work.
+
+Verification now also streams the exact pretty expected-tree and compact
+plan/ticket hash bytes. The two native extent-verification paths borrow the
+canonical expected objects instead of cloning a second semantic tree. This
+changes no serialized pins or checks and adds no device reads. Focused locked
+compilation of the public converter and both native conversion/marker tools
+passed at commit 378860e; native qualification of that revision is pending.

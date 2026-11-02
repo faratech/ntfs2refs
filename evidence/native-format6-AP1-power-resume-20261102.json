@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "kind": "native-format6-AP1-actual-power-resume",
+  "utc": "2026-11-02T04:52:48.2281115Z",
+  "original_power_checkpoint": "8d4192fe-003b-441f-8591-f0b271028841",
+  "original_native_exit_observed": false,
+  "resume_checkpoint": "fccec765-f271-4dd5-88c6-6e6e5bd29181",
+  "original_power_receipt_sha256": "8d63cbc34214475e8ceb51989b760137c8ab4bc3d2d7f6ff037a6ad7e7debc69",
+  "source_commit": "7cd68709e3cd2e4cb1d5227d01fd6137c93ea13f",
+  "native_sha256": "e21888922313aaf591ed8d54c930ae2bd9639eca41f28dfcb6a0dd959e8dfaab",
+  "helper_sha256": "df88c9d563d1abc488e67322c966dcaced0a332936490e83fc14658193ed2def",
+  "native_pid": 3064,
+  "native_creation_ms": 1793594871253,
+  "native_exit": 0,
+  "native_wall_seconds": 16.2593027,
+  "action": "resume",
+  "observed_lifecycle": "apply_intent",
+  "outcome": "refs_completed",
+  "journal_format": "N2RFRE02",
+  "journal_bytes": 131175520,
+  "selected_bytes": 544673792,
+  "extent_verification": {
+    "all_complete_maps_identical": true,
+    "extent_only_partial_streams": 650,
+    "extent_only_partial_tail_bytes": 1371388,
+    "extent_only_streams": 654,
+    "full_file_hashes": false,
+    "grants_fresh_source_or_write_authority": false,
+    "handoff_replay_closed": true,
+    "initial_retained_content_digests_available": false,
+    "known_content_payload_bytes_read": 119009,
+    "known_content_streams_hashed": 157,
+    "post_operational_source_equality_claimed": false,
+    "schema_version": 1,
+    "scope": "recovery-selected-checksums-and-pinned-stream-maps-v1",
+    "selected_bytes_checksummed": 544673792,
+    "selected_sha256": "78ff8967850b2d958b8af62d7bdf17687527dd03f43ddbdc1b38257531a05e33",
+    "stream_and_directory_bindings": 1084
+  },
+  "native_metadata_namespace_security_and_storage_checks_passed": true,
+  "fresh_source_admission_recreated": false,
+  "all_project_tasks_terminal_and_workers_absent_before_normal_stop": true,
+  "archive_files": 42,
+  "archive_bytes": 56785150,
+  "unused_detached_shadow_excluded_by_held_exclusive_read": true,
+  "unused_shadow_provider_identity_or_geometry_claimed": false,
+  "unused_shadow_contents_read_or_log_replayed": false,
+  "source_or_shadow_attributes_changed_by_helper": false,
+  "independent_full_content_scan_run": false,
+  "physical_hardware_power_loss_qualified": false,
+  "remaining_native_marker_power_matrix_complete": false,
+  "stable_release": false,
+  "unit_tests_added_or_run": false,
+  "artifacts": [
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-resume-05572eb503ac4ca3bf5c4d1bec8eb19e\\checkpoint.json",
+      "bytes": 680,
+      "sha256": "b5994fbe468524dbeb7a008f0652a09628d5a441f2c402574caa916626fa4bfb"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-resume-05572eb503ac4ca3bf5c4d1bec8eb19e\\closed-native\\receipt.json",
+      "bytes": 24270,
+      "sha256": "5da19ce805629cf9456215afe96888b60b234916053fc3412b35176cba7297a1"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-resume-05572eb503ac4ca3bf5c4d1bec8eb19e\\closed-native\\recovery\\native-terminal.json",
+      "bytes": 823,
+      "sha256": "6404d1f80d8de31e802591388433afcd6d3eb547e2ab216f8e08d0546cc82857"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-resume-05572eb503ac4ca3bf5c4d1bec8eb19e\\closed-native\\recovery\\wrapper-result.json",
+      "bytes": 761,
+      "sha256": "e9bff15959cf74297d405d85ef6a0b890c9f0126451e8a2c9ba244cb15406a27"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-resume-05572eb503ac4ca3bf5c4d1bec8eb19e\\closed-native\\recovery\\recovery\\result.json",
+      "bytes": 1752,
+      "sha256": "585d17a71e73fac7251950ba0dd2017bb97054f5ba0ff30d50b86938807fd868"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-resume-05572eb503ac4ca3bf5c4d1bec8eb19e\\closed-native\\recovery\\recovery\\recovery-extent-verification.json",
+      "bytes": 724,
+      "sha256": "0f871d102c2682b08d2b09d775f086b714785365a1c0250a5252894e0c562821"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-resume-05572eb503ac4ca3bf5c4d1bec8eb19e\\closed-native\\recovery\\recovery-shadow-exclusive-backing.json",
+      "bytes": 6722,
+      "sha256": "9975915e41ca65b284b5fbaf284f00a0d89e6a923c1b48fda4dca53d5bea47e7"
+    },
+    {
+      "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\native-marker-power-resume-05572eb503ac4ca3bf5c4d1bec8eb19e\\closed-native\\recovery\\recovery-shadow-terminal.json",
+      "bytes": 8637,
+      "sha256": "d88111d6e37759dba2d08c99c3127bd0adb43e5f53837b0a38ada417302c47ce"
+    }
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "kind": "clean-committed-source-build",
+  "utc": "2026-11-02T04:58:17.2568038Z",
+  "source_commit": "378860eb4356cb576a73213eed72a675032df906",
+  "source_tree": "dd3ae6cab8b8a277efac5e2b31385991c9d5bc90",
+  "source_file_count": 283,
+  "builder_sha256": "ad37f7786861636248920eb70ace6510901a92d4f4f6ef1b6e21558e4e91610f",
+  "manifest_path": "D:\\code\\ntfs2refs\\.lab\\development\\release-candidates\\r378860e-c\\manifest.json",
+  "manifest_sha256": "cbf9c8d8b328e7a6aa8cd42e62c895ce6f40e2c6c2fc53707565bde84a1091f3",
+  "cargo_lock_sha256": "d0b38b485a79e8b38e4793ca9bfd8f3560eb15dc1c19347d70c7ddd39d2aba96",
+  "toolchain_channel": "1.98.1",
+  "target": "x86_64-pc-windows-msvc",
+  "working_tree_inputs_used": false,
+  "locked_dependencies": true,
+  "offline_build": true,
+  "compiler_wrappers_disabled": true,
+  "observed_working_bytes": 517209397,
+  "binaries": [
+    {
+      "name": "ntfs2refs",
+      "path": "bin/ntfs2refs.exe",
+      "bytes": 10774016,
+      "sha256": "f6d85607de3d7deffd5a0acc58b598c86cf38e5149d4f832c17664ee60476d6c"
+    },
+    {
+      "name": "lab-selected-marker-native",
+      "path": "bin/lab-selected-marker-native.exe",
+      "bytes": 7083520,
+      "sha256": "c622a16187fa14310b43d63ca3aff94325451ad54aaabade4a24a5157c4a5eaa"
+    },
+    {
+      "name": "lab-convert-native-composite",
+      "path": "bin/lab-convert-native-composite.exe",
+      "bytes": 7575040,
+      "sha256": "cd6bf7a5af5a7ec8066fb20b885b56dcf4201a15dc5288d72c6865eeddc8ce70"
+    },
+    {
+      "name": "lab-recover-native-composite",
+      "path": "bin/lab-recover-native-composite.exe",
+      "bytes": 3203584,
+      "sha256": "2d3e841e426ab55c7365dcad8dc069d7e7e1958879ca561236975f1091886413"
+    },
+    {
+      "name": "lab-content-digest",
+      "path": "bin/lab-content-digest.exe",
+      "bytes": 322048,
+      "sha256": "305e9ddf70382c459e076dc455127d975e7a98daf78cbbd4572cc45b3ca1eac4"
+    },
+    {
+      "name": "lab-managed-shadow",
+      "path": "bin/lab-managed-shadow.exe",
+      "bytes": 1069056,
+      "sha256": "d089fcda7a76df2f33ce2b9bc203a80bec8f3c185e83e1953e2757453992457f"
+    }
+  ],
+  "public_cli_help_exit": 0,
+  "protected_working_tree_main_preserved": true,
+  "qualification_inherited": false,
+  "native_tools_invoked": false,
+  "stable_release": false,
+  "unit_tests_added_or_run": false,
+  "note": "Build provenance only; native recovery results belong to separately pinned runtime7cd. Committed main predates the protected capability-field removal."
+}

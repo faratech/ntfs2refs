@@ -50,3 +50,17 @@ A read I/O error refuses instead of treating an unread peer as a zero slot.
 These checks bind reported storage-interface granules, not hardware FTL
 separation or host power-failure behavior. The next required evidence is an
 owning-guest format6 normal/fault/recovery run and hard-power interruption matrix.
+
+The first owning-guest run of runtime `f707d75` refused during native journal
+construction with Windows error 1. The new journal remained empty; no ticket,
+recovery bundle or source activation was reached. Its metadata archive is
+preserved. This is a refusal, not native qualification.
+
+Constructor failures now carry their native operation name and original error
+chain. The explicit lab tool also has a `probe` command that creates a new empty
+journal and diagnostic report under an enrolled C: lab directory. It exercises
+the actual constructor without reading source/shadow data, constructing ReFS,
+writing journal payload, sealing markers or acquiring volume privileges. This
+isolates setup failures without repeating the full source and shadow work.
+It creates filesystem metadata and therefore is not a disk-write-free operation.
+Unsupported queries still refuse; probe output supplies no storage capability.

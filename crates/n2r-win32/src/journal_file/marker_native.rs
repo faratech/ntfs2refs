@@ -47,6 +47,31 @@ const NTFS_DATA: u32 = 0x00090064;
 const BLOCK_REFCOUNTING: u32 = 0x08000000;
 const MAX_PREFIX_EXTENTS: usize = 64; // 32 KiB / the minimum 512-byte cluster.
 
+#[derive(Debug)]
+struct OperationError {
+    operation: &'static str,
+    source: io::Error,
+}
+
+impl std::fmt::Display for OperationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.operation, self.source)
+    }
+}
+
+impl std::error::Error for OperationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+// Retain the original OS error as a source rather than flattening it into a
+// string. Callers still receive its ErrorKind, and diagnostics can traverse to
+// the original raw_os_error even when an API returns an otherwise vague code.
+fn operation(operation: &'static str, source: io::Error) -> io::Error {
+    io::Error::new(source.kind(), OperationError { operation, source })
+}
+
 #[repr(C, align(4096))]
 struct AlignedBlock([u8; BLOCK]);
 
@@ -133,8 +158,11 @@ impl UnbufferedJournalFile {
         profile: JournalProfile,
         recovery: Option<(&JournalFileIdentity, u64)>,
     ) -> io::Result<Self> {
-        binding.validate()?;
-        let capacity = profile_capacity(profile)?;
+        binding
+            .validate()
+            .map_err(|error| operation("open_owned.binding.validate", error))?;
+        let capacity = profile_capacity(profile)
+            .map_err(|error| operation("open_owned.profile_capacity", error))?;
         let path_units: Vec<u16> = path.as_os_str().encode_wide().collect();
         let drive_colon = if path_units.get(1) == Some(&58)
             && path_units[0] <= 127
@@ -184,8 +212,15 @@ impl UnbufferedJournalFile {
                 FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT,
             )
             .create_new(recovery.is_none())
-            .open(path)?;
-        let snapshot = native::observe_general_journal_file_with_profile(&file, binding, profile)?;
+            .open(path)
+            .map_err(|error| operation("open_owned.OpenOptions journal", error))?;
+        let snapshot = native::observe_general_journal_file_with_profile(&file, binding, profile)
+            .map_err(|error| {
+            operation(
+                "open_owned.native::observe_general_journal_file_with_profile",
+                error,
+            )
+        })?;
         require(
             recovery.is_some() || snapshot.file_bytes == 0,
             "new unbuffered journal is not empty",
@@ -199,15 +234,18 @@ impl UnbufferedJournalFile {
         let volume_path = final_volume_path(
             &snapshot.final_path,
             &guid_bytes(&binding.disk.volume_guid)?,
-        )?;
+        )
+        .map_err(|error| operation("open_owned.final_volume_path", error))?;
         let volume = OpenOptions::new()
             .read(true)
             .share_mode(3)
-            .open(volume_path)?;
+            .open(volume_path)
+            .map_err(|error| operation("open_owned.OpenOptions volume", error))?;
         let disk = OpenOptions::new()
             .read(true)
             .share_mode(3)
-            .open(format!("\\\\.\\PhysicalDrive{}", binding.disk.disk_number))?;
+            .open(format!("\\\\.\\PhysicalDrive{}", binding.disk.disk_number))
+            .map_err(|error| operation("open_owned.OpenOptions disk", error))?;
         let result = Self {
             file,
             volume,
@@ -225,9 +263,15 @@ impl UnbufferedJournalFile {
             poisoned: false,
             privileges: None,
         };
-        result.observe_owned()?;
-        result.ntfs_geometry()?;
-        result.require_plain_storage()?;
+        result
+            .observe_owned()
+            .map_err(|error| operation("open_owned.observe_owned", error))?;
+        result
+            .ntfs_geometry()
+            .map_err(|error| operation("open_owned.ntfs_geometry", error))?;
+        result
+            .require_plain_storage()
+            .map_err(|error| operation("open_owned.require_plain_storage", error))?;
         Ok(result)
     }
 
@@ -251,10 +295,14 @@ impl UnbufferedJournalFile {
 
     fn observe_owned(&self) -> io::Result<JournalFileSnapshot> {
         self.usable()?;
-        let (path, mut before) = native::file_observation_with_profile(&self.file, self.profile)?;
-        native::storage_observation(&self.volume, &self.disk, &mut before)?;
+        let (path, mut before) = native::file_observation_with_profile(&self.file, self.profile)
+            .map_err(|error| operation("observe_owned.native::file_observation before", error))?;
+        native::storage_observation(&self.volume, &self.disk, &mut before).map_err(|error| {
+            operation("observe_owned.native::storage_observation before", error)
+        })?;
         let snapshot =
-            validate_general_evidence_for_profile(&self.binding, &path, before, self.profile)?;
+            validate_general_evidence_for_profile(&self.binding, &path, before, self.profile)
+                .map_err(|error| operation("observe_owned.validate_general_evidence", error))?;
         require(
             snapshot.identity == self.identity
                 && path == self.final_path
@@ -262,13 +310,18 @@ impl UnbufferedJournalFile {
             "owned journal file identity, route or actual EOF changed",
         )?;
         let (after_path, mut after) =
-            native::file_observation_with_profile(&self.file, self.profile)?;
-        native::storage_observation(&self.volume, &self.disk, &mut after)?;
+            native::file_observation_with_profile(&self.file, self.profile).map_err(|error| {
+                operation("observe_owned.native::file_observation after", error)
+            })?;
+        native::storage_observation(&self.volume, &self.disk, &mut after)
+            .map_err(|error| operation("observe_owned.native::storage_observation after", error))?;
         finish_observation(snapshot, &after_path, &after)
+            .map_err(|error| operation("observe_owned.finish_observation", error))
     }
 
     fn require_plain_storage(&self) -> io::Result<[u32; 7]> {
-        let (_, evidence) = native::file_observation_with_profile(&self.file, self.profile)?;
+        let (_, evidence) = native::file_observation_with_profile(&self.file, self.profile)
+            .map_err(|error| operation("require_plain_storage.native::file_observation", error))?;
         // Reparse includes dedup/WOF. Also reject recall/offline/virtual and
         // integrity streams; no provider or filesystem transform is admitted.
         const EXTRA_FORBIDDEN: u32 = 0x1000 | 0x8000 | 0x10000 | 0x40000 | 0x400000;
@@ -277,7 +330,9 @@ impl UnbufferedJournalFile {
             "marker journal has offline, recall, virtual or integrity storage",
         )?;
         require(
-            native::query(&self.file, FSCTL_GET_COMPRESSION, &[], 2)? == [0, 0],
+            native::query(&self.file, FSCTL_GET_COMPRESSION, &[], 2)
+                .map_err(|error| operation("require_plain_storage.FSCTL_GET_COMPRESSION", error))?
+                == [0, 0],
             "marker journal has native file compression",
         )?;
         // A refusal other than the documented explicit unbacked result is not
@@ -285,10 +340,16 @@ impl UnbufferedJournalFile {
         match native::query(&self.file, FSCTL_GET_EXTERNAL_BACKING, &[], 4096) {
             Err(error)
                 if error.raw_os_error() == Some(ERROR_OBJECT_NOT_EXTERNALLY_BACKED as i32) => {}
-            Err(error) => return Err(error),
+            Err(error) => {
+                return Err(operation(
+                    "require_plain_storage.FSCTL_GET_EXTERNAL_BACKING",
+                    error,
+                ));
+            }
             Ok(_) => return Err(invalid("marker journal has external backing")),
         }
-        let alignment = native::information::<4>(&self.file, FileAlignmentInfo)?;
+        let alignment = native::information::<4>(&self.file, FileAlignmentInfo)
+            .map_err(|error| operation("require_plain_storage.FileAlignmentInfo", error))?;
         let mask = u32_at(&alignment, 0)?;
         require(
             mask < GRANULE as u32 && (mask + 1).is_power_of_two(),
@@ -306,7 +367,10 @@ impl UnbufferedJournalFile {
             )
         } == 0
         {
-            return Err(io::Error::last_os_error());
+            return Err(operation(
+                "require_plain_storage.GetFileInformationByHandleEx(FileStorageInfo)",
+                io::Error::last_os_error(),
+            ));
         }
         let values = [
             info.LogicalBytesPerSector,
@@ -348,13 +412,17 @@ impl UnbufferedJournalFile {
             )
         };
         if ok == 0 {
-            return Err(io::Error::last_os_error());
+            return Err(operation(
+                "ntfs_geometry.GetVolumeInformationByHandleW",
+                io::Error::last_os_error(),
+            ));
         }
         require(
             name[..5] == [78, 84, 70, 83, 0] && flags & BLOCK_REFCOUNTING == 0,
             "marker storage requires NTFS without block refcounting",
         )?;
-        let data = native::query(&self.volume, NTFS_DATA, &[], 96)?;
+        let data = native::query(&self.volume, NTFS_DATA, &[], 96)
+            .map_err(|error| operation("ntfs_geometry.FSCTL_GET_NTFS_VOLUME_DATA", error))?;
         let logical = self.identity.logical_sector_bytes;
         let physical = self.identity.physical_sector_bytes;
         let cluster = u32_at(&data, 44)?;
@@ -370,7 +438,8 @@ impl UnbufferedJournalFile {
                 && cluster.is_multiple_of(logical),
             "marker journal NTFS or reported sector geometry differs",
         )?;
-        let base = native::query(&self.volume, crate::stream_layout::GET_BASE, &[], 8)?;
+        let base = native::query(&self.volume, crate::stream_layout::GET_BASE, &[], 8)
+            .map_err(|error| operation("ntfs_geometry.FSCTL_GET_RETRIEVAL_POINTER_BASE", error))?;
         require(base.len() == 8, "marker retrieval base is incomplete")?;
         let base = u64_at(&base, 0)?
             .checked_mul(u64::from(logical))

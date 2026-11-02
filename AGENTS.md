@@ -10,7 +10,52 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 17:49 UTC)
+## CURRENT release continuation (2026-11-02 19:00 UTC)
+
+This block supersedes all older CURRENT/LIVE labels below. Actual VM is Off/RAM0,
+29 snapshots, saved at afb9afa4-859e-471d-8600-2ba4abb9d2dd (parent golden8329),
+name r4d8-public-min-scratch-verified-20261102. No project job is live. NEVER replay
+this closed HND; use original interrupted branches for recovery qualification.
+
+Clean source4d8ca993cf660ea7430b9cc8b229553946add82b includes mandatory VSS evidence
+for ALL fresh qualification policies (6f2d8a1), preserving full2pass/allocated1pass.
+Cleanbuild manifestSHA5d09d4faa51afc21e2d0fd67c21b9f485ad6b0e485111a82f4801ab0a5330ae2,
+all6bins/284sourcefiles/518875518B. Sealed native-marker-tools-4d8ca99 manifestSHA
+77edb210f6236d3e22ec18a2f6cccd043ea0f784ec9a2041afec7be0aba3b396.
+
+Public --drive F --partition2 --minimize-scratch case0cf3676b completed native5404/
+birth1793644941535/0 in120.1092406s INCLUDING385 native NTFS moves/5,643,501,568B.
+Observer Ready/0; all811 independent hashes/1084objects/full map replay passed.
+Combined JOURNAL+LITERAL191,015,832B; logical process reads30,470,821,813B/writes
+3,885,745,941B. Physical I/O, peakRAM and total shadow allocation are NOT claimed.
+Closed97files244,310,572B archiveSHA03097395779ac04fb2cbf4a79f5e52162f279f574d1f9fad4eb9cf919bf75311.
+Use archive-manifest exact routes: product metadata is in the stage archive
+directory, not empty public-run. Evidence clean4d8-public-native-20261102.json.
+Engine records were C:\ProgramData\ntfs2refs\runs\dd3b74cc743eab2b4b8c5a4f85f66f9b.
+
+All4 format6 bad-peer states passed on separately sealed70c10cc: AP2 Resume17.27s,
+HND2 VerifyHandoff9.264905s, RB2 Rollback9.4060466s, ABT2 VerifyAborted6.5163473s.
+Each actual bad self-hash write/flush/readback+intactfirst proof was followed by
+root TurnOff, same-branch reboot, NOrestore, and ordinary recovery native0.
+All3 AP2 synthetic WriteFile/FlushFileBuffers/ReadFile failures exited1/poisoned/
+offline, then recovered on their same branches. These are VM/failure-path facts,
+not physical hardware power qualification. Globalproductionmarker flag staysFALSE.
+
+New4d public DEFAULT/conservative VSS case517b4916 created actual snapshot01896338,
+native5868/birth1793643655642/1 in3.546999s. Positive snapshot/hosted-diff catalog
+refused at source-vss-catalog-before-freeze; F stayed onlineNTFS; no sourcecert/J.
+Original observer Ready/1 (wrong6disk guard; actual owned empty shadow became7th).
+NEW readonlycompletion ba2c2a86 Ready/0 authenticated original evidence and actual
+managedreceipt/provider/GPT, no converter/VSS mutation/replay. Original failure
+preserved. Archives29files10,957,214B +2files30,443B; see public-positive-vss-refusal
+evidence. Only after closure was disposable VSS branch reverted to golden.
+
+NEXT: exact-build public recovery and post-conversion mutation/reboot qualification;
+resource-scale/compatibility work still open. Keep native-shadow; no unit tests,
+no main edits, no WSL shutdown/new persistent privilege changes. Mainc6 remains
+unchanged. Do not mark stable or flip a global flag from these bounded VM cases.
+
+## Earlier release continuation (2026-11-02 17:49 UTC)
 
 VM is fresh-confirmed Off/RAM0 after readback-error recovery9bd6cd42004b46c98ebc0e9ff57a671e,
 with active parent8d4192fe and28 snapshots. The ACTIVE writable branch is closed

@@ -17,8 +17,14 @@ HND2, RB2 and ABT2 corruption/recovery subsequently passed on that same pinned
 runtime. A code review also found and fixed a VSS admission bypass for
 conservative scratch and whole-image policies; all fresh certificate paths now
 require affirmative VSS evidence. See [the fix](vss-fresh-admission.md).
-The new clean4d8ca99 build contains that fix. Its final public qualification and
-the resource and compatibility gaps below still prevent a stable release claim.
+The new clean4d8ca99 build contains that fix. Its public default/conservative
+command refused an actual VSS snapshot before source freeze. Its normal public
+minimize-scratch conversion then passed in120.1092406s, with all811 independent
+hashes and1084 object checks. Journal plus literal recovery storage was191015832B;
+this is not total shadow backing or a controlled speedup measurement. See
+[the current normal run](../evidence/clean4d8-public-native-20261102.json).
+Exact-build public recovery/mutation qualification and the resource and
+compatibility gaps below still prevent a stable release claim.
 
 The older paragraphs below retain their original scope; their pending native
 run statements do not supersede the pinned results above.

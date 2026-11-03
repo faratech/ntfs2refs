@@ -118,11 +118,17 @@ pub struct ArtifactPathPermit {
     complete: bool,
 }
 struct FilePin {
+    arena: ArtifactArena,
     file: Mutex<Option<File>>,
     snapshot: ReferenceFileSnapshot,
     modified: SystemTime,
     sha256: String,
     _parents: Vec<File>,
+}
+struct SealedPins {
+    pins: Vec<Arc<FilePin>>,
+    // Drop the pin vector before returning its prepaid memory.
+    _ram: ArenaRamLease,
 }
 #[derive(Clone)]
 pub struct ArtifactLease {
@@ -133,7 +139,7 @@ pub struct ArtifactLease {
 #[derive(Clone)]
 pub struct ArtifactGroupSeal {
     permit: ArtifactGroupPermit,
-    pins: Vec<Arc<FilePin>>,
+    pins: Arc<SealedPins>,
     wire_bytes: u64,
     allocated_bytes: u64,
 }
@@ -150,6 +156,7 @@ fn add(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b)
         .context("artifact arena accounting overflow")
 }
+const HASH_WORKSPACE: u64 = 4 * 1024 * 1024;
 fn parents(path: &Path) -> Result<Vec<File>> {
     let mut result = Vec::new();
     for parent in path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
@@ -498,15 +505,59 @@ impl ArtifactGroupPermit {
         })
     }
     pub fn seal(&self) -> Result<ArtifactGroupSeal> {
+        let (count, hash_bytes) = {
+            let state = self
+                .arena
+                .0
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+            let mut count = 0usize;
+            let mut hash_bytes = 0u64;
+            for entry in state.entries.values().filter(|e| e.group == self.group) {
+                let verified = entry
+                    .verified
+                    .as_ref()
+                    .context("artifact group still has an active/unverified creation")?;
+                count = count
+                    .checked_add(1)
+                    .context("sealed artifact count overflow")?;
+                hash_bytes = hash_bytes.max(verified.snapshot.file_bytes.min(HASH_WORKSPACE));
+            }
+            (count, hash_bytes)
+        };
+        let pin_bytes = (count as u64)
+            .checked_mul((2 * std::mem::size_of::<Arc<FilePin>>()) as u64)
+            .and_then(|n| n.checked_add(256))
+            .context("sealed artifact pin RAM overflow")?;
+        let pins_ram = self.arena.reserve_ram(pin_bytes)?;
+        let _hash_ram = self.arena.reserve_ram(hash_bytes)?;
         let mut state = self
             .arena
             .0
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        ensure!(
+            state
+                .entries
+                .values()
+                .filter(|e| e.group == self.group)
+                .count()
+                == count,
+            "artifact group changed before sealing"
+        );
         let mut wire = 0;
         let mut allocated = 0;
         let mut pins = Vec::new();
+        pins.try_reserve_exact(count)
+            .context("sealed artifact pin allocation failed")?;
+        ensure!(
+            (pins.capacity() as u64)
+                .checked_mul(std::mem::size_of::<Arc<FilePin>>() as u64)
+                .is_some_and(|n| n <= pin_bytes),
+            "sealed artifact pin allocation exceeded reservation"
+        );
         for entry in state.entries.values().filter(|e| e.group == self.group) {
             let verified = entry
                 .verified
@@ -516,11 +567,16 @@ impl ArtifactGroupPermit {
                 .lease
                 .upgrade()
                 .context("sealed artifact requires its actual retained immutable file owner")?;
-            pin.revalidate()?;
+            ensure!(
+                verified.snapshot.file_bytes.min(HASH_WORKSPACE) <= hash_bytes,
+                "artifact group changed before sealing"
+            );
+            pin.revalidate_prepaid()?;
             wire = add(wire, verified.snapshot.file_bytes)?;
             allocated = add(allocated, verified.snapshot.allocation_bytes)?;
             pins.push(pin);
         }
+        ensure!(pins.len() == count, "artifact group changed before sealing");
         let group = state
             .groups
             .get_mut(&self.group)
@@ -531,7 +587,10 @@ impl ArtifactGroupPermit {
         group.sealed = true;
         Ok(ArtifactGroupSeal {
             permit: self.clone(),
-            pins,
+            pins: Arc::new(SealedPins {
+                pins,
+                _ram: pins_ram,
+            }),
             wire_bytes: wire,
             allocated_bytes: allocated,
         })
@@ -570,12 +629,17 @@ impl ArtifactPathPermit {
             .custom_flags(0x00200000)
             .open(&self.path)?;
         let before = reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;
+        let hash_ram = self
+            .group
+            .arena
+            .reserve_ram(before.file_bytes.min(HASH_WORKSPACE))?;
         let hash = hex::encode(n2r_win32::sha256_native::hash_range(
             &mut file,
             0,
             before.file_bytes,
         )?);
         drop(file);
+        drop(hash_ram);
         self.verify_closed(&hash)
     }
     pub fn extend(&mut self, bytes: u64) -> Result<()> {
@@ -631,6 +695,9 @@ impl ArtifactPathPermit {
             .get(&self.path)
             .context("artifact entry absent")?
             .maximum;
+        // The handle is read-only here; reserve the maximum hash buffer before
+        // inspecting its current length, so a changing file cannot outgrow it.
+        let _hash_ram = self.group.arena.reserve_ram(maximum.min(HASH_WORKSPACE))?;
         let verified = inspect(&mut file, maximum, expected_sha256)?;
         let parent_guid = n2r_win32::file_storage::final_path_guid(
             self._parents
@@ -659,6 +726,7 @@ impl ArtifactPathPermit {
             "artifact physical allocation exceeds reserved slack"
         );
         let pin = Arc::new(FilePin {
+            arena: self.group.arena.clone(),
             file: Mutex::new(Some(file)),
             snapshot: verified.snapshot.clone(),
             modified: verified.modified,
@@ -720,6 +788,12 @@ impl Drop for ArtifactPathPermit {
 }
 impl FilePin {
     fn revalidate(&self) -> Result<()> {
+        let _hash_ram = self
+            .arena
+            .reserve_ram(self.snapshot.file_bytes.min(HASH_WORKSPACE))?;
+        self.revalidate_prepaid()
+    }
+    fn revalidate_prepaid(&self) -> Result<()> {
         let mut file = self
             .file
             .lock()
@@ -776,6 +850,9 @@ impl ArtifactLease {
             .share_mode(0)
             .custom_flags(0x00200000)
             .open(&path)?;
+        let _hash_ram = group
+            .arena
+            .reserve_ram(pin.snapshot.file_bytes.min(HASH_WORKSPACE))?;
         let verified = inspect(&mut file, pin.snapshot.file_bytes, &pin.sha256)?;
         ensure!(
             verified.snapshot == pin.snapshot && verified.modified == pin.modified,
@@ -824,7 +901,7 @@ impl ArtifactLease {
 impl ArtifactGroupSeal {
     /// A seal owns every file it covers until all seal clones are dropped.
     pub fn revalidate(&self) -> Result<()> {
-        for pin in &self.pins {
+        for pin in &self.pins.pins {
             pin.revalidate()?;
         }
         Ok(())

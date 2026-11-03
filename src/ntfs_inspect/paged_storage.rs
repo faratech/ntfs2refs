@@ -553,11 +553,11 @@ impl Drop for SourceRamLease {
     }
 }
 pub struct SourceTemporaryLease {
-    _ram: SourceRamLease,
     bytes: u64,
     scratch: SourceScratch,
     permit: Option<crate::artifact_arena::ArtifactPathPermit>,
     complete: bool,
+    _ram: SourceRamLease,
 }
 impl SourceTemporaryLease {
     pub fn bytes(&self) -> u64 {
@@ -713,7 +713,6 @@ fn decode(payload: &[u8], maximum: usize) -> Result<Vec<u8>> {
 pub struct SourceRangeWriter {
     writer: Option<Writer>,
     scratch: SourceScratch,
-    _ram: SourceRamLease,
     path: PathBuf,
     purpose: [u8; 8],
     budget: PageBudget,
@@ -725,6 +724,8 @@ pub struct SourceRangeWriter {
     reserved: u64,
     complete: bool,
     artifact: Option<crate::artifact_arena::ArtifactPathPermit>,
+    // The charged writer buffers must be destroyed before releasing RAM.
+    _ram: SourceRamLease,
 }
 impl SourceRangeWriter {
     pub fn byte_len(&self) -> u64 {

@@ -72,7 +72,17 @@ archive SHA256 is `9f297cdedb7510df6b477ee46a4221790567f41d4c9da5eb5378becf41ed2
 See `evidence/resource-source-arena-20261103.json`. The successful source code
 was committed and pushed at `151db0a`; subsequent RAM-ledger changes at
 `5d6410e`, `69eeccc`, and `3c69bff` compiled, but were not in that VM run.
-The VM is Off/RAM0 with original source checkpoint `001f7611-257f-4c5a-8c5b-560ce8faa68d`.
+The VM is Off/RAM0 at new diagnostic-ready checkpoint
+`d8db8fd9-284a-4e78-86b5-85d8a2607663`, child of the original source
+checkpoint `001f7611-257f-4c5a-8c5b-560ce8faa68d`. A fresh, explicitly
+enrolled disposable ReFS shadow is disk6, disk GUID
+`f88939b6-dbc6-4089-b947-7914d2f92180`, partition/volume GUID
+`ad0e87c4-487a-49bd-94bd-519d054dcc5b`, offset33554432, length55834574848.
+Its receipt is `.lab/development/diagnostic-shadow-enrollment.json`; the
+checkpoint receipt is `.lab/development/diagnostic-ready-checkpoint.json`.
+The separate original disk3 shadow was not overwritten. Verify the live
+attachment, identities, source fingerprint and capacity before any guest work;
+the earlier managed disk6 identities are not this shadow.
 This is source observation only: no conversion, recovery, or release qualification.
 
 Current uncommitted V4 target, journal, recovery and native-memory work remains

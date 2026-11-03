@@ -12,6 +12,18 @@ Old CURRENT/LIVE labels and preserve-all instructions in those archives are hist
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LIVE resource reader: VM Running, parent001f7611-257f-4c5a-8c5b-560ce8faa68d,
+six snapshots, source disk1 offline/read-only. Task
+N2R-ResourceFixed-546b84134d1d4f0c98d543fc3be3e2ed is Running; actual native
+lab-observe-resource-source.exe PID3068, birth1793676486424, confirmed live.
+Worker PID1064, birth1793676485073. Source51910d3177acffae65c80365aff15cbb3103bad1,
+binary SHA546cc8ed3647138e7437833b9ae6c6a4604f83c741e05d500cadcd3c154c854d.
+Guest stage C:\ntfs2refs\resource-source-fixed-546b84134d1d4f0c98d543fc3be3e2ed;
+host dispatch/current-resource-fixed-run.json in .lab/development identifies case.
+No conversion, journal or payload writes authorized by this observation. Poll the
+SAME task and PID/birth; no restart/restore based on timeout. The published7feb
+alpha remains unchanged on its separate branch. Parallel resource code is WIP.
+
 LATEST USER DIRECTION: finish and package the preserved working alpha; keep
 broader cap-removal development separate. Experimental prerelease published in
 the private repository: https://github.com/faratech/ntfs2refs/releases/tag/alpha-7feb4c0

@@ -68,6 +68,18 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+Exact published alpha `7feb4c0` passed one controlled Hyper-V power-off
+recovery case: the controller saw the synced resume result and a live process
+immediately before one TurnOff; after booting the same branch, native recovery
+observed `apply_intent`, resumed with exit 0, and mounted ReFS. Handoff state
+and process liveness at the instant of power-off are not inferred. This case
+did not rerun the independent 811-stream scan and does not establish physical
+power-loss safety or a stable general release. See
+`evidence/exact-alpha-resume-after-vm-poweroff-20261103.json`.
+The resulting branch is closed HND: never replay its old journal. The VM is
+off; the original first-write checkpoint `58bd9ceb-60bc-4b34-81e1-7af197523a80`
+remains separately available. Do not restore while any project task is active.
+
 Latest continuation: the V4 diagnostic remains experimental and does not
 authorize source writes. The most recent pinned candidate `a69181274506d613cbfb965bd2b8f4af3a7bc36b`
 failed during protected target capture while retaining native report rows;

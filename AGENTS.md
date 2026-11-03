@@ -10,6 +10,48 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
+## Shared experimental Cargo target
+
+For experimental committed-source builds only, use the existing pinned builder
+arguments plus `-ExperimentalBinaries @('lab-observe-resource-source')`. Explicit
+`-ExperimentalBinaries` and `-ResourceSourceObservationOnly` automatically select
+the shared target; `-UseSharedExperimentalTarget` selects it for other experiment sets.
+The fixed target is `D:\code\ntfs2refs\target\shared-experiments`; jobs default to4
+and `-Jobs` can override them. The builder holds its exclusive per-cache lock,
+archives and checks the exact committed source, builds release/offline/locked,
+and copies/pins selected executables into each fresh candidate's `bin` directory.
+It records shared-cache use without a clean-build, reproducibility or native
+qualification claim. `CARGO_INCREMENTAL=0` remains unchanged. Omit the shared
+switch for isolated clean release qualification; never reuse/alter old frozen
+target directories. The initial shared-size baseline is persisted once for
+provenance; ALL current shared bytes, including the moved a6d seed, are charged
+in addition to current lab bytes against the original maximum329374052988 and
+minimum host free17179869184. No epoch or baseline reset is permitted.
+
+Exact experimental invocation in PowerShell7, using the existing a6d committed
+source and tool pins (fresh output name on every invocation):
+
+```powershell
+$buildSeed = Get-Content 'D:\code\ntfs2refs\.lab\development\release-candidates\ra6d68d2-cache\manifest.json' -Raw | ConvertFrom-Json
+$buildToolPins = @{}; foreach ($tool in $buildSeed.tools) { $buildToolPins[$tool.name] = $tool.sha256 }
+$experimentBuild = @{
+  SourceCommit = $buildSeed.source_commit
+  OutputDirectory = 'D:\code\ntfs2refs\.lab\development\release-candidates\shared-observer-' + [guid]::NewGuid().ToString('N')
+  ExpectedCargoLockSha256 = $buildSeed.cargo_lock_sha256
+  ExpectedCargoSha256 = $buildToolPins.cargo; ExpectedRustcSha256 = $buildToolPins.rustc
+  ExpectedRustupSha256 = $buildToolPins.rustup; ExpectedGitSha256 = $buildToolPins.git
+  ExpectedCargoHomeConfigSha256 = $buildSeed.cargo_home_configuration.sha256
+  ExperimentalBinaries = @('lab-observe-resource-source'); Jobs = 4
+}
+& 'D:\code\ntfs2refs\lab\Build-ReleaseCandidate.ps1' @experimentBuild
+```
+
+Root measured an identical-source/identical-command a6d Cargo build at143.647s,
+then its unchanged repeat at0.215s with the same executable SHA. That repeat
+shows warm-cache reuse for unchanged inputs; it does not predict changed-source
+build time, reproducibility or native qualification. The moved seed's source.zip,
+copied bin and manifest remain unchanged; only its disposable target was moved.
+
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
 USER BUILD-SPEED DIRECTION: Reuse ONE Cargo target directory for experimental

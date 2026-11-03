@@ -10,7 +10,53 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-02 23:20 UTC)
+## CURRENT release continuation (2026-11-03 00:20 UTC)
+
+LIVE VMRunning4GiB/4CPU/noNIC,34snapshots, parent58bd9ceb-60bc-4b34-81e1-7af197523a80
+(ORIGINALinterruptedNTFS childa062). ACTIVE WRITABLE BRANCH HAS NOW CLOSED HND/REFS:
+publicResume2456/birth1793664719382/0 in239.4291539s. NEVER replay activebranch.
+Post-nativeobserver4752/birth1793664307649 task
+N2R-PagedEnvelope-Recovery-resume-bd4eee3b50504bc3b0cea5ad89212cd2 stillRunning
+at00:20:03; no finalReady0/all811 yet. StageC:\ntfs2refs\paged-envelope-recovery-resume-bd4eee3b50504bc3b0cea5ad89212cd2.
+RecordsC:\ProgramData\ntfs2refs\runs\recovery-13407d75fde97e9a95180202ee0e17f9.
+NO hostbuild live. RootaloneVMactions. Check actualtask/PID+BIRTH, notPIDalone.
+
+Firstwriteproducerfe086985340548db9eb098a884f4d1be actual6004/birth1793661913763/86
+flushedonewrite. Wrapper5044/birth1793661790079 thenReady1 duePSempty-array.Count
+bug atgeneratedline659; original failure preserved. NEWpuremetadata observer
+2d3370475c7f4d21a5ee52475cc94c90 actual2140/birth1793663040818/Ready0 verifiedall
+remainingchecks, separatepub/control (originalReady1NEVERfabricated86).
+Generator49f41a495ccd4318c3122b18897d8c7f683659c840ffc2a1c90bd20d6c1a548d;
+worker28b630c436d79887bd873c81b2fcf27a7ad8609759271cc4ccdc570da58cfbb8.
+Combinedclosedarchive106files278,336,987B SHA37d67de193964d714522a67de6aa67d07029ec7a8456ba73f393eed53a12f5ee;
+V2closureSHA21bcb8b128f8354e0011fa5cff35b6acb1cc5cba252ff3beaea95918afc44625.
+Originalfailurearchiveed76ce3f98bc3670ee3dca9bc508352f3b8ae78d6157a8e3b7d3e4423094e874 remains.
+
+ACTUAL journalformat4/N2ROLD01, NOTformat5: selected11,396,272,128B,
+oldzero5,665,275,904B, J5,786,767,272B, sourcefree0. Requestpolicy ALLOWSsourcefree
+butactualplanhasnone; fullselected-byte rollback contract applies. Bugwasnull
+arraywhenno source_free_ranges, not necessarilysingle-range scalar. No SourceFree
+qualificationclaim. CP58bd savedafterallclosed/normaloff, containsactualoriginal
+J+Some2expected/map.pages+completion. Rootreceipt casefe086/checkpoint-observer-completed.json
+SHAd4321534441dfcd7a8bf2a91358950b7caaf4af9620b48fb818f0fd13068aa8a;
+publishedbundle334098c8baa0a04c95275130d2714b1551740dfeee66a011db179000ad2f7baa.
+
+Use NEW lab/Start-PagedEnvelopeObservedRecovery.ps1 FINAL SHA
+f1900f073364d7a30224de47ac11cc02bd43c6a3d01c683c5d6fd0f2e2a52c1d
+(HEADb3083a1). It acceptsactualformats4/5 withstrictcontract, role4MiBcontrol
+receipt (actual2,636,563B), keepsallfullpins/checks. Earliera124resume attempt
+Ready1 waspreflight-only JSONrolelimit; native_exitnull/NOnativeprocess, preserved.
+Currentbd4eee issecondfreshscope, ACTUALnative0/HNDclosed asabove; never rerun it.
+
+NEXT waitcurrentobserveractualReady0+all811/hash+1534metadata, archiveallclosed
+metadata, proveallworkersdead/normaloff. THEN restore ORIGINAL58bd ONCE for
+independentRollback via samefinalhelper. Never restorecurrentHND image asoriginal.
+No activeunit tests, no main edits (c6 unchanged), keepWSL/fixed50GBepoch/min16GiB.
+Rootledger .lab/development/current-paged-state.json hasactualcurrentIDs. All
+native format6globalqualificationflags stayFALSE, no stable/tag/generalrelease.
+Need newpagedRollback +exactcandidatecoldboot/mutation beforequalifiedalpha.
+
+## Earlier release continuation (2026-11-02 23:20 UTC)
 
 VM fresh-confirmed Off/RAM0,33snapshots, currentparent
 5ce766b0-c6e9-4007-b16d-363944240c51 childa0621534source. This is CLOSED HND/ReFS;

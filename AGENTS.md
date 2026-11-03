@@ -12,6 +12,17 @@ Old CURRENT/LIVE labels and preserve-all instructions in those archives are hist
 
 ## CURRENT release continuation (2026-11-03 00:41 UTC)
 
+USER FREEZE (00:52 UTC): "Do not keep making changes to the code if we are close
+to release stability." Stop feature/performance/refactor work and new harness
+development. Finish the existing pinned7feb recovery/mutation/boot checks with
+reviewed frozen helpers. Only a confirmed release-blocking defect justifies a
+code change; no speculative cleanup. Root verified git diff7feb..HEAD is EMPTY
+for src/crates/Cargo/config/toolchain, worktreeclean, mainc6 unchanged. Remaining
+2048/profile restrictions stay explicit; don't claim generalstable fromalpha.
+ActualRollback5812/birth1793666832841/0 completed171.889081s at00:50:03; NTFS
+restored/replayclosed. Observer5088/birth1793666446097 stillrunningpostchecks as
+lastobserved00:51:20. No oldjournalreplay over the active now-ABT branch.
+
 LIVE VMRunning4GiB/4CPU/noNIC,33snapshots,parentORIGINAL58bd9ceb-60bc-4b34-81e1-7af197523a80.
 Rootrestored58bd EXACTLYONCE forindependentRollback, thenstarted. ACTIVEbranch
 is now originalinterruptedNTFS source1 (not the previousclosedHNDResume branch).

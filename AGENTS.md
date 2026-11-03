@@ -189,6 +189,16 @@ Off/RAM0 at checkpoint3343. A narrow helper fix must ignore only runs wholly
 after the proved prefix, still reject any hole inside it, and preserve the
 complete retrieval/validity bookends; do not assume the actual hole was a tail.
 
+Diagnostic `2d3aab0112484e4eb0a5f2c2418947b0` passed the prefix-scope check
+and advanced further, then exited1 on the shared arena RAM gate: leased
+1093750691 + registry3085170 + requested364106752 exceeded limit1456427008
+by4515605 bytes. Source stayed offline/read-only; no conversion completed.
+Worker/output archive SHA256 `298b23e52a6cb93e015bd608954a885c31a0ece3ccf5c1130c6708bd70bc87f4`
+/ `25fafa117ea09a65ea1a10759ddb14d6e446af5185d0dbb5cb81815959497c4c`;
+see `evidence/resource-fixture-arena-ram-refusal-20261103.json`. VM is Off/RAM0
+at3343. Do not raise the RAM budget without first resolving actual ownership
+and overlapping reservations.
+
 Current uncommitted V4 target, journal, recovery and native-memory work remains
 experimental and gated. The target/recovery scaffolding compiled on the shared
 target, but has not passed a native conversion or power-loss recovery; trusted

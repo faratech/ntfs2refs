@@ -128,3 +128,10 @@ was inside the required prefix or in a trailing suffix. The source remained
 offline/read-only; no conversion completed. See the
 [measurement](../evidence/resource-fixture-prefix-hole-refusal-20261103.json).
 
+After the prefix-scope correction, the next diagnostic progressed further but
+refused an MFT workspace reservation: its actual shared-ledger commitments
+would have exceeded the 1,456,427,008-byte limit by 4,515,605 bytes. The
+[record](../evidence/resource-fixture-arena-ram-refusal-20261103.json) retains
+the native result. The correction targets the lifetime of existing buffers;
+it does not increase the configured RAM budget.
+

@@ -168,6 +168,19 @@ see `evidence/resource-fixture-routed-ram-refusal-20261103.json`. VM is
 Off/RAM0 with parent3343. Investigate overlapping local SourceScratch leases
 before changing the RAM limit. This was not a conversion or recovery test.
 
+Routed diagnostic `e200cb75b16f4de88e88838f92f5c6eb` passed the prior RAM
+refusal and measured 10813014016 shadow move bytes, down from13581152256
+(2768138240 fewer, about20.4%) with the same4225110016 original-coordinate
+bytes. It then exited1 on `private routed prefix contains a hole`; the message
+did not identify whether the hole was inside the required prefix or only in a
+trailing partial-cluster suffix. Source remained offline/read-only. Worker /
+output archive SHA256: `fea43f57deecf24b1a8bd84e6d64b1402865904f483ffa8d5b4257649fe83b46`
+/ `3121429d69138d4f887acb360c74f4ef770b4b2217c458952b356e2de86878d6`.
+See `evidence/resource-fixture-prefix-hole-refusal-20261103.json`. VM is
+Off/RAM0 at checkpoint3343. A narrow helper fix must ignore only runs wholly
+after the proved prefix, still reject any hole inside it, and preserve the
+complete retrieval/validity bookends; do not assume the actual hole was a tail.
+
 Current uncommitted V4 target, journal, recovery and native-memory work remains
 experimental and gated. The target/recovery scaffolding compiled on the shared
 target, but has not passed a native conversion or power-loss recovery; trusted

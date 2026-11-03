@@ -119,3 +119,12 @@ remained offline and read-only; capture and conversion did not complete. The
 preserves the native exit and evidence pins. The current work reduces
 overlapping per-stream reservations while keeping the shared RAM limit.
 
+After reordering shadow placement, a later diagnostic submitted 10,813,014,016
+shadow-move bytes, 2,768,138,240 fewer than the earlier 13,581,152,256-byte
+run, while retaining the same 4,225,110,016 bytes at original coordinates.
+It then refused during routed-prefix verification on a reported hole. The
+error did not identify the hole's location, so it is not yet known whether it
+was inside the required prefix or in a trailing suffix. The source remained
+offline/read-only; no conversion completed. See the
+[measurement](../evidence/resource-fixture-prefix-hole-refusal-20261103.json).
+

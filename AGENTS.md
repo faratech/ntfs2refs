@@ -28,6 +28,12 @@ provenance; ALL current shared bytes, including the moved a6d seed, are charged
 in addition to current lab bytes against the original maximum329374052988 and
 minimum host free17179869184. No epoch or baseline reset is permitted.
 
+For routine WIP `cargo check`, use the same target and its exclusive sibling
+lock. Process-local `CARGO_INCREMENTAL=1` speeds repeated checks; the host-wide
+sccache wrapper rejects incremental builds, so clear `RUSTC_WRAPPER` and
+`RUSTC_WORKSPACE_WRAPPER` only for that check. A four-binary shared-target
+check passed after the initial debug dependency build. No unit tests were run.
+
 Exact experimental invocation in PowerShell7, using the existing a6d committed
 source and tool pins (fresh output name on every invocation):
 

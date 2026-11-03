@@ -135,3 +135,11 @@ would have exceeded the 1,456,427,008-byte limit by 4,515,605 bytes. The
 the native result. The correction targets the lifetime of existing buffers;
 it does not increase the configured RAM budget.
 
+A later native diagnostic completed its routed-supply stage: 5,659,201,536
+relocated bytes were routed, 4,225,110,016 bytes remained at original
+coordinates, and 1,469,829 bytes were materialized into the shadow. The
+reported 1,469,829 logical source bytes read apply to that verification stage,
+not the complete run. Target capture then refused a projection-budget mismatch;
+no conversion or recovery authority was issued. See the
+[record](../evidence/resource-fixture-routed-supply-20261103.json).
+

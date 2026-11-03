@@ -176,6 +176,20 @@ see `evidence/resource-fixture-routed-ram-refusal-20261103.json`. VM is
 Off/RAM0 with parent3343. Investigate overlapping local SourceScratch leases
 before changing the RAM limit. This was not a conversion or recovery test.
 
+Latest completed diagnostic `7577c8fe15cd4033bc42d3107e03ccea` passed routed
+supply: 5659201536 bytes of relocated initialized prefixes were routed,
+4225110016 bytes stayed at original coordinates, and 1469829 bytes were
+materialized into the shadow. Its routed verification read1469829 logical
+source bytes; this is NOT the complete run's I/O. It then exited1 during
+protected target capture with `actual source/native/resource projection
+ownership differs`. Source and shadow were offline/read-only. The failure is
+traced to projection scratch using the full capture group budget rather than
+the exact admitted page budget; a narrow fix is compiled but not yet run.
+Worker/output archive SHA256 `7118fd113a0d8a59a1d604e7c491626169af5b4de677463d5e30bf0f80350a23`
+/ `0e82353f90a27714dc900f8fb2b4959bb50d50df96e0a50d012de08caeeed936`;
+see `evidence/resource-fixture-routed-supply-20261103.json`. VM remains
+Off/RAM0 at3343. No conversion/recovery authority was issued.
+
 Routed diagnostic `e200cb75b16f4de88e88838f92f5c6eb` passed the prior RAM
 refusal and measured 10813014016 shadow move bytes, down from13581152256
 (2768138240 fewer, about20.4%) with the same4225110016 original-coordinate

@@ -82,3 +82,11 @@ ordinary path while verifying the canonical parent and held volume identity.
 The source was offline and read-only at completion. Target and cross-stage
 arena obligations still prevent admission or execution.
 
+The first end-to-end resource diagnostic passed the source and fixture
+allocation checks, then refused during expected-tree projection because the
+shared RAM budget was exhausted. It did not populate the shadow or activate
+the source. The [refusal record](../evidence/resource-fixture-ram-refusal-20261103.json)
+preserves the actual process result and evidence archive pins. The next change
+reduces initial external-sort reservations while retaining bounded spill;
+it is not yet qualified by a completed native conversion.
+

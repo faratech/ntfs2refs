@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "kind": "native-resource-fixture-diagnostic-refusal",
+  "source_commit": "a9e68f756b83deaa850b8ce47cb9bed3d79c248d",
+  "binary_sha256": "0875cc47c91b9925f4a1bd33cb111defe55a3f94d14e5c95ad0dbcb1963b47c6",
+  "run_id": "9c6f880bbcbd46c1934096432256531f",
+  "ready_checkpoint": "d8db8fd9-284a-4e78-86b5-85d8a2607663",
+  "worker_archive_sha256": "a934137bf4b5a21d981ce38cfa71274862f0eb401e488aaefb793612e3caa0ff",
+  "output_archive_sha256": "f57aba70b2c5daf1c2ab46ae611f4734bfe78673e99d40383eec488a0d3c195c",
+  "native_process": {
+    "exit_code": 1,
+    "pid": 5260,
+    "actual_exit_observed": true,
+    "creation_ms": 1793691746101,
+    "utc": "2026-11-03T07:43:38.3466940Z",
+    "stdout_bytes": 27411,
+    "stderr_bytes": 58,
+    "wall_seconds": 72.1994148
+  },
+  "job_limit_observed": {
+    "baseline_private_bytes": 1253376,
+    "current_private_bytes": 1400832,
+    "job_limit_bytes": 2147483648,
+    "process_is_member": true,
+    "process_limit_bytes": 2147483648
+  },
+  "stderr": "Error: aggregate artifact arena RAM exhausted or poisoned",
+  "observed_projection_directory_created": true,
+  "observed_projection_files": 0,
+  "source_evidence_and_structural_fixture_gate": "passed by control flow before projection directory creation",
+  "source_offline_and_readonly_at_completion": true,
+  "shadow_online_and_writable_at_completion": true,
+  "shadow_population_started": false,
+  "source_payload_writes": 0,
+  "conversion_qualified": false,
+  "execution_authorized": false
+}

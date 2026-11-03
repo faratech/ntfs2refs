@@ -95,6 +95,17 @@ SHA256 `687995a88c68cc20306c3ad4fcdc5b2ea4b8d8a4d6c6f872ff17a500bd3fad54`.
 VM is Off/RAM0 at d8db; a narrowly scoped, independently verified held-arena
 output fix is in progress. Do not retry the old executable.
 
+The corrected diagnostic `9c6f880bbcbd46c1934096432256531f` passed source
+inspection and the independent fixture allocation/bitmap checks, then exited1
+before shadow population because aggregate arena RAM was exhausted during
+projection. Its source remained offline/read-only; the shadow was untouched.
+Worker archive SHA256 `a934137bf4b5a21d981ce38cfa71274862f0eb401e488aaefb793612e3caa0ff`,
+output archive SHA256 `f57aba70b2c5daf1c2ab46ae611f4734bfe78673e99d40383eec488a0d3c195c`;
+see `evidence/resource-fixture-ram-refusal-20261103.json`. VM remains Off/RAM0
+at d8db. Three eager sort buffers were the leading identified waste; a bounded,
+spill-capable count-hinted replacement is in development. Never retry a prior
+executable or infer conversion/recovery qualification from this refusal.
+
 Current uncommitted V4 target, journal, recovery and native-memory work remains
 experimental and gated. The target/recovery scaffolding compiled on the shared
 target, but has not passed a native conversion or power-loss recovery; trusted

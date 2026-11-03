@@ -136,15 +136,71 @@ impl PagedPolicyIndexBuilder {
     pub fn finish(mut self, facts: PagedPolicyIndexFacts) -> io::Result<HeldPagedWritePolicy> {
         self.file.flush()?;
         self.file.sync_all()?;
+        let produced = reference_file::observe_reference_file_handle_with_limit(
+            &self.file,
+            facts.max_index_bytes,
+        )?;
+        let produced_modified = self.file.metadata()?.modified()?;
+        let maximum_allocation = add(
+            produced.file_bytes,
+            file_storage::artifact_allocation_slack(&self.file)?,
+        )?;
+        if produced.allocation_bytes > maximum_allocation {
+            return Err(invalid(
+                "policy index producer exceeds its actual allocation allowance",
+            ));
+        }
         validate_index(&mut self.file, facts)?;
-        let readonly = file_storage::duplicate_readonly(&self.file)?;
+        if reference_file::observe_reference_file_handle_with_limit(
+            &self.file,
+            facts.max_index_bytes,
+        )? != produced
+            || self.file.metadata()?.modified()? != produced_modified
+        {
+            return Err(invalid(
+                "policy index producer changed before its final close",
+            ));
+        }
+        // A reduced-access duplicate still owns the writable creator's NT
+        // file object. NTFS can finalize timestamps/allocation only when that
+        // object's LAST handle closes. Finish that lifecycle before pinning
+        // immutable metadata; then independently bind and hash the same file.
         drop(self.file);
+        let mut readonly = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(&produced.final_path)?;
         file_storage::require_readonly_access(&readonly)?;
         let snapshot = reference_file::observe_reference_file_handle_with_limit(
             &readonly,
             facts.max_index_bytes,
         )?;
+        if snapshot.final_path != produced.final_path
+            || snapshot.volume_serial_number != produced.volume_serial_number
+            || snapshot.file_id_128 != produced.file_id_128
+            || snapshot.file_bytes != produced.file_bytes
+            || snapshot.file_attributes != produced.file_attributes
+            || snapshot.number_of_links != produced.number_of_links
+            || snapshot.allocation_bytes > produced.allocation_bytes
+            || snapshot.allocation_bytes > maximum_allocation
+        {
+            return Err(invalid(
+                "policy index readonly reopen changed identity, EOF or allocation allowance",
+            ));
+        }
         let modified = readonly.metadata()?.modified()?;
+        validate_index(&mut readonly, facts)?;
+        if reference_file::observe_reference_file_handle_with_limit(
+            &readonly,
+            facts.max_index_bytes,
+        )? != snapshot
+            || readonly.metadata()?.modified()? != modified
+        {
+            return Err(invalid(
+                "closed policy index changed during readonly validation",
+            ));
+        }
         Ok(HeldPagedWritePolicy(Arc::new(Mutex::new(PolicyOwner {
             reader: BufReader::with_capacity(256 * 1024, readonly),
             facts,

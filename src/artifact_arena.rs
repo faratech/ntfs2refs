@@ -1520,10 +1520,27 @@ impl ArtifactLease {
             .arena
             .reserve_ram(pin.snapshot.file_bytes.min(HASH_WORKSPACE))?;
         let verified = inspect(&mut file, pin.snapshot.file_bytes, &pin.sha256)?;
-        ensure!(
-            verified.snapshot == pin.snapshot && verified.modified == pin.modified,
-            "artifact changed before retirement"
-        );
+        if verified.snapshot != pin.snapshot || verified.modified != pin.modified {
+            let _diagnostic_ram = group.arena.reserve_ram(8192)?;
+            let route: String = verified.snapshot.final_path.chars().take(512).collect();
+            anyhow::bail!(
+                "artifact changed before retirement: path={route:?}, path_changed={}, volume_serial={}/{}, file_id_changed={}, EOF={}/{}, allocation={}/{}, attributes={:#x}/{:#x}, links={}/{}, modified={:?}/{:?}",
+                verified.snapshot.final_path != pin.snapshot.final_path,
+                verified.snapshot.volume_serial_number,
+                pin.snapshot.volume_serial_number,
+                verified.snapshot.file_id_128 != pin.snapshot.file_id_128,
+                verified.snapshot.file_bytes,
+                pin.snapshot.file_bytes,
+                verified.snapshot.allocation_bytes,
+                pin.snapshot.allocation_bytes,
+                verified.snapshot.file_attributes,
+                pin.snapshot.file_attributes,
+                verified.snapshot.number_of_links,
+                pin.snapshot.number_of_links,
+                verified.modified,
+                pin.modified,
+            );
+        }
         n2r_win32::file_storage::mark_delete_on_close(&file)?;
         drop(file);
         ensure!(

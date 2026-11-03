@@ -47,7 +47,7 @@ run f856e0a021bb44e2930f66846a5459e4, source a0b29e04dd2e83086823349724e7e2a8ccf
 public binary SHA 1cc91461deae2d97df5390da1a5cb9d8a25c9f864574a39f492889305370dfe9.
 Actual PID **5324**, birth **1793737914035 ms**, task
 N2R-ResourceFixture-f856e0a021bb44e2930f66846a5459e4 was Running at
-2026-11-03T20:35:46.915Z, source OFFLINE|READ_ONLY (3), no terminal receipt.
+2026-11-03T20:47:39.729Z, source OFFLINE (1), no terminal receipt.
 Guest stage C:\ntfs2refs\resource-fixture-f856e0a021bb44e2930f66846a5459e4;
 actual public run C:\ProgramData\ntfs2refs\runs\bd38a1599dae8ce8b1f23195eddde9f6.
 The helper's unused K: output path is NOT the public output. Actual argv is
@@ -55,6 +55,8 @@ The helper's unused K: output path is NOT the public output. Actual argv is
 not the native worker. All builders/checks are terminal. Poll the same actual
 PID AND birth/task/owned terminal before any power/restore/second worker.
 Do not bypass the live native-events.log sharing lock to read it.
+Preparation and actual source writes have been reached. The journal file is
+184184288B versus the prior5818541240B; that is not total physical scratch.
 The resources are admitted from observed hardware; native completion, speed,
 full physical footprint and the new guard's recovery remain unqualified.
 

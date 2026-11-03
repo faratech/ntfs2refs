@@ -90,3 +90,10 @@ preserves the actual process result and evidence archive pins. The next change
 reduces initial external-sort reservations while retaining bounded spill;
 it is not yet qualified by a completed native conversion.
 
+With count-hinted sort batches, the next diagnostic built the complete
+2,558-object expected tree. It then refused before shadow population because
+the newly formatted shadow's label differed from the native constructor's
+required label. The [record](../evidence/resource-fixture-shadow-label-refusal-20261103.json)
+contains the actual exit and archive pins. The reported 308,727,808 bytes of
+private commit was a single pre-shadow observation, not a peak measurement.
+

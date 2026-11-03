@@ -106,6 +106,19 @@ at d8db. Three eager sort buffers were the leading identified waste; a bounded,
 spill-capable count-hinted replacement is in development. Never retry a prior
 executable or infer conversion/recovery qualification from this refusal.
 
+The count-hinted projection diagnostic `7a65c3d6b52e4553864112c6d36a497d`
+passed source checks and built the 2,558-object expected tree. At the pre-shadow
+checkpoint its Job Object reported 308727808 bytes current private commit,
+not a peak or total-guest-memory measurement. It then exited1 before shadow
+population: the fresh ReFS shadow label `n2r-resource-shadow` differs from the
+native constructor's required `n2r-retained-shadow`. Source remained
+offline/read-only. See `evidence/resource-fixture-shadow-label-refusal-20261103.json`;
+worker/output archive SHA256 values are respectively
+`dfba32911b47108204bc7cd16eba0b1cb9a8cfd65f89965393f9ce3b56432370` and
+`291a037c0cc50ff7edc38e2e21b7162f460252688822502ab21b15f40ca6a399`.
+The corrected lab launcher must relabel ONLY the verified disposable shadow
+after each d8db restore, before dispatch; it must not touch source/journal.
+
 Current uncommitted V4 target, journal, recovery and native-memory work remains
 experimental and gated. The target/recovery scaffolding compiled on the shared
 target, but has not passed a native conversion or power-loss recovery; trusted

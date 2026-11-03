@@ -157,6 +157,17 @@ See `evidence/resource-fixture-placement-measurement-20261103.json`.
 Do not simply raise the budget: an explicit proof-bound routed-prefix path
 is in development to avoid copying relocated initialized data into the shadow.
 
+Routed diagnostic `972cee3fa2ee41c88e7a3de7d23d6c35` ran from checkpoint
+3343 using the larger K: journal. It completed source checks, expected-tree
+construction and shadow placement, then exited1 with `source metadata working
+RAM exhausted` during routed preparation. Source remained offline/read-only;
+routed supply, capture and conversion did not complete. Worker/output archive
+SHA256 values are `9c626fd91e08656056991ba7148e1750405cff28be79e590c2fd56f3ff3b5be1`
+and `9cf1a6f45916df90e03fcf9ecd15d2d3282e94b4780633dbc935e5b38850543a`;
+see `evidence/resource-fixture-routed-ram-refusal-20261103.json`. VM is
+Off/RAM0 with parent3343. Investigate overlapping local SourceScratch leases
+before changing the RAM limit. This was not a conversion or recovery test.
+
 Current uncommitted V4 target, journal, recovery and native-memory work remains
 experimental and gated. The target/recovery scaffolding compiled on the shared
 target, but has not passed a native conversion or power-loss recovery; trusted

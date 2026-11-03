@@ -112,3 +112,10 @@ is a diagnostic refusal, not a completed conversion. A proof-bound routed
 prefix path is being developed to avoid first copying eligible relocated data
 into the shadow; its later target/journal I/O still needs measurement.
 
+The first routed diagnostic completed placement but refused during routed
+preparation when its source-metadata RAM ledger was exhausted. The source
+remained offline and read-only; capture and conversion did not complete. The
+[refusal record](../evidence/resource-fixture-routed-ram-refusal-20261103.json)
+preserves the native exit and evidence pins. The current work reduces
+overlapping per-stream reservations while keeping the shared RAM limit.
+

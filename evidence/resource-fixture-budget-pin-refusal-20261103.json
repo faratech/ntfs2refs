@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "kind": "native-resource-fixture-budget-pin-refusal",
+  "source_commit": "9b1e40e998eae98d5e6d8a9fdcce5a3f8020a849",
+  "binary_sha256": "b128d9222e57588f54a426b5d1054b5f9c69d7ed5a1e283455bcb0c4c324796e",
+  "run_id": "79bd5695b23e44e0aab72e5227f83f96",
+  "request_sha256": "c837c44fc9d50bc0e958ee2206304fc1bc2e8ab49cc716d8703e49a3b8ce36b9",
+  "request_arena_bytes": 1489981440,
+  "hard_process_cap_bytes": 2147483648,
+  "returned_stage_archive_sha256": "a8b7ee4ff562ffbcb20d4ad9b4ba5bffaf6b0e7b821b7d5b6e68c1f86e6b7b99",
+  "native_process": {
+    "exit_code": 1,
+    "pid": 5268,
+    "actual_exit_observed": true,
+    "creation_ms": 1793703971881,
+    "utc": "2026-11-03T11:06:11.9239409Z",
+    "stdout_bytes": 0,
+    "stderr_bytes": 70,
+    "wall_seconds": 0.0269322
+  },
+  "terminal_error": "Error: fixture source-evidence budget or verification profile differs",
+  "failure_phase": "request validation before freeze",
+  "source_and_shadow_online_writable_at_completion": true,
+  "source_payload_writes": 0,
+  "conversion_qualified": false,
+  "execution_authorized": false
+}

@@ -12,6 +12,38 @@ Old CURRENT/LIVE labels and preserve-all instructions in those archives are hist
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST USER DIRECTION: finish and package the preserved working alpha; keep
+broader cap-removal development separate. Experimental prerelease published in
+the private repository: https://github.com/faratech/ntfs2refs/releases/tag/alpha-7feb4c0
+It uses exact public executable source7feb4c06d21e9de73bb88961197f5b745463e490,
+binary SHA c7b5809f4456f55e71f19b47d4e4cb9b7ee6cad86c4ff0fac36c1db5a5b909d1;
+its documentation/evidence commit845eeea is pushed on codex/alpha-7feb-release.
+Windows ZIP SHA dd9f2dcd169ff20a1701eb4ddf2cbbf9d453944a48d6969e35500a49cd26e0b3.
+It is an experimental prerelease, NOT the broad stable release or goal completion.
+
+Exact7feb mutation run cd60cd1d39284fc79f264db6ea8628ba passed258 new files and
+256 directory entries. Root performed normal shutdown and restarted the SAME
+branch without restoring. VerifyAfterBoot08203c6f8c0d430d9c2cf35271c509c1 then
+passed Ready/0, 811 independent XXH3 streams and1534 original namespace/type/
+length objects,258 mutation files/256 entries. Archived preboot resultSHA
+d6c414d401b7a20ac7287a4ffd6ad95ba56e32cff0a98ac7a4c3f177f4b30050 archiveSHA
+b87bc994c4af065ebfecc5d64ed518ec307e34628716de66626fa25688e3ca58; postboot
+resultSHA93ec3de28e30fe7a3efae530004ecc22d77c746401af9097a72fa977b83840f9
+archiveSHA4f35b884295c54e2d637ec47eafa415275d8d7f487ce65a38f4a2a36b96fe068.
+Do not claim complete postboot ACL/SACL/timestamp or physical cluster reuse proof.
+
+VM is NOW Off/RAM0 at parent5ce766b0-c6e9-4007-b16d-363944240c51, six snapshots;
+its active branch contains the closed, mutated ReFS result, NEVER raw-replay it.
+Sixth snapshot001f7611-257f-4c5a-8c5b-560ce8faa68d is the original NTFS source
+with1024 additional directories, retained for future resource work. The first
+resource observer on it stopped on my resident digest bug; the closed failed
+archive SHA a95bf4e5a554ca714cb02dad5eaf33e1ebbec058897230f8d74304eb2272bd65
+preserves the actual failure, unknown native exit and worker result1. Root fixed
+the SHA/XXH3 mismatch in committed51910d3, built its observer, restored001f ONCE,
+then switched to the verified alpha for the user-requested release. No VM job is
+active. The resource WIP in the main worktree is incomplete/uncompiled after its
+latest edits; preserve it separately and do not include it in the alpha.
+
 Latest user instruction: "Also remove all the caps so it can work on most
 hardware." This authorizes the resource/generalization work below and supersedes
 the earlier feature freeze for that scope. Do not delete correctness, format,

@@ -68,6 +68,24 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+Latest continuation: the V4 diagnostic remains experimental and does not
+authorize source writes. The most recent pinned candidate `a69181274506d613cbfb965bd2b8f4af3a7bc36b`
+failed during protected target capture while retaining native report rows;
+both source and shadow remained offline/read-only. The VM was then cleanly
+shut down. With a 32 MiB larger arena, retained leases grew by about the same
+amount and the next row still failed; do not repeat the run or increase the
+budget again without addressing the report's accumulated memory. See
+`evidence/resource-fixture-row-plus32-refusal-20261103.json` and
+`evidence/resource-fixture-row-capacity-refusal-20261103.json`.
+
+The working tree includes a compiled but unqualified V4 read-only recovery
+observer, resource-accounted bitmap work, and a publication change reducing
+estimated capture-literal scans from 15 to 9. Replay and write authority remain
+unavailable; none of these changes qualifies the released alpha or a general
+conversion. The bitmap path has no proven allocator-independent peak bound.
+The published `7feb4c0` alpha remains separate. Preserve the existing shared
+Cargo target and the original lab disk budget; no unit tests were added or run.
+
 LATEST source-arena VM observation: pinned experimental source `8831d738` and
 binary SHA256 `b0096aa3e842af78de7ec208fdbc9405a80c66f34aa639994c2a2d70f5d482ab`
 completed run `d79d5a4c79024b7da3bbbe6b057a8bd7` with native PID5168,

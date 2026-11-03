@@ -131,6 +131,18 @@ child of d8db; VM is Off/RAM0. Diagnose the actual required amount and avoid
 unnecessary data rewriting before changing the budget. Restore d8db for a fresh
 run; never confuse the partial shadow checkpoint with a converted volume.
 
+For the routed-prefix diagnostic a fresh dynamic 32 GiB external journal was
+enrolled inside the VM, within the original 50 GiB host allowance. It is guest
+disk7, GPT disk GUID `b1209612-0971-4230-afc8-142134dc3d19`, partition/volume
+GUID `6b2c8755-e6a4-40a9-b804-ccd32d9c0d6f`, offset16777216,
+length33285996544, NTFS K:. Its host VHD root ID is
+`35db6ac3-d69e-4382-821b-15ecc5a70f02` at controller0/location8. Enrollment
+receipt: `.lab/development/diagnostic-journal-enrollment.json`. The VM is now
+Off/RAM0 at checkpoint `3343f2a4-cf81-4fa9-a504-030425a8011e`, child of d8db;
+receipt `.lab/development/diagnostic-large-journal-checkpoint.json`. Verify all
+actual VHD chains, guest identities and the fixed original storage budget before
+dispatch. The previous 8 GiB J: journal remains intact.
+
 Placement-instrumented diagnostic `e9072298839748c8a55345b55c153b91` measured
 9,885,781,381 logical bytes, 4,225,110,016 source-reference bytes and
 5,660,671,365 bytes classified for materialization. It submitted 13,581,152,256

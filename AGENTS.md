@@ -68,6 +68,19 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST handoff: memory-fix sourcea7befe8af1aad71e9cab7134f9d4aee5b87d90a4
+is committed/pushed. Shared release build exec43001 is ACTIVE for public+lab
+diagnostic at .lab/development/release-candidates/resource-first-write-a7befe8;
+poll it, never restart on timeout. Root fresh-verified VMOff/RAM0,parent3343;
+all guest workers terminal after618 prewrite refusal. current-resource-fixture-
+run.json now describes that actual terminal refusal/no validsignal, not oldd9.
+Final reciprocal review of all three memory fixes PASS, with full checks and
+same admitted budget. P3inventory/planner/SDKmover modules+two parenthooks stay
+uncommitted; D is adding executor/receipts, so compile/freeze that slice before
+staging. Original alpha, normal2558 result411c and mutated/online-reconciled
+resultba81 remain saved. No source write afterAP has been observed for V4's
+new partialwrite hook yet; do not infer it from a nonzero exit or old evidence.
+
 LATEST memory fixes are final-checked8.893s: SDKactual-file Readered473871,
 Rootpairedleases3fb02336 andplacementJSON2×allowancee2785df8. Completefile/
 page/record/hash checks and acceptedquery/prooflimits remain. Constructor

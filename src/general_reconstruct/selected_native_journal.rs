@@ -35,6 +35,9 @@ pub(crate) struct NativeSelectedJournal {
     storage: Storage,
     lab_pause: Option<LabMarkerCopyPause>,
     fixed_length: Option<u64>,
+    // Set only by the actual completed PreparedClear journal scan. Once set,
+    // ordinary writes may touch marker granules but never the immutable body.
+    prepared_body_sealed: bool,
 }
 
 /// V4 read-only recovery evidence tied to the actual share-zero native journal
@@ -148,11 +151,58 @@ impl NativeSelectedJournal {
     /// Native paged recovery currently supports only the buffered, markerless
     /// formats. This is not a target-write capability or a reopened pathname.
     pub(crate) fn markerless_recovery_file(&mut self) -> Result<&mut File> {
+        ensure!(!self.prepared_body_sealed,
+            "sealed prepared journal cannot expose its writable body handle");
         match &mut self.storage {
             Storage::Buffered(file) => Ok(file),
             Storage::Constructing(_) | Storage::Sealed(_) | Storage::Unavailable => {
                 anyhow::bail!("paged recovery requires the held markerless native journal")
             }
+        }
+    }
+    /// Make the actual fixed-EOF markerless owner permanently reject ordinary
+    /// writes to its body. This is an in-process capability boundary, not a
+    /// claim that privileged raw-volume aliases are excluded.
+    pub(crate) fn seal_prepared_body(&mut self, ticket: &sj::SelectedTicket) -> Result<()> {
+        ensure!(!self.prepared_body_sealed && self.fixed_length == Some(ticket.journal_length)
+            && ticket.marker_profile.is_none() && matches!(self.storage, Storage::Buffered(_)),
+            "actual fixed markerless prepared owner required for body seal");
+        ensure!(sj::classify(self, ticket)? == sj::SelectedLifecycle::PreparedClear,
+            "body seal requires the actual clear journal");
+        self.prepared_body_sealed = true;
+        Ok(())
+    }
+    pub(crate) fn require_prepared_body_seal(&self) -> Result<()> {
+        ensure!(self.prepared_body_sealed && matches!(self.storage, Storage::Buffered(_)),
+            "actual prepared marker-only journal owner absent");
+        Ok(())
+    }
+    /// The raw file is not returned: only the SDK's fixed activation gate may
+    /// borrow it, and that gate rehashes the body on both sides of OLD checks.
+    pub(crate) fn begin_sealed_fresh_apply<'a>(
+        &mut self,
+        source: &'a mut n2r_win32::GeneralFrozenPartition,
+        policy: n2r_win32::HeldPagedWritePolicy,
+        pins: &n2r_win32::PagedRecoveryPins<'_>,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<n2r_win32::BorrowedPagedWriter<'a>> {
+        self.require_prepared_body_seal()?;
+        match &mut self.storage {
+            Storage::Buffered(file) => Ok(source.begin_paged_fresh_apply(policy, file, pins, events)?),
+            _ => anyhow::bail!("sealed markerless journal owner absent"),
+        }
+    }
+    pub(crate) fn seal_sealed_handoff_for_observation(
+        &mut self,
+        source: &mut n2r_win32::GeneralFrozenPartition,
+        policy: &n2r_win32::HeldPagedWritePolicy,
+        pins: &n2r_win32::PagedRecoveryPins<'_>,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<()> {
+        self.require_prepared_body_seal()?;
+        match &mut self.storage {
+            Storage::Buffered(file) => Ok(source.seal_paged_handoff_for_observation(policy, file, pins, events)?),
+            _ => anyhow::bail!("sealed markerless journal owner absent"),
         }
     }
     /// Same-handle volume-GUID route for a future recovery locator. A
@@ -193,6 +243,7 @@ impl NativeSelectedJournal {
                     storage: Storage::Constructing(file),
                     lab_pause,
                     fixed_length: None,
+                    prepared_body_sealed: false,
                 },
                 identity,
             ));
@@ -218,6 +269,7 @@ impl NativeSelectedJournal {
                 storage: Storage::Buffered(file),
                 lab_pause: None,
                 fixed_length: None,
+                prepared_body_sealed: false,
             },
             observed.identity,
         ))
@@ -289,6 +341,7 @@ impl NativeSelectedJournal {
                     storage: Storage::Sealed(file),
                     lab_pause: None,
                     fixed_length: None,
+                    prepared_body_sealed: false,
                 },
                 actual_identity,
                 observed,
@@ -315,6 +368,7 @@ impl NativeSelectedJournal {
                 storage: Storage::Buffered(file),
                 lab_pause: None,
                 fixed_length: None,
+                prepared_body_sealed: false,
             },
             actual_identity,
             serde_json::to_value(observed)?,
@@ -736,6 +790,13 @@ impl Read for NativeSelectedJournal {
 }
 impl Write for NativeSelectedJournal {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.prepared_body_sealed {
+            let position = self.stream_position()?;
+            if !position.checked_add(bytes.len() as u64).is_some_and(|end| end <= 8192) {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                    "sealed prepared journal permits marker writes only"));
+            }
+        }
         if let Some(length) = self.fixed_length {
             let position = self.stream_position()?;
             if !position

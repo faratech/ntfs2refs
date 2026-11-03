@@ -4,6 +4,10 @@ use super::super::input_domain::{InputDomain, ObjectInput, SliceInputs};
 use super::*;
 use crate::{bitmap_observation::Observation, retention_layout, shadow_evacuation};
 
+mod resource;
+use resource::Limits as PlacementLimits;
+pub use resource::{PlacementEvidenceSink, ResourcePlacementReport};
+
 const MOVE_BYTES: u64 = 512 * 1024 * 1024;
 /// Tree-wide FSCTL_MOVE_FILE submissions, shared by every phase.
 const MAX_MOVES: usize = super::MAX_PLACEMENT_SUBMISSIONS;
@@ -226,7 +230,7 @@ fn progress(
     tree: &mut PrivateTree,
     phase: &str,
     charged_bytes: u64,
-    verified: &[serde_json::Value],
+    verified: &Evidence<'_>,
     mut pending: Option<serde_json::Value>,
     counters: &Counters,
 ) {
@@ -242,6 +246,7 @@ fn progress(
     }
     // Keep a bounded tail, not a second copy of the complete mapping proofs.
     let phases: Vec<_> = verified
+        .moves
         .iter()
         .rev()
         .take(16)
@@ -263,7 +268,14 @@ fn progress(
 /// Record the bounded quantity in the progress artifact and refuse.
 fn refuse(tree: &mut PrivateTree, counters: &Counters, message: String) -> io::Error {
     if !tree.placement_progress.is_object() {
-        progress(tree, "plan-desired-runs", 0, &[], None, counters);
+        progress(
+            tree,
+            "plan-desired-runs",
+            0,
+            &Evidence::default(),
+            None,
+            counters,
+        );
     }
     tree.placement_progress["counters"] = serde_json::to_value(counters).unwrap_or_default();
     tree.placement_progress["refusal"] = message.as_str().into();
@@ -314,59 +326,154 @@ fn saved_size(value: &serde_json::Value) -> Result<usize, String> {
         .ok_or_else(|| "placement evidence accounting overflow".to_owned())
 }
 
+fn compact_size(value: &serde_json::Value) -> Result<usize, String> {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| invalid("placement compact size overflow"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    serde_json::to_writer(&mut count, value).map_err(|e| e.to_string())?;
+    Ok(count.0)
+}
+
 /// Move proofs are kept exactly as before. Their compact size is still
 /// reported; the binding charge is each section's exact contribution to the
 /// pretty-printed construction-placement.json, which must fit its save bound.
-#[derive(Default)]
-struct Evidence {
+struct Evidence<'a> {
     moves: Vec<serde_json::Value>,
     compact_bytes: usize,
     saved_bytes: usize,
+    count: usize,
+    maximum: usize,
+    sink: Option<&'a mut dyn PlacementEvidenceSink>,
 }
-
-impl Evidence {
+impl Default for Evidence<'_> {
+    fn default() -> Self {
+        Self {
+            moves: Vec::new(),
+            compact_bytes: 0,
+            saved_bytes: 0,
+            count: 0,
+            maximum: MAX_PLACEMENT_ARTIFACT_BYTES,
+            sink: None,
+        }
+    }
+}
+impl<'a> Evidence<'a> {
+    fn new(sink: Option<&'a mut dyn PlacementEvidenceSink>, maximum: usize) -> Self {
+        Self {
+            maximum,
+            sink,
+            ..Self::default()
+        }
+    }
+    fn len(&self) -> usize {
+        if self.sink.is_some() {
+            self.count
+        } else {
+            self.moves.len()
+        }
+    }
     fn charge(&mut self, value: &serde_json::Value) -> Result<(), String> {
-        let total = saved_size(value)?
-            .checked_add(self.saved_bytes)
-            .ok_or("placement evidence accounting overflow")?;
-        if total > MAX_PLACEMENT_ARTIFACT_BYTES {
+        let total = if self.sink.is_some() {
+            compact_size(value)?
+        } else {
+            saved_size(value)?
+        }
+        .checked_add(self.saved_bytes)
+        .ok_or("placement evidence accounting overflow")?;
+        if total > self.maximum {
             return Err(format!(
                 "placement evidence budget exceeded: {total} saved artifact bytes > \
-                 {MAX_PLACEMENT_ARTIFACT_BYTES} after {} move proofs; preserve shadow without retry",
-                self.moves.len()
+                 {} after {} move proofs; preserve shadow without retry",
+                self.maximum,
+                self.len()
             ));
+        }
+        if let Some(sink) = &mut self.sink {
+            sink.push("section", value).map_err(|e| e.to_string())?;
         }
         self.saved_bytes = total;
         Ok(())
     }
 
     fn push_move(&mut self, value: serde_json::Value) -> Result<(), String> {
-        let compact = serde_json::to_vec(&value)
-            .map_err(|e| e.to_string())?
-            .len()
+        let compact = compact_size(&value)?
             .checked_add(self.compact_bytes)
             .ok_or("placement evidence accounting overflow")?;
-        self.charge(&value)?;
+        if let Some(sink) = &mut self.sink {
+            let total = self
+                .saved_bytes
+                .checked_add(compact_size(&value)?)
+                .filter(|n| *n <= self.maximum)
+                .ok_or("paged placement evidence resource exhausted")?;
+            sink.push("move", &value).map_err(|e| e.to_string())?;
+            self.saved_bytes = total;
+            self.count = self
+                .count
+                .checked_add(1)
+                .ok_or("placement move count overflow")?;
+            // Progress uses only these two scalar fields. Every full proof is
+            // already streamed; no second all-moves collection is retained.
+            let recent =
+                serde_json::json!({"object_index":value["object_index"],"phase":value["phase"]});
+            if self.moves.len() == 16 {
+                self.moves.remove(0);
+            }
+            self.moves.push(recent);
+            drop(value);
+        } else {
+            self.charge(&value)?;
+            self.moves.push(value);
+        }
         self.compact_bytes = compact;
-        self.moves.push(value);
         Ok(())
+    }
+
+    fn failed_move(&mut self, value: serde_json::Value) -> Result<serde_json::Value, String> {
+        if self.sink.is_none() {
+            return Ok(value);
+        }
+        self.charge(&value)?;
+        let summary = serde_json::json!({"object_index":value["object_index"],
+            "phase":value["phase"],"native_error":value["proof"]["native_error"],
+            "mapping_matches":value["proof"]["mapping_matches"],
+            "all_placements_match":value["proof"]["all_placements_match"],
+            "complete_proof_in_paged_evidence":true});
+        drop(value);
+        Ok(summary)
     }
 
     /// Refuse before native IO unless the next move record, at its bound,
     /// still fits. The exact charge after the move is unchanged.
-    fn reserve(&self, bound: usize) -> Result<(), String> {
+    fn reserve(&mut self, bound: usize) -> Result<(), String> {
         if self
             .saved_bytes
             .checked_add(bound)
-            .is_none_or(|total| total > MAX_PLACEMENT_ARTIFACT_BYTES)
+            .is_none_or(|total| total > self.maximum)
         {
             return Err(format!(
                 "placement evidence reservation exceeded before native IO: {} saved artifact bytes \
-                 + {bound} bound for the next move proof > {MAX_PLACEMENT_ARTIFACT_BYTES} after {} \
+                 + {bound} bound for the next move proof > {} after {} \
                  move proofs; preserve shadow without retry",
                 self.saved_bytes,
-                self.moves.len()
+                self.maximum,
+                self.len()
             ));
+        }
+        if let Some(sink) = &mut self.sink {
+            sink.reserve_next(bound as u64).map_err(|e| e.to_string())?;
+            // Resource NativeMoveValue transfers the complete query/JSON
+            // allowance which was prepaid before the physical operation.
         }
         Ok(())
     }
@@ -380,12 +487,16 @@ struct Reservation {
     base: usize,
     per_extent: usize,
     empty_destination: usize,
+    maximum_resource_extents: Option<usize>,
 }
 
 impl Reservation {
     fn new() -> Result<Self, String> {
-        let base = saved_size(&widest_move_record(0)?)?;
-        let per_extent = saved_size(&widest_move_record(1)?)?
+        Self::with_pages(crate::retrieval_paging::MAX_PAGES)
+    }
+    fn with_pages(pages: usize) -> Result<Self, String> {
+        let base = saved_size(&widest_move_record(0, pages)?)?;
+        let per_extent = saved_size(&widest_move_record(1, pages)?)?
             .checked_sub(base)
             .ok_or("placement evidence reservation differs")?;
         let empty_destination = saved_size(&serde_json::json!({
@@ -395,7 +506,14 @@ impl Reservation {
             base,
             per_extent,
             empty_destination,
+            maximum_resource_extents: None,
         })
+    }
+
+    fn with_resource_limits(limits: crate::retrieval_paging::Limits) -> Result<Self, String> {
+        let mut reservation = Self::with_pages(limits.max_pages)?;
+        reservation.maximum_resource_extents = Some(limits.max_extents);
+        Ok(reservation)
     }
 
     /// The file's canonical extents after a verified move: its current count,
@@ -411,10 +529,19 @@ impl Reservation {
     ) -> Result<usize, String> {
         let allowance = usize::try_from(length.div_ceil(SPLIT_ALLOWANCE_BYTES))
             .map_err(|_| "placement evidence reservation overflow")?;
-        let extents = current_extents
-            .checked_add(2)
-            .and_then(|n| n.checked_add(allowance))
-            .ok_or("placement evidence reservation overflow")?;
+        let extents = if let Some(maximum) = self.maximum_resource_extents {
+            if current_extents > maximum {
+                return Err("current map exceeds original resource retrieval bound".into());
+            }
+            // Match the complete after-map accepted by the native resource
+            // collector, including legal growth not predicted by this move.
+            maximum
+        } else {
+            current_extents
+                .checked_add(2)
+                .and_then(|n| n.checked_add(allowance))
+                .ok_or("placement evidence reservation overflow")?
+        };
         // Use the exact enclosing shape so the pretty-printed indentation and
         // line count are charged at the proof's real nesting depth. Replacing
         // null here adds exactly the same bytes as in widest_move_record.
@@ -431,7 +558,7 @@ impl Reservation {
     }
 }
 
-fn widest_move_record(extents: usize) -> Result<serde_json::Value, String> {
+fn widest_move_record(extents: usize, pages: usize) -> Result<serde_json::Value, String> {
     let digest = "f".repeat(64);
     let page = crate::retrieval_paging::PageProof {
         input: vec![u8::MAX; 8],
@@ -445,7 +572,7 @@ fn widest_move_record(extents: usize) -> Result<serde_json::Value, String> {
         canonical_sha256: digest.clone(),
         extent_count: usize::MAX,
         virtual_clusters: u64::MAX,
-        pages: vec![page; crate::retrieval_paging::MAX_PAGES],
+        pages: vec![page; pages],
     };
     // Keep the destination field a null placeholder: its actual complete
     // transport is added by bound() immediately before the native submission.
@@ -464,7 +591,7 @@ fn widest_move_record(extents: usize) -> Result<serde_json::Value, String> {
 /// Check the next move's evidence bound before its native submission.
 fn reserve_move(
     counters: &mut Counters,
-    evidence: &Evidence,
+    evidence: &mut Evidence<'_>,
     reservation: &Reservation,
     current_extents: usize,
     length: u64,
@@ -477,12 +604,14 @@ fn reserve_move(
     evidence.reserve(bound).map_err(|message| invalid(&message))
 }
 
-fn views(tree: &PrivateTree) -> io::Result<(Observation, Observation)> {
-    let bytes = tree.pair.shadow.identity.partition_bytes;
-    let a = Observation::capture(&tree.volume, &[0; 8], bytes, true)?;
+fn views(
+    tree: &PrivateTree,
+    limits: PlacementLimits,
+) -> io::Result<(resource::Bitmap, resource::Bitmap)> {
+    let a = resource::capture_bitmap(tree, &[0; 8], limits)?;
     let mut ex = [0u8; 16];
     ex[8] = 1;
-    let b = Observation::capture(&tree.volume, &ex, bytes, true)?;
+    let b = resource::capture_bitmap(tree, &ex, limits)?;
     Ok((a, b))
 }
 
@@ -493,10 +622,12 @@ fn barrier_snapshot(
     metadata: &Observation,
     desired: &BTreeMap<usize, Vec<SourceRun>>,
     partition: u64,
+    limits: PlacementLimits,
+    payer: Option<&dyn report_memory::ReportMemoryAccountant>,
 ) -> io::Result<serde_json::Value> {
     let a = legacy.view(partition)?.candidate(0, partition)?;
     let b = metadata.view(partition)?.candidate(0, partition)?;
-    let planner = legacy.retention_planner(metadata, partition)?;
+    let planner = resource::planner(legacy, metadata, partition, limits, payer)?;
     let mut free_bytes = 0u64;
     for run in desired.values().flatten() {
         let plan = planner.plan(
@@ -507,7 +638,7 @@ fn barrier_snapshot(
                 })?,
                 length: run.length,
             },
-            retention_layout::MAX_SUBRUNS,
+            limits.subruns,
         )?;
         free_bytes = free_bytes
             .checked_add(plan.free_bytes)
@@ -534,6 +665,7 @@ struct Scratch {
     /// choices without rescanning earlier too-small spans for every request.
     longest: Vec<u64>,
     leaves: usize,
+    _memory: Option<Box<dyn report_memory::ReportMemoryLease>>,
 }
 
 impl Scratch {
@@ -542,17 +674,59 @@ impl Scratch {
         metadata: &Observation,
         avoid: &[(u64, u64)],
         partition: u64,
+        limits: PlacementLimits,
+        payer: Option<&dyn report_memory::ReportMemoryAccountant>,
     ) -> Result<Self, String> {
+        let count_ranges = |view: &Observation| -> Result<usize, String> {
+            match view {
+                Observation::Streamed { summary, .. } => Ok(summary.allocated_ranges.len()),
+                _ => Err("resource scratch needs streamed complete bitmaps".into()),
+            }
+        };
+        let memory = if limits.resource {
+            let maps = count_ranges(legacy)?
+                .checked_add(count_ranges(metadata)?)
+                .ok_or("scratch map count overflow")?;
+            let occupied = maps
+                .checked_add(avoid.len())
+                .and_then(|n| n.checked_add(2))
+                .ok_or("scratch occupancy count overflow")?;
+            let leaves = occupied
+                .checked_add(1)
+                .and_then(usize::checked_next_power_of_two)
+                .ok_or("scratch index count overflow")?;
+            let bytes = (maps as u64)
+                .checked_mul(64)
+                .and_then(|n| n.checked_add((occupied as u64).checked_mul(128)?))
+                .and_then(|n| n.checked_add((leaves as u64).checked_mul(32)?))
+                .and_then(|n| n.checked_add(65536))
+                .ok_or("scratch RAM overflow")?;
+            Some(
+                payer
+                    .ok_or("scratch payer absent")?
+                    .reserve(bytes)
+                    .map_err(|e| e.to_string())?,
+            )
+        } else {
+            None
+        };
         let a = legacy
             .allocation_map(partition)
             .map_err(|e| e.to_string())?;
         let b = metadata
             .allocation_map(partition)
             .map_err(|e| e.to_string())?;
-        let count = a.ranges.len() + b.ranges.len() + avoid.len() + 2;
-        if count > MAX_SCRATCH_INTERVALS {
+        let count = a
+            .ranges
+            .len()
+            .checked_add(b.ranges.len())
+            .and_then(|n| n.checked_add(avoid.len()))
+            .and_then(|n| n.checked_add(2))
+            .ok_or("scratch occupancy count overflow")?;
+        if count > limits.scratch_intervals {
             return Err(format!(
-                "scratch occupancy budget exceeded: {count} intervals > {MAX_SCRATCH_INTERVALS}"
+                "scratch occupancy budget exceeded: {count} intervals > {}",
+                limits.scratch_intervals
             ));
         }
         let mut occupied: Vec<(u64, u64)> = a
@@ -597,6 +771,7 @@ impl Scratch {
             free,
             longest,
             leaves,
+            _memory: memory,
         })
     }
 
@@ -692,6 +867,8 @@ struct Wanted<'a> {
     avoid: &'a [(u64, u64)],
     partition: u64,
     max_moves: usize,
+    limits: PlacementLimits,
+    payer: Option<&'a dyn report_memory::ReportMemoryAccountant>,
 }
 
 /// The unexecuted part of each hole in `steps`, in plan order.
@@ -728,13 +905,15 @@ fn plan_deferred(
         avoid,
         partition,
         max_moves,
+        limits,
+        payer,
     } = wanted;
-    let mut scratch = match Scratch::new(legacy, metadata, avoid, partition) {
+    let mut scratch = match Scratch::new(legacy, metadata, avoid, partition, limits, payer) {
         Ok(value) => value,
         Err(message) => return Ok(Err(message)),
     };
     counters.scratch_free_intervals = scratch.free.len();
-    let planner = legacy.retention_planner(metadata, partition)?;
+    let planner = resource::planner(legacy, metadata, partition, limits, payer)?;
     let mut deferred = Vec::new();
     for &(index, start, end) in holes {
         // A deferred range has no old physical ownership to evacuate.
@@ -762,14 +941,19 @@ fn plan_deferred(
                     physical_offset: run.physical_offset.unwrap() + from - run.logical_offset,
                     length: to - from,
                 },
-                max_moves,
+                max_moves.min(limits.subruns),
             )?;
-            for subrun in plan.subruns {
+            for subrun in plan.subruns.iter().copied() {
                 // Keep the same bootstrap margins as scratch allocation.
                 let physical_start = subrun.physical_offset.max(MARGIN);
                 let physical_end =
                     (subrun.physical_offset + subrun.length).min(partition.saturating_sub(MARGIN));
                 if physical_start < physical_end {
+                    if limits.resource && direct.len() == limits.subruns {
+                        return Ok(Err(
+                            "resource direct-piece index exhausted before native IO".into(),
+                        ));
+                    }
                     direct.push((
                         subrun.logical_offset + physical_start - subrun.physical_offset,
                         physical_start,
@@ -790,6 +974,11 @@ fn plan_deferred(
         let mut cursor = start;
         let mut next_direct = 0;
         while cursor < end {
+            if limits.resource && deferred.len() == limits.subruns {
+                return Ok(Err(
+                    "resource deferred-step index exhausted before native IO".into(),
+                ));
+            }
             if executed + deferred.len() >= max_moves {
                 counters.planned_deferred_submissions = executed + deferred.len();
                 return Ok(Err(format!(
@@ -852,9 +1041,28 @@ fn allocate_deferred(
     // ReFS allocates a planned destination after it, the mover refuses that
     // step before submission; the rest of the phase is then planned again
     // from one fresh snapshot, a bounded number of times.
-    let (legacy, metadata) = views(tree)?;
+    let _deferred_memory = if wanted.limits.resource {
+        Some(
+            wanted
+                .payer
+                .ok_or_else(|| invalid("deferred payer absent"))?
+                .reserve(
+                    (wanted.limits.subruns as u64)
+                        .checked_mul(
+                            (mem::size_of::<Deferred>() + 2 * mem::size_of::<(usize, u64, u64)>())
+                                as u64
+                                * 8,
+                        )
+                        .and_then(|n| n.checked_add(65536))
+                        .ok_or_else(|| invalid("deferred planning RAM overflow"))?,
+                )?,
+        )
+    } else {
+        None
+    };
+    let (legacy, metadata) = views(tree, wanted.limits)?;
     counters.phase_bitmap_snapshots += 1;
-    let base_moves = evidence.moves.len();
+    let mut base_moves = evidence.len();
     let mut deferred = match plan_deferred(wanted, &legacy, &metadata, holes, base_moves, counters)?
     {
         Ok(steps) => steps,
@@ -866,7 +1074,7 @@ fn allocate_deferred(
             tree,
             step.phase,
             *move_bytes,
-            &evidence.moves,
+            &evidence,
             Some(serde_json::json!({
             "object_index":step.index,"logical_offset":step.logical,"destination":step.destination,
             "length":step.length,"placement_result_recorded":false,"budget_charged":false})),
@@ -876,11 +1084,14 @@ fn allocate_deferred(
         charge_move(move_bytes, step.length, max_move_bytes)?;
         tree.placement_progress["charged_move_bytes"] = (*move_bytes).into();
         tree.placement_progress["pending"]["budget_charged"] = true.into();
-        let attempt = tree.place_slot_with_evidence(
+        let attempt = resource::move_slot(
+            tree,
             step.index,
             step.logical / 4096,
             step.destination / 4096,
             (step.length / 4096) as u32,
+            false,
+            wanted.limits.resource,
             |destination| {
                 reserve_move(
                     counters,
@@ -909,7 +1120,7 @@ fn allocate_deferred(
                 }
                 counters.deferred_drift_replans += 1;
                 let remaining = remaining_holes(&deferred[next_step..]);
-                let (legacy, metadata) = views(tree)?;
+                let (legacy, metadata) = views(tree, wanted.limits)?;
                 counters.phase_bitmap_snapshots += 1;
                 let planned = match plan_deferred(
                     wanted,
@@ -922,17 +1133,25 @@ fn allocate_deferred(
                     Ok(steps) => steps,
                     Err(message) => return Err(refuse(tree, counters, message)),
                 };
-                deferred.truncate(next_step);
-                deferred.extend(planned);
+                if wanted.limits.resource {
+                    deferred = planned;
+                    next_step = 0;
+                    base_moves = evidence.len();
+                } else {
+                    deferred.truncate(next_step);
+                    deferred.extend(planned);
+                }
                 continue;
             }
             result => result?,
         };
         if proof["native_error"] != serde_json::Value::Null || proof["all_placements_match"] != true
         {
-            tree.placement_progress["failed_native_move"] = serde_json::json!({
-                "object_index":step.index,"phase":step.phase,"proof":proof
-            });
+            tree.placement_progress["failed_native_move"] = evidence
+                .failed_move(serde_json::json!({
+                    "object_index":step.index,"phase":step.phase,"proof":proof
+                }))
+                .map_err(|e| invalid(&e))?;
             return Err(invalid(
                 "deferred unwritten allocation refused; preserve without retry",
             ));
@@ -950,14 +1169,7 @@ fn allocate_deferred(
         if let Err(message) = recorded {
             return Err(refuse(tree, counters, message));
         }
-        progress(
-            tree,
-            step.phase,
-            *move_bytes,
-            &evidence.moves,
-            None,
-            counters,
-        );
+        progress(tree, step.phase, *move_bytes, &evidence, None, counters);
         next_step += 1;
     }
     Ok(())
@@ -978,9 +1190,81 @@ pub(super) fn run_domain(
     max_move_bytes: u64,
     max_moves: usize,
 ) -> io::Result<serde_json::Value> {
+    let limits = PlacementLimits::legacy(tree.pair.shadow.identity.partition_bytes, max_moves)?;
+    run_domain_inner(tree, input, max_move_bytes, max_moves, limits, None)
+}
+
+pub(super) fn run_resource_domain(
+    tree: &mut PrivateTree,
+    input: &impl InputDomain,
+    max_move_bytes: u64,
+    max_moves: usize,
+    sink: &mut dyn PlacementEvidenceSink,
+) -> io::Result<ResourcePlacementReport> {
+    let admission = tree
+        .metadata_resource_admission
+        .ok_or_else(|| invalid("actual resource private-tree admission absent"))?;
+    if tree.memory.is_none() {
+        return Err(invalid("actual resource placement payer absent"));
+    }
+    input.require_resource_metadata(admission)?;
+    let limits = PlacementLimits::resource(
+        admission,
+        tree.pair.shadow.identity.partition_bytes,
+        max_move_bytes,
+        max_moves,
+        sink.maximum_bytes(),
+    )?;
+    let payer = tree
+        .memory
+        .as_ref()
+        .ok_or_else(|| invalid("actual resource placement payer absent"))?
+        .payer();
+    for file in tree.files.values_mut() {
+        file.enable_resource_placement(
+            admission,
+            limits.tracked,
+            limits.moves,
+            max_move_bytes,
+            payer.clone(),
+        )?;
+    }
+    let report_memory = payer.reserve(2 * 1024 * 1024)?;
+    let value = run_domain_inner(
+        tree,
+        input,
+        max_move_bytes,
+        limits.moves,
+        limits,
+        Some(sink),
+    )?;
+    match ResourcePlacementReport::new(value, report_memory) {
+        Ok(report) => {
+            tree.placement_complete = true;
+            tree.placement_progress["placement_complete"] = true.into();
+            Ok(report)
+        }
+        Err(error) => {
+            tree.placement_complete = false;
+            tree.original_coordinates.clear();
+            Err(error)
+        }
+    }
+}
+
+fn run_domain_inner(
+    tree: &mut PrivateTree,
+    input: &impl InputDomain,
+    max_move_bytes: u64,
+    max_moves: usize,
+    limits: PlacementLimits,
+    sink: Option<&mut dyn PlacementEvidenceSink>,
+) -> io::Result<serde_json::Value> {
     tree.require_source_excluded()?;
     tree.require_bound_input_domain(input)?;
-    validate_limits(max_move_bytes, max_moves)?;
+    if !limits.resource {
+        validate_limits(max_move_bytes, max_moves)?;
+    }
     if tree.placement_started {
         return Err(invalid(
             "tree placement already attempted; preserve without retry",
@@ -989,6 +1273,39 @@ pub(super) fn run_domain(
     if input.len() != tree.initial_objects.len() {
         return Err(invalid("private placement object count differs"));
     }
+    let payer = tree.memory.as_ref().map(|m| m.payer());
+    let mut index_memory = if limits.resource {
+        let mut ranges = 0usize;
+        for key in tree.stream_slots.values() {
+            let owner = input.object(key.object_index)?;
+            let object = owner.input();
+            let item = tree.placement_view_object(&object, key)?;
+            ranges = ranges
+                .checked_add(item.source_runs.len())
+                .and_then(|n| n.checked_add(usize::from(item.source_offset.is_some())))
+                .ok_or_else(|| invalid("resource desired count overflow"))?;
+        }
+        let islands = tree.sparse_targets.values().try_fold(0usize, |n, target| {
+            n.checked_add(target.islands.len())
+                .ok_or_else(|| invalid("resource island count overflow"))
+        })?;
+        let rows = ranges
+            .checked_add(tree.files.len())
+            .and_then(|n| n.checked_add(islands))
+            .ok_or_else(|| invalid("resource placement index count overflow"))?;
+        let bytes = (rows as u64)
+            .checked_mul(8192)
+            .and_then(|n| n.checked_add(1024 * 1024))
+            .ok_or_else(|| invalid("resource placement index RAM overflow"))?;
+        Some(
+            payer
+                .as_deref()
+                .ok_or_else(|| invalid("resource placement payer absent"))?
+                .reserve(bytes)?,
+        )
+    } else {
+        None
+    };
     validate_stream_slots(tree, input)?;
     let partition = tree.pair.shadow.identity.partition_bytes;
     let mut counters = Counters {
@@ -1036,15 +1353,34 @@ pub(super) fn run_domain(
                     .checked_add(target.dense_length)
                     .ok_or_else(|| invalid("named carrier byte count overflow"))
             })?,
-        desired_runs_limit: MAX_ADMITTED_RANGES,
-        tracked_extents_limit: MAX_TRACKED_EXTENTS,
-        owned_intersecting_desired_limit: MAX_OWNED_RANGES,
+        desired_runs_limit: limits.desired,
+        tracked_extents_limit: limits.tracked,
+        owned_intersecting_desired_limit: limits.owned,
         move_submissions_limit: max_moves,
-        placement_artifact_bytes_limit: MAX_PLACEMENT_ARTIFACT_BYTES,
+        placement_artifact_bytes_limit: limits.evidence,
         drift_replans_limit_per_phase: MAX_DRIFT_REPLANS,
         ..Counters::default()
     };
-    let reservation = Reservation::new().map_err(|message| invalid(&message))?;
+    let reservation = if limits.resource {
+        let admission = tree
+            .metadata_resource_admission
+            .ok_or_else(|| invalid("resource admission absent"))?;
+        let query = crate::retrieval_paging::Limits::for_resource_bytes(
+            usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?,
+        )?;
+        let _memory = payer
+            .as_deref()
+            .ok_or_else(|| invalid("reservation payer absent"))?
+            .reserve(
+                (query.max_pages as u64)
+                    .checked_mul(8192)
+                    .and_then(|n| n.checked_add(1024 * 1024))
+                    .ok_or_else(|| invalid("reservation template RAM overflow"))?,
+            )?;
+        Reservation::with_resource_limits(query).map_err(|message| invalid(&message))?
+    } else {
+        Reservation::new().map_err(|message| invalid(&message))?
+    };
     let mut desired = BTreeMap::new();
     let mut avoid = Vec::new();
 
@@ -1069,20 +1405,19 @@ pub(super) fn run_domain(
             avoid.push((run.physical_offset.unwrap(), run.length));
         }
         desired.insert(index, runs);
-        if avoid.len() > MAX_ADMITTED_RANGES {
+        if avoid.len() > limits.desired {
             break;
         }
     }
     counters.desired_runs = avoid.len();
-    if avoid.len() > MAX_ADMITTED_RANGES {
+    if avoid.len() > limits.desired {
         return Err(refuse(
             tree,
             &counters,
             format!(
-                "global source placement range budget exceeded: {} desired NTFS runs > {MAX_ADMITTED_RANGES} \
-                 (placement planner limit {MAX_PLACEMENT_RANGES}, downstream source-backed route and \
-                 supply-range limit {DOWNSTREAM_ROUTE_LIMIT})",
-                avoid.len()
+                "global source placement range budget exceeded: {} desired NTFS runs > {}",
+                avoid.len(),
+                limits.desired
             ),
         ));
     }
@@ -1090,7 +1425,7 @@ pub(super) fn run_domain(
     if avoid.windows(2).any(|w| w[0].0 + w[0].1 > w[1].0) {
         return Err(invalid("source desired physical ownership overlaps"));
     }
-    let mut evidence = Evidence::default();
+    let mut evidence = Evidence::new(sink, limits.evidence);
     let mut move_bytes = 0u64;
     let mut parked = Vec::new();
     if !tree.sparse_targets.is_empty() {
@@ -1106,7 +1441,11 @@ pub(super) fn run_domain(
             return Err(refuse(tree, &counters, message));
         }
         counters.placement_artifact_bytes = evidence.saved_bytes;
-        parked.push(mapping);
+        if limits.resource {
+            drop(mapping);
+        } else {
+            parked.push(mapping);
+        }
     }
     if counters.named_streams != 0 {
         let mapping = serde_json::json!({
@@ -1120,24 +1459,62 @@ pub(super) fn run_domain(
             return Err(refuse(tree, &counters, message));
         }
         counters.placement_artifact_bytes = evidence.saved_bytes;
-        parked.push(mapping);
+        if limits.resource {
+            drop(mapping);
+        } else {
+            parked.push(mapping);
+        }
     }
     tree.placement_started = true;
-    progress(tree, "track-zero-vdl", 0, &evidence.moves, None, &counters);
+    progress(tree, "track-zero-vdl", 0, &evidence, None, &counters);
     let indexes: Vec<_> = tree.stream_slots.keys().copied().collect();
     // Bind existing allocated ownership of every file before any native move.
     // Tracking only reads a placeholder's own live retrieval map, a move never
     // changes another placeholder's mapping, and every move still verifies its
     // file's complete tracked mapping first. No user bytes are initialized.
+    let _hole_memory = if limits.resource {
+        Some(
+            payer
+                .as_deref()
+                .ok_or_else(|| invalid("hole payer absent"))?
+                .reserve(
+                    (limits.tracked as u64)
+                        .checked_mul(4 * mem::size_of::<(usize, u64, u64)>() as u64)
+                        .and_then(|n| n.checked_add(65536))
+                        .ok_or_else(|| invalid("hole index RAM overflow"))?,
+                )?,
+        )
+    } else {
+        None
+    };
     let mut holes = Vec::new();
     for index in &indexes {
         let file = tree.file_by_slot_mut(*index)?;
-        let file_holes = file.track_current_prefix()?;
-        counters.initial_tracked_extents += file.tracked_mappings().len();
-        counters.deferred_holes += file_holes.len();
-        for (vcn, clusters) in file_holes {
-            let start = vcn * 4096;
-            holes.push((*index, start, start + u64::from(clusters) * 4096));
+        if limits.resource {
+            let file_holes = file.track_current_prefix_resource()?;
+            counters.initial_tracked_extents = counters
+                .initial_tracked_extents
+                .checked_add(file.tracked_mappings().len())
+                .ok_or_else(|| invalid("tracked extent count overflow"))?;
+            counters.deferred_holes = counters
+                .deferred_holes
+                .checked_add(file_holes.len())
+                .ok_or_else(|| invalid("deferred hole count overflow"))?;
+            for (vcn, clusters) in file_holes.iter().copied() {
+                if holes.len() == limits.tracked {
+                    return Err(invalid("resource deferred hole index exhausted"));
+                }
+                let start = vcn * 4096;
+                holes.push((*index, start, start + u64::from(clusters) * 4096));
+            }
+        } else {
+            let file_holes = file.track_current_prefix()?;
+            counters.initial_tracked_extents += file.tracked_mappings().len();
+            counters.deferred_holes += file_holes.len();
+            for (vcn, clusters) in file_holes {
+                let start = vcn * 4096;
+                holes.push((*index, start, start + u64::from(clusters) * 4096));
+            }
         }
     }
     let wanted = Wanted {
@@ -1145,6 +1522,8 @@ pub(super) fn run_domain(
         avoid: &avoid,
         partition,
         max_moves,
+        limits,
+        payer: payer.as_deref(),
     };
     // Preserve the frozen legacy/alpha order. Resource construction can
     // evacuate the already tracked initial blockers before allocating holes,
@@ -1162,6 +1541,31 @@ pub(super) fn run_domain(
             &mut move_bytes,
         )?;
     }
+    let owned_memory = if limits.resource {
+        let tracked = tree.files.values().try_fold(0usize, |n, file| {
+            n.checked_add(file.tracked_mappings().len())
+                .ok_or_else(|| invalid("tracked count overflow"))
+        })?;
+        if tracked > limits.tracked {
+            return Err(invalid("resource tracked extent index exhausted"));
+        }
+        let count = tracked
+            .checked_add(avoid.len())
+            .ok_or_else(|| invalid("ownership index count overflow"))?;
+        Some(
+            payer
+                .as_deref()
+                .ok_or_else(|| invalid("ownership payer absent"))?
+                .reserve(
+                    (count as u64)
+                        .checked_mul(8192)
+                        .and_then(|n| n.checked_add(1024 * 1024))
+                        .ok_or_else(|| invalid("ownership index RAM overflow"))?,
+                )?,
+        )
+    } else {
+        None
+    };
     let mut owned = Vec::new();
     let mut eligible = Vec::new();
     for index in &indexes {
@@ -1196,63 +1600,56 @@ pub(super) fn run_domain(
         .iter()
         .filter(|e| intersects_desired(&avoid, e.physical_offset, e.length))
         .count();
-    if owned.len() > MAX_TRACKED_EXTENTS {
+    if owned.len() > limits.tracked {
         return Err(refuse(
             tree,
             &counters,
             format!(
-                "global tracked shadow mapping budget exceeded: {} tracked mappings > {MAX_TRACKED_EXTENTS}",
-                owned.len()
+                "global tracked shadow mapping budget exceeded: {} tracked mappings > {}",
+                owned.len(),
+                limits.tracked
             ),
         ));
     }
-    if counters.owned_intersecting_desired > MAX_OWNED_RANGES {
+    if counters.owned_intersecting_desired > limits.owned {
         return Err(refuse(
             tree,
             &counters,
             format!(
-                "global tracked ownership range budget exceeded: {} tracked mappings intersect desired runs > {MAX_OWNED_RANGES}",
-                counters.owned_intersecting_desired
+                "global tracked ownership range budget exceeded: {} tracked mappings intersect desired runs > {}",
+                counters.owned_intersecting_desired, limits.owned
             ),
         ));
     }
-    let (legacy, metadata) = views(tree)?;
+    let (legacy, metadata) = views(tree, limits)?;
     counters.phase_bitmap_snapshots += 1;
     progress(
         tree,
         "plan-evacuation",
         move_bytes,
-        &evidence.moves,
+        &evidence,
         None,
         &counters,
     );
-    let Some(remaining) = max_moves
-        .checked_sub(evidence.moves.len())
-        .filter(|v| *v > 0)
-    else {
+    let Some(remaining) = max_moves.checked_sub(evidence.len()).filter(|v| *v > 0) else {
         return Err(refuse(
             tree,
             &counters,
             format!(
                 "no evacuation move budget: {} of {max_moves} submissions used",
-                evidence.moves.len()
+                evidence.len()
             ),
         ));
     };
-    let evacuation = shadow_evacuation::plan_ranges(
-        &legacy.allocation_map(partition)?,
-        &metadata.allocation_map(partition)?,
+    let evacuation = resource::evacuation(
+        &legacy,
+        &metadata,
         &eligible,
         &owned,
         partition,
         remaining,
-        shadow_evacuation::RangeLimits {
-            max_source_extents: MAX_PLACEMENT_RANGES,
-            max_shadow_extents: MAX_TRACKED_EXTENTS,
-            max_blocked: MAX_OWNED_RANGES + MAX_PLACEMENT_RANGES,
-            max_moves: MAX_MOVES,
-            margin: MARGIN,
-        },
+        limits,
+        payer.as_deref(),
     )?;
     let required: usize = evacuation
         .moves
@@ -1285,14 +1682,38 @@ pub(super) fn run_domain(
     }
     // The plan record is complete before any evacuation move, so its saved
     // size is charged before native IO in this phase.
+    let plan_json_memory = if limits.resource {
+        let rows = owned
+            .len()
+            .checked_add(evacuation.moves.len())
+            .ok_or_else(|| invalid("evacuation JSON count overflow"))?;
+        Some(
+            payer
+                .as_deref()
+                .ok_or_else(|| invalid("evacuation JSON payer absent"))?
+                .reserve(
+                    (rows as u64)
+                        .checked_mul(8192)
+                        .and_then(|n| n.checked_add(65536))
+                        .ok_or_else(|| invalid("evacuation JSON RAM overflow"))?,
+                )?,
+        )
+    } else {
+        None
+    };
     let plan_record = serde_json::json!({"strategy":"selective-user-blockers","initial_owned_ranges":owned,
-        "evacuation_plan":evacuation});
+        "evacuation_plan":&*evacuation});
     let charged = evidence.charge(&plan_record);
     counters.placement_artifact_bytes = evidence.saved_bytes;
     if let Err(message) = charged {
         return Err(refuse(tree, &counters, message));
     }
-    parked.push(plan_record);
+    if limits.resource {
+        drop(plan_record);
+    } else {
+        parked.push(plan_record);
+    }
+    drop(plan_json_memory);
     for movement in &evacuation.moves {
         let mut offset = 0;
         while offset < movement.length {
@@ -1301,7 +1722,7 @@ pub(super) fn run_domain(
                 tree,
                 "evacuate-blocker",
                 move_bytes,
-                &evidence.moves,
+                &evidence,
                 Some(serde_json::json!({
                 "object_index":movement.file_index,"logical_offset":movement.logical_offset+offset,
                 "destination":movement.destination_offset+offset,"length":length,
@@ -1314,15 +1735,18 @@ pub(super) fn run_domain(
             charge_move(&mut move_bytes, length, max_move_bytes)?;
             tree.placement_progress["charged_move_bytes"] = move_bytes.into();
             tree.placement_progress["pending"]["budget_charged"] = true.into();
-            let attempt = tree.reposition_slot_with_evidence(
+            let attempt = resource::move_slot(
+                tree,
                 movement.file_index as usize,
                 (movement.logical_offset + offset) / 4096,
                 (movement.destination_offset + offset) / 4096,
                 (length / 4096) as u32,
+                true,
+                limits.resource,
                 |destination| {
                     reserve_move(
                         &mut counters,
-                        &evidence,
+                        &mut evidence,
                         &reservation,
                         current_extents,
                         length,
@@ -1336,9 +1760,11 @@ pub(super) fn run_domain(
             if proof["native_error"] != serde_json::Value::Null
                 || proof["all_placements_match"] != true
             {
-                tree.placement_progress["failed_native_move"] = serde_json::json!({
-                    "object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof
-                });
+                tree.placement_progress["failed_native_move"] = evidence
+                    .failed_move(serde_json::json!({
+                        "object_index":movement.file_index,"phase":"evacuate-blocker","proof":proof
+                    }))
+                    .map_err(|e| invalid(&e))?;
                 return Err(invalid(
                     "selective unwritten evacuation refused; preserve without retry",
                 ));
@@ -1356,12 +1782,20 @@ pub(super) fn run_domain(
                 tree,
                 "evacuate-blocker",
                 move_bytes,
-                &evidence.moves,
+                &evidence,
                 None,
                 &counters,
             );
             offset += length;
         }
+    }
+    if limits.resource {
+        drop(evacuation);
+        drop(owned);
+        drop(eligible);
+        drop(owned_memory);
+        drop(legacy);
+        drop(metadata);
     }
     // One snapshot after evacuation plans every desired run. Final moves land
     // only in their own disjoint desired runs, so no earlier move in this
@@ -1370,7 +1804,7 @@ pub(super) fn run_domain(
     // refuses before submission and this run and every later one are planned
     // from one fresh snapshot, a bounded number of times. Pieces already
     // placed are allocated in it and so are not planned again.
-    let (mut legacy, mut metadata) = views(tree)?;
+    let (mut legacy, mut metadata) = views(tree, limits)?;
     counters.phase_bitmap_snapshots += 1;
     if counters.evacuation_submissions > 0 {
         counters.post_evacuation_barrier = Some(serde_json::json!({
@@ -1384,13 +1818,20 @@ pub(super) fn run_domain(
             tree,
             "post-evacuation-barrier",
             move_bytes,
-            &evidence.moves,
+            &evidence,
             None,
             &counters,
         );
-        let observed = (|| -> io::Result<(Observation, Observation)> {
+        let observed = (|| -> io::Result<(resource::Bitmap, resource::Bitmap)> {
             let trace = counters.post_evacuation_barrier.as_mut().unwrap();
-            trace["before"] = barrier_snapshot(&legacy, &metadata, &desired, partition)?;
+            trace["before"] = barrier_snapshot(
+                &legacy,
+                &metadata,
+                &desired,
+                partition,
+                limits,
+                payer.as_deref(),
+            )?;
             trace["status"] = "checking-source-exclusion".into();
             tree.require_source_excluded()?;
             trace["source_exclusion_checked_before"] = true.into();
@@ -1409,9 +1850,16 @@ pub(super) fn run_domain(
             tree.require_source_excluded()?;
             trace["source_exclusion_checked_after"] = true.into();
             trace["status"] = "observing-after".into();
-            let (after_legacy, after_metadata) = views(tree)?;
+            let (after_legacy, after_metadata) = views(tree, limits)?;
             counters.phase_bitmap_snapshots += 1;
-            trace["after"] = barrier_snapshot(&after_legacy, &after_metadata, &desired, partition)?;
+            trace["after"] = barrier_snapshot(
+                &after_legacy,
+                &after_metadata,
+                &desired,
+                partition,
+                limits,
+                payer.as_deref(),
+            )?;
             trace["status"] = "complete".into();
             // The existing evidence budget reserves 64 KiB for framing and
             // scalars. This trace cannot consume unbounded move-proof space.
@@ -1434,7 +1882,7 @@ pub(super) fn run_domain(
                     tree,
                     "post-evacuation-barrier",
                     move_bytes,
-                    &evidence.moves,
+                    &evidence,
                     None,
                     &counters,
                 );
@@ -1451,7 +1899,7 @@ pub(super) fn run_domain(
             tree,
             "post-evacuation-barrier",
             move_bytes,
-            &evidence.moves,
+            &evidence,
             None,
             &counters,
         );
@@ -1473,24 +1921,22 @@ pub(super) fn run_domain(
         )?;
         // Direct deferred allocations are now occupied and must not be planned
         // again. Never infer these bitmap bits from submitted move receipts.
-        (legacy, metadata) = views(tree)?;
+        (legacy, metadata) = views(tree, limits)?;
         counters.phase_bitmap_snapshots += 1;
     }
     // Only actual post-flush/post-deferred views can make a destination eligible.
-    let mut planner = legacy.retention_planner(&metadata, partition)?;
+    let mut planner = resource::planner(&legacy, &metadata, partition, limits, payer.as_deref())?;
     for &index in &indexes {
         for run in &desired[&index] {
             loop {
-                let Some(remaining) = max_moves
-                    .checked_sub(evidence.moves.len())
-                    .filter(|v| *v > 0)
+                let Some(remaining) = max_moves.checked_sub(evidence.len()).filter(|v| *v > 0)
                 else {
                     return Err(refuse(
                         tree,
                         &counters,
                         format!(
                             "tree placement move budget exhausted: {} of {max_moves} submissions used",
-                            evidence.moves.len()
+                            evidence.len()
                         ),
                     ));
                 };
@@ -1500,7 +1946,7 @@ pub(super) fn run_domain(
                         physical_offset: run.physical_offset.unwrap(),
                         length: run.length,
                     },
-                    remaining,
+                    remaining.min(limits.subruns),
                 )?;
                 let required: usize = plan
                     .subruns
@@ -1517,7 +1963,7 @@ pub(super) fn run_domain(
                     ));
                 }
                 let mut drifted = None;
-                'pieces: for subrun in plan.subruns {
+                'pieces: for subrun in plan.subruns.iter().copied() {
                     let mut offset = 0;
                     while offset < subrun.length {
                         let length = (subrun.length - offset).min(MOVE_BYTES);
@@ -1527,7 +1973,7 @@ pub(super) fn run_domain(
                             tree,
                             "original-coordinate",
                             move_bytes,
-                            &evidence.moves,
+                            &evidence,
                             Some(serde_json::json!({
                             "object_index":index,"logical_offset":logical,"destination":physical,"length":length,
                             "placement_result_recorded":false,"budget_charged":false})),
@@ -1537,15 +1983,18 @@ pub(super) fn run_domain(
                         charge_move(&mut move_bytes, length, max_move_bytes)?;
                         tree.placement_progress["charged_move_bytes"] = move_bytes.into();
                         tree.placement_progress["pending"]["budget_charged"] = true.into();
-                        let attempt = tree.reposition_slot_with_evidence(
+                        let attempt = resource::move_slot(
+                            tree,
                             index,
                             logical / 4096,
                             physical / 4096,
                             (length / 4096) as u32,
+                            true,
+                            limits.resource,
                             |destination| {
                                 reserve_move(
                                     &mut counters,
-                                    &evidence,
+                                    &mut evidence,
                                     &reservation,
                                     current_extents,
                                     length,
@@ -1567,7 +2016,7 @@ pub(super) fn run_domain(
                             tree,
                             "original-coordinate",
                             move_bytes,
-                            &evidence.moves,
+                            &evidence,
                             None,
                             &counters,
                         );
@@ -1580,9 +2029,11 @@ pub(super) fn run_domain(
                                 proof["mapping_matches"],
                                 proof["all_placements_match"]
                             );
-                            tree.placement_progress["failed_native_move"] = serde_json::json!({
-                                "object_index":index,"phase":"original-coordinate","proof":proof
-                            });
+                            tree.placement_progress["failed_native_move"] = evidence
+                                .failed_move(serde_json::json!({
+                                    "object_index":index,"phase":"original-coordinate","proof":proof
+                                }))
+                                .map_err(|e| invalid(&e))?;
                             return Err(invalid(&message));
                         }
                         counters.final_submissions += 1;
@@ -1612,8 +2063,9 @@ pub(super) fn run_domain(
                 }
                 counters.final_drift_replans += 1;
                 drop(planner);
-                (legacy, metadata) = views(tree)?;
-                planner = legacy.retention_planner(&metadata, partition)?;
+                (legacy, metadata) = views(tree, limits)?;
+                planner =
+                    resource::planner(&legacy, &metadata, partition, limits, payer.as_deref())?;
                 counters.phase_bitmap_snapshots += 1;
             }
         }
@@ -1672,9 +2124,14 @@ pub(super) fn run_domain(
                     .entry(index)
                     .or_default()
                     .push((logical, physical, length));
-                retained.push(serde_json::json!({"object_index":index,"logical_offset":logical,
+                let row = serde_json::json!({"object_index":index,"logical_offset":logical,
                     "source_physical_offset":physical,"target_physical_offset":physical,"length":length,
-                    "source_contents_verified":false}));
+                    "source_contents_verified":false});
+                if limits.resource {
+                    evidence.charge(&row).map_err(|e| invalid(&e))?;
+                } else {
+                    retained.push(row);
+                }
                 retained_bytes = retained_bytes
                     .checked_add(length)
                     .ok_or_else(|| invalid("final original-coordinate byte overflow"))?;
@@ -1700,16 +2157,42 @@ pub(super) fn run_domain(
             return Err(invalid("retained streams collide after slot translation"));
         }
     }
+    if limits.resource {
+        let actual = tree
+            .memory
+            .as_ref()
+            .ok_or_else(|| invalid("resource placement payer absent"))?;
+        let retained = memory::coordinate_map_bytes(&retained_streams)?;
+        // All local planner indexes/JSON are gone before their guard is
+        // narrowed to the state which remains inside the live PrivateTree.
+        drop(planner);
+        drop(legacy);
+        drop(metadata);
+        drop(desired);
+        drop(avoid);
+        drop(holes);
+        drop(indexes);
+        let receipt = evidence
+            .sink
+            .as_mut()
+            .ok_or_else(|| invalid("actual paged evidence sink absent"))?
+            .finish()?;
+        let result = serde_json::json!({"schema_version":3,"kind":"private-unwritten-tree-placement-pages",
+            "occupancy_evidence_scope":"destination-window-v1","per_move_retrieval_scope":"complete-file-mapping",
+            "phase_bitmap_scope":"full-volume","paged_evidence":receipt,"move_count":evidence.len(),
+            "original_coordinate_bytes":retained_bytes,"move_evidence_bytes":evidence.compact_bytes,
+            "placement_artifact_bytes":evidence.saved_bytes,"max_placement_artifact_bytes":limits.evidence,
+            "counters":counters,"move_bytes_submitted":move_bytes,"max_move_bytes":max_move_bytes,
+            "max_move_submissions":max_moves,"payload_contents_verified":false,"source_payload_writes":0,
+            "conversion_qualified":false});
+        actual.retain_from(&mut index_memory, retained)?;
+        tree.original_coordinates = retained_streams;
+        progress(tree, "complete", move_bytes, &evidence, None, &counters);
+        return Ok(result);
+    }
     tree.original_coordinates = retained_streams;
     tree.placement_complete = true;
-    progress(
-        tree,
-        "complete",
-        move_bytes,
-        &evidence.moves,
-        None,
-        &counters,
-    );
+    progress(tree, "complete", move_bytes, &evidence, None, &counters);
     tree.placement_progress["placement_complete"] = true.into();
     let mut result = serde_json::json!({"schema_version":2,"kind":"private-unwritten-tree-placement",
         "occupancy_evidence_scope":"destination-window-v1","per_move_retrieval_scope":"complete-file-mapping",

@@ -269,11 +269,8 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             new_selected_sha256: ticket.new_selected_sha256,
         };
         let (source, _) = prepared.context.source_and_inspection();
-        let mut target = source.begin_paged_fresh_apply(
-            index.policy(),
-            prepared.inner._journal.markerless_recovery_file()?,
-            &pins,
-            events,
+        let mut target = prepared.inner._journal.begin_sealed_fresh_apply(
+            source, index.policy(), &pins, events,
         )?;
         ensure!(
             target.byte_len() == ticket.image_length,
@@ -436,11 +433,8 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
             new_selected_sha256: ticket.new_selected_sha256,
         };
         let (source, _) = prepared.context.source_and_inspection();
-        source.seal_paged_handoff_for_observation(
-            &index.policy(),
-            prepared.inner._journal.markerless_recovery_file()?,
-            &pins,
-            events,
+        prepared.inner._journal.seal_sealed_handoff_for_observation(
+            source, &index.policy(), &pins, events,
         )?;
         ensure!(
             source.binding() == facts.source && source.state(events)?.disk_attributes == 3,

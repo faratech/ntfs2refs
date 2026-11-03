@@ -2,7 +2,9 @@
 //! raw handle is exposed outside the native shadow module. Failed operations
 //! leave the private file for diagnosis; they never authorize target writes.
 use super::{ctl, invalid, wide};
+mod resource;
 use crate::{bitmap_paging, bitmap_window, bitmap_window_native, bitmap_window_transport};
+pub(super) use resource::ResourceTrackedHoles;
 use serde::Serialize;
 use std::{
     fs::File,
@@ -39,6 +41,9 @@ struct PreparedMapping {
 impl PreparedMapping {
     fn parse(canonical: &[u8]) -> io::Result<Self> {
         let runs = crate::stream_layout::parse_complete_retrieval(canonical)?;
+        Self::from_runs(runs)
+    }
+    fn from_runs(runs: Vec<crate::stream_layout::Run>) -> io::Result<Self> {
         // The complete parser establishes increasing contiguous VCNs. Retain
         // the raw matcher's checked-end error before relying on those ends in
         // partition_point, including for runs outside a requested interval.
@@ -160,6 +165,41 @@ pub(super) struct Placement {
     pub mapping_after: Vec<u8>,
     pub mapping_page_proof: crate::retrieval_paging::Proof,
     pub destination_bitmap: DestinationWindows,
+    #[serde(skip)]
+    _resource_memory: Option<Box<dyn super::report_memory::ReportMemoryLease>>,
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+pub(super) struct ResourceMoveValue {
+    value: serde_json::Value,
+    #[serde(skip)]
+    _memory: Box<dyn super::report_memory::ReportMemoryLease>,
+}
+impl std::ops::Deref for ResourceMoveValue {
+    type Target = serde_json::Value;
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
+}
+impl Placement {
+    pub(super) fn into_resource_value(mut self) -> io::Result<ResourceMoveValue> {
+        if self._resource_memory.is_none() {
+            return Err(invalid("actual prepaid resource proof owner absent"));
+        }
+        // This same guard was acquired before FSCTL_MOVE_FILE and covers
+        // native capture plus both JSON copies and serialization workspace.
+        let value = serde_json::to_value(&self).map_err(io::Error::other)?;
+        let memory = self
+            ._resource_memory
+            .take()
+            .expect("verified prepaid resource proof owner");
+        drop(self);
+        Ok(ResourceMoveValue {
+            value,
+            _memory: memory,
+        })
+    }
 }
 
 pub(super) struct PrivatePlaceholder {
@@ -178,9 +218,38 @@ pub(super) struct PrivatePlaceholder {
     initial_mapping_tracked: bool,
     retrieval_extents: usize,
     retire_identity: Option<Vec<u8>>,
+    resource: Option<resource::ResourcePlacement>,
 }
 
 impl PrivatePlaceholder {
+    pub(super) fn enable_resource_placement(
+        &mut self,
+        admission: crate::tree_resources::SourceResourceAdmission,
+        tracked: usize,
+        moves: usize,
+        move_bytes: u64,
+        payer: std::sync::Arc<dyn super::report_memory::ReportMemoryAccountant>,
+    ) -> io::Result<()> {
+        if self.resource.is_some()
+            || self.poisoned
+            || self.valid_prefix != 0
+            || self.valid_data_submitted
+            || self.initial_mapping_tracked
+            || self.move_submissions != 0
+            || !self.placed.is_empty()
+        {
+            return Err(invalid(
+                "fresh zero-VDL placeholder required for resource placement",
+            ));
+        }
+        self.resource = Some(resource::ResourcePlacement::new(
+            admission, tracked, moves, move_bytes, payer,
+        )?);
+        Ok(())
+    }
+    pub(super) fn resource_placement_enabled(&self) -> bool {
+        self.resource.is_some()
+    }
     pub(super) fn retained_memory_bytes(&self) -> io::Result<u64> {
         (self.path.capacity() as u64)
             .checked_add(
@@ -353,6 +422,7 @@ impl PrivatePlaceholder {
             initial_mapping_tracked: false,
             retrieval_extents: 0,
             retire_identity,
+            resource: None,
         })
     }
     pub(super) fn allocate_carrier(
@@ -575,12 +645,25 @@ impl PrivatePlaceholder {
         reposition: bool,
         mut guard: impl FnMut(&DestinationWindows) -> io::Result<()>,
     ) -> io::Result<Placement> {
+        let resource_memory = self
+            .resource
+            .as_ref()
+            .map(|r| r.move_workspace(clusters, self.placed.len()))
+            .transpose()?;
+        let max_submissions = self
+            .resource
+            .as_ref()
+            .map_or(MAX_FILE_SUBMISSIONS, |r| r.max_moves);
+        let max_placements = self
+            .resource
+            .as_ref()
+            .map_or(MAX_FILE_PLACEMENTS, |r| r.max_tracked_slots);
         let logical_end = starting_vcn.checked_add(u64::from(clusters));
         let physical_end = destination_lcn.checked_add(u64::from(clusters));
         if self.poisoned
             || self.valid_data_submitted
             || self.valid_prefix != 0
-            || self.move_submissions >= MAX_FILE_SUBMISSIONS
+            || self.move_submissions >= max_submissions
             || clusters == 0
             || !self.partition.is_multiple_of(4096)
             || destination_lcn < 256
@@ -595,7 +678,7 @@ impl PrivatePlaceholder {
                 "private unwritten placement state, overlap or bounds differ",
             ));
         }
-        if let Err(error) = self.verify_placements() {
+        if let Err(error) = self.verify_placements_prepaid(self.resource.is_some()) {
             self.poisoned = true;
             return Err(error);
         }
@@ -641,12 +724,21 @@ impl PrivatePlaceholder {
         next.push((starting_vcn, destination_lcn, clusters));
         next.sort_by_key(|r| r.0);
         coalesce(&mut next);
-        if next.len() > MAX_FILE_PLACEMENTS {
+        if next.len() > max_placements {
             return Err(invalid(&format!(
-                "private reposition split budget exceeded: {} tracked entries > {MAX_FILE_PLACEMENTS}",
-                next.len()
+                "private reposition split budget exceeded: {} tracked entries > {}",
+                next.len(),
+                max_placements
             )));
         }
+        // This exact future map is already known before the native move.
+        // Retain its new owner now; never discover a missing RAM allowance
+        // after changing the independent shadow's physical mappings.
+        let placed_memory = self
+            .resource
+            .as_ref()
+            .map(|r| r.reserve_placed(next.len(), next.capacity()))
+            .transpose()?;
         let request = bitmap_window::Request {
             volume_clusters: self.partition / 4096,
             starting_lcn: destination_lcn,
@@ -691,9 +783,17 @@ impl PrivatePlaceholder {
         self.poisoned = true; // Any missing post-I/O evidence must fail closed.
         self.move_submissions += 1;
         let moved = ctl(volume, 0x90074, &input, 0);
-        let capture = crate::stream_native::retrieval_capture(&self.file)?;
+        let capture = if let Some(resource) = &self.resource {
+            resource.capture(&self.file)?
+        } else {
+            crate::stream_native::retrieval_capture(&self.file)?
+        };
         self.retrieval_extents = capture.runs.len();
-        let mapping = PreparedMapping::parse(&capture.canonical)?;
+        let mapping = if self.resource.is_some() {
+            PreparedMapping::from_runs(capture.runs)?
+        } else {
+            PreparedMapping::parse(&capture.canonical)?
+        };
         let mapped = mapping.matches(starting_vcn, destination_lcn, clusters)?;
         let native_error = moved.err().map(|e| e.raw_os_error().unwrap_or(31));
         let mut all_placements_match = true;
@@ -702,6 +802,11 @@ impl PrivatePlaceholder {
         }
         if native_error.is_none() && mapped && all_placements_match {
             self.placed = next;
+            if let Some(resource) = self.resource.as_mut() {
+                resource.replace_placed_lease(
+                    placed_memory.ok_or_else(|| invalid("actual tracked map memory absent"))?,
+                );
+            }
             self.poisoned = false;
         }
         Ok(Placement {
@@ -717,6 +822,7 @@ impl PrivatePlaceholder {
             mapping_after: capture.canonical,
             mapping_page_proof: capture.proof,
             destination_bitmap,
+            _resource_memory: resource_memory,
         })
     }
 
@@ -733,6 +839,11 @@ impl PrivatePlaceholder {
             return Err(invalid("private validity state or length differs"));
         }
         if require_placed {
+            let _coverage = self
+                .resource
+                .as_ref()
+                .map(|r| r.coverage_workspace(self.placed.capacity()))
+                .transpose()?;
             let mut runs = self.placed.clone();
             runs.sort_by_key(|r| r.0);
             let mut cursor = 0;
@@ -775,11 +886,30 @@ impl PrivatePlaceholder {
     }
 
     fn verify_placements(&self) -> io::Result<()> {
+        self.verify_placements_prepaid(false)
+    }
+    fn verify_placements_prepaid(&self, prepaid: bool) -> io::Result<()> {
         if self.placed.is_empty() {
             return Ok(());
         }
-        let capture = crate::stream_native::retrieval_capture(&self.file)?;
-        let mapping = PreparedMapping::parse(&capture.canonical)?;
+        let _memory = if prepaid {
+            None
+        } else {
+            self.resource
+                .as_ref()
+                .map(|r| r.tracking_workspace(self.bytes))
+                .transpose()?
+        };
+        let capture = if let Some(resource) = &self.resource {
+            resource.capture(&self.file)?
+        } else {
+            crate::stream_native::retrieval_capture(&self.file)?
+        };
+        let mapping = if self.resource.is_some() {
+            PreparedMapping::from_runs(capture.runs)?
+        } else {
+            PreparedMapping::parse(&capture.canonical)?
+        };
         for &(vcn, lcn, clusters) in &self.placed {
             if !mapping.matches(vcn, lcn, clusters)? {
                 return Err(invalid("private mapping changed after valid-data flush"));
@@ -799,6 +929,34 @@ impl PrivatePlaceholder {
     /// Deferred holes are returned for explicit allocation, never invented as
     /// physical ownership or accepted as source references.
     pub fn track_current_prefix(&mut self) -> io::Result<Vec<(u64, u32)>> {
+        if self.resource.is_some() {
+            return Err(invalid(
+                "resource tracking requires its lease-owning holes owner",
+            ));
+        }
+        self.track_current_prefix_inner()
+    }
+    pub(super) fn track_current_prefix_resource(&mut self) -> io::Result<ResourceTrackedHoles> {
+        let _memory = self
+            .resource
+            .as_ref()
+            .ok_or_else(|| invalid("resource tracking state absent"))?
+            .tracking_workspace(self.bytes)?;
+        let holes = self.track_current_prefix_inner()?;
+        match self
+            .resource
+            .as_ref()
+            .ok_or_else(|| invalid("resource tracking state absent"))?
+            .hold_holes(holes)
+        {
+            Ok(holes) => Ok(holes),
+            Err(error) => {
+                self.poisoned = true;
+                Err(error)
+            }
+        }
+    }
+    fn track_current_prefix_inner(&mut self) -> io::Result<Vec<(u64, u32)>> {
         if self.poisoned
             || self.valid_prefix != 0
             || self.valid_data_submitted
@@ -814,7 +972,15 @@ impl PrivatePlaceholder {
             return Ok(vec![]);
         }
         self.poisoned = true;
-        let capture = crate::stream_native::retrieval_capture(&self.file)?;
+        let max_placements = self
+            .resource
+            .as_ref()
+            .map_or(MAX_FILE_PLACEMENTS, |r| r.max_tracked_slots);
+        let capture = if let Some(resource) = &self.resource {
+            resource.capture(&self.file)?
+        } else {
+            crate::stream_native::retrieval_capture(&self.file)?
+        };
         self.retrieval_extents = capture.runs.len();
         let mut tracked: Vec<(u64, u64, u32)> = Vec::new();
         let mut holes = Vec::new();
@@ -853,10 +1019,11 @@ impl PrivatePlaceholder {
                 } else {
                     holes.push((start, count));
                 }
-                if tracked.len() + holes.len() > MAX_FILE_PLACEMENTS {
+                if tracked.len() + holes.len() > max_placements {
                     return Err(invalid(&format!(
-                        "current mapping tracking budget exceeded: {} tracked entries and holes > {MAX_FILE_PLACEMENTS}",
-                        tracked.len() + holes.len()
+                        "current mapping tracking budget exceeded: {} tracked entries and holes > {}",
+                        tracked.len() + holes.len(),
+                        max_placements
                     )));
                 }
                 start += u64::from(count);
@@ -866,7 +1033,17 @@ impl PrivatePlaceholder {
         if cursor != clusters {
             return Err(invalid("current private mapping prefix incomplete"));
         }
+        let placed_memory = self
+            .resource
+            .as_ref()
+            .map(|r| r.reserve_placed(tracked.len(), tracked.capacity()))
+            .transpose()?;
         self.placed = tracked;
+        if let Some(resource) = self.resource.as_mut() {
+            resource.replace_placed_lease(
+                placed_memory.ok_or_else(|| invalid("resource tracked memory absent"))?,
+            );
+        }
         self.poisoned = false;
         Ok(holes)
     }

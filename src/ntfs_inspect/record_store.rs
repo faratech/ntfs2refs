@@ -61,6 +61,43 @@ impl SortedRecordWriter {
         })
     }
 
+    /// Prepay the actual data and ordinal-directory files before native IO
+    /// creates the next proof. This is a quota operation, not an advisory size.
+    pub fn reserve_next_record(&mut self, maximum_json_bytes: u64) -> Result<()> {
+        ensure!(
+            !self.poisoned
+                && maximum_json_bytes > 0
+                && maximum_json_bytes <= self.maximum_record_bytes,
+            "next record exceeds its actual resource working window"
+        );
+        self.reserve_record_batch(maximum_json_bytes, 1)
+    }
+
+    /// Reserve complete multi-record output before an external operation.
+    /// Individual pushes retain the original per-record working-window check;
+    /// this only prepays a bounded logical record split across many rows.
+    pub fn reserve_record_batch(
+        &mut self,
+        maximum_json_bytes: u64,
+        maximum_records: u64,
+    ) -> Result<()> {
+        ensure!(
+            !self.poisoned && maximum_records > 0 && maximum_json_bytes >= maximum_records,
+            "invalid prepaid record batch"
+        );
+        let data = self
+            .bytes
+            .checked_add(maximum_json_bytes)
+            .context("prepaid record bytes overflow")?;
+        let directory = self
+            .records
+            .checked_add(maximum_records)
+            .and_then(|n| n.checked_mul(DIRECTORY_BYTES))
+            .context("prepaid record directory overflow")?;
+        self.data.reserve_logical_bytes(data)?;
+        self.directory.reserve_logical_bytes(directory)
+    }
+
     pub fn push(&mut self, key: [u8; 16], value: &impl Serialize) -> Result<()> {
         ensure!(!self.poisoned, "record writer is poisoned");
         // Mark intent before serialization: a partially encoded row can never
@@ -327,7 +364,9 @@ impl SortedRecordStore {
         Ok(None)
     }
     pub fn find<T: DeserializeOwned>(&self, key: [u8; 16]) -> Result<Option<T>> {
-        self.find_ordinal(key)?.map(|ordinal| self.get(ordinal)).transpose()
+        self.find_ordinal(key)?
+            .map(|ordinal| self.get(ordinal))
+            .transpose()
     }
     pub fn revalidate(&self) -> Result<()> {
         self.data.revalidate()?;

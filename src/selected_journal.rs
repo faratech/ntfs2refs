@@ -2854,7 +2854,9 @@ pub fn lifecycle<J: ReadSeek>(
     classify(journal, ticket)
 }
 
-fn classify<J: Read + Seek>(journal: &mut J, ticket: &SelectedTicket) -> Result<SelectedLifecycle> {
+/// Internal marker classification only. Callers must independently bind and
+/// authenticate the actual held journal and ticket; this never grants replay.
+pub(crate) fn classify<J: Read + Seek>(journal: &mut J, ticket: &SelectedTicket) -> Result<SelectedLifecycle> {
     if ticket.marker_profile.is_some() {
         return classify_redundant(journal, ticket);
     }

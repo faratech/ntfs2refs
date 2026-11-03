@@ -320,9 +320,12 @@ impl CheckedMftDomain {
             &mut raw,
             geometry.volume_size,
         )?;
+        // Declare the optional assembly lease before the record so errors in
+        // later validation drop the assembled record before its lease.
+        let assembly_ram;
         let mut record = parse_record(raw.clone(), geometry)?;
         same_identity(&record, &file)?;
-        let assembly_ram = match source.assembly_for_record(0)? {
+        assembly_ram = match source.assembly_for_record(0)? {
             Some(assembly) => Some(actual_assembly(reader, source, &data, 0, &raw, &mut record, assembly)?),
             None => { ensure!(
                 !record.attributes.iter().any(|a| a.report.type_code == 0x20),
@@ -393,9 +396,11 @@ impl CheckedMftDomain {
             &mut raw,
             geometry,
         )?;
+        // The same ordering is required on all error paths after assembly.
+        let assembly_ram;
         let mut record = parse_record(raw.clone(), geometry)?;
         same_identity(&record, &file)?;
-        let assembly_ram = match source.assembly_for_record(number)? {
+        assembly_ram = match source.assembly_for_record(number)? {
             Some(assembly) => Some(actual_assembly(
                 reader,
                 source,

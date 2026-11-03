@@ -24,6 +24,7 @@ pub(crate) struct FilePreparationObserver {
     chain: [u8; 32],
     ram_bytes: u64,
     phase: Option<&'static str>,
+    started: std::time::Instant,
     finished: bool,
 }
 struct CountHash {
@@ -219,6 +220,7 @@ impl FilePreparationObserver {
             chain: [0; 32],
             ram_bytes: required_ram,
             phase: None,
+            started: std::time::Instant::now(),
             finished: false,
         })
     }
@@ -369,12 +371,17 @@ impl FilePreparationObserver {
         self.writer.get_ref().sync_all()?;
         let digest = n2r_win32::sha256_native::hash_range(self.writer.get_mut(), 0, self.position)?;
         self.finished = true;
+        let counters = n2r_win32::process_io::snapshot();
         Ok(
             serde_json::json!({"kind":"bounded-native-event-ledger","path":self.snapshot.final_path,
             "format":"N2REVLG1-length-hash-chain-v1","records":self.records,"used_bytes":self.position,
             "used_prefix_sha256":hex::encode(digest),"chain_sha256":hex::encode(self.chain),
             "reserved_file_bytes":self.capacity,"maximum_budget_bytes":self.maximum_capacity,"actual_allocation_bytes":self.snapshot.allocation_bytes,
             "reserved_ram_bytes":self.ram_bytes,"held_parent_handles":self.parents.len(),
+            "observer_elapsed_ms":self.started.elapsed().as_millis(),
+            "observer_close_process_io":counters.as_ref().ok(),
+            "process_io_error":counters.as_ref().err().map(ToString::to_string),
+            "process_io_is_advisory_not_physical_disk_traffic":true,
             "closed":true,"grants_source_or_replay_authority":false}),
         )
     }
@@ -397,7 +404,15 @@ impl PreparationObserver for FilePreparationObserver {
             println!("{label}");
             self.phase = Some(phase);
         }
-        self.append(&serde_json::json!({"kind":"native-events","phase":phase,"events":events}))?;
+        // Sample the existing current-process counters at this already-required
+        // boundary. This adds no payload scan and never contributes authority.
+        // An unavailable sample stays explicit rather than failing conversion.
+        let counters = n2r_win32::process_io::snapshot();
+        self.append(&serde_json::json!({"kind":"native-events","phase":phase,"events":events,
+            "observer_elapsed_ms":self.started.elapsed().as_millis(),
+            "process_io":counters.as_ref().ok(),
+            "process_io_error":counters.as_ref().err().map(ToString::to_string),
+            "process_io_is_advisory_not_physical_disk_traffic":true}))?;
         events.clear();
         Ok(())
     }

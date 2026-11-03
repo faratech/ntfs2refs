@@ -550,6 +550,43 @@ impl ReopenedResourceRecovery {
         maximum_index_bytes: u64,
         events: &mut Vec<NativeEvent>,
     ) -> Result<Self> {
+        Self::open_observed_impl(path, independently_supplied_sha256, maximum_publication_bytes,
+            expected_pair, expected_journal, group, scratch, index_path, maximum_index_bytes,
+            events, false)
+    }
+
+    /// Also admit a terminal HND/ABT that is already online. This observes
+    /// the real journal first and never grants replay on a mounted source.
+    pub(crate) fn open_observed_or_online_terminal(
+        path: &Path,
+        independently_supplied_sha256: [u8; 32],
+        maximum_publication_bytes: u64,
+        expected_pair: &GeneralSourceShadowBinding,
+        expected_journal: &GeneralJournalStorageBinding,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<Self> {
+        Self::open_observed_impl(path, independently_supplied_sha256, maximum_publication_bytes,
+            expected_pair, expected_journal, group, scratch, index_path, maximum_index_bytes,
+            events, true)
+    }
+
+    fn open_observed_impl(
+        path: &Path,
+        independently_supplied_sha256: [u8; 32],
+        maximum_publication_bytes: u64,
+        expected_pair: &GeneralSourceShadowBinding,
+        expected_journal: &GeneralJournalStorageBinding,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+        allow_online_terminal: bool,
+    ) -> Result<Self> {
         ensure!(
             group.group() == ArtifactGroup::RecoveryCopy
                 && maximum_publication_bytes > 0
@@ -704,12 +741,6 @@ impl ReopenedResourceRecovery {
                     == digest(&publication.ticket_sha256)?,
             "recovery locator ticket and publication differ"
         );
-        let target = ObservedTarget::reopen(publication.source.clone(), events)?;
-        let initial_state = target.state(events)?;
-        ensure!(
-            matches!(initial_state.disk_attributes, 1 | 3),
-            "reopened recovery source is not persistently offline"
-        );
         let identity = locator.journal_identity();
         let marker_identity = locator
             .ticket()
@@ -747,6 +778,30 @@ impl ReopenedResourceRecovery {
         )?;
         let initial_lifecycle = observation.lifecycle()?;
         observation.retire()?;
+        let online = if allow_online_terminal && matches!(initial_lifecycle,
+            SelectedLifecycle::Handoff | SelectedLifecycle::Aborted) {
+            let state = n2r_win32::observe_general_disk_state_readonly(publication.source.clone(), events)?;
+            if state.disk_attributes == 0 {
+                let mounted = n2r_win32::rediscover_general_volume_wait(publication.source.clone(), events)?;
+                n2r_win32::volume_label::validate_original_partition(&publication.source, &mounted)?;
+                let expected_fs = if initial_lifecycle == SelectedLifecycle::Handoff { "ReFS" } else { "NTFS" };
+                ensure!(n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == expected_fs,
+                    "online terminal source filesystem differs from durable lifecycle");
+                ensure!(n2r_win32::observe_general_disk_state_readonly(mounted.clone(), events)? == state,
+                    "online terminal source identity changed during rediscovery");
+                Some((mounted, state))
+            } else { None }
+        } else { None };
+        let (target, initial_state, mounted) = match online {
+            Some((mounted, state)) => (None, state, Some(mounted)),
+            None => {
+                let target = ObservedTarget::reopen(publication.source.clone(), events)?;
+                let state = target.state(events)?;
+                ensure!(matches!(state.disk_attributes, 1 | 3),
+                    "reopened recovery source is not persistently offline");
+                (Some(target), state, None)
+            }
+        };
         let mut recovered = Self {
             publication,
             publication_file,
@@ -754,17 +809,21 @@ impl ReopenedResourceRecovery {
             maps,
             locator,
             journal,
-            target: Some(target),
+            target,
             initial_state,
             initial_lifecycle,
-            mounted: None,
+            mounted,
             scratch: scratch.clone(),
             _memory: memory,
         };
         // Complete the other side of the journal-scan boundary exactly once.
         // The expected and map files were hashed when opened, and remain held
         // while this rehash and the native lifecycle/state checks run.
-        recovered.revalidate(events)?;
+        if recovered.mounted.is_some() {
+            recovered.revalidate_online_terminal(events)?;
+        } else {
+            recovered.revalidate(events)?;
+        }
         Ok(recovered)
     }
 
@@ -800,9 +859,22 @@ impl ReopenedResourceRecovery {
         &mut self,
         events: &mut Vec<NativeEvent>,
     ) -> Result<GeneralDiskBinding> {
+        ensure!(self.initial_lifecycle == SelectedLifecycle::Handoff,
+            "online handoff revalidation requires durable HND");
+        self.revalidate_online_terminal(events)
+    }
+
+    /// Reauthenticate the actual terminal journal and physical partition
+    /// while online. Never compare selected bytes: applications may have
+    /// legitimately changed them after the terminal mount.
+    pub(crate) fn revalidate_online_terminal(
+        &mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<GeneralDiskBinding> {
         ensure!(
-            self.target.is_none() && self.initial_lifecycle == SelectedLifecycle::Handoff,
-            "online artifact revalidation requires a consumed HND target"
+            self.target.is_none() && matches!(self.initial_lifecycle,
+                SelectedLifecycle::Handoff | SelectedLifecycle::Aborted),
+            "online artifact revalidation requires an actual terminal journal"
         );
         self.publication_file.revalidate(&self.scratch)?;
         self.expected.revalidate(&self.scratch)?;
@@ -813,48 +885,49 @@ impl ReopenedResourceRecovery {
         self.journal.revalidate()?;
         ensure!(
             self.locator.ticket().marker_profile.is_none(),
-            "mounted V4 markerless HND required"
+            "mounted V4 markerless terminal journal required"
         );
         let body_bytes = self
             .locator
             .ticket()
             .journal_length
             .checked_sub(super::BODY)
-            .context("mounted HND journal is shorter than its marker area")?;
+            .context("mounted terminal journal is shorter than its marker area")?;
         let immutable = self.locator.ticket().immutable_sha256;
         let _journal_hash_ram = self.scratch.lease_ram(4 * 1024 * 1024)?;
         let (journal, _) = self.journal.split_for_observation()?;
         ensure!(
-            super::sj::classify(journal, self.locator.ticket())? == SelectedLifecycle::Handoff,
-            "actual native journal no longer reports HND"
+            super::sj::classify(journal, self.locator.ticket())? == self.initial_lifecycle,
+            "actual native terminal journal lifecycle changed"
         );
         ensure!(
             n2r_win32::sha256_native::hash_range(journal, super::BODY, body_bytes)? == immutable,
-            "mounted HND journal immutable body changed"
+            "mounted terminal journal immutable body changed"
         );
         ensure!(
-            super::sj::classify(journal, self.locator.ticket())? == SelectedLifecycle::Handoff,
-            "actual native HND changed during immutable journal verification"
+            super::sj::classify(journal, self.locator.ticket())? == self.initial_lifecycle,
+            "actual native terminal lifecycle changed during journal verification"
         );
         let mounted = self
             .mounted
             .as_ref()
-            .context("mounted HND source has not been rediscovered")?
+            .context("mounted terminal source has not been rediscovered")?
             .clone();
         n2r_win32::volume_label::validate_original_partition(&self.publication.source, &mounted)?;
         let before = n2r_win32::observe_general_disk_state_readonly(mounted.clone(), events)?;
         ensure!(
             before.disk_attributes == 0,
-            "HND source is not online and writable"
+            "terminal source is not online and writable"
         );
+        let expected_fs = if self.initial_lifecycle == SelectedLifecycle::Handoff { "ReFS" } else { "NTFS" };
         ensure!(
-            n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == "ReFS",
-            "actual HND source did not mount as ReFS"
+            n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == expected_fs,
+            "actual terminal source filesystem differs from journal lifecycle"
         );
         let after = n2r_win32::observe_general_disk_state_readonly(mounted.clone(), events)?;
         ensure!(
             after == before,
-            "mounted HND source route changed during observation"
+            "mounted terminal source route changed during observation"
         );
         Ok(mounted)
     }

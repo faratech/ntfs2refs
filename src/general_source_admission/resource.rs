@@ -605,7 +605,7 @@ impl ResourceSourceContext {
         events: &mut Vec<NativeEvent>,
         phase: &mut &'static str,
     ) -> Result<Self> {
-        Self::collect(binding, budget, policy, output, events, phase, None)
+        Self::collect(binding, budget, policy, output, events, phase, None, false)
     }
 
     /// Reserve real source and native groups before any source freeze or
@@ -618,6 +618,19 @@ impl ResourceSourceContext {
         arena: &ArtifactArena,
         events: &mut Vec<NativeEvent>,
         phase: &mut &'static str,
+    ) -> Result<Self> {
+        Self::prepare_with_failure_restore(binding, budget, policy, output, arena, events, phase, false)
+    }
+
+    pub(crate) fn prepare_with_failure_restore(
+        binding: GeneralDiskBinding,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        output: &Path,
+        arena: &ArtifactArena,
+        events: &mut Vec<NativeEvent>,
+        phase: &mut &'static str,
+        restore_on_failure: bool,
     ) -> Result<Self> {
         ensure!(
             arena.budget() == budget,
@@ -637,6 +650,7 @@ impl ResourceSourceContext {
             events,
             phase,
             Some((arena.clone(), source, native)),
+            restore_on_failure,
         )
     }
     fn collect(
@@ -647,6 +661,7 @@ impl ResourceSourceContext {
         events: &mut Vec<NativeEvent>,
         phase: &mut &'static str,
         groups: Option<(ArtifactArena, ArtifactGroupPermit, ArtifactGroupPermit)>,
+        restore_on_failure: bool,
     ) -> Result<Self> {
         binding.validate()?;
         budget.validate()?;
@@ -758,11 +773,26 @@ impl ResourceSourceContext {
             &mut reservations,
         )?;
         events.clear();
-        let mut source = GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget(
-            binding.clone(),
-            budget,
-            events,
-        )?;
+        // Prepay the failure-only pair of full-image hash passes before the
+        // irreversible visibility change; healthy collection performs no such
+        // scan. Diagnostics explicitly opt out of automatic restoration.
+        let cleanup_workspace = if restore_on_failure {
+            Some(scratch.lease_ram(5 * 1024 * 1024)?)
+        } else {
+            None
+        };
+        let source = if restore_on_failure {
+            GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget_restore_on_error(
+                binding.clone(), budget, events,
+            )?
+        } else {
+            GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget(
+                binding.clone(), budget, events,
+            )?
+        };
+        let mut source_slot = Some(source);
+        let result = (|| -> Result<Self> {
+        let mut source = source_slot.as_mut().context("isolated source owner absent")?;
         let before = source.state(events)?;
         ensure!(
             before.disk_attributes == 3 && source.freeze_observation().is_some(),
@@ -1249,6 +1279,9 @@ impl ResourceSourceContext {
         let rows = SortedRecordStore::open(&rows_pin, &scratch)?;
         let unresolved = SortedRecordStore::open(&unresolved_pin, &scratch)?;
         let replacements = SortedRecordStore::open(&replacements_pin, &scratch)?;
+        // All preceding fallible collection used the same live source owner.
+        // Move it only once the complete source context is ready to form.
+        let source = source_slot.take().context("isolated source owner absent")?;
         let mut context = Self {
             source,
             raw,
@@ -1286,6 +1319,7 @@ impl ResourceSourceContext {
             _source_io_ram: source_io_ram,
             _output_basis: output_basis,
         };
+        let finishing = (|| -> Result<()> {
         context.revalidate_evidence()?;
         let mut metadata = std::mem::take(&mut context._metadata);
         let mut reservations = std::mem::take(&mut context._metadata_reservations);
@@ -1303,7 +1337,24 @@ impl ResourceSourceContext {
             context.source_seal = Some(context.scratch.seal()?);
         }
         context.revalidate_evidence()?;
+        Ok(())
+        })();
+        if let Err(error) = finishing {
+            return Err(crate::resource_preparation::abort::after_collection_failure(
+                context.source, cleanup_workspace.as_ref(), &geometry, events, error,
+            ));
+        }
         Ok(context)
+        })();
+        match result {
+            Ok(context) => Ok(context),
+            Err(error) => match source_slot.take() {
+                Some(source) => Err(crate::resource_preparation::abort::after_collection_failure(
+                    source, cleanup_workspace.as_ref(), &geometry, events, error,
+                )),
+                None => Err(error),
+            },
+        }
     }
     pub fn report(&self) -> ResourceSourceReport<'_> {
         ResourceSourceReport {

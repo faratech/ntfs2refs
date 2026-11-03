@@ -37,13 +37,26 @@ pub(crate) fn recover_resource_allocation_with_observer<O: PreparationObserver>(
     let scratch = SourceScratch::new_auxiliary_in_arena(budget, group.clone())?;
     let mut events = EventLog::new(observer);
     events.phase("resource-recovery-reopen");
-    let mut recovery = ReopenedResourceRecovery::open_observed(
+    let mut recovery = ReopenedResourceRecovery::open_observed_or_online_terminal(
         publication, publication_sha256, budget.record_bytes, &pair, &journal,
         &group, &scratch, &output.join("reopened-journal.index"), budget.scratch_bytes,
         &mut events,
     )?;
     let initial = recovery.observed_lifecycle();
     events.checkpoint()?;
+    if recovery.mounted_source().is_some() {
+        ensure!(matches!((rollback, initial),
+            (false, SelectedLifecycle::Handoff) | (true, SelectedLifecycle::Aborted)),
+            "requested direction conflicts with the actual online terminal journal");
+        let reconciliation = crate::resource_finalize::reconcile_online_terminal(&mut recovery, &mut events)?;
+        return Ok(serde_json::json!({
+            "kind":"resource-allocation-recovery-v1",
+            "direction":if rollback { "rollback" } else { "resume" },
+            "initial_lifecycle":initial,"already_online_terminal":true,
+            "raw_replay_performed":false,"conversion_time_content_reverified":false,
+            "reconciliation":reconciliation
+        }));
+    }
     let mut replayed = None;
     match (rollback, initial) {
         (true, SelectedLifecycle::PreparedClear) => {

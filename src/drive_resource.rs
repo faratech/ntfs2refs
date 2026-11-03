@@ -139,8 +139,8 @@ pub(crate) fn convert_owned(
         verification_policy,
         selected_capacity_policy,
         maximum_placement_bytes,
-        maximum_placement_submissions:
-            n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS,
+        maximum_placement_submissions: usize::try_from(maximum_placement_bytes / 4096)
+            .context("placement operation format overflow")?,
         maximum_materialized_bytes: capture,
         maximum_source_read_bytes: None,
         capture_arena_bytes: capture,
@@ -429,7 +429,40 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
     }
     let result = result?;
     if let Err(error) = save(&output.join("result.json"), &result) {
-        eprintln!("Recovery completed; the result report could not be saved: {error}");
+        eprintln!("The native recovery result could not be saved: {error}");
+    }
+    if result
+        .get("already_online_terminal")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        println!("The terminal recovery state is already online; raw replay was not performed.");
+        println!("Current contents were not reverified against the conversion-time baseline.");
+        let reconciliation = result
+            .get("reconciliation")
+            .unwrap_or(&serde_json::Value::Null);
+        if reconciliation
+            .get("reconciliation_complete")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            eprintln!(
+                "Recovery reconciliation is incomplete. Missing original mount paths: {}; label action: {}.",
+                reconciliation
+                    .get("missing_original_mount_paths")
+                    .unwrap_or(&serde_json::Value::Null),
+                reconciliation
+                    .get("label_action")
+                    .unwrap_or(&serde_json::Value::Null)
+            );
+            println!("Recovery records: {}", output.display());
+            return Ok(1);
+        }
+        println!(
+            "Label and mount-path reconciliation verified. Records: {}",
+            output.display()
+        );
+        return Ok(0);
     }
     if rollback
         && result

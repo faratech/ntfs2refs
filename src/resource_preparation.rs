@@ -27,7 +27,10 @@ use crate::{
     verification_policy::VerificationPolicy,
 };
 
-mod abort;
+#[path = "resource_placement.rs"]
+mod placement_evidence;
+
+pub(crate) mod abort;
 pub(crate) mod file_observer;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
@@ -355,7 +358,8 @@ where
     let mut events = EventLog::new(observer);
     events.phase("source-preparation");
     let mut phase = "source-start";
-    let source_result = ResourceSourceContext::prepare(
+    let restore_on_failure = events.observer.restore_source_on_pre_ap_failure();
+    let source_result = ResourceSourceContext::prepare_with_failure_restore(
         request.pair.source.clone(),
         request.resources,
         request.verification_policy,
@@ -363,6 +367,7 @@ where
         &arena,
         &mut events,
         &mut phase,
+        restore_on_failure,
     );
     events.phase(phase);
     let mut context = source_result?;
@@ -437,6 +442,19 @@ where
         let maximum_source_read_bytes = request.source_read_budget(&expected, admission)?;
         let inputs = PagedInputs(&expected);
 
+        // Placement and later target capture share one actual quota. Keep
+        // every complete placement proof in its constructor-owned page files.
+        let capture_group =
+            arena.reserve_group(ArtifactGroup::Capture, request.capture_arena_bytes)?;
+        let placement_directory = output.join("placement");
+        std::fs::create_dir(&placement_directory)?;
+        let placement_scratch =
+            SourceScratch::new_bounded_auxiliary_in_arena(source_budget, capture_group.clone())?;
+        let mut placement_evidence = placement_evidence::PagedPlacementEvidence::create(
+            &placement_directory.join("evidence"),
+            placement_scratch,
+        )?;
+
         // Every native allocation uses this actual shared arena accountant.
         let mut private = {
             let (source, _) = context.source_and_inspection();
@@ -459,10 +477,11 @@ where
             private.allocation_ram_accounted(),
             "native private-tree allocation lease is absent"
         );
-        let placement = match private.place_source_prefixes_domain(
+        let placement = match private.place_source_prefixes_resource_domain(
             &inputs,
             request.maximum_placement_bytes,
             request.maximum_placement_submissions,
+            &mut placement_evidence,
         ) {
             Ok(report) => report,
             Err(error) => {
@@ -517,8 +536,6 @@ where
         events.phase("shadow-freeze");
         let mut shadow = GeneralFrozenPartition::isolate(request.pair.shadow.clone(), &mut events)?;
         events.checkpoint()?;
-        let capture_group =
-            arena.reserve_group(ArtifactGroup::Capture, request.capture_arena_bytes)?;
         let capture_dir = output.join("capture");
         std::fs::create_dir(&capture_dir)?;
         let capture_budget = CaptureBudget {

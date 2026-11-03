@@ -68,6 +68,20 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST follow-up: after all workers were terminal, root normally shut down the
+completed5a8 branch and saved checkpoint411c47b6-652d-432a-81f9-8bd10ff18e1b,
+parent3343. Fresh-process verification confirmed Off and the exact graph; root
+then started the SAME branch once without restore. ReFS remounted Healthy after
+cold boot1793721764446. Independent811-stream observer is now task
+N2R-ResourcePostboot-5a8b781-v3; poll actual task/PID/terminal files before any
+VM action. First two read-only observer attempts failed before hash processes
+on PS5 UTF-8 decoding and non-SYSTEM metadata access; their stages remain intact.
+The SYSTEM/explicit-UTF8 observer writes only C: evidence, never source data.
+Latest six-bin shared-target check passed17.659s after placement proof precharge,
+early cleanup, prepared body seal/scan reuse, online terminal recovery and UI,
+plus advisory phase IO counters. These later changes are not in native5a8.
+No units were added/run. All source agents are frozen pending root build.
+
 LATEST: actual public V4 run d9d466db4780468a9a493e6a8292ea6d from source
 5a8b781728726fec5e0f9351fa3b61c8633a7e19 / binary67be83d917386989fdd7ed21dbe1aed15074c8c3459e083198ea4b524d5220ec
 completed native5312/birth1793718535039/exit0 in2588.6345994s. It matched2558

@@ -148,6 +148,22 @@ impl Owner {
         guards.push(guard);
         Ok(())
     }
+    pub(super) fn retain_from(
+        &self,
+        guard: &mut Option<Box<dyn ReportMemoryLease>>,
+        bytes: u64,
+    ) -> io::Result<()> {
+        let mut guards = self.guards.borrow_mut();
+        if guards.len() == guards.capacity() {
+            return Err(invalid("private constructor guard registry exhausted"));
+        }
+        guard
+            .as_mut()
+            .ok_or_else(|| invalid("actual retained state guard absent"))?
+            .shrink_to(bytes)?;
+        guards.push(guard.take().expect("validated actual retained state guard"));
+        Ok(())
+    }
     fn static_bytes(
         pair: &GeneralSourceShadowBinding,
         source_before: &native::GeneralDiskState,
@@ -300,6 +316,28 @@ pub(super) fn object_bytes(
         )?;
     }
     Ok(n)
+}
+
+pub(super) fn original_coordinates_bytes(tree: &PrivateTree) -> io::Result<u64> {
+    coordinate_map_bytes(&tree.original_coordinates)
+}
+pub(super) fn coordinate_map_bytes(
+    coordinates: &BTreeMap<StreamKey, Vec<(u64, u64, u64)>>,
+) -> io::Result<u64> {
+    coordinates
+        .iter()
+        .try_fold(65536u64, |n, (stream, ranges)| {
+            add(
+                n,
+                add(
+                    node::<StreamKey, Vec<(u64, u64, u64)>>()?,
+                    add(key(stream)?, vec_bytes(ranges)?)?,
+                )?,
+            )
+        })
+}
+pub(super) fn value_bytes(value: &serde_json::Value) -> io::Result<u64> {
+    json(value)
 }
 pub(super) fn slot_bytes(k: &StreamKey) -> io::Result<u64> {
     add(node::<usize, StreamKey>()?, key(k)?)

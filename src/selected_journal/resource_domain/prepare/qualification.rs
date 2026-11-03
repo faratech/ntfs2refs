@@ -151,6 +151,7 @@ fn require_owners(
     expected: &PagedExpectedTree,
     maps: Option<&V4RecoveryMaps>,
     locator: &mut super::super::durable_anchor::DurableRecoveryLocator,
+    journal_receipt: Option<&super::super::reopen::PreparedJournalIndex>,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<()> {
     let capture = prepared.candidate.protected_proof().captured();
@@ -158,7 +159,7 @@ fn require_owners(
     // capture's complete content hash. Nested source/target/lifecycle checks
     // reuse this non-escaping witness; none gains write authority from it.
     capture.with_revalidation(|witness| {
-        require_owners_with_capture_witness(prepared, expected, maps, locator, witness, events)
+        require_owners_with_capture_witness(prepared, expected, maps, locator, journal_receipt, witness, events)
     })?;
     // Ordinary share-zero handles do not rule out raw/admin aliases. Hash the
     // capture again after all nested checks, retaining the prior boundary.
@@ -170,6 +171,7 @@ fn require_owners_with_capture_witness(
     expected: &PagedExpectedTree,
     maps: Option<&V4RecoveryMaps>,
     locator: &mut super::super::durable_anchor::DurableRecoveryLocator,
+    journal_receipt: Option<&super::super::reopen::PreparedJournalIndex>,
     witness: &crate::general_shadow::paged_capture::CaptureRevalidation<'_>,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<()> {
@@ -236,26 +238,25 @@ fn require_owners_with_capture_witness(
             && same_ticket(locator.ticket(), &prepared.inner.ticket)?,
         "published locator is not the original actual prepared native journal/ticket"
     );
-    // Recheck all immutable payload/descriptor/COPY digests, not merely the
-    // marker lifecycle or a file identity. This is the existing bounded codec.
-    let _memory = prepared
-        .inner
-        ._domain
-        .scratch
-        .lease_ram(12 * BUFFER as u64)?;
-    let mut buffer = vec![0; BUFFER];
-    let mut compare = vec![0; BUFFER];
-    let (immutable, _) = validate_readback(
-        prepared.inner._domain,
-        prepared.inner._journal,
-        &prepared.inner.ticket,
-        &mut buffer,
-        &mut compare,
-    )?;
-    ensure!(
-        immutable == prepared.inner.ticket.immutable_sha256,
-        "prepared journal immutable bytes changed before qualification"
-    );
+    if let Some(receipt) = journal_receipt {
+        // The earlier complete scan produced this actual held index and
+        // sealed the same native journal body against ordinary writes. A
+        // separate raw alias is still possible, so the SDK rehashes the full
+        // body on BOTH sides of the actual source-OLD activation boundary.
+        receipt.require_same_sealed_journal(prepared.inner._journal, &prepared.inner.ticket)?;
+    } else {
+        // Before the live receipt exists, retain the complete original
+        // payload/descriptor/COPY readback at each publication boundary.
+        let _memory = prepared.inner._domain.scratch.lease_ram(12 * BUFFER as u64)?;
+        let mut buffer = vec![0; BUFFER];
+        let mut compare = vec![0; BUFFER];
+        let (immutable, _) = validate_readback(
+            prepared.inner._domain, prepared.inner._journal, &prepared.inner.ticket,
+            &mut buffer, &mut compare,
+        )?;
+        ensure!(immutable == prepared.inner.ticket.immutable_sha256,
+            "prepared journal immutable bytes changed before qualification");
+    }
     prepared.revalidate_with_capture_witness(witness, events)
 }
 
@@ -340,7 +341,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             checkpoint_events(events)?;
             ensure!(events.is_empty(), "native event checkpoint did not drain");
         }
-        require_owners(&mut prepared, expected, maps.as_ref(), &mut locator, events)?;
+        require_owners(&mut prepared, expected, maps.as_ref(), &mut locator, None, events)?;
         checkpoint_events(events)?;
         ensure!(events.is_empty(), "native event checkpoint did not drain");
         let expected_path = expected.final_path();
@@ -389,7 +390,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         };
         let (publication, checksum) =
             save_publication(group, path, &publication, scratch.budget().record_bytes)?;
-        require_owners(&mut prepared, expected, maps.as_ref(), &mut locator, events)?;
+        require_owners(&mut prepared, expected, maps.as_ref(), &mut locator, None, events)?;
         checkpoint_events(events)?;
         ensure!(events.is_empty(), "native event checkpoint did not drain");
         let write_index = if prepared.inner.ticket.marker_profile.is_none() {
@@ -446,6 +447,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             self.expected,
             self.maps.as_ref(),
             &mut self.locator,
+            self.write_index.as_ref(),
             events,
         )?;
         self.closure.revalidate()

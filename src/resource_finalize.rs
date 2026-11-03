@@ -16,6 +16,72 @@ use n2r_win32::{
 };
 use std::{collections::BTreeSet, path::Path};
 
+/// Reconcile an already-online terminal state without replaying any bytes or
+/// claiming that its current contents equal the conversion-time snapshot.
+/// Applications may have used the volume since the original terminal mount.
+pub(crate) fn reconcile_online_terminal<O: PreparationObserver>(
+    recovery: &mut ReopenedResourceRecovery,
+    events: &mut EventLog<'_, O>,
+) -> Result<serde_json::Value> {
+    use crate::selected_journal::SelectedLifecycle;
+    let lifecycle = recovery.observed_lifecycle();
+    ensure!(matches!(lifecycle, SelectedLifecycle::Handoff | SelectedLifecycle::Aborted),
+        "online reconciliation requires a durable terminal lifecycle");
+    events.phase("resource-online-terminal-reconcile");
+    let mounted = recovery.revalidate_online_terminal(events)?;
+    events.checkpoint()?;
+    let filesystem = if lifecycle == SelectedLifecycle::Handoff { "ReFS" } else { "NTFS" };
+    let desired = recovery.expected_source_label().clone();
+    let initial = n2r_win32::volume_label::observe_label(mounted.clone(), filesystem)?;
+    let mut label_action = "already-original";
+    if initial.label != desired {
+        let enrollment = n2r_win32::volume_label::VolumeLabel::from_text("n2r-retained-shadow")?;
+        if lifecycle == SelectedLifecycle::Handoff && initial.label == enrollment {
+            let restored = n2r_win32::volume_label::restore_verified_label(
+                recovery.source(), &desired, mounted.clone(), &enrollment,
+            )?;
+            ensure!(restored.success, "terminal volume label restoration did not complete");
+            label_action = "restored-enrollment-label";
+        } else {
+            // A later application/user may have deliberately changed it.
+            label_action = "different-current-label-preserved";
+        }
+    }
+    let expected: BTreeSet<_> = recovery.expected_mount_paths().iter()
+        .map(|s| s.to_lowercase()).collect();
+    let first = n2r_win32::capture_mount_paths_general(mounted.clone(), events)?;
+    let actual_before: BTreeSet<_> = first.paths.iter().map(|s| s.to_lowercase()).collect();
+    let mut attempted = Vec::new();
+    for missing in expected.difference(&actual_before) {
+        let bytes = missing.as_bytes();
+        let letter = bytes.len() == 3 && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':' && bytes[2] == b'\\';
+        if lifecycle == SelectedLifecycle::Handoff && letter {
+            events.checkpoint()?;
+            n2r_win32::restore_drive_letter_general(mounted.clone(), missing, events)
+                .context("terminal drive letter is unavailable or could not be safely restored")?;
+            attempted.push(missing.clone());
+        }
+    }
+    let paths = n2r_win32::capture_mount_paths_general(mounted.clone(), events)?;
+    let actual: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
+    let missing: Vec<_> = expected.difference(&actual).cloned().collect();
+    let current = n2r_win32::volume_label::observe_label(mounted.clone(), filesystem)?;
+    recovery.revalidate_online_terminal(events)?;
+    events.checkpoint()?;
+    Ok(serde_json::json!({
+        "kind":"resource-online-terminal-reconciliation-v1",
+        "terminal_lifecycle":lifecycle,"source":mounted,"filesystem":filesystem,
+        "reconciliation_complete":missing.is_empty() && current.label == desired,
+        "label_action":label_action,"label_matches_original":current.label == desired,
+        "restored_drive_letters":attempted,"missing_original_mount_paths":missing,
+        "additional_current_mount_paths_preserved":actual.difference(&expected).cloned().collect::<Vec<_>>(),
+        "journal_terminal_verified":true,"raw_replay_performed":false,
+        "conversion_time_content_reverified":false,
+        "selected_bytes_compared_to_old_or_new":false
+    }))
+}
+
 #[derive(Debug)]
 pub(crate) struct CommittedFinalizationError {
     cause: anyhow::Error,

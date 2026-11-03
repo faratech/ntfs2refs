@@ -316,6 +316,8 @@ impl PagedMftResolver {
         }
         self.retain(assembly)?;
         record.attributes = output;
+        drop(entries);
+        drop(value);
         drop(list_ram);
         Ok(Some(record_ram))
     }

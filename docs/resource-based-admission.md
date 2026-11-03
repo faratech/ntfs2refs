@@ -20,6 +20,23 @@ peak scratch are unmeasured. Subsequent placement, cancellation, journal-scan
 reuse and online-terminal reconciliation edits require their own build and
 native qualification. The frozen `7feb4c0` alpha remains unchanged.
 
+The combined six-entry Windows `cargo check` passed after the later integration
+changes (17.66 seconds; no unit tests). Placement evidence now stores complete
+logical proofs across bounded chunk records, reserving their full encoded data,
+directory and framing storage before each native move. Its native reservation
+covers the complete accepted retrieval domain, including after-map growth.
+Closing the sink refuses an unsettled move reservation.
+
+Restart recovery now has an already-online terminal route. It authenticates the
+actual original journal and physical partition, never replays old bytes over an
+operational HND/ABT volume, and reports incomplete label/mount reconciliation or
+unverified current contents explicitly. A same-owner prepared-journal receipt
+also removes four repeated full scans after the initial authenticated index;
+the native activation boundary still hashes the journal body before and after
+source verification. None of these later changes has native qualification yet.
+Existing event records now include advisory elapsed/process-I/O samples, without
+adding a data pass or treating those counters as execution authority.
+
 ## Experimental integration checkpoint — 2026-11-03
 
 The compiled V4 core now connects held source/target/resource admission to a

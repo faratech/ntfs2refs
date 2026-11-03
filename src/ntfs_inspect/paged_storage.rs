@@ -549,6 +549,7 @@ impl SourceScratch {
             chunks: 0,
             hash: Sha256::new(),
             reserved: 1024,
+            charged: 1024,
             complete: false,
             artifact,
         })
@@ -745,6 +746,7 @@ pub struct SourceRangeWriter {
     chunks: u64,
     hash: Sha256,
     reserved: u64,
+    charged: u64,
     complete: bool,
     artifact: Option<crate::artifact_arena::ArtifactPathPermit>,
     // The charged writer buffers must be destroyed before releasing RAM.
@@ -753,6 +755,38 @@ pub struct SourceRangeWriter {
 impl SourceRangeWriter {
     pub fn byte_len(&self) -> u64 {
         self.logical_bytes
+    }
+    fn reserve_total(&mut self, bytes: u64) -> Result<()> {
+        if bytes <= self.reserved {
+            return Ok(());
+        }
+        let additional = bytes - self.reserved;
+        if let Some(permit) = self.artifact.as_mut() {
+            permit.extend(additional)?;
+        }
+        self.scratch.reserve_wire(additional)?;
+        self.reserved = bytes;
+        Ok(())
+    }
+    /// Reserve a complete logical prefix before an external irreversible IO.
+    /// Full-size final chunks deliberately overestimate wire/framing; finish
+    /// returns only the verified unused credit. Ordinary writers need no call.
+    pub fn reserve_logical_bytes(&mut self, logical: u64) -> Result<()> {
+        ensure!(
+            logical >= self.logical_bytes,
+            "source reservation precedes written bytes"
+        );
+        let chunks = logical.div_ceil(u64::from(self.chunk_bytes));
+        let per_chunk = u64::from(self.chunk_bytes)
+            .div_ceil(3)
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(2 + 8 + 8 + 64 + 64))
+            .context("source prepaid chunk wire overflow")?;
+        let bytes = chunks
+            .checked_mul(per_chunk)
+            .and_then(|n| n.checked_add(1024))
+            .context("source prepaid wire overflow")?;
+        self.reserve_total(bytes)
     }
     fn chunk(&mut self) -> Result<()> {
         if self.body.is_empty() {
@@ -764,11 +798,12 @@ impl SourceRangeWriter {
         let bytes = (payload.len() as u64)
             .checked_add(8 + 8 + 64 + 64)
             .context("source wire overflow")?;
-        if let Some(permit) = self.artifact.as_mut() {
-            permit.extend(bytes)?;
-        }
-        self.scratch.reserve_wire(bytes)?;
-        self.reserved += bytes;
+        let charged = self
+            .charged
+            .checked_add(bytes)
+            .context("source chunk charge overflow")?;
+        self.reserve_total(charged)?;
+        self.charged = charged;
         self.writer
             .as_mut()
             .context("source writer absent")?

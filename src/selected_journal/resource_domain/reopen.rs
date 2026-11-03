@@ -194,10 +194,24 @@ pub(crate) struct PreparedJournalIndex {
     lease: ArtifactLease,
     ticket_sha256: [u8; 32],
     format_version: u32,
+    journal_owner: usize,
     _memory: SourceRamLease,
 }
 
 impl PreparedJournalIndex {
+    /// The receipt is tied to the same live scanned journal object, whose
+    /// ordinary write API now rejects body mutations. It does not exclude raw
+    /// aliases; the native activation gate still hashes both boundaries.
+    pub(crate) fn require_same_sealed_journal(
+        &self,
+        journal: &NativeSelectedJournal,
+        ticket: &SelectedTicket,
+    ) -> Result<()> {
+        self.require_ticket(ticket)?;
+        ensure!(std::ptr::from_ref(journal) as usize == self.journal_owner,
+            "prepared index belongs to a different native journal owner");
+        journal.require_prepared_body_seal()
+    }
     pub(crate) fn policy(&self) -> n2r_win32::HeldPagedWritePolicy {
         self.policy.clone()
     }
@@ -331,6 +345,8 @@ impl<'a> JournalObservation<'a> {
             "prepared journal ticket exceeds bound"
         );
         let ticket_sha256 = Sha256::digest(&encoded).into();
+        let journal_owner = std::ptr::from_ref(&*self.journal) as usize;
+        self.journal.seal_prepared_body(self.ticket)?;
         let Self {
             index,
             index_lease,
@@ -343,6 +359,7 @@ impl<'a> JournalObservation<'a> {
             lease: index_lease,
             ticket_sha256,
             format_version: format.version,
+            journal_owner,
             _memory,
         };
         Ok(result)

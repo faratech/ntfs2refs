@@ -13,6 +13,7 @@ mod source_backed;
 mod supply;
 mod system_payloads;
 pub use enrollment::{ConstructionEnrollment, enroll, enroll_with_resource_profile};
+pub use placement::{PlacementEvidenceSink, ResourcePlacementReport};
 pub use routed_prefix::RoutedPrefixReady;
 pub use source_backed::{
     MountedAllocation, PayloadRoute, SourceBackedRoutes, ValidatedSourceBackedRoutes,
@@ -290,6 +291,41 @@ impl PrivateTree {
             guard,
         )
     }
+
+    fn move_slot_resource_with_evidence(
+        &mut self,
+        slot: usize,
+        vcn: u64,
+        lcn: u64,
+        clusters: u32,
+        reposition: bool,
+        guard: impl FnMut(&unwritten::DestinationWindows) -> io::Result<()>,
+    ) -> io::Result<unwritten::ResourceMoveValue> {
+        self.require_source_excluded()?;
+        if self.metadata_resource_admission.is_none() || self.memory.is_none() {
+            return Err(invalid("actual resource construction owner absent"));
+        }
+        self.placement_complete = false;
+        self.original_coordinates.clear();
+        let key = self
+            .stream_slots
+            .get(&slot)
+            .ok_or_else(|| invalid("resource stream slot absent"))?;
+        let file = self
+            .files
+            .get_mut(key)
+            .ok_or_else(|| invalid("resource placeholder absent"))?;
+        if !file.resource_placement_enabled() {
+            return Err(invalid("resource placeholder not enrolled"));
+        }
+        let proof = if reposition {
+            file.reposition_with_evidence(&self.volume, vcn, lcn, clusters, guard)
+        } else {
+            file.place_with_evidence(&self.volume, vcn, lcn, clusters, guard)
+        };
+        self.require_source_excluded()?;
+        proof?.into_resource_value()
+    }
     /// Complete metadata only on this owning disposable maintenance session.
     /// Consumes the owner even on partial failure: no retry/placement authority
     /// is returned. Source-backed prefixes are not logical-content verified by
@@ -318,6 +354,18 @@ impl PrivateTree {
         moves: usize,
     ) -> io::Result<serde_json::Value> {
         placement::run_domain(self, input, bytes, moves)
+    }
+
+    /// V4 resource-derived placement with complete paged evidence retained by
+    /// the caller. This cannot be selected by a legacy profile or JSON flag.
+    pub fn place_source_prefixes_resource_domain(
+        &mut self,
+        input: &impl InputDomain,
+        bytes: u64,
+        moves: usize,
+        evidence: &mut dyn PlacementEvidenceSink,
+    ) -> io::Result<ResourcePlacementReport> {
+        placement::run_resource_domain(self, input, bytes, moves, evidence)
     }
 
     pub fn complete_source_metadata(

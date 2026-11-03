@@ -28,6 +28,14 @@ provenance; ALL current shared bytes, including the moved a6d seed, are charged
 in addition to current lab bytes against the original maximum329374052988 and
 minimum host free17179869184. No epoch or baseline reset is permitted.
 
+For experimental builds, `-UseSharedExperimentalSource` additionally reuses
+the verified source-staging tree under the same cache lock. Supply
+`-ExpectedSharedSourceHelperSha256 842c5e7f7e65a1df72e6276af505e47f85f79b649429fe1eeac0833d1b534992`.
+The reviewed option was used successfully for pinned candidate581b697; its
+first release Cargo build took2m05s. No warm-cache speedup or reproducibility
+was established. Count ALL staging bytes along with shared target bytes and
+lab bytes; default isolated release builds remain unchanged.
+
 For routine WIP `cargo check`, use the same target and its exclusive sibling
 lock. Process-local `CARGO_INCREMENTAL=1` speeds repeated checks; the host-wide
 sccache wrapper rejects incremental builds, so clear `RUSTC_WRAPPER` and

@@ -10,7 +10,52 @@ chronological log. Prior instructions and results are preserved verbatim in
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-03 00:20 UTC)
+## CURRENT release continuation (2026-11-03 00:41 UTC)
+
+LIVE VMRunning4GiB/4CPU/noNIC,33snapshots,parentORIGINAL58bd9ceb-60bc-4b34-81e1-7af197523a80.
+Rootrestored58bd EXACTLYONCE forindependentRollback, thenstarted. ACTIVEbranch
+is now originalinterruptedNTFS source1 (not the previousclosedHNDResume branch).
+Rollbackobserver taskN2R-PagedEnvelope-Recovery-rollback-5cc9b3f4a5854b35bc7cb98c0e8172bd
+actual5088/birth1793666446097 Runningat00:41:29. Publicnative rollback NOTYETobserved
+launched; latesttypedpage/oldzero preflight. Hostdispatchsession62328completed;
+doNOTrerun. StageC:\ntfs2refs\paged-envelope-recovery-rollback-5cc9b3f4a5854b35bc7cb98c0e8172bd.
+Runtime7feb/sealedb0/helperf190 unchanged. No hostbuildlive. RootaloneVMactions.
+
+RESUME FULLYPASSED Ready0/all811independenthashes/1534objects, allcompletemaps
+identical,650tails. Actual2456/1793664719382/0,239.4291539s; wrapper4752/birth
+1793664307649 terminal. Archive76files146,412,148B at
+.lab/hyperv/streaming-v2-20261027/paged-envelope-recovery-resume-bd4eee3b50504bc3b0cea5ad89212cd2/closed-recovery/archive-manifest.json
+SHAb3838c824b4c3314c6b2e6028f47b2f21d7363bb38bf1de592c1becd1d27e355.
+AllResume metadata (includingrecovery-13407d75...) closed/pinned beforediscarding
+ONLYitsworkingbranch byrestoring original58bd forRollback. NeverrawreplaythatHND.
+
+STORAGE: Resume growthdrove actual328182083310/free11330711552 below16GiBreserve.
+No furtherVMwrites started; allworkersclosed/normaloff. Retired ONLY superseded
+f3c1460b-6811-4dd3-908c-12cc2842c35e (14ec1084normal leaf) viaHyperV after full
+109old+113replacementarchivefileSHA checks underreadlocks; replacement5ce1534
+saved+archive97b intact. Allother33IDs+f4bf/original58bd/a062/5ce preserved.
+Afterdelayedreclaim actual314803133403/free24707756032; resumedsolelytoarchive
+closedResume, thennormaloff/restoreoriginal58bd. Fixedepoch/max329374052988/
+min17179869184 unchanged. f3nowRETIRED; don'tresurrectfromolderguidance.
+
+New .lab/development/archive-paged-recovery.ps1 SHA4afdc3990cdef067d8cf320aa81169d3ce019130986e492d361e9f8ec3530a9a
+canarchiveRootonly afteractualReady0/native0/all811+1534/allworkersabsent. Params
+CasePath,GuestStage,NativeRecordsRoot(ROOTwithoutoperationleaf),Operation.
+Whitelistmetadataonly; neverJ/bin/vhdx. Lastnewsourceuntracked
+lab/Start-PagedPublicMutation.ps1 SHA3522bb167b0c47492206ed3de57212605b6f66ea5d75513174c8bb684a1d1bec
+is source-reviewedbyC/PS5assembledparse0 butNOTinvoked. SourceFrozen5971 oldhelper
+unchanged. RootafterRollbackarchival mayrestore5ce forMutate, normalsave/off/coldboot
+VerifyAfterBoot; exact258newfileSHA/256entries/all811 originalcontent/1534namespace/
+type/length checks. NOTallACL/SACL/timestampmetadatabytechecks; labeltruthfully.
+
+NEXT: verifyactualRollbacknative0 +independent811/1534, archiveclosedmetadata,
+allworkersabsent/normaloff. Thenexact7febmutation/coldboot. Broaderrelease remains
+UNPROVEN: raw2048/semantic16MiB/native64MiB/handle/rangecaps, standardformatonly
+safeformatterrefusal, nativeproductionmarkergateFALSE, notphysicalpowerqualified.
+Useraskedstablecloseness: workingexperimentalalpha, notgeneralstable. Preserve
+fullobjective; no narrowedgoalcompletion. Mainc6/no unit tests/WSL unchanged.
+
+## Earlier release continuation (2026-11-03 00:20 UTC)
 
 LIVE VMRunning4GiB/4CPU/noNIC,34snapshots, parent58bd9ceb-60bc-4b34-81e1-7af197523a80
 (ORIGINALinterruptedNTFS childa062). ACTIVE WRITABLE BRANCH HAS NOW CLOSED HND/REFS:

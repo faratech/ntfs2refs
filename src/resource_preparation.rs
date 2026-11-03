@@ -26,6 +26,9 @@ use crate::{
     shadow_tree::{PagedExpectedTree, source_pages::SourceExpectedDomain},
     verification_policy::VerificationPolicy,
 };
+
+mod abort;
+pub(crate) mod file_observer;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent,
@@ -39,7 +42,7 @@ use std::{
     io::Write,
     ops::{Deref, DerefMut},
     os::windows::fs::{MetadataExt, OpenOptionsExt},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -141,6 +144,11 @@ pub(crate) struct PreShadow<'a> {
     pub projection_wire_bytes: u64,
 }
 pub(crate) trait PreparationObserver {
+    /// Cleanup policy only. Actual unchanged-source or ABT proofs must still
+    /// be issued by the live owning context; this flag grants no device access.
+    fn restore_source_on_pre_ap_failure(&self) -> bool {
+        false
+    }
     fn native_events(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> Result<()>;
     fn source_prepared(&mut self, _context: &ResourceSourceContext) -> Result<()> {
         Ok(())
@@ -164,6 +172,16 @@ pub(crate) trait PreparationObserver {
         out.write_all(b"\n")?;
         out.flush()?;
         Ok(())
+    }
+    fn incomplete_events(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) {
+        let mut out = std::io::stderr().lock();
+        let written = serde_json::to_writer(&mut out, &serde_json::json!({
+            "kind":"resource-preparation-incomplete-native-events", "phase":phase,"events":events
+        })).and_then(|_| out.write_all(b"\n").map_err(serde_json::Error::io))
+            .and_then(|_| out.flush().map_err(serde_json::Error::io));
+        if written.is_ok() {
+            events.clear();
+        }
     }
 }
 pub(crate) struct StdoutObserver;
@@ -219,13 +237,8 @@ impl<O: PreparationObserver> DerefMut for EventLog<'_, O> {
 impl<O: PreparationObserver> Drop for EventLog<'_, O> {
     fn drop(&mut self) {
         if !self.events.is_empty() {
-            let mut out = std::io::stderr().lock();
-            let _ = serde_json::to_writer(
-                &mut out,
-                &serde_json::json!({"kind":"resource-preparation-incomplete-native-events","phase":self.phase,"events":self.events}),
-            );
-            let _ = out.write_all(b"\n");
-            let _ = out.flush();
+            self.observer
+                .incomplete_events(self.phase, &mut self.events);
         }
     }
 }
@@ -353,328 +366,399 @@ where
     );
     events.phase(phase);
     let mut context = source_result?;
-    events.checkpoint()?;
-    events.phase("source-recheck");
-    context.require_source_evidence()?;
-    context.recheck_source(&mut events)?;
-    events.checkpoint()?;
-    events.observer.source_prepared(&context)?;
-    let admission = context.resource_admission();
-    let profile = crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
-    request
-        .pair
-        .validate_with_resource_profile(profile.native_profile())?;
-    let source_budget = SourceMetadataBudget::from_resource_budget(request.resources)?;
-    let aux_group = arena.reserve_group(ArtifactGroup::Auxiliary, source_budget.scratch_bytes)?;
-    let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
-    let projection_dir = output.join("projection");
-    std::fs::create_dir(&projection_dir)?;
-    let projection = SourceExpectedDomain::derive(
-        context.inspection(),
-        context.native().domain(),
-        admission,
-        &projection_dir,
-        &aux_scratch,
-    )?;
-    let expected_group = arena.reserve_group(
-        ArtifactGroup::Expected,
-        admission.expected_page_budget()?.max_file_bytes,
-    )?;
-    let expected_path = output.join("expected.pages");
-    let (receipt, artifact) = PagedExpectedTree::create_with_resources_in_group(
-        &projection,
-        &expected_path,
-        admission,
-        &expected_group,
-    )?;
-    let expected = PagedExpectedTree::open_with_resources_in_group(
-        &expected_path,
-        &receipt.file_sha256,
-        &receipt.semantic_sha256,
-        admission,
-        &expected_group,
-        artifact,
-    )?;
-    let _expected_seal = expected_group.seal()?;
-    expected.require_shared_memory(&arena)?;
-    expected.require_resource_owner(admission)?;
-    events.observer.expected_prepared(&context, &expected)?;
-    // The complete independently held expected pages are now reopened,
-    // authenticated and resource-bound. Their producer is no longer used:
-    // release its 8-row workspace before native shadow construction. The
-    // original source/native owners and expected page lease stay alive.
-    let memory_before_projection_drop = arena.usage()?;
-    drop(projection);
-    // The expected tree now owns its independent authenticated pages. No
-    // subsequent phase writes through this projection scratch. Seal its
-    // retained real file owners so only actual wire bytes remain reserved.
-    let projection_seal = aux_scratch.seal()?;
-    let memory_after_projection_drop = arena.usage()?;
-    events.observer.before_shadow(PreShadow {
-        context: &context,
-        expected: &expected,
-        arena: &arena,
-        projection_memory_before: memory_before_projection_drop,
-        projection_memory_after: memory_after_projection_drop,
-        projection_wire_bytes: projection_seal.wire_bytes(),
-    })?;
-    let maximum_source_read_bytes = request.source_read_budget(&expected, admission)?;
-    let inputs = PagedInputs(&expected);
+    let mut published: Option<(PathBuf, [u8; 32])> = None;
+    let result = (|| -> Result<T> {
+        events.checkpoint()?;
+        events.phase("source-recheck");
+        context.require_source_evidence()?;
+        context.recheck_source(&mut events)?;
+        events.checkpoint()?;
+        events.observer.source_prepared(&context)?;
+        let admission = context.resource_admission();
+        let profile = crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
+        request
+            .pair
+            .validate_with_resource_profile(profile.native_profile())?;
+        let source_budget = SourceMetadataBudget::from_resource_budget(request.resources)?;
+        let aux_group =
+            arena.reserve_group(ArtifactGroup::Auxiliary, source_budget.scratch_bytes)?;
+        let aux_scratch = SourceScratch::new_auxiliary_in_arena(source_budget, aux_group)?;
+        let projection_dir = output.join("projection");
+        std::fs::create_dir(&projection_dir)?;
+        let projection = SourceExpectedDomain::derive(
+            context.inspection(),
+            context.native().domain(),
+            admission,
+            &projection_dir,
+            &aux_scratch,
+        )?;
+        let expected_group = arena.reserve_group(
+            ArtifactGroup::Expected,
+            admission.expected_page_budget()?.max_file_bytes,
+        )?;
+        let expected_path = output.join("expected.pages");
+        let (receipt, artifact) = PagedExpectedTree::create_with_resources_in_group(
+            &projection,
+            &expected_path,
+            admission,
+            &expected_group,
+        )?;
+        let expected = PagedExpectedTree::open_with_resources_in_group(
+            &expected_path,
+            &receipt.file_sha256,
+            &receipt.semantic_sha256,
+            admission,
+            &expected_group,
+            artifact,
+        )?;
+        let _expected_seal = expected_group.seal()?;
+        expected.require_shared_memory(&arena)?;
+        expected.require_resource_owner(admission)?;
+        events.observer.expected_prepared(&context, &expected)?;
+        // The complete independently held expected pages are now reopened,
+        // authenticated and resource-bound. Their producer is no longer used:
+        // release its 8-row workspace before native shadow construction. The
+        // original source/native owners and expected page lease stay alive.
+        let memory_before_projection_drop = arena.usage()?;
+        drop(projection);
+        // The expected tree now owns its independent authenticated pages. No
+        // subsequent phase writes through this projection scratch. Seal its
+        // retained real file owners so only actual wire bytes remain reserved.
+        let projection_seal = aux_scratch.seal()?;
+        let memory_after_projection_drop = arena.usage()?;
+        events.observer.before_shadow(PreShadow {
+            context: &context,
+            expected: &expected,
+            arena: &arena,
+            projection_memory_before: memory_before_projection_drop,
+            projection_memory_after: memory_after_projection_drop,
+            projection_wire_bytes: projection_seal.wire_bytes(),
+        })?;
+        let maximum_source_read_bytes = request.source_read_budget(&expected, admission)?;
+        let inputs = PagedInputs(&expected);
 
-    // Every native allocation uses this actual shared arena accountant.
-    let mut private = {
-        let (source, _) = context.source_and_inspection();
-        let native_profile = profile
-            .native_profile()
-            .context("native resource profile absent")?;
-        let enrollment = n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
-            source,
-            &request.pair,
-            native_profile,
-        )?;
-        n2r_win32::shadow_native::private_tree::allocate_enrolled_domain_with_memory(
-            enrollment,
+        // Every native allocation uses this actual shared arena accountant.
+        let mut private = {
+            let (source, _) = context.source_and_inspection();
+            let native_profile = profile
+                .native_profile()
+                .context("native resource profile absent")?;
+            let enrollment = n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
+                source,
+                &request.pair,
+                native_profile,
+            )?;
+            n2r_win32::shadow_native::private_tree::allocate_enrolled_domain_with_memory(
+                enrollment,
+                &inputs,
+                native_profile,
+                Arc::new(ArenaReportMemory(arena.clone())),
+            )?
+        };
+        ensure!(
+            private.allocation_ram_accounted(),
+            "native private-tree allocation lease is absent"
+        );
+        let placement = match private.place_source_prefixes_domain(
             &inputs,
-            native_profile,
-            Arc::new(ArenaReportMemory(arena.clone())),
-        )?
-    };
-    ensure!(
-        private.allocation_ram_accounted(),
-        "native private-tree allocation lease is absent"
-    );
-    let placement = match private.place_source_prefixes_domain(
-        &inputs,
-        request.maximum_placement_bytes,
-        request.maximum_placement_submissions,
-    ) {
-        Ok(report) => report,
-        Err(error) => {
-            let progress = private.placement_progress();
-            events.observer.note(&serde_json::json!({
-                "kind":"resource-placement-refusal", "phase":progress.get("phase"),
-                "counters":progress.get("counters"), "refusal":progress.get("refusal"),
-                "source_payload_writes":0, "conversion_authorized":false,
-            }))?;
-            return Err(error.into());
-        }
-    };
-    events.observer.note(&serde_json::json!({
-        "kind":"resource-placement-summary",
-        "original_coordinate_bytes":placement.get("original_coordinate_bytes"),
-        "move_bytes_submitted":placement.get("move_bytes_submitted"),
-        "counters":placement.get("counters"), "source_payload_writes":0,
-        "conversion_authorized":false,
-    }))?;
-    drop(placement);
-    private.prepare_source_backed_prefixes()?;
-    {
-        let (source, raw) = context.source_and_inspection();
-        let mut bytes =
-            PagedSourceByteAdapter::new(source, raw, admission, maximum_source_read_bytes)?;
-        let mut routed = general_shadow::paged_supply::routed::prepare(
-            &mut bytes,
-            &expected,
-            &mut private,
-            request.maximum_materialized_bytes,
-            request.verification_policy,
-        )?;
-        let (_system, indexer) = routed.materialize_system_payloads()?;
-        drop(indexer);
-        let supply_receipt = routed.verify()?;
-        events
-            .observer
-            .note(&serde_json::to_value(&supply_receipt)?)?;
-        bytes.finish()?;
-    }
-    private.complete_source_metadata_domain(&inputs, |a, b| {
-        crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
-    })?;
-    events.phase("source-after-shadow-construction");
-    context.recheck_source(&mut events)?;
-    events.checkpoint()?;
-    let shadow_ram = arena.reserve_ram(
-        GeneralFrozenPartition::read_buffer_memory_bytes()
-            .checked_add(64 * 1024)
-            .context("shadow native RAM overflow")?,
-    )?;
-    events.phase("shadow-freeze");
-    let mut shadow = GeneralFrozenPartition::isolate(request.pair.shadow.clone(), &mut events)?;
-    events.checkpoint()?;
-    let capture_group = arena.reserve_group(ArtifactGroup::Capture, request.capture_arena_bytes)?;
-    let capture_dir = output.join("capture");
-    std::fs::create_dir(&capture_dir)?;
-    let capture_budget = CaptureBudget {
-        max_changed_bytes: request.pair.source.identity.partition_bytes / 4096 * 4096,
-        max_journal_bytes: request.max_journal_bytes,
-        max_literal_backing_bytes: request.max_literal_backing_bytes,
-        max_combined_backing_and_journal_bytes: request.max_combined_backing_and_journal_bytes,
-        minimum_free_bytes: request.minimum_free_bytes,
-        selected_capacity_policy: request.selected_capacity_policy,
-    };
-    let journal_root = format!("{}\\", request.journal.disk.volume_path()?);
-    events.phase("protected-target-capture");
-    let proof = observe_and_select_paged(
-        &mut context,
-        &mut shadow,
-        request.pair.clone(),
-        &expected,
-        &capture_group,
-        &output.join("target"),
-        &mut events,
-        |context, target, expected, native, scope, closing| {
+            request.maximum_placement_bytes,
+            request.maximum_placement_submissions,
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                let progress = private.placement_progress();
+                events.observer.note(&serde_json::json!({
+                    "kind":"resource-placement-refusal", "phase":progress.get("phase"),
+                    "counters":progress.get("counters"), "refusal":progress.get("refusal"),
+                    "source_payload_writes":0, "conversion_authorized":false,
+                }))?;
+                return Err(error.into());
+            }
+        };
+        events.observer.note(&serde_json::json!({
+            "kind":"resource-placement-summary",
+            "original_coordinate_bytes":placement.get("original_coordinate_bytes"),
+            "move_bytes_submitted":placement.get("move_bytes_submitted"),
+            "counters":placement.get("counters"), "source_payload_writes":0,
+            "conversion_authorized":false,
+        }))?;
+        drop(placement);
+        private.prepare_source_backed_prefixes()?;
+        {
             let (source, raw) = context.source_and_inspection();
             let mut bytes =
                 PagedSourceByteAdapter::new(source, raw, admission, maximum_source_read_bytes)?;
-            let routes = PagedPayloadRoutes::capture(
-                native,
-                expected,
+            let mut routed = general_shadow::paged_supply::routed::prepare(
                 &mut bytes,
-                &capture_dir.join("routes"),
-                &capture_group,
+                &expected,
+                &mut private,
+                request.maximum_materialized_bytes,
+                request.verification_policy,
             )?;
-            let candidate = PagedSourceBackedCandidate::new(bytes, target, expected, routes)?
-                .with_closing_bytes(closing);
-            let mut guard = |p: CaptureProgress| -> Result<()> {
-                let space = n2r_win32::discovery::observe_volume_space(&journal_root)?;
-                ensure!(
-                    space.available_bytes_to_caller >= p.required_available_bytes()?,
-                    "capture does not have its remaining journal and reserve capacity"
-                );
-                Ok(())
-            };
-            capture_target_selected(
-                candidate,
-                scope,
-                &capture_dir.join("literal.bin"),
-                &capture_dir.join("capture.index"),
-                capture_budget,
-                &mut guard,
-            )
-        },
-    )?;
-    events.checkpoint()?;
-    let capture_scratch =
-        SourceScratch::new_auxiliary_in_arena(source_budget, capture_group.clone())?;
-    let domain = ResourceJournalDomain::from_capture(
-        proof.captured(),
-        ResourceJournalBudget {
-            max_selected_bytes: capture_budget.max_changed_bytes,
+            let (_system, indexer) = routed.materialize_system_payloads()?;
+            drop(indexer);
+            let supply_receipt = routed.verify()?;
+            events
+                .observer
+                .note(&serde_json::to_value(&supply_receipt)?)?;
+            bytes.finish()?;
+        }
+        private.complete_source_metadata_domain(&inputs, |a, b| {
+            crate::ntfs_attestation::same_security(a, b).map_err(std::io::Error::other)
+        })?;
+        events.phase("source-after-shadow-construction");
+        context.recheck_source(&mut events)?;
+        events.checkpoint()?;
+        let shadow_ram = arena.reserve_ram(
+            GeneralFrozenPartition::read_buffer_memory_bytes()
+                .checked_add(64 * 1024)
+                .context("shadow native RAM overflow")?,
+        )?;
+        events.phase("shadow-freeze");
+        let mut shadow = GeneralFrozenPartition::isolate(request.pair.shadow.clone(), &mut events)?;
+        events.checkpoint()?;
+        let capture_group =
+            arena.reserve_group(ArtifactGroup::Capture, request.capture_arena_bytes)?;
+        let capture_dir = output.join("capture");
+        std::fs::create_dir(&capture_dir)?;
+        let capture_budget = CaptureBudget {
+            max_changed_bytes: request.pair.source.identity.partition_bytes / 4096 * 4096,
             max_journal_bytes: request.max_journal_bytes,
-            marker_profile: request.marker_profile,
-        },
-        &capture_group,
-        &capture_scratch,
-        &output.join("journal-layout.index"),
-    )?;
-    events.phase("captured-candidate-open");
-    let mut candidate =
-        ProtectedCapturedCandidate::open(&proof, &domain, &mut context, &mut shadow, &mut events)?;
-    events.checkpoint()?;
-    events.phase("native-journal-create");
-    let mut creation = {
-        let (source, _) = context.source_and_inspection();
-        BoundNativeCreationJournal::create_new(
-            source,
+            max_literal_backing_bytes: request.max_literal_backing_bytes,
+            max_combined_backing_and_journal_bytes: request.max_combined_backing_and_journal_bytes,
+            minimum_free_bytes: request.minimum_free_bytes,
+            selected_capacity_policy: request.selected_capacity_policy,
+        };
+        let journal_root = format!("{}\\", request.journal.disk.volume_path()?);
+        events.phase("protected-target-capture");
+        let proof = observe_and_select_paged(
+            &mut context,
             &mut shadow,
-            &arena,
-            domain.facts().journal_length,
-            &output.join("selected.journal"),
-            &request.journal,
-            JournalProfile::from_schema_and_capacity(3, Some(request.max_journal_bytes))?,
-            domain.facts().marker_profile,
-            request.marker_use,
-            &mut events,
-        )?
-    };
-    events.checkpoint()?;
-    events.phase("native-journal-preparation");
-    let mut prepared = prepare_native_from_protected_capture(
-        &domain,
-        &mut context,
-        &mut shadow,
-        &mut candidate,
-        &mut creation,
-        &mut events,
-    )?;
-    events.checkpoint()?;
-    // No capture producer remains after native preparation. Seal its actual
-    // closed files before reserving the separate map group, so unused promised
-    // capture capacity is not mistaken for a second simultaneous allocation.
-    let _capture_seal = capture_group.seal()?;
-    events.phase("recovery-map-publication");
-    let recovery_maps = if prepared.recovery_maps_required(&expected)? {
-        let map_group = arena.reserve_group(
-            ArtifactGroup::Map,
-            admission.map_page_budget()?.max_file_bytes,
-        )?;
-        let maps = prepared.create_recovery_maps(
+            request.pair.clone(),
             &expected,
-            &map_group,
+            &capture_group,
+            &output.join("target"),
+            &mut events,
+            |context, target, expected, native, scope, closing| {
+                let (source, raw) = context.source_and_inspection();
+                let mut bytes =
+                    PagedSourceByteAdapter::new(source, raw, admission, maximum_source_read_bytes)?;
+                let routes = PagedPayloadRoutes::capture(
+                    native,
+                    expected,
+                    &mut bytes,
+                    &capture_dir.join("routes"),
+                    &capture_group,
+                )?;
+                let candidate = PagedSourceBackedCandidate::new(bytes, target, expected, routes)?
+                    .with_closing_bytes(closing);
+                let mut guard = |p: CaptureProgress| -> Result<()> {
+                    let space = n2r_win32::discovery::observe_volume_space(&journal_root)?;
+                    ensure!(
+                        space.available_bytes_to_caller >= p.required_available_bytes()?,
+                        "capture does not have its remaining journal and reserve capacity"
+                    );
+                    Ok(())
+                };
+                capture_target_selected(
+                    candidate,
+                    scope,
+                    &capture_dir.join("literal.bin"),
+                    &capture_dir.join("capture.index"),
+                    capture_budget,
+                    &mut guard,
+                )
+            },
+        )?;
+        events.checkpoint()?;
+        let capture_scratch =
+            SourceScratch::new_auxiliary_in_arena(source_budget, capture_group.clone())?;
+        let domain = ResourceJournalDomain::from_capture(
+            proof.captured(),
+            ResourceJournalBudget {
+                max_selected_bytes: capture_budget.max_changed_bytes,
+                max_journal_bytes: request.max_journal_bytes,
+                marker_profile: request.marker_profile,
+            },
+            &capture_group,
             &capture_scratch,
-            &output.join("recovery-maps.pages"),
+            &output.join("journal-layout.index"),
+        )?;
+        events.phase("captured-candidate-open");
+        let mut candidate = ProtectedCapturedCandidate::open(
+            &proof,
+            &domain,
+            &mut context,
+            &mut shadow,
             &mut events,
         )?;
-        let _map_seal = map_group.seal()?;
-        Some(maps)
-    } else {
-        None
-    };
-    events.checkpoint()?;
-    let locator_group =
-        arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?;
-    let locator_scratch =
-        SourceScratch::new_auxiliary_in_arena(source_budget, locator_group.clone())?;
-    events.phase("durable-locator");
-    let locator = DurableRecoveryLocator::create_from_protected_preparation(
-        &mut prepared,
-        &locator_group,
-        &locator_scratch,
-        &output.join("recovery.locator"),
-        &mut events,
-    )?;
-    events.checkpoint()?;
-    events.phase("prepared-conversion-publication");
-    let prepared_conversion = {
-        let EventLog {
-            observer,
-            events: native_events,
-            ..
-        } = &mut events;
-        ResourcePreparedConversion::publish(
-            prepared,
-            &expected,
-            recovery_maps,
-            locator,
+        events.checkpoint()?;
+        events.phase("native-journal-create");
+        let mut creation = {
+            let (source, _) = context.source_and_inspection();
+            BoundNativeCreationJournal::create_new(
+                source,
+                &mut shadow,
+                &arena,
+                domain.facts().journal_length,
+                &output.join("selected.journal"),
+                &request.journal,
+                JournalProfile::from_schema_and_capacity(3, Some(request.max_journal_bytes))?,
+                domain.facts().marker_profile,
+                request.marker_use,
+                &mut events,
+            )?
+        };
+        events.checkpoint()?;
+        events.phase("native-journal-preparation");
+        let mut prepared = prepare_native_from_protected_capture(
+            &domain,
+            &mut context,
+            &mut shadow,
+            &mut candidate,
+            &mut creation,
+            &mut events,
+        )?;
+        events.checkpoint()?;
+        // No capture producer remains after native preparation. Seal its actual
+        // closed files before reserving the separate map group, so unused promised
+        // capture capacity is not mistaken for a second simultaneous allocation.
+        let _capture_seal = capture_group.seal()?;
+        events.phase("recovery-map-publication");
+        let recovery_maps = if prepared.recovery_maps_required(&expected)? {
+            let map_group = arena.reserve_group(
+                ArtifactGroup::Map,
+                admission.map_page_budget()?.max_file_bytes,
+            )?;
+            let maps = prepared.create_recovery_maps(
+                &expected,
+                &map_group,
+                &capture_scratch,
+                &output.join("recovery-maps.pages"),
+                &mut events,
+            )?;
+            let _map_seal = map_group.seal()?;
+            Some(maps)
+        } else {
+            None
+        };
+        events.checkpoint()?;
+        let locator_group =
+            arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?;
+        let locator_scratch =
+            SourceScratch::new_auxiliary_in_arena(source_budget, locator_group.clone())?;
+        events.phase("durable-locator");
+        let locator = DurableRecoveryLocator::create_from_protected_preparation(
+            &mut prepared,
             &locator_group,
             &locator_scratch,
-            &output.join("recovery-envelope.json"),
-            native_events,
-            |batch| observer.native_events("prepared-conversion-publication", batch),
-        )?
-    };
-    events.checkpoint()?;
-    events.observer.published(
-        prepared_conversion.publication_path(),
-        prepared_conversion.publication_sha256(),
-        prepared_conversion.locator_sha256(),
-    )?;
-    // Consume only inside this lexical scope. A callback cannot return any
-    // borrowed prepared/source/journal owner as its lifetime-independent T.
-    let result = {
-        let EventLog {
-            observer,
-            events: native_events,
-            ..
-        } = &mut events;
-        consume(prepared_conversion, native_events, *observer)?
-    };
-    events.checkpoint()?;
-    drop(creation);
-    drop(candidate);
-    drop(domain);
-    drop(proof);
-    drop(shadow);
-    drop(shadow_ram);
-    Ok(result)
+            &output.join("recovery.locator"),
+            &mut events,
+        )?;
+        events.checkpoint()?;
+        events.phase("prepared-conversion-publication");
+        let prepared_conversion = {
+            let EventLog {
+                observer,
+                events: native_events,
+                ..
+            } = &mut events;
+            ResourcePreparedConversion::publish(
+                prepared,
+                &expected,
+                recovery_maps,
+                locator,
+                &locator_group,
+                &locator_scratch,
+                &output.join("recovery-envelope.json"),
+                native_events,
+                |batch| observer.native_events("prepared-conversion-publication", batch),
+            )?
+        };
+        let publication_digest: [u8; 32] = hex::decode(prepared_conversion.publication_sha256())?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("published recovery checksum length differs"))?;
+        published = Some((
+            prepared_conversion.publication_path().to_path_buf(),
+            publication_digest,
+        ));
+        events.checkpoint()?;
+        events.observer.published(
+            prepared_conversion.publication_path(),
+            prepared_conversion.publication_sha256(),
+            prepared_conversion.locator_sha256(),
+        )?;
+        // Consume only inside this lexical scope. A callback cannot return any
+        // borrowed prepared/source/journal owner as its lifetime-independent T.
+        let result = {
+            let EventLog {
+                observer,
+                events: native_events,
+                ..
+            } = &mut events;
+            consume(prepared_conversion, native_events, *observer)?
+        };
+        events.checkpoint()?;
+        drop(creation);
+        drop(candidate);
+        drop(domain);
+        drop(proof);
+        drop(shadow);
+        drop(shadow_ram);
+        Ok(result)
+    })();
+    match result {
+        Ok(value) => Ok(value),
+        Err(original) => {
+            if !events.observer.restore_source_on_pre_ap_failure() {
+                return Err(original
+                    .context("diagnostic observer did not request automatic source restoration"));
+            }
+            // A cleared witness means an AP write was attempted, even if the
+            // call failed before the disk attributes changed. Never infer a
+            // safe cancellation from marker absence in that state.
+            if !context.has_original_freeze_witness() {
+                return Err(original.context(
+                    "apply intent was attempted; preserve and classify the recovery journal",
+                ));
+            }
+            if let Some((path, sha)) = published {
+                // Recheck the actual still-held pre-AP source before releasing
+                // it. The reopened recovery path independently authenticates
+                // the publication and writes durable ABT before NTFS online.
+                events.phase("pre-ap-published-cancellation-check");
+                let checked = context
+                    .recheck_source(&mut events)
+                    .and_then(|()| events.checkpoint());
+                if let Err(cleanup) = checked {
+                    return Err(original.context(format!("pre-AP cancellation source recheck failed; disk remains excluded: {cleanup:#}")));
+                }
+                drop(context);
+                drop(events);
+                drop(arena);
+                let cancelled = crate::resource_recovery::recover_resource_allocation_with_observer(
+                    request.pair.clone(),
+                    request.journal.clone(),
+                    &path,
+                    sha,
+                    request.resources,
+                    &output.join("pre-ap-cancellation"),
+                    true,
+                    observer,
+                );
+                match cancelled {
+                    Ok(receipt) => Err(original.context(format!("conversion failed before AP; original NTFS restored through durable cancellation: {receipt}"))),
+                    Err(cleanup) => Err(original.context(format!("conversion failed before AP; durable cancellation did not complete and source may remain excluded or already be online: {cleanup:#}"))),
+                }
+            } else {
+                if output.join("recovery-envelope.json").exists() {
+                    return Err(original.context("publication may be partial; preserve it and the excluded source for explicit recovery"));
+                }
+                match abort::restore_live_source(context, &mut events) {
+                    Ok(mounted) => Err(original.context(format!("conversion failed before publication; unchanged original NTFS restored on disk {}", mounted.disk_number))),
+                    Err(cleanup) => Err(original.context(format!("conversion failed before publication; original NTFS cleanup did not complete and source may remain excluded or already be online: {cleanup:#}"))),
+                }
+            }
+        }
+    }
 }

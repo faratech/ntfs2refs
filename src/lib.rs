@@ -110,6 +110,8 @@ pub mod resource_diagnostic;
 #[cfg(windows)]
 pub(crate) mod resource_preparation;
 #[cfg(windows)]
+pub(crate) mod resource_recovery;
+#[cfg(windows)]
 pub(crate) mod resource_finalize;
 pub mod retained_compare;
 pub mod selected_capacity;

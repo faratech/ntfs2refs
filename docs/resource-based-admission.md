@@ -9,18 +9,34 @@ and saved-map verification before writable access. The source's diagnostic
 report flags are not activation authority. The exact experimental source
 snapshot is `f469d146e530cb471060e1cbdea22127a7baaebd`; its release build used
 the shared experimental cache and does not establish reproducibility or native
-qualification. The public CLI switch is a separate subsequent change.
+qualification.
 
-The latest completed native attempt still stopped before source writes while
+The subsequent public integration is connected in source snapshot
+`5a1eea1714ee06ae840a2dc4996286209589f7a3`: default allocation-bounded `--drive`
+uses the resource-profile preparation/apply/recovery/finalization chain.
+Its actual 52 GiB public-command run reached capture, refused an oversized
+checked-MFT working reservation before publication/AP, and restored unchanged
+NTFS online through the live cancellation gate. The earlier volume-root
+refusal and this cleanup result are recorded in
+`evidence/public-resource-volume-root-refusal-20261103.json` and
+`evidence/public-resource-mft-memory-restoration-20261103.json`.
+This is compiled experimental integration and safe-refusal evidence; it is not
+a completed V4 conversion or general release qualification.
+
+The earlier core-only native attempt stopped before source writes while
 preparing target intervals. Its actual input count exposed an eager RAM/8 sort
 reservation; the snapshot replaces that batch sizing with actual domain hints
 and preserves complete spill/merge processing. Full V4 conversion, reboot
 recovery, hardware coverage and the final release matrix remain required.
 
 This development path replaces fixture cardinality limits with complete,
-page-backed metadata and an explicit RAM/scratch budget. It does not enable a
-general conversion path or inherit native qualification from source `7feb4c0`.
+page-backed metadata and an explicit RAM/scratch budget. It does not establish
+general conversion qualification or inherit native results from `7feb4c0`.
 The previously qualified native-shadow candidate remains preserved separately.
+
+The implementation-history paragraphs below retain their recorded revision
+scope; their older integration-pending statements do not supersede the current
+checkpoint above.
 
 `ResourceBoundedV4` binds the actual source pin and complete MFT, object and
 stream counts to observed resources. Its pre-count state cannot authorize native

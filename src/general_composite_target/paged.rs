@@ -782,6 +782,7 @@ pub(crate) struct PagedTargetScope {
     identity: Arc<CaptureScopeIdentity>,
     native_report: Arc<n2r_win32::shadow_native::Report>,
     source_owner: usize,
+    _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
 }
 pub(crate) struct CaptureScopeIdentity {
     _ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
@@ -1334,7 +1335,13 @@ pub(crate) fn observe_and_select_paged(
         identity: Arc::new(CaptureScopeIdentity { _ram: identity_ram }),
         native_report: native.report().native_observation(),
         source_owner,
+        _ram: scratch.lease_ram(16 * 1024)?,
     };
+    // The capture candidate and reducer independently pay for their source
+    // session, decoded object/routes and I/O buffers. Only the closing reader
+    // below needs a buffer from this layer during consume().
+    let _closing_read_ram = scratch.lease_ram(crate::ntfs_inspect::SESSION_READ_BYTES as u64)?;
+    drop(_stage_ram);
     let mut closing = PagedShadowClosing::new(target, &scope.consumed)?;
     let captured = consume(context, target, expected, &native, &scope, &mut closing)?;
     ensure!(

@@ -79,8 +79,22 @@ impl<'a> StreamedPlanner<'a> {
             return Err(invalid("streamed retention partition geometry differs"));
         }
         let domain = partition / CLUSTER;
+        Self::build(legacy, metadata, partition, crate::bitmap_streaming::source_limits(domain)?, None)
+    }
+
+    fn build(
+        legacy: &'a crate::bitmap_streaming::Summary,
+        metadata: &'a crate::bitmap_streaming::Summary,
+        partition: u64,
+        limits: crate::bitmap_streaming::Limits,
+        resource_capacity: Option<usize>,
+    ) -> io::Result<Self> {
+        if partition == 0 || !partition.is_multiple_of(CLUSTER) {
+            return Err(invalid("streamed retention partition geometry differs"));
+        }
+        let domain = partition / CLUSTER;
         for summary in [legacy, metadata] {
-            summary.validate(domain, crate::bitmap_streaming::source_limits(domain)?)?;
+            summary.validate(domain, limits)?;
             if summary.declared_clusters != domain {
                 return Err(invalid("streamed retention bitmap domain differs"));
             }
@@ -88,6 +102,12 @@ impl<'a> StreamedPlanner<'a> {
         let mut left = legacy.allocated_ranges.iter().peekable();
         let mut right = metadata.allocated_ranges.iter().peekable();
         let mut occupied: Vec<(u64, u64)> = Vec::new();
+        if let Some(capacity) = resource_capacity {
+            occupied.try_reserve_exact(capacity).map_err(io::Error::other)?;
+            if occupied.capacity() > capacity {
+                return Err(invalid("retention union exceeded prepaid capacity"));
+            }
+        }
         loop {
             let next = match (left.peek(), right.peek()) {
                 (Some(a), Some(b)) if a.starting_lcn <= b.starting_lcn => left.next(),
@@ -122,8 +142,12 @@ impl<'a> StreamedPlanner<'a> {
     }
 
     pub fn plan(&self, run: SourceRun, max_subruns: usize) -> io::Result<Plan> {
+        self.plan_inner(run, max_subruns, false)
+    }
+
+    fn plan_inner(&self, run: SourceRun, max_subruns: usize, resource: bool) -> io::Result<Plan> {
         let (legacy, metadata, partition) = (self.legacy, self.metadata, self.partition);
-        if !(1..=MAX_SUBRUNS).contains(&max_subruns)
+        if max_subruns == 0 || (!resource && max_subruns > MAX_SUBRUNS)
             || partition == 0
             || !partition.is_multiple_of(CLUSTER)
             || run.length == 0
@@ -144,6 +168,16 @@ impl<'a> StreamedPlanner<'a> {
         let mut cursor = start;
         let mut free_clusters = 0u64;
         let mut subruns = Vec::new();
+        if resource {
+            // A free complement gains at most one interval per occupied
+            // interval, plus splits at the native DWORD cluster limit.
+            let split = usize::try_from((run.length / CLUSTER).div_ceil(u64::from(u32::MAX)))
+                .map_err(io::Error::other)?;
+            let capacity = self.occupied.len().checked_add(split).and_then(|n| n.checked_add(1))
+                .ok_or_else(|| invalid("retention output capacity overflow"))?.min(max_subruns);
+            subruns.try_reserve_exact(capacity).map_err(io::Error::other)?;
+            if subruns.capacity() > capacity { return Err(invalid("retention output exceeded prepaid capacity")); }
+        }
         let mut push_free = |mut begin: u64, end: u64| -> io::Result<()> {
             while begin < end {
                 if subruns.len() >= max_subruns {
@@ -190,6 +224,74 @@ impl<'a> StreamedPlanner<'a> {
             blocked_bytes: run.length - free_clusters * CLUSTER,
             subruns,
         })
+    }
+}
+
+/// Actual bounded resource owner for complete bitmap union and per-run output.
+#[cfg(windows)]
+pub struct ResourcePlanner<'a> {
+    planner: StreamedPlanner<'a>,
+    max_subruns: usize,
+    payer: &'a dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+    _lease: Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>,
+}
+
+#[cfg(windows)]
+pub struct ResourcePlan {
+    plan: Plan,
+    _lease: Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>,
+}
+#[cfg(windows)]
+impl std::ops::Deref for ResourcePlan {
+    type Target = Plan;
+    fn deref(&self) -> &Plan { &self.plan }
+}
+
+#[cfg(windows)]
+impl<'a> StreamedPlanner<'a> {
+    pub fn new_resource(
+        legacy: &'a crate::bitmap_streaming::Summary,
+        metadata: &'a crate::bitmap_streaming::Summary,
+        partition: u64,
+        limits: crate::bitmap_streaming::Limits,
+        max_subruns: usize,
+        payer: &'a dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+    ) -> io::Result<ResourcePlanner<'a>> {
+        if max_subruns == 0 { return Err(invalid("resource retention subrun budget is empty")); }
+        let capacity = legacy.allocated_ranges.len().checked_add(metadata.allocated_ranges.len())
+            .ok_or_else(|| invalid("retention bitmap union count overflow"))?;
+        let bytes = (capacity as u64).checked_mul(std::mem::size_of::<(u64,u64)>() as u64)
+            .and_then(|n| n.checked_add(payer.lease_heap_bytes()))
+            .ok_or_else(|| invalid("retention union RAM overflow"))?;
+        let lease = payer.reserve(bytes)?;
+        let planner = Self::build(legacy, metadata, partition, limits, Some(capacity))?;
+        Ok(ResourcePlanner { planner, max_subruns, payer, _lease: lease })
+    }
+}
+
+#[cfg(windows)]
+impl ResourcePlanner<'_> {
+    pub fn plan(&self, run: SourceRun, remaining_subruns: usize) -> io::Result<ResourcePlan> {
+        if remaining_subruns == 0 || remaining_subruns > self.max_subruns {
+            return Err(invalid("resource retention remaining budget differs"));
+        }
+        let split = usize::try_from((run.length / CLUSTER).div_ceil(u64::from(u32::MAX)))
+            .map_err(io::Error::other)?;
+        let slots = self.planner.occupied.len().checked_add(split).and_then(|n| n.checked_add(1))
+            .ok_or_else(|| invalid("retention output capacity overflow"))?.min(remaining_subruns);
+        let bytes = (slots as u64).checked_mul(std::mem::size_of::<FreeSubrun>() as u64)
+            .and_then(|n| n.checked_add((self.planner.legacy.canonical_bitmap_sha256.len() + self.planner.metadata.canonical_bitmap_sha256.len()) as u64 * 2))
+            .and_then(|n| n.checked_add(self.payer.lease_heap_bytes()))
+            .ok_or_else(|| invalid("retention output RAM overflow"))?;
+        let mut lease = self.payer.reserve(bytes)?;
+        let plan = self.planner.plan_inner(run, remaining_subruns, true)?;
+        let actual = (plan.subruns.capacity() as u64).checked_mul(std::mem::size_of::<FreeSubrun>() as u64)
+            .and_then(|n| n.checked_add(plan.legacy_bitmap_sha256.capacity() as u64))
+            .and_then(|n| n.checked_add(plan.metadata_bitmap_sha256.capacity() as u64))
+            .and_then(|n| n.checked_add(self.payer.lease_heap_bytes()))
+            .ok_or_else(|| invalid("retention actual output RAM overflow"))?;
+        lease.shrink_to(actual)?;
+        Ok(ResourcePlan { plan, _lease: lease })
     }
 }
 

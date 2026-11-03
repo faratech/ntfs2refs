@@ -1547,6 +1547,42 @@ impl ResourceSourceContext {
         );
         Ok(())
     }
+
+    /// Consume the same live pre-AP NTFS owner on an ordinary failure. The
+    /// original freeze witness is invalidated before *any* AP attempt, so it
+    /// can never authorize cleanup of a source that entered journal replay.
+    pub(crate) fn restore_original_unchanged(
+        mut self,
+        events: &mut Vec<NativeEvent>,
+        mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
+    ) -> Result<GeneralDiskBinding> {
+        self.recheck_source(events)?;
+        checkpoint(events)?;
+        let binding = self.source.binding().clone();
+        let length = self.source.byte_len();
+        // The SDK repeats the entire SHA-256 while holding the same frozen
+        // source. Pay the single 4 MiB hashing buffer and state-query overhead
+        // before either pass; this expensive path is only used after failure.
+        let _ram = self.scratch.lease_ram(5 * 1024 * 1024)?;
+        let sha = hex::encode(n2r_win32::sha256_native::hash_range(&mut self.source, 0, length)?);
+        self.recheck_source(events)?;
+        checkpoint(events)?;
+        ensure!(self.source.freeze_observation().is_some(),
+            "pre-AP NTFS freeze witness was consumed");
+        self.source.bring_original_online_unchanged(&sha, events)
+            .context("original NTFS online transition failed; source may require rediscovery")?;
+        checkpoint(events)?;
+        let mounted = n2r_win32::rediscover_general_volume_wait(binding.clone(), events)?;
+        n2r_win32::volume_label::validate_original_partition(&binding, &mounted)?;
+        ensure!(n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == "NTFS",
+            "original source did not return as NTFS");
+        checkpoint(events)?;
+        Ok(mounted)
+    }
+
+    pub(crate) fn has_original_freeze_witness(&self) -> bool {
+        self.source.freeze_observation().is_some()
+    }
     pub fn inspection(&self) -> &PagedInspection {
         &self.raw
     }

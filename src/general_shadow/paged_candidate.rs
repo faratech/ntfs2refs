@@ -5,6 +5,7 @@ use super::{
     source_backed::{
         CandidateChunk, CandidateReadSpans, ClosingShadowBytes, ClosingSourceBytes,
         PagedSourceByteAdapter, PagedStreamIdentity, ReadCounts,
+        candidate_span_workspace_bytes,
     },
 };
 use crate::{
@@ -357,6 +358,9 @@ pub(crate) struct PagedCandidateChunk<'buffer> {
     chunk: CandidateChunk<'buffer>,
     original_owner: usize,
     physical_offset: u64,
+    // Chunk bytes and spans may outlive the candidate. Release the prepaid
+    // receipt workspace only after the owned span Vec has been dropped.
+    _ram: SourceRamLease,
 }
 impl PagedCandidateChunk<'_> {
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -387,6 +391,12 @@ impl<'source, 'observation> PagedSourceBackedCandidate<'source, 'observation> {
         expected: &'source PagedExpectedTree,
         routes: PagedPayloadRoutes<'observation>,
     ) -> Result<Self> {
+        // Each native state query returns at most 64 KiB of layout plus small
+        // fixed device/geometry buffers and event copies. One MiB pays the
+        // retained shadow state together with an overlapping before/after query.
+        // Routes, expected objects and the NTFS DATA session own their own
+        // separately prepaid leases; no source-row-sized copy is made here.
+        let ram = routes.scratch.lease_ram(1024 * 1024)?;
         routes.revalidate(expected)?;
         bytes.require_admission(routes.admission)?;
         ensure!(
@@ -404,14 +414,6 @@ impl<'source, 'observation> PagedSourceBackedCandidate<'source, 'observation> {
             length == routes.pair().shadow.identity.partition_bytes,
             "candidate partition length differs"
         );
-        let ram = routes.scratch.lease_ram(
-            routes
-                .admission
-                .budget
-                .max_row_bytes
-                .checked_mul(8)
-                .context("candidate row RAM overflow")?,
-        )?;
         let source_reads_before = bytes.logical_bytes_read();
         Ok(Self {
             bytes,
@@ -656,6 +658,14 @@ impl<'source, 'observation> PagedSourceBackedCandidate<'source, 'observation> {
             !self.poisoned && output.len() <= CHUNK,
             "candidate chunk exceeds bounded actual read window"
         );
+        // The returned chunk owns its span Vec independently of `self`.
+        // Its lease also covers the transient direct receipt and Vec growth
+        // before any spans are allocated.
+        let ram = self.routes.scratch.lease_ram(if direct {
+            candidate_span_workspace_bytes()?
+        } else {
+            0
+        })?;
         let result: Result<CandidateReadSpans> = (|| {
             self.seek(SeekFrom::Start(offset))?;
             let mut done = 0;
@@ -681,6 +691,7 @@ impl<'source, 'observation> PagedSourceBackedCandidate<'source, 'observation> {
             chunk: CandidateChunk::from_actual_reads(output, spans),
             original_owner: self.bytes.original_owner_id(),
             physical_offset: offset,
+            _ram: ram,
         })
     }
     /// Reuse only this candidate's original owner's actual direct-read spans.

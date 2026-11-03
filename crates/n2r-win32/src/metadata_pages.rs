@@ -104,10 +104,21 @@ fn ordinary(path: &Path) -> io::Result<()> {
     )?;
     for part in path.components() {
         match part {
-            Component::Prefix(p) => require(
-                matches!(p.kind(), Prefix::Disk(_)),
-                "local ordinary metadata path required",
-            )?,
+            Component::Prefix(p) => {
+                let local = match p.kind() {
+                    Prefix::Disk(_) => true,
+                    // Authenticated recovery pins use the actual volume-GUID
+                    // route saved by the held file. Accept only that exact
+                    // filesystem prefix, never device/GLOBALROOT/UNC aliases.
+                    Prefix::Verbatim(name) => name.to_str()
+                        .and_then(|s| s.strip_prefix("Volume{"))
+                        .and_then(|s| s.strip_suffix('}'))
+                        .is_some_and(|guid| guid.len() == 36
+                            && crate::layout::guid_bytes(guid).is_ok_and(|v| v != [0;16])),
+                    _ => false,
+                };
+                require(local, "local ordinary metadata path required")?;
+            }
             Component::RootDir => {}
             Component::Normal(name) => {
                 let name = name

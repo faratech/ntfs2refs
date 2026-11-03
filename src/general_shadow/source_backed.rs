@@ -41,6 +41,20 @@ struct CandidateReadSpan {
     length: usize,
 }
 
+/// Both growable span vectors can overlap while a direct-read receipt is
+/// appended. Pay old plus new Vec allocations during growth; this stays
+/// bounded by the explicit per-read span limit and is independent of row size.
+pub(super) fn candidate_span_workspace_bytes() -> Result<u64> {
+    let item_bytes = std::mem::size_of::<CandidateReadSpan>()
+        .checked_add(std::mem::size_of::<crate::ntfs_inspect::DirectReadSpan>())
+        .context("candidate span item size overflow")?;
+    (crate::ntfs_inspect::MAX_DIRECT_READ_SPANS as u64)
+        .checked_mul(item_bytes as u64)
+        .and_then(|n| n.checked_mul(3))
+        .and_then(|n| n.checked_add(64 * 1024))
+        .context("candidate span workspace overflow")
+}
+
 impl<'buf> CandidateChunk<'buf> {
     pub(super) fn from_actual_reads(bytes: &'buf [u8], reads: CandidateReadSpans) -> Self {
         Self { bytes, reads }

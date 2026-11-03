@@ -16,6 +16,25 @@ use n2r_win32::{
 };
 use std::{collections::BTreeSet, path::Path};
 
+#[derive(Debug)]
+pub(crate) struct CommittedFinalizationError {
+    cause: anyhow::Error,
+}
+impl std::fmt::Display for CommittedFinalizationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ReFS conversion is committed and online; finalization is incomplete: {:#}",
+            self.cause
+        )
+    }
+}
+impl std::error::Error for CommittedFinalizationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.cause.as_ref())
+    }
+}
+
 pub(crate) fn finalize_resource_handoff(
     pair: GeneralSourceShadowBinding,
     journal: GeneralJournalStorageBinding,
@@ -135,57 +154,60 @@ pub(crate) fn finalize_resource_handoff_with_observer<O: PreparationObserver>(
         budget.scratch_bytes,
         &mut events,
     )?;
-    events.checkpoint()?;
-    let converted = mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
-    let current_label = n2r_win32::volume_label::observe_label(converted.clone(), "ReFS")?;
-    let restored = n2r_win32::volume_label::restore_verified_label(
-        mounted.source(),
-        mounted.expected_source_label(),
-        converted.clone(),
-        &current_label.label,
-    )?;
-    ensure!(restored.success, "original volume label restoration failed");
-    let mut paths = n2r_win32::capture_mount_paths_general(converted.clone(), &mut events)?;
-    let expected_paths: BTreeSet<_> = mounted
-        .expected_mount_paths()
-        .iter()
-        .map(|s| s.to_lowercase())
-        .collect();
-    let initial_paths: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
-    for missing in expected_paths.difference(&initial_paths) {
-        let bytes = missing.as_bytes();
-        ensure!(
-            bytes.len() == 3
-                && bytes[0].is_ascii_alphabetic()
-                && bytes[1] == b':'
-                && bytes[2] == b'\\',
-            "HND is closed; missing folder mount requires explicit rebinding: {missing}"
-        );
+    let finish_online = (|| -> Result<serde_json::Value> {
         events.checkpoint()?;
-        n2r_win32::restore_drive_letter_general(converted.clone(), missing, &mut events)
+        let converted = mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
+        let current_label = n2r_win32::volume_label::observe_label(converted.clone(), "ReFS")?;
+        let restored = n2r_win32::volume_label::restore_verified_label(
+            mounted.source(),
+            mounted.expected_source_label(),
+            converted.clone(),
+            &current_label.label,
+        )?;
+        ensure!(restored.success, "original volume label restoration failed");
+        let mut paths = n2r_win32::capture_mount_paths_general(converted.clone(), &mut events)?;
+        let expected_paths: BTreeSet<_> = mounted
+            .expected_mount_paths()
+            .iter()
+            .map(|s| s.to_lowercase())
+            .collect();
+        let initial_paths: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
+        for missing in expected_paths.difference(&initial_paths) {
+            let bytes = missing.as_bytes();
+            ensure!(
+                bytes.len() == 3
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && bytes[2] == b'\\',
+                "HND is closed; missing folder mount requires explicit rebinding: {missing}"
+            );
+            events.checkpoint()?;
+            n2r_win32::restore_drive_letter_general(converted.clone(), missing, &mut events)
             .context("HND is closed; original drive letter could not be restored without reassigning another volume")?;
-    }
-    if !expected_paths.is_subset(&initial_paths) {
-        paths = n2r_win32::capture_mount_paths_general(converted.clone(), &mut events)?;
-    }
-    let actual_paths: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
-    ensure!(
-        expected_paths == actual_paths,
-        "original volume mount paths were not preserved"
-    );
-    mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
-    events.checkpoint()?;
-    let known = native
-        .report()
-        .content_observation
-        .as_ref()
-        .and_then(|o| o.known_content.as_ref())
-        .context("known-content verification receipt absent")?;
-    Ok(
-        serde_json::json!({"kind":"resource-native-finalization-v1","success":true,
+        }
+        if !expected_paths.is_subset(&initial_paths) {
+            paths = n2r_win32::capture_mount_paths_general(converted.clone(), &mut events)?;
+        }
+        let actual_paths: BTreeSet<_> = paths.paths.iter().map(|s| s.to_lowercase()).collect();
+        ensure!(
+            expected_paths == actual_paths,
+            "original volume mount paths were not preserved"
+        );
+        mounted.revalidate_handoff_artifacts_after_mount(&mut events)?;
+        events.checkpoint()?;
+        let known = native
+            .report()
+            .content_observation
+            .as_ref()
+            .and_then(|o| o.known_content.as_ref())
+            .context("known-content verification receipt absent")?;
+        Ok(
+            serde_json::json!({"kind":"resource-native-finalization-v1","success":true,
         "publication_sha256":hex::encode(publication_sha256),"matching_map_bindings":matching_bindings,
         "known_streams_hashed":known.streams_hashed,"known_payload_bytes_read":known.payload_bytes_read,
         "extent_only_streams":known.streams_without_content_baseline,"source":converted,
         "label_restored":true,"mount_paths_preserved":true,"journal_handoff_closed":true}),
-    )
+        )
+    })();
+    finish_online.map_err(|cause| CommittedFinalizationError { cause }.into())
 }

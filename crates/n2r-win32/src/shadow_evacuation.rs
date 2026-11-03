@@ -103,13 +103,30 @@ pub(crate) fn plan_ranges(
 ) -> io::Result<Plan> {
     const MAX_MAP_RANGES: usize = 262_144;
     const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024 * 1024;
-    if partition == 0
-        || partition > MAX_BYTES
-        || !partition.is_multiple_of(CLUSTER)
+    if partition > MAX_BYTES
         || limits.max_source_extents > MAX_EXTENTS
         || limits.max_shadow_extents > MAX_EXTENTS
         || limits.max_blocked > 2 * MAX_EXTENTS
         || limits.max_moves > MAX_MOVES
+    {
+        return Err(invalid("streaming evacuation geometry differs"));
+    }
+    plan_ranges_bounded(legacy, metadata, eligible_source, shadow, partition, move_budget, limits, MAX_MAP_RANGES)
+}
+
+fn plan_ranges_bounded(
+    legacy: &bitmap_layout::AllocationMap,
+    metadata: &bitmap_layout::AllocationMap,
+    eligible_source: &[Extent],
+    shadow: &[Extent],
+    partition: u64,
+    move_budget: usize,
+    limits: RangeLimits,
+    max_map_ranges: usize,
+) -> io::Result<Plan> {
+    if partition == 0
+        || !partition.is_multiple_of(CLUSTER)
+        || partition > i64::MAX as u64
         || !(1..=limits.max_moves).contains(&move_budget)
         || !limits.margin.is_multiple_of(CLUSTER)
         || limits.margin.checked_mul(2).is_none_or(|m| m >= partition)
@@ -117,14 +134,14 @@ pub(crate) fn plan_ranges(
         return Err(invalid("streaming evacuation geometry differs"));
     }
     for map in [legacy, metadata] {
-        if map.ranges.len() > MAX_MAP_RANGES {
+        if map.ranges.len() > max_map_ranges {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "evacuation interval budget exceeded",
             ));
         }
         if map.cluster_count != partition / CLUSTER
-            || map.ranges.len() > MAX_MAP_RANGES
+            || map.ranges.len() > max_map_ranges
             || map.bitmap_sha256.len() != 64
             || !map
                 .bitmap_sha256
@@ -310,6 +327,72 @@ pub(crate) fn plan_ranges(
         moves,
         remaining_blocked_bytes: blocked_bytes - total,
     })
+}
+
+/// The plan owns its real retained output lease; dropping it releases the
+/// corresponding prepaid resource allowance only after its moves are freed.
+pub(crate) struct ResourcePlan {
+    plan: Plan,
+    _lease: Box<dyn crate::shadow_native::report_memory::ReportMemoryLease>,
+}
+impl std::ops::Deref for ResourcePlan {
+    type Target = Plan;
+    fn deref(&self) -> &Plan { &self.plan }
+}
+
+/// Resource-profile variant. The caller supplies limits derived from its
+/// admitted, prepaid bitmap/placement bounds; this retains every map and
+/// ownership check performed by the legacy planner.
+pub(crate) fn plan_ranges_resource(
+    legacy: &bitmap_layout::AllocationMap,
+    metadata: &bitmap_layout::AllocationMap,
+    eligible_source: &[Extent],
+    shadow: &[Extent],
+    partition: u64,
+    move_budget: usize,
+    limits: RangeLimits,
+    bitmap_range_limit: usize,
+    payer: &dyn crate::shadow_native::report_memory::ReportMemoryAccountant,
+) -> io::Result<ResourcePlan> {
+    if bitmap_range_limit == 0 || limits.max_moves == 0 || move_budget == 0
+        || move_budget > limits.max_moves
+        || eligible_source.len() > limits.max_source_extents
+        || shadow.len() > limits.max_shadow_extents
+        || legacy.ranges.len() > bitmap_range_limit
+        || metadata.ranges.len() > bitmap_range_limit {
+        return Err(invalid("resource evacuation limits are empty or inconsistent"));
+    }
+    let add = |a: usize, b: usize| a.checked_add(b).ok_or_else(|| invalid("resource evacuation count overflow"));
+    let source_count = eligible_source.len();
+    let shadow_count = shadow.len();
+    let extents = add(source_count, shadow_count)?;
+    // Sorted, internally disjoint source/shadow intervals have at most N+M
+    // nonempty intersections. Occupancy adds at most one destination split
+    // per union range and native DWORD-sized moves split long ranges further.
+    let blocked = extents.min(limits.max_blocked);
+    let occupied = add(add(add(legacy.ranges.len(), metadata.ranges.len())?, source_count)?, 2)?;
+    let native_splits = usize::try_from(partition / (u64::from(u32::MAX) * CLUSTER))
+        .map_err(io::Error::other)?;
+    let max_output = add(add(blocked, occupied)?, native_splits)?.min(move_budget);
+    let bytes = (extents as u64).checked_mul(512)
+        // Vec reallocation temporarily retains both old and new buffers.
+        .and_then(|n| n.checked_add((occupied as u64).checked_mul(3 * std::mem::size_of::<(u64, u64)>() as u64)?))
+        .and_then(|n| n.checked_add((blocked as u64).checked_mul(3 * std::mem::size_of::<Extent>() as u64)?))
+        .and_then(|n| n.checked_add((max_output as u64).checked_mul(3 * std::mem::size_of::<Move>() as u64)?))
+        .and_then(|n| n.checked_add(1024 * 1024))
+        .and_then(|n| n.checked_add(payer.lease_heap_bytes()))
+        .ok_or_else(|| invalid("resource evacuation RAM overflow"))?;
+    let mut lease = payer.reserve(bytes)?;
+    let plan = plan_ranges_bounded(legacy, metadata, eligible_source, shadow, partition,
+        move_budget, limits, bitmap_range_limit)?;
+    let retained = (plan.moves.capacity() as u64)
+        .checked_mul(std::mem::size_of::<Move>() as u64)
+        .and_then(|n| n.checked_add(plan.legacy_bitmap_sha256.capacity() as u64))
+        .and_then(|n| n.checked_add(plan.metadata_bitmap_sha256.capacity() as u64))
+        .and_then(|n| n.checked_add(payer.lease_heap_bytes()))
+        .ok_or_else(|| invalid("resource evacuation retained RAM overflow"))?;
+    lease.shrink_to(retained)?;
+    Ok(ResourcePlan { plan, _lease: lease })
 }
 
 fn invalid(message: &str) -> io::Error {

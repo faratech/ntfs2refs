@@ -3,6 +3,10 @@ use anyhow::{Context, Result, ensure};
 use clap::Args;
 use std::path::PathBuf;
 
+#[cfg(windows)]
+#[path = "drive_resource.rs"]
+mod resource;
+
 #[derive(Args, Debug)]
 pub struct DriveArgs {
     /// Show available Windows disks, partition numbers and mounted volumes.
@@ -329,6 +333,15 @@ mod windows {
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         if let Some(directory) = args.recover {
+            if directory.join("recovery-envelope.json").exists() {
+                return super::resource::recover(
+                    &directory,
+                    &args
+                        .recovery_sha256
+                        .context("original recovery checksum required")?,
+                    args.rollback,
+                );
+            }
             return crate::drive_recovery::run(
                 &directory,
                 &args
@@ -378,8 +391,8 @@ mod windows {
             before.filesystem == "NTFS",
             "selected partition must currently be NTFS"
         );
-        let resources = if !args.whole_image_verification && !args.verify_full_content {
-            crate::ntfs_admission::ResourceProfile::ExperimentalObjectEnvelopeV3(None)
+        let resources = if !args.whole_image_verification {
+            crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(None)
         } else {
             crate::ntfs_admission::ResourceProfile::ExperimentalStreamingTreeV2
         };
@@ -592,67 +605,92 @@ mod windows {
                 "grants_source_or_replay_authority":false,
             }),
         )?;
-        if minimize_scratch {
-            println!("Preparing NTFS file placement to reduce recovery storage.");
-            let preparation = crate::ntfs_preparation::prepare(
-                before.binding.clone(),
-                staged.binding.clone(),
-                resources,
-                &run.join("ntfs-preparation"),
-                crate::ntfs_preparation::Budget {
-                    metadata_bytes: 64 * 1024 * 1024,
-                    receipt_bytes: 64 * 1024 * 1024,
-                    maximum_moves: 32768,
-                    maximum_move_bytes: 64 * 1024 * 1024,
-                    maximum_payload_bytes: before.binding.identity.partition_bytes,
+        let result = if allocation_bounded {
+            super::resource::convert_owned(
+                n2r_win32::general_layout::GeneralSourceShadowBinding {
+                    source: before.binding.clone(),
+                    shadow: staged.binding.clone(),
                 },
-            )?;
-            save_new(&run.join("ntfs-preparation-result.json"), &preparation)?;
-        }
-        let request = crate::general_conversion::Request {
-            verification_policy,
-            selected_capacity_policy: if minimize_scratch {
-                crate::selected_capacity::SelectedCapacityPolicy::SourceFreeActualBytesV1
-            } else {
-                Default::default()
-            },
-            schema_version: if allocation_bounded { 3 } else { 2 },
-            source_resource_profile: Some(resources),
-            experiment_id: id,
-            pair: n2r_win32::general_layout::GeneralSourceShadowBinding {
-                source: before.binding.clone(),
-                shadow: staged.binding.clone(),
-            },
-            journal: n2r_win32::journal_file::GeneralJournalStorageBinding {
-                disk: journal.binding.clone(),
-                externally_enrolled_disk_unique_id: format!(
-                    "gpt-{}",
-                    journal.binding.identity.disk_guid.trim_matches(['{', '}'])
-                ),
-                allow_additional_partitions: true,
-            },
-            max_journal_bytes: journal_bytes,
-            max_literal_backing_bytes: literal_backing_bytes,
-            max_combined_scratch_bytes: allocation_bounded.then_some(usable),
-            verify_existing_shadow: false,
+                n2r_win32::journal_file::GeneralJournalStorageBinding {
+                    disk: journal.binding.clone(),
+                    externally_enrolled_disk_unique_id: format!(
+                        "gpt-{}",
+                        journal.binding.identity.disk_guid.trim_matches(['{', '}'])
+                    ),
+                    allow_additional_partitions: true,
+                },
+                &run,
+                verification_policy,
+                if minimize_scratch {
+                    crate::selected_capacity::SelectedCapacityPolicy::SourceFreeActualBytesV1
+                } else {
+                    Default::default()
+                },
+            )
+        } else {
+            if minimize_scratch {
+                println!("Preparing NTFS file placement to reduce recovery storage.");
+                let preparation = crate::ntfs_preparation::prepare(
+                    before.binding.clone(),
+                    staged.binding.clone(),
+                    resources,
+                    &run.join("ntfs-preparation"),
+                    crate::ntfs_preparation::Budget {
+                        metadata_bytes: 64 * 1024 * 1024,
+                        receipt_bytes: 64 * 1024 * 1024,
+                        maximum_moves: 32768,
+                        maximum_move_bytes: 64 * 1024 * 1024,
+                        maximum_payload_bytes: before.binding.identity.partition_bytes,
+                    },
+                )?;
+                save_new(&run.join("ntfs-preparation-result.json"), &preparation)?;
+            }
+            let request = crate::general_conversion::Request {
+                verification_policy,
+                selected_capacity_policy: if minimize_scratch {
+                    crate::selected_capacity::SelectedCapacityPolicy::SourceFreeActualBytesV1
+                } else {
+                    Default::default()
+                },
+                schema_version: if allocation_bounded { 3 } else { 2 },
+                source_resource_profile: Some(resources),
+                experiment_id: id,
+                pair: n2r_win32::general_layout::GeneralSourceShadowBinding {
+                    source: before.binding.clone(),
+                    shadow: staged.binding.clone(),
+                },
+                journal: n2r_win32::journal_file::GeneralJournalStorageBinding {
+                    disk: journal.binding.clone(),
+                    externally_enrolled_disk_unique_id: format!(
+                        "gpt-{}",
+                        journal.binding.identity.disk_guid.trim_matches(['{', '}'])
+                    ),
+                    allow_additional_partitions: true,
+                },
+                max_journal_bytes: journal_bytes,
+                max_literal_backing_bytes: literal_backing_bytes,
+                max_combined_scratch_bytes: allocation_bounded.then_some(usable),
+                verify_existing_shadow: false,
+            };
+            request.validate()?;
+            save_new(&run.join("devices.json"), &request)?;
+            let output = run.join("conversion");
+            let budget = crate::general_qualification::CompactConstructionBudget {
+                maximum_placement_bytes: request
+                    .pair
+                    .source
+                    .identity
+                    .partition_bytes
+                    .saturating_mul(4),
+                maximum_placement_submissions:
+                    n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS,
+                maximum_exception_bytes: 16 * 1024 * 1024,
+            };
+            // Keep the native attachment owner on this thread until the conversion
+            // worker has returned, including error/panic handling.
+            convert_with_progress(request, budget, output.clone(), allocation_bounded)
         };
-        request.validate()?;
-        save_new(&run.join("devices.json"), &request)?;
         let output = run.join("conversion");
-        let budget = crate::general_qualification::CompactConstructionBudget {
-            maximum_placement_bytes: request
-                .pair
-                .source
-                .identity
-                .partition_bytes
-                .saturating_mul(4),
-            maximum_placement_submissions:
-                n2r_win32::shadow_native::private_tree::MAX_PLACEMENT_SUBMISSIONS,
-            maximum_exception_bytes: 16 * 1024 * 1024,
-        };
-        // Keep the native attachment owner on this thread until the conversion
-        // worker has returned, including error/panic handling.
-        let result = convert_with_progress(request, budget, output.clone(), allocation_bounded);
         drop(staged);
         match result {
             Ok(()) => {
@@ -710,6 +748,16 @@ mod windows {
                 Ok(0)
             }
             Err(e) => {
+                if e.downcast_ref::<crate::resource_finalize::CommittedFinalizationError>()
+                    .is_some()
+                {
+                    eprintln!("{e:#}");
+                    eprintln!(
+                        "Preserve the recovery records at {}. Raw rollback is closed.",
+                        run.display()
+                    );
+                    return Err(e);
+                }
                 eprintln!(
                     "Conversion stopped. Preserve all recovery files at {}",
                     run.display()

@@ -1603,17 +1603,16 @@ pub(crate) fn validate_stream_mapping(
     Ok(())
 }
 
-fn hash_stream<R: Read + Seek>(
-    reader: &mut R,
-    attribute: &Attribute,
+/// Metadata-only classification shared with the preparation inspector. It
+/// performs no DATA reads and must not be treated as logical-content evidence.
+fn logical_hash_metadata_status(
+    a: &AttributeInventory,
     geometry: &NtfsGeometry,
-    budget: &mut HashBudget,
     has_attribute_list: bool,
     extension_record: bool,
     record_number: u64,
-) -> Result<(LogicalHashStatus, Option<String>)> {
-    let a = &attribute.report;
-    let unsupported = if has_attribute_list || a.lowest_vcn != 0 {
+) -> Option<LogicalHashStatus> {
+    if has_attribute_list || a.lowest_vcn != 0 {
         Some(LogicalHashStatus::UnsupportedAttributeList)
     } else if extension_record {
         Some(LogicalHashStatus::UnsupportedExtensionRecord)
@@ -1645,8 +1644,26 @@ fn hash_stream<R: Read + Seek>(
         Some(LogicalHashStatus::UnsupportedCompressionUnit)
     } else {
         None
-    };
-    if let Some(status) = unsupported {
+    }
+}
+
+fn hash_stream<R: Read + Seek>(
+    reader: &mut R,
+    attribute: &Attribute,
+    geometry: &NtfsGeometry,
+    budget: &mut HashBudget,
+    has_attribute_list: bool,
+    extension_record: bool,
+    record_number: u64,
+) -> Result<(LogicalHashStatus, Option<String>)> {
+    let a = &attribute.report;
+    if let Some(status) = logical_hash_metadata_status(
+        a,
+        geometry,
+        has_attribute_list,
+        extension_record,
+        record_number,
+    ) {
         return Ok((status, None));
     }
     if let Some(value) = &attribute.resident_value {

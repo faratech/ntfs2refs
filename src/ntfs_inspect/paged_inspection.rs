@@ -26,7 +26,19 @@ pub struct SourceInspectionPin {
     security: crate::ntfs_security::PagedReconciliationPin,
     allocation: PagedAllocationReconciliation,
     blockers: RecordStorePin,
+    /// Omitted for the historical complete conversion inspector. A preparation
+    /// pin records absent content evidence and never grants source admission.
+    #[serde(default, skip_serializing_if = "is_false")]
+    preparation_only: bool,
     serialized_facts_grant_source_admission: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InspectionPurpose {
+    Conversion,
+    Preparation,
 }
 struct ClosedSource;
 pub struct PagedInspection {
@@ -40,9 +52,32 @@ pub struct PagedInspection {
     blockers: SortedRecordStore,
     pin: SourceInspectionPin,
     scratch: SourceScratch,
+    // Runtime provenance, independently of the serialized diagnostic pin.
+    purpose: InspectionPurpose,
     _closed: ClosedSource,
 }
 impl PagedInspection {
+    /// Complete planning metadata without separate logical DATA hashing. All
+    /// source metadata, namespace, security and allocation joins still close.
+    /// This runtime owner is explicitly excluded from source admission; the
+    /// converter must collect a new frozen conversion inspection afterwards.
+    pub(crate) fn inspect_preparation_with_scratch<R: Read + Seek>(
+        reader: &mut R,
+        length: u64,
+        resources: n2r_win32::tree_resources::ResourceBudget,
+        root: &Path,
+        scratch: &SourceScratch,
+    ) -> Result<Self> {
+        inspect_paged_internal(
+            reader,
+            length,
+            resources,
+            crate::verification_policy::VerificationPolicy::ExtentIdentityV1,
+            root,
+            scratch,
+            InspectionPurpose::Preparation,
+        )
+    }
     pub fn pin(&self) -> &SourceInspectionPin {
         &self.pin
     }
@@ -169,7 +204,9 @@ impl PagedInspection {
     ) -> Result<()> {
         let actual = self.budget().page_budget()?;
         ensure!(
-            self.pin.schema_version == 1
+            self.purpose == InspectionPurpose::Conversion
+                && !self.pin.preparation_only
+                && self.pin.schema_version == 1
                 && self.files.header().inventory_complete
                 && !self.pin.serialized_facts_grant_source_admission
                 && !self.scratch.is_poisoned()
@@ -272,6 +309,59 @@ fn header(report: &NtfsInspection, complete: bool, hashed: u64) -> SourceHeader 
     }
 }
 
+/// Preserve the normal inspector's metadata support diagnostics without
+/// manufacturing a content digest or opening any logical DATA range.
+fn validate_preparation_stream_metadata(
+    file: &mut FileInventory,
+    geometry: &NtfsGeometry,
+    report: &mut NtfsInspection,
+    budget: &mut ReportBudget,
+) -> Result<()> {
+    let has_attribute_list = file.attributes.iter().any(|a| a.type_code == 0x20);
+    for stream in &mut file.streams {
+        ensure!(
+            stream.logical_hash_status == LogicalHashStatus::NotComputed
+                && stream.logical_sha256.is_none(),
+            "preparation stream unexpectedly contains logical-content evidence"
+        );
+        let attribute = file
+            .attributes
+            .iter()
+            .find(|a| a.type_code == 0x80 && a.name_utf16 == stream.name_utf16)
+            .context("preparation DATA attribute absent")?;
+        if let Some(status) = logical_hash_metadata_status(
+            attribute,
+            geometry,
+            has_attribute_list,
+            file.base_file_reference != 0,
+            file.record_number,
+        ) {
+            stream.logical_hash_status = status;
+            blocker(
+                report,
+                budget,
+                "logical_stream_hash_unavailable",
+                format!(
+                    "DATA attribute {} has no complete logical hash: {status:?}",
+                    attribute.instance
+                ),
+                Some(file.record_number),
+            )?;
+        } else if attribute.resident {
+            // The resident value was bounded and parsed inside its FILE
+            // record. Its fingerprint is retained as metadata, never promoted
+            // to a separately observed complete logical stream digest here.
+            ensure!(
+                attribute.initialized_size == attribute.logical_size,
+                "resident DATA size is inconsistent"
+            );
+        } else {
+            validate_stream_mapping(attribute, geometry)?;
+        }
+    }
+    Ok(())
+}
+
 /// Every physical record and global join closes before a complete owner can be
 /// returned. The legacy Vec inspector is never called or used as a fallback.
 pub fn inspect_paged_with_policy<R: Read + Seek>(
@@ -296,6 +386,27 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
     root: &Path,
     scratch: &SourceScratch,
 ) -> Result<PagedInspection> {
+    inspect_paged_internal(
+        reader,
+        length,
+        resources,
+        policy,
+        root,
+        scratch,
+        InspectionPurpose::Conversion,
+    )
+}
+
+fn inspect_paged_internal<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    resources: n2r_win32::tree_resources::ResourceBudget,
+    policy: crate::verification_policy::VerificationPolicy,
+    root: &Path,
+    scratch: &SourceScratch,
+    purpose: InspectionPurpose,
+) -> Result<PagedInspection> {
+    let preparation_only = purpose == InspectionPurpose::Preparation;
     let budget = SourceMetadataBudget::from_resource_budget(resources)?;
     let actual = scratch.budget();
     ensure!(
@@ -358,9 +469,11 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
                     .record_bytes
                     .checked_mul(8)
                     .and_then(|n| {
-                        n.checked_add(
-                            LARGE_STREAM_HASH_BYTES as u64 + STREAM_HASH_BUFFER_BYTES as u64,
-                        )
+                        n.checked_add(if preparation_only {
+                            0
+                        } else {
+                            LARGE_STREAM_HASH_BYTES as u64 + STREAM_HASH_BUFFER_BYTES as u64
+                        })
                     })
                     .context("raw current-row RAM overflow")?,
             )?;
@@ -447,7 +560,7 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
                     require_bitmap_bytes(&value.report, geometry.total_clusters.div_ceil(8))?;
                     volume_bitmap = Some(value.clone());
                 }
-                let inventory = inventory_record(
+                let mut inventory = inventory_record(
                     reader,
                     &geometry,
                     record,
@@ -456,13 +569,21 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
                     &mut row_budget,
                     &mut hash_budget,
                     policy,
-                    false,
+                    preparation_only,
                     |reader, record| {
                         namespace.observe(reader, record, number, &geometry)?;
                         security.observe(reader, record, number, &geometry)?;
                         Ok(())
                     },
                 )?;
+                if preparation_only {
+                    validate_preparation_stream_metadata(
+                        &mut inventory,
+                        &geometry,
+                        &mut report,
+                        &mut row_budget,
+                    )?;
+                }
                 ensure!(
                     file_heap_bytes(&inventory)? <= row_budget.limit,
                     "current source row exceeds resource RAM"
@@ -533,7 +654,7 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
         allocation.status == AllocationReconciliationStatus::ConsistentRawModel,
         "complete raw allocation closure absent"
     );
-    if policy.is_fast() {
+    if policy.is_fast() && !preparation_only {
         let mut output =
             SortedRecordWriter::new(&root.join("hashed-files"), *b"N2RFILE1", &scratch)?;
         for ordinal in 0..files.file_count() {
@@ -615,6 +736,10 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
         &root.join("security"),
         &scratch,
     )?;
+    ensure!(
+        !preparation_only || hash_budget.used == 0,
+        "preparation inspection unexpectedly hashed logical DATA"
+    );
     files.set_header(header(&report, true, hash_budget.used))?;
     for (code, message) in [
         (
@@ -648,6 +773,17 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
             },
         )?;
     }
+    if preparation_only {
+        emit_blocker(
+            &mut blockers,
+            &mut blocker_count,
+            &InspectionBlocker {
+                code: "preparation_inventory_only".into(),
+                message: "Metadata-only layout hints lack logical content evidence and cannot admit conversion".into(),
+                file_record_number: None,
+            },
+        )?;
+    }
     let blocker_pin = blockers.finish()?;
     let pin = SourceInspectionPin {
         schema_version: 1,
@@ -662,6 +798,7 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
         security: security.pin().clone(),
         allocation: allocation.clone(),
         blockers: blocker_pin.clone(),
+        preparation_only,
         serialized_facts_grant_source_admission: false,
     };
     let value = PagedInspection {
@@ -682,6 +819,7 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
         allocation,
         pin,
         scratch,
+        purpose,
         _closed: ClosedSource,
     };
     value.revalidate()?;

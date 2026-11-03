@@ -5,7 +5,6 @@ use crate::{
         paged_storage::SourceScratch,
         record_store::{SortedRecordStore, SortedRecordWriter},
     },
-    verification_policy::VerificationPolicy,
 };
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
@@ -46,6 +45,7 @@ struct Facts<'a> {
     metadata_sha256: &'a str,
     vss: &'a n2r_win32::vss_observation::Observation,
     logical_payload_reads_may_have_occurred: bool,
+    logical_data_hash_bytes: u64,
     preparation_only: bool,
     source_admission_granted: bool,
 }
@@ -123,16 +123,16 @@ impl PreparationInventory {
             group,
         )?;
         let mut reader = GeneralPartitionReader::open(source.clone(), events)?;
-        let raw = ntfs_inspect::inspect_paged_with_scratch(
+        let raw = PagedInspection::inspect_preparation_with_scratch(
             &mut reader,
             source.identity.partition_bytes,
             resources,
-            VerificationPolicy::ExtentIdentityV1,
             &output.join("raw"),
             &scratch,
         )?;
         ensure!(
             raw.header().inventory_complete
+                && raw.header().stream_hash_bytes == 0
                 && raw.header().geometry.serial_number as u32 == discovered.volume_serial_low32
                 && raw.allocation().status
                     == ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
@@ -163,7 +163,11 @@ impl PreparationInventory {
                 inventory: raw.pin(),
                 metadata_sha256: &metadata_sha256,
                 vss: &catalog,
+                // Resident bytes remain visible as part of FILE metadata.
+                // Do not turn zero separate DATA hashes into a claim that
+                // metadata reads cannot contain any user payload bytes.
                 logical_payload_reads_may_have_occurred: true,
+                logical_data_hash_bytes: raw.header().stream_hash_bytes,
                 preparation_only: true,
                 source_admission_granted: false,
             },

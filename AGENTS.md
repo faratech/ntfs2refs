@@ -1,1425 +1,237 @@
-# ntfs2refs project guidance
+# ntfs2refs: current handoff
 
 @C:\Users\mfara\.codex\RTK.md
 
-Read RTK. Work in **D:\code\ntfs2refs**, branch
-`codex/resource-based-admission`, private origin faratech/ntfs2refs.
-The environment's C: workspace path is stale. This is a current handoff, not a
-chronological log. Prior instructions and results are preserved verbatim in
-[the November 1 archive](docs/history/AGENTS-through-20261101T0225.md) and
-[the October 29 archive](docs/history/AGENTS-through-20261029.md).
-Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
-
-## Shared experimental Cargo target
-
-For experimental committed-source builds only, use the existing pinned builder
-arguments plus `-ExperimentalBinaries @('lab-observe-resource-source')`. Explicit
-`-ExperimentalBinaries` and `-ResourceSourceObservationOnly` automatically select
-the shared target; `-UseSharedExperimentalTarget` selects it for other experiment sets.
-The fixed target is `D:\code\ntfs2refs\target\shared-experiments`; jobs default to4
-and `-Jobs` can override them. The builder holds its exclusive per-cache lock,
-archives and checks the exact committed source, builds release/offline/locked,
-and copies/pins selected executables into each fresh candidate's `bin` directory.
-It records shared-cache use without a clean-build, reproducibility or native
-qualification claim. `CARGO_INCREMENTAL=0` remains unchanged. Omit the shared
-switch for isolated clean release qualification; never reuse/alter old frozen
-target directories. The initial shared-size baseline is persisted once for
-provenance; ALL current shared bytes, including the moved a6d seed, are charged
-in addition to current lab bytes against the original maximum329374052988 and
-minimum host free17179869184. No epoch or baseline reset is permitted.
-
-For experimental builds, `-UseSharedExperimentalSource` additionally reuses
-the verified source-staging tree under the same cache lock. Supply
-`-ExpectedSharedSourceHelperSha256 842c5e7f7e65a1df72e6276af505e47f85f79b649429fe1eeac0833d1b534992`.
-The reviewed option was used successfully for pinned candidate581b697; its
-first release Cargo build took2m05s. No warm-cache speedup or reproducibility
-was established. Count ALL staging bytes along with shared target bytes and
-lab bytes; default isolated release builds remain unchanged.
-
-For routine WIP `cargo check`, use the same target and its exclusive sibling
-lock. Process-local `CARGO_INCREMENTAL=1` speeds repeated checks; the host-wide
-sccache wrapper rejects incremental builds, so clear `RUSTC_WRAPPER` and
-`RUSTC_WORKSPACE_WRAPPER` only for that check. A four-binary shared-target
-check passed after the initial debug dependency build. No unit tests were run.
-
-Exact experimental invocation in PowerShell7, using the existing a6d committed
-source and tool pins (fresh output name on every invocation):
-
-```powershell
-$buildSeed = Get-Content 'D:\code\ntfs2refs\.lab\development\release-candidates\ra6d68d2-cache\manifest.json' -Raw | ConvertFrom-Json
-$buildToolPins = @{}; foreach ($tool in $buildSeed.tools) { $buildToolPins[$tool.name] = $tool.sha256 }
-$experimentBuild = @{
-  SourceCommit = $buildSeed.source_commit
-  OutputDirectory = 'D:\code\ntfs2refs\.lab\development\release-candidates\shared-observer-' + [guid]::NewGuid().ToString('N')
-  ExpectedCargoLockSha256 = $buildSeed.cargo_lock_sha256
-  ExpectedCargoSha256 = $buildToolPins.cargo; ExpectedRustcSha256 = $buildToolPins.rustc
-  ExpectedRustupSha256 = $buildToolPins.rustup; ExpectedGitSha256 = $buildToolPins.git
-  ExpectedCargoHomeConfigSha256 = $buildSeed.cargo_home_configuration.sha256
-  ExperimentalBinaries = @('lab-observe-resource-source'); Jobs = 4
-}
-& 'D:\code\ntfs2refs\lab\Build-ReleaseCandidate.ps1' @experimentBuild
-```
-
-Root measured an identical-source/identical-command a6d Cargo build at143.647s,
-then its unchanged repeat at0.215s with the same executable SHA. That repeat
-shows warm-cache reuse for unchanged inputs; it does not predict changed-source
-build time, reproducibility or native qualification. The moved seed's source.zip,
-copied bin and manifest remain unchanged; only its disposable target was moved.
-
-## CURRENT resource-based hardware continuation (2026-11-03)
-
-LATEST handoff: memory-fix sourcea7befe8af1aad71e9cab7134f9d4aee5b87d90a4
-is committed/pushed. Shared release build exec43001 is ACTIVE for public+lab
-diagnostic at .lab/development/release-candidates/resource-first-write-a7befe8;
-poll it, never restart on timeout. Root fresh-verified VMOff/RAM0,parent3343;
-all guest workers terminal after618 prewrite refusal. current-resource-fixture-
-run.json now describes that actual terminal refusal/no validsignal, not oldd9.
-Final reciprocal review of all three memory fixes PASS, with full checks and
-same admitted budget. P3inventory/planner/SDKmover modules+two parenthooks stay
-uncommitted; D is adding executor/receipts, so compile/freeze that slice before
-staging. Original alpha, normal2558 result411c and mutated/online-reconciled
-resultba81 remain saved. No source write afterAP has been observed for V4's
-new partialwrite hook yet; do not infer it from a nonzero exit or old evidence.
-
-LATEST memory fixes are final-checked8.893s: SDKactual-file Readered473871,
-Rootpairedleases3fb02336 andplacementJSON2×allowancee2785df8. Completefile/
-page/record/hash checks and acceptedquery/prooflimits remain. Constructor
-key-comparisonworkspace prepaid; earlypathguarderror-droporder fixed; no
-encoded-recordclone inRootreads. No units or budgetraises. Stop65593 COMPLETE;
-VM should be Off/RAM0,parent3343 after the prewrite618 refusal (fresh-verify
-before nextaction). There is no valid partialwrite signal/recoveryorigin yet.
-Source96 diagnostic build8393 is COMPLETE, manifest
-6e76228aeef91afe64ed925aa1e1142ad9945575ca4f7f996db73a157548517e; do not
-rerun96 without these latermemoryfixes. D is now implementing NEW resource
-prealignment executor/receipts; its newexports may be WIP. Preserve the compiled
-inventory/planner/SDKmover slices and do not stage uncompiled executor changes.
-
-LATEST native diagnostic6189937fca3445bfb0f216c4588641d5 from96f9587 failed
-BEFORE its intended first-write interruption:5272/birth1793725411361/exit1 in
-65.2511025s, Source3, evacuation_submissions0, no valid signal (4096 all-zero
-bytes). Actual leased942034628+registry3087768+requested571816544 exceeded
-unchangedRAM1456427008.15 closed files80472B/manifestSHA
-08b5df397ca2dff5ce4a52fe74c62e0363879806b0d2ee3f9bf9c70e4b1839e4 are in
-resource-fixture-6189937fca3445bfb0f216c4588641d5/closed-refusal. DO NOT call
-nativeexit1 a successful fault. All workers terminal; normal stop65593 is the
-latest host shutdown handle (poll it; no duplicate stop/restore on timeout).
-The completed operational HND+33-file state was separately saved Off at
-ba81a1f8-eee9-40d6-957f-31acbb09b98e child411c before one restore3343 for this
-diagnostic. Critical frozen alpha/normal/source/recovery states remain intact.
-
-C's multiplier3→2 actual JSON allowance fix saves91026944 declared bytes, not
-a heap measurement; all accepted limits unchanged. D/C also paired actual-file
-Reader/cache sizing and borrowed record reads. First combined check passed
-15.94s; final path-lease error-order and constructor-key-workspace review fixes
-are being applied before final check. Root owns the two prealignment module
-hooks; full Root+SDK P3 inventory/planner/mover slices compiled22.74s but have
-NO executor/CLI hookup or native qualification. Keep those source modules as
-experimental, not a completed --minimize prepass. No budget raise or unit tests.
-
-LATEST public terminal recovery PASSED on source03868c1/publicSHA
-0167246edb0c238463ecc22d8761418da551f9a232c6b3624840ef7fcd8a7b73,
-manifestef5047be7cbc41c0eb267c1b12974ce9b267654b0363d278b9bee319a10e6995.
-Native1664/birth1793723556816/exit0/133.6850253s, task
-N2R-ResourceOnlineRecovery-03868c1 Ready and no native workers remain. Actual
-productC:\ntfs2refs-recovery-56c2aff559caa5c0d661dae32c6de23d/result.json proves
-already-online HND, no raw replay, no stale selected-byte comparison and complete
-label/mount reconciliation. Root created33 new ordinary ReFS test files with
-grow/truncate/rename/delete beforehand; all lengths/SHA remained unchanged
-afterward. Original payload files were not written.11 closed files674098B,
-manifestSHA43cbfa0453a205344771d0ee95e00793c7064aa7e92b78dbdf1eec6f99d7c4de
-under currentcase/closed-online-recovery-03868c1. Source remains operational
-HND/ReFS, VM Running4GiB/4CPU/noNIC parent411c. NEVER raw-replay this branch.
-Build29024 and launcher64318 are COMPLETE, not live. No V4 AP/RB recovery yet.
-
-Latest first-write diagnostic code compiled11.185s, no units: explicit
---apply-and-verify --interrupt-after-first-flushed-write prepays a share-zero
-4KiB independent signal+held buffers BEFORE preparation, then actual write/
-sync/readback/AP/offline+another different NEW granule precede real Err exit.
-Public None adds no read/flush. Needs pinned diagnostic build and real partial
-restart Resume/Rollback; never synthesize86 or a success. R slice is frozen.
-D power_dispatch owns NEW src/ntfs_preparation/resource.rs/children for actual
-paged online preparation inventory/planner; C release_status_review owns NEW
-SDK ntfs_preparation/resource.rs/children. Those WIP modules are not public
-wiring or qualified and must not be mixed into the first-write snapshot blindly.
-V4 currently bypasses the old NTFS prepass even with --minimize-scratch; that
-flag only changes capacity policy. Resource prealignment is necessary next;
-do not attribute all journal/time differences solely to hash repeats or compare
-default/conservative5a8 directly with older --minimize-scratch cases.
-
-LATEST recovery attempt: built sourcea9f3436/publicSHA900a5d39fb44a77e6d84a49fe467c8b6784fc5eaa7613f3be6048d09a6b8a818
-failed BEFORE journal opening on source-only C: output discovery ('current
-Windows disk is excluded'). Actual4020/birth1793722638392/exit1/1.2040996s,
-taskN2R-ResourceOnlineRecovery-a9f3436 Ready, all workers absent. Source remains
-online healthy ReFS/HND, parent411c. Six closed metadata files5352B/manifestSHA
-a3dd6589295b88e96bef5a5bca9e060df2c8225ee61fedddbe31f33f5b57fa4e are in
-the current case/closed-online-recovery-a9-refusal. Typed read-only journal
-mount discovery is now implemented/source-reviewed and checked10.732s; it
-preserves all source/shadow OS-disk exclusions and verifies exact complete
-journal evidence before/after mount enumeration. Needs new build/native run;
-do not retry a9. Build46573 is COMPLETE, not live. No unit tests.
-
-LATEST independent cold-boot observer is COMPLETE: task
-N2R-ResourcePostboot-5a8b781-v3 Ready0,13 actual digest processes/observed0,
-all811 original XXH3 streams9885801949B matched, plus1534 baseline namespace/
-type/length objects. The1024 extra directories were NOT independently checked
-after boot; no mutation or replay occurred.56 closed observer/control files
-109798B were copied/rehashed; manifestSHAf871b302dc0b37a8f58d0625244098697ade857c17f8685f3f2b89b72c0a0633
-under the current case/closed-postboot, resultSHA308fef971d2c8d6608f6501404fb9a601eaebcc4f3c0ef848163b9efeed587da.
-VM remains Running/parent411c, closed operational ReFS. No project guest worker
-remains. Host shared release build a9f343686d61039029e260cecbf0d99034c69a36 is
-active exec46573; preserve/poll it, do not restart. It builds only public CLI
-with the newly compiled placement/cleanup/body-seal/online-terminal work and
-phase IO counters. Public5a8 evidence does not qualify that new binary.
-
-LATEST follow-up: after all workers were terminal, root normally shut down the
-completed5a8 branch and saved checkpoint411c47b6-652d-432a-81f9-8bd10ff18e1b,
-parent3343. Fresh-process verification confirmed Off and the exact graph; root
-then started the SAME branch once without restore. ReFS remounted Healthy after
-cold boot1793721764446. Independent811-stream observer is now task
-N2R-ResourcePostboot-5a8b781-v3; poll actual task/PID/terminal files before any
-VM action. First two read-only observer attempts failed before hash processes
-on PS5 UTF-8 decoding and non-SYSTEM metadata access; their stages remain intact.
-The SYSTEM/explicit-UTF8 observer writes only C: evidence, never source data.
-Latest six-bin shared-target check passed17.659s after placement proof precharge,
-early cleanup, prepared body seal/scan reuse, online terminal recovery and UI,
-plus advisory phase IO counters. These later changes are not in native5a8.
-No units were added/run. All source agents are frozen pending root build.
-
-LATEST: actual public V4 run d9d466db4780468a9a493e6a8292ea6d from source
-5a8b781728726fec5e0f9351fa3b61c8633a7e19 / binary67be83d917386989fdd7ed21dbe1aed15074c8c3459e083198ea4b524d5220ec
-completed native5312/birth1793718535039/exit0 in2588.6345994s. It matched2558
-native metadata/map bindings,157 known stream hashes119009B and654 extent-only
-streams; all811 are not independently full-hashed in this run. F is healthy
-ReFS/Dev Drive, original label and mount paths restored. HND is CLOSED: never
-raw-replay this active branch. VM remains Running4GiB/4CPU/noNIC, parent3343;
-all project workers absent and task Ready before33 closed metadata files7055480B
-were copied/rehashed. Closed manifestSHA629acd85398776c67fe032fbb6536e37ed333dc604a47843d81c9dc1e3497c74
-is in resource-fixture-d9d466db4780468a9a493e6a8292ea6d/closed-public. Original
-guest J/shadow/recovery material remain intact. Actual J5821929848B; lastlive
-process reads497108655663B, not final/physical I/O. Peak RAM/scratch unmeasured.
-See evidence/public-resource-first-conversion-20261103.json. No V4 coldboot,
-mutation, restart recovery or stable qualification is inferred. Later placement,
-early cleanup, body-scan reuse and online reconciliation work is still WIP.
-
-Exact published alpha `7feb4c0` passed one controlled Hyper-V power-off
-recovery case: the controller saw the synced resume result and a live process
-immediately before one TurnOff; after booting the same branch, native recovery
-observed `apply_intent`, resumed with exit 0, and mounted ReFS. Handoff state
-and process liveness at the instant of power-off are not inferred. This case
-did not rerun the independent 811-stream scan and does not establish physical
-power-loss safety or a stable general release. See
-`evidence/exact-alpha-resume-after-vm-poweroff-20261103.json`.
-The resulting branch is closed HND: never replay its old journal. The VM is
-off; the original first-write checkpoint `58bd9ceb-60bc-4b34-81e1-7af197523a80`
-remains separately available. Do not restore while any project task is active.
-
-Latest continuation: the V4 diagnostic remains experimental and does not
-authorize source writes. The most recent pinned candidate `a69181274506d613cbfb965bd2b8f4af3a7bc36b`
-failed during protected target capture while retaining native report rows;
-both source and shadow remained offline/read-only. The VM was then cleanly
-shut down. With a 32 MiB larger arena, retained leases grew by about the same
-amount and the next row still failed; do not repeat the run or increase the
-budget again without addressing the report's accumulated memory. See
-`evidence/resource-fixture-row-plus32-refusal-20261103.json` and
-`evidence/resource-fixture-row-capacity-refusal-20261103.json`.
-
-The working tree includes a compiled but unqualified V4 read-only recovery
-observer, resource-accounted bitmap work, and a publication change reducing
-estimated capture-literal scans from 15 to 9. Replay and write authority remain
-unavailable; none of these changes qualifies the released alpha or a general
-conversion. The bitmap path has no proven allocator-independent peak bound.
-The published `7feb4c0` alpha remains separate. Preserve the existing shared
-Cargo target and the original lab disk budget; no unit tests were added or run.
-
-LATEST source-arena VM observation: pinned experimental source `8831d738` and
-binary SHA256 `b0096aa3e842af78de7ec208fdbc9405a80c66f34aa639994c2a2d70f5d482ab`
-completed run `d79d5a4c79024b7da3bbbe6b057a8bd7` with native PID5168,
-birth1793683562259, exit0. Both actual source/native arena groups sealed;
-2,585 raw identities and 2,558 user objects were accounted for, with no
-unresolved source blockers. The source remained offline/read-only. Its closed
-archive SHA256 is `d733ffe13d5f86202c47a6f0966b4f482e4cac47d3b75ea7219cb1d2b528d582`.
-The first attempt safely failed on an ordinary/verbatim path mismatch; its
-archive SHA256 is `9f297cdedb7510df6b477ee46a4221790567f41d4c9da5eb5378becf41ed2674`.
-See `evidence/resource-source-arena-20261103.json`. The successful source code
-was committed and pushed at `151db0a`; subsequent RAM-ledger changes at
-`5d6410e`, `69eeccc`, and `3c69bff` compiled, but were not in that VM run.
-The prior source-and-shadow diagnostic-ready checkpoint is
-`d8db8fd9-284a-4e78-86b5-85d8a2607663`, child of the original source
-checkpoint `001f7611-257f-4c5a-8c5b-560ce8faa68d`. A fresh, explicitly
-enrolled disposable ReFS shadow is disk6, disk GUID
-`f88939b6-dbc6-4089-b947-7914d2f92180`, partition/volume GUID
-`ad0e87c4-487a-49bd-94bd-519d054dcc5b`, offset33554432, length55834574848.
-Its receipt is `.lab/development/diagnostic-shadow-enrollment.json`; the
-checkpoint receipt is `.lab/development/diagnostic-ready-checkpoint.json`.
-The separate original disk3 shadow was not overwritten. Verify the live
-attachment, identities, source fingerprint and capacity before any guest work;
-the earlier managed disk6 identities are not this shadow.
-This is source observation only: no conversion, recovery, or release qualification.
-
-Fixture diagnostic `b9be10d8eeef4a60bdeedf771d9ac047` launched once with
-candidate `9e1fa648` and actual Job limits, then exited1 before source freeze:
-the existing source-output gate required the OS volume while this fixture's
-shared journal arena is on J:. Both source and shadow remained online and
-writable with no source payload or shadow writes. Closed worker evidence is
-`.lab/hyperv/streaming-v2-20261027/resource-fixture-b9be10d8eeef4a60bdeedf771d9ac047/closed-evidence.zip`,
-SHA256 `687995a88c68cc20306c3ad4fcdc5b2ea4b8d8a4d6c6f872ff17a500bd3fad54`.
-At that point the VM was Off/RAM0 at d8db; a narrowly scoped held-arena
-output fix is in progress. Do not retry the old executable.
-
-The corrected diagnostic `9c6f880bbcbd46c1934096432256531f` passed source
-inspection and the independent fixture allocation/bitmap checks, then exited1
-before shadow population because aggregate arena RAM was exhausted during
-projection. Its source remained offline/read-only; the shadow was untouched.
-Worker archive SHA256 `a934137bf4b5a21d981ce38cfa71274862f0eb401e488aaefb793612e3caa0ff`,
-output archive SHA256 `f57aba70b2c5daf1c2ab46ae611f4734bfe78673e99d40383eec488a0d3c195c`;
-see `evidence/resource-fixture-ram-refusal-20261103.json`. Three eager sort
-buffers were the leading identified waste; a bounded,
-spill-capable count-hinted replacement is in development. Never retry a prior
-executable or infer conversion/recovery qualification from this refusal.
-
-The count-hinted projection diagnostic `7a65c3d6b52e4553864112c6d36a497d`
-passed source checks and built the 2,558-object expected tree. At the pre-shadow
-checkpoint its Job Object reported 308727808 bytes current private commit,
-not a peak or total-guest-memory measurement. It then exited1 before shadow
-population: the fresh ReFS shadow label `n2r-resource-shadow` differs from the
-native constructor's required `n2r-retained-shadow`. Source remained
-offline/read-only. See `evidence/resource-fixture-shadow-label-refusal-20261103.json`;
-worker/output archive SHA256 values are respectively
-`dfba32911b47108204bc7cd16eba0b1cb9a8cfd65f89965393f9ce3b56432370` and
-`291a037c0cc50ff7edc38e2e21b7162f460252688822502ab21b15f40ca6a399`.
-The corrected lab launcher must relabel ONLY the verified disposable shadow
-after each d8db restore, before dispatch; it must not touch source/journal.
-
-The next diagnostic `dfb97725233246338c0ee04f6e08349f` built the expected tree,
-released the original projection workspace (arena leased bytes fell from
-1040701782 to 833478896), and started allocation/placement on the disposable
-shadow. It then refused before source payload materialization because the
-required bytes exceeded the explicit 2147483648-byte budget; the actual
-required amount was not reported. Source remained offline/read-only. See
-`evidence/resource-fixture-materialization-refusal-20261103.json`. The partial
-shadow is temporarily saved at checkpoint `bbeb8887-7da9-4d40-afcb-39e727565c8b`,
-child of d8db. Diagnose the actual required amount and avoid
-unnecessary data rewriting before changing the budget. Restore d8db for a fresh
-run; never confuse the partial shadow checkpoint with a converted volume.
-
-For the routed-prefix diagnostic a fresh dynamic 32 GiB external journal was
-enrolled inside the VM, within the original 50 GiB host allowance. It is guest
-disk7, GPT disk GUID `b1209612-0971-4230-afc8-142134dc3d19`, partition/volume
-GUID `6b2c8755-e6a4-40a9-b804-ccd32d9c0d6f`, offset16777216,
-length33285996544, NTFS K:. Its host VHD root ID is
-`35db6ac3-d69e-4382-821b-15ecc5a70f02` at controller0/location8. Enrollment
-receipt: `.lab/development/diagnostic-journal-enrollment.json`. The VM is now
-Off/RAM0 at checkpoint `3343f2a4-cf81-4fa9-a504-030425a8011e`, child of d8db;
-receipt `.lab/development/diagnostic-large-journal-checkpoint.json`. Verify all
-actual VHD chains, guest identities and the fixed original storage budget before
-dispatch. The previous 8 GiB J: journal remains intact.
-
-Placement-instrumented diagnostic `e9072298839748c8a55345b55c153b91` measured
-9,885,781,381 logical bytes, 4,225,110,016 source-reference bytes and
-5,660,671,365 bytes classified for materialization. It submitted 13,581,152,256
-bytes of shadow moves (846 evacuation and 842 final moves), then refused the
-2 GiB materialization budget before copying source payload. The independent
-source model has 9,884,332,032 bytes of initialized full-cluster prefixes;
-the multi-gigabyte shadow-copy requirement is therefore not inherent source
-content. Source remained offline/read-only. Worker/output archive SHA256:
-`0b77fc9e9fa3c7a15c3ef7e01cab7cd8066b7c200d0f81969dba1cac56e4ae22` /
-`354db4931b6ff78257c8961a3eeb393eab6733fde5df8fd86890bcba5d1d4b3b`.
-See `evidence/resource-fixture-placement-measurement-20261103.json`.
-Do not simply raise the budget: an explicit proof-bound routed-prefix path
-is in development to avoid copying relocated initialized data into the shadow.
-
-Routed diagnostic `972cee3fa2ee41c88e7a3de7d23d6c35` ran from checkpoint
-3343 using the larger K: journal. It completed source checks, expected-tree
-construction and shadow placement, then exited1 with `source metadata working
-RAM exhausted` during routed preparation. Source remained offline/read-only;
-routed supply, capture and conversion did not complete. Worker/output archive
-SHA256 values are `9c626fd91e08656056991ba7148e1750405cff28be79e590c2fd56f3ff3b5be1`
-and `9cf1a6f45916df90e03fcf9ecd15d2d3282e94b4780633dbc935e5b38850543a`;
-see `evidence/resource-fixture-routed-ram-refusal-20261103.json`. VM is
-Off/RAM0 with parent3343. Investigate overlapping local SourceScratch leases
-before changing the RAM limit. This was not a conversion or recovery test.
-
-Latest completed diagnostic `7577c8fe15cd4033bc42d3107e03ccea` passed routed
-supply: 5659201536 bytes of relocated initialized prefixes were routed,
-4225110016 bytes stayed at original coordinates, and 1469829 bytes were
-materialized into the shadow. Its routed verification read1469829 logical
-source bytes; this is NOT the complete run's I/O. It then exited1 during
-protected target capture with `actual source/native/resource projection
-ownership differs`. Source and shadow were offline/read-only. The failure is
-traced to projection scratch using the full capture group budget rather than
-the exact admitted page budget; a narrow fix is compiled but not yet run.
-Worker/output archive SHA256 `7118fd113a0d8a59a1d604e7c491626169af5b4de677463d5e30bf0f80350a23`
-/ `0e82353f90a27714dc900f8fb2b4959bb50d50df96e0a50d012de08caeeed936`;
-see `evidence/resource-fixture-routed-supply-20261103.json`. VM remains
-Off/RAM0 at3343. No conversion/recovery authority was issued.
-
-Diagnostic `ef4c99d113db4c5d87c7c68ba14a05d4` passed the prior target page
-budget mismatch and again routed5659201536 bytes/materialized1469829 bytes.
-It then refused during target source-projection on aggregate arena RAM:
-leased1235605603 + registry3085170 + requested389342208 > limit1456427008.
-The target workspace was reserved while the independently accounted source
-projection was still being built. A narrow fix to reserve it after the actual
-semantic comparison is in development. Source and shadow remained
-offline/read-only; worker/output archive SHA256 are
-`6fb74d5ac68773272cdda7a07e7f75cf331afb9f1780e24356728f597c4f18a6` /
-`d8dec61c659222ca467e2dd8a4f0206f739af74bed2f901cec03b9f10dc1868a`;
-see `evidence/resource-fixture-target-ram-refusal-20261103.json`. VM is
-Off/RAM0 at3343. This was not a completed conversion or recovery test.
-
-Routed diagnostic `e200cb75b16f4de88e88838f92f5c6eb` passed the prior RAM
-refusal and measured 10813014016 shadow move bytes, down from13581152256
-(2768138240 fewer, about20.4%) with the same4225110016 original-coordinate
-bytes. It then exited1 on `private routed prefix contains a hole`; the message
-did not identify whether the hole was inside the required prefix or only in a
-trailing partial-cluster suffix. Source remained offline/read-only. Worker /
-output archive SHA256: `fea43f57deecf24b1a8bd84e6d64b1402865904f483ffa8d5b4257649fe83b46`
-/ `3121429d69138d4f887acb360c74f4ef770b4b2217c458952b356e2de86878d6`.
-See `evidence/resource-fixture-prefix-hole-refusal-20261103.json`. VM is
-Off/RAM0 at checkpoint3343. A narrow helper fix must ignore only runs wholly
-after the proved prefix, still reject any hole inside it, and preserve the
-complete retrieval/validity bookends; do not assume the actual hole was a tail.
-
-Diagnostic `2d3aab0112484e4eb0a5f2c2418947b0` passed the prefix-scope check
-and advanced further, then exited1 on the shared arena RAM gate: leased
-1093750691 + registry3085170 + requested364106752 exceeded limit1456427008
-by4515605 bytes. Source stayed offline/read-only; no conversion completed.
-Worker/output archive SHA256 `298b23e52a6cb93e015bd608954a885c31a0ece3ccf5c1130c6708bd70bc87f4`
-/ `25fafa117ea09a65ea1a10759ddb14d6e446af5185d0dbb5cb81815959497c4c`;
-see `evidence/resource-fixture-arena-ram-refusal-20261103.json`. VM is Off/RAM0
-at3343. Do not raise the RAM budget without first resolving actual ownership
-and overlapping reservations.
-
-Current uncommitted V4 target, journal, recovery and native-memory work remains
-experimental and gated. The target/recovery scaffolding compiled on the shared
-target, but has not passed a native conversion or power-loss recovery; trusted
-ticket issuance and full cross-stage memory accounting remain incomplete.
-Do not change the released `7feb4c0` alpha or infer its qualification for V4.
-
-USER BUILD-SPEED DIRECTION: Reuse ONE Cargo target directory for experimental
-builds: D:\code\ntfs2refs\target\shared-experiments. It was seeded by a
-verified same-volume move of the completed a6d generated target (388066812B);
-that candidate's pinned bin, source archive and manifest remain unchanged.
-Count ALL bytes in this shared target in addition to lab ActualBytes against
-the original fixed329374052988B maximum; do not reset the epoch. Preserve the
-17179869184B host-free floor. Use four jobs while host memory is constrained;
-build only the binaries actually needed. The shared-target mode for
-lab/Build-ReleaseCandidate.ps1 is implemented and a real targeted build passed;
-use the invocation above and pin the resulting binary before native execution.
-Keep a separately isolated clean target for final release qualification and do
-not label a shared-cache experiment as independently reproducible.
-
-LATEST resource reader result: task N2R-ResourceFixed-546b84134d1d4f0c98d543fc3be3e2ed
-actually completed Ready/0; native PID3068/birth1793676486424/exit0 in641.207s.
-Source51910d3177acffae65c80365aff15cbb3103bad1, binary SHA
-546cc8ed3647138e7437833b9ae6c6a4604f83c741e05d500cadcd3c154c854d.
-Complete raw+native user views matched2558 objects; allocated MFT records2585
-exceed the previous2048 raw ceiling. This is source observation ONLY, no source
-admission, conversion, journal or payload writes. Closed archive2047 metadata
-files/61,348,728B compressed4,108,453B SHA3253d0fc2cb148b9405a71a08480d76dab174a72ae27ca06e1bc54be255ab35e.
-ResultSHA92778044199ae1b68b39a99ec87079ec2241e385ca885afd9ccb10a650f1aa00.
-VM now Off/RAM0, parent001f7611-257f-4c5a-8c5b-560ce8faa68d, six snapshots;
-active branch is post-observation NTFS excluded3, original checkpoint001f retained.
-Root identified repeated metadata-page rescans/thrashing and added WIP bounded
-reader/cache improvements on the resource branch. They were NOT in519 and have
-not been measured. The published7feb alpha remains unchanged and separate.
-
-LATEST USER DIRECTION: finish and package the preserved working alpha; keep
-broader cap-removal development separate. Experimental prerelease published in
-the private repository: https://github.com/faratech/ntfs2refs/releases/tag/alpha-7feb4c0
-It uses exact public executable source7feb4c06d21e9de73bb88961197f5b745463e490,
-binary SHA c7b5809f4456f55e71f19b47d4e4cb9b7ee6cad86c4ff0fac36c1db5a5b909d1;
-its documentation/evidence commit845eeea is pushed on codex/alpha-7feb-release.
-Windows ZIP SHA dd9f2dcd169ff20a1701eb4ddf2cbbf9d453944a48d6969e35500a49cd26e0b3.
-It is an experimental prerelease, NOT the broad stable release or goal completion.
-
-Exact7feb mutation run cd60cd1d39284fc79f264db6ea8628ba passed258 new files and
-256 directory entries. Root performed normal shutdown and restarted the SAME
-branch without restoring. VerifyAfterBoot08203c6f8c0d430d9c2cf35271c509c1 then
-passed Ready/0, 811 independent XXH3 streams and1534 original namespace/type/
-length objects,258 mutation files/256 entries. Archived preboot resultSHA
-d6c414d401b7a20ac7287a4ffd6ad95ba56e32cff0a98ac7a4c3f177f4b30050 archiveSHA
-b87bc994c4af065ebfecc5d64ed518ec307e34628716de66626fa25688e3ca58; postboot
-resultSHA93ec3de28e30fe7a3efae530004ecc22d77c746401af9097a72fa977b83840f9
-archiveSHA4f35b884295c54e2d637ec47eafa415275d8d7f487ce65a38f4a2a36b96fe068.
-Do not claim complete postboot ACL/SACL/timestamp or physical cluster reuse proof.
-
-VM is NOW Off/RAM0 at parent5ce766b0-c6e9-4007-b16d-363944240c51, six snapshots;
-its active branch contains the closed, mutated ReFS result, NEVER raw-replay it.
-Sixth snapshot001f7611-257f-4c5a-8c5b-560ce8faa68d is the original NTFS source
-with1024 additional directories, retained for future resource work. The first
-resource observer on it stopped on my resident digest bug; the closed failed
-archive SHA a95bf4e5a554ca714cb02dad5eaf33e1ebbec058897230f8d74304eb2272bd65
-preserves the actual failure, unknown native exit and worker result1. Root fixed
-the SHA/XXH3 mismatch in committed51910d3, built its observer, restored001f ONCE,
-then switched to the verified alpha for the user-requested release. No VM job is
-active. The resource WIP in the main worktree is incomplete/uncompiled after its
-latest edits; preserve it separately and do not include it in the alpha.
-
-Latest user instruction: "Also remove all the caps so it can work on most
-hardware." This authorizes the resource/generalization work below and supersedes
-the earlier feature freeze for that scope. Do not delete correctness, format,
-unsupported-feature or actual resource checks. Replace artificial limits with
-complete paged evidence and observed RAM/scratch/geometry admission; never just
-raise constants or truncate inventories. No unit tests. Preserve approved mainc6.
-
-The verified native-shadow candidate remains on `codex/isolated-journal-observation`
-at21087bb, with exact source7feb binaries/evidence. New source is on the separate
-`codex/resource-based-admission` branch. Hardware discovery slice48e1d54 is pushed;
-it removes arbitrary disk/partition-number/table-count/placement restrictions
-while retaining checked GPT/identity/bounds and dedicated-disk exclusion rules.
-
-WIP actual paged raw MFT/attribute-list/namespace/security/allocation domains,
-resource native selectors/observations, expected-tree pages and native V4 owners
-are being connected. Root owns shared validators, new ntfs_attestation/paged.rs,
-ntfs_admission/paged.rs and comparison/source-view joins. B power_dispatch owns
-actual paged inspector/role/record producer. A public_readonly_completion owns
-native request/observation/target paging +resource query variants/pre-count entry.
-C release_status_review owns paged MFT resolver/allocation/security/native stream
-join and native security_descriptor resource validator. Root alone runs builds,
-Git and VM mutations. Complete4bin check passed27.61s (public/new resource-source
-observer/native composite converter/recovery); no units run. Actual PagedInspection
-producer and raw/native comparison are connected through the new owning-machine
-lab-observe-resource-source entry. Public V4 conversion/certificate/recovery
-orchestration is pending; no new native qualification is inherited. Details in
-docs/resource-based-admission.md. B now owns NEW shadow_tree/source_pages.rs only.
-
-LATEST USER CLEANUP (2026-11-03): deleted28 obsolete checkpoint nodes through
-Hyper-V, preserving children and all host archives. Only FIVE remain:
-f4bf5238-14c0-4b15-bda6-7859abd4d1c9 (guarded),
-83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b (original NTFS baseline),
-a0627dbd-aa3b-4896-bbeb-495f5e372057 (CURRENT original NTFS1534 source),
-5ce766b0-c6e9-4007-b16d-363944240c51 (verified ReFS1534 result),
-58bd9ceb-60bc-4b34-81e1-7af197523a80 (latest original interrupted state).
-ALL other historical snapshot IDs below are RETIRED; never recreate/restore them
-from stale guidance. In particular old format5/6 originals and cb preparation
-are no longer retained. Their evidence and control archives remain unchanged.
-No recursive snapshot deletion/manual AVHDX deletion/WSL stop occurred.
-
-VM is Off/RAM0/currentparenta062. Root restored it EXACTLY ONCE after rehashing
-all74 closedRollback files, before cleanup; the old active ABT working branch
-was discarded only after archive closure. Native5812/1793666832841/0, Ready0,
-all811/1534 and74file108102734B archiveSHA7c3d78b1af9f5ebca13b02637a0aa16000beed04ab30e92bc10d4d38e9c639f9
-remain valid recorded results. No new VM work is active; no guest launch yet.
-Cleanup evidence: evidence/checkpoint-cleanup-20261103.json. 2337 archive/control
-file checks,3,062,865,391B rehashed; hostfree150802001920B (140.45GiB), increase
-112500826112B (104.77GiB); labactual188145504524B. Fixed original maximum
-329374052988/minimum17179869184 unchanged. The first two original-state cleanup
-attempts stopped at metadata preflight with ZERO deletions; v3 completed12 after
-the first16-result batch. Host receipts are under retire-obsolete-*20261103*.
-
-New source2e3f709fc95f0fb7340f5b564cedf907eb2ac173 is committed/pushed and clean
-8bin release-built: .lab/development/release-candidates/r2e3f709-resource/manifest.json
-SHAfa85bb84e3ccab59f96396646af996efb24b0d83be87a4142c405c561ce2f5d0.
-No native qualification inherited. Later uncommitted C per-file policy helpers
-and B one-stream/source_pages projection await hookup/build; don't label this
-WIP as part of2e3. Pending pinned7feb mutation/coldboot helper3522 remains separate;
-no universal hardware/release claim. Keep source/converted/recovery five above.
-
-## Earlier release continuation (2026-11-03 00:41 UTC)
-
-USER FREEZE (00:52 UTC): "Do not keep making changes to the code if we are close
-to release stability." Stop feature/performance/refactor work and new harness
-development. Finish the existing pinned7feb recovery/mutation/boot checks with
-reviewed frozen helpers. Only a confirmed release-blocking defect justifies a
-code change; no speculative cleanup. Root verified git diff7feb..HEAD is EMPTY
-for src/crates/Cargo/config/toolchain, worktreeclean, mainc6 unchanged. Remaining
-2048/profile restrictions stay explicit; don't claim generalstable fromalpha.
-ActualRollback5812/birth1793666832841/0 completed171.889081s at00:50:03; NTFS
-restored/replayclosed. Observer5088/birth1793666446097 stillrunningpostchecks as
-lastobserved00:51:20. No oldjournalreplay over the active now-ABT branch.
-
-LIVE VMRunning4GiB/4CPU/noNIC,33snapshots,parentORIGINAL58bd9ceb-60bc-4b34-81e1-7af197523a80.
-Rootrestored58bd EXACTLYONCE forindependentRollback, thenstarted. ACTIVEbranch
-is now originalinterruptedNTFS source1 (not the previousclosedHNDResume branch).
-Rollbackobserver taskN2R-PagedEnvelope-Recovery-rollback-5cc9b3f4a5854b35bc7cb98c0e8172bd
-actual5088/birth1793666446097 Runningat00:41:29. Publicnative rollback NOTYETobserved
-launched; latesttypedpage/oldzero preflight. Hostdispatchsession62328completed;
-doNOTrerun. StageC:\ntfs2refs\paged-envelope-recovery-rollback-5cc9b3f4a5854b35bc7cb98c0e8172bd.
-Runtime7feb/sealedb0/helperf190 unchanged. No hostbuildlive. RootaloneVMactions.
-
-RESUME FULLYPASSED Ready0/all811independenthashes/1534objects, allcompletemaps
-identical,650tails. Actual2456/1793664719382/0,239.4291539s; wrapper4752/birth
-1793664307649 terminal. Archive76files146,412,148B at
-.lab/hyperv/streaming-v2-20261027/paged-envelope-recovery-resume-bd4eee3b50504bc3b0cea5ad89212cd2/closed-recovery/archive-manifest.json
-SHAb3838c824b4c3314c6b2e6028f47b2f21d7363bb38bf1de592c1becd1d27e355.
-AllResume metadata (includingrecovery-13407d75...) closed/pinned beforediscarding
-ONLYitsworkingbranch byrestoring original58bd forRollback. NeverrawreplaythatHND.
-
-STORAGE: Resume growthdrove actual328182083310/free11330711552 below16GiBreserve.
-No furtherVMwrites started; allworkersclosed/normaloff. Retired ONLY superseded
-f3c1460b-6811-4dd3-908c-12cc2842c35e (14ec1084normal leaf) viaHyperV after full
-109old+113replacementarchivefileSHA checks underreadlocks; replacement5ce1534
-saved+archive97b intact. Allother33IDs+f4bf/original58bd/a062/5ce preserved.
-Afterdelayedreclaim actual314803133403/free24707756032; resumedsolelytoarchive
-closedResume, thennormaloff/restoreoriginal58bd. Fixedepoch/max329374052988/
-min17179869184 unchanged. f3nowRETIRED; don'tresurrectfromolderguidance.
-
-New .lab/development/archive-paged-recovery.ps1 SHA4afdc3990cdef067d8cf320aa81169d3ce019130986e492d361e9f8ec3530a9a
-canarchiveRootonly afteractualReady0/native0/all811+1534/allworkersabsent. Params
-CasePath,GuestStage,NativeRecordsRoot(ROOTwithoutoperationleaf),Operation.
-Whitelistmetadataonly; neverJ/bin/vhdx. Lastnewsourceuntracked
-lab/Start-PagedPublicMutation.ps1 SHA3522bb167b0c47492206ed3de57212605b6f66ea5d75513174c8bb684a1d1bec
-is source-reviewedbyC/PS5assembledparse0 butNOTinvoked. SourceFrozen5971 oldhelper
-unchanged. RootafterRollbackarchival mayrestore5ce forMutate, normalsave/off/coldboot
-VerifyAfterBoot; exact258newfileSHA/256entries/all811 originalcontent/1534namespace/
-type/length checks. NOTallACL/SACL/timestampmetadatabytechecks; labeltruthfully.
-
-NEXT: verifyactualRollbacknative0 +independent811/1534, archiveclosedmetadata,
-allworkersabsent/normaloff. Thenexact7febmutation/coldboot. Broaderrelease remains
-UNPROVEN: raw2048/semantic16MiB/native64MiB/handle/rangecaps, standardformatonly
-safeformatterrefusal, nativeproductionmarkergateFALSE, notphysicalpowerqualified.
-Useraskedstablecloseness: workingexperimentalalpha, notgeneralstable. Preserve
-fullobjective; no narrowedgoalcompletion. Mainc6/no unit tests/WSL unchanged.
-
-## Earlier release continuation (2026-11-03 00:20 UTC)
-
-LIVE VMRunning4GiB/4CPU/noNIC,34snapshots, parent58bd9ceb-60bc-4b34-81e1-7af197523a80
-(ORIGINALinterruptedNTFS childa062). ACTIVE WRITABLE BRANCH HAS NOW CLOSED HND/REFS:
-publicResume2456/birth1793664719382/0 in239.4291539s. NEVER replay activebranch.
-Post-nativeobserver4752/birth1793664307649 task
-N2R-PagedEnvelope-Recovery-resume-bd4eee3b50504bc3b0cea5ad89212cd2 stillRunning
-at00:20:03; no finalReady0/all811 yet. StageC:\ntfs2refs\paged-envelope-recovery-resume-bd4eee3b50504bc3b0cea5ad89212cd2.
-RecordsC:\ProgramData\ntfs2refs\runs\recovery-13407d75fde97e9a95180202ee0e17f9.
-NO hostbuild live. RootaloneVMactions. Check actualtask/PID+BIRTH, notPIDalone.
-
-Firstwriteproducerfe086985340548db9eb098a884f4d1be actual6004/birth1793661913763/86
-flushedonewrite. Wrapper5044/birth1793661790079 thenReady1 duePSempty-array.Count
-bug atgeneratedline659; original failure preserved. NEWpuremetadata observer
-2d3370475c7f4d21a5ee52475cc94c90 actual2140/birth1793663040818/Ready0 verifiedall
-remainingchecks, separatepub/control (originalReady1NEVERfabricated86).
-Generator49f41a495ccd4318c3122b18897d8c7f683659c840ffc2a1c90bd20d6c1a548d;
-worker28b630c436d79887bd873c81b2fcf27a7ad8609759271cc4ccdc570da58cfbb8.
-Combinedclosedarchive106files278,336,987B SHA37d67de193964d714522a67de6aa67d07029ec7a8456ba73f393eed53a12f5ee;
-V2closureSHA21bcb8b128f8354e0011fa5cff35b6acb1cc5cba252ff3beaea95918afc44625.
-Originalfailurearchiveed76ce3f98bc3670ee3dca9bc508352f3b8ae78d6157a8e3b7d3e4423094e874 remains.
-
-ACTUAL journalformat4/N2ROLD01, NOTformat5: selected11,396,272,128B,
-oldzero5,665,275,904B, J5,786,767,272B, sourcefree0. Requestpolicy ALLOWSsourcefree
-butactualplanhasnone; fullselected-byte rollback contract applies. Bugwasnull
-arraywhenno source_free_ranges, not necessarilysingle-range scalar. No SourceFree
-qualificationclaim. CP58bd savedafterallclosed/normaloff, containsactualoriginal
-J+Some2expected/map.pages+completion. Rootreceipt casefe086/checkpoint-observer-completed.json
-SHAd4321534441dfcd7a8bf2a91358950b7caaf4af9620b48fb818f0fd13068aa8a;
-publishedbundle334098c8baa0a04c95275130d2714b1551740dfeee66a011db179000ad2f7baa.
-
-Use NEW lab/Start-PagedEnvelopeObservedRecovery.ps1 FINAL SHA
-f1900f073364d7a30224de47ac11cc02bd43c6a3d01c683c5d6fd0f2e2a52c1d
-(HEADb3083a1). It acceptsactualformats4/5 withstrictcontract, role4MiBcontrol
-receipt (actual2,636,563B), keepsallfullpins/checks. Earliera124resume attempt
-Ready1 waspreflight-only JSONrolelimit; native_exitnull/NOnativeprocess, preserved.
-Currentbd4eee issecondfreshscope, ACTUALnative0/HNDclosed asabove; never rerun it.
-
-NEXT waitcurrentobserveractualReady0+all811/hash+1534metadata, archiveallclosed
-metadata, proveallworkersdead/normaloff. THEN restore ORIGINAL58bd ONCE for
-independentRollback via samefinalhelper. Never restorecurrentHND image asoriginal.
-No activeunit tests, no main edits (c6 unchanged), keepWSL/fixed50GBepoch/min16GiB.
-Rootledger .lab/development/current-paged-state.json hasactualcurrentIDs. All
-native format6globalqualificationflags stayFALSE, no stable/tag/generalrelease.
-Need newpagedRollback +exactcandidatecoldboot/mutation beforequalifiedalpha.
-
-## Earlier release continuation (2026-11-02 23:20 UTC)
-
-VM fresh-confirmed Off/RAM0,33snapshots, currentparent
-5ce766b0-c6e9-4007-b16d-363944240c51 childa0621534source. This is CLOSED HND/ReFS;
-NEVER replay currentjournal. No VM/build job is running. Root alone VMmutations.
-
-Corrected7feb4c06d21e9de73bb88961197f5b745463e490 clean8bin buildmanifest
-d4afec214f672fe4eb3b12c5e82a5315ccbee25f92f9222ef426605948f54814;
-sealed5roles directory-attribute-tools-7feb4c0 manifest
-b0f6fe5fd4e02046739e9c177c838c1675c5a746b8662eec493402cca9e5e521.
-Actualfixedfullbaselinefb8592bb3b044c3aa3879c46afd326af passed capture4984/
-1793660209770/0,21.570304s. Manifestd6a958631a570b3a2cdd3f0077148b571330719988f6f0e430d8e80a22e72d09,
-schema2/9artifacts/1534objects723dirs811fullstreams, before/after3/noauthority.
-Immutablecorrectedbaselinehelper5ce43...751ce is committed3371e97; ce2 unchanged.
-
-PUBLIC1534 case608071c1ad524d07b1ef94237996cc6c PASSED native4164/birth
-1793660834450/0 in129.4563482s includingnativeNTFSpreparation. All811 independent
-hashes+1534objects/fullprepmapreplay andSome2typedpages passed; wrapper4592/birth
-1793660713935 terminal/Ready0, allworkersabsentbefore normalshutdown. Sourceattrs
-10000000→Dir10 fix is now nativelyqualified for this source/profile.
-Expectedpages2,753,825B/map616,436B; J155,932,464+literal55,382,016=211,314,480B.
-Selected3,497,697,280B/3954ranges. Processlogicalreads30,751,950,216/writes3,936,193,515B;
-physicalIO/causalperformance/fullpeakRAM unclaimed. EngineC:\ProgramData\ntfs2refs\runs\4a1bad035614748a2fb5b77d649b2c00.
-Archive113files328,266,646B SHA97b2e173906a5602b7baa953798c1ee52b85d7417f6f83ec923a8a14acc49475.
-See evidence/paged-metadata-public1534-7feb4c0-20261102.json.
-
-NEXT actualnewSome2paged interruption/resume/rollback. Bsource-onlyproducer
-Start-PagedEnvelopeInterruption.ps1 SHA87f2e7e9c822e9f57ed7a805499b5846dae028b498e2f349b187d96cd9937481;
-shared PagedEnvelopeBaselineSupport.ps1 SHA10537d42164c33bd2d5c32fa724c9529e7a16163c8aa8017f9adc69342d2cf4c.
-Both NEW/no nativeexecutionyet. Actualreserveguard correctedto17179869184,
-separate J8GiB/literal256MiB/combined10GiB. Aindependentreviewinprogress, Cwriting
-NEW Start-PagedEnvelopeRecovery.ps1. Actualfirstwrite86 mustbeobserved/flushed,
-thenrootoff/saveoriginalchilda062+flatCPreceipt withallactualpins. JSONlocates,
-neverauthorizes; recovercoremustactualJ/device/lifecycle checks. Rootwillrestore
-same originalindependentlyforResume/Rollback, neverclosedHND/ABTresults. Current
-large success5ce is NOT that original. Useclean7feb/b0toolset/d6fullbaseline +
-additional450receipt0bc. See agents forfullreceiptcontract. No oldhelper edits.
-Globalproductionmarker flag remainsFALSE; no stable/tag/arbitraryscaleclaim.
-Mainc6/no unit tests/keepWSL/fixed50GBepoch unchanged. Sourcea062 originalNTFS
-mustrestoreONCE afterallclosedbeforefreshproducer; don'tclearprotection/replay.
-
-## Earlier release continuation (2026-11-02 22:51 UTC)
-
-VM fresh-confirmed Off/RAM0,32snapshots, parenta0627dbd-aa3b-4896-bbeb-495f5e372057
-(savedNTFS1534source childgolden8329). ACTIVE writable branch is the FAILED
-read-onlybaseline branch: F remains excluded3. Restorea062 ONCE beforea new
-online freeze/baseline. No VM/build job is currently running. Root alone VMactions.
-
-Added450directories ONLY using closedfixturebdb9bb9c2c0a44fdba275a19b00d6567,
-receiptSHA0bc8de2079ed702d64e7fa43e39cc5db3948594ad84b3963e7177a12e3ad1e1d.
-Savedsourcea062 beforefreeze. New8bin clean2591b5fc91bc0b6e7f011d2dd2344d16cd37c958
-buildmanifestSHAa4d43cc60446fa4298bfa5a1fce4b51a332af6e57a4dd0b76d34910ade2071a7.
-Baselinea6c0728f0fc741e0a403d9be992956be actuallyran inheritedfreezer3372/
-1793658467612/0 thennewcapture1468/1793658468889/1 (19.4870058s). It stopped
-atTree derivation: record1120 unsupportedSIattrs. Closedworker+failedbaseline
-archived, no cert/J/conversion/sourcepayloadwrites. Originalce2helper committed
-59142da worked/archived failures; later3precautionaryedits were saved as
-.lab/development/baseline-launcher-post-dispatch-improvements.patch and helper
-restoredEXACTce2 afterclosure. Do not edit frozen live dispatchers.
-
-Newdiagnostic acc43e2 lab-inspect-frozen-record is read-only, selectedMFTrows,
-fastmetadata/RAW2048 only. BuiltsourceSHA759435432ba71781103b6a2ff0dd903c7f8a863401396d1c3666808000375b7e,
-exeSHA814d4f92621d34e4370cf9615cb4883c8cb62e36753144b371b4b78d95882200.
-Actualprobe5028/1793659290341/0, outputfrozen-record-1120-ec24bfd3dfc34ed8893ea62a1da46884/
-records.json SHA10c2c754e1543e54d836a45c8ce13cd8bfc1c9bda1f59298951ef330e981a3bb.
-1120/1121 ordinarynewemptydirs SI10000000 +MFTdir +residentI30length48; root5SI6
-legacy. Raw1561;109121536nativebytes/94863957streamhashbytes; nofullpayloadscan,
-before/after3. Rawallocation/namespaceconsistent; diagnostic not admission.
-
-NARROW coherent ntfs_file_attributes projection now implemented/reviewed and
-4bincheckpassed15.38s: knownSI10000000 onlyMFTdir+coherentuniqueI30, targetWin32
-Dir10; unknownhighuserflagsrefuse. Source/tree/nativeuser comparison shareit;
-internal$Secure/$Extend observation remainscompatible. Normal80/otherlowmasks
-unchanged. See docs/ntfs-directory-attribute-projection.md. Nativefix PENDING.
-NEXT: commitfix, cleanbuild8bins+seal, NEW versioned directory-attribute full
-baseline launcher(agentpublic_readonly_completion writing; preservece2), restore
-a062fresh/start once, runfixedfullbaseline, thenNEWlargepublicadapter andnew
-Some2pagedbundle recovery. Keep native-shadow/no unit tests/mainc6/WSL/fixedepoch.
-Existing14ec1084nativepass+f3saved result remain valid only their actual source.
-
-## Earlier release continuation (2026-11-02 22:14 UTC)
-
-VM fresh-confirmed Off/RAM0,31snapshots, active saved parent
-f3c1460b-6811-4dd3-908c-12cc2842c35e childgolden8329. This is CLOSED HND/ReFS;
-NEVER replay its journal. No VM/build job is running. Root alone VM mutations.
-
-Clean14ec1f8136d8b11f843b76347feb44768536d891 build7bins passed. Manifest
-1fead6f5e9b5ea15a19646a2c3c68bf0aef51ce6ecc2040f6377eebab3299e0e;
-sealed5role paged-tools-14ec1f8 manifest
-7c40e81f62aeda5a554caae10fad22fa9698fb28e3de437573f8ab278bf92585.
-Publiccaseeb251870789c45b988e167f6b4228807 native5756/birth1793656474443/0,
-105.854466s including385NTFS moves5,643,501,568B. All811 independent hashes and
-1084objects/fullprepmapreplay passed. ActualSome2 has1111raw/objectslots;
-expected.pages1,876,145B/9pages +map.pages487,863B/9pages independently typed
-verified. J137,120,208 +literal42,799,104 =179,919,312B. Processlogicalreads
-26,093,083,915/writes2,382,989,259B; physicalIO/causalspeedup/fullpeakRAM unclaimed.
-EngineC:\ProgramData\ntfs2refs\runs\d1741da2e123856b25d2c80fe47e0525.
-Archive109files249,337,084B SHAaa0131d711ea240967791ba5d6198075b055b66f810fe1351fd00cf1e35909a9.
-See evidence/paged-metadata-public-14ec1f8-20261102.json and paged-resource-metadata.md.
-
-Retired ONLY superseded leaf results577b09be andc2a5d174 throughHyper-V after
-197archivedfiles488,386,932B fully rehashed +replacement saved. Bothhostarchives
-retained. f4bf/alloriginalrecoveryroots preserved. Delayedspace release closed:
-lab286,930,463,472B/free53,643,284,480B; reclaimed26,776,781,471B lab and
-26,772,975,616B hostfree. Fixed50GBepoch/max329374052988/min17179869184 unchanged.
-Do not resurrect retired IDs from older guidance.
-
-99fadf7 adds optional --paged-metadata fullbaseline capture: actualSome2/pages,
-allfullraw+nativeEOF/security/namespace/immutability checks/noauthority; default
-Some1 artifacts unchanged. Focusedcheck passed17.93s; no tests/nativecase yet.
-NEWlarge-source fixture/controller/support are in progress under source-only
-release_status_review agent: add450dirs only tooriginalgolden, source1534objects/
-723dirs/811streams, raw~1561<=2048. Rootmustrestoregolden once theninvokeguarded
-New-PagedDirectoryFixture.ps1, save source checkpoint, seal fullbaseline binary
-using Build-ReleaseCandidate -IncludeFullSourceBaseline, capture explicit new
-baseline, then NEWlarge public adapter. Do not run fixture against savedReFS.
-After >1280normalcase, qualify newSome2pagedbundle interruption/resume/rollback.
-Other public recovery originals remain; globalproductionmarker flag staysFALSE.
-No stable/tag/arbitraryscale claim. No unit tests/main edits/WSL shutdown/new
-persistent privileges. Mainc6 unchanged; independentwriter offcriticalpath.
-
-## Earlier release continuation (2026-11-02 21:48 UTC)
-
-VM fresh-confirmed Off/RAM0, parentgolden8329,32snapshots. No VM run is active.
-Authenticated metadata-page storage committed/pushed1379f04. The subsequent
-paged schema2 integration compiles for public CLI, native converter/recovery and
-lab-inspect-paged-metadata; NO unit tests added/run. Native qualification is
-PENDING; do not transfer the05c native result to this new source.
-
-New actual held expectation.pages owner flows through constructor, protected
-target proof, conversion, native readback and recovery. Objects span bounded
-chunks, preserving legacy16MiB semantic acceptance with separate wire budget.
-Fast recovery maps are paged; schema1JSON remains readable. Schema2budgets bind
-actual complete frozen raw counts/pin, available owning handles and exact page
-limits. LegacyWholeImage/full-baseline None stillchoosesSome1; allocationNone
-choosesSome2. Raw2048 domain and other memory/byte/range caps remain explicit.
-Actualpaged owner requiredSome2; noJSONflag can replace it. No handle batching.
-Namespace scalarindexes avoid repeatedwholeobjectdecodes perchild/directory.
-
-NEXT: finish NEW page-aware public observer controller (existing sealedhelpers
-unchanged), cleanbuild/seal exact committed source, qualify fresh native
-conversion then >1280object tree and independent original-state resume/rollback.
-See docs/paged-resource-metadata.md. All older evidence retained. Globalproduction
-marker flag staysFALSE; no stable/tag/broadscale claim. Mainc6unchanged.
-
-## Earlier release continuation (2026-11-02 21:03 UTC)
-
-This block supersedes all older CURRENT/LIVE labels. VM is confirmed Off/RAM0,
-parentgolden8329,32snapshots after explicitstandard-profile refusal. No VM/host
-build is live. HEAD05c1abd source is built/sealed; later commits are lab/evidence.
-Cleanbuild r05c1abd manifestSHA8c26a1d1e6242c5d8d95f6c898c4191eca2096dc3ad58143294c99f3c007adda;
-source05c1abd8e9b274cf7bd26ecaa93cb690dbd98e68. Native-marker-tools-05c1abd
-manifestSHAee288bbfaa52550ca1074271a60cf8351ec94b469951823080d102ca5cb51ccc.
-
-CorrecteddefaultDev case7868b792 PASSED native5332/birth1793652600258/0,
-119.6812554s, all811independenthashes/1084objects/fullpreparationreplay. Journal+
-literal184,273,712B; logicalreads28,549,568,333/writes3,285,385,657 (notphysicalIO).
-ActualQUERY success16bytes/flags0x6000/zeroechoes nowKnownDev=true/Trusted=true on
-shadow; independently queried SOURCE KnownDev=true/Trusted=false/flags0x2000.
-No trust/filter/registry setter. Requesteddesignationmatched; HNDclosed.
-Saved577b09be-973e-4823-ab10-b2d8e07d774a childgolden; NEVERreplayclosedHND.
-Archive100files244,303,060B SHAd2e73c54801f71951fc4dd0abd9a3e201670c19c31ed8e704032624d19403383.
-
-ThenFRESHgolden standardcase5a5ace3d actuallyran --target-formatstandard via
-reviewednewhelperf32265c6a1e13e88079304fa1688198c6f06dbb90513b95a0fe8d362286cf429.
-Native5324/birth1793653187749/1; format.comexit4 explicitlyreported
-'ReFS file system is not supported on this device.' NO fallback/conversion,
-FstayedonlineNTFS, no sourceprep/freeze/cert/J. ObserverReady/0 means SAFE
-FORMATTERREFUSAL only; standardprofile_qualified=false, unsupported_capability_proven=false.
-Don't infer universalOS/edition cause. Archive28files73,444,222B SHA
-2a07de4d4bb65f1a84b17fda819a5000b2d9f42854a8066e0ffc68f740640501.
-See corrected-devdrive-public and standard-format-refusal05cevidence.
-
-NEXT realcode slice: resource-budgeted complete paged ExpectedTree/object/map
-manifests endtoend through native constructor +fastverification +recovery, remove
-1280semantic limit while initiallykeeping2048rawidentity domain. All counts/keys/
-pagehashes/ownership handles must close BEFOREactivation; neverfeedpageddata into
-old1280limitedvectors orliftconstants alone. Qualify~1500simpleobjects andboth
-recoverydirections. Productionmarker flag remainsFALSE: explicit r70lab matrix
-is not productionownerformat6 qualification; exactcandidate creation/recovery+
-outofprofile refusal stillneeded. Standardprofile remainsunqualified here.
-
-No unit tests/main edits/WSL shutdown/newpersistentprivileges. Mainc6 unchanged;
-keep native-shadow and fixed50GBepoch; rootaloneVM actions. No stable/tag claim.
-
-## Earlier release continuation (2026-11-02 20:48 UTC)
-
-This block supersedes older CURRENT/LIVE labels. VM is confirmed Off/RAM0,
-parentgolden8329,31snapshots after preserved13433 pre-source refusal. No VM job
-is live. Host cleanbuild r05c1abd is ACTIVE unifiedexecsession51545; actualcargo
-PID10024/rustc46060,29392 confirmed live. Poll SAMEhandle; do not restart on timeout.
-
-CurrentHEAD05c1abd corrects volume-policy request-echo assumptions. Native13433
-fd88f53a had API success/16bytes/flags0x6000 but mask/version/reserved0; oldreader
-refused before sourcepreparation/freeze (F stayedonlineNTFS). Source/query-only
-fix uses successful fixedversion1/mask6000 request +exact16bytes, rawflagsonly;
-errors/short/contradictoryflags stillUnknown. Focused3bincheck passed34.38s and
-independentreview passed. Failurearchive29files73,480,786B SHA05c85e95e6e0c61dd8a61ea3ff3aacfc1f5f1fd343c366263e83fb9bf7eff53d.
-NEXT: seal05c build, restoregolden8329 fresh, nativequery/defaultprofile run then
-standardprofile capability/conversion test. Never weaken unknown/error handling.
-New--target-formatdev-drive|standard (defaultDev) and readonlyvolume_policy were
-committed13433; no trust/filter/registry setter, no fallback. Actual4d source
-fsutilquery confirmeddeveloper/untrusted, notordinaryReFS. Mainc6 unchanged.
-
-Readreusef696 passed113.1028816s/publicnative5316/birth1793650872220/0 andall811
-independenthashes/1084objects. Completeclosingfingerprint123,539,456B =113,623,040
-actualcapturebytes reused+9,916,416 gapreads,4MiB scratch; no checksomitted or
-physicalspeedupclaimed. Journal+literal186,955,512B. Savedc2a5d174-8634-437e-940d-18d93cdfb37d
-parentgolden. Archive97files244,083,872B SHA11b1bbe18e71df96386ca446ebc01974c236483bd432f4ca106aa8788bb68080.
-
-4d publicmutation/coldboot passed1084originalobjects/811independentXXH3streams
-plus258newfileSHAchecks/256directoryentries; no ReFS warnings/errorssincebaseline.
-Saved265b5c2c-9215-4216-bb92-896db06fbd51 childafb9. Public4d --recover fromoriginal667
-then passed separateResume6080/1793648201357/0,13.9658835s andRollback6012/
-1793649245898/0,8.8482228s; bothall811fullhashes. Archives/evidence checked in.
-NEVER replay those HND/ABT results; originals667 (format5),8d/bfd/291c/833(format6)
-remain recovery origins. HelpersCurrentPublicMutation5971..., CurrentPublicRecovery989e...
-are frozen; fullexacthashes/evidence in their files/history. Rootalone VM actions.
-
-No unit tests/main edits/WSL shutdown/persistentprivilege changes. Native-shadow
-continues. Globalproductionmarkerqualification staysFALSE, scale/compatibility
-remain open; do not mark stable from bounded VM evidence. Fixed50GBepoch remains.
-
-## Earlier release continuation (2026-11-02 19:00 UTC)
-
-This block supersedes all older CURRENT/LIVE labels below. Actual VM is Off/RAM0,
-29 snapshots, saved at afb9afa4-859e-471d-8600-2ba4abb9d2dd (parent golden8329),
-name r4d8-public-min-scratch-verified-20261102. No project job is live. NEVER replay
-this closed HND; use original interrupted branches for recovery qualification.
-
-Clean source4d8ca993cf660ea7430b9cc8b229553946add82b includes mandatory VSS evidence
-for ALL fresh qualification policies (6f2d8a1), preserving full2pass/allocated1pass.
-Cleanbuild manifestSHA5d09d4faa51afc21e2d0fd67c21b9f485ad6b0e485111a82f4801ab0a5330ae2,
-all6bins/284sourcefiles/518875518B. Sealed native-marker-tools-4d8ca99 manifestSHA
-77edb210f6236d3e22ec18a2f6cccd043ea0f784ec9a2041afec7be0aba3b396.
-
-Public --drive F --partition2 --minimize-scratch case0cf3676b completed native5404/
-birth1793644941535/0 in120.1092406s INCLUDING385 native NTFS moves/5,643,501,568B.
-Observer Ready/0; all811 independent hashes/1084objects/full map replay passed.
-Combined JOURNAL+LITERAL191,015,832B; logical process reads30,470,821,813B/writes
-3,885,745,941B. Physical I/O, peakRAM and total shadow allocation are NOT claimed.
-Closed97files244,310,572B archiveSHA03097395779ac04fb2cbf4a79f5e52162f279f574d1f9fad4eb9cf919bf75311.
-Use archive-manifest exact routes: product metadata is in the stage archive
-directory, not empty public-run. Evidence clean4d8-public-native-20261102.json.
-Engine records were C:\ProgramData\ntfs2refs\runs\dd3b74cc743eab2b4b8c5a4f85f66f9b.
-
-All4 format6 bad-peer states passed on separately sealed70c10cc: AP2 Resume17.27s,
-HND2 VerifyHandoff9.264905s, RB2 Rollback9.4060466s, ABT2 VerifyAborted6.5163473s.
-Each actual bad self-hash write/flush/readback+intactfirst proof was followed by
-root TurnOff, same-branch reboot, NOrestore, and ordinary recovery native0.
-All3 AP2 synthetic WriteFile/FlushFileBuffers/ReadFile failures exited1/poisoned/
-offline, then recovered on their same branches. These are VM/failure-path facts,
-not physical hardware power qualification. Globalproductionmarker flag staysFALSE.
-
-New4d public DEFAULT/conservative VSS case517b4916 created actual snapshot01896338,
-native5868/birth1793643655642/1 in3.546999s. Positive snapshot/hosted-diff catalog
-refused at source-vss-catalog-before-freeze; F stayed onlineNTFS; no sourcecert/J.
-Original observer Ready/1 (wrong6disk guard; actual owned empty shadow became7th).
-NEW readonlycompletion ba2c2a86 Ready/0 authenticated original evidence and actual
-managedreceipt/provider/GPT, no converter/VSS mutation/replay. Original failure
-preserved. Archives29files10,957,214B +2files30,443B; see public-positive-vss-refusal
-evidence. Only after closure was disposable VSS branch reverted to golden.
-
-NEXT: exact-build public recovery and post-conversion mutation/reboot qualification;
-resource-scale/compatibility work still open. Keep native-shadow; no unit tests,
-no main edits, no WSL shutdown/new persistent privilege changes. Mainc6 remains
-unchanged. Do not mark stable or flip a global flag from these bounded VM cases.
-
-## Earlier release continuation (2026-11-02 17:49 UTC)
-
-VM is fresh-confirmed Off/RAM0 after readback-error recovery9bd6cd42004b46c98ebc0e9ff57a671e,
-with active parent8d4192fe and28 snapshots. The ACTIVE writable branch is closed
-HND/ReFS, not the original AP1 state. NEVER recover/replay it again. Restore
-original8d before the next independent fault. All project tasks/workers were
-terminal before normal stop. No conversion or recovery is currently running.
-
-Clean runtime70c10cc built284sourcefiles/all6bins,518875518B. ManifestSHA
-e418f4a206fef25f5f03248a057b9612f5d2bb35de50f52868e5b97ac41667ed;
-sealed toolsetSHA b2c4962495d0da9f477ef425f2cf5d2a49b8fd133a647f2f92613d0fc4c767f0.
-Native AP2corrupt case752b1197:5068/birth1793641119368 parked after actual
-badselfhash-peer write/flush/uncachedreadback +intactAP1/storage proof. Root
-TurnOff then same-branch boot with NO restore. Ordinary df88 recoverya8a1e454:
-5732/birth1793641287536/0,17.272784s, HND/ReFS/1084bindings, archived42files
-56822707B SHAe66bb0eb90149236deaa061ca32451b7a0897f5f2865c5afe99ade9d1443126b.
-Saved checkpoint2c7ff0ea-8fe8-4fe9-bce9-0a3fbb4883a1 child8d. Original fault
-producer exitUNOBSERVED. Corruption/power evidence is separate from AP1 receipt.
-
-Native AP2synthetic ReadFile error case4f526787:5556/birth1793641538060/1,
-7.3740063s; actual write/flush, skippedReadFile,1117/poison/failed.json, source
-offline/no success output. ObserverReady/0 means expected failure observed.
-Its38file29682528B archiveSHA609f85c718e5c98ded161e249ee7684130fed79ecea1a7aa306d8d385bf18abd.
-Samebranch ordinary recovery9bd6cd42:868/birth1793641614761/0,14.8922902s,
-HND/ReFS/1084bindings. Its42file56822697B archiveSHA
-9b9f6f2cf32bc875f11962d6d951fdd02791161ed0124afb85b3ab6dc48c8970.
-No extra checkpoint retained for this reproducible closed result; host evidence
-is preserved. These are actual VM/failure-path observations, not hardware power
-qualification. See native-marker-ap2-{corruption,readback-error}-20261102.json.
-
-Next: run synthetic WriteFile/FlushFileBuffers fault cases from original8d,
-remaining marker-state damaged-peer cases, then final exact public qualification.
-Use frozen new fault controller58884f76e2e13e1467235868b00ab52ea23f17ab704f1c6ebb758c2376857007
-and unchanged df88 normal recovery. Globalqualification remainsFALSE. No unit
-tests added/run. Broader compatibility/resource scale remains open.
-
-## Earlier clean public result (2026-11-02 17:32 UTC)
-
-This block supersedes the earlier VM and pending-public labels below.
-VM is fresh-confirmed Off/RAM0 at clean233 public success checkpoint
-efa60a3e-e1ca-4840-9328-2c542e44ee6b, parent golden8329, 27 snapshots.
-The exact clean233 public CLI completed normal conversion on the unprepared
-source: native4704/birth1793602537416/exit0 in139.0057165s including385 NTFS
-moves/5,643,501,568B. All811 independent hashes,1084objects and complete native
-preparation-map replay passed. Journal142,496,384B +literal43,900,928B =
-186,397,312B. Logical process reads29,258,514,077B/writes3,483,167,219B;
-physical I/O and peakRAM unmeasured. Observer Ready/0; all project workers
-terminal before normal shutdown. Closed97files244,192,950B archiveSHA
-de470b5d436ab73aa461307eaa3ea181150aa3cd3ab5e108e24a89d2fc4067f5.
-See evidence/clean233-public-native-20261102.json. NEVER replay its closed HND.
-
-The new recover-only enrolled-lab fault facility accepts only an already valid
-first marker plus zero second peer, checked before target opening and at the
-selected write. Corrupt-peer flips one fixed second-copy self-hash bit and parks
-after actual flush/readback; synthetic write/flush/readback errors poison and
-return actual Err. They are explicitly not hardware error claims. Signals are
-preallocated before journal/target open. Focused3bin Windows check passed;
-no unit tests added/run. Native damaged-peer/error execution remains pending.
-The public production qualification flag remainsFALSE; do not flip or claim
-stable release from these bounded cases. Preserve approved mainc6 bytes.
-
-## Earlier release checkpoint (2026-11-02 UTC)
-
-This block supersedes older CURRENT/LIVE and pending-power labels below.
-CURRENT VM is fresh-confirmed Off/RAM0 at ABT1 closed-verification checkpoint
-0a3a2a49-44cd-45a0-8817-41767231d7b2, parent83354c86, 26 snapshots. All project
-workers/tasks were terminal before normal shutdown. No conversion is active.
-Runtime7cd6870 passed all FOUR first-copy VM power-cut states:
-- AP1 Resume3064/birth1793594871253/0,16.2593027s,HND/ReFS and separate original
-  Rollback2588/birth1793595236914/0,11.6591231s,ABT/NTFS. Savedfccec765/44c0074b;
-  original8d4192fe childpreparedcb802669. Original producer6000 exitUNOBSERVED.
-- HND1 producer6104/birth1793595917550 actualcut; originalbfd2dfbe childcb.
-  Verify_handoff1752/birth1793596303139/0,10.2369122s,1084maps; saved2d62e6da.
-- RB1 pausedRecoverRollback5948/birth1793596998366 actualcut; original291c825f
-  child8d. Rollback3868/birth1793597267167/0,9.6930208s; saved450eb572.
-- ABT1 pausedRecoverRollback3060/birth1793597984026 actualcut; original83354c86
-  child8d. Verify_aborted2488/birth1793598793045/0,6.7257683s; saved0a3a2a49.
-NEVER replay any successful HND/ABT result; use the respective original power
-checkpoint for another direction. Cuts followed actual closed/synced32KiB signal
-and two matching livePID/birth/task observations. Original exits are unobserved.
-These prove four first-copy/zero-peer states, not native damaged-peer bytes,
-Win32 I/O-error injection, physical power-loss safety or general stable release.
-Archives are closed/pinned; no extra811-stream scan or peakRAM claim. See
-native-format6-power-recovery.md and per-state evidence JSONs.
-ExistingPowerRecoverydf88 remains frozen. NewRollbackPause3107ef and nested
-RollbackPowerRecoveryebedbc controllers passed actual RB1/ABT1 dispatch; the
-nested receipts bind child->original8d->preparedcb and originalAP1 bundle/ticket,
-with the new producer's own process/config/signal. No fakeexit86/freshcertificate.
-User approved unchanged mainc6 capability edit; committedb87867e. Preserve its
-bytes; no other main edits authorized. Shared plan-aware production gate7abadeb
-keeps legacy fallback forF0/tightmarkerbudget. Backup-boot fixa545bbe reserves
-final4KiB regardlessbitmap and rejects unsafeformat5/6plans beforetargetopen.
-Typed storage policy1316ac9 requires production qualification from actual owned
-V3 journal C4096/L512/P4096/FileStorageInfo, with explicit unqualified lab use.
-The globalqualification flag remainsFALSE. Native cases above use sealed7cd,
-not later source. Focused Windows builds of public/marker/composite bins passed;
-no unit tests were added or run. Final exact public build/matrix, remaining
-qualification and broader resource-scale/compatibility scope remain OPEN.
-Latest clean candidate r233c2a3 built all6bins from283 committedsourcefiles,
-517927162B workingbytes, manifestSHA
-659b9534941eb950e63e912c1a0d46f56d5f7c35aac7417bc6897c8fbbaf700e;
-publicCLI --help exited0. It includes the approved main, gate and two fixes.
-No native conversion/recovery has run on that candidate; do not inherit7cd
-native qualification. Build record evidence/clean-release-candidate-233c2a3-20261102.json.
-Old clean candidate r378860e-c (283sourcefiles/6bins,517209397B,manifestSHA
-cbf9c8d8b328e7a6aa8cd42e62c895ce6f40e2c6c2fc53707565bde84a1091f3) is build
-provenance only and predates current source. Do not inherit its qualification.
+Work in **D:\code\ntfs2refs**, branch codex/resource-based-admission,
+private origin faratech/ntfs2refs. The environment's C: workspace path is
+stale. Read RTK before operating.
+
+The previous AGENTS.md was copied **verbatim**, including its historical
+evidence and instructions, to
+[AGENTS-through-20261103-resource-continuation.md](docs/history/AGENTS-through-20261103-resource-continuation.md).
+Its old CURRENT/LIVE labels, status claims, and old keep lists are history,
+not current instructions. Earlier archives remain in docs/history/.
 
 ## Objective and user constraints
 
-Finish the Rust in-place NTFS-to-ReFS converter, with efficient reads, scratch
-storage and RAM, broad NTFS compatibility and resource-based scale. Conversion
-and recovery must run inside the Windows machine owning the disk. Hyper-V is
-lab infrastructure, never a product requirement. Boot conversion is deferred;
-large-count/volume, feature and production-hardening requirements remain open.
-Do not redefine completion as the existing small-corpus success.
+- Finish a usable, efficient in-place NTFS-to-ReFS converter with broad
+  compatibility and resource-based scaling. Do not redefine completion as
+  the existing bounded native successes.
+- Conversion and recovery must run inside the Windows machine owning the disk.
+  Hyper-V is test infrastructure, not a product dependency. Boot conversion is
+  deferred; the current focus is nonboot data volumes.
+- Preserve the frozen native-shadow alpha and build on it. Independent writer
+  and forensic-parser research is off the critical path; do not copy GPL
+  engines into the Rust product.
+- Prioritize actual implementation and necessary native integration. The user
+  explicitly directed: **do not add or run unit tests** unless specifically
+  requested. Focused builds and necessary existing native checks are allowed.
+- Minimize reads, scratch storage and RAM. Do not repeatedly perform expensive
+  checks already answered by unchanged evidence.
+- Commit stable task-owned changes and push normally; never force-push. Stage
+  exact owned paths, not git add all. Avoid speculative changes near release.
+- **Do not edit, format, reset, clean, or otherwise alter src/main.rs.**
+  Preserve approved SHA-256
+  c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b.
+  The user previously approved committing its existing edit unchanged.
+- Keep WSL running. Do not disable UAC, stop WSL, or add new persistent
+  privilege changes. Do not expose credentials.
+- User authorized deletion of obsolete checkpoints and ordinary cleanup,
+  subject to the safeguards below. Preserve active recovery and evidence;
+  do not infer a preserve-all policy from archived historical instructions.
 
-- Prioritize actual implementation and necessary native integration. Keep the
-  native-shadow alpha; independent-writer research is off the critical path.
-- Do NOT add or run unit tests unless specifically requested. Focused builds,
-  existing owned-file experiments and necessary native checks are allowed.
-  Avoid repeating expensive scans answered by unchanged evidence.
-- Commit task-owned stable source/docs regularly and push normally; never force-push.
-- Preserve the exact approved src/main.rs bytes; do not edit, format, reset or clean them. The user explicitly authorized committing the existing capability-field removal unchanged on November 2.
-  Its SHA-256 is `c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b`.
-  Stage exact owned paths, never `git add .` or workspace-wide formatting.
-- User authorized obsolete-checkpoint deletion and cleanup. Preserve active
-  recovery material and host archives; do not infer preserve-all from history.
-- Keep WSL running. No disabling UAC or new persistent privilege changes.
+## Current live work: verify before acting
 
-## Performance continuation and current native state (2026-11-01 UTC)
+Last reported actual VM observation: resource diagnostic run
+fc838b529f5e4d2c904c465cfde97459, source commit
+a7befe8af1aad71e9cab7134f9d4aee5b87d90a4, on restored checkpoint
+3343f2a4-cf81-4fa9-a504-030425a8011e. VM is Running with fixed 4 GiB RAM,
+4 CPUs, and no network adapter. Native PID **5272**, creation time
+**1793727899451 ms**, and the scheduled task were actually live at last poll.
+Source was **3** (persistent OFFLINE|READ_ONLY), at source-recheck.
+No AP or valid first-write signal was observed at that poll.
 
-Latest native performance case6be2648addc24d1b95a11d807dae76d6 PASSED exit0/HND
-and all811 independent hashes. Runtime c2c1ef3 used the already-prepared source,
-new live source certificate and same owned empty shadow. D544,784,384B /
-J131,301,000B / C15,888,384B / O55,504,896B / F402,669,568B. Actual format5
-N2RFRE01; native conversion62.2871679s, prep18.5202009s (80.8073688s combined).
-Native-verified logical process reads27,643,861,313B/writes878,482,576B versus
-prior94,053,323,457B/17,368,271,656B. Journal reduction97.73%; kernel NTFS move IO
-is separate. These are scoped observations, not a controlled physical benchmark.
-See evidence/prepared-source-performance-native-20261101.json.
+The latest sample reported 5,369,506,919 process logical-read transfer bytes
+and a 42,192,896-byte working set. Those are samples, not final I/O, physical
+disk traffic, peak RAM, or evidence that a fault or conversion completed.
+PID 5272 from an older failed run had a different creation time; never infer
+identity from PID alone. The old current-resource-fixture-run.json may still
+describe that prior run: verify the actual task/PID/birth and current receipts.
 
-CURRENT VM is fresh-confirmed Off/RAM0 at native format6 controlled Rollback
-200aaa68-6a12-482d-910e-60e5b1f20b63, parent originalfault5d2517e5,17snapshots.
-Runtime010316d matrix PASSED: fault76ce2bc519f74493a29832b8c7f1db4f native840/
-birth1793587745932/exit86 afterfirstflushedsourcewrite; originalcheckpoint
-5d2517e5-59f9-4c26-b9e0-e6775d175f68 parentpreparedcb802669, receiptSHA
-b3fc860f1d04a645db01c593ba0c9661f20d65bac2d1ce0c9cc1b1165b92ddbe,
-bundle70ef71dc498e887d4810660913b61189b564811a46f5e063ce9fbe15b290c97d.
-Separate Resume d81599ef... native4604/birth1793588211332/exit0 HND/ReFS15.8797041s,
-1084completebindings, checkpoint43d445cb-0d6e-4647-aa43-2664ee78b424.
-Separate Rollback37f15c4a... native4572/birth1793588475205/exit0 ABT/NTFS11.5185644s,
-142,356,480restoredB digest96a4400a2f6e7fc07e2c337b5e82a1e61346776ee3ae2f87a1e0704f497362b4.
-Both collectorspassed, shadowabsentafterboot/neverreattached, originalJSONisnot
-newsourceauth, noextrafullcontentscan. Archives: fault62/130227192B,
-Resume31/29770192B, Rollback29/2643077B, length/SHAverified. Normalstoponlyafter
-allprojecttasks/workersterminal. Evidence/native-format6-controlled-matrix-20261102.json.
-Power-cut/hardwarequalification stillpending. NEVERreplayresultHND/ABT; useonly
-original5d2517e5 foranotherdirection. Originalnormal format6 eba55c48 remains saved.
-Read-only completion1078caf077ae4c51a76d8e2110c5a74e PASSED Ready/0 with original
-native3944/birth1793585096824/exit0. Original operator failure and earlier6037
-cold-shadow refusal are preserved. Source payload scanned0, new nativeprocess0,
-rawJopenedfalse. Detached shadow6 is affirmed absent only AFTER closedHND/full
-recorded native proofs; image exists/Attachedfalse/allcurrentGUIDsunique, no
-reattach/rebind/attributechanges. Closed10observerfiles89,357B verified; archiveSHA
-33d74cd86c502b0fd602febd2671b082905df9d2f98496e816050144feee2d1b.
-VM start initially failed for hostRAM. WSL cache-only reclaim (sync/drop_caches)
-released about38GiB Linuxcache and enabled the unchanged4GiB VM; no Linux process
-was stopped and no persistent memory/privilege setting changed. Keep WSL running.
-Run e330512f550a49dda07e5700f5c4bb6a used sealed runtime010316d, native3944/
-birth1793585096824 exited0 in69.7858092s, HND/ReFS, actual sealed unbuffered NTFS
-journal format6/131,669,328B, selected545,095,680B, eight aligned distinct marker
-device offsets,1084 complete native map bindings and650partial/1,371,388tailB.
-WOFquery1 remains unsupported/absence=false; samehandle directreparse4390/tag0
-supplies affirmative ordinary-file proof. Both terminal barriers passed before
-native online exposure. This is normal CORE success, not a completed native6
-matrix or hardware qualification. Independent full-content hashes were not run.
-Original metadata observer failed AFTER native0 because saved admitted V3Some
-was incorrectly required to remain planningNone. Its corrected finalization
-reader uses64MiB (actual27,174,509B). Readonlycompletion is now complete; NEVER
-replay this HND or rerun its converter. The generator and original failures stay.
-Closed67files157,375,432B source/copySHAverified; archiveSHA
-d9bdf0ba3bbe3ee2c1d57b5fb2d3b2604600dae865a2cf7e79b6275c7b2c9167.
-Bundle7296ac5c02ec6dfd3292e78f12d8dee48e3d08870faaf025a8f1976aa50723bd.
-Evidence evidence/native-format6-core-normal-20261102.json. Logical process read
-delta21,619,924,280B/write922,583,523B; physicalIO and peakRAM remain unmeasured.
-The core success checkpoint was normally stopped/fresh verified before current
-read-only observer boot. No native conversion/recovery job is active now.
+Root alone controls the VM. Do not restore, power off, checkpoint, launch a
+second worker, or repeat a timed-out operation while this run may be active.
+Poll actual task state, PID and creation time, owned process/terminal files,
+and real source/journal state. Timeouts and remoting loss are not termination.
 
-Earlier completed current65b Rollback remains saved at
-9a01516b-1279-4266-9923-fe17d2610090, parent original6679708a.
-Rollback5b38b6a74a61429abd60829507b0e7c1 PASSED native6124/birth1793580685000
-exit0/ABT/NTFS and all811 independent hashes. Restore-required144,560,128B digest
-3f2be98dfc6a5cf8f12a818593fa8df8cc9a0e89c7aa3637891039b040588c22 matched;
-original full-old marker identity3f01c92ba134075ddf517702704bc7b517dbeb5b1cb4728e389815d2bb89e6bc
-is unchanged. Original free bytes and post-rollback maps/timestamps are not claimed.
-Closed57 files61,769,941B, archiveSHA92b00fca5022290a2c5e2d38b5e77ce2a156e0552754643b0d5a8b537180fc69.
-All tasks/workers terminal before normal shutdown. No active native job remains.
-Resume5ccce67524a64c58a2c89b8c37a990cd PASSED native852/birth1793579665500 exit0,
-HND/ReFS, all811 independent hashes,1084 metadata/maps,273 required directory checks.
-Normal stop and fresh checkpoint19f5d614-e7a0-42d7-9d32-c8e1c55c1065 saved it,
-parent6679708a. Closed59 metadata files88,491,263B; archiveSHA50a778825b18064165c66bbe062832fe747dc08028a91e15dcd179b16f04d687.
-The first resume harnessaa991 refused before native launch because host PS7
-normalized a timestamp; its failure is archived. Controller8097683 preserves
-timestamp strings and both current-source14/6 adaptations; historical11 remains.
-Original first-write checkpoint6679708a is Off/RAM0, parent preparedcb802669.
-Producer4144/birth1793578032909 exited86; actual sole post-flush message,
-noApply/HND,sourceoffline/shadowofflineRO and terminaltasks/workers observed.
-Metadata archive verified; readonlyobserver completed the original failed schema
-observation without replay. Recovery bundle SHA2a86be3408bc784a3b0ac1a8bff2acc1b76099635ed58561114e84724a376944.
-Actual checkpoint receipt atprepared-source-performance-interrupt-d0d30cb0454e4441920df86accf869a7/checkpoint.json,
-SHAf5b631ee591c1c6befd3afd75ddf4bc50d93cfec60d0bc9e8abd89ca7595738c.
-The controlled current65b first-write/Resume/Rollback matrix is now complete;
-both directions started from original6679708a on separate branches. Birth-to-
-terminal observations13.247s Resume/8.089s Rollback include parent observation;
-the slower PS lab metadata/full-content observers are separate. Evidence:
-evidence/current65b-recovery-matrix-20261102.json. No rawclosedHND/ABT replay.
-Latest PUBLIC minimize-scratch success1d7299ff-c616-4bcb-8b29-c1a1ba4a8a33
-remains saved separately, parent golden8329.
-Run d04360139db64953a53a2d1448018c58 used real
-ntfs2refs --drive F --partition 2 --minimize-scratch with affirmative stdin,
-runtime65b1178 (not a lab conversion entry). Native1308/birth1793575210964 exited0,
-HND/Complete. Wall131.4201284s INCLUDES385 NTFS moves/5,643,501,568B and new live
-post-move source certificate. Actual journal139,901,808B +literal45,113,344B =
-185,015,152B; processlogicalreads26,341,046,157B/writes2,507,543,331B. Kernel move
-IO/physicaldisk speed and peakRAM are NOT established; peakmetricsnull, never0.
-Original independent811 hashes, exactsemanticmetadata (existingprovedaccess-time
-exceptions only), fullnative move-map replay, security/namespace/fullmap/tails
-all PASSED through readonlycompletion3569935d09754470af1bdfdaf014facb. No native
-conversion/recovery replay. Original schema-tail and duplicate cached-access
-observer failures preserved. Source required273/5 provenreplaced internal dirs
-of278raw, actual$Deleted29error87 remainsUnknown. See docs/public-min-scratch-native.md
-and evidence/public-min-scratch-native-20261102.json.
+The opt-in diagnostic is lab-resource-diagnostic --apply-and-verify
+--interrupt-after-first-flushed-write. It prepares an independent preallocated
+signal before source activation. A valid
+K:\...\<output>-first-write-signal\signal.json is evidence only after the real
+first native write, flush, exact readback, OFFLINE and AP observations, a
+different remaining selected granule, and signal sync/readback. It grants no
+replay authority. Exit 1 by itself proves none of those conditions; do not
+invent exit 0/86 or claim a physical power-loss test.
 
-Product records: C:\ProgramData\ntfs2refs\runs\0dd148940f0c665732d7e146426ff52c\conversion.
-Closed106 metadata files224,579,123B source/copySHAverified under .lab base
-public-min-scratch-d04360139db64953a53a2d1448018c58/closed-native (wrapper/product).
-Alltasks/workers terminal before normalstop/checkpoint. Oldnormal051b andf8f7 were
-retired viaHyper-V after279 old/newarchivefilesheld/rehashed; receiptfolder
-retire-two-superseded-normal-results-f59aabfec5804818aac3c9756dd0362f. Allarchivesremain.
-Keep latestnative6eba55c48, original6679708a, newResume19f5d614, newRollback9a01516b, latestpublic1d729, preparedcb,
-originalNTFS8329/6fe2/371a/9c42, guardedf4bf,Hcoldd939, oldformatinterrupteddea9
-and format5original7721 (14 states, current Off ateba55c48).
-Cleanup20261102 retired ONLY archived recovery-result leaves8087/d40b/d9e580fa/67eda3e4
-through Hyper-V after224 archive files held/rehashed. Freed22,095,781,888 hostbytes
-(20.58GiB), Dfree143,170,375,680B; logical lab201,040,951,068B at00:25UTC.
-Evidence: evidence/obsolete-recovery-snapshot-cleanup-20261102.json. Older keep
-lists below are historical and MUST NOT recreate these retired IDs. Automatic
-approval review blocked three obsolete .lab/development Cargo cache deletions;
-leave those paths alone. Main target is also in use by external cargoPID17220;
-root did not start that test command and must not delete its build directory.
-No rawHND/ABT replay. WSLrunningprotected.
+Build process 43001 for a7 is **complete**, not live. Pinned candidate:
+.lab/development/release-candidates/resource-first-write-a7befe8/manifest.json
+SHA-256 1cceb0332abb64e015613bcaf5d06391eb2a2efdb651ded5ce24da593bcefeb0.
+Diagnostic executable SHA-256
+03b7aa96d5f66361fd272668de5ba24e751535869c34556c46a961eca147ac8f.
+Its public executable SHA-256 is
+49a741917ed08f2d119671eb6d43d6e7dcadaba44ae844885a5b74363d8409e6.
+This is a pinned experimental build, not a qualified release.
 
-Source65b1178 fixes case applicability after independent bound replacement proof,
-not metadata labels. Actual2e20 predecessor safely refused$Deleted87 before
-certificate/J/writes;40 metadata files94,365,160B preserved atprepared-source-
-performance-normal-7f5da47801b1457cac07a28f0b63bfa6/closed-refusal. No failurewasmasked.
-Alltransferred/root dirs still actual0/0. Preparation savesboundedalready-read
-source-before-preparation.json and pin/length; all4 actualbasic_times retainedand
-verifiedstable in385moveledger. See source-directory-case-admission.md.
+Root's P3 executor check, session **75015**, was reported active when this
+handoff was requested. Poll its actual session/result; do not start a duplicate
+build on timeout. Last reported HEAD was 146093e; verify actual Git state
+rather than relying on this text. C/D source slices were being reviewed or
+frozen; coordinate ownership and check their actual status before editing.
 
-Earlier72b4db0 actual closing-reuse8437 PASSEDall811:6,176,772,096B reused,
-extra capture shadowreads0; bothraw/zero brackets unchanged. Reads21,473,893,401B,
-wall70.5999624s vsprior62.2871679s (NO wall speedupclaim). Oldf8f7state retired,
-87-file220,578,453B archive preserved; evidence/closing-buffer-native-20261101.json.
+## Real evidence and boundaries
 
-Positiveformat5 c2c1ef3 first-write/Resume/Rollback matrix passedall811 bothdirections,
-restore-required143,527,936B matchedc395ac7284dcc32ba73e148957e544d837fc1c7423291f09c1ec32aefac36ceb.
-Originalfault7721 parentcb: receiptSHA9afc04c396cad6051bde711914227ac394e78aacc5391ef479fdf630cb95d4eb,
-bundle0b6cc964ac2b3410712b23c99b5247a58a9b9297d4554c052c4312daac35c0fc. NativeResume4688
-18.7571244s/HND,Rollback6052 9.8437227s/ABT. Old resultbranchesd9e580fa/67eda3e4
-were retired after full archive rehash; evidence remains. This old matrix is not
-native6 or hard-power qualification. Current65b Resume now passed separately.
+- Frozen published alpha 7feb4c0 passed one controlled Hyper-V TurnOff and
+  AP-resume-to-ReFS case. See
+  [exact-alpha-resume-after-vm-poweroff-20261103.json](evidence/exact-alpha-resume-after-vm-poweroff-20261103.json).
+  It is a bounded experiment, not physical-power-loss or general release proof.
+- Public V4 source 5a8b781728726fec5e0f9351fa3b61c8633a7e19 completed a
+  real same-partition conversion, exit 0, in 2588.6345994 seconds.
+  It recorded 2,558 metadata/map bindings and 811 streams: 157 known hashes
+  covering 119,009 bytes, and 654 extent-only streams. The journal was
+  5,821,929,848 bytes. The last live process-read sample was 497,108,655,663
+  bytes, not final or physical I/O; peak RAM/scratch was not measured.
+  See [public-resource-first-conversion-20261103.json](evidence/public-resource-first-conversion-20261103.json).
+- That completed HND/ReFS branch was saved at
+  411c47b6-652d-432a-81f9-8bd10ff18e1b. After cold boot, independent
+  observation matched all 811 original XXH3-128 streams, totaling
+  9,885,801,949 bytes, and 1,534 baseline namespace/type/length objects.
+  The extra 1,024 directories were not independently checked after boot.
+- Public terminal recovery source 03868c1 completed already-online HND
+  reconciliation, native exit 0, without raw replay or comparing mutable
+  mounted bytes to stale selected bytes. Beforehand 33 ordinary ReFS files
+  were created/mutated; their recorded lengths/SHA remained unchanged after
+  that recovery. It does not qualify V4 AP/RB recovery.
+- The resulting operational branch was saved Off as
+  ba81a1f8-eee9-40d6-957f-31acbb09b98e, child of 411c. Both are closed
+  HND branches: **never replay their old raw journals**.
+- Diagnostic 6189937fca3445bfb0f216c4588641d5, source 96f9587, failed
+  before its first write on RAM accounting; actual exit 1 and a zero-filled
+  signal are not a valid partial-write result. The later a7 fixes were built,
+  but the active fc838 run has not yet established a valid signal/recovery.
+- Exact record archives, hashes, prior qualified cases and refusals are in the
+  linked historical handoff and evidence/. Do not recreate retired snapshot
+  IDs or transfer qualification from one binary/build to another.
 
-E3 mechanics c641d8d generic opt-in format6 N2RFRE02, marker_profile RedundantSourceFreeV1,
-body32768/AP/RB/HND/ABT copy pairs; formats1–5 defaultsunchanged. Nativeproduction
-creation UNWIRED; general_recovery/allocation.rs explicitly refusesmarkerprofiles
-BEFORE targetopening. Native adapter670f72f is compiled/source-reviewed only,
-MARKER_STORAGE_NATIVE_QUALIFIED=false. It binds share0 unbufferedwrite-through
-NTFS, exactEOF, aligneddisjointmappedsectors/protectclusters/scopedprivilege,
-uncachedreadback. Integration7859cea adds the same-owner postvalidation sealing
-hook and both-terminal-peer online barrier behind ONLY explicit enrolled lab
-lab-selected-marker-native acknowledgments. Independent source review and focused
-build passed. One valid terminal closes replay; degraded peers stay offline.
-Native/hard-power qualification remains open; production defaults unchanged.
-See docs/redundant-selected-markers.md.
+## Current engineering priorities
 
-Memory codee596322 streams bounded artifact saves/hashing, borrows exported maps,
-moves parsed maps into recovery lookup and directly compares mounted bindings.
-Focusedcheck/releasebuild and independent review passed; no new native evidence
-for this runtime. Shared selected artifact limits934ffa8 fix writer64MiB versus
-recovery16MiB opening/copy mismatch; small fresh saves obey existingread limits
-beforeactivation. No object/range caps lifted. The separate lab readonly observer
-still has16MiB expectation/report limits; reconcile before larger-corpus claims.
-Sealed e596 runtime toolsetnative-marker-memory-tools-e596322/manifest.json
-SHA857e4003cc4c367a0bf3fba2c45461f30dfcdd261608b286400ff1bee31c5fad
-has4 standard roles plus separately pinned lab marker tool. It predates934ffa8;
-do not relabel it as latest or nativequalified. Details metadata-memory-reduction.md.
+1. Resolve the live diagnostic from actual terminal evidence. Only after a
+   valid real first-write signal and independently classified AP/OFFLINE
+   state may Root establish a recovery origin for separate Resume/Rollback.
+2. Qualify new V4 recovery/finalization changes against the real native stack.
+   Missing/corrupt journal, wrong identity, low space, and interruption stages
+   must fail safely; preserve actual journal and source protections.
+3. Finish P3 resource-based source prealignment inventory, planning, executor
+   and receipts. Until genuinely wired and qualified, --minimize-scratch in
+   V4 changes capacity policy but does not run the old NTFS placement prepass.
+4. Reduce repeated journal/artifact reads through same-owner receipts only
+   where actual immutable capabilities and required before/after checks are
+   preserved. Preserve final native gates; never replace proof with JSON flags.
+5. Retire artificial count/size caps through paged evidence and real resource
+   accounting, not larger constants or truncation. Large-volume, geometry,
+   feature and production qualification remain open.
 
-NEXT: native6 hard-power qualification usingexplicitpause, thenresource-basedpagedscale.
-Native010controlledmatrix and65bmatrix areclosed; do not repeatwithouta
-new failure or relevant change. Publiconecommand
-coverage is now real; don'trepeatit withoutnewchanges/failures. Cleancommitted
-release/tag/version remainsopen because usermainhunk MUSTstayuntouched/unstaged;
-qualifiedbuildpins it separately. No units added/run. Do notcall performancegoal
-complete fromthis boundedcorpus; independentwriter research remainsoffcriticalpath.
-Lab-only marker-copy pause instrumentation is now source-reviewed and compiled,
-but not natively qualified. Eight8slots selectable through paired
---pause-after-marker-copy/--pause-signal options; signal is preallocated32KiB
-marker-pause.json directlyinsideindependentC0output. Actual selectedcopy must
-completewrite/flush/uncachedreadback/storagevalidation before syncedsignal closes;
-then source/journalownersparkforever. Signalwrite/syncerrorparks withsignalstill
-share0locked. No nextslot/target/callback advances, no timeoutautocontinue, all
-productionpathsNone. HostmustverifylivePID/birth+readableclosedactualreceipt before
-the intentionaldisposableVM hard-power exception; timeoutalone is NEVERauthority.
-Rootfocusedcheck3bins passed23.32s; no unit tests. Build/freeze a newruntime before
-pausecases; existing010316dsealedtools have NOpausefeature. Controlledprocessfault
-matrix haspassed010316d. Sealedpausebuildaba19c9 at native-marker-tools-aba19c9/
-manifest.json SHA96a7edf0ac89878e7098299e27362395e734eb09e38546db27aa521ddd227ab7,
-sourceaba19c9b06b2d3ebfbcc921bd5090cec77cf97da, markerexe4ea48b265dc4c49fec76b9fc63d5870fee346198e9da930b65e2fdad91896230.
-It predates the newly source-reviewed/compiled terminal-peer repair; build/freeze
-latestbefore HND1powerrecoveryqualification. NewexclusiveclosedReadSeek-only path
-checksfullcommittedtarget, repairsonlymatchingterminalpeer, rechecksfulltarget+
-unchangedlifecycle beforeexistingnativebothpeerbarrier; publicread-onlyverify
-andlegacyNone remainunchanged. Rollbackformat6 repairs actualexistingAPafter
-fullmixedtargetprecheck beforeRB/payload, neverinventingintent. No nativeevidence
-forthisrepairyet; focusedcheck17.57s/source-independentreviewpassed. Recover-only
-dispatcher now allows affirmed originalshadowabsence aftercoldboot, without
-attach/rebind/attrchanges; Fresh stillrequiresoriginalemptyattachedshadow6.
-Preparation82e805b moved5,643,501,568B over385 native requests/222 identities,
-with complete native maps/EOF/identity checks and all811 independent hashes.
-A fresh frozen full raw/native baseline also passed1084 objects/811 streams.
-Prepared checkpoint cb802669 preserves RUNNING MEMORY and empty owned shadow6:
-restoring it yields Saved; verify in a fresh process, then Start-VM once.
-The original prepared managed smoke receipt is pinned SHA184aad57e2c8c8616adb4ad57ed82e40aba31949c530015ebcc5f7b681bcf876,
-at ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e/closed-native/managed-shadow/result.json.
-The actual guest VHDX is under that same6ec...stage, not each conversion's stage.
-New source uses a32MiB pre-submission receipt reserve; focused compilation passed,
-but that later change was not part of recorded82e execution. No unit tests.
+Allocation-bounded is the default: compare/write authenticated target-required
+ranges. NTFS free space is not claimed unchanged. Whole-image mode retains its
+full checks. The approved destination-bitmap window check does not replace full
+phase maps, per-file retrieval, all-placement or final allocation checks.
+Incremental retrieval remains deferred.
 
-New full baseline manifest SHA7d10997d0ec43a54725c66956a0992d40437b20720a78217852cc338e82a74e7
-is under ntfs-owned-preparation-6ec16ed4b4774c13a76b1e282103c66e/full-baseline-
-8796571ebd24458f8bedf17b5784e5a7/closed-native/full-baseline in the .lab base.
-Original f5de describes PRE-move physical locations and is not admission forcb.
-Conversion uses genuine fresh source inspection/certificate; baseline JSON is
-only independent lab evidence. Original logical-content hashes remain pinned.
+Extent-based fast verification is the approved default; retain full-content
+verification as an option. Prove retained bytes via exact metadata/physical
+extent identity; checksum moved/rewritten bytes during their I/O. Preserve
+namespace, ACL, allocation, full retrieval and recovery checks. Explicitly
+absent digests stay absent. User-file/resident/native content digests use
+XXH3-128 despite some legacy field names; artifact, metadata, residual-tail,
+whole-image and journal pins use SHA-256.
 
-Completed first-write interruption used
-lab/Start-PreparedSourcePerformanceExperiment.ps1 -InterruptAfterFirstWrite.
-Its exact schema3/8GiB J/256MiB literal/10GiB combined bounds remain; requires
-positive format5 F for the new recovery experiment. Toolset remains sealed
-paired-source-preparation-tools-c2c1ef3/manifest.json SHA70fb7abaff41ad497bb90e996662057de36222ddd9d5a68cc411d57957dc557e.
-Native producer SHA93c1eb20a3510fb12f6d84732fb3b4c8779ee7493ceefa46f5125f1bd0c8e232;
-public SHAe49d604561d19652557b8ee8a2e93f3ca8797d7e97fd7c228ae7a7ee7cab2f75.
-Root must create a REAL interrupted checkpoint receipt only after actual86,
-first flush/noHND, idle, normal stop and fresh checkpoint graph verification.
-New lab/Start-PreparedSourcePerformanceRecovery.ps1 documents the schema1
-prepared-source-performance-interrupted-checkpoint-v1 contract. It is parsed,
-not native-qualified, and requires original bundle/process/terminal/diagnostic/
-managed pins. Root must review it before execution. Resume must prove full new
-selected SHA/HND; Rollback proves ticket.old_restored_selected_sha256 over D-F,
-not full old-selected bytes. Marker/footer identity REMAINS original full old SHA.
-Never invent legacy producer fields or recreate fresh Apply authority from JSON.
-Native positive-format5 interruption, Resume and Rollback passed for c2c1ef3 only.
-
-A delegated Rust read-pass fusion may be in progress; inspect worktree before
-build/commit. Desired optimization consumes actual borrowed closing-read buffers
-in capture, retaining BOTH complete opening/closing reads/hash equality and all
-native/route/allocator/source gates. No zero-range skipping or JSON byte authority.
-Unchanged9,868,443,648B of adopted payload is ALREADY excluded from comparison.
-Actual remaining bulk is repeated6.18GB native-metadata/required-zero brackets;
-see current target-preservation and phase IO counters. Paged evidence/handle
-windows remain for broad scale. Do not mark the performance goal complete.
-
-
-Sealed new-runtime toolset closing-read-reuse-tools-72b4db0/manifest.json,
-SHA783f1f2a3e0abd3e97e573554a31a5379fd9eae5a4fc1cdd10637e7921b17e6b.
-Public9b371439ecbf9cc374b990ece1d31760bfa25f1e2951bb1e7c96751e5415395a/10344448B;
-producer17931521a6c0488c41c47528784e46fdc94882c9eebcea0a0d400ea675c1f347/7276544B.
-Prepared controller now supports -RequireClosingReadReuse; do not claim measured
-savings until actual new native case. It checks reuse counter, both full raw/zero
-brackets and exact source+shadow+reused byte accounting. Older controllers/helpers
-remain compatible; inherited helper origins retained. No unit tests.
-Root alone mutates VM2401593c-4b30-472e-9b6d-c9534cbaa599,
-ntfs2refs-streaming-v2-20261027;4GiB fixed/4CPU/noNIC. Credentials only Import-Clixml
-.lab/hyperv/win11/secrets/guest-credential.xml, never print. Keep current051b,
-preparedcb, sources8329/6fe2/371a/9c42, guardedf4bf, H cold d939, original old-format
-interrupteddea9 and recovery8087/d40b, original format5 fault7721, Resumed9, Rollback67eda and latestf8f7 (15 states). All other older listed IDs were
-retired. Old recovery compatibility evidence is in docs/exclusive-recovery-native.md.
-## Evidence and current implementations
-
-- Frozen E4ff old-zero matrix is complete: first flushed write86, clean restart,
-  Resume0/HND, separate original-state Rollback0/ABT, all811 hashes both ways.
-  Old-selected checksum exactly matched original ticket. This is not arbitrary
-  faults or physical-power-loss qualification. See docs/old-zero-recovery-matrix.md
-  and evidence/old-zero-recovery-matrix-20261031.json.
-- The retained states include latest051b, grown source8329, original F source6fe2,
-  H source371a, sparse source9c42 with guardedf4bf, H cold resultd939, interrupted
-  old-zerodea9 and journal-owner recovery results8087/d40b, plus new prepared
-  sourcecb802669 (11 total). Other historical
-  fixture/intermediate/result nodes, including6bef and the H tail matrix, are
-  retired. Their reports and pins remain. Never recreate old IDs from guidance.
-- Grown F corpus:808 user files/271 user dirs;811 total streams/273 total dirs/
- 1084 semantic objects/1111 raw identities;9,885,781,381 user bytes. Fresh full
-  baseline f5de156f and metadata-only growth835b1196 remain pinned. Full/fast raw
-  inspection pins differ; never mask root-modified/MFT times, profiles or new
-  objects. Only actual evidence-backed access-time reconciliation is allowed.
-- Normal E4ff converted that tree in276.7805697s, all811 independent hashes.
-  Format4 N2ROLD01 uses actual old-zero whole ranges (capture AND preparation
-  check every actual byte), not allocation/VDL assumptions. Journal5,850,442,832B
-  versus SAME-plan old encoding11,438,022,112B; all selected writes remain.
-- Original interrupted plan: D11392847872 / N3547 / O5587685376 / J5849731480 /
-  L44191744 / C5659303936. All raw selected checksums remain SHA-256. Allocation
-  recovery is self-contained with original metadata pins; cold shadow absence
-  is allowed without reattach. Compact/whole-shadow modes have other dependencies.
-- Private PreparedExclusiveJournal retains actual complete post-flush readback
-  through fresh activation/apply/HND; no mutable J accessor or JSON authority.
-  Exact-old/new target checks and all ordering/barriers remain.
-- Private ExclusiveRecoveryJournal retains one actual load+classify through
-  recovery; all mixed target prechecks, PER-SPAN old/current/new reads, exact
-  post-target AND post-callback handoff target checks remain. Target reopen stays
-  share3; exclusivity claim is JOURNAL ONLY. Code-accounted e4ff savings:
-  Resume34,805,884,512 / Rollback17,402,942,256 logical J bytes, not physical IO.
-- Optional old_zero_actual_bytes_v1 capacity policy is implemented/compiled,
-  natively UNQUALIFIED. Schema3/CapacityPinnedV3/fresh fast allocation only,
-  pinned literal/combined bounds; logical maxD=partition, each append charges
-  J=(D-O)+literal+16MiB. O(1) credit revocation occurs BEFORE admission/append.
-  Exact final positive O/format4 required beyond the conservative ceiling.
-  Existing CLI/binder and omitted policy remain conservative. Source policies,
-  namespace/security/maps/tails/source-certificate and metadata/range caps stay.
-- New lab/Start-ActualByteCapacityExperiment.ps1 (d6bc234) is reviewed and PS5
-  host/assembled-guest parsed. It uses J8GiB/L256MiB/combined10GiB/reserve1GiB,
-  requires actual D above old ceiling and actual J within8GiB. Normal flag
-  --fresh-exclusive-v3 and fault flag --fresh-exclusive-v3-first-write require
-  genuine planningNone, never Some. No8GiB native execution yet. Capacity rows
-  are sampled free-space observations, not a complete rolling-O ledger.
-
-Useful docs: fast-verification.md, raw-extent-verification.md,
-old-zero-journal.md, journal-exclusive-recovery.md, actual-byte-capacity.md,
-recovery-runtime-compatibility.md, scaling-budget-gaps.md, unbounded-scale-design.md,
-ntfs-compatibility-comparison-20261030.md (under docs/).
-
-## User decisions and open scope
-
-- Allocation-bounded is default; only authenticated target-required allocation
-  is compared/written. NTFS free space is not covered as unchanged by admission.
-  Whole-image mode retains its full checks.
-- D1 destination bitmap windows approved under both selectors. Keep complete
-  phase maps, full per-file retrieval/all-placement and final allocation checks.
-  Window evidence must not be serialized as a whole-map hash. D2 incremental
-  retrieval remains deferred/unapproved.
-- D3 extent-based fast verification is default; --verify-full-content and
-  whole-image mode retain full verification. Prove retained data via exact
-  metadata/physical extents, checksum moved/rewritten bytes during IO. Preserve
-  namespace, ACLs, allocation, full retrieval and recovery checks. Explicit
-  absent digests stay absent; never invent hashes or call metadata a content hash.
-- User-selected logical file/resident/native content digests are XXH3-128 even
-  where legacy field names end in sha256; they do not match Get-FileHash.
-  Artifact pins, residual tails, metadata/whole-image and journal hashes stay SHA-256.
-- Resource-based scale is the goal: remove artificial count/size ceilings through
-  complete paged evidence/resource budgets, not larger constants or truncation.
-  Current1280 semantic objects/2048 raw identities and other caps remain; no
-  arbitrary-volume/file-count qualification. See scaling-budget-gaps.md.
-- Hybrid moved-data policy approved in principle: stage in same-volume free
-  space when possible, external journal fallback. E2 per4KiB old/new XXH3 table;
-  E-2 rollback restores all NTFS-allocated bytes and may leave staged free-space
-  bytes; refuse VSS. E3 dual-sector markers/hard-poweroff qualification. These
-  plans are NOT blanket implemented/qualified by current format4 journals.
-  E2 Resume must refuse a4KiB granule matching neither old nor new; E3 uses
-  the intact marker copy to decide after a torn write.
-- ReFS reserved-zone zero skipping was DISPROVED (refs-zone-probe-20261030).
-  Keep every required zero write. Do not repeat that proposal without an
-  authenticated footprint proving the precise zeros are unreferenced.
-- VSS and directory case-sensitivity have live admission gaps; no existing gate
-  or full preservation claim. Historical missing feature evidence is Unknown,
-  never false. Hard-link groups use new ReFS IDs, not original numeric IDs.
-  ADS/sparse/compression-normalization/EA/security/MS-reparse have scoped native
-  evidence on H, not universal compatibility. EFS, additional reparse providers,
-  missing security forms, boot/system and broad geometry remain unqualified.
-- REFSNT and forensic parsers remain external research. Never copy GPL engines
-  into the Rust product or claim compatibility from their checkers.
-- Any actual narrowing of checked evidence needs a separate user decision.
-  Routine proof retention under explicit ownership does not authorize unrelated
-  weaker checks. Preserve old format/recovery compatibility explicitly.
+Preserve all required zero writes: reserved-zone zero skipping was disproved.
+VSS, directory case sensitivity, EFS, additional reparse/security forms,
+boot/system volumes and broader geometry remain unqualified. ADS, sparse,
+compression normalization, EA, security and Microsoft reparse points have
+scoped evidence only. Any actual narrowing of checked evidence requires a
+separate user decision. Never silently discard unsupported NTFS semantics.
 
 ## Source and recovery invariants
 
-- Fresh Apply requires the original opaque live SourceCertificate through
-  freeze/qualification. Never recreate it from JSON, old reports, flags or a bundle.
-- A recovery bundle supplies pinned routes only. Actual journal/ticket/input/
-  device/lifecycle checks authorize recovery, never a new fresh Apply.
-- Keep all mode-required pins and recovery material until closure. Never bypass
-  a live sharing lock with another reader or tool.
-- HND/ABT close old raw replay. Post-handoff observer failure permits read-only
-  completion only; no replay over a mounted/changed filesystem.
-- Do not clear protection, online/reidentify/rebind devices to bypass refusal.
-  Missing protection may be added only through reviewed exact binding/provider
-  checks and positive native write-protect evidence. Do not recreate lost authority.
-- Timeouts/remoting loss do not prove death. Check actual task state, PID AND
-  creation identity, terminal files and actual native handles. No duplicate retry.
-- Before power/restore/checkpoint/new work prove ALL project tasks terminal and
-  workers absent. Root alone mutates VM. After restore/checkpoint verify parent/
-  state from a FRESH exec process; cached Hyper-V objects can lie. Do not repeat
-  a successful restore because a cached object disagrees.
-- A mount/hash alone is not allocator/durability/semantic proof. Record refusals
-  and scoped evidence honestly. Code accounting/live samples are not final IO.
+- Fresh Apply requires its original opaque live source certificate and the
+  actual held source/target/journal/arena owners. Never reconstruct authority
+  from a JSON flag, old report, pathname, or recovery bundle.
+- Recovery bundles supply independently pinned routes only. Real device,
+  file, journal, ticket, index and lifecycle checks authorize recovery, never
+  a new fresh Apply. Keep every mode-required pin and recovery artifact.
+- HND/ABT close old raw replay. After operational writable use, do not replay
+  or compare mutable selected bytes against a stale postimage. Observe and
+  reconcile the mounted terminal state through the dedicated non-replay path.
+- Do not clear exclusion, online/rebind/reidentify a device, or bypass a live
+  sharing lock to evade a refusal. Fail closed on unknown identity, mixed
+  bytes, missing protection, ambiguous marker, or unresolved ownership.
+- Preserve validated write ordering, pre/post checks, actual flush/readback,
+  source/target identity, persisted exclusion and handoff boundaries.
+- After any restore/checkpoint, verify parent/state from a **fresh** process;
+  cached Hyper-V objects can be stale. Do not repeat a successful operation
+  because an old object disagrees.
+- A mount, hash, code-derived accounting estimate, or live sample alone does
+  not establish semantic fidelity, allocator correctness, power-loss safety,
+  final I/O, or stable release readiness.
 
-## Storage, RAM, cleanup and tools
+## Storage, RAM and cleanup
 
-Fixed epoch (do not reset after cleanup): initial lab279374052988B,
-initial host free66133905408B; MAX actual329374052988B; MIN host free17179869184B.
-Original additional allowance is50,000,000,000B. Re-measure/admit a justified
-per-phase forecast through lab/Lab.psm1 and lab/lab.config.json before growth.
+The original fixed epoch is unchanged: initial lab **279374052988 B**, initial
+host free **66133905408 B**, maximum actual **329374052988 B**, minimum host
+free **17179869184 B**. The original total additional allowance is
+**50000000000 B**. Never reset the epoch or its baseline after cleanup.
+Before growth, remeasure/admit a justified phase forecast through
+lab/Lab.psm1 and lab/lab.config.json; charge all current lab files,
+target\shared-experiments, and shared staging bytes.
 
-Cleanup2e79 removed ONLY old1aed/5f/307b(after children)/ed6 via Hyper-V, after
-336 closed files576851960B/pins rehashed under held reads with fresh-process
-exact graph guards. Lab usage decreased47,021,869,171B to275,354,925,443B;
-free69,904,642,048B at01:58. That is a measured bracket, not per-file guarantee.
-All host archives/baselines remain. Retired snapshot IDs must not be recreated.
-Other removals and old labels are recorded in archived guidance/evidence.
+Delete snapshots only through Hyper-V APIs, never AVHDX chain files. First
+verify actual inactive graph, child order, current parent, dependency pins and
+archives; remeasure after merges. Do not remove or force guarded checkpoint
+f4bf5238-14c0-4b15-bda6-7859abd4d1c9 (archive mismatch).
 
-- Remove snapshots through Hyper-V APIs ONLY. NEVER delete AVHDX chain files.
-  Before deletion verify complete archive/dependency pins, exact inactive graph,
-  protected states, child order and current parent. Re-measure after merges.
-- NEVER force guarded f4bf5238-14c0-4b15-bda6-7859abd4d1c9 removal (archive mismatch).
-- Prior automatic approval review rejected research-image deletion and duplicate
-  D:\code\ntfs2refs\.lab\ntfs2btrfs-source-audit deletion. Do NOT retry via another
-  shell/method. Authorized Hyper-V checkpoint removal is a different action.
-- Keep WSL running and VM4GiB/4CPU/noNIC. Keep .lab/images/journals/ISOs/binaries/
-  secrets out of Git. Credentials only Import-Clixml
-  .lab/hyperv/win11/secrets/guest-credential.xml; NEVER print credentials.
-- Resolve absolute targets before cleanup; native PowerShell literal-path ops,
-  one shell end-to-end for destructive filesystem work. No guessed deletion.
-- Rust1.98.1: C:\Users\mfara\.cargo\bin\cargo.exe. Set TEMP and TMP to
-  D:\code\ntfs2refs\target\tmp. Format OWNED files only via rustfmt --edition2024
-  --config skip_children=true. Never workspace cargo fmt/all or touch main.
-- Focused compilation/native checks only; documentation needs no rebuild.
-  Always preserve exec session IDs; poll live sessions, never restart on timeout.
+Automatic approval review previously rejected deletion of a research image,
+duplicate checkout D:\code\ntfs2refs\.lab\ntfs2btrfs-source-audit, and
+three old .lab\development Cargo caches. Do not retry rejected actions
+through another shell or method. Approved Hyper-V cleanup is separate.
+Resolve absolute targets before cleanup and use one native PowerShell shell
+with literal-path operations; do not delete guessed or active artifacts.
+
+Keep .lab, images, journals, ISOs, binaries and secrets out of Git.
+Credentials are only imported from
+.lab/hyperv/win11/secrets/guest-credential.xml; never print them.
+The VM is 2401593c-4b30-472e-9b6d-c9534cbaa599,
+ntfs2refs-streaming-v2-20261027, fixed 4 GiB / 4 CPUs / no NIC.
+
+## Build and tooling
+
+Use Rust **1.98.1** and the existing pinned MSVC toolchain. Set TEMP and
+TMP to D:\code\ntfs2refs\target\tmp. The user wants one shared experiment
+build directory: D:\code\ntfs2refs\target\shared-experiments. Use its
+exclusive sibling lock; never modify old frozen candidate targets.
+
+Use the existing lab/Build-ReleaseCandidate.ps1 with exact committed source,
+pinned tool/config/archive hashes, fresh output directory, offline/locked
+release mode and -UseSharedExperimentalTarget. Its optional verified shared
+source staging uses -UseSharedExperimentalSource and
+-ExpectedSharedSourceHelperSha256 842c5e7f7e65a1df72e6276af505e47f85f79b649429fe1eeac0833d1b534992.
+The builder records cache use; it is not a clean-build, reproducibility, or
+native-qualification claim. Default isolated release builds remain separate.
+Experimental builder defaults to four jobs; preserve its lock and actual
+session IDs. The a7 manifest records exact 1.98.1 cargo/rustc pins.
+
+For routine focused cargo check, use the shared target and same lock.
+Process-local CARGO_INCREMENTAL=1 can help; clear RUSTC_WRAPPER and
+RUSTC_WORKSPACE_WRAPPER for that check because the host sccache wrapper
+rejects incremental builds. Restore no host-wide settings.
+Format only owned Rust files with rustfmt --edition 2024 --config
+skip_children=true; never use workspace-wide formatting or touch main.
+Documentation-only edits need no rebuild. No unit tests unless user requests.

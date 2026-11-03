@@ -40,15 +40,37 @@ lab-observe-resource-source entry. Public V4 conversion/certificate/recovery
 orchestration is pending; no new native qualification is inherited. Details in
 docs/resource-based-admission.md. B now owns NEW shadow_tree/source_pages.rs only.
 
-VM is Off/RAM0,33 checkpoints,parent58bd; active working branch has completed
-Rollback/ABT/NTFS (case5cc9b3f4), NOT original interrupted source. Native5812/
-1793666832841/0 and Ready0/all811 hashes/1534 objects passed. Closed74file archive
-108102734B SHA7c3d78b1af9f5ebca13b02637a0aa16000beed04ab30e92bc10d4d38e9c639f9.
-Original58bd remains the interrupted AP1 origin. Resume and normal archives are
-preserved. Latest capacity actual302305191385/free37210034176, fixed original
-max329374052988/min17179869184 unchanged. Preserve all original recovery origins.
-No new VM work is active. Pending pinned7feb mutation/coldboot helper3522 remains
-separate from resource-source development; no universal hardware/release claim.
+LATEST USER CLEANUP (2026-11-03): deleted28 obsolete checkpoint nodes through
+Hyper-V, preserving children and all host archives. Only FIVE remain:
+f4bf5238-14c0-4b15-bda6-7859abd4d1c9 (guarded),
+83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b (original NTFS baseline),
+a0627dbd-aa3b-4896-bbeb-495f5e372057 (CURRENT original NTFS1534 source),
+5ce766b0-c6e9-4007-b16d-363944240c51 (verified ReFS1534 result),
+58bd9ceb-60bc-4b34-81e1-7af197523a80 (latest original interrupted state).
+ALL other historical snapshot IDs below are RETIRED; never recreate/restore them
+from stale guidance. In particular old format5/6 originals and cb preparation
+are no longer retained. Their evidence and control archives remain unchanged.
+No recursive snapshot deletion/manual AVHDX deletion/WSL stop occurred.
+
+VM is Off/RAM0/currentparenta062. Root restored it EXACTLY ONCE after rehashing
+all74 closedRollback files, before cleanup; the old active ABT working branch
+was discarded only after archive closure. Native5812/1793666832841/0, Ready0,
+all811/1534 and74file108102734B archiveSHA7c3d78b1af9f5ebca13b02637a0aa16000beed04ab30e92bc10d4d38e9c639f9
+remain valid recorded results. No new VM work is active; no guest launch yet.
+Cleanup evidence: evidence/checkpoint-cleanup-20261103.json. 2337 archive/control
+file checks,3,062,865,391B rehashed; hostfree150802001920B (140.45GiB), increase
+112500826112B (104.77GiB); labactual188145504524B. Fixed original maximum
+329374052988/minimum17179869184 unchanged. The first two original-state cleanup
+attempts stopped at metadata preflight with ZERO deletions; v3 completed12 after
+the first16-result batch. Host receipts are under retire-obsolete-*20261103*.
+
+New source2e3f709fc95f0fb7340f5b564cedf907eb2ac173 is committed/pushed and clean
+8bin release-built: .lab/development/release-candidates/r2e3f709-resource/manifest.json
+SHAfa85bb84e3ccab59f96396646af996efb24b0d83be87a4142c405c561ce2f5d0.
+No native qualification inherited. Later uncommitted C per-file policy helpers
+and B one-stream/source_pages projection await hookup/build; don't label this
+WIP as part of2e3. Pending pinned7feb mutation/coldboot helper3522 remains separate;
+no universal hardware/release claim. Keep source/converted/recovery five above.
 
 ## Earlier release continuation (2026-11-03 00:41 UTC)
 

@@ -105,7 +105,7 @@ pub use native::{
     LiveNtfsObservation, MountPathObservation, NativeEvent, OfflinePartition,
     PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow, PagedRecoveryDirection,
     PagedRecoveryPins, PartitionSnapshot,
-    WritePolicy, capture_mount_paths_general, mounted_filesystem_general,
+    WritePolicy, capture_mount_paths_for_journal, capture_mount_paths_general, mounted_filesystem_general,
     observe_general_disk_state_readonly, probe_general, rediscover_general_volume,
     rediscover_general_volume_wait, restore_drive_letter_general,
 };

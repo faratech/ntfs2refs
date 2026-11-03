@@ -19,9 +19,9 @@ and654 extent-only streams. Windows reported healthy ReFS, the original label
 and mount paths were preserved, and the actual journal closed HND. See
 [the exact native record](../evidence/public-resource-first-conversion-20261103.json).
 
-This clears the first full public V4 conversion gate. It does not establish
-restart recovery, mutation/cold-boot qualification, an independent full811-stream
-scan, or useful large-volume performance. Its last live process sample already
+Together these establish the first full public V4 conversion and the separate
+cold-remount/original811-stream verification above. Mutation, interrupted
+restart recovery and useful large-volume performance remain open. Its last live process sample already
 reported497.1GB of logical read transfers; final process and physical I/O totals
 were not observed. The journal was5,821,929,848 bytes. Actual peak RAM and total
 peak scratch are unmeasured. Subsequent placement, cancellation, journal-scan
@@ -44,6 +44,15 @@ the native activation boundary still hashes the journal body before and after
 source verification. None of these later changes has native qualification yet.
 Existing event records now include advisory elapsed/process-I/O samples, without
 adding a data pass or treating those counters as execution authority.
+
+The first public already-online recovery attempt on built source`a9f3436`
+refused before journal opening because output discovery used the source-only
+Windows-disk exclusion for the legitimate C: journal. The converted source
+remained online ReFS. The follow-up uses a typed journal-only read-only query,
+bracketing mount enumeration with complete `Role::Journal` discoveries. Source
+and shadow exclusions remain unchanged. Its focused Windows check passed in
+10.73 seconds; a new pinned executable/native rerun is still required. See
+[the original refusal](../evidence/resource-recovery-os-journal-refusal-20261103.json).
 
 ## Experimental integration checkpoint — 2026-11-03
 

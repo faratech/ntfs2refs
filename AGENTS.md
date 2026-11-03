@@ -68,6 +68,18 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST recovery attempt: built sourcea9f3436/publicSHA900a5d39fb44a77e6d84a49fe467c8b6784fc5eaa7613f3be6048d09a6b8a818
+failed BEFORE journal opening on source-only C: output discovery ('current
+Windows disk is excluded'). Actual4020/birth1793722638392/exit1/1.2040996s,
+taskN2R-ResourceOnlineRecovery-a9f3436 Ready, all workers absent. Source remains
+online healthy ReFS/HND, parent411c. Six closed metadata files5352B/manifestSHA
+a3dd6589295b88e96bef5a5bca9e060df2c8225ee61fedddbe31f33f5b57fa4e are in
+the current case/closed-online-recovery-a9-refusal. Typed read-only journal
+mount discovery is now implemented/source-reviewed and checked10.732s; it
+preserves all source/shadow OS-disk exclusions and verifies exact complete
+journal evidence before/after mount enumeration. Needs new build/native run;
+do not retry a9. Build46573 is COMPLETE, not live. No unit tests.
+
 LATEST independent cold-boot observer is COMPLETE: task
 N2R-ResourcePostboot-5a8b781-v3 Ready0,13 actual digest processes/observed0,
 all811 original XXH3 streams9885801949B matched, plus1534 baseline namespace/

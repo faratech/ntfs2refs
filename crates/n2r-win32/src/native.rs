@@ -902,6 +902,47 @@ pub fn capture_mount_paths_general(
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<MountPathObservation> {
     probe_general(binding.clone(), events)?;
+    capture_mount_paths_for_bound_volume(binding)
+}
+
+/// Read-only path enumeration for an actual journal volume. Unlike the
+/// source-only probe, this role can be the Windows disk when the typed journal
+/// binding explicitly permits additional GPT partitions. This creates no
+/// source, replay or write capability.
+pub fn capture_mount_paths_for_journal(
+    journal: &crate::journal_file::GeneralJournalStorageBinding,
+) -> io::Result<MountPathObservation> {
+    journal.validate()?;
+    let root = format!("{}\\", journal.disk.volume_path()?);
+    let role = crate::discovery::Role::Journal {
+        allow_additional_partitions: journal.allow_additional_partitions,
+    };
+    // Each native discovery independently checks the exact volume extent,
+    // device/disk geometry, complete GPT non-overlap/identity, attributes,
+    // Windows disk, requested role and two identical native snapshots.
+    let before = crate::discovery::discover(&root, role)?;
+    if before.binding != journal.disk || !before.read_only || !before.observed_twice_unchanged
+        || before.source_write_requests != 0 {
+        return Err(invalid("journal mount-route binding differs before enumeration"));
+    }
+    let paths = capture_mount_paths_for_bound_volume(journal.disk.clone())?;
+    let after = crate::discovery::discover(&root, role)?;
+    if after.binding != journal.disk || !after.read_only || !after.observed_twice_unchanged
+        || after.source_write_requests != 0 || before.evidence != after.evidence
+        || before.windows_disk_number != after.windows_disk_number
+        || before.disk_is_windows_disk != after.disk_is_windows_disk
+        || before.filesystem != after.filesystem || before.filesystem_flags != after.filesystem_flags
+        || before.volume_serial_low32 != after.volume_serial_low32
+        || before.bytes_per_sector != after.bytes_per_sector
+        || before.sectors_per_cluster != after.sectors_per_cluster
+        || !before.volume_guid_path.eq_ignore_ascii_case(&after.volume_guid_path)
+        || paths.binding != after.binding || !paths.all_paths_resolve_to_bound_volume {
+        return Err(invalid("journal mount-route identity changed during enumeration"));
+    }
+    Ok(paths)
+}
+
+fn capture_mount_paths_for_bound_volume(binding: GeneralDiskBinding) -> io::Result<MountPathObservation> {
     let root = format!("{}\\", binding.volume_path()?);
     let mut root_wide: Vec<u16> = root.encode_utf16().collect();
     root_wide.push(0);

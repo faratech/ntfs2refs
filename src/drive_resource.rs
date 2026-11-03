@@ -364,8 +364,16 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
         println!("Cancelled.");
         return Ok(0);
     }
+    // Do not create even the recovery output directory until the actual
+    // journal device is independently disjoint from both data devices.
+    for data in [&pair.source, &pair.shadow] {
+        ensure!(journal.disk.disk_number != data.disk_number
+            && n2r_win32::layout::guid_bytes(&journal.disk.identity.disk_guid)?
+                != n2r_win32::layout::guid_bytes(&data.identity.disk_guid)?,
+            "journal route aliases a source or shadow disk");
+    }
     let mut route_events = Vec::new();
-    let mounts = n2r_win32::capture_mount_paths_general(journal.disk.clone(), &mut route_events)?;
+    let mounts = n2r_win32::capture_mount_paths_for_journal(&journal)?;
     let root = mounts
         .paths
         .iter()

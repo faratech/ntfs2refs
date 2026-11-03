@@ -97,3 +97,10 @@ required label. The [record](../evidence/resource-fixture-shadow-label-refusal-2
 contains the actual exit and archive pins. The reported 308,727,808 bytes of
 private commit was a single pre-shadow observation, not a peak measurement.
 
+After releasing the projection workspace, the next diagnostic reached
+allocation and placement on the disposable ReFS shadow. It then refused before
+copying source payload because the materialization plan exceeded its 2 GiB
+budget. The plan did not report the required amount, so the next step is to
+measure and explain that amount before raising the limit. The source stayed
+offline and read-only. See the [record](../evidence/resource-fixture-materialization-refusal-20261103.json).
+

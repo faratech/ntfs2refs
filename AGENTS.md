@@ -119,6 +119,18 @@ worker/output archive SHA256 values are respectively
 The corrected lab launcher must relabel ONLY the verified disposable shadow
 after each d8db restore, before dispatch; it must not touch source/journal.
 
+The next diagnostic `dfb97725233246338c0ee04f6e08349f` built the expected tree,
+released the original projection workspace (arena leased bytes fell from
+1040701782 to 833478896), and started allocation/placement on the disposable
+shadow. It then refused before source payload materialization because the
+required bytes exceeded the explicit 2147483648-byte budget; the actual
+required amount was not reported. Source remained offline/read-only. See
+`evidence/resource-fixture-materialization-refusal-20261103.json`. The partial
+shadow is temporarily saved at checkpoint `bbeb8887-7da9-4d40-afcb-39e727565c8b`,
+child of d8db; VM is Off/RAM0. Diagnose the actual required amount and avoid
+unnecessary data rewriting before changing the budget. Restore d8db for a fresh
+run; never confuse the partial shadow checkpoint with a converted volume.
+
 Current uncommitted V4 target, journal, recovery and native-memory work remains
 experimental and gated. The target/recovery scaffolding compiled on the shared
 target, but has not passed a native conversion or power-loss recovery; trusted

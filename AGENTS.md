@@ -68,6 +68,19 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST independent cold-boot observer is COMPLETE: task
+N2R-ResourcePostboot-5a8b781-v3 Ready0,13 actual digest processes/observed0,
+all811 original XXH3 streams9885801949B matched, plus1534 baseline namespace/
+type/length objects. The1024 extra directories were NOT independently checked
+after boot; no mutation or replay occurred.56 closed observer/control files
+109798B were copied/rehashed; manifestSHAf871b302dc0b37a8f58d0625244098697ade857c17f8685f3f2b89b72c0a0633
+under the current case/closed-postboot, resultSHA308fef971d2c8d6608f6501404fb9a601eaebcc4f3c0ef848163b9efeed587da.
+VM remains Running/parent411c, closed operational ReFS. No project guest worker
+remains. Host shared release build a9f343686d61039029e260cecbf0d99034c69a36 is
+active exec46573; preserve/poll it, do not restart. It builds only public CLI
+with the newly compiled placement/cleanup/body-seal/online-terminal work and
+phase IO counters. Public5a8 evidence does not qualify that new binary.
+
 LATEST follow-up: after all workers were terminal, root normally shut down the
 completed5a8 branch and saved checkpoint411c47b6-652d-432a-81f9-8bd10ff18e1b,
 parent3343. Fresh-process verification confirmed Off and the exact graph; root

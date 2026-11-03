@@ -2,6 +2,14 @@
 
 ## First completed public V4 conversion — 2026-11-03
 
+The same closed ReFS branch subsequently passed a normal shutdown/cold start
+without restoring a snapshot. A separate, pinned XXH3-128 tool read all811
+original streams (9,885,801,949 logical bytes), and every baseline hash matched.
+The original1534 names, types and lengths also matched. The1024 added directories
+were covered by the conversion-time2558 bindings but were not independently
+re-enumerated after boot. This does not establish mutation or interrupted V4
+recovery. See [the cold-boot record](../evidence/public-resource-coldboot-content-20261103.json).
+
 The public `ntfs2refs --drive F --partition 2` command from exact experimental
 source `5a8b781728726fec5e0f9351fa3b61c8633a7e19` completed with observed native
 exit0 in2588.635 seconds. Its independently populated source had2585 raw

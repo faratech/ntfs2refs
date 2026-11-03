@@ -104,3 +104,11 @@ budget. The plan did not report the required amount, so the next step is to
 measure and explain that amount before raising the limit. The source stayed
 offline and read-only. See the [record](../evidence/resource-fixture-materialization-refusal-20261103.json).
 
+An instrumented repeat measured 4,225,110,016 source-reference bytes and
+5,660,671,365 bytes classified for shadow materialization, after
+13,581,152,256 bytes of shadow moves. The move count does not represent source
+payload writes. The [measurement](../evidence/resource-fixture-placement-measurement-20261103.json)
+is a diagnostic refusal, not a completed conversion. A proof-bound routed
+prefix path is being developed to avoid first copying eligible relocated data
+into the shadow; its later target/journal I/O still needs measurement.
+

@@ -131,6 +131,20 @@ child of d8db; VM is Off/RAM0. Diagnose the actual required amount and avoid
 unnecessary data rewriting before changing the budget. Restore d8db for a fresh
 run; never confuse the partial shadow checkpoint with a converted volume.
 
+Placement-instrumented diagnostic `e9072298839748c8a55345b55c153b91` measured
+9,885,781,381 logical bytes, 4,225,110,016 source-reference bytes and
+5,660,671,365 bytes classified for materialization. It submitted 13,581,152,256
+bytes of shadow moves (846 evacuation and 842 final moves), then refused the
+2 GiB materialization budget before copying source payload. The independent
+source model has 9,884,332,032 bytes of initialized full-cluster prefixes;
+the multi-gigabyte shadow-copy requirement is therefore not inherent source
+content. Source remained offline/read-only. Worker/output archive SHA256:
+`0b77fc9e9fa3c7a15c3ef7e01cab7cd8066b7c200d0f81969dba1cac56e4ae22` /
+`354db4931b6ff78257c8961a3eeb393eab6733fde5df8fd86890bcba5d1d4b3b`.
+See `evidence/resource-fixture-placement-measurement-20261103.json`.
+Do not simply raise the budget: an explicit proof-bound routed-prefix path
+is in development to avoid copying relocated initialized data into the shadow.
+
 Current uncommitted V4 target, journal, recovery and native-memory work remains
 experimental and gated. The target/recovery scaffolding compiled on the shared
 target, but has not passed a native conversion or power-loss recovery; trusted

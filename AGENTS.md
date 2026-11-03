@@ -42,17 +42,66 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current live work: verify before acting
 
-**Latest actual run is d9c893d3e6a343f4b5ef8544c6eebeca**, source
-acbcc1b00ec5cdb1448b29eaa8e2257fb7015594. VM Running from parent 3343;
-actual diagnostic PID 5252 / creation 1793730736468 ms matched at
-2026-11-03T18:33:22.9669492Z, phase source-recheck, source OFFLINE|READ_ONLY.
-No terminal receipt or valid partial-write signal yet. Never restore/stop or
-launch a second worker while it may be live. Current-run JSON has exact paths.
-Pinned build is complete, manifest SHA
+Diagnostic **d9c893d3e6a343f4b5ef8544c6eebeca is terminal**. Exact source
+acbcc1b00ec5cdb1448b29eaa8e2257fb7015594, native PID 5252 / creation
+1793730736468 ms, actual exit 1 after 1652.7334505 seconds. Its requested
+interruption occurred after a real 4 KiB write at partition offset 4096,
+flush and exact readback, with actual AP and source attributes 1. Another
+selected 4 KiB granule at offset 0 still differed from NEW. This was a reserved
+or boot metadata write, **not the first copied user payload**. See
+[resource-first-flushed-write-20261103.json](evidence/resource-first-flushed-write-20261103.json).
+Closed evidence: 21 files / 6,640,939 bytes, manifest SHA
+3e5f14fe89b0bfc49c286a3c23f3966e634902be948a9063bd57718bf474bc7f.
+
+Root normally shut down after the worker exited and saved actual recovery
+origin **a51e134b-9c2f-4de6-9794-37e8d664b79a**, parent 3343. A fresh process
+verified the checkpoint while Off. After restart the actual boot epoch was
+1793732805726 ms and source remained offline, attributes 1. Preserve this
+original AP branch for separate Resume and Rollback; no physical power loss
+was exercised.
+
+**Resume dc85d03749af4128a4ef77b313a6ef6f is terminal failure.** Public native
+PID **3620**, creation **1793732911458 ms**, actually exited **1** after
+**90.8334903 seconds** at 2026-11-03T19:10:02.3199026Z. Root verified task Ready,
+PID absent and source attributes 1 at 19:11:53.681Z. Stderr was exactly
+`error: artifact changed before retirement`; stdout reached preparation of
+recovery records. Product output is
+K:\ntfs2refs-recovery-12eeeb4663e051fb1ce01a8f325a7720. Only the reopened index
+exists in the recovery subdirectory; failure is in opening/retirement before
+the public replay method. Actual AP prefix and the original written 4 KiB SHA
+were checked after failure; this is not a complete target-immutability proof.
+Preserve source exclusion and original a51e; no ReFS success is inferred. See
+[the refusal](evidence/resource-restart-retirement-refusal-20261103.json).
+It used the original acbcc public binary and publication SHA
+594d59d21ee7440d02eea58d65099c0c2ab59f4d389cb723e5e70a46f83a3ace.
+The host launcher session 48526 is complete; dispatch alone is not completion.
+Current-run JSON has exact paths. Revalidate actual VM/task/process state
+before another operation. Resume and Rollback remain unproven.
+Root subsequently normally stopped the failed branch and restored original
+a51e **once**, completed tool session 31226 / exit 0. A fresh process verified
+VM Off / RAM 0 / parent a51e. No native recovery worker is live.
+Do not repeat the completed restore because an older cached object disagrees.
+
+The acbcc pinned build is complete, manifest SHA
 8543fb8698ec90462d7e297d5e286c6c8da5f65fd28a22ea8e53456d64fabc64;
 diagnostic SHA 8a190267414f91f9dbbd0c4538b2b0901b27cba24ce1cc4a43b8820bc3c52484.
-The separate metadata-only placement inventory compiles (43.02 seconds) and
-is committed/pushed at aa6e01d; it is not in the running acbcc candidate.
+The separate metadata-only placement inventory compiled (43.02 seconds) at
+aa6e01d; it is not in the interrupted acbcc candidate. Guard source
+**6fea7578d132aaec036ecd0482d20a0653afbed3** is committed/pushed and its combined
+Windows check passed **24.85 seconds**. It adds the durable cancellation-only
+preparation guard and actual PreparedClear/OLD-proved delegation witness.
+Its pinned experimental build is complete, manifest SHA
+411218f5538127cb25b0788a611646ea8177e7a0807249c0be890f25ccf253bc, with no native
+guard qualification. It excludes the later SDK index last-close ordering fix.
+That fix compiled in 10.07 seconds and is committed/pushed as
+**a0b29e04dd2e83086823349724e7e2a8ccf905f5**. Its pinned build is actually running
+in host session **97854**, output
+.lab/development/release-candidates/resource-index-handoff-a0b29e0. Poll that
+session, never launch a duplicate shared-target builder. It has no native result
+and preserves strict retirement checks and the existing allocation quota. A new ordinary-file
+probe reproduced allocation trimming 278,528 to 270,336 bytes only after the
+duplicated creator object's last close; closing the writer before a fresh
+readonly open made the final metadata stable. No acbcc result qualifies it.
 
 Authorized cleanup retired ONLY archived leaf checkpoints 5ce766b0 and
 bbeb8887 through Hyper-V. Their evidence archives and frozen alpha package
@@ -83,8 +132,9 @@ c88f344a08b8ad3fdcddf81a1d4d90ccd3f2f75714914741483da149a370a501.
 See evidence/resource-first-write-journal-refusal-20261103.json. A separate
 ordinary-file probe reproduced speculative NTFS allocation above the existing
 quota while open, then trimming on last close. Same-file preallocation kept
-allocation within that quota. The resulting fix compiles; no native conversion
-or interruption result for the fix exists yet.
+allocation within that quota. The later acbcc case reached actual apply and the
+verified first-write interruption above with that fix; completed conversion and
+recovery qualification for acbcc remains open.
 
 Root alone controls the VM. Before another operation, poll actual task state,
 PID and creation time, owned process/terminal files and real source/journal
@@ -110,13 +160,13 @@ Its public executable SHA-256 is
 49a741917ed08f2d119671eb6d43d6e7dcadaba44ae844885a5b74363d8409e6.
 This is a pinned experimental build, not a qualified release.
 
-The combined public/diagnostic/recovery-observer cargo check is **complete**,
-exit 0, with Cargo reporting 9.98 seconds in
+The earlier public/diagnostic/recovery-observer check completed, exit 0,
+with Cargo reporting 9.98 seconds in
 .lab/development/journal-preallocation-check.log. It includes current paged
 prealignment orchestration, journal preallocation and canonical page-pin checks.
-These task-owned changes were uncommitted at this update; verify actual Git
-state and coordinate ownership before editing. No new pinned release build or
-native qualification of those changes is implied by cargo check.
+Those changes were subsequently pinned in acbcc. The latest 6fea guard check
+is recorded in .lab/development/early-preparation-guard-check-2.log; source
+ownership is frozen. Verify actual Git/process state before further edits.
 
 ## Real evidence and boundaries
 
@@ -155,15 +205,15 @@ native qualification of those changes is implied by cargo check.
 
 ## Current engineering priorities
 
-1. Build the compiled journal-preallocation fix and repeat the same admitted
-   diagnostic. Only after a valid real first-write signal and independently
-   classified AP/OFFLINE state may Root establish a recovery origin for separate
-   Resume/Rollback. Preserve the closed fc838 refusal and original journal.
+1. Complete the actual a0b29e0 pinned build, verify its manifest/binaries, then
+   retry Resume from the restored a51e origin and qualify independent Rollback.
+   The acbcc retirement refusal is archived. Preserve original pins and source
+   exclusion; a completed build or dispatch is not completed recovery.
 2. Qualify new V4 recovery/finalization changes against the real native stack.
    Missing/corrupt journal, wrong identity, low space, and interruption stages
    must fail safely; preserve actual journal and source protections.
 3. Qualify current P3 resource-paged source prealignment inventory, planning,
-   executor and receipts. The uncommitted public --minimize-scratch hook now
+   executor and receipts. The committed public --minimize-scratch hook now
    calls it before final freeze and obtains fresh source admission afterward;
    this compiles but has no native result. Previously pinned V4 binaries only
    changed capacity policy and did not run the old NTFS placement prepass.

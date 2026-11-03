@@ -106,8 +106,34 @@ through its same held handle kept allocation at5,818,634,240 bytes throughout,
 within the existing quota. The compiled correction reserves quota before
 preallocation, retains zero EOF and checks actual identity/allocation before
 streaming. It changes neither the quota nor marker-storage formats. The
-original journal was untouched by the probe. Native execution of the corrected
-converter remains pending. See [the refusal and probe](../evidence/resource-first-write-journal-refusal-20261103.json).
+original journal was untouched by the probe. See
+[the refusal and probe](../evidence/resource-first-write-journal-refusal-20261103.json).
+
+The corrected pinned`acbcc1b` diagnostic subsequently completed resource
+preparation and reached its real fresh writer under the unchanged1,456,427,008
+byte RAM budget. It intentionally exited1 after writing4,096 bytes at partition
+offset4,096, flushing and matching exact readback. The native byte counter moved
+from0 to4,096; source attributes1 and actual`N2RSAP01` were observed, while the
+selected primary granule at offset0 still differed from NEW. This was reserved
+or boot metadata, not copied user payload. The original AP state was saved Off
+at checkpoint`a51e134b-9c2f-4de6-9794-37e8d664b79a` after normal shutdown, then
+booted for actual public recovery. Resume and independent Rollback remain
+unproven; no physical power loss was exercised. See
+[the closed first-write evidence](../evidence/resource-first-flushed-write-20261103.json).
+
+The first actual restarted public Resume on acbcc then failed after90.833
+seconds with`artifact changed before retirement`, while preparing recovery
+records. Its native exit1 is terminal and source remains offline with
+attributes1. The actual failure path is reopened-index retirement before the
+public replay method. AP prefix and the original written4KiB hash matched after
+failure; a full unchanged-target claim is not made. A separate ordinary-file
+probe reproduced allocation trimming from278,528 to270,336 bytes when the last
+duplicate of the creator's writable file object closed. Fully closing the
+writer before reopening readonly produced stable final metadata. The SDK
+ordering fix at`a0b29e04dd2e83086823349724e7e2a8ccf905f5` preserves complete index
+checks and strict retirement and compiled in10.07 seconds. Its pinned build is
+in progress; native recovery with that fix remains pending. The saved AP
+origin remains protected. See [the refusal and probes](../evidence/resource-restart-retirement-refusal-20261103.json).
 
 Resource-native NTFS prealignment now has an online paged inventory, complete
 stream decision/move planner, checked SDK mover/shadow-hint interfaces and a
@@ -116,9 +142,22 @@ runs this prepass before final freeze, reserves receipt space before each
 NTFS-owned move and stops conversion on an incomplete result. It drops prepass
 owners, samples resources again and obtains fresh frozen source admission;
 prepass reports never authorize conversion. The combined three-entry Windows
-check passed in9.98 seconds. This newly wired code has no native qualification
-yet, and previously pinned V4 binaries do not contain it. The current fast
-inspector may still hash some exceptional user data during the prepass.
+initial check passed in9.98 seconds. The acbcc interruption diagnostic does not
+exercise the public prealignment flag. Later source`aa6e01d` supplies a separate
+metadata-only placement inventory, compiled in43.02 seconds; that change is not
+in the acbcc native binary. Public native prealignment qualification remains.
+
+Source`6fea7578d132aaec036ecd0482d20a0653afbed3` adds the actual cancellation-only
+durable preparation guard. Its intent is pinned before freeze, the post-lock
+boot witness is persisted before exclusion, and final-publication delegation
+precedes AP. New final recovery also binds that guard; only actual
+PreparedClear/OLD-proved abandonment can finish a valid split delegation toward
+the exact publication. Closed cancellation records cannot clear later disk
+exclusions. Existing ordinary-failure full-hash checks remain. The combined
+Windows check passed in24.85 seconds, with no unit tests. Its pinned experimental
+build completed with manifest SHA`411218f5538127cb25b0788a611646ea8177e7a0807249c0be890f25ccf253bc`.
+It has no native guard/recovery qualification, excludes the later last-close
+ordering fix, and does not inherit the separate acbcc first-write result.
 
 ## Experimental integration checkpoint — 2026-11-03
 

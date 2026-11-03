@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "kind": "public-resource-v4-native-conversion",
+  "source_commit": "5a8b781728726fec5e0f9351fa3b61c8633a7e19",
+  "binary_sha256": "67be83d917386989fdd7ed21dbe1aed15074c8c3459e083198ea4b524d5220ec",
+  "build_manifest_sha256": "d5fc7ba763ba02a85a00d244f24d283b185807de8f65276d5543efce2f78e96a",
+  "run_id": "d9d466db4780468a9a493e6a8292ea6d",
+  "engine_run_id": "4e5dcb5afdd78cd5758623dbae43c9d3",
+  "argv": ["--drive", "F", "--partition", "2"],
+  "confirmation": "one affirmative stdin line",
+  "native": {
+    "pid": 5312,
+    "creation_unix_ms": 1793718535039,
+    "actual_exit_observed": true,
+    "exit_code": 0,
+    "wall_seconds": 2588.6345994,
+    "scheduled_task_terminal": true,
+    "project_workers_absent_before_archival": true,
+    "source_filesystem": "ReFS",
+    "source_health": "Healthy",
+    "source_label": "n2r-stream-source",
+    "source_online_and_writable": true,
+    "target_designation": "Dev Drive; not marked trusted"
+  },
+  "source": {
+    "partition_bytes": 55834574848,
+    "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+    "raw_identities": 2585,
+    "objects": 2558,
+    "files": 811,
+    "directories": 1747,
+    "streams": 811,
+    "verification_policy": "extent_identity_v1"
+  },
+  "actual_completion": {
+    "success": true,
+    "matching_map_bindings": 2558,
+    "known_streams_hashed": 157,
+    "known_payload_bytes_read": 119009,
+    "extent_only_streams": 654,
+    "journal_handoff_closed": true,
+    "label_restored": true,
+    "mount_paths_preserved": true,
+    "publication_sha256": "7758e8a4c67d76da06a8fe3111ff359c735061f797ac0db93c4fd25ed04ff830"
+  },
+  "resources": {
+    "vm_ram_bytes": 4294967296,
+    "vm_processors": 4,
+    "admitted_arena_ram_bytes": 1812170155,
+    "admitted_arena_scratch_bytes": 29204733952,
+    "selected_journal_bytes": 5821929848,
+    "expected_pages_bytes": 4750499,
+    "recovery_map_pages_bytes": 1171603,
+    "event_ledger_actual_allocation_bytes": 655360,
+    "final_process_io_observed": false,
+    "last_live_sample_logical_read_transfers": 497108655663,
+    "last_live_sample_logical_write_transfers": 17420778945,
+    "physical_io_bytes": null,
+    "final_peak_ram_bytes": null,
+    "total_peak_scratch_bytes": null
+  },
+  "closed_evidence": {
+    "path": ".lab/hyperv/streaming-v2-20261027/resource-fixture-d9d466db4780468a9a493e6a8292ea6d/closed-public/archive-manifest.json",
+    "sha256": "629acd85398776c67fe032fbb6536e37ed333dc604a47843d81c9dc1e3497c74",
+    "files": 33,
+    "bytes": 7055480,
+    "source_and_copy_hashes_checked": true,
+    "journal_and_shadow_remain_on_original_guest_branch": true
+  },
+  "qualification": {
+    "first_completed_public_v4_conversion": true,
+    "independent_full_811_stream_hash_scan": false,
+    "post_conversion_mutation_and_cold_boot": false,
+    "v4_restart_resume_and_rollback": false,
+    "power_loss": false,
+    "arbitrary_hardware_or_volume_scale": false,
+    "allocator_independent_peak_memory_bound": false,
+    "superior_performance": false,
+    "stable_release": false,
+    "unit_tests_run": false
+  },
+  "handoff_rule": "This original branch is HND/operational ReFS. Never replay its old NTFS journal. Later source changes do not inherit this binary's evidence."
+}

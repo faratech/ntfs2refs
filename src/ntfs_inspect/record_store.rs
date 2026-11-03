@@ -313,7 +313,7 @@ impl SortedRecordStore {
             },
         ))?)
     }
-    pub fn find<T: DeserializeOwned>(&self, key: [u8; 16]) -> Result<Option<T>> {
+    pub fn find_ordinal(&self, key: [u8; 16]) -> Result<Option<u64>> {
         let mut low = 0;
         let mut high = self.len();
         while low < high {
@@ -321,10 +321,13 @@ impl SortedRecordStore {
             match self.key(middle)?.cmp(&key) {
                 std::cmp::Ordering::Less => low = middle + 1,
                 std::cmp::Ordering::Greater => high = middle,
-                std::cmp::Ordering::Equal => return self.get(middle).map(Some),
+                std::cmp::Ordering::Equal => return Ok(Some(middle)),
             }
         }
         Ok(None)
+    }
+    pub fn find<T: DeserializeOwned>(&self, key: [u8; 16]) -> Result<Option<T>> {
+        self.find_ordinal(key)?.map(|ordinal| self.get(ordinal)).transpose()
     }
     pub fn revalidate(&self) -> Result<()> {
         self.data.revalidate()?;

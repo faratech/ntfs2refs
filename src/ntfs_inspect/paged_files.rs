@@ -97,6 +97,12 @@ impl PagedRawFiles {
         }
         Ok(None)
     }
+    pub(super) fn record_wire_bytes(&self, number: u64) -> Result<Option<u64>> {
+        self.ordinal(number)?.map(|ordinal| self.files.record_bytes(ordinal)).transpose()
+    }
+    pub(super) fn ordinal_wire_bytes(&self, ordinal: u64) -> Result<u64> {
+        self.files.record_bytes(ordinal)
+    }
     fn bit(&self, range: &dyn SourceMetadataRange, number: u64) -> Result<bool> {
         ensure!(
             number < self.header.mft_record_count,

@@ -123,7 +123,7 @@ impl PagedVerifiedIndexes {
     }
 }
 struct IndexStorage {
-    root: Vec<u8>,
+    root: ntfs_inspect::LeasedResidentBytes,
     root_pin: SourcePagePin,
     allocation: Option<SourcePagePin>,
     bitmap: Option<SourcePagePin>,
@@ -643,7 +643,7 @@ fn volume_identity<R: Read + Seek>(
     let (key, indexed) = entry;
     if value.len() != 16
         || value.iter().all(|b| *b == 0)
-        || key != &value
+        || key.as_slice() != value.as_ref()
         || indexed.len() != 56
         || indexed[..8] != reference.to_le_bytes()
         || indexed[8..] != [0; 48]

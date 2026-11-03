@@ -1,5 +1,25 @@
 # Resource-based source and metadata admission
 
+## First completed public V4 conversion — 2026-11-03
+
+The public `ntfs2refs --drive F --partition 2` command from exact experimental
+source `5a8b781728726fec5e0f9351fa3b61c8633a7e19` completed with observed native
+exit0 in2588.635 seconds. Its independently populated source had2585 raw
+identities and2558 user objects:811 files and1747 directories. Native protected
+verification matched2558 metadata/map bindings,157 known-content stream hashes
+and654 extent-only streams. Windows reported healthy ReFS, the original label
+and mount paths were preserved, and the actual journal closed HND. See
+[the exact native record](../evidence/public-resource-first-conversion-20261103.json).
+
+This clears the first full public V4 conversion gate. It does not establish
+restart recovery, mutation/cold-boot qualification, an independent full811-stream
+scan, or useful large-volume performance. Its last live process sample already
+reported497.1GB of logical read transfers; final process and physical I/O totals
+were not observed. The journal was5,821,929,848 bytes. Actual peak RAM and total
+peak scratch are unmeasured. Subsequent placement, cancellation, journal-scan
+reuse and online-terminal reconciliation edits require their own build and
+native qualification. The frozen `7feb4c0` alpha remains unchanged.
+
 ## Experimental integration checkpoint — 2026-11-03
 
 The compiled V4 core now connects held source/target/resource admission to a

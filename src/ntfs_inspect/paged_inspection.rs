@@ -106,6 +106,15 @@ impl PagedInspection {
     ) -> Result<Option<crate::ntfs_attribute_list::Assembly>> {
         self.assemblies[0].find(file_key(record))
     }
+    /// Bounded directory metadata from the already authenticated stores. No
+    /// row is decoded or allocated before its actual wire length is known.
+    pub(crate) fn checked_record_wire_sizes(&self, record: u64) -> Result<(u64, Option<u64>)> {
+        let file = self.files.record_wire_bytes(record)?
+            .with_context(|| format!("source FILE {record} absent from complete domain"))?;
+        let assembly = self.assemblies[0].find_ordinal(file_key(record))?
+            .map(|ordinal| self.assemblies[0].record_bytes(ordinal)).transpose()?;
+        Ok((file, assembly))
+    }
     pub(crate) fn lease_working_ram(
         &self,
         bytes: u64,
@@ -367,6 +376,9 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
                 &mut raw,
                 &geometry,
             )?;
+            // Declared before the record so the assembly lease drops only
+            // after the assembled record and its resident values are gone.
+            let mut _assembly_ram = None;
             let mut record = parse_record(raw.clone(), &geometry)
                 .with_context(|| format!("parsing MFT record {number}"))?;
             ensure!(
@@ -390,7 +402,7 @@ pub fn inspect_paged_with_scratch<R: Read + Seek>(
                         .take()
                         .context("canonical MFT bootstrap reused")?;
                 } else {
-                    resolver.resolve(reader, number, &raw, &mut record)?;
+                    _assembly_ram = resolver.resolve(reader, number, &raw, &mut record)?;
                 }
                 let mut row_budget = ReportBudget {
                     limit: budget

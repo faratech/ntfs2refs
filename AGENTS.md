@@ -68,6 +68,22 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST: actual public V4 run d9d466db4780468a9a493e6a8292ea6d from source
+5a8b781728726fec5e0f9351fa3b61c8633a7e19 / binary67be83d917386989fdd7ed21dbe1aed15074c8c3459e083198ea4b524d5220ec
+completed native5312/birth1793718535039/exit0 in2588.6345994s. It matched2558
+native metadata/map bindings,157 known stream hashes119009B and654 extent-only
+streams; all811 are not independently full-hashed in this run. F is healthy
+ReFS/Dev Drive, original label and mount paths restored. HND is CLOSED: never
+raw-replay this active branch. VM remains Running4GiB/4CPU/noNIC, parent3343;
+all project workers absent and task Ready before33 closed metadata files7055480B
+were copied/rehashed. Closed manifestSHA629acd85398776c67fe032fbb6536e37ed333dc604a47843d81c9dc1e3497c74
+is in resource-fixture-d9d466db4780468a9a493e6a8292ea6d/closed-public. Original
+guest J/shadow/recovery material remain intact. Actual J5821929848B; lastlive
+process reads497108655663B, not final/physical I/O. Peak RAM/scratch unmeasured.
+See evidence/public-resource-first-conversion-20261103.json. No V4 coldboot,
+mutation, restart recovery or stable qualification is inferred. Later placement,
+early cleanup, body-scan reuse and online reconciliation work is still WIP.
+
 Exact published alpha `7feb4c0` passed one controlled Hyper-V power-off
 recovery case: the controller saw the synced resume result and a live process
 immediately before one TurnOff; after booting the same branch, native recovery

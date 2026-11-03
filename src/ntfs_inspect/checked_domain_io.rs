@@ -9,6 +9,43 @@ pub(crate) struct CheckedMftDomain {
     root: Record,
     source_pin: String,
     _mapping_ram: paged_storage::SourceRamLease,
+    _assembly_ram: Option<paged_storage::SourceRamLease>,
+}
+struct CheckedRecord {
+    record: Record,
+    // The result can escape `record()`: keep all actual row/assembly leases
+    // until its caller finishes using its attributes and resident values.
+    _ram: paged_storage::SourceRamLease,
+    _assembly_ram: Option<paged_storage::SourceRamLease>,
+}
+pub(crate) struct LeasedAttributeInventory {
+    value: AttributeInventory,
+    _ram: paged_storage::SourceRamLease,
+    _assembly_ram: Option<paged_storage::SourceRamLease>,
+}
+impl std::ops::Deref for LeasedAttributeInventory {
+    type Target = AttributeInventory;
+    fn deref(&self) -> &Self::Target { &self.value }
+}
+pub(crate) struct LeasedResidentBytes {
+    value: Vec<u8>,
+    _ram: paged_storage::SourceRamLease,
+    _assembly_ram: Option<paged_storage::SourceRamLease>,
+}
+impl std::ops::Deref for LeasedResidentBytes {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target { &self.value }
+}
+impl AsRef<[u8]> for LeasedResidentBytes {
+    fn as_ref(&self) -> &[u8] { &self.value }
+}
+fn row_workspace(source: &PagedInspection, number: u64) -> Result<u64> {
+    let (file, assembly) = source.checked_record_wire_sizes(number)?;
+    file.checked_mul(32)
+        .and_then(|n| n.checked_add(assembly.unwrap_or(0).checked_mul(32)?))
+        .and_then(|n| n.checked_add(u64::from(source.header().geometry.file_record_size).checked_mul(32)?))
+        .and_then(|n| n.checked_add(1024 * 1024))
+        .with_context(|| format!("FILE {number} checked-row workspace overflow"))
 }
 fn clone_record(record: &Record) -> Record {
     Record {
@@ -80,7 +117,7 @@ fn actual_assembly<R: Read + Seek>(
     raw: &[u8],
     record: &mut Record,
     expected: Assembly,
-) -> Result<()> {
+) -> Result<paged_storage::SourceRamLease> {
     let geometry = &source.header().geometry;
     ensure!(
         expected.base.record_number == number
@@ -89,8 +126,31 @@ fn actual_assembly<R: Read + Seek>(
     );
     let working = source.budget().ram_bytes / 4;
     let limits = lists::AssemblyLimits::from_working_bytes(working, geometry.file_record_size)?;
+    ensure!(expected.extensions.len() <= limits.extension_records
+        && expected.list_value_hex.len() <= limits.list_bytes.checked_mul(2)
+            .context("actual assembly list limit overflow")?,
+        "FILE {number} assembly exceeds its original admitted limits");
+    let extension_records = u64::try_from(expected.extensions.len())?
+        .checked_add(1).context("actual assembly record count overflow")?;
+    let list_hex = u64::try_from(expected.list_value_hex.len())?;
+    ensure!(list_hex.is_multiple_of(2), "actual assembly list encoding differs");
+    // Each extension can contribute resident bytes independently of its
+    // serialized digest; include those actual record-size bounds as well as
+    // replay/list decoding and cloned serialized evidence.
+    let assembly_bytes = source.checked_record_wire_sizes(number)?.1
+        .context("actual assembly wire size absent")?;
+    let bytes = extension_records.checked_mul(u64::from(geometry.file_record_size))
+        .and_then(|n| n.checked_mul(16))
+        .and_then(|n| n.checked_add(assembly_bytes.checked_mul(64)?))
+        .and_then(|n| n.checked_add(list_hex.checked_mul(8)?))
+        .and_then(|n| n.checked_add(1024 * 1024))
+        .with_context(|| format!("FILE {number} assembly workspace overflow"))?;
+    let ram = source.lease_working_ram(bytes)
+        .with_context(|| format!("FILE {number} actual assembly requires {bytes} bytes"))?;
     let list = unnamed(record, 0x20)?;
     lists::validate_list_resource(&list.report, geometry, limits)?;
+    ensure!(list.report.logical_size == list_hex / 2,
+        "actual attribute-list length differs from the captured assembly");
     let value = read_small_attribute(reader, list, geometry, limits.list_bytes as u64)?;
     let mut residents = BTreeMap::new();
     for attribute in &record.attributes {
@@ -223,7 +283,7 @@ fn actual_assembly<R: Read + Seek>(
         });
     }
     record.attributes = output;
-    Ok(())
+    Ok(ram)
 }
 
 impl CheckedMftDomain {
@@ -233,8 +293,9 @@ impl CheckedMftDomain {
             "complete paged source is required"
         );
         let geometry = &source.header().geometry;
-        let working = source.budget().ram_bytes / 4;
-        let _working = source.lease_working_ram(working)?;
+        let working = row_workspace(source, 0)?;
+        let ram = source.lease_working_ram(working)
+            .with_context(|| format!("FILE 0 checked MFT open requires {working} bytes"))?;
         let mut boot = [0; 512];
         read_at(reader, 0, &mut boot, geometry.volume_size)?;
         ensure!(
@@ -261,15 +322,13 @@ impl CheckedMftDomain {
         )?;
         let mut record = parse_record(raw.clone(), geometry)?;
         same_identity(&record, &file)?;
-        match source.assembly_for_record(0)? {
-            Some(assembly) => {
-                actual_assembly(reader, source, &data, 0, &raw, &mut record, assembly)?
-            }
-            None => ensure!(
+        let assembly_ram = match source.assembly_for_record(0)? {
+            Some(assembly) => Some(actual_assembly(reader, source, &data, 0, &raw, &mut record, assembly)?),
+            None => { ensure!(
                 !record.attributes.iter().any(|a| a.report.type_code == 0x20),
                 "actual MFT unexpectedly requires an assembly"
-            ),
-        }
+            ); None },
+        };
         let attrs: Vec<_> = record.attributes.iter().map(|a| a.report.clone()).collect();
         ensure!(
             attrs == file.attributes,
@@ -284,16 +343,12 @@ impl CheckedMftDomain {
         };
         view.revalidate()?;
         drop(view);
-        let mapping = (expected.extents.capacity() as u64)
-            .checked_mul(std::mem::size_of::<Extent>() as u64 * 2)
-            .and_then(|n| n.checked_add(u64::from(geometry.file_record_size) * 16))
-            .context("checked MFT mapping RAM overflow")?;
-        let ram = source.lease_working_ram(mapping)?;
         Ok(Self {
             data,
             root: record,
             source_pin: source.canonical_sha256()?,
             _mapping_ram: ram,
+            _assembly_ram: assembly_ram,
         })
     }
     fn record<R: Read + Seek>(
@@ -301,13 +356,22 @@ impl CheckedMftDomain {
         reader: &mut R,
         source: &PagedInspection,
         number: u64,
-    ) -> Result<Record> {
+    ) -> Result<CheckedRecord> {
         ensure!(
             source.canonical_sha256()? == self.source_pin,
             "checked MFT owner changed"
         );
+        let mut working = row_workspace(source, number)?;
         if number == 0 {
-            return Ok(clone_record(&self.root));
+            for attribute in &self.root.attributes {
+                working = working.checked_add(attribute.resident_value.as_ref().map_or(0, |v| v.capacity() as u64))
+                    .context("root resident clone workspace overflow")?;
+            }
+        }
+        let ram = source.lease_working_ram(working)
+            .with_context(|| format!("FILE {number} checked-record operation requires {working} bytes"))?;
+        if number == 0 {
+            return Ok(CheckedRecord { record: clone_record(&self.root), _ram: ram, _assembly_ram: None });
         }
         let file = source
             .find_record(number, None)?
@@ -318,7 +382,6 @@ impl CheckedMftDomain {
                 && !source.extension_record(number)?,
             "source FILE allocation/base identity differs"
         );
-        let _ram = source.lease_working_ram(source.budget().ram_bytes / 4)?;
         let geometry = &source.header().geometry;
         let mut raw = vec![0; geometry.file_record_size as usize];
         read_attribute_range(
@@ -332,8 +395,8 @@ impl CheckedMftDomain {
         )?;
         let mut record = parse_record(raw.clone(), geometry)?;
         same_identity(&record, &file)?;
-        match source.assembly_for_record(number)? {
-            Some(assembly) => actual_assembly(
+        let assembly_ram = match source.assembly_for_record(number)? {
+            Some(assembly) => Some(actual_assembly(
                 reader,
                 source,
                 &self.data,
@@ -341,18 +404,18 @@ impl CheckedMftDomain {
                 &raw,
                 &mut record,
                 assembly,
-            )?,
-            None => ensure!(
+            )?),
+            None => { ensure!(
                 !record.attributes.iter().any(|a| a.report.type_code == 0x20),
                 "actual FILE unexpectedly requires an assembly"
-            ),
-        }
+            ); None },
+        };
         let attrs: Vec<_> = record.attributes.iter().map(|a| a.report.clone()).collect();
         ensure!(
             attrs == file.attributes,
             "actual canonical FILE attributes changed"
         );
-        Ok(record)
+        Ok(CheckedRecord { record, _ram: ram, _assembly_ram: assembly_ram })
     }
     pub(crate) fn data<R: Read + Seek>(
         &self,
@@ -360,15 +423,15 @@ impl CheckedMftDomain {
         source: &PagedInspection,
         number: u64,
         name: &[u16],
-    ) -> Result<AttributeInventory> {
-        let record = self.record(reader, source, number)?;
+    ) -> Result<LeasedAttributeInventory> {
+        let CheckedRecord { record, _ram, _assembly_ram } = self.record(reader, source, number)?;
         let mut attrs = record
             .attributes
             .into_iter()
             .filter(|a| a.report.type_code == 0x80 && a.report.name_utf16 == name);
         let attribute = attrs.next().context("actual DATA attribute absent")?;
         ensure!(attrs.next().is_none(), "duplicate actual DATA attribute");
-        Ok(attribute.report)
+        Ok(LeasedAttributeInventory { value: attribute.report, _ram, _assembly_ram })
     }
     pub(crate) fn verify_record<R: Read + Seek>(
         &self,
@@ -385,12 +448,12 @@ impl CheckedMftDomain {
         source: &PagedInspection,
         file: &FileInventory,
         wanted: &AttributeInventory,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<LeasedResidentBytes> {
         ensure!(
             wanted.resident && wanted.logical_size <= source.budget().record_bytes,
             "resident source attribute exceeds admitted row"
         );
-        let record = self.record(reader, source, file.record_number)?;
+        let CheckedRecord { record, _ram, _assembly_ram } = self.record(reader, source, file.record_number)?;
         same_identity(&record, file)?;
         let mut attrs = record
             .attributes
@@ -401,9 +464,10 @@ impl CheckedMftDomain {
             attrs.next().is_none() && actual.report == *wanted,
             "actual resident attribute changed"
         );
-        actual
-            .resident_value
-            .context("actual resident bytes absent")
+        Ok(LeasedResidentBytes {
+            value: actual.resident_value.context("actual resident bytes absent")?,
+            _ram, _assembly_ram,
+        })
     }
 }
 fn unnamed_inventory_data<'a>(
@@ -423,7 +487,7 @@ pub(crate) fn read_resident_inventory_attribute_domain<R: Read + Seek>(
     source: &PagedInspection,
     file: &FileInventory,
     wanted: &AttributeInventory,
-) -> Result<Vec<u8>> {
+) -> Result<LeasedResidentBytes> {
     ensure!(
         wanted.resident && wanted.logical_size <= source.budget().record_bytes,
         "resident source attribute exceeds admitted row"
@@ -439,7 +503,10 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
     name: &[u16],
     max_bytes: u64,
     allow_sparse: bool,
-) -> Result<(Attribute, Option<String>)> {
+) -> Result<(Attribute, Option<String>, paged_storage::SourceRamLease, Option<paged_storage::SourceRamLease>)> {
+    let file_workspace = row_workspace(source, number)?;
+    let _file_ram = source.lease_working_ram(file_workspace)
+        .with_context(|| format!("FILE {number} checked DATA inventory requires {file_workspace} bytes"))?;
     let file = source
         .find_record(number, None)?
         .context("source file absent from complete inventory")?;
@@ -477,7 +544,7 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
         "unsupported stream or materialization budget"
     );
     let mapping = CheckedMftDomain::open(reader, source)?;
-    let record = mapping.record(reader, source, number)?;
+    let CheckedRecord { record, _ram, _assembly_ram } = mapping.record(reader, source, number)?;
     same_identity(&record, &file)?;
     let mut attrs = record
         .attributes
@@ -515,5 +582,5 @@ pub(super) fn checked_data_attribute_domain<R: Read + Seek>(
     if !data.report.resident {
         validate_stream_mapping(&data.report, geometry)?;
     }
-    Ok((data, stream.logical_sha256.clone()))
+    Ok((data, stream.logical_sha256.clone(), _ram, _assembly_ram))
 }

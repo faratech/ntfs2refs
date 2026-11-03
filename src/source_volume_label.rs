@@ -55,10 +55,10 @@ pub fn verify_domain<R: Read + Seek>(
     Ok(result)
 }
 
-fn verify_file(
+fn verify_file<B: AsRef<[u8]>>(
     file: &ntfs_inspect::FileInventory,
     captured: &VolumeLabel,
-    mut read_resident: impl FnMut(&ntfs_inspect::AttributeInventory) -> Result<Vec<u8>>,
+    mut read_resident: impl FnMut(&ntfs_inspect::AttributeInventory) -> Result<B>,
     fingerprint: impl FnOnce() -> Result<String>,
 ) -> Result<FrozenLabelProof> {
     ensure!(
@@ -84,7 +84,8 @@ fn verify_file(
                 && attribute.logical_size.is_multiple_of(2),
             "unsupported persisted NTFS volume-name form"
         );
-        let bytes = read_resident(attribute)?;
+        let owner = read_resident(attribute)?;
+        let bytes = owner.as_ref();
         let label = VolumeLabel::from_utf16(
             bytes
                 .as_chunks::<2>()

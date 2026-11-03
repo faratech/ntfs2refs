@@ -23,7 +23,7 @@ pub mod allocation_domain;
 #[cfg(windows)]
 mod checked_domain_io;
 #[cfg(windows)]
-pub(crate) use checked_domain_io::{CheckedMftDomain, read_resident_inventory_attribute_domain};
+pub(crate) use checked_domain_io::{CheckedMftDomain, LeasedResidentBytes, read_resident_inventory_attribute_domain};
 #[cfg(windows)]
 use checked_domain_io::checked_data_attribute_domain;
 #[cfg(windows)]
@@ -2868,6 +2868,9 @@ pub struct PlainStreamRangeSession {
     compression: Option<crate::ntfs_compression::Reader>,
     expected: Option<String>,
     poisoned: bool,
+    // Paged DATA mapping remains charged for the complete session lifetime.
+    #[cfg(windows)]
+    _domain_record_ram: Option<(paged_storage::SourceRamLease, Option<paged_storage::SourceRamLease>)>,
 }
 impl PlainStreamRangeSession {
     pub fn open<R: Read + Seek>(
@@ -2968,7 +2971,7 @@ impl PlainStreamRangeSession {
             stream_name_utf16.len() <= 255,
             "stream name exceeds NTFS limit"
         );
-        let (attribute, expected) = checked_data_attribute_domain(
+        let owned = checked_data_attribute_domain(
             reader,
             raw,
             record_number,
@@ -2976,7 +2979,8 @@ impl PlainStreamRangeSession {
             max_bytes,
             allow_sparse,
         )?;
-        let compression = compression_reader(&attribute, &raw.header().geometry)?;
+        let compression = compression_reader(&owned.0, &raw.header().geometry)?;
+        let (attribute, expected, ram, assembly_ram) = owned;
         Ok(Self {
             record_number,
             stream_name_utf16: stream_name_utf16.to_vec(),
@@ -2985,6 +2989,7 @@ impl PlainStreamRangeSession {
             compression,
             expected,
             poisoned: false,
+            _domain_record_ram: Some((ram, assembly_ram)),
         })
     }
 
@@ -3018,6 +3023,8 @@ impl PlainStreamRangeSession {
             compression,
             expected,
             poisoned: false,
+            #[cfg(windows)]
+            _domain_record_ram: None,
         })
     }
     pub fn record_number(&self) -> u64 {
@@ -3309,7 +3316,7 @@ impl PlainStreamRangeSession {
         raw: &PagedInspection,
     ) -> Result<()> {
         ensure!(!self.poisoned, "failed plain stream session cannot finish");
-        let (after, expected) = checked_data_attribute_domain(
+        let after = checked_data_attribute_domain(
             reader,
             raw,
             self.record_number,
@@ -3318,9 +3325,9 @@ impl PlainStreamRangeSession {
             self.allow_sparse,
         )?;
         ensure!(
-            expected == self.expected
-                && after.report == self.attribute.report
-                && after.resident_value == self.attribute.resident_value,
+            after.1 == self.expected
+                && after.0.report == self.attribute.report
+                && after.0.resident_value == self.attribute.resident_value,
             "plain stream mapping changed around session",
         );
         Ok(())

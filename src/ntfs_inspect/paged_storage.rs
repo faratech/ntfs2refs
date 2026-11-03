@@ -608,10 +608,19 @@ impl Drop for SourceRangeWriter {
 
 pub struct PagedMetadataRange {
     reader: RefCell<Reader>,
-    decoded: RefCell<Option<(u64, Vec<u8>)>>,
+    decoded: RefCell<DecodedChunks>,
     pin: SourcePagePin,
     _ram: SourceRamLease,
+    // An optional second decoded chunk is charged to the same shared source
+    // budget. On constrained systems the reader keeps the existing one-chunk
+    // behavior rather than increasing the required memory.
+    _extra_cache_ram: Option<SourceRamLease>,
     _created: Option<CreatedReaderLease>,
+}
+#[derive(Default)]
+struct DecodedChunks {
+    recent: Option<(u64, Vec<u8>)>,
+    previous: Option<(u64, Vec<u8>)>,
 }
 impl PagedMetadataRange {
     pub fn capture(
@@ -637,7 +646,8 @@ impl PagedMetadataRange {
     }
     pub fn open(pin: &SourcePagePin, scratch: &SourceScratch) -> Result<Self> {
         ensure!(
-            pin.page_budget.max_page_bytes <= scratch.0.borrow().budget.page_bytes
+            !scratch.is_poisoned()
+                && pin.page_budget.max_page_bytes <= scratch.0.borrow().budget.page_bytes
                 && pin.wire_bytes <= scratch.0.borrow().budget.scratch_bytes,
             "source range exceeds owner resources"
         );
@@ -699,11 +709,23 @@ impl PagedMetadataRange {
         );
         reader.revalidate()?;
         let created = scratch.reader_lease(pin)?;
+        // File inventory lookups repeatedly alternate between an object and
+        // its root/parent record. Other range types are normally sequential;
+        // avoid reserving a second window for every directory/index/descriptor.
+        let extra_cache_ram = if pin.purpose == *b"N2RFILE1"
+            && pin.logical_bytes > u64::from(pin.chunk_bytes)
+            && u64::from(pin.chunk_bytes) <= scratch.budget().ram_bytes / 64
+        {
+            scratch.lease_ram(u64::from(pin.chunk_bytes)).ok()
+        } else {
+            None
+        };
         Ok(Self {
             reader: RefCell::new(reader),
-            decoded: RefCell::new(None),
+            decoded: RefCell::new(DecodedChunks::default()),
             pin: pin.clone(),
             _ram: ram,
+            _extra_cache_ram: extra_cache_ram,
             _created: created,
         })
     }
@@ -736,13 +758,32 @@ impl SourceMetadataRange for PagedMetadataRange {
         while !output.is_empty() {
             let ordinal = at / u64::from(self.pin.chunk_bytes);
             let skip = (at % u64::from(self.pin.chunk_bytes)) as usize;
+            {
+                let mut cache = self.decoded.borrow_mut();
+                if !cache.recent.as_ref().is_some_and(|(n, _)| *n == ordinal)
+                    && cache.previous.as_ref().is_some_and(|(n, _)| *n == ordinal)
+                {
+                    let previous = cache.previous.take();
+                    cache.previous = cache.recent.take();
+                    cache.recent = previous;
+                }
+            }
             if !self
                 .decoded
                 .borrow()
+                .recent
                 .as_ref()
-                .is_some_and(|(cached, _)| *cached == ordinal)
+                .is_some_and(|(n, _)| *n == ordinal)
             {
-                *self.decoded.borrow_mut() = None;
+                {
+                    let mut cache = self.decoded.borrow_mut();
+                    cache.previous = if self._extra_cache_ram.is_some() {
+                        cache.recent.take()
+                    } else {
+                        cache.recent = None;
+                        None
+                    };
+                }
                 let row = self.reader.borrow_mut().get(ordinal + 1)?;
                 ensure!(
                     row.key == ordinal.to_be_bytes(),
@@ -754,10 +795,14 @@ impl SourceMetadataRange for PagedMetadataRange {
                     chunk.len() as u64 == remaining.min(u64::from(self.pin.chunk_bytes)),
                     "held source range chunk length differs"
                 );
-                *self.decoded.borrow_mut() = Some((ordinal, chunk));
+                self.decoded.borrow_mut().recent = Some((ordinal, chunk));
             }
             let cached = self.decoded.borrow();
-            let chunk = &cached.as_ref().context("source chunk cache absent")?.1;
+            let chunk = &cached
+                .recent
+                .as_ref()
+                .context("source chunk cache absent")?
+                .1;
             let n = output.len().min(chunk.len() - skip);
             output[..n].copy_from_slice(&chunk[skip..skip + n]);
             output = &mut output[n..];

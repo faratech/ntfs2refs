@@ -43,9 +43,10 @@ not current instructions. Earlier archives remain in docs/history/.
 ## Current state: verify before acting
 
 **CURRENT LOW-RESERVE / EARLY-CANCEL CASE IS COMPLETE**, not live.
-Root's latest actual state is VM Running, parentfe668886-647a-4928-9c14-9fd9e323aefb,
+Root's latest actual state is VM Off / assigned RAM0, parentfe668886-647a-4928-9c14-9fd9e323aefb,
 boot1793747939459, original F: NTFS64KiB/original label/source attributes0,
-no active product worker. Always check actual newer task/PID/birth before any
+no active product worker; Root normally shut down after all checks to free4GiB.
+No restore was requested. Always check actual newer task/PID/birth before any
 power/restore/dispatch; this historical completion is not a new liveness probe.
 
 Prepare-only489777a11e84413fb50ebe9fc06063b0, PID5360/birth1793747474820,

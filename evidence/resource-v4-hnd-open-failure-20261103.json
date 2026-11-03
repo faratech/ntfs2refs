@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "kind": "public-resource-v4-online-hnd-journal-open-failure-and-normal-reconciliation",
+  "source_commit": "a0b29e04dd2e83086823349724e7e2a8ccf905f5",
+  "binary_sha256": "1cc91461deae2d97df5390da1a5cb9d8a25c9f864574a39f492889305370dfe9",
+  "build_manifest_sha256": "331098d19f6f8d800abc3988522fd9d2feaccb37b38fcdf926d125e59cac4403",
+  "publication_sha256": "92211da15e0025b9d721daf33e6c886c64a261de34a3b40debb62743eb4b9204",
+  "publication_has_new_early_guard": true,
+  "fault": {
+    "run_id": "baae02d3e0324d19b0ba5d6cf3b014c5",
+    "mode": "WithReadOnlyJournalLock",
+    "native": {
+      "actual_exit_observed": true,
+      "stdout_bytes": 246,
+      "handle_owned_through_terminal": true,
+      "wall_seconds": 0.0783545,
+      "stderr_bytes": 101,
+      "creation_ms": 1793746940241,
+      "utc": "2026-11-03T23:02:20.3336503Z",
+      "pid": 5004,
+      "exit_code": 1,
+      "readonly_journal_lock_still_held": true
+    },
+    "mechanism": "Actual read-only FileShare.None handle remained held on completed HND journal through native exit",
+    "actual_windows_error": 32,
+    "native_nonzero_exit_is_expected": true,
+    "original_stderr_sharing_error_observed": true,
+    "journal_before_after_sha256": "a49c7d8dc5ce58c94dcf2341c55e10b31ab9a70f6a45b7e4782964598df34e42",
+    "journal_identity_unchanged": true,
+    "source_remained_online_refs": true,
+    "helper_wrote_source_or_journal_bytes": false,
+    "automatic_retry": false,
+    "write_flush_or_readback_fault_qualified": false,
+    "journal_before": {
+      "file_id": "0e0c0000000003000000000000000000",
+      "volume_serial": 12259941802954451809,
+      "eof": 184184288,
+      "allocation": 184184832,
+      "links": 1,
+      "attributes": 8224,
+      "final_path": "\\\\?\\Volume{c6c3318f-a7c8-47b9-be6d-6dde5e00862f}\\ProgramData\\ntfs2refs\\runs\\bd38a1599dae8ce8b1f23195eddde9f6\\conversion\\selected.journal",
+      "actual_closed_hnd_hint": true,
+      "hint_grants_replay_authority": false,
+      "readonly_handle": true
+    }
+  },
+  "normal": {
+    "run_id": "e3c9912685b14d9aaeb24c7e383a8bba",
+    "native": {
+      "actual_exit_observed": true,
+      "stdout_bytes": 540,
+      "handle_owned_through_terminal": true,
+      "wall_seconds": 15.769099899999999,
+      "stderr_bytes": 0,
+      "creation_ms": 1793747019399,
+      "utc": "2026-11-03T23:03:55.1842465Z",
+      "pid": 4956,
+      "exit_code": 0,
+      "readonly_journal_lock_still_held": false
+    },
+    "wrapper_task_exit_code": 1,
+    "wrapper_failure": {
+      "actual_native_exit": 0,
+      "error": "Actual recovery result route is absent or ambiguous.",
+      "automatic_retry": false,
+      "native_started": true,
+      "expected_failure_is_not_automatic_success": true
+    },
+    "wrapper_failure_scope": "Post-native output parser missed the actual successful label-reconciliation message; native exit 0 is independently preserved",
+    "product_result_sha256": "cfa164eaeeb25a69beb9167c1412202c98c03fd91bf48ffb6c6b6ddbda4a22c5",
+    "product_result": {
+      "already_online_terminal": true,
+      "conversion_time_content_reverified": false,
+      "direction": "resume",
+      "initial_lifecycle": "handoff",
+      "kind": "resource-allocation-recovery-v1",
+      "raw_replay_performed": false,
+      "reconciliation": {
+        "additional_current_mount_paths_preserved": [],
+        "conversion_time_content_reverified": false,
+        "filesystem": "ReFS",
+        "journal_terminal_verified": true,
+        "kind": "resource-online-terminal-reconciliation-v1",
+        "label_action": "already-original",
+        "label_matches_original": true,
+        "missing_original_mount_paths": [],
+        "raw_replay_performed": false,
+        "reconciliation_complete": true,
+        "restored_drive_letters": [],
+        "selected_bytes_compared_to_old_or_new": false,
+        "source": {
+          "disk_number": 1,
+          "identity": {
+            "disk_bytes": 68719476736,
+            "disk_guid": "1b191872-c372-41ee-a416-e18863996f54",
+            "logical_sector_bytes": 512,
+            "partition_bytes": 55834574848,
+            "partition_guid": "f06075a8-67a2-46b9-8fac-4af4da809617",
+            "partition_number": 2,
+            "partition_offset": 16777216,
+            "physical_sector_bytes": 4096
+          },
+          "volume_guid": "f06075a8-67a2-46b9-8fac-4af4da809617"
+        },
+        "terminal_lifecycle": "handoff"
+      }
+    },
+    "root_post_normal_observation": {
+      "whole_journal_sha256": "a49c7d8dc5ce58c94dcf2341c55e10b31ab9a70f6a45b7e4782964598df34e42",
+      "whole_journal_hash_unchanged": true,
+      "mutation_files_verified": 513,
+      "mutation_manifest_sha256": "3a9a89c6f0d82ab2da973952b475030bd1f060074e9c4f85b305408f4a559490",
+      "scope": "Root-reported separate post-normal observation; not a separate manual-observation receipt within this 27-file archive"
+    }
+  },
+  "actual_source": {
+    "disk_number": 1,
+    "filesystem": "ReFS",
+    "cluster_bytes": 4096,
+    "label": "n2r-stream-source",
+    "offline": false,
+    "read_only": false,
+    "boot_unix_ms": 1793746065079
+  },
+  "closed_evidence": {
+    "path": ".lab/hyperv/streaming-v2-20261027/resource-hnd-io-e3c9912685b14d9aaeb24c7e383a8bba/closed-pair/archive-manifest.json",
+    "sha256": "34327d607ce554fd3f87d1cb136f8ac1074227a6c3c1facee54ef9d89f7f1b85",
+    "files": 27,
+    "bytes": 711211,
+    "all_archived_file_lengths_and_sha256_verified": true
+  },
+  "qualification": {
+    "actual_hnd_journal_open_sharing_failure": true,
+    "actual_normal_online_hnd_reconciliation": true,
+    "raw_journal_replay": false,
+    "stale_old_or_new_target_comparison": false,
+    "conversion_time_content_reverification": false,
+    "active_ap_io_failure": false,
+    "write_flush_or_readback_fault": false,
+    "early_guard_restart_cancellation": false,
+    "physical_power_loss": false,
+    "stable_release": false,
+    "unit_tests_run": false
+  },
+  "handoff_rule": "HND remains authoritative. This test never grants old raw-journal replay after ordinary writable ReFS use."
+}

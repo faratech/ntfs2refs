@@ -1,4 +1,41 @@
 # Resource-based source and metadata admission
+
+## Completed public scratch-minimizing conversion — 2026-11-03
+
+Frozen source `a0b29e0` completed public `--drive F --partition 2 --minimize-scratch`
+in 1,036.16 seconds with actual native exit 0 and 2,558 metadata/map bindings.
+The NTFS driver verified 343 prealignment moves totaling 5,643,501,568 bytes;
+no moves were skipped. The journal file was 184,184,288 bytes. All 811 original
+XXH3 stream hashes and 1,024 additional directory paths matched independently.
+After 513 new-file mutations and a normal shutdown/restart, all original
+hashes, extra directory paths and mutation-file hashes matched again.
+
+Retained regular-file allocation was 1,245,219,744 bytes before reboot and
+1,220,053,920 bytes afterward; the shadow image alone shrank on clean close.
+These snapshots exclude directory/MFT overhead and do not measure peak scratch.
+Observer-close logical transfers were 189,617,274,776 bytes read and
+3,030,345,500 bytes written, separately from NTFS relocation work. They are
+not physical traffic or exact final counters. Timing and journal comparisons
+with older profiles are observations rather than a controlled benchmark.
+The normal early-guard transition was exercised. Separate Frozen restart
+cancellation subsequently passed; mixed-copy repair remains unqualified. See the
+[exact native conversion and resource record](../evidence/public-resource-minimize-20261103.json).
+
+The same frozen candidate also passed a real read-only exclusive journal-open
+failure (native ERROR32/exit1) followed by native exit0 online HND reconciliation.
+The normal wrapper reported a separate output-parser failure; the actual native
+result is preserved. This covers journal-open failure, not active write/flush
+or readback failure. See [the scoped record](../evidence/resource-v4-hnd-open-failure-20261103.json).
+The verified full minimum-scratch HND branch is saved. The separate prepare-only
+low-free-reserve case subsequently refused at capture before J/AP. After a normal
+restart, the ordinary LabAdmin public command cancelled the authenticated Frozen
+preparation, restored NTFS/F:/label without a whole-partition hash or source
+payload writes, and durably closed both guard copies as Cancelled. All811 known
+stream hashes and1024 extra directory paths matched independently. This covers
+reserve admission and normal Frozen restart cancellation, not actual ENOSPC,
+active write/flush/readback failure or torn/corrupt guard repair. See
+[the exact early-cancellation record](../evidence/resource-v4-early-cancel-20261103.json).
+
 ## Actual restart recovery and next performance run — 2026-11-03
 
 Corrected reader `a0b29e0` completed genuine public rollback and resume on
@@ -11,10 +48,10 @@ NTFS and matched exactly on resumed ReFS. See the exact
 [rollback](../evidence/resource-v4-restart-rollback-20261103.json) and
 [resume](../evidence/resource-v4-restart-resume-20261103.json) records.
 
-The frozen a0b public `--minimize-scratch` command is now running on a fresh
-NTFS branch. Its result, storage savings and performance remain pending.
-The verified HND branch and original partial-write origin remain saved.
-No new code changes or unit tests accompany this performance run.
+The subsequent public scratch-minimizing run completed and passed mutation
+and cold-boot observations as recorded above. The verified HND branch and
+original partial-write origin remain saved. No new code changes or unit tests
+accompanied that performance run.
 
 ## First completed public V4 conversion — 2026-11-03
 

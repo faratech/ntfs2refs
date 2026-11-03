@@ -40,66 +40,125 @@ not current instructions. Earlier archives remain in docs/history/.
   subject to the safeguards below. Preserve active recovery and evidence;
   do not infer a preserve-all policy from archived historical instructions.
 
-## Current live work: verify before acting
+## Current state: verify before acting
 
-**Public scratch-minimizing conversion is LIVE at the last actual poll**:
-run f856e0a021bb44e2930f66846a5459e4, source a0b29e04dd2e83086823349724e7e2a8ccf905f5,
-public binary SHA 1cc91461deae2d97df5390da1a5cb9d8a25c9f864574a39f492889305370dfe9.
-Actual PID **5324**, birth **1793737914035 ms**, task
-N2R-ResourceFixture-f856e0a021bb44e2930f66846a5459e4 was Running at
-2026-11-03T20:47:39.729Z, source OFFLINE (1), no terminal receipt.
-Guest stage C:\ntfs2refs\resource-fixture-f856e0a021bb44e2930f66846a5459e4;
-actual public run C:\ProgramData\ntfs2refs\runs\bd38a1599dae8ce8b1f23195eddde9f6.
-The helper's unused K: output path is NOT the public output. Actual argv is
---drive F --partition 2 --minimize-scratch. Host dispatcher 88257 completed,
-not the native worker. All builders/checks are terminal. Poll the same actual
-PID AND birth/task/owned terminal before any power/restore/second worker.
-Do not bypass the live native-events.log sharing lock to read it.
-Preparation and actual source writes have been reached. The journal file is
-184184288B versus the prior5818541240B; that is not total physical scratch.
-The resources are admitted from observed hardware; native completion, speed,
-full physical footprint and the new guard's recovery remain unqualified.
+**CURRENT LOW-RESERVE / EARLY-CANCEL CASE IS COMPLETE**, not live.
+Root's latest actual state is VM Running, parentfe668886-647a-4928-9c14-9fd9e323aefb,
+boot1793747939459, original F: NTFS64KiB/original label/source attributes0,
+no active product worker. Always check actual newer task/PID/birth before any
+power/restore/dispatch; this historical completion is not a new liveness probe.
 
-**Both actual V4 restart directions now passed**, using old acbcc producer
-and corrected a0b reader, from the SAME original AP checkpoint a51e134b-9c2f-4de6-9794-37e8d664b79a.
-The controlled interruption wrote/flushed/read back 4 KiB at offset 4096,
-with another selected 4 KiB at offset 0 still OLD. It was boot/reserved metadata,
-not the first copied user payload or physical power loss.
-- Rollback ea51f01d132e465ea3aac4ff9aab47fb, PID3564/birth1793734231523,
-  actual exit0/462.8372956s: NTFS64KiB, original F:/label, ABT and source0.
-  All811 independent XXH3 streams/9,885,801,949B matched; 1534 original
-  path/type/length objects and 1024 extra directories checked/captured.
-  Archive72files949084B SHA7101a462e1ab960f4dbd31ac05b3f19c9bec4179c872b41d97e57210a0704b94.
-- Resume8153619678074311931e18f6548f1f99, PID1432/birth1793735658561,
-  actual exit0/935.2567496s: healthy ReFS4KiB, 2558 metadata/map bindings,
-  157 known hashes/119009B,654 extent-only streams, HND/label/mounts complete.
-  Independent811 hashes AND all1024 extra UTF16 directory paths matched the
-  NTFS manifest8f14bdc273f05813732fa80250df74302525d8837061da46c61a0039e741678b.
-  Archive72files949262B SHA1af64e312e5a87cc3e341512b5735dcad09bf33197f8a19b1aeaf46d3507527a.
-See evidence/resource-v4-restart-{rollback,resume}-20261103.json. Independent
-ACL/SACL/time and complete-no-extra-original-object audits are not claimed.
-Fresh a0b preparation-guard interruption/mixed-copy repair remains unqualified.
+Prepare-only489777a11e84413fb50ebe9fc06063b0, PID5360/birth1793747474820,
+actually exited1/247.2616313s at2026-11-03T23:15:22.1073085Z. Only the request
+minimum_free_bytes became33285996544; protected-target-capture refused with
+"capture does not have its remaining journal and reserve capacity". Source
+stayed3; no J or AP existed. This is admission-reserve refusal, NOT actual
+ENOSPC, write/flush/readback failure or power loss. Closed16files5015551B,
+manifestcbdff236ccaedf73d0c312b2601dc0f2b9e9840acd76c989014321a3ba426a6f.
 
-The verified ReFS/HND result was saved Off at **b1de36d8-2520-4d67-8165-fd1358e9c7d5**,
-parent a51e, before starting the fresh public run. **Never replay that HND
-branch's old NTFS journal.** The current public helper restored clean NTFS
-checkpoint3343f2a4-cf81-4fa9-a504-030425a8011e exactly once.
-Original AP a51e, clean3343, alpha AP58bd and required ancestors remain.
-Authorized cleanup retired old closed HND ba81 then411c only, after all172
-small archive files and frozen package pins were verified. Their restorable
-old guest images/large journals are retired; evidence/package remain.
-Full ALL-.lab+shared target+staging after cleanup272447465589B, host free134104756224B;
-the UNCHANGED42949672960B forecast passed original max329374052988/min17179869184.
+Root saved Frozen checkpointfe668 (parent3343), then normally restarted. The
+ordinary LabAdmin public early-cancel command, PID2256/birth1793748006977,
+actually exited0/0.1461095s at23:20:07.1489079Z; exact intentSHA
+df9866259919e96c06582cea63cc3f8b179f5f2027ee2f0dfd0d4cb713a4b2b1.
+The product returned NTFS/F:/label/source0 with no whole-partition hash, source
+payload writes or journal replay. Both original Frozen copies and both final
+Cancelled copies validated; nonce+locked boot and the1971B intent stayed equal.
+Final131072B stateSHAfed3a8262d9e9d998d389ffaf6177145c9fb40cbcb8fed000094a8ffc3fc109c.
+Independent SYSTEM observer matched811 XXH3 streams/9885801949B,1534 baseline
+objects and1024 extra dirs opening/closing;13 actual native digest exits0.
+New capture1013b8807eccf653bf26a58b0fab055be21245b0e14d3a3275cae831961595c9
+has the EXACT same paths object as old8f14 (boot fields differ). Closed66files
+928764B manifestf36e8940bf2cee9cc4a45c6de5625f5f857c23427fa46f5ebe4e920855191951.
+See evidence/resource-v4-early-cancel-20261103.json. Normal Frozen restart
+cancellation is now qualified; mixed/torn/corrupt/missing copies and physical
+power loss remain unqualified. Product source remains frozen a0b.
+
+The successful full minimum-scratch/mutation/cold-boot/HND result remains saved
+at7d816cf1-f924-44d0-ba27-c5e44eafa4a1(parent3343); NEVER replay its old raw J.
+Original a51e and prior b1de HND remain. The completed early cancellation acted
+only on a separately restored original NTFS prepare-only branch.
+
+**Public scratch-minimizing conversion f856 is COMPLETE**, not live. Frozen
+source a0b29e04dd2e83086823349724e7e2a8ccf905f5 / public SHA
+1cc91461deae2d97df5390da1a5cb9d8a25c9f864574a39f492889305370dfe9,
+actual PID5324/birth1793737914035, exit0 in **1036.1624366 seconds** at
+2026-11-03T20:49:10.231566Z. Actual argv was --drive F --partition 2
+--minimize-scratch. Native HND/finalization matched2558 metadata/map bindings,
+157 known hashes/119009B and654 extent-only streams, original label/mounts.
+Actual public run is C:\ProgramData\ntfs2refs\runs\bd38a1599dae8ce8b1f23195eddde9f6;
+the host helper's unused K: path is not this run. Native NTFS prealignment
+verified343 moves/5,643,501,568B on222 files, no skips or stopped outcome.
+The new early guard created/froze/delegated normally; its two checked identical
+state copies bind publication92211da15e0025b9d721daf33e6c886c64a261de34a3b40debb62743eb4b9204.
+The separate normal Frozen restart cancellation above is qualified; interrupted/mixed-copy repair remains unqualified.
+
+**Completed minimum-scratch case's post-boot state** was healthy original F:
+ReFS4KiB/original label/attributes0 at boot1793746065079. All converter/observer
+workers belonging to that completed normal case are terminal; the independent
+current low-reserve worker above is live and must not be interrupted blindly.
+Both subsequent HND journal-open cases are terminal. Actual read-only exclusive
+journal-lock failure baae exited1/ERROR32 in0.0783545s while its lock stayed
+held through real exit; journal SHA/identity and online ReFS remained unchanged.
+Normal e3c reconciliation actually exited0/15.7690999s with verified HND,
+no raw replay, no OLD/NEW comparison and no conversion-time data rehash. Its
+wrapper task exited1 only because the output parser missed the valid final
+label-reconciliation message; the original worker-failed record is preserved.
+Root independently observed all513 mutation hashes still matching afterward.
+See evidence/resource-v4-hnd-open-failure-20261103.json. This qualifies a real
+HND open failure, not active AP write/flush/readback failure. The earlier cc90
+pre-native helper error remains unqualified history. The successful minimum-
+scratch HND result is now saved at7d81; the separate live low-free-reserve case
+is described above. Root alone controls the VM; inspect actual latest task,
+PID AND creation time and owned terminal files before power/restore/dispatch.
+
+Independent SYSTEM observers matched all811 original XXH3 streams /
+9,885,801,949B and1534 baseline path/type/length objects before and after a
+normal shutdown/restart WITHOUT restore. All1024 extra UTF16 directory paths
+matched the independent NTFS manifest8f14bdc273f05813732fa80250df74302525d8837061da46c61a0039e741678b.
+Only new test paths were mutated:512 small creates,64 deletes/replacements,
+16MiB growth then1048699B truncate/rename,513 live files; all513 hashes/lengths
+matched after reboot. Original payload files were never written by the probe.
+No independent full ACL/SACL/time, complete-no-extra-original-object, physical
+allocation-reuse or physical-power-loss proof is claimed.
+
+The journal is184184288 logical bytes /184184832 allocated bytes; literal
+backing85946368B plus494336B capture index. Retained regular-file allocation
+was1245219744B before reboot and1220053920B after; the shadow alone shrank
+25165824B on clean close. These snapshots exclude directory/MFT global overhead
+and are NOT peak scratch. GetCompressedFileSize values equal EOF here; use
+FileStandardInfo AllocationSize for the rounded file allocation totals.
+Observer-close logical transfers were189617274776B read /3030345500B written;
+not physical storage I/O or exact final counters. Peak RAM/scratch are unknown.
+Admitted RAM1890108843B /scratch29182386176B are ceilings, not measured peaks.
+
+The complete metadata ZIP (large shadow/J/literal excluded and retained in guest)
+is .lab/hyperv/streaming-v2-20261027/resource-fixture-f856e0a021bb44e2930f66846a5459e4/closed-min/metadata.zip:
+25036814B, SHA5bc838b89e6b01700acfb4cc8c76e21d9a0aebb2ce9043bbd6e5b552bb814f1f.
+ManifestSHA05b301c2537f05211e35474a74080ed4b1209d470e16dc98abb2dae9605b89f0;
+ALL4336 source entries/167319552 uncompressed bytes were length/SHA-verified.
+Closed ledger40 frames/payload hashes/chains/closing record are authenticated.
+See evidence/public-resource-minimize-20261103.json for exact scope.
+**The current operational HND journal is permanently closed to raw replay.**
+
+Both older actual V4 restart directions passed from original AP a51e134b-9c2f-4de6-9794-37e8d664b79a:
+old acbcc producer -> corrected a0b reader. Rollback ea51 exited0/462.8372956s
+and returned NTFS64KiB; Resume815 exited0/935.2567496s and returned healthy ReFS.
+Both independently matched811 hashes; resumed1024 extra names matched NTFS.
+That original fault changed/flushed/read back4KiB at offset4096, with primary0
+still OLD: boot/reserved metadata, NOT copied user payload or physical power.
+Its verified HND branch is saved Off at b1de36d8-2520-4d67-8165-fd1358e9c7d5,
+parenta51e. Never replay its old journal. Original APa51e, clean3343, alpha AP58bd
+and required ancestors remain. Old closed HNDba81/411c were retired after172
+small archive files and the frozen package were verified; evidence remains.
+After cleanup ALL-.lab+shared target+staging272447465589B, free134104756224B;
+UNCHANGED42949672960B forecast passed max329374052988/min17179869184.
 No cap/epoch/forecast was raised or reset.
 
-Code is frozen at a0b. One shared target/source cache built the three tools;
-manifest331098d19f6f8d800abc3988522fd9d2feaccb37b38fcdf926d125e59cac4403.
-Source changes include paged NTFS prealignment, metadata-only prepass,
-preallocated journal capacity, durable early preparation guard, scoped capture
-read reuse, and fully closed index writers before fresh readonly pinning.
-The index fix retained strict retirement checks; a focused Windows probe with
-262144+6816-byte writes reproduced allocation278528->270336 on last close.
-The two new-file probes never touched the source or original journal.
+Code remains frozen a0b; candidate manifest
+331098d19f6f8d800abc3988522fd9d2feaccb37b38fcdf926d125e59cac4403.
+One shared target/source cache built the three tools. Source fixes include
+paged metadata-only prealignment, journal preallocation, durable early guard,
+scoped capture-read reuse and fully closed index creators before readonly pins.
 No unit tests were added or run.
 
 ## Real evidence and boundaries
@@ -139,24 +198,21 @@ No unit tests were added or run.
 
 ## Current engineering priorities
 
-1. Follow the actual live Resume to terminal evidence, preserving source/journal
-   protection and the original AP origin. On actual success run independent
-   CompareRefs against all 811 baseline hashes, original names and the newly
-   pinned NTFS extra-directory manifest. Rollback is separately scoped evidence.
-2. Qualify new V4 recovery/finalization changes against the real native stack.
-   Missing/corrupt journal, wrong identity, low space, and interruption stages
-   must fail safely; preserve actual journal and source protections.
-3. Qualify current P3 resource-paged source prealignment inventory, planning,
-   executor and receipts. The committed public --minimize-scratch hook now
-   calls it before final freeze and obtains fresh source admission afterward;
-   this compiles but has no native result. Previously pinned V4 binaries only
-   changed capacity policy and did not run the old NTFS placement prepass.
-4. Reduce repeated journal/artifact reads through same-owner receipts only
-   where actual immutable capabilities and required before/after checks are
-   preserved. Preserve final native gates; never replace proof with JSON flags.
-5. Retire artificial count/size caps through paged evidence and real resource
-   accounting, not larger constants or truncation. Large-volume, geometry,
-   feature and production qualification remain open.
+1. Qualify the frozen a0b candidate's remaining focused I/O-failure/low-space,
+   remaining mixed/torn/corrupt guard-copy and authenticated active restart cases. Track
+   actual new dispatches; terminal historical workers do not prove no new work.
+2. Preserve actual source/journal exclusion and HND/ABT no-replay rules. The
+   completed public minimum-scratch and mutation/cold-boot cases now have exact
+   evidence; do not repeat them without a changed build or unresolved concern.
+3. Attribute remaining repeated reads from the authenticated phase ledger.
+   Preserve checked evidence; optimize only with concrete same-owner receipts.
+   Public per-boundary checks still repeat about13.44GB logical transfers.
+4. Retire active-path artificial collection limits through complete paged
+   evidence/resource accounting; qualify useful geometry and partition-scoped
+   exclusion for data partitions sharing the Windows disk. These remain open.
+5. Freeze/package/document one candidate with its own complete native matrix.
+   Arbitrary hardware/scale, physical power safety and stable release are not
+   established by the current scoped VM successes.
 
 Allocation-bounded is the default: compare/write authenticated target-required
 ranges. NTFS free space is not claimed unchanged. Whole-image mode retains its

@@ -44,6 +44,123 @@ pub fn file_id_info(file: &std::fs::File) -> io::Result<String> {
             .collect::<Vec<_>>(),
     ))
 }
+/// Actual GUID-volume path of this retained file or directory handle.
+/// No pathname reopen, probe file or device mutation occurs.
+pub fn final_path_guid(file: &std::fs::File) -> io::Result<String> {
+    use windows_sys::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, VOLUME_NAME_GUID};
+    let mut path = vec![0u16; 256];
+    loop {
+        // SAFETY: live borrowed handle and initialized declared-size output.
+        let count = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                path.as_mut_ptr(),
+                path.len() as u32,
+                VOLUME_NAME_GUID,
+            )
+        } as usize;
+        if count == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if count < path.len() {
+            let path = String::from_utf16(&path[..count])
+                .map_err(|_| io::Error::other("invalid held GUID path UTF16"))?;
+            if !path.starts_with("\\\\?\\Volume{") {
+                return Err(io::Error::other("held artifact is not on a GUID volume"));
+            }
+            return Ok(path);
+        }
+        if count > 32768 {
+            return Err(io::Error::other(
+                "held GUID path exceeds Windows representation",
+            ));
+        }
+        path.resize(count, 0);
+    }
+}
+/// Query actual filesystem and operating-system allocation quanta for an
+/// already-held ordinary directory. No probe file is created.
+pub fn artifact_allocation_slack(file: &std::fs::File) -> io::Result<u64> {
+    use windows_sys::Win32::{
+        Storage::FileSystem::GetDiskFreeSpaceW,
+        System::SystemInformation::{GetSystemInfo, SYSTEM_INFO},
+    };
+    let path = final_path_guid(file)?;
+    let end = path
+        .find("}\\")
+        .ok_or_else(|| io::Error::other("GUID volume root absent"))?
+        + 2;
+    let root: Vec<u16> = path[..end].encode_utf16().chain([0]).collect();
+    let (mut sectors, mut sector_bytes, mut free, mut total) = (0u32, 0u32, 0u32, 0u32);
+    // SAFETY: terminated actual GUID root and initialized synchronous outputs.
+    if unsafe {
+        GetDiskFreeSpaceW(
+            root.as_ptr(),
+            &mut sectors,
+            &mut sector_bytes,
+            &mut free,
+            &mut total,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: SYSTEM_INFO consists of initialized SDK scalar fields.
+    let mut system: SYSTEM_INFO = unsafe { std::mem::zeroed() };
+    unsafe { GetSystemInfo(&mut system) };
+    let cluster = u64::from(sectors)
+        .checked_mul(u64::from(sector_bytes))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| io::Error::other("filesystem allocation unit unavailable"))?;
+    let quantum = cluster.max(u64::from(system.dwAllocationGranularity));
+    quantum
+        .checked_sub(1)
+        .ok_or_else(|| io::Error::other("allocation quantum unavailable"))
+}
+/// Verify the granted access of an already-held metadata handle before
+/// adopting it as immutable storage. This does not infer sharing from a flag.
+pub fn require_readonly_access(file: &std::fs::File) -> io::Result<()> {
+    use windows_sys::Win32::{Foundation::HANDLE, System::IO::IO_STATUS_BLOCK};
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtQueryInformationFile(
+            file: HANDLE,
+            status: *mut IO_STATUS_BLOCK,
+            information: *mut core::ffi::c_void,
+            length: u32,
+            class: i32,
+        ) -> i32;
+        fn RtlNtStatusToDosError(status: i32) -> u32;
+    }
+    // SAFETY: exact initialized FILE_ACCESS_INFORMATION and IOSB outputs.
+    let mut status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    let mut access = 0u32;
+    let result = unsafe {
+        NtQueryInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            (&mut access as *mut u32).cast(),
+            4,
+            8,
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(result) } as i32,
+        ));
+    }
+    if result != 0 || status.Information != 4 {
+        return Err(io::Error::other("granted metadata access query incomplete"));
+    }
+    const MUTATION: u32 =
+        0x2 | 0x4 | 0x10 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000;
+    if access & MUTATION != 0 {
+        return Err(io::Error::other(
+            "artifact adoption requires actual reduced readonly access",
+        ));
+    }
+    Ok(())
+}
 
 /// Actual link count on this same retained handle, using the stable SDK ABI.
 pub fn number_of_links(file: &std::fs::File) -> io::Result<u32> {
@@ -62,6 +179,51 @@ pub fn number_of_links(file: &std::fs::File) -> io::Result<u32> {
         return Err(io::Error::last_os_error());
     }
     Ok(info.NumberOfLinks)
+}
+
+/// Reduce this live owner's access without reopening a pathname. The duplicate
+/// retains the same file object/sharing exclusion; it grants FILE_GENERIC_READ
+/// only. The caller must flush writes before handing off and drop its writer.
+pub fn duplicate_readonly(file: &std::fs::File) -> io::Result<std::fs::File> {
+    use std::os::windows::io::FromRawHandle;
+    let before = file.metadata()?;
+    if !before.is_file() || before.file_attributes() & 0x400 != 0 {
+        return Err(io::Error::other("ordinary live file owner required"));
+    }
+    let id = file_id_info(file)?;
+    let mut duplicated = std::ptr::null_mut();
+    // SAFETY: current-process pseudo handles, caller's live file handle, and an
+    // initialized output slot. No SAME_ACCESS or CLOSE_SOURCE flags are used.
+    let succeeded = unsafe {
+        let process = windows_sys::Win32::System::Threading::GetCurrentProcess();
+        windows_sys::Win32::Foundation::DuplicateHandle(
+            process,
+            file.as_raw_handle(),
+            process,
+            &mut duplicated,
+            windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
+            0,
+            0,
+        )
+    };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful DuplicateHandle transferred one new owned handle.
+    let readonly = unsafe { std::fs::File::from_raw_handle(duplicated) };
+    let after = readonly.metadata()?;
+    if file_id_info(&readonly)? != id
+        || file_id_info(file)? != id
+        || !after.is_file()
+        || before.file_attributes() != after.file_attributes()
+        || before.len() != after.len()
+        || before.modified()? != after.modified()?
+    {
+        return Err(io::Error::other(
+            "same-owner read-only duplicate identity changed",
+        ));
+    }
+    Ok(readonly)
 }
 
 /// Mark only this already-held ordinary file for deletion when its owner

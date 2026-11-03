@@ -33,6 +33,11 @@ struct Ledger {
     ram: u64,
     poisoned: bool,
     created: BTreeMap<PathBuf, CreatedFile>,
+    arena: Option<crate::artifact_arena::ArtifactGroupPermit>,
+    sealed: bool,
+    writers: u64,
+    temporary_creations: u64,
+    extra_artifacts: Vec<crate::artifact_arena::ArtifactLease>,
 }
 struct CreatedFile {
     pin: SourcePagePin,
@@ -42,6 +47,7 @@ struct CreatedFile {
     modified: SystemTime,
     readers: u64,
     ram: u64,
+    artifact: Option<crate::artifact_arena::ArtifactLease>,
 }
 #[derive(Clone)]
 pub struct SourceScratch(Rc<RefCell<Ledger>>);
@@ -54,7 +60,67 @@ impl SourceScratch {
             ram: 0,
             poisoned: false,
             created: BTreeMap::new(),
+            arena: None,
+            sealed: false,
+            writers: 0,
+            temporary_creations: 0,
+            extra_artifacts: Vec::new(),
         }))))
+    }
+    pub fn new_in_arena(
+        budget: SourceMetadataBudget,
+        permit: crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<Self> {
+        ensure!(
+            permit.group() == crate::artifact_arena::ArtifactGroup::Source
+                && budget.scratch_bytes <= permit.maximum_bytes()?,
+            "source scratch requires its actual source group permit"
+        );
+        let scratch = Self::new(budget)?;
+        scratch.0.borrow_mut().arena = Some(permit);
+        Ok(scratch)
+    }
+    pub fn artifact_group(&self) -> Option<crate::artifact_arena::ArtifactGroupPermit> {
+        self.0.borrow().arena.clone()
+    }
+    pub fn new_auxiliary_in_arena(
+        mut budget: SourceMetadataBudget,
+        permit: crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<Self> {
+        ensure!(
+            matches!(
+                permit.group(),
+                crate::artifact_arena::ArtifactGroup::Auxiliary
+                    | crate::artifact_arena::ArtifactGroup::Capture
+                    | crate::artifact_arena::ArtifactGroup::RecoveryCopy
+            ),
+            "non-source scratch requires an auxiliary/capture/recovery group"
+        );
+        budget.scratch_bytes = permit.maximum_bytes()?;
+        let scratch = Self::new(budget)?;
+        scratch.0.borrow_mut().arena = Some(permit);
+        Ok(scratch)
+    }
+    pub fn seal(&self) -> Result<crate::artifact_arena::ArtifactGroupSeal> {
+        let permit = {
+            let ledger = self.0.borrow();
+            ensure!(
+                !ledger.poisoned && ledger.writers == 0 && ledger.temporary_creations == 0,
+                "source scratch has active writers/temp creations or poison"
+            );
+            ledger
+                .arena
+                .clone()
+                .context("standalone source scratch has no shared arena capability")?
+        };
+        let seal = permit.seal()?;
+        let mut ledger = self.0.borrow_mut();
+        ledger.wire = seal.wire_bytes();
+        ledger.sealed = true;
+        Ok(seal)
+    }
+    pub fn is_sealed(&self) -> bool {
+        self.0.borrow().sealed
     }
     pub fn remaining_bytes(&self) -> u64 {
         let ledger = self.0.borrow();
@@ -98,7 +164,11 @@ impl SourceScratch {
         )?;
         Ok((handles, id, fs::canonicalize(parent)?))
     }
-    fn register_created(&self, pin: &SourcePagePin) -> Result<()> {
+    fn register_created(
+        &self,
+        pin: &SourcePagePin,
+        artifact: Option<crate::artifact_arena::ArtifactLease>,
+    ) -> Result<()> {
         let (_parents, parent_id, canonical_parent) = Self::parent_handles(&pin.path)?;
         let file = OpenOptions::new()
             .read(true)
@@ -146,6 +216,7 @@ impl SourceScratch {
                 modified: metadata.modified()?,
                 readers: 0,
                 ram,
+                artifact,
             },
         );
         Ok(())
@@ -182,6 +253,36 @@ impl SourceScratch {
     /// JSON pins supply no credit. No pathname deletion or permission change.
     pub fn retire_created(&self, pin: &SourcePagePin) -> Result<()> {
         let result = (|| -> Result<()> {
+            let artifact = {
+                let mut ledger = self.0.borrow_mut();
+                ensure!(!ledger.poisoned, "source scratch is poisoned");
+                let entry = ledger
+                    .created
+                    .get_mut(&pin.path)
+                    .context("scratch file was not created by this ledger")?;
+                ensure!(
+                    entry.pin == *pin && entry.readers == 0,
+                    "scratch pin differs or readers survive"
+                );
+                entry.artifact.take()
+            };
+            if let Some(artifact) = artifact {
+                artifact.retire()?;
+                let mut ledger = self.0.borrow_mut();
+                let entry = ledger
+                    .created
+                    .remove(&pin.path)
+                    .context("created scratch registration disappeared")?;
+                ledger.wire = ledger
+                    .wire
+                    .checked_sub(entry.pin.wire_bytes)
+                    .context("scratch wire credit underflow")?;
+                ledger.ram = ledger
+                    .ram
+                    .checked_sub(entry.ram)
+                    .context("scratch RAM credit underflow")?;
+                return Ok(());
+            }
             let _ram = self.lease_ram(65536)?;
             let (id, parent, canonical, modified, bytes, registry_ram) = {
                 let ledger = self.0.borrow();
@@ -273,7 +374,10 @@ impl SourceScratch {
     }
     fn reserve_wire(&self, bytes: u64) -> Result<()> {
         let mut ledger = self.0.borrow_mut();
-        ensure!(!ledger.poisoned, "source scratch is poisoned");
+        ensure!(
+            !ledger.poisoned && !ledger.sealed,
+            "source scratch is poisoned or sealed"
+        );
         let used = ledger
             .wire
             .checked_add(bytes)
@@ -313,14 +417,58 @@ impl SourceScratch {
         wire_bytes: u64,
         ram_bytes: u64,
     ) -> Result<SourceTemporaryLease> {
+        ensure!(
+            self.0.borrow().arena.is_none() || wire_bytes == 0,
+            "arena source temporary files require reserve_temporary_file with an owned path"
+        );
+        self.reserve_temporary_inner(None, wire_bytes, ram_bytes)
+    }
+    pub fn reserve_temporary_file(
+        &self,
+        path: &Path,
+        wire_bytes: u64,
+        ram_bytes: u64,
+    ) -> Result<SourceTemporaryLease> {
+        let permit = self
+            .artifact_group()
+            .map(|group| group.reserve_file(path, wire_bytes))
+            .transpose()?;
+        self.reserve_temporary_inner(permit, wire_bytes, ram_bytes)
+    }
+    fn reserve_temporary_inner(
+        &self,
+        permit: Option<crate::artifact_arena::ArtifactPathPermit>,
+        wire_bytes: u64,
+        ram_bytes: u64,
+    ) -> Result<SourceTemporaryLease> {
         let ram = self.lease_ram(ram_bytes)?;
         self.reserve_wire(wire_bytes)?;
+        let mut ledger = self.0.borrow_mut();
+        ledger.temporary_creations = ledger
+            .temporary_creations
+            .checked_add(1)
+            .context("source temporary count overflow")?;
+        drop(ledger);
         Ok(SourceTemporaryLease {
             _ram: ram,
             bytes: wire_bytes,
+            scratch: self.clone(),
+            permit,
+            complete: false,
         })
     }
     pub fn writer(&self, path: &Path, purpose: [u8; 8]) -> Result<SourceRangeWriter> {
+        ensure!(
+            !self.0.borrow().sealed,
+            "sealed source scratch refuses all new writers"
+        );
+        let artifact = self
+            .artifact_group()
+            .map(|group| group.reserve_file(path, 1024))
+            .transpose()?;
+        let path = artifact
+            .as_ref()
+            .map_or_else(|| path.to_path_buf(), |p| p.path().to_path_buf());
         let ram = self.lease_window()?;
         let page = self.0.borrow().budget.page_bytes;
         // Both count ceilings derive from physical scratch bytes and minimum
@@ -334,7 +482,7 @@ impl SourceScratch {
             * 3;
         ensure!(chunk_bytes != 0, "source page cannot hold a chunk");
         self.reserve_wire(1024)?;
-        let mut writer = Writer::new(path, purpose, budget)?;
+        let mut writer = Writer::new(&path, purpose, budget)?;
         writer.push(
             &[],
             &serde_json::to_vec(&RangeHeader {
@@ -345,11 +493,18 @@ impl SourceScratch {
         let mut body = Vec::new();
         body.try_reserve_exact(chunk_bytes as usize)
             .context("source chunk RAM unavailable")?;
+        {
+            let mut ledger = self.0.borrow_mut();
+            ledger.writers = ledger
+                .writers
+                .checked_add(1)
+                .context("source writer count overflow")?;
+        }
         Ok(SourceRangeWriter {
             writer: Some(writer),
             scratch: self.clone(),
             _ram: ram,
-            path: path.to_owned(),
+            path,
             purpose,
             budget,
             chunk_bytes,
@@ -359,6 +514,7 @@ impl SourceScratch {
             hash: Sha256::new(),
             reserved: 1024,
             complete: false,
+            artifact,
         })
     }
 }
@@ -385,10 +541,63 @@ impl Drop for SourceRamLease {
 pub struct SourceTemporaryLease {
     _ram: SourceRamLease,
     bytes: u64,
+    scratch: SourceScratch,
+    permit: Option<crate::artifact_arena::ArtifactPathPermit>,
+    complete: bool,
 }
 impl SourceTemporaryLease {
     pub fn bytes(&self) -> u64 {
         self.bytes
+    }
+    pub fn verify_closed(
+        mut self,
+        expected_sha256: &str,
+    ) -> Result<crate::artifact_arena::ArtifactLease> {
+        let artifact = self
+            .permit
+            .take()
+            .context("temporary has no arena path permit")?
+            .verify_closed(expected_sha256)?;
+        {
+            let mut ledger = self.scratch.0.borrow_mut();
+            let unused = self
+                .bytes
+                .checked_sub(artifact.wire_bytes())
+                .context("source temporary length exceeds reservation")?;
+            ledger.wire = ledger
+                .wire
+                .checked_sub(unused)
+                .context("source temporary credit underflow")?;
+            ledger.extra_artifacts.push(artifact.clone());
+        }
+        self.complete = true;
+        Ok(artifact)
+    }
+}
+impl Drop for SourceTemporaryLease {
+    fn drop(&mut self) {
+        if !self.complete {
+            if let Some(permit) = self.permit.take() {
+                match permit.verify_closed_current() {
+                    Ok(artifact) => {
+                        let mut ledger = self.scratch.0.borrow_mut();
+                        if let Some(credit) = self
+                            .bytes
+                            .checked_sub(artifact.wire_bytes())
+                            .and_then(|n| ledger.wire.checked_sub(n))
+                        {
+                            ledger.wire = credit;
+                            ledger.extra_artifacts.push(artifact);
+                        } else {
+                            ledger.poisoned = true;
+                        }
+                    }
+                    Err(_) => self.scratch.0.borrow_mut().poisoned = true,
+                }
+            }
+        }
+        let mut ledger = self.scratch.0.borrow_mut();
+        ledger.temporary_creations -= 1;
     }
 }
 #[derive(Serialize, Deserialize)]
@@ -501,6 +710,7 @@ pub struct SourceRangeWriter {
     hash: Sha256,
     reserved: u64,
     complete: bool,
+    artifact: Option<crate::artifact_arena::ArtifactPathPermit>,
 }
 impl SourceRangeWriter {
     pub fn byte_len(&self) -> u64 {
@@ -516,6 +726,9 @@ impl SourceRangeWriter {
         let bytes = (payload.len() as u64)
             .checked_add(8 + 8 + 64 + 64)
             .context("source wire overflow")?;
+        if let Some(permit) = self.artifact.as_mut() {
+            permit.extend(bytes)?;
+        }
         self.scratch.reserve_wire(bytes)?;
         self.reserved += bytes;
         self.writer
@@ -561,7 +774,12 @@ impl SourceRangeWriter {
             chunk_bytes: self.chunk_bytes,
             page_budget: self.budget,
         };
-        self.scratch.register_created(&pin)?;
+        let artifact = self
+            .artifact
+            .take()
+            .map(|permit| permit.verify_closed(&pin.file_sha256))
+            .transpose()?;
+        self.scratch.register_created(&pin, artifact)?;
         self.complete = true;
         Ok(pin)
     }
@@ -600,6 +818,7 @@ impl Write for SourceRangeWriter {
 }
 impl Drop for SourceRangeWriter {
     fn drop(&mut self) {
+        self.scratch.0.borrow_mut().writers -= 1;
         if !self.complete {
             self.scratch.0.borrow_mut().poisoned = true;
         }

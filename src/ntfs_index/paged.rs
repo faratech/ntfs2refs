@@ -124,7 +124,7 @@ impl Seen {
             return Ok(None);
         }
         let bytes = slots.div_ceil(8);
-        let lease = scratch.reserve_temporary(bytes, 4096)?;
+        let lease = scratch.reserve_temporary_file(path, bytes, 4096)?;
         ensure!(
             path.is_absolute(),
             "absolute ordinary visited-index scratch path required"

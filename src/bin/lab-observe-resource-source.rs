@@ -42,6 +42,9 @@ fn main() -> anyhow::Result<()> {
         /// Collect the live source proof, including VSS, backup, log and internal state.
         #[arg(long, requires = "native")]
         source_evidence: bool,
+        /// Use the shared artifact arena for the live source and native groups.
+        #[arg(long, requires = "source_evidence", conflicts_with = "project_tree")]
+        source_arena: bool,
         /// Construct and reopen complete expected-object pages from the same raw/native owners.
         #[arg(long, requires = "native")]
         project_tree: bool,
@@ -91,14 +94,21 @@ fn main() -> anyhow::Result<()> {
     let ram = args
         .ram_bytes
         .unwrap_or(available.available_physical_bytes / 2);
+    let scratch_bytes = args
+        .scratch_bytes
+        .unwrap_or(available.scratch_available_bytes / 8);
+    let maximum_page = (scratch_bytes / 8)
+        .checked_sub(193)
+        .filter(|bytes| *bytes >= 256)
+        .context("scratch share cannot hold one complete metadata page")?;
+    let row_bytes = (ram / 64).min(scratch_bytes / 16);
+    ensure!(row_bytes > 0, "resource share cannot hold a metadata row");
     let budget = ResourceBudget {
         schema_version: 1,
         ram_bytes: ram,
-        scratch_bytes: args
-            .scratch_bytes
-            .unwrap_or(available.scratch_available_bytes / 8),
-        page_bytes: u32::try_from((ram / 64).min(4 * 1024 * 1024).max(256))?,
-        max_row_bytes: ram / 64,
+        scratch_bytes,
+        page_bytes: u32::try_from((ram / 64).min(4 * 1024 * 1024).min(maximum_page).max(256))?,
+        max_row_bytes: row_bytes,
         retained_index_bytes: ram / 4,
         handle_slots: ram / 1024,
     };
@@ -115,16 +125,35 @@ fn main() -> anyhow::Result<()> {
             "schema_version":1,"kind":"resource-source-observation-intent",
             "binding":binding,"binding_sha256":args.binding_sha256,
             "observed_available_resources":available,"resource_budget":budget,
-            "verification_policy":policy,"source_payload_writes_authorized":false,
+            "verification_policy":policy,"source_arena":args.source_arena,"source_payload_writes_authorized":false,
             "conversion_authorized":false
         }),
     )?;
     let mut events = Vec::new();
     if args.source_evidence {
         let mut phase = "source-start";
-        let attempt = ntfs2refs::general_source_admission::resource::ResourceSourceContext::collect_source_evidence(
-            binding, budget, policy, &args.output.join("live-source"), &mut events, &mut phase,
-        );
+        let attempt = (|| -> anyhow::Result<_> {
+            if args.source_arena {
+                let arena = ntfs2refs::artifact_arena::ArtifactArena::new(
+                    &args.output,
+                    budget,
+                    std::slice::from_ref(&binding),
+                )?;
+                ntfs2refs::general_source_admission::resource::ResourceSourceContext::prepare(
+                    binding,
+                    budget,
+                    policy,
+                    &args.output.join("live-source"),
+                    &arena,
+                    &mut events,
+                    &mut phase,
+                )
+            } else {
+                ntfs2refs::general_source_admission::resource::ResourceSourceContext::collect_source_evidence(
+                binding, budget, policy, &args.output.join("live-source"), &mut events, &mut phase,
+            )
+            }
+        })();
         let mut context = match attempt {
             Ok(value) => value,
             Err(error) => {

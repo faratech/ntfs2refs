@@ -80,8 +80,8 @@ impl ResourceBudget {
             || !working.is_some_and(|n| n <= self.ram_bytes)
             || self.ram_bytes > isize::MAX as u64
             || self.scratch_bytes > i64::MAX as u64
-            || self.scratch_bytes / 4 <= u64::from(self.page_bytes) + 192
-            || self.max_row_bytes > self.scratch_bytes / 8
+            || self.scratch_bytes / 8 <= u64::from(self.page_bytes) + 192
+            || self.max_row_bytes > self.scratch_bytes / 16
             || self.handle_slots < 8
             || self.handle_slots > self.ram_bytes / 256
         {
@@ -91,12 +91,13 @@ impl ResourceBudget {
         }
         Ok(())
     }
-    /// Each of the four retained source/observation/expected/map artifacts has
-    /// its own pinned quarter of scratch. Counts follow the smallest possible
-    /// encoded record/page, never a fixture cardinality.
+    /// Each primary source/observation/expected/map artifact group has an
+    /// eighth of scratch. Legacy semantic JSON has a separate sixteenth;
+    /// auxiliary/copy capacity is held by the live aggregate arena. These
+    /// ceilings alone do not prove aggregate reservation or current free space.
     pub fn page_budget(self) -> io::Result<MetadataPageBudget> {
         self.validate()?;
-        let bytes = self.scratch_bytes / 4;
+        let bytes = self.scratch_bytes / 8;
         Ok(MetadataPageBudget {
             max_page_bytes: self.page_bytes,
             max_records_per_page: (self.page_bytes - 64) / 9,
@@ -210,7 +211,7 @@ impl SourceResourceAdmission {
         Ok(())
     }
     pub fn semantic_byte_budget(self) -> u64 {
-        self.budget.scratch_bytes / 8
+        self.budget.scratch_bytes / 16
     }
     pub fn maximum_namespace_names(self) -> io::Result<usize> {
         self.validate()?;

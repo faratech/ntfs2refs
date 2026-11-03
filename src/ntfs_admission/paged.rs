@@ -219,6 +219,8 @@ pub(crate) fn ordinary_user_issues(
 ) -> Result<Vec<String>> {
     resources.validate()?;
     let budget = source.budget();
+    let expected_budget =
+        crate::ntfs_inspect::SourceMetadataBudget::from_resource_budget(resources.budget)?;
     ensure!(
         source.header().inventory_complete
             && source.canonical_sha256()? == hex::encode(resources.source_inspection_sha256)
@@ -226,7 +228,7 @@ pub(crate) fn ordinary_user_issues(
             && resources.raw_identities == source.file_count()
             && file.record_number < resources.mft_records
             && budget.ram_bytes == resources.budget.ram_bytes
-            && budget.scratch_bytes == resources.budget.scratch_bytes / 4
+            && budget.scratch_bytes == expected_budget.scratch_bytes
             && budget.record_bytes == resources.budget.max_row_bytes
             && budget.page_bytes == resources.budget.page_bytes,
         "ordinary policy source/resource identity differs"

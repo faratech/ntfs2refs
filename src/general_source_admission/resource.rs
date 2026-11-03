@@ -2,6 +2,9 @@
 //! frozen reader and native witnesses; serialized results cannot recreate it.
 //! V4 activation remains refused until the cross-stage artifact arena and
 //! actual same-tree target preservation are supplied by their owning paths.
+use crate::artifact_arena::{
+    ArtifactArena, ArtifactGroup, ArtifactGroupPermit, ArtifactGroupSeal, ArtifactLease,
+};
 use crate::{
     ntfs_admission::{self, Gate, InternalReplacement},
     ntfs_attestation::paged::{
@@ -42,6 +45,8 @@ struct MetadataPin {
     sha256: String,
     #[serde(skip)]
     held: File,
+    #[serde(skip)]
+    arena_lease: Option<ArtifactLease>,
 }
 #[derive(Serialize)]
 struct ObjectRow {
@@ -68,6 +73,9 @@ pub struct ResourceSourceReport<'a> {
     pub internal_replacements: &'a RecordStorePin,
     pub gates: &'a [Gate],
     pub source_group_bytes: u64,
+    pub source_native_groups_sealed: bool,
+    pub source_group_allocated_bytes: Option<u64>,
+    pub native_group_allocated_bytes: Option<u64>,
     pub shared_artifact_arena_complete: bool,
     pub target_preservation_complete: bool,
     pub source_admitted: bool,
@@ -103,6 +111,10 @@ pub struct ResourceSourceContext {
     scratch: SourceScratch,
     _metadata: Vec<MetadataPin>,
     _metadata_reservations: Vec<SourceTemporaryLease>,
+    arena: Option<ArtifactArena>,
+    source_seal: Option<ArtifactGroupSeal>,
+    native_seal: Option<ArtifactGroupSeal>,
+    native_artifact: Option<ArtifactLease>,
 }
 
 struct Counter {
@@ -150,7 +162,7 @@ fn save(
     value: &impl Serialize,
     scratch: &SourceScratch,
     pins: &mut Vec<MetadataPin>,
-    reservations: &mut Vec<SourceTemporaryLease>,
+    _reservations: &mut Vec<SourceTemporaryLease>,
 ) -> Result<()> {
     ensure!(
         !name.contains(['\\', '/', ':']) && name.ends_with(".json"),
@@ -162,8 +174,13 @@ fn save(
     };
     serde_json::to_writer_pretty(&mut counter, value)?;
     counter.write_all(b"\n")?;
-    let reservation = scratch.reserve_temporary(counter.bytes, 0)?;
     let path = root.join(name);
+    let in_arena = scratch.artifact_group().is_some();
+    let reservation = if in_arena {
+        scratch.reserve_temporary_file(&path, counter.bytes, 0)?
+    } else {
+        scratch.reserve_temporary(counter.bytes, 0)?
+    };
     let mut file = OpenOptions::new()
         .create_new(true)
         .read(true)
@@ -218,13 +235,19 @@ fn save(
         "source artifact readback changed"
     );
     held.seek(SeekFrom::Start(0))?;
+    let arena_lease = if in_arena {
+        Some(reservation.verify_closed(&hash)?)
+    } else {
+        drop(reservation);
+        None
+    };
     pins.push(MetadataPin {
         path,
         bytes: counter.bytes,
         sha256: hash,
         held,
+        arena_lease,
     });
-    reservations.push(reservation);
     Ok(())
 }
 fn key(number: u64) -> [u8; 16] {
@@ -333,6 +356,49 @@ impl ResourceSourceContext {
         events: &mut Vec<NativeEvent>,
         phase: &mut &'static str,
     ) -> Result<Self> {
+        Self::collect(binding, budget, policy, output, events, phase, None)
+    }
+
+    /// Reserve real source and native groups before any source freeze or
+    /// artifact write. The remaining cross-stage/target obligations stay false.
+    pub fn prepare(
+        binding: GeneralDiskBinding,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        output: &Path,
+        arena: &ArtifactArena,
+        events: &mut Vec<NativeEvent>,
+        phase: &mut &'static str,
+    ) -> Result<Self> {
+        ensure!(
+            arena.budget() == budget,
+            "source arena differs from the observed resource budget"
+        );
+        let source = arena.reserve_group(
+            ArtifactGroup::Source,
+            SourceMetadataBudget::from_resource_budget(budget)?.scratch_bytes,
+        )?;
+        let native =
+            arena.reserve_group(ArtifactGroup::Native, budget.page_budget()?.max_file_bytes)?;
+        Self::collect(
+            binding,
+            budget,
+            policy,
+            output,
+            events,
+            phase,
+            Some((arena.clone(), source, native)),
+        )
+    }
+    fn collect(
+        binding: GeneralDiskBinding,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        output: &Path,
+        events: &mut Vec<NativeEvent>,
+        phase: &mut &'static str,
+        groups: Option<(ArtifactArena, ArtifactGroupPermit, ArtifactGroupPermit)>,
+    ) -> Result<Self> {
         binding.validate()?;
         budget.validate()?;
         output_independent(&binding, output)?;
@@ -347,7 +413,12 @@ impl ResourceSourceContext {
         fs::create_dir(&source_output)?;
         fs::create_dir(&native_output)?;
         let output = source_output.as_path();
-        let scratch = SourceScratch::new(SourceMetadataBudget::from_resource_budget(budget)?)?;
+        let source_budget = SourceMetadataBudget::from_resource_budget(budget)?;
+        let scratch = if let Some((_, permit, _)) = &groups {
+            SourceScratch::new_in_arena(source_budget, permit.clone())?
+        } else {
+            SourceScratch::new(source_budget)?
+        };
         let mut metadata = Vec::new();
         let mut reservations = Vec::new();
         save(
@@ -496,14 +567,32 @@ impl ResourceSourceContext {
         *phase = "source-observation";
         let selectors = PagedObservationRequest::new(&raw, &binding, budget, policy)?;
         let admission = selectors.admission();
+        let native_path = native_output.join("native.pages");
+        let native_permit = groups
+            .as_ref()
+            .map(|(_, _, group)| {
+                group.reserve_file(&native_path, admission.native_page_budget()?.max_file_bytes)
+            })
+            .transpose()?;
+        let native_destination = native_permit
+            .as_ref()
+            .map_or(native_path.as_path(), |p| p.path());
         let native = source.observe_ntfs_files_paged_domain(
             &selectors,
-            &native_output.join("native.pages"),
+            native_destination,
             admission.native_observation_budget()?,
             true,
             true,
             events,
         )?;
+        native.domain().revalidate()?;
+        let native_artifact = native_permit
+            .map(|permit| permit.verify_closed(native.domain().sha256()))
+            .transpose()?;
+        let native_seal = groups
+            .as_ref()
+            .map(|(_, _, group)| group.seal())
+            .transpose()?;
         save(
             output,
             "source-native-witness.json",
@@ -903,6 +992,10 @@ impl ResourceSourceContext {
             scratch,
             _metadata: metadata,
             _metadata_reservations: reservations,
+            arena: groups.as_ref().map(|(arena, _, _)| arena.clone()),
+            source_seal: None,
+            native_seal,
+            native_artifact,
         };
         context.revalidate_evidence()?;
         let mut metadata = std::mem::take(&mut context._metadata);
@@ -917,6 +1010,10 @@ impl ResourceSourceContext {
         )?;
         context._metadata = metadata;
         context._metadata_reservations = reservations;
+        if context.arena.is_some() {
+            context.source_seal = Some(context.scratch.seal()?);
+        }
+        context.revalidate_evidence()?;
         Ok(context)
     }
     pub fn report(&self) -> ResourceSourceReport<'_> {
@@ -938,6 +1035,9 @@ impl ResourceSourceContext {
             internal_replacements: self.replacements.pin(),
             gates: &self.gates,
             source_group_bytes: self.scratch.used_bytes(),
+            source_native_groups_sealed: self.source_seal.is_some() && self.native_seal.is_some(),
+            source_group_allocated_bytes: self.source_seal.as_ref().map(|s| s.allocated_bytes()),
+            native_group_allocated_bytes: self.native_seal.as_ref().map(|s| s.allocated_bytes()),
             shared_artifact_arena_complete: false,
             target_preservation_complete: false,
             source_admitted: false,
@@ -995,7 +1095,30 @@ impl ResourceSourceContext {
             "VSS witness binding changed"
         );
         let _readback_ram = self.scratch.lease_ram(65536)?;
+        if let Some(artifact) = &self.native_artifact {
+            artifact.revalidate()?;
+        }
+        if let Some(seal) = &self.native_seal {
+            seal.revalidate()?;
+        }
+        if let Some(seal) = &self.source_seal {
+            seal.revalidate()?;
+        }
+        if let (Some(source), Some(native)) = (&self.source_seal, &self.native_seal) {
+            let arena = self.arena.as_ref().context("source arena owner absent")?;
+            ensure!(
+                source.permit().group() == ArtifactGroup::Source
+                    && native.permit().group() == ArtifactGroup::Native
+                    && source.permit().arena().same_arena(arena)
+                    && native.permit().arena().same_arena(arena)
+                    && self.scratch.is_sealed(),
+                "source/native arena owner or source seal changed"
+            );
+        }
         for pin in &self._metadata {
+            if let Some(lease) = &pin.arena_lease {
+                lease.revalidate()?;
+            }
             ensure!(
                 pin.held.metadata()?.len() == pin.bytes
                     && pin.held.metadata()?.file_attributes() & 0x400 == 0,
@@ -1071,6 +1194,15 @@ impl ResourceSourceContext {
     }
     pub fn source_and_inspection(&mut self) -> (&mut GeneralFrozenPartition, &PagedInspection) {
         (&mut self.source, &self.raw)
+    }
+    pub fn arena(&self) -> Option<&ArtifactArena> {
+        self.arena.as_ref()
+    }
+    pub fn source_group_seal(&self) -> Option<&ArtifactGroupSeal> {
+        self.source_seal.as_ref()
+    }
+    pub fn native_group_seal(&self) -> Option<&ArtifactGroupSeal> {
+        self.native_seal.as_ref()
     }
     pub fn source_artifact_bytes(&self) -> u64 {
         self.scratch.used_bytes()

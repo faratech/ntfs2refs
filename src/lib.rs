@@ -2,6 +2,8 @@
 //!
 //! The experimental ReFS writer is deliberately unavailable until native-driver
 //! validation establishes a complete format profile and commit protocol.
+#[cfg(windows)]
+pub mod artifact_arena;
 pub mod block_io;
 pub mod capability_evidence;
 #[cfg(windows)]

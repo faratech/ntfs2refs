@@ -40,7 +40,7 @@ fn issue(value: u8) -> Result<MetadataRoleIssue> {
 }
 impl States {
     fn new(path: &Path, rows: u64, scratch: &SourceScratch) -> Result<Self> {
-        let lease = scratch.reserve_temporary(rows, 4096)?;
+        let lease = scratch.reserve_temporary_file(path, rows, 4096)?;
         let file = OpenOptions::new()
             .read(true)
             .write(true)

@@ -68,7 +68,7 @@ impl SourceMetadataBudget {
             .max(2) as u32;
         let value = Self {
             ram_bytes: budget.ram_bytes,
-            scratch_bytes: budget.scratch_bytes / 4,
+            scratch_bytes: budget.page_budget()?.max_file_bytes,
             page_bytes: budget.page_bytes,
             record_bytes: budget.max_row_bytes,
             merge_fan_in: fan_in,

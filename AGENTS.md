@@ -72,7 +72,7 @@ archive SHA256 is `9f297cdedb7510df6b477ee46a4221790567f41d4c9da5eb5378becf41ed2
 See `evidence/resource-source-arena-20261103.json`. The successful source code
 was committed and pushed at `151db0a`; subsequent RAM-ledger changes at
 `5d6410e`, `69eeccc`, and `3c69bff` compiled, but were not in that VM run.
-The VM is Off/RAM0 at new diagnostic-ready checkpoint
+The prior source-and-shadow diagnostic-ready checkpoint is
 `d8db8fd9-284a-4e78-86b5-85d8a2607663`, child of the original source
 checkpoint `001f7611-257f-4c5a-8c5b-560ce8faa68d`. A fresh, explicitly
 enrolled disposable ReFS shadow is disk6, disk GUID
@@ -92,7 +92,7 @@ shared journal arena is on J:. Both source and shadow remained online and
 writable with no source payload or shadow writes. Closed worker evidence is
 `.lab/hyperv/streaming-v2-20261027/resource-fixture-b9be10d8eeef4a60bdeedf771d9ac047/closed-evidence.zip`,
 SHA256 `687995a88c68cc20306c3ad4fcdc5b2ea4b8d8a4d6c6f872ff17a500bd3fad54`.
-VM is Off/RAM0 at d8db; a narrowly scoped, independently verified held-arena
+At that point the VM was Off/RAM0 at d8db; a narrowly scoped held-arena
 output fix is in progress. Do not retry the old executable.
 
 The corrected diagnostic `9c6f880bbcbd46c1934096432256531f` passed source
@@ -101,8 +101,8 @@ before shadow population because aggregate arena RAM was exhausted during
 projection. Its source remained offline/read-only; the shadow was untouched.
 Worker archive SHA256 `a934137bf4b5a21d981ce38cfa71274862f0eb401e488aaefb793612e3caa0ff`,
 output archive SHA256 `f57aba70b2c5daf1c2ab46ae611f4734bfe78673e99d40383eec488a0d3c195c`;
-see `evidence/resource-fixture-ram-refusal-20261103.json`. VM remains Off/RAM0
-at d8db. Three eager sort buffers were the leading identified waste; a bounded,
+see `evidence/resource-fixture-ram-refusal-20261103.json`. Three eager sort
+buffers were the leading identified waste; a bounded,
 spill-capable count-hinted replacement is in development. Never retry a prior
 executable or infer conversion/recovery qualification from this refusal.
 
@@ -127,7 +127,7 @@ required bytes exceeded the explicit 2147483648-byte budget; the actual
 required amount was not reported. Source remained offline/read-only. See
 `evidence/resource-fixture-materialization-refusal-20261103.json`. The partial
 shadow is temporarily saved at checkpoint `bbeb8887-7da9-4d40-afcb-39e727565c8b`,
-child of d8db; VM is Off/RAM0. Diagnose the actual required amount and avoid
+child of d8db. Diagnose the actual required amount and avoid
 unnecessary data rewriting before changing the budget. Restore d8db for a fresh
 run; never confuse the partial shadow checkpoint with a converted volume.
 

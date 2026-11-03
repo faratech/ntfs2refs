@@ -12,6 +12,20 @@ Old CURRENT/LIVE labels and preserve-all instructions in those archives are hist
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+USER BUILD-SPEED DIRECTION: Reuse ONE Cargo target directory for experimental
+builds: D:\code\ntfs2refs\target\shared-experiments. It was seeded by a
+verified same-volume move of the completed a6d generated target (388066812B);
+that candidate's pinned bin, source archive and manifest remain unchanged.
+Count ALL bytes in this shared target in addition to lab ActualBytes against
+the original fixed329374052988B maximum; do not reset the epoch. Preserve the
+17179869184B host-free floor. Use four jobs while host memory is constrained;
+build only the binaries actually needed. A shared-target mode for
+lab/Build-ReleaseCandidate.ps1 is in progress. Until available, use the pinned
+toolchain with --target-dir pointing at the shared path and --bin for the needed
+executable, then pin the actual source and binary before native execution.
+Keep a separately isolated clean target for final release qualification and do
+not label a shared-cache experiment as independently reproducible.
+
 LATEST resource reader result: task N2R-ResourceFixed-546b84134d1d4f0c98d543fc3be3e2ed
 actually completed Ready/0; native PID3068/birth1793676486424/exit0 in641.207s.
 Source51910d3177acffae65c80365aff15cbb3103bad1, binary SHA

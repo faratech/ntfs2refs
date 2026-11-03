@@ -42,6 +42,28 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current live work: verify before acting
 
+**Latest actual run is d9c893d3e6a343f4b5ef8544c6eebeca**, source
+acbcc1b00ec5cdb1448b29eaa8e2257fb7015594. VM Running from parent 3343;
+actual diagnostic PID 5252 / creation 1793730736468 ms matched at
+2026-11-03T18:33:22.9669492Z, phase source-recheck, source OFFLINE|READ_ONLY.
+No terminal receipt or valid partial-write signal yet. Never restore/stop or
+launch a second worker while it may be live. Current-run JSON has exact paths.
+Pinned build is complete, manifest SHA
+8543fb8698ec90462d7e297d5e286c6c8da5f65fd28a22ea8e53456d64fabc64;
+diagnostic SHA 8a190267414f91f9dbbd0c4538b2b0901b27cba24ce1cc4a43b8820bc3c52484.
+The separate metadata-only placement inventory compiles (43.02 seconds) and
+is committed/pushed at aa6e01d; it is not in the running acbcc candidate.
+
+Authorized cleanup retired ONLY archived leaf checkpoints 5ce766b0 and
+bbeb8887 through Hyper-V. Their evidence archives and frozen alpha package
+remain; alpha AP origin 58bd, source/ready ancestors and 411c/ba81 remain.
+Do not recreate or restore retired checkpoint IDs. Full ALL-.lab + shared
+target + staging accounting after cleanup: 281,927,945,785 bytes; free host
+124,627,722,240 bytes. The unchanged 42,949,672,960-byte next-phase forecast
+passed the original maximum/reserve. No epoch/cap/forecast reduction occurred.
+
+The preceding failed run is retained below as history, not the live worker.
+
 Resource diagnostic fc838b529f5e4d2c904c465cfde97459 is **terminal**, not live.
 It used source a7befe8af1aad71e9cab7134f9d4aee5b87d90a4 from checkpoint
 3343f2a4-cf81-4fa9-a504-030425a8011e. Native PID **5272**, creation time

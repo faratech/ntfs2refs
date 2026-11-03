@@ -190,6 +190,19 @@ Worker/output archive SHA256 `7118fd113a0d8a59a1d604e7c491626169af5b4de677463d5e
 see `evidence/resource-fixture-routed-supply-20261103.json`. VM remains
 Off/RAM0 at3343. No conversion/recovery authority was issued.
 
+Diagnostic `ef4c99d113db4c5d87c7c68ba14a05d4` passed the prior target page
+budget mismatch and again routed5659201536 bytes/materialized1469829 bytes.
+It then refused during target source-projection on aggregate arena RAM:
+leased1235605603 + registry3085170 + requested389342208 > limit1456427008.
+The target workspace was reserved while the independently accounted source
+projection was still being built. A narrow fix to reserve it after the actual
+semantic comparison is in development. Source and shadow remained
+offline/read-only; worker/output archive SHA256 are
+`6fb74d5ac68773272cdda7a07e7f75cf331afb9f1780e24356728f597c4f18a6` /
+`d8dec61c659222ca467e2dd8a4f0206f739af74bed2f901cec03b9f10dc1868a`;
+see `evidence/resource-fixture-target-ram-refusal-20261103.json`. VM is
+Off/RAM0 at3343. This was not a completed conversion or recovery test.
+
 Routed diagnostic `e200cb75b16f4de88e88838f92f5c6eb` passed the prior RAM
 refusal and measured 10813014016 shadow move bytes, down from13581152256
 (2768138240 fewer, about20.4%) with the same4225110016 original-coordinate

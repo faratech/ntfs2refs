@@ -143,3 +143,10 @@ not the complete run. Target capture then refused a projection-budget mismatch;
 no conversion or recovery authority was issued. See the
 [record](../evidence/resource-fixture-routed-supply-20261103.json).
 
+The subsequent diagnostic passed that page-budget mismatch and completed
+routed supply again. It then refused while rebuilding the target's source
+projection because a later target workspace overlapped that projection's own
+RAM reservation. The [record](../evidence/resource-fixture-target-ram-refusal-20261103.json)
+captures the actual ledger values and exit. Source and shadow remained
+offline/read-only; conversion and recovery remain unqualified.
+

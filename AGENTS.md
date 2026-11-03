@@ -42,26 +42,33 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current live work: verify before acting
 
-Last reported actual VM observation: resource diagnostic run
-fc838b529f5e4d2c904c465cfde97459, source commit
-a7befe8af1aad71e9cab7134f9d4aee5b87d90a4, on restored checkpoint
-3343f2a4-cf81-4fa9-a504-030425a8011e. VM is Running with fixed 4 GiB RAM,
-4 CPUs, and no network adapter. Native PID **5272**, creation time
-**1793727899451 ms**, and the scheduled task were actually live at last poll.
-Source was **3** (persistent OFFLINE|READ_ONLY), at source-recheck.
-No AP or valid first-write signal was observed at that poll.
+Resource diagnostic fc838b529f5e4d2c904c465cfde97459 is **terminal**, not live.
+It used source a7befe8af1aad71e9cab7134f9d4aee5b87d90a4 from checkpoint
+3343f2a4-cf81-4fa9-a504-030425a8011e. Native PID **5272**, creation time
+**1793727899451 ms**, actually exited **1** after **835.2523342 seconds** at
+2026-11-03T17:58:54.7927542Z. Root subsequently observed task Ready, PID absent,
+and source disk 1 still **3** (persistent OFFLINE|READ_ONLY), then normally
+shut down the VM after confirming no project workers/tasks remained live.
+Fresh Hyper-V observation showed **Off**, assigned RAM 0 and parent 3343.
+No new checkpoint was taken of this refused branch.
+The refusal occurred during native journal preparation, before AP or source
+writes. The 4 KiB first-write signal remained all zero; this is not a successful
+interruption or recovery case.
 
-The latest sample reported 5,369,506,919 process logical-read transfer bytes
-and a 42,192,896-byte working set. Those are samples, not final I/O, physical
-disk traffic, peak RAM, or evidence that a fault or conversion completed.
-PID 5272 from an older failed run had a different creation time; never infer
-identity from PID alone. The old current-resource-fixture-run.json may still
-describe that prior run: verify the actual task/PID/birth and current receipts.
+The original 5,818,630,248-byte journal remains in the guest. Its closed refusal
+archive has 18 files / 4,975,867 bytes; manifest SHA-256
+c88f344a08b8ad3fdcddf81a1d4d90ccd3f2f75714914741483da149a370a501.
+See evidence/resource-first-write-journal-refusal-20261103.json. A separate
+ordinary-file probe reproduced speculative NTFS allocation above the existing
+quota while open, then trimming on last close. Same-file preallocation kept
+allocation within that quota. The resulting fix compiles; no native conversion
+or interruption result for the fix exists yet.
 
-Root alone controls the VM. Do not restore, power off, checkpoint, launch a
-second worker, or repeat a timed-out operation while this run may be active.
-Poll actual task state, PID and creation time, owned process/terminal files,
-and real source/journal state. Timeouts and remoting loss are not termination.
+Root alone controls the VM. Before another operation, poll actual task state,
+PID and creation time, owned process/terminal files and real source/journal
+state. Never restore, power off, checkpoint, launch a second worker or repeat a
+timed-out operation while a worker may be active. Timeouts and remoting loss
+are not termination. PID reuse is not process identity.
 
 The opt-in diagnostic is lab-resource-diagnostic --apply-and-verify
 --interrupt-after-first-flushed-write. It prepares an independent preallocated
@@ -81,11 +88,13 @@ Its public executable SHA-256 is
 49a741917ed08f2d119671eb6d43d6e7dcadaba44ae844885a5b74363d8409e6.
 This is a pinned experimental build, not a qualified release.
 
-Root's P3 executor check, session **75015**, was reported active when this
-handoff was requested. Poll its actual session/result; do not start a duplicate
-build on timeout. Last reported HEAD was 146093e; verify actual Git state
-rather than relying on this text. C/D source slices were being reviewed or
-frozen; coordinate ownership and check their actual status before editing.
+The combined public/diagnostic/recovery-observer cargo check is **complete**,
+exit 0, with Cargo reporting 9.98 seconds in
+.lab/development/journal-preallocation-check.log. It includes current paged
+prealignment orchestration, journal preallocation and canonical page-pin checks.
+These task-owned changes were uncommitted at this update; verify actual Git
+state and coordinate ownership before editing. No new pinned release build or
+native qualification of those changes is implied by cargo check.
 
 ## Real evidence and boundaries
 
@@ -116,22 +125,26 @@ frozen; coordinate ownership and check their actual status before editing.
 - Diagnostic 6189937fca3445bfb0f216c4588641d5, source 96f9587, failed
   before its first write on RAM accounting; actual exit 1 and a zero-filled
   signal are not a valid partial-write result. The later a7 fixes were built,
-  but the active fc838 run has not yet established a valid signal/recovery.
+  but the later fc838 run refused journal allocation before AP and likewise
+  did not establish a valid signal/recovery.
 - Exact record archives, hashes, prior qualified cases and refusals are in the
   linked historical handoff and evidence/. Do not recreate retired snapshot
   IDs or transfer qualification from one binary/build to another.
 
 ## Current engineering priorities
 
-1. Resolve the live diagnostic from actual terminal evidence. Only after a
-   valid real first-write signal and independently classified AP/OFFLINE
-   state may Root establish a recovery origin for separate Resume/Rollback.
+1. Build the compiled journal-preallocation fix and repeat the same admitted
+   diagnostic. Only after a valid real first-write signal and independently
+   classified AP/OFFLINE state may Root establish a recovery origin for separate
+   Resume/Rollback. Preserve the closed fc838 refusal and original journal.
 2. Qualify new V4 recovery/finalization changes against the real native stack.
    Missing/corrupt journal, wrong identity, low space, and interruption stages
    must fail safely; preserve actual journal and source protections.
-3. Finish P3 resource-based source prealignment inventory, planning, executor
-   and receipts. Until genuinely wired and qualified, --minimize-scratch in
-   V4 changes capacity policy but does not run the old NTFS placement prepass.
+3. Qualify current P3 resource-paged source prealignment inventory, planning,
+   executor and receipts. The uncommitted public --minimize-scratch hook now
+   calls it before final freeze and obtains fresh source admission afterward;
+   this compiles but has no native result. Previously pinned V4 binaries only
+   changed capacity policy and did not run the old NTFS placement prepass.
 4. Reduce repeated journal/artifact reads through same-owner receipts only
    where actual immutable capabilities and required before/after checks are
    preserved. Preserve final native gates; never replace proof with JSON flags.

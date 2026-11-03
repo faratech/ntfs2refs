@@ -95,13 +95,30 @@ Full file/page hashes, record bounds, counts and same-file checks remain. The
 placement change removes91,026,944 declared bytes for this fixture; this is
 code-derived quota arithmetic, not a heap or conversion-speed measurement.
 
-Resource-native NTFS prealignment now has a compiled online paged inventory,
-all-stream decision/move planner and checked SDK mover/shadow-hint interfaces.
-These private components are not wired into the public command yet. They do
-not issue source admission and must be followed by a fresh frozen source
-inspection/certificate. A streamed execution/receipt layer and public
-`--minimize-scratch` orchestration remain necessary; the current fast inspector
-may still hash some exceptional user data during this prepass.
+The next enrolled interruption attempt, source`a7befe8`, passed the earlier
+placement reservation but stopped during native journal preparation after
+835.252 seconds. Its actual exit1, offline/read-only source and zero-filled
+first-write signal establish a pre-AP refusal, not a partial conversion. A
+separate ordinary-file probe on the same journal volume reproduced temporary
+NTFS allocation of5,820,645,376 bytes for a5,818,630,248-byte file while open;
+allocation fell to5,818,634,240 bytes on last close. Preallocating the new file
+through its same held handle kept allocation at5,818,634,240 bytes throughout,
+within the existing quota. The compiled correction reserves quota before
+preallocation, retains zero EOF and checks actual identity/allocation before
+streaming. It changes neither the quota nor marker-storage formats. The
+original journal was untouched by the probe. Native execution of the corrected
+converter remains pending. See [the refusal and probe](../evidence/resource-first-write-journal-refusal-20261103.json).
+
+Resource-native NTFS prealignment now has an online paged inventory, complete
+stream decision/move planner, checked SDK mover/shadow-hint interfaces and a
+streamed execution/receipt layer. The current public `--minimize-scratch` hook
+runs this prepass before final freeze, reserves receipt space before each
+NTFS-owned move and stops conversion on an incomplete result. It drops prepass
+owners, samples resources again and obtains fresh frozen source admission;
+prepass reports never authorize conversion. The combined three-entry Windows
+check passed in9.98 seconds. This newly wired code has no native qualification
+yet, and previously pinned V4 binaries do not contain it. The current fast
+inspector may still hash some exceptional user data during the prepass.
 
 ## Experimental integration checkpoint — 2026-11-03
 

@@ -99,3 +99,197 @@ pub(crate) fn internal_role(
     };
     Ok(super::internal_role_with_path(file, || path))
 }
+
+/// Classify one raw inspection blocker using the actual retained source and
+/// independent internal-state proofs. This is a diagnostic, not admission:
+/// native identity, namespace, security, frozen-source and target checks are
+/// still required by the enclosing live conversion.
+pub(crate) fn blocker_is_unresolved(
+    source: &crate::ntfs_inspect::PagedInspection,
+    blocker: &crate::ntfs_inspect::InspectionBlocker,
+    backups: &crate::ntfs_backup::VerifiedBackups,
+    log: &crate::ntfs_log::VerifiedRestart,
+    indexes: &crate::ntfs_internal::PagedVerifiedIndexes,
+    transactions: &crate::ntfs_transactions::VerifiedTransactions,
+    native_short_names_disabled_without_dos_aliases: bool,
+) -> Result<bool> {
+    use crate::ntfs_inspect::LogicalHashStatus;
+    if matches!(
+        blocker.code.as_str(),
+        "security_descriptors_unresolved"
+            | "directory_indexes_unverified"
+            | "allocation_ownership_unverified"
+    ) {
+        return Ok(false);
+    }
+    if blocker.code == "backup_boot_unverified" && backups.binds_domain(source) {
+        return Ok(false);
+    }
+    if blocker.code == "journal_state_unverified"
+        && log.binds_domain(source)
+        && log.restart.candidate_clean_dismount
+    {
+        return Ok(false);
+    }
+    if blocker.code == "volume_state_flags"
+        && source.header().volume_flags == Some(0x80)
+        && native_short_names_disabled_without_dos_aliases
+    {
+        return Ok(false);
+    }
+    if blocker.code == "object_id"
+        && blocker.file_record_number == Some(3)
+        && indexes.covers_volume_object_id_domain(source, 3)
+    {
+        return Ok(false);
+    }
+    if blocker.code == "unsupported_attribute"
+        && blocker.message == "Attribute type 0x100 needs a preservation policy"
+        && transactions.binds_domain(source)
+    {
+        if let Some(number) = blocker.file_record_number {
+            if let Some(file) = source.find_record(number, None)? {
+                let role = internal_role(source, &file)?;
+                if (number == 5 || role.as_deref() == Some("$Extend\\$RmMetadata\\$Txf"))
+                    && file
+                        .attributes
+                        .iter()
+                        .filter(|a| a.type_code == 0x100)
+                        .count()
+                        == 1
+                    && file.attributes.iter().any(super::recognized_root_txf)
+                {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    if blocker.code == "logical_stream_hash_unavailable"
+        && blocker.file_record_number == Some(8)
+        && blocker.message
+            == "DATA attribute 1 has no complete logical hash: UnsupportedBadClusterMetadata"
+    {
+        if let Some(file) = source.find_record(8, None)? {
+            if internal_role(source, &file)?.as_deref() == Some("$BadClus")
+                && file.streams.len() == 2
+            {
+                let unnamed = file.streams.iter().find(|s| s.name_utf16.is_empty());
+                let bad = file
+                    .streams
+                    .iter()
+                    .find(|s| s.name_utf16 == [36, 66, 97, 100]);
+                if let (Some(unnamed), Some(bad)) = (unnamed, bad) {
+                    let geometry = &source.header().geometry;
+                    if unnamed.resident
+                        && unnamed.logical_size == 0
+                        && unnamed.extents.is_empty()
+                        && unnamed.logical_hash_status == LogicalHashStatus::Complete
+                        && !bad.resident
+                        && bad.flags == 0
+                        && geometry
+                            .total_clusters
+                            .checked_mul(u64::from(geometry.cluster_size))
+                            == Some(bad.logical_size)
+                        && bad.initialized_size == 0
+                        && bad.allocated_size == bad.logical_size
+                        && bad.logical_hash_status
+                            == LogicalHashStatus::UnsupportedBadClusterMetadata
+                        && bad.extents.len() == 1
+                        && bad.extents[0].logical_offset == 0
+                        && bad.extents[0].physical_offset.is_none()
+                        && bad.extents[0].length == bad.logical_size
+                    {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// The same per-file preservation policy used by the legacy inspector, with
+/// paths and security resolved from the actual held paged source owner.
+/// Global page closure belongs to the enclosing producer, not one full-source
+/// rescan per object. These diagnostics grant no admission or write authority.
+pub(crate) fn ordinary_user_issues(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    resources: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<Vec<String>> {
+    resources.validate()?;
+    let budget = source.budget();
+    ensure!(
+        source.header().inventory_complete
+            && source.canonical_sha256()? == hex::encode(resources.source_inspection_sha256)
+            && resources.mft_records == source.header().mft_record_count
+            && resources.raw_identities == source.file_count()
+            && file.record_number < resources.mft_records
+            && budget.ram_bytes == resources.budget.ram_bytes
+            && budget.scratch_bytes == resources.budget.scratch_bytes / 4
+            && budget.record_bytes == resources.budget.max_row_bytes
+            && budget.page_bytes == resources.budget.page_bytes,
+        "ordinary policy source/resource identity differs"
+    );
+    let paths = user_paths(source, file).ok();
+    let names_supported = paths.is_some();
+    let system_volume_information = paths.as_ref().is_some_and(|paths| {
+        paths.iter().any(|path| {
+            path.first()
+                .is_some_and(|name| name.eq_ignore_ascii_case("System Volume Information"))
+        })
+    });
+    let descriptor = if let Some(binding) = source.security().find_binding(file.record_number)? {
+        ensure!(
+            binding.sequence_number == file.sequence_number,
+            "ordinary security binding has a stale file sequence"
+        );
+        let descriptor = if let Some(id) = binding.security_id {
+            source.security().find_id(id)?
+        } else {
+            source.security().find_legacy(file.record_number)?
+        };
+        if let Some(record) = &descriptor {
+            ensure!(
+                record.descriptor.sha256 == binding.descriptor_sha256,
+                "ordinary security descriptor differs from its complete binding"
+            );
+        }
+        descriptor
+    } else {
+        None
+    };
+    let mut evidence = std::collections::BTreeMap::new();
+    for stream in &file.streams {
+        let valid = match stream.logical_hash_status {
+            crate::ntfs_inspect::LogicalHashStatus::Complete => stream
+                .logical_sha256
+                .as_deref()
+                .is_some_and(n2r_win32::content_digest::is_hex),
+            crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
+                stream.logical_sha256.is_none()
+                    && crate::ntfs_attestation::extent_identity_stream_request_domain(
+                        source, file, stream, true, true,
+                    )?
+                    .is_some()
+            }
+            _ => false,
+        };
+        evidence.insert(&stream.name_utf16, valid);
+    }
+    let maximum_streams = usize::try_from(
+        resources.budget.max_row_bytes
+            / std::mem::size_of::<crate::ntfs_inspect::StreamInventory>() as u64,
+    )?;
+    Ok(super::user_issues_with_context(
+        file,
+        true,
+        &source.header().geometry,
+        names_supported,
+        system_volume_information,
+        descriptor.as_ref(),
+        Some(resources.budget.max_row_bytes),
+        maximum_streams,
+        |stream| evidence.get(&stream.name_utf16).copied().unwrap_or(false),
+    ))
+}

@@ -47,6 +47,13 @@ impl VerifiedRestart {
             .ok()
             .is_some_and(|bytes| hex::encode(Sha256::digest(bytes)) == self.inspection_fingerprint)
     }
+
+    #[cfg(windows)]
+    pub fn binds_domain(&self, source: &ntfs_inspect::PagedInspection) -> bool {
+        source
+            .canonical_sha256()
+            .is_ok_and(|hash| hash == self.inspection_fingerprint)
+    }
 }
 
 fn u16le(b: &[u8], at: usize) -> u16 {
@@ -148,8 +155,18 @@ pub fn parse_restart_pair(log: &[u8]) -> Result<RestartPair> {
         (PAGE * 2..=MAX_LOG_BYTES as usize).contains(&log.len()) && log.len().is_multiple_of(PAGE),
         "unsupported LFS log length"
     );
-    let first = parse_page(&log[..PAGE], 0, log.len() as u64)?;
-    let second = parse_page(&log[PAGE..2 * PAGE], 1, log.len() as u64)?;
+    parse_restart_headers(&log[..2 * PAGE], log.len() as u64)
+}
+
+fn parse_restart_headers(headers: &[u8], log_bytes: u64) -> Result<RestartPair> {
+    ensure!(
+        headers.len() == 2 * PAGE
+            && log_bytes >= 2 * PAGE as u64
+            && log_bytes.is_multiple_of(PAGE as u64),
+        "unsupported LFS log length"
+    );
+    let first = parse_page(&headers[..PAGE], 0, log_bytes)?;
+    let second = parse_page(&headers[PAGE..], 1, log_bytes)?;
     ensure!(
         first.current_lsn == second.current_lsn
             && first.revision_number == second.revision_number
@@ -185,6 +202,85 @@ pub fn verify<R: Read + Seek>(reader: &mut R, raw: &NtfsInspection) -> Result<Ve
         inspection_fingerprint: hex::encode(Sha256::digest(serde_json::to_vec(raw)?)),
         log_file_sha256: hex::encode(Sha256::digest(&bytes)),
         log_file_bytes: bytes.len() as u64,
+        restart,
+        complete_log_recovery_proven: false,
+    })
+}
+
+/// Stream a completely mapped frozen LogFile through the same actual source
+/// session as materialization. Only the two restart pages and one read window
+/// remain in RAM; the complete logical digest and all restart checks remain.
+#[cfg(windows)]
+pub fn verify_domain<R: Read + Seek>(
+    reader: &mut R,
+    source: &ntfs_inspect::PagedInspection,
+) -> Result<VerifiedRestart> {
+    use ntfs_inspect::RootFileDomain;
+    source.revalidate()?;
+    ensure!(
+        source.header().dirty == Some(false)
+            && source
+                .header()
+                .volume_flags
+                .is_some_and(|flags| flags & 1 == 0),
+        "NTFS dirty state is unresolved"
+    );
+    let file = source
+        .find_record(2, None)?
+        .context("frozen LogFile absent")?;
+    let mut streams = file.streams.iter().filter(|s| s.name_utf16.is_empty());
+    let stream = streams.next().context("LogFile unnamed stream absent")?;
+    ensure!(
+        streams.next().is_none()
+            && stream.logical_size >= 2 * PAGE as u64
+            && stream.logical_size <= i64::MAX as u64
+            && stream.logical_size.is_multiple_of(PAGE as u64),
+        "unsupported LFS log length"
+    );
+    let expected = stream
+        .logical_sha256
+        .as_deref()
+        .filter(|hash| n2r_win32::content_digest::is_hex(hash))
+        .context("complete inspected LogFile logical digest absent")?;
+    let length = stream.logical_size;
+    let mut session =
+        ntfs_inspect::PlainStreamRangeSession::open_named_domain(reader, source, 2, &[], length)?;
+    let mut transfer = ntfs_inspect::StreamTransferBudget::new(length, length)?;
+    let window = (u64::from(source.budget().page_bytes) / 4)
+        .max(1)
+        .min(ntfs_inspect::SESSION_READ_BYTES as u64);
+    let _ram = source.lease_working_ram(window + 2 * PAGE as u64)?;
+    let mut buffer = vec![0; usize::try_from(window)?];
+    let mut prefix = [0u8; 2 * PAGE];
+    let mut content = n2r_win32::content_digest::Hasher::new();
+    let mut digest = Sha256::new();
+    let mut offset = 0;
+    while offset < length {
+        let count = (length - offset).min(window) as usize;
+        session.read_domain(reader, source, offset, &mut buffer[..count], &mut transfer)?;
+        if offset < 2 * PAGE as u64 {
+            let copied = count.min(2 * PAGE - offset as usize);
+            prefix[offset as usize..offset as usize + copied].copy_from_slice(&buffer[..copied]);
+        }
+        content.update(&buffer[..count]);
+        digest.update(&buffer[..count]);
+        offset += count as u64;
+    }
+    session.finish_domain(reader, source)?;
+    ensure!(
+        content.finish() == expected,
+        "logical stream changed from inspection"
+    );
+    let restart = parse_restart_headers(&prefix, length)?;
+    ensure!(
+        restart.candidate_clean_dismount,
+        "LFS restart pages lack clean-dismount flag"
+    );
+    source.revalidate()?;
+    Ok(VerifiedRestart {
+        inspection_fingerprint: source.canonical_sha256()?,
+        log_file_sha256: hex::encode(digest.finalize()),
+        log_file_bytes: length,
         restart,
         complete_log_recovery_proven: false,
     })

@@ -1,4 +1,6 @@
 //! Strict geometry-bound backup checks against actual source reads.
+#[cfg(windows)]
+use crate::ntfs_inspect::RootFileDomain;
 use crate::ntfs_inspect::{self as ntfs, AttributeInventory, NtfsInspection};
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -35,6 +37,13 @@ impl VerifiedBackups {
     pub fn binds(&self, raw: &NtfsInspection) -> bool {
         fingerprint(raw).is_ok_and(|hash| hash == self.inspection_fingerprint)
     }
+
+    #[cfg(windows)]
+    pub fn binds_domain(&self, source: &ntfs::PagedInspection) -> bool {
+        source
+            .canonical_sha256()
+            .is_ok_and(|hash| hash == self.inspection_fingerprint)
+    }
 }
 fn data(raw: &NtfsInspection, record: u64) -> Result<&AttributeInventory> {
     let files: Vec<_> = raw
@@ -63,7 +72,46 @@ pub fn verify<R: Read + Seek>(
     raw: &NtfsInspection,
 ) -> Result<VerifiedBackups> {
     ntfs::revalidate_mft_mapping(reader, raw)?;
-    let g = &raw.geometry;
+    verify_parts(
+        reader,
+        length,
+        &raw.geometry,
+        data(raw, 0)?,
+        data(raw, 1)?,
+        || fingerprint(raw),
+    )
+}
+
+#[cfg(windows)]
+pub fn verify_domain<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    source: &ntfs::PagedInspection,
+) -> Result<VerifiedBackups> {
+    source.revalidate()?;
+    let mapping = ntfs::CheckedMftDomain::open(reader, source)?;
+    let mft = mapping.data(reader, source, 0, &[])?;
+    let mirror = mapping.data(reader, source, 1, &[])?;
+    let result = verify_parts(
+        reader,
+        length,
+        &source.header().geometry,
+        &mft,
+        &mirror,
+        || source.canonical_sha256(),
+    )?;
+    source.revalidate()?;
+    Ok(result)
+}
+
+fn verify_parts<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    g: &ntfs::NtfsGeometry,
+    mft: &AttributeInventory,
+    mirror: &AttributeInventory,
+    fingerprint: impl FnOnce() -> Result<String>,
+) -> Result<VerifiedBackups> {
     ensure!(
         g.bytes_per_sector == 512
             && crate::ntfs_index::supports_cluster_size(g.cluster_size)
@@ -90,8 +138,6 @@ pub fn verify<R: Read + Seek>(
     reader.seek(SeekFrom::Start(length - 512))?;
     reader.read_exact(&mut backup)?;
     ensure!(boot == backup, "primary and backup boot sectors differ");
-    let mft = data(raw, 0)?;
-    let mirror = data(raw, 1)?;
     for (attribute, lcn) in [(mft, g.mft_lcn), (mirror, g.mftmirr_lcn)] {
         ensure!(
             attribute
@@ -146,7 +192,7 @@ pub fn verify<R: Read + Seek>(
         }
     }
     Ok(VerifiedBackups {
-        inspection_fingerprint: fingerprint(raw)?,
+        inspection_fingerprint: fingerprint()?,
         partition_length: length,
         primary_boot_sha256: hex::encode(Sha256::digest(&boot)),
         backup_boot_sha256: hex::encode(Sha256::digest(&backup)),

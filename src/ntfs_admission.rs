@@ -42,6 +42,14 @@ pub(crate) fn compressed_stream_supported(
     file: &FileInventory,
     stream: &ntfs::StreamInventory,
 ) -> bool {
+    compressed_stream_supported_with_geometry(&raw.geometry, file, stream)
+}
+
+pub(crate) fn compressed_stream_supported_with_geometry(
+    geometry: &ntfs::NtfsGeometry,
+    file: &FileInventory,
+    stream: &ntfs::StreamInventory,
+) -> bool {
     if stream.flags != 1 {
         return false;
     }
@@ -58,7 +66,7 @@ pub(crate) fn compressed_stream_supported(
         && attribute.initialized_size == stream.initialized_size
         && attribute.allocated_size == stream.allocated_size
         && attribute.extents == stream.extents
-        && crate::ntfs_compression::supported(attribute, &raw.geometry).is_ok()
+        && crate::ntfs_compression::supported(attribute, geometry).is_ok()
 }
 pub const MAX_FILES: usize = 128;
 pub const MAX_DIRECTORIES: usize = 32;
@@ -1172,6 +1180,63 @@ fn user_issues_profile(
     f: &FileInventory,
     ordinary: bool,
 ) -> Vec<String> {
+    let paths = if ordinary
+        || f.streams
+            .iter()
+            .any(|s| !s.name_utf16.is_empty() || s.flags == 0x8000)
+    {
+        user_paths(raw, f)
+    } else {
+        None
+    };
+    let names_supported = if ordinary {
+        paths.is_some()
+    } else {
+        path(raw, f).is_some() && f.hard_link_count == 1
+    };
+    let system_volume_information = paths.as_ref().is_some_and(|paths| {
+        paths.iter().any(|path| {
+            path.first()
+                .is_some_and(|name| name.eq_ignore_ascii_case("System Volume Information"))
+        })
+    });
+    let descriptor = raw.security_reconciliation.as_ref().and_then(|s| {
+        let binding = s.bindings.iter().find(|b| {
+            b.record_number == f.record_number && b.sequence_number == f.sequence_number
+        })?;
+        s.descriptors
+            .iter()
+            .find(|d| d.descriptor.sha256 == binding.descriptor_sha256)
+    });
+    user_issues_with_context(
+        f,
+        ordinary,
+        &raw.geometry,
+        names_supported,
+        system_volume_information,
+        descriptor,
+        None,
+        n2r_win32::stream_layout::MAX_STREAMS,
+        |stream| {
+            crate::ntfs_attestation::source_stream_evidence_valid(raw, f, stream).unwrap_or(false)
+        },
+    )
+}
+
+/// Shared per-object preservation policy. The caller supplies already selected
+/// path/security/source evidence; this function never invents an inventory or
+/// grants admission from those diagnostic facts.
+pub(crate) fn user_issues_with_context(
+    f: &FileInventory,
+    ordinary: bool,
+    geometry: &ntfs::NtfsGeometry,
+    names_supported: bool,
+    system_volume_information: bool,
+    descriptor: Option<&ntfs_security::DescriptorRecord>,
+    descriptor_maximum: Option<u64>,
+    maximum_streams: usize,
+    mut source_evidence_valid: impl FnMut(&ntfs::StreamInventory) -> bool,
+) -> Vec<String> {
     let mut issues = vec![];
     if f.metadata_role_issue.is_some()
         || !matches!(
@@ -1182,11 +1247,6 @@ fn user_issues_profile(
     {
         issues.push("source object role is unresolved or unsupported".into());
     }
-    let names_supported = if ordinary {
-        user_paths(raw, f).is_some()
-    } else {
-        path(raw, f).is_some() && f.hard_link_count == 1
-    };
     let ea_supported = ordinary && crate::ntfs_extended_attributes::file_set(f).is_ok();
     let reparse = if ordinary {
         crate::ntfs_reparse::file_point(f).ok().flatten()
@@ -1229,7 +1289,7 @@ fn user_issues_profile(
             let compressed_data = ordinary
                 && data
                 && a.flags == 1
-                && crate::ntfs_compression::supported(a, &raw.geometry).is_ok();
+                && crate::ntfs_compression::supported(a, geometry).is_ok();
             // Resident I30 compression is an inheritance policy marker; the
             // index value still passes the complete raw namespace parser.
             let compressed_directory_policy = ordinary
@@ -1278,19 +1338,17 @@ fn user_issues_profile(
     }) {
         issues.push("unsupported attributes or missing standard information".into());
     }
-    let descriptor = raw.security_reconciliation.as_ref().and_then(|s| {
-        let binding = s.bindings.iter().find(|b| {
-            b.record_number == f.record_number && b.sequence_number == f.sequence_number
-        })?;
-        s.descriptors
-            .iter()
-            .find(|d| d.descriptor.sha256 == binding.descriptor_sha256)
-    });
     match descriptor {
         Some(record) if ordinary => {
             let validated = hex::decode(&record.descriptor.relative_hex)
                 .ok()
-                .and_then(|bytes| n2r_win32::security_descriptor::validate(&bytes).ok());
+                .and_then(|bytes| {
+                    if let Some(maximum) = descriptor_maximum {
+                        n2r_win32::security_descriptor::validate_with_limit(&bytes, maximum).ok()
+                    } else {
+                        n2r_win32::security_descriptor::validate(&bytes).ok()
+                    }
+                });
             if validated.is_none() {
                 issues.push("security descriptor exceeds native preservation layout".into());
             }
@@ -1298,23 +1356,11 @@ fn user_issues_profile(
         Some(record) if record.descriptor.sacl.state == ntfs_security::AclState::Absent => (),
         _ => issues.push("initial preservation profile requires verified SACL absence".into()),
     }
-    if f.streams.iter().any(|stream| !stream.name_utf16.is_empty())
-        && user_paths(raw, f).is_some_and(|paths| {
-            paths.iter().any(|path| {
-                path.first()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("System Volume Information"))
-            })
-        })
-    {
+    if f.streams.iter().any(|stream| !stream.name_utf16.is_empty()) && system_volume_information {
         issues.push("named streams on System Volume Information objects require a separate system-payload implementation".into());
     }
     if has_sparse {
-        if user_paths(raw, f).is_some_and(|paths| {
-            paths.iter().any(|path| {
-                path.first()
-                    .is_some_and(|name| name.eq_ignore_ascii_case("System Volume Information"))
-            })
-        }) {
+        if system_volume_information {
             issues.push(
                 "sparse system-managed streams require a separate system-payload implementation"
                     .into(),
@@ -1329,7 +1375,7 @@ fn user_issues_profile(
         let mut exact_names = BTreeSet::new();
         let mut folded_names = BTreeSet::new();
         let stream_names_valid = !f.streams.is_empty()
-            && f.streams.len() <= n2r_win32::stream_layout::MAX_STREAMS
+            && f.streams.len() <= maximum_streams
             && f.streams.iter().filter(|s| s.name_utf16.is_empty()).count() == 1
             && f.streams.iter().all(|s| {
                 (s.name_utf16.is_empty() || (ordinary && valid_named_stream_name(&s.name_utf16)))
@@ -1343,7 +1389,7 @@ fn user_issues_profile(
                 (!ordinary && !s.name_utf16.is_empty())
                     || (s.flags != 0
                         && !(ordinary && !s.resident && s.flags == 0x8000)
-                        && !(ordinary && compressed_stream_supported(raw, f, s)))
+                        && !(ordinary && compressed_stream_supported_with_geometry(geometry, f, s)))
                     || s.initialized_size > s.logical_size
                     || (!ordinary
                         && (s.resident
@@ -1355,8 +1401,7 @@ fn user_issues_profile(
                             || s.extents[0].logical_offset != 0
                             || s.extents[0].physical_offset.is_none()
                             || s.extents[0].length != s.logical_size))
-                    || !crate::ntfs_attestation::source_stream_evidence_valid(raw, f, s)
-                        .unwrap_or(false)
+                    || !source_evidence_valid(s)
             })
         {
             issues.push(

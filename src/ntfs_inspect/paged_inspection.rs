@@ -58,6 +58,63 @@ impl PagedInspection {
     pub fn allocation(&self) -> &PagedAllocationReconciliation {
         &self.allocation
     }
+    pub fn allocated_bytes_in(
+        &self,
+        offset: u64,
+        length: u64,
+        partition_bytes: u64,
+    ) -> Result<u64> {
+        allocation_domain::allocated_bytes_in(
+            &self.ownership[0],
+            &self.header().geometry,
+            &self.allocation,
+            offset,
+            length,
+            partition_bytes,
+        )
+    }
+    pub fn require_allocated_range(
+        &self,
+        offset: u64,
+        length: u64,
+        partition_bytes: u64,
+    ) -> Result<()> {
+        allocation_domain::require_allocated_range(
+            &self.ownership[0],
+            &self.header().geometry,
+            &self.allocation,
+            offset,
+            length,
+            partition_bytes,
+        )
+    }
+    pub fn is_free_granule(&self, offset: u64, partition_bytes: u64) -> Result<bool> {
+        allocation_domain::is_free_granule(
+            &self.ownership[0],
+            &self.header().geometry,
+            &self.allocation,
+            offset,
+            partition_bytes,
+        )
+    }
+    pub(crate) fn mft_bitmap_pin(&self) -> &SourcePagePin {
+        &self.pin.assemblies.mft_bitmap
+    }
+    pub(crate) fn assembly_for_record(
+        &self,
+        record: u64,
+    ) -> Result<Option<crate::ntfs_attribute_list::Assembly>> {
+        self.assemblies[0].find(file_key(record))
+    }
+    pub(crate) fn lease_working_ram(
+        &self,
+        bytes: u64,
+    ) -> Result<super::paged_storage::SourceRamLease> {
+        self.scratch.lease_ram(bytes)
+    }
+    pub(crate) fn metadata_scratch(&self) -> SourceScratch {
+        self.scratch.clone()
+    }
     pub fn blocker_count(&self) -> u64 {
         self.blockers.len()
     }
@@ -217,6 +274,30 @@ pub fn inspect_paged_with_policy<R: Read + Seek>(
 ) -> Result<PagedInspection> {
     let budget = SourceMetadataBudget::from_resource_budget(resources)?;
     let scratch = SourceScratch::new(budget)?;
+    inspect_paged_with_scratch(reader, length, resources, policy, root, &scratch)
+}
+
+/// The recorder, inspector and later source-range proofs share one aggregate
+/// owner. The historical entry point simply creates this owner and delegates.
+pub fn inspect_paged_with_scratch<R: Read + Seek>(
+    reader: &mut R,
+    length: u64,
+    resources: n2r_win32::tree_resources::ResourceBudget,
+    policy: crate::verification_policy::VerificationPolicy,
+    root: &Path,
+    scratch: &SourceScratch,
+) -> Result<PagedInspection> {
+    let budget = SourceMetadataBudget::from_resource_budget(resources)?;
+    let actual = scratch.budget();
+    ensure!(
+        actual.ram_bytes == budget.ram_bytes
+            && actual.scratch_bytes == budget.scratch_bytes
+            && actual.page_bytes == budget.page_bytes
+            && actual.record_bytes == budget.record_bytes
+            && actual.merge_fan_in == budget.merge_fan_in,
+        "shared source scratch resource owner differs"
+    );
+    let scratch = scratch.clone();
     ensure!(
         !root.exists(),
         "fresh ordinary source-page directory required"

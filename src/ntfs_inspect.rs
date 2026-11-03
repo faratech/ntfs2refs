@@ -21,6 +21,12 @@ pub use assembled_io::validate_record_coverage;
 #[cfg(windows)]
 pub mod allocation_domain;
 #[cfg(windows)]
+mod checked_domain_io;
+#[cfg(windows)]
+pub(crate) use checked_domain_io::{CheckedMftDomain, read_resident_inventory_attribute_domain};
+#[cfg(windows)]
+use checked_domain_io::checked_data_attribute_domain;
+#[cfg(windows)]
 pub mod external_sort;
 #[cfg(windows)]
 mod paged_files;
@@ -38,7 +44,9 @@ pub mod source_domain;
 #[cfg(windows)]
 pub use paged_files::PagedRawFiles;
 #[cfg(windows)]
-pub use paged_inspection::{PagedInspection, SourceInspectionPin, inspect_paged_with_policy};
+pub use paged_inspection::{
+    PagedInspection, SourceInspectionPin, inspect_paged_with_policy, inspect_paged_with_scratch,
+};
 pub use source_domain::{
     LegacySecurityRecord, RootDirectoryDomain, RootFileDomain, RootSecurityCaptureDomain,
     SourceDirectoryHeader, SourceHeader, SourceIndexRanges, SourceMetadataBudget,
@@ -2911,6 +2919,75 @@ impl PlainStreamRangeSession {
         )
     }
 
+    #[cfg(windows)]
+    pub fn open_named_domain<R: Read + Seek>(
+        reader: &mut R,
+        raw: &PagedInspection,
+        record_number: u64,
+        stream_name_utf16: &[u16],
+        max_bytes: u64,
+    ) -> Result<Self> {
+        Self::open_domain_policy(
+            reader,
+            raw,
+            record_number,
+            stream_name_utf16,
+            max_bytes,
+            false,
+        )
+    }
+
+    #[cfg(windows)]
+    pub fn open_sparse_named_domain<R: Read + Seek>(
+        reader: &mut R,
+        raw: &PagedInspection,
+        record_number: u64,
+        stream_name_utf16: &[u16],
+        max_bytes: u64,
+    ) -> Result<Self> {
+        Self::open_domain_policy(
+            reader,
+            raw,
+            record_number,
+            stream_name_utf16,
+            max_bytes,
+            true,
+        )
+    }
+
+    #[cfg(windows)]
+    fn open_domain_policy<R: Read + Seek>(
+        reader: &mut R,
+        raw: &PagedInspection,
+        record_number: u64,
+        stream_name_utf16: &[u16],
+        max_bytes: u64,
+        allow_sparse: bool,
+    ) -> Result<Self> {
+        ensure!(
+            stream_name_utf16.len() <= 255,
+            "stream name exceeds NTFS limit"
+        );
+        let (attribute, expected) = checked_data_attribute_domain(
+            reader,
+            raw,
+            record_number,
+            stream_name_utf16,
+            max_bytes,
+            allow_sparse,
+        )?;
+        let compression = compression_reader(&attribute, &raw.header().geometry)?;
+        Ok(Self {
+            record_number,
+            stream_name_utf16: stream_name_utf16.to_vec(),
+            allow_sparse,
+            attribute,
+            compression,
+            expected,
+            poisoned: false,
+        })
+    }
+
     fn open_policy<R: Read + Seek>(
         reader: &mut R,
         raw: &NtfsInspection,
@@ -2962,6 +3039,168 @@ impl PlainStreamRangeSession {
     pub fn allocation_evidence(&self) -> Result<StreamAllocationEvidence> {
         data_allocation_evidence(&self.attribute.report)
     }
+
+    #[cfg(windows)]
+    pub(crate) fn contiguous_physical_range(
+        &self,
+        offset: u64,
+        length: u64,
+    ) -> Result<Option<u64>> {
+        ensure!(
+            !self.poisoned,
+            "failed DATA session cannot suggest a COPY source"
+        );
+        let a = &self.attribute.report;
+        let end = offset
+            .checked_add(length)
+            .context("COPY source logical overflow")?;
+        ensure!(
+            end <= a.logical_size,
+            "COPY source query escapes logical stream"
+        );
+        if length == 0
+            || a.resident
+            || a.flags & !0x8000 != 0
+            || a.compression_unit != 0
+            || end > a.initialized_size
+        {
+            return Ok(None);
+        }
+        let mut cursor = offset;
+        let mut first = None;
+        for run in &a.extents {
+            let run_end = run
+                .logical_offset
+                .checked_add(run.length)
+                .context("COPY source run overflow")?;
+            if run_end <= cursor {
+                continue;
+            }
+            if cursor == end {
+                break;
+            }
+            if run.logical_offset > cursor {
+                return Ok(None);
+            }
+            let Some(physical) = run.physical_offset else {
+                return Ok(None);
+            };
+            let physical = physical
+                .checked_add(cursor - run.logical_offset)
+                .context("COPY source physical overflow")?;
+            if let Some(start) = first {
+                if Some(physical) != u64::checked_add(start, cursor - offset) {
+                    return Ok(None);
+                }
+            } else {
+                first = Some(physical);
+            }
+            cursor = end.min(run_end);
+        }
+        Ok(if cursor == end { first } else { None })
+    }
+
+    /// Compare a retained native placement with the checked current DATA map.
+    /// This observes no payload bytes and produces no content/EOF claim.
+    #[cfg(windows)]
+    pub(crate) fn require_physical_mapping(
+        &self,
+        offset: u64,
+        physical: u64,
+        length: u64,
+    ) -> Result<()> {
+        let a = &self.attribute.report;
+        let end = offset
+            .checked_add(length)
+            .context("reference logical overflow")?;
+        ensure!(
+            !self.poisoned
+                && !a.resident
+                && a.flags & !0x8000 == 0
+                && a.compression_unit == 0
+                && end <= a.initialized_size
+                && end <= a.logical_size,
+            "retained reference is not initialized uncompressed source DATA"
+        );
+        let mut cursor = offset;
+        for run in &a.extents {
+            let run_end = run
+                .logical_offset
+                .checked_add(run.length)
+                .context("source run overflow")?;
+            if run_end <= cursor {
+                continue;
+            }
+            if cursor == end {
+                break;
+            }
+            ensure!(
+                run.logical_offset <= cursor,
+                "retained source mapping has a gap"
+            );
+            let actual = run
+                .physical_offset
+                .context("retained source range is a hole")?
+                .checked_add(cursor - run.logical_offset)
+                .context("source physical overflow")?;
+            let wanted = physical
+                .checked_add(cursor - offset)
+                .context("reference physical overflow")?;
+            ensure!(
+                actual == wanted,
+                "native retained reference differs from current source DATA"
+            );
+            cursor = end.min(run_end);
+        }
+        ensure!(
+            cursor == end,
+            "retained source mapping coverage is incomplete"
+        );
+        Ok(())
+    }
+
+    /// Prove logical zeros from actual sparse mapping/VDL, without claiming a
+    /// payload read. The caller separately checks the native destination hole.
+    #[cfg(windows)]
+    pub(crate) fn require_zero_mapping(&self, offset: u64, length: u64) -> Result<()> {
+        let a = &self.attribute.report;
+        let end = offset
+            .checked_add(length)
+            .context("hole logical overflow")?;
+        ensure!(
+            !self.poisoned
+                && self.allow_sparse
+                && !a.resident
+                && a.flags & !0x8000 == 0
+                && a.compression_unit == 0
+                && end <= a.logical_size,
+            "logical hole requires checked uncompressed sparse DATA"
+        );
+        let initialized_end = end.min(a.initialized_size);
+        let mut cursor = offset.min(initialized_end);
+        for run in &a.extents {
+            let run_end = run
+                .logical_offset
+                .checked_add(run.length)
+                .context("sparse source run overflow")?;
+            if run_end <= cursor {
+                continue;
+            }
+            if cursor == initialized_end {
+                break;
+            }
+            ensure!(
+                run.logical_offset <= cursor && run.physical_offset.is_none(),
+                "native hole differs from initialized source allocation"
+            );
+            cursor = initialized_end.min(run_end);
+        }
+        ensure!(
+            cursor == initialized_end,
+            "source hole coverage is incomplete"
+        );
+        Ok(())
+    }
     pub fn read<R: Read + Seek>(
         &mut self,
         reader: &mut R,
@@ -2995,6 +3234,18 @@ impl PlainStreamRangeSession {
         budget: &mut StreamTransferBudget,
         receipt: Option<&mut DirectReadReceipt>,
     ) -> Result<()> {
+        self.read_observed_geometry(reader, &raw.geometry, offset, output, budget, receipt)
+    }
+
+    fn read_observed_geometry<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        geometry: &NtfsGeometry,
+        offset: u64,
+        output: &mut [u8],
+        budget: &mut StreamTransferBudget,
+        receipt: Option<&mut DirectReadReceipt>,
+    ) -> Result<()> {
         ensure!(
             !self.poisoned
                 && output.len() <= SESSION_READ_BYTES
@@ -3010,11 +3261,68 @@ impl PlainStreamRangeSession {
             &self.attribute,
             offset,
             output,
-            &raw.geometry,
+            geometry,
             &mut self.compression,
             receipt,
         )?;
         self.poisoned = false;
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    pub fn read_domain<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        raw: &PagedInspection,
+        offset: u64,
+        output: &mut [u8],
+        budget: &mut StreamTransferBudget,
+    ) -> Result<()> {
+        self.read_observed_geometry(reader, &raw.header().geometry, offset, output, budget, None)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn read_with_direct_receipts_domain<R: Read + Seek>(
+        &mut self,
+        reader: &mut R,
+        raw: &PagedInspection,
+        offset: u64,
+        output: &mut [u8],
+        budget: &mut StreamTransferBudget,
+    ) -> Result<DirectReadReceipt> {
+        let mut receipt = DirectReadReceipt::new();
+        self.read_observed_geometry(
+            reader,
+            &raw.header().geometry,
+            offset,
+            output,
+            budget,
+            Some(&mut receipt),
+        )?;
+        Ok(receipt)
+    }
+
+    #[cfg(windows)]
+    pub fn finish_domain<R: Read + Seek>(
+        self,
+        reader: &mut R,
+        raw: &PagedInspection,
+    ) -> Result<()> {
+        ensure!(!self.poisoned, "failed plain stream session cannot finish");
+        let (after, expected) = checked_data_attribute_domain(
+            reader,
+            raw,
+            self.record_number,
+            &self.stream_name_utf16,
+            self.stream_length(),
+            self.allow_sparse,
+        )?;
+        ensure!(
+            expected == self.expected
+                && after.report == self.attribute.report
+                && after.resident_value == self.attribute.resident_value,
+            "plain stream mapping changed around session",
+        );
         Ok(())
     }
     pub fn finish<R: Read + Seek>(self, reader: &mut R, raw: &NtfsInspection) -> Result<()> {

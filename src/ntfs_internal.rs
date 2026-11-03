@@ -13,6 +13,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek};
 
+#[cfg(windows)]
+#[path = "ntfs_internal_paged.rs"]
+mod paged;
+#[cfg(windows)]
+pub use paged::{PagedVerifiedIndexes, verify_domain};
+
 #[derive(Debug, Serialize)]
 pub struct IndexState {
     pub role: String,
@@ -69,6 +75,12 @@ impl InternalVolumeObjectId {
     pub fn binds(&self, raw: &NtfsInspection) -> bool {
         serde_json::to_vec(raw)
             .is_ok_and(|bytes| hex::encode(Sha256::digest(bytes)) == self.inspection_sha256)
+    }
+    #[cfg(windows)]
+    pub fn binds_domain(&self, source: &ntfs_inspect::PagedInspection) -> bool {
+        source
+            .canonical_sha256()
+            .is_ok_and(|hash| hash == self.inspection_sha256)
     }
     pub fn record_number(&self) -> u64 {
         self.record_number

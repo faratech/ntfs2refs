@@ -13,6 +13,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom};
 
+#[cfg(windows)]
+pub mod resource;
+
 pub const FULL_KIND: &str = "ntfs_allocated_ranges_xxh3_128_4mib_pieces";
 pub const EXTENT_KIND: &str = "ntfs_metadata_and_extent_fingerprint_v1";
 const DOMAIN: &[u8] = b"ntfs2refs/source/metadata-and-extents/v1\0";

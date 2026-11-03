@@ -2,6 +2,8 @@
 //! source admission, a conversion plan or authority to modify the NTFS source.
 #[cfg(windows)]
 pub mod pages;
+#[cfg(windows)]
+pub mod source_pages;
 use crate::{ntfs_admission, ntfs_inspect as ntfs, ntfs_security, ntfs_stream_plan};
 use anyhow::{Context, Result, ensure};
 pub use n2r_win32::sparse_layout::{LogicalRange, SparseLayout};
@@ -236,6 +238,8 @@ mod expected_domain_sealed {
     impl Sealed for super::PagedExpectedTree {}
     #[cfg(windows)]
     impl Sealed for super::ExpectedTreeView<'_> {}
+    #[cfg(windows)]
+    impl Sealed for super::source_pages::SourceExpectedDomain {}
 }
 pub trait ExpectedObjectDomain: Serialize + expected_domain_sealed::Sealed {
     fn object_count(&self) -> usize;

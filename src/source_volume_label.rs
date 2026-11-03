@@ -20,14 +20,54 @@ pub fn verify<R: Read + Seek>(
 ) -> Result<FrozenLabelProof> {
     captured.validate()?;
     let files: Vec<_> = raw.files.iter().filter(|f| f.record_number == 3).collect();
+    ensure!(files.len() == 1, "frozen $Volume identity differs");
+    verify_file(
+        files[0],
+        captured,
+        |attribute| {
+            ntfs_inspect::read_resident_inventory_attribute(reader, raw, files[0], attribute)
+        },
+        || Ok(hex::encode(Sha256::digest(serde_json::to_vec(raw)?))),
+    )
+}
+
+#[cfg(windows)]
+pub fn verify_domain<R: Read + Seek>(
+    reader: &mut R,
+    source: &ntfs_inspect::PagedInspection,
+    captured: &VolumeLabel,
+) -> Result<FrozenLabelProof> {
+    use crate::ntfs_inspect::RootFileDomain;
+    captured.validate()?;
+    source.revalidate()?;
+    let file = source
+        .find_record(3, None)?
+        .ok_or_else(|| anyhow::anyhow!("frozen $Volume absent"))?;
+    let mapping = ntfs_inspect::CheckedMftDomain::open(reader, source)?;
+    mapping.verify_record(reader, source, 3)?;
+    let result = verify_file(
+        &file,
+        captured,
+        |attribute| mapping.resident_attribute(reader, source, &file, attribute),
+        || source.canonical_sha256(),
+    )?;
+    source.revalidate()?;
+    Ok(result)
+}
+
+fn verify_file(
+    file: &ntfs_inspect::FileInventory,
+    captured: &VolumeLabel,
+    mut read_resident: impl FnMut(&ntfs_inspect::AttributeInventory) -> Result<Vec<u8>>,
+    fingerprint: impl FnOnce() -> Result<String>,
+) -> Result<FrozenLabelProof> {
     ensure!(
-        files.len() == 1
-            && files[0].metadata_role == MetadataRole::ReservedSystemRecord
-            && files[0].base_file_reference == 0
-            && !files[0].is_directory,
+        file.metadata_role == MetadataRole::ReservedSystemRecord
+            && file.base_file_reference == 0
+            && !file.is_directory,
         "frozen $Volume identity differs"
     );
-    let attributes: Vec<_> = files[0]
+    let attributes: Vec<_> = file
         .attributes
         .iter()
         .filter(|a| a.type_code == 0x60)
@@ -44,8 +84,7 @@ pub fn verify<R: Read + Seek>(
                 && attribute.logical_size.is_multiple_of(2),
             "unsupported persisted NTFS volume-name form"
         );
-        let bytes =
-            ntfs_inspect::read_resident_inventory_attribute(reader, raw, files[0], attribute)?;
+        let bytes = read_resident(attribute)?;
         let label = VolumeLabel::from_utf16(
             bytes
                 .as_chunks::<2>()
@@ -65,7 +104,7 @@ pub fn verify<R: Read + Seek>(
     Ok(FrozenLabelProof {
         label,
         volume_name_attribute_present: !attributes.is_empty(),
-        inspection_sha256: hex::encode(Sha256::digest(serde_json::to_vec(raw)?)),
+        inspection_sha256: fingerprint()?,
         resident_value_sha256: value_hash,
     })
 }

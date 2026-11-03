@@ -82,7 +82,7 @@ struct SparseCandidate {
 }
 
 fn sparse_candidate(
-    raw: &NtfsInspection,
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
     file: &FileInventory,
     stream: &StreamInventory,
 ) -> Result<SparseCandidate> {
@@ -111,7 +111,7 @@ fn sparse_candidate(
             && attribute.allocated_size == stream.allocated_size,
         "sparse stream inventory differs from its attribute"
     );
-    let cluster = u64::from(raw.geometry.cluster_size);
+    let cluster = u64::from(geometry.cluster_size);
     ensure!(
         cluster >= CLUSTER && cluster.is_multiple_of(CLUSTER),
         "sparse source geometry differs"
@@ -143,7 +143,7 @@ fn sparse_candidate(
                 offset.is_multiple_of(cluster)
                     && offset
                         .checked_add(extent.length)
-                        .is_some_and(|end| end <= raw.geometry.volume_size),
+                        .is_some_and(|end| end <= geometry.volume_size),
                 "sparse physical run escapes the source"
             );
             physical_bytes = physical_bytes
@@ -248,93 +248,25 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
         .enumerate()
     {
         for stream in &file.streams {
-            let named = !stream.name_utf16.is_empty();
-            let sparse_requested = stream.flags == 0x8000;
-            let compressed = crate::ntfs_admission::compressed_stream_supported(raw, file, stream);
-            let sparse = sparse_requested
-                .then(|| sparse_candidate(raw, file, stream))
-                .and_then(|value| value.ok());
-            let complete = crate::ntfs_attestation::source_stream_evidence_valid(raw, file, stream)
-                .unwrap_or(false);
-            let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
-            let physical = single.and_then(|e| e.physical_offset);
-            let full_prefix = stream.initialized_size.min(stream.logical_size) / CLUSTER * CLUSTER;
-            let rounded = stream.logical_size.checked_next_multiple_of(CLUSTER);
-            let mut covered = 0u64;
-            let physical_runs = !stream.extents.is_empty()
-                && stream.extents.len() <= 1024
-                && stream.extents.iter().all(|extent| {
-                    let valid = extent.logical_offset == covered
-                        && extent.length > 0
-                        && extent.length.is_multiple_of(CLUSTER)
-                        && extent.physical_offset.is_some_and(|offset| {
-                            offset.is_multiple_of(CLUSTER)
-                                && offset
-                                    .checked_add(extent.length)
-                                    .is_some_and(|end| end <= raw.geometry.volume_size)
-                        });
-                    let Some(next) = covered.checked_add(extent.length) else {
-                        return false;
-                    };
-                    covered = next;
-                    valid
-                })
-                && covered == stream.allocated_size;
-            let adoptable_prefix = !stream.resident
-                && stream.flags == 0
-                && full_prefix > 0
-                && stream.initialized_size <= stream.logical_size
-                // NTFS may reserve clusters beyond logical EOF. Account for
-                // the complete physical allocation, but retain only full
-                // initialized logical clusters, never the unused reservation.
-                && rounded.is_some_and(|minimum| {
-                    stream.allocated_size >= minimum
-                        && stream.allocated_size.is_multiple_of(CLUSTER)
-                })
-                && physical_runs;
-            let (mut disposition, mut reason) = if !resources
-                .supports_source_geometry(&raw.geometry)
-                || (stream.flags != 0 && sparse.is_none() && !compressed)
-                || (named && !crate::ntfs_admission::valid_named_stream_name(&stream.name_utf16))
-                || plan.streams.len() >= crate::ntfs_admission::MAX_DATA_STREAMS
-                || !complete
-                || stream.logical_size > limits.maximum_stream_bytes
-                || (resources != ResourceProfile::AlphaV1 && file_index >= limits.maximum_files)
-            {
-                (
-                    Disposition::Reject,
-                    "source geometry, encoding, logical hash or bounded copy is unsupported",
-                )
-            } else if compressed {
-                (
-                    Disposition::MaterializeCandidate,
-                    "NTFS LZNT1 is decoded and rewritten as ordinary ReFS data; compressed physical bytes cannot be adopted",
-                )
-            } else if let Some(sparse) = &sparse {
-                (
-                    if sparse.retained == stream.logical_size {
-                        Disposition::RetainCandidate
-                    } else {
-                        Disposition::MixedCandidate
-                    },
-                    "sparse physical islands may be retained; holes and VDL zeros remain logical absence",
-                )
-            } else if adoptable_prefix && full_prefix == stream.logical_size {
-                (
-                    Disposition::RetainCandidate,
-                    "initialized aligned physical runs may be adopted",
-                )
-            } else if adoptable_prefix {
-                (
-                    Disposition::MixedCandidate,
-                    "complete initialized physical clusters may be retained; partial or uninitialized tail must be materialized",
-                )
-            } else {
-                (
-                    Disposition::MaterializeCandidate,
-                    "logical stream requires new ReFS allocation or inline data",
-                )
-            };
+            let PreparedCandidate {
+                mut disposition,
+                mut reason,
+                sparse,
+                full_prefix,
+                physical,
+                has_single,
+            } = candidate_source(
+                &raw.geometry,
+                file,
+                stream,
+                resources,
+                crate::ntfs_attestation::source_stream_evidence_valid(raw, file, stream)
+                    .unwrap_or(false),
+                crate::ntfs_admission::compressed_stream_supported(raw, file, stream),
+                plan.streams.len() < crate::ntfs_admission::MAX_DATA_STREAMS
+                    && (resources == ResourceProfile::AlphaV1 || file_index < limits.maximum_files),
+                1024,
+            );
             let increment = if let Some(sparse) = &sparse {
                 (sparse.retained, sparse.materialized)
             } else {
@@ -387,45 +319,248 @@ pub fn classify_with_resource_profile(raw: &NtfsInspection, resources: ResourceP
                     plan.sparse_zero_logical_bytes = zeros;
                 }
             }
-            plan.streams.push(StreamDecision {
-                record_number: file.record_number,
-                sequence_number: file.sequence_number,
-                name_utf16: stream.name_utf16.clone(),
-                logical_bytes: stream.logical_size,
-                logical_sha256: stream.logical_sha256.clone(),
-                source_offset: if disposition == Disposition::RetainCandidate && sparse.is_none() {
-                    physical
-                } else {
-                    None
-                },
-                source_extents: if disposition == Disposition::Reject {
-                    Vec::new()
-                } else if let Some(sparse) = &sparse {
-                    sparse.initialized_extents.clone()
-                } else if disposition == Disposition::MixedCandidate
-                    || (disposition == Disposition::RetainCandidate && single.is_none())
-                {
-                    stream
-                        .extents
-                        .iter()
-                        .filter_map(|extent| {
-                            (extent.logical_offset < full_prefix).then(|| Extent {
-                                logical_offset: extent.logical_offset,
-                                physical_offset: extent.physical_offset,
-                                length: extent.length.min(full_prefix - extent.logical_offset),
-                            })
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                },
-                sparse: sparse.as_ref().map(|s| s.layout.clone()),
+            plan.streams.push(finish_candidate(
+                file,
+                stream,
                 disposition,
-                target_named_stream_support_pending: false,
-                target_sparse_support_pending: false,
-                reason: reason.into(),
-            });
+                reason,
+                &sparse,
+                full_prefix,
+                physical,
+                has_single,
+            ));
         }
     }
     plan
+}
+
+struct PreparedCandidate {
+    disposition: Disposition,
+    reason: &'static str,
+    sparse: Option<SparseCandidate>,
+    full_prefix: u64,
+    physical: Option<u64>,
+    has_single: bool,
+}
+fn candidate_source(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    file: &FileInventory,
+    stream: &StreamInventory,
+    resources: ResourceProfile,
+    complete: bool,
+    compressed: bool,
+    within_counts: bool,
+    maximum_extents: usize,
+) -> PreparedCandidate {
+    let limits = resources.limits();
+    let named = !stream.name_utf16.is_empty();
+    let sparse_requested = stream.flags == 0x8000;
+
+    let sparse = sparse_requested
+        .then(|| sparse_candidate(geometry, file, stream))
+        .and_then(|value| value.ok());
+
+    let single = stream.extents.first().filter(|_| stream.extents.len() == 1);
+    let physical = single.and_then(|e| e.physical_offset);
+    let full_prefix = stream.initialized_size.min(stream.logical_size) / CLUSTER * CLUSTER;
+    let rounded = stream.logical_size.checked_next_multiple_of(CLUSTER);
+    let mut covered = 0u64;
+    let physical_runs = !stream.extents.is_empty()
+        && stream.extents.len() <= maximum_extents
+        && stream.extents.iter().all(|extent| {
+            let valid = extent.logical_offset == covered
+                && extent.length > 0
+                && extent.length.is_multiple_of(CLUSTER)
+                && extent.physical_offset.is_some_and(|offset| {
+                    offset.is_multiple_of(CLUSTER)
+                        && offset
+                            .checked_add(extent.length)
+                            .is_some_and(|end| end <= geometry.volume_size)
+                });
+            let Some(next) = covered.checked_add(extent.length) else {
+                return false;
+            };
+            covered = next;
+            valid
+        })
+        && covered == stream.allocated_size;
+    let adoptable_prefix = !stream.resident
+                && stream.flags == 0
+                && full_prefix > 0
+                && stream.initialized_size <= stream.logical_size
+                // NTFS may reserve clusters beyond logical EOF. Account for
+                // the complete physical allocation, but retain only full
+                // initialized logical clusters, never the unused reservation.
+                && rounded.is_some_and(|minimum| {
+                    stream.allocated_size >= minimum
+                        && stream.allocated_size.is_multiple_of(CLUSTER)
+                })
+                && physical_runs;
+    let (disposition, reason) = if !resources.supports_source_geometry(geometry)
+        || (stream.flags != 0 && sparse.is_none() && !compressed)
+        || (named && !crate::ntfs_admission::valid_named_stream_name(&stream.name_utf16))
+        || !within_counts
+        || !complete
+        || stream.logical_size > limits.maximum_stream_bytes
+    {
+        (
+            Disposition::Reject,
+            "source geometry, encoding, logical hash or bounded copy is unsupported",
+        )
+    } else if compressed {
+        (
+            Disposition::MaterializeCandidate,
+            "NTFS LZNT1 is decoded and rewritten as ordinary ReFS data; compressed physical bytes cannot be adopted",
+        )
+    } else if let Some(sparse) = &sparse {
+        (
+            if sparse.retained == stream.logical_size {
+                Disposition::RetainCandidate
+            } else {
+                Disposition::MixedCandidate
+            },
+            "sparse physical islands may be retained; holes and VDL zeros remain logical absence",
+        )
+    } else if adoptable_prefix && full_prefix == stream.logical_size {
+        (
+            Disposition::RetainCandidate,
+            "initialized aligned physical runs may be adopted",
+        )
+    } else if adoptable_prefix {
+        (
+            Disposition::MixedCandidate,
+            "complete initialized physical clusters may be retained; partial or uninitialized tail must be materialized",
+        )
+    } else {
+        (
+            Disposition::MaterializeCandidate,
+            "logical stream requires new ReFS allocation or inline data",
+        )
+    };
+    PreparedCandidate {
+        disposition,
+        reason,
+        sparse,
+        full_prefix,
+        physical,
+        has_single: single.is_some(),
+    }
+}
+
+/// One actual source stream under the resource-selected profile. The caller
+/// closes the complete admitted count domain and aggregate logical totals;
+/// this shares the legacy stream preservation/adoption decision, not its Vec.
+#[cfg(windows)]
+pub fn classify_stream_domain(
+    source: &crate::ntfs_inspect::PagedInspection,
+    file: &FileInventory,
+    stream: &StreamInventory,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<StreamDecision> {
+    use crate::ntfs_inspect::RootFileDomain;
+    admission.validate()?;
+    ensure!(
+        source.header().inventory_complete
+            && admission.mft_records == source.header().mft_record_count
+            && admission.raw_identities == source.file_count()
+            && file.record_number < source.header().mft_record_count
+            && !file.is_directory
+            && file.metadata_role == MetadataRole::OutsideExtendCandidate,
+        "stream candidate differs from the complete admitted source domain"
+    );
+    let complete = match stream.logical_hash_status {
+        crate::ntfs_inspect::LogicalHashStatus::Complete => stream
+            .logical_sha256
+            .as_deref()
+            .is_some_and(n2r_win32::content_digest::is_hex),
+        crate::ntfs_inspect::LogicalHashStatus::NotReadExtentIdentityV1 => {
+            stream.logical_sha256.is_none()
+                && crate::ntfs_attestation::extent_identity_stream_request_domain(
+                    source,
+                    file,
+                    stream,
+                    source.allocation().status
+                        == crate::ntfs_inspect::AllocationReconciliationStatus::ConsistentRawModel,
+                    true,
+                )?
+                .is_some()
+        }
+        _ => false,
+    };
+    let maximum_extents =
+        usize::try_from(admission.budget.max_row_bytes / std::mem::size_of::<Extent>() as u64)?;
+    let resources = ResourceProfile::ResourceBoundedV4(Some(admission));
+    let candidate = candidate_source(
+        &source.header().geometry,
+        file,
+        stream,
+        resources,
+        complete,
+        crate::ntfs_admission::compressed_stream_supported_with_geometry(
+            &source.header().geometry,
+            file,
+            stream,
+        ),
+        file.streams.len() as u64 <= admission.data_streams,
+        maximum_extents,
+    );
+    Ok(finish_candidate(
+        file,
+        stream,
+        candidate.disposition,
+        candidate.reason,
+        &candidate.sparse,
+        candidate.full_prefix,
+        candidate.physical,
+        candidate.has_single,
+    ))
+}
+fn finish_candidate(
+    file: &FileInventory,
+    stream: &StreamInventory,
+    disposition: Disposition,
+    reason: &str,
+    sparse: &Option<SparseCandidate>,
+    full_prefix: u64,
+    physical: Option<u64>,
+    has_single: bool,
+) -> StreamDecision {
+    StreamDecision {
+        record_number: file.record_number,
+        sequence_number: file.sequence_number,
+        name_utf16: stream.name_utf16.clone(),
+        logical_bytes: stream.logical_size,
+        logical_sha256: stream.logical_sha256.clone(),
+        source_offset: if disposition == Disposition::RetainCandidate && sparse.is_none() {
+            physical
+        } else {
+            None
+        },
+        source_extents: if disposition == Disposition::Reject {
+            Vec::new()
+        } else if let Some(sparse) = &sparse {
+            sparse.initialized_extents.clone()
+        } else if disposition == Disposition::MixedCandidate
+            || (disposition == Disposition::RetainCandidate && !has_single)
+        {
+            stream
+                .extents
+                .iter()
+                .filter_map(|extent| {
+                    (extent.logical_offset < full_prefix).then(|| Extent {
+                        logical_offset: extent.logical_offset,
+                        physical_offset: extent.physical_offset,
+                        length: extent.length.min(full_prefix - extent.logical_offset),
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        sparse: sparse.as_ref().map(|s| s.layout.clone()),
+        disposition,
+        target_named_stream_support_pending: false,
+        target_sparse_support_pending: false,
+        reason: reason.into(),
+    }
 }

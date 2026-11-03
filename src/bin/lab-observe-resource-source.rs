@@ -39,6 +39,12 @@ fn main() -> anyhow::Result<()> {
         /// Collect actual native rows through a physically read-only mount lease.
         #[arg(long)]
         native: bool,
+        /// Collect the live source proof, including VSS, backup, log and internal state.
+        #[arg(long, requires = "native")]
+        source_evidence: bool,
+        /// Construct and reopen complete expected-object pages from the same raw/native owners.
+        #[arg(long, requires = "native")]
+        project_tree: bool,
         #[arg(long)]
         verify_full_content: bool,
         /// Optional resource share, cross-checked against actual available RAM.
@@ -114,6 +120,89 @@ fn main() -> anyhow::Result<()> {
         }),
     )?;
     let mut events = Vec::new();
+    if args.source_evidence {
+        let mut phase = "source-start";
+        let attempt = ntfs2refs::general_source_admission::resource::ResourceSourceContext::collect_source_evidence(
+            binding, budget, policy, &args.output.join("live-source"), &mut events, &mut phase,
+        );
+        let mut context = match attempt {
+            Ok(value) => value,
+            Err(error) => {
+                save(
+                    &args.output.join("source-evidence-failure.json"),
+                    &serde_json::json!({
+                        "schema_version":1,"kind":"resource-live-source-evidence-failure",
+                        "phase":phase,"error":format!("{error:#}"),"events":events,
+                        "source_admitted":false,"execution_authorized":false,"conversion_qualified":false
+                    }),
+                )?;
+                return Err(error);
+            }
+        };
+        let source_gate = context.require_source_evidence();
+        let completion = (|| -> anyhow::Result<()> {
+            phase = "source-recheck";
+            context.recheck_source(&mut events)?;
+            if args.project_tree && source_gate.is_ok() {
+                phase = "expected-projection";
+                let projection_root = args.output.join("projection");
+                fs::create_dir(&projection_root)?;
+                let scratch =
+                    SourceScratch::new(SourceMetadataBudget::from_resource_budget(budget)?)?;
+                let admission = context.resource_admission();
+                let projected = ntfs2refs::shadow_tree::source_pages::SourceExpectedDomain::derive(
+                    context.inspection(),
+                    context.native().domain(),
+                    admission,
+                    &projection_root,
+                    &scratch,
+                )?;
+                let path = args.output.join("expected.pages");
+                let receipt = ntfs2refs::shadow_tree::PagedExpectedTree::create_with_resources(
+                    &projected, &path, admission,
+                )?;
+                let expected = ntfs2refs::shadow_tree::PagedExpectedTree::open_with_resources(
+                    &path,
+                    &receipt.file_sha256,
+                    &receipt.semantic_sha256,
+                    admission,
+                )?;
+                expected.validate_with_resource_profile(
+                    ntfs2refs::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission)),
+                )?;
+                save(&args.output.join("expected-manifest.json"), &receipt)?;
+            }
+            phase = "source-report";
+            save(
+                &args.output.join("source-evidence-result.json"),
+                &serde_json::json!({
+                    "schema_version":1,"kind":"resource-live-source-evidence",
+                    "phase":phase,"source_evidence_satisfied":source_gate.is_ok(),
+                    "source_evidence_error":source_gate.as_ref().err().map(|error| format!("{error:#}")),
+                    "report":context.report(),"events":events,
+                    "source_admitted":false,"execution_authorized":false,"conversion_qualified":false
+                }),
+            )?;
+            source_gate?;
+            Ok(())
+        })();
+        if let Err(error) = completion {
+            save(
+                &args.output.join("source-evidence-failure.json"),
+                &serde_json::json!({
+                    "schema_version":1,"kind":"resource-live-source-evidence-failure",
+                    "phase":phase,"error":format!("{error:#}"),"events":events,
+                    "source_admitted":false,"execution_authorized":false,"conversion_qualified":false
+                }),
+            )?;
+            return Err(error);
+        }
+        println!(
+            "{}",
+            args.output.join("source-evidence-result.json").display()
+        );
+        return Ok(());
+    }
     let mut source = GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget(
         binding.clone(),
         budget,
@@ -177,6 +266,36 @@ fn main() -> anyhow::Result<()> {
                 "source_admitted":false,"execution_authorized":false
             }),
         )?;
+        if args.project_tree {
+            ensure!(
+                summary.all_supported_user_views_compatible,
+                "expected projection requires complete supported-user native agreement"
+            );
+            let projection_root = args.output.join("projection");
+            fs::create_dir(&projection_root)?;
+            let scratch = SourceScratch::new(SourceMetadataBudget::from_resource_budget(budget)?)?;
+            let projected = ntfs2refs::shadow_tree::source_pages::SourceExpectedDomain::derive(
+                &raw,
+                native.domain(),
+                admission,
+                &projection_root,
+                &scratch,
+            )?;
+            let path = args.output.join("expected.pages");
+            let receipt = ntfs2refs::shadow_tree::PagedExpectedTree::create_with_resources(
+                &projected, &path, admission,
+            )?;
+            let expected = ntfs2refs::shadow_tree::PagedExpectedTree::open_with_resources(
+                &path,
+                &receipt.file_sha256,
+                &receipt.semantic_sha256,
+                admission,
+            )?;
+            expected.validate_with_resource_profile(
+                ntfs2refs::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission)),
+            )?;
+            save(&args.output.join("expected-manifest.json"), &receipt)?;
+        }
         Some(summary)
     } else {
         None

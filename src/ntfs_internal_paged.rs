@@ -1,0 +1,669 @@
+//! Resource-backed verification of the same supported NTFS internal states.
+use super::*;
+use crate::ntfs_inspect::{
+    CheckedMftDomain, PagedInspection, RootFileDomain, SourceIndexRanges, SourceMetadataRange,
+    external_sort::ExternalSort,
+    paged_storage::{PagedMetadataRange, SourcePagePin, SourceScratch},
+    record_store::{RecordStorePin, SortedRecordStore, SortedRecordWriter},
+};
+use n2r_win32::attestation::NativeObservationDomain;
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+};
+
+#[derive(Debug, Serialize)]
+pub struct PagedIndexState {
+    pub role: String,
+    pub name: String,
+    pub record_number: u64,
+    pub root_sha256: String,
+    pub initialized_allocation_sha256: Option<String>,
+    pub bitmap_sha256: Option<String>,
+    pub index_blocks: u64,
+    pub entries: u64,
+    pub entry_evidence: RecordStorePin,
+    pub replacement_supported: bool,
+    pub detail: String,
+    pub root_pages: SourcePagePin,
+    pub allocation_pages: Option<SourcePagePin>,
+    pub bitmap_pages: Option<SourcePagePin>,
+}
+struct HeldIndexStorage {
+    root: PagedMetadataRange,
+    allocation: Option<PagedMetadataRange>,
+    bitmap: Option<PagedMetadataRange>,
+}
+/// Created only after actual source/index reads and complete joins. JSON pins
+/// are diagnostics; no deserializer can reconstruct this held proof owner.
+#[derive(Serialize)]
+pub struct PagedVerifiedIndexes {
+    inspection_sha256: String,
+    internal_volume_object_id: Option<InternalVolumeObjectId>,
+    pub indexes: Vec<PagedIndexState>,
+    pub default_quotas_only: bool,
+    pub native_quota_policy_bound: bool,
+    pub replacement_supported: bool,
+    #[serde(skip)]
+    stores: Vec<SortedRecordStore>,
+    #[serde(skip)]
+    ranges: Vec<HeldIndexStorage>,
+}
+impl PagedVerifiedIndexes {
+    pub fn binds_domain(&self, source: &PagedInspection) -> bool {
+        source
+            .canonical_sha256()
+            .is_ok_and(|hash| hash == self.inspection_sha256)
+    }
+    pub fn internal_volume_object_id(&self) -> Option<&InternalVolumeObjectId> {
+        self.internal_volume_object_id.as_ref()
+    }
+    pub fn covers_volume_object_id_domain(&self, source: &PagedInspection, record: u64) -> bool {
+        record == 3
+            && self.binds_domain(source)
+            && self.internal_volume_object_id.as_ref().is_some_and(|id| {
+                id.record_number == record && id.inspection_sha256 == self.inspection_sha256
+            })
+    }
+    pub fn bind_native_quota(
+        &mut self,
+        observed: &n2r_win32::GeneralLivePagedNtfsObservation,
+    ) -> bool {
+        let Some(native) = observed.txf() else {
+            return false;
+        };
+        let native = &native.observation;
+        if observed.domain().header().request.source_inspection_sha256 != self.inspection_sha256
+            || !self.default_quotas_only
+            || native.windows_version != [10, 0, 26300]
+            || native.rm_handle_profile != "volume-root-directory-physical-disk-read-only"
+            || !native
+                .quota_before
+                .as_ref()
+                .zip(native.quota_after.as_ref())
+                .is_some_and(|(a, b)| {
+                    a == b
+                        && a.control_flags == 0
+                        && a.default_threshold == -1
+                        && a.default_limit == -1
+                        && a.free_space_start_filtering == 0
+                        && a.free_space_threshold == 0
+                        && a.free_space_stop_filtering == 0
+                })
+        {
+            return false;
+        }
+        self.native_quota_policy_bound = true;
+        for index in &mut self.indexes {
+            if index.role == "$Extend\\$Quota" {
+                index.replacement_supported = true;
+                index.detail =
+                    "cross-matched unlimited defaults; native quotas disabled with zero accounting"
+                        .into();
+            }
+        }
+        self.replacement_supported = self.indexes.iter().all(|i| i.replacement_supported);
+        true
+    }
+    pub fn revalidate(&self) -> Result<()> {
+        for store in &self.stores {
+            store.revalidate()?;
+        }
+        for ranges in &self.ranges {
+            ranges.root.revalidate()?;
+            if let Some(a) = &ranges.allocation {
+                a.revalidate()?;
+            }
+            if let Some(b) = &ranges.bitmap {
+                b.revalidate()?;
+            }
+        }
+        Ok(())
+    }
+}
+struct IndexStorage {
+    root: Vec<u8>,
+    root_pin: SourcePagePin,
+    allocation: Option<SourcePagePin>,
+    bitmap: Option<SourcePagePin>,
+    initialized: u64,
+}
+fn record_key(number: u64) -> [u8; 16] {
+    let mut key = [0; 16];
+    key[..8].copy_from_slice(&number.to_be_bytes());
+    key
+}
+fn capture_attribute<R: Read + Seek>(
+    reader: &mut R,
+    source: &PagedInspection,
+    mapping: &CheckedMftDomain,
+    file: &ntfs_inspect::FileInventory,
+    attribute: &ntfs_inspect::AttributeInventory,
+    path: &Path,
+    tag: [u8; 8],
+    scratch: &SourceScratch,
+) -> Result<SourcePagePin> {
+    ensure!(
+        attribute.flags == 0 && attribute.compression_unit == 0 && attribute.lowest_vcn == 0,
+        "internal index requires plain assembled metadata"
+    );
+    let mut writer = scratch.writer(path, tag)?;
+    if attribute.resident {
+        let value = mapping.resident_attribute(reader, source, file, attribute)?;
+        writer.write_all(&value)?;
+    } else {
+        ntfs_inspect::validate_stream_mapping(attribute, &source.header().geometry)?;
+        ensure!(
+            attribute
+                .extents
+                .iter()
+                .all(|e| e.physical_offset.is_some()),
+            "sparse internal index metadata"
+        );
+        let window = (u64::from(scratch.budget().page_bytes) / 4).max(1);
+        let _ram = scratch.lease_ram(window)?;
+        let mut bytes = vec![0; window as usize];
+        let mut at = 0;
+        while at < attribute.logical_size {
+            let count = (attribute.logical_size - at).min(window) as usize;
+            bytes[..count].fill(0);
+            let initialized = attribute
+                .initialized_size
+                .saturating_sub(at)
+                .min(count as u64) as usize;
+            if initialized > 0 {
+                ntfs_inspect::read_nonresident_inventory_range(
+                    reader,
+                    attribute,
+                    at,
+                    &mut bytes[..initialized],
+                    &source.header().geometry,
+                )?;
+            }
+            writer.write_all(&bytes[..count])?;
+            at += count as u64;
+        }
+    }
+    writer.finish()
+}
+fn storage<R: Read + Seek>(
+    reader: &mut R,
+    source: &PagedInspection,
+    mapping: &CheckedMftDomain,
+    file: &ntfs_inspect::FileInventory,
+    name: &str,
+    role: &str,
+    ordinal: usize,
+    root: &Path,
+    scratch: &SourceScratch,
+) -> Result<IndexStorage> {
+    mapping.verify_record(reader, source, file.record_number)?;
+    let units: Vec<_> = name.encode_utf16().collect();
+    let mut attrs = file.attributes.iter().filter(|a| a.name_utf16 == units);
+    let named: Vec<_> = attrs.by_ref().collect();
+    let (index_root, allocation, bitmap) = if role == "$Extend\\$Reparse" {
+        let mut index_root = None;
+        let mut allocation = None;
+        let mut bitmap = None;
+        for a in &file.attributes {
+            if matches!(a.type_code, 0x90 | 0xa0 | 0xb0) {
+                ensure!(
+                    a.name_utf16 == units
+                        && a.flags == 0
+                        && a.lowest_vcn == 0
+                        && a.compression_unit == 0,
+                    "reparse index contains unknown, encoded or continued index"
+                );
+                let slot = match a.type_code {
+                    0x90 => &mut index_root,
+                    0xa0 => &mut allocation,
+                    _ => &mut bitmap,
+                };
+                ensure!(slot.replace(a).is_none(), "duplicate reparse index stream");
+            } else {
+                let metadata = matches!(a.type_code, 0x10 | 0x30 | 0x50)
+                    && a.resident
+                    && a.name_utf16.is_empty()
+                    && a.flags == 0;
+                let empty = a.type_code == 0x80
+                    && a.name_utf16.is_empty()
+                    && a.flags == 0
+                    && a.logical_size == 0
+                    && a.initialized_size == 0
+                    && a.allocated_size == 0
+                    && a.extents.is_empty();
+                ensure!(metadata || empty, "unexplained reparse-index file metadata");
+            }
+        }
+        (
+            index_root.context("reparse index root absent")?,
+            allocation,
+            bitmap,
+        )
+    } else {
+        ensure!(
+            named.len() == 1
+                && named[0].type_code == 0x90
+                && named[0].flags == 0
+                && named[0].lowest_vcn == 0
+                && named[0].compression_unit == 0,
+            "internal index exceeds resident-only replacement profile"
+        );
+        (named[0], None, None)
+    };
+    ensure!(index_root.resident, "internal index root must be resident");
+    let bytes = mapping.resident_attribute(reader, source, file, index_root)?;
+    let root_pin = PagedMetadataRange::capture(
+        &root.join(format!("index-{ordinal}-root.pages")),
+        *b"N2RIROOT",
+        &mut io::Cursor::new(&bytes),
+        bytes.len() as u64,
+        scratch,
+    )?;
+    ensure!(
+        allocation.is_some() == bitmap.is_some(),
+        "internal index allocation/bitmap pair incomplete"
+    );
+    if let Some(a) = allocation {
+        ensure!(
+            !a.resident
+                && a.logical_size > 0
+                && a.logical_size.is_multiple_of(4096)
+                && a.initialized_size <= a.logical_size,
+            "internal index allocation form differs"
+        );
+    }
+    if let Some(a) = bitmap {
+        ensure!(
+            a.initialized_size == a.logical_size,
+            "internal bitmap is uninitialized"
+        );
+    }
+    Ok(IndexStorage {
+        root: bytes,
+        root_pin,
+        allocation: allocation
+            .map(|a| {
+                capture_attribute(
+                    reader,
+                    source,
+                    mapping,
+                    file,
+                    a,
+                    &root.join(format!("index-{ordinal}-allocation.pages")),
+                    *b"N2RIALLO",
+                    scratch,
+                )
+            })
+            .transpose()?,
+        bitmap: bitmap
+            .map(|a| {
+                capture_attribute(
+                    reader,
+                    source,
+                    mapping,
+                    file,
+                    a,
+                    &root.join(format!("index-{ordinal}-bitmap.pages")),
+                    *b"N2RIBMAP",
+                    scratch,
+                )
+            })
+            .transpose()?,
+        initialized: allocation.map_or(0, |a| a.initialized_size),
+    })
+}
+#[derive(Serialize, serde::Deserialize, PartialEq, Eq)]
+struct ReparseBinding {
+    reference: u64,
+    tag: u32,
+}
+fn prefix_hash(range: &dyn SourceMetadataRange, length: u64) -> Result<String> {
+    ensure!(
+        length <= range.byte_len(),
+        "initialized internal index prefix escapes range"
+    );
+    let mut digest = Sha256::new();
+    let mut bytes = [0u8; 4096];
+    let mut at = 0;
+    while at < length {
+        let count = (length - at).min(bytes.len() as u64) as usize;
+        range.read_exact_at(at, &mut bytes[..count])?;
+        digest.update(&bytes[..count]);
+        at += count as u64;
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+pub fn verify_domain<R: Read + Seek>(
+    reader: &mut R,
+    source: &PagedInspection,
+    root: &Path,
+) -> Result<PagedVerifiedIndexes> {
+    source.revalidate()?;
+    let geometry = &source.header().geometry;
+    ensure!(
+        ntfs_index::supports_cluster_size(geometry.cluster_size)
+            && geometry.bytes_per_sector == 512
+            && geometry.file_record_size == 1024
+            && geometry.index_record_size == 4096,
+        "supported-cluster MFT scan with 512-byte sectors and4KiB indexes required"
+    );
+    ensure!(
+        !root.exists(),
+        "fresh internal-index evidence directory required"
+    );
+    fs::create_dir(root)?;
+    let scratch = source.metadata_scratch();
+    let _rows = scratch.lease_ram(
+        scratch
+            .budget()
+            .record_bytes
+            .checked_mul(8)
+            .context("index working RAM overflow")?,
+    )?;
+    let mapping = CheckedMftDomain::open(reader, source)?;
+    let mut selected: [Option<ntfs_inspect::FileInventory>; 3] = [None, None, None];
+    let mut object_id_count = 0u64;
+    let mut volume_id = None;
+    let mut expected_reparse =
+        SortedRecordWriter::new(&root.join("expected-reparse"), *b"N2RRPEXP", &scratch)?;
+    for ordinal in 0..source.file_count() {
+        let file = source.file(ordinal)?;
+        for attribute in file.attributes.iter().filter(|a| a.type_code == 0x40) {
+            object_id_count = object_id_count
+                .checked_add(1)
+                .context("object ID count overflow")?;
+            if object_id_count == 1 {
+                volume_id = Some((file.clone(), attribute.clone()));
+            }
+        }
+        if let Some(point) = crate::ntfs_reparse::file_point(&file)? {
+            ensure!(
+                file.sequence_number != 0 && file.record_number <= 0x0000_ffff_ffff_ffff,
+                "invalid reparse reference"
+            );
+            expected_reparse.push(
+                record_key(file.record_number),
+                &ReparseBinding {
+                    reference: file.record_number | (u64::from(file.sequence_number) << 48),
+                    tag: point.tag(),
+                },
+            )?;
+        }
+        if file.record_number >= 16
+            && file.metadata_role != ntfs_inspect::MetadataRole::ExtendDescendantCandidate
+        {
+            continue;
+        }
+        let role = ntfs_admission::paged::internal_role(source, &file)?;
+        let slot = match role.as_deref() {
+            Some("$Extend\\$ObjId") => 0,
+            Some("$Extend\\$Reparse") => 1,
+            Some("$Extend\\$Quota") => 2,
+            _ => continue,
+        };
+        ensure!(
+            selected[slot].replace(file).is_none(),
+            "duplicate internal index file role"
+        );
+    }
+    let expected_pin = expected_reparse.finish()?;
+    let expected = SortedRecordStore::open(&expected_pin, &scratch)?;
+    let mut indexes = Vec::new();
+    let mut stores = Vec::new();
+    let mut ranges = Vec::new();
+    let mut quota_owners = Vec::new();
+    let mut quota_ids = Vec::new();
+    let mut internal_volume_object_id = None;
+    for (ordinal, (role, name, profile, slot)) in [
+        ("$Extend\\$ObjId", "$O", Profile::OBJECT_ID, 0),
+        ("$Extend\\$Reparse", "$R", Profile::REPARSE, 1),
+        ("$Extend\\$Quota", "$O", Profile::QUOTA_OWNER, 2),
+        ("$Extend\\$Quota", "$Q", Profile::QUOTA_ID, 2),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let file = selected[slot]
+            .as_ref()
+            .context("missing internal index object")?;
+        let storage = storage(
+            reader, source, &mapping, file, name, role, ordinal, root, &scratch,
+        )?;
+        let root_range = PagedMetadataRange::open(&storage.root_pin, &scratch)?;
+        let allocation = storage
+            .allocation
+            .as_ref()
+            .map(|p| PagedMetadataRange::open(p, &scratch))
+            .transpose()?;
+        let bitmap = storage
+            .bitmap
+            .as_ref()
+            .map(|p| PagedMetadataRange::open(p, &scratch))
+            .transpose()?;
+        let mut writer = SortedRecordWriter::new(
+            &root.join(format!("index-{ordinal}-entries")),
+            *b"N2RINDEX",
+            &scratch,
+        )?;
+        let mut entry_count = 0u64;
+        let mut entries = Vec::new();
+        let mut actual_reparse = if slot == 1 {
+            Some(ExternalSort::new(
+                &root.join("actual-reparse"),
+                *b"N2RRPACT",
+                &scratch,
+            )?)
+        } else {
+            None
+        };
+        let mut previous = None;
+        let walked = ntfs_index::paged::walk_ranges(
+            SourceIndexRanges {
+                root: &root_range,
+                allocation: allocation.as_ref().map(|r| r as &dyn SourceMetadataRange),
+                bitmap: bitmap.as_ref().map(|r| r as &dyn SourceMetadataRange),
+                initialized_allocation_bytes: storage.initialized,
+            },
+            profile,
+            geometry.cluster_size,
+            &scratch,
+            &root.join(format!("index-{ordinal}.visited")),
+            |_, key, value| {
+                writer.push(
+                    record_key(entry_count),
+                    &IndexEntry {
+                        key_hex: hex::encode(key),
+                        value_hex: hex::encode(value),
+                    },
+                )?;
+                entry_count = entry_count
+                    .checked_add(1)
+                    .context("internal index count overflow")?;
+                if let Some(sort) = &mut actual_reparse {
+                    ensure!(
+                        key.len() == 12 && value.is_empty(),
+                        "invalid reparse index key/value shape"
+                    );
+                    let tag = u32::from_le_bytes(key[..4].try_into()?);
+                    let low = u32::from_le_bytes(key[4..8].try_into()?);
+                    let high = u32::from_le_bytes(key[8..12].try_into()?);
+                    let order = (tag, low, high);
+                    ensure!(
+                        previous.is_none_or(|p| p < order),
+                        "reparse index ordering differs"
+                    );
+                    previous = Some(order);
+                    let reference = u64::from(low) | (u64::from(high) << 32);
+                    ensure!(reference >> 48 != 0, "zero reparse sequence");
+                    sort.push(
+                        record_key(reference & 0x0000_ffff_ffff_ffff),
+                        &ReparseBinding { reference, tag },
+                    )?;
+                } else {
+                    // These three indexes deliberately retain the same resident-
+                    // root-only profile, so this is one <=4KiB node, not an N table.
+                    entries.push((key.to_vec(), value.to_vec()));
+                }
+                Ok(())
+            },
+        )?;
+        let entry_pin = writer.finish()?;
+        let entry_store = SortedRecordStore::open(&entry_pin, &scratch)?;
+        let supported = if slot == 0 {
+            if object_id_count == 1 && entries.len() == 1 {
+                if let Some((volume, attribute)) = &volume_id {
+                    internal_volume_object_id = volume_identity(
+                        reader,
+                        source,
+                        &mapping,
+                        volume,
+                        attribute,
+                        file,
+                        &storage.root,
+                        &entries[0],
+                    )?;
+                }
+            }
+            internal_volume_object_id.is_some() || (object_id_count == 0 && entries.is_empty())
+        } else if slot == 1 {
+            let pin = actual_reparse
+                .take()
+                .context("reparse collector absent")?
+                .finish()?;
+            let actual = SortedRecordStore::open(&pin, &scratch)?;
+            let mut same = actual.len() == expected.len();
+            if same {
+                for i in 0..actual.len() {
+                    same &= actual.key(i)? == expected.key(i)?
+                        && actual.get::<ReparseBinding>(i)? == expected.get::<ReparseBinding>(i)?;
+                }
+            }
+            drop(actual);
+            scratch.retire_created(&pin.data)?;
+            scratch.retire_created(&pin.directory)?;
+            same
+        } else {
+            if name == "$Q" {
+                quota_ids = entries;
+            } else {
+                quota_owners = entries;
+            }
+            false
+        };
+        indexes.push(PagedIndexState {
+            role: role.into(),
+            name: name.into(),
+            record_number: file.record_number,
+            root_sha256: storage.root_pin.logical_sha256.clone(),
+            initialized_allocation_sha256: allocation
+                .as_ref()
+                .map(|a| prefix_hash(a, storage.initialized))
+                .transpose()?,
+            bitmap_sha256: storage.bitmap.as_ref().map(|p| p.logical_sha256.clone()),
+            index_blocks: walked.index_blocks,
+            entries: entry_count,
+            entry_evidence: entry_pin,
+            replacement_supported: supported,
+            detail: if supported {
+                "complete supported index state cross-matched"
+            } else {
+                "nondefault or unexplained internal state requires preservation/native policy"
+            }
+            .into(),
+            root_pages: storage.root_pin,
+            allocation_pages: storage.allocation,
+            bitmap_pages: storage.bitmap,
+        });
+        stores.push(entry_store);
+        ranges.push(HeldIndexStorage {
+            root: root_range,
+            allocation,
+            bitmap,
+        });
+    }
+    drop(expected);
+    scratch.retire_created(&expected_pin.data)?;
+    scratch.retire_created(&expected_pin.directory)?;
+    source.revalidate()?;
+    Ok(PagedVerifiedIndexes {
+        inspection_sha256: source.canonical_sha256()?,
+        internal_volume_object_id,
+        replacement_supported: indexes.iter().all(|i| i.replacement_supported),
+        default_quotas_only: quota_indexes_match(&quota_owners, &quota_ids),
+        native_quota_policy_bound: false,
+        indexes,
+        stores,
+        ranges,
+    })
+}
+
+fn volume_identity<R: Read + Seek>(
+    reader: &mut R,
+    source: &PagedInspection,
+    mapping: &CheckedMftDomain,
+    volume: &ntfs_inspect::FileInventory,
+    attribute: &ntfs_inspect::AttributeInventory,
+    index_file: &ntfs_inspect::FileInventory,
+    index_root: &[u8],
+    entry: &(Vec<u8>, Vec<u8>),
+) -> Result<Option<InternalVolumeObjectId>> {
+    let name: Vec<_> = "$O".encode_utf16().collect();
+    if volume.record_number != 3
+        || volume.sequence_number == 0
+        || volume.base_file_reference != 0
+        || volume.is_directory
+        || volume.hard_link_count != 1
+        || volume.metadata_role != ntfs_inspect::MetadataRole::ReservedSystemRecord
+        || volume.metadata_role_issue.is_some()
+        || ntfs_admission::paged::internal_role(source, volume)?.as_deref() != Some("$Volume")
+        || !attribute.resident
+        || !attribute.name_utf16.is_empty()
+        || attribute.flags != 0
+        || attribute.compression_unit != 0
+        || attribute.lowest_vcn != 0
+        || attribute.logical_size != 16
+        || attribute.initialized_size != 16
+        || attribute.allocated_size != 16
+        || !attribute.extents.is_empty()
+        || index_file.base_file_reference != 0
+        || index_file.sequence_number == 0
+        || index_file.metadata_role_issue.is_some()
+        || index_file.attributes.iter().any(|a| {
+            matches!(a.type_code, 0x20 | 0xa0 | 0xb0)
+                || (a.type_code == 0x90 && a.name_utf16 != name)
+        })
+    {
+        return Ok(None);
+    }
+    let value = mapping.resident_attribute(reader, source, volume, attribute)?;
+    let reference = volume.record_number | (u64::from(volume.sequence_number) << 48);
+    let (key, indexed) = entry;
+    if value.len() != 16
+        || value.iter().all(|b| *b == 0)
+        || key != &value
+        || indexed.len() != 56
+        || indexed[..8] != reference.to_le_bytes()
+        || indexed[8..] != [0; 48]
+    {
+        return Ok(None);
+    }
+    Ok(Some(InternalVolumeObjectId {
+        inspection_sha256: source.canonical_sha256()?,
+        record_number: volume.record_number,
+        sequence_number: volume.sequence_number,
+        attribute_instance: attribute.instance,
+        object_id_hex: hex::encode(&value),
+        object_id_sha256: hex::encode(Sha256::digest(&value)),
+        object_index_record_number: index_file.record_number,
+        object_index_sequence_number: index_file.sequence_number,
+        object_index_name: "$O",
+        object_index_root_sha256: hex::encode(Sha256::digest(index_root)),
+        object_index_value_sha256: hex::encode(Sha256::digest(indexed)),
+        file_reference: reference,
+        disposition: "replace-filesystem-internal-volume-identity",
+        same_refs_object_id_preserved: false,
+    }))
+}

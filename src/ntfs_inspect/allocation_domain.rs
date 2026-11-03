@@ -45,6 +45,151 @@ struct Interval {
     lcn: u64,
     clusters: u64,
 }
+
+fn query_domain(
+    store: &SortedRecordStore,
+    geometry: &super::NtfsGeometry,
+    summary: &PagedAllocationReconciliation,
+    offset: u64,
+    length: u64,
+    partition_bytes: u64,
+) -> Result<(u64, u64)> {
+    let pin = store.pin();
+    let original = &summary.physical_ownership;
+    ensure!(
+        summary.status == AllocationReconciliationStatus::ConsistentRawModel
+            && summary.domain_clusters == geometry.total_clusters
+            && store.len() == summary.physical_intervals
+            && pin.purpose == original.purpose
+            && pin.records == original.records
+            && pin.data.file_sha256 == original.data.file_sha256
+            && pin.directory.file_sha256 == original.directory.file_sha256,
+        "allocation query requires its actual reconciled held ownership index"
+    );
+    let cluster = u64::from(geometry.cluster_size);
+    ensure!(
+        cluster > 0
+            && cluster.is_power_of_two()
+            && length > 0
+            && (partition_bytes == geometry.volume_size
+                || geometry
+                    .volume_size
+                    .checked_add(u64::from(geometry.bytes_per_sector))
+                    == Some(partition_bytes)),
+        "allocation query geometry/partition boundary differs"
+    );
+    let end = offset
+        .checked_add(length)
+        .filter(|end| *end <= partition_bytes)
+        .context("allocation query escapes actual partition")?;
+    let domain = geometry
+        .total_clusters
+        .checked_mul(cluster)
+        .filter(|domain| *domain <= geometry.volume_size)
+        .context("allocation cluster domain overflow")?;
+    Ok((end, domain))
+}
+fn interval_bytes(
+    store: &SortedRecordStore,
+    ordinal: u64,
+    cluster: u64,
+    domain: u64,
+) -> Result<(u64, u64)> {
+    let row: Interval = store.get(ordinal)?;
+    ensure!(
+        store.key(ordinal)? == key(row.lcn, row.ordinal) && row.clusters > 0,
+        "held allocation interval key/length differs"
+    );
+    let start = row
+        .lcn
+        .checked_mul(cluster)
+        .context("allocation byte start overflow")?;
+    let end = row
+        .lcn
+        .checked_add(row.clusters)
+        .and_then(|end| end.checked_mul(cluster))
+        .filter(|end| *end <= domain)
+        .context("allocation byte end escapes bitmap domain")?;
+    Ok((start, end))
+}
+/// Count true NTFS-owned bytes. Reserved bootstrap/tail bytes are deliberately
+/// not invented as bitmap allocation; is_free_granule protects them separately.
+pub fn allocated_bytes_in(
+    store: &SortedRecordStore,
+    geometry: &super::NtfsGeometry,
+    summary: &PagedAllocationReconciliation,
+    offset: u64,
+    length: u64,
+    partition_bytes: u64,
+) -> Result<u64> {
+    let (end, domain) = query_domain(store, geometry, summary, offset, length, partition_bytes)?;
+    if offset >= domain {
+        return Ok(0);
+    }
+    let cluster = u64::from(geometry.cluster_size);
+    let (mut low, mut high) = (0, store.len());
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if interval_bytes(store, mid, cluster, domain)?.1 <= offset {
+            low = mid + 1
+        } else {
+            high = mid
+        }
+    }
+    let mut bytes = 0u64;
+    let mut prior_end = None;
+    for ordinal in low..store.len() {
+        let (start, finish) = interval_bytes(store, ordinal, cluster, domain)?;
+        if start >= end {
+            break;
+        }
+        ensure!(
+            prior_end.is_none_or(|prior| prior <= start),
+            "held physical ownership overlaps"
+        );
+        prior_end = Some(finish);
+        let first = start.max(offset);
+        let last = finish.min(end);
+        if first < last {
+            bytes = bytes
+                .checked_add(last - first)
+                .context("allocation query total overflow")?;
+        }
+    }
+    ensure!(bytes <= length, "allocation query exceeds requested range");
+    Ok(bytes)
+}
+pub fn require_allocated_range(
+    store: &SortedRecordStore,
+    geometry: &super::NtfsGeometry,
+    summary: &PagedAllocationReconciliation,
+    offset: u64,
+    length: u64,
+    partition_bytes: u64,
+) -> Result<()> {
+    ensure!(
+        allocated_bytes_in(store, geometry, summary, offset, length, partition_bytes)? == length,
+        "source range is not completely owned by the reconciled NTFS allocation"
+    );
+    Ok(())
+}
+pub fn is_free_granule(
+    store: &SortedRecordStore,
+    geometry: &super::NtfsGeometry,
+    summary: &PagedAllocationReconciliation,
+    offset: u64,
+    partition_bytes: u64,
+) -> Result<bool> {
+    let (end, domain) = query_domain(store, geometry, summary, offset, 4096, partition_bytes)?;
+    ensure!(
+        offset.is_multiple_of(4096),
+        "free-source query must be a complete aligned granule"
+    );
+    if partition_bytes < 4096 || offset < 4096 || end > partition_bytes - 4096 || end > domain {
+        return Ok(false);
+    }
+    Ok(allocated_bytes_in(store, geometry, summary, offset, 4096, partition_bytes)? == 0)
+}
 fn key(a: u64, b: u64) -> [u8; 16] {
     let mut key = [0; 16];
     key[..8].copy_from_slice(&a.to_be_bytes());

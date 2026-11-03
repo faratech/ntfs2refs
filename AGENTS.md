@@ -60,6 +60,27 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST source-arena VM observation: pinned experimental source `8831d738` and
+binary SHA256 `b0096aa3e842af78de7ec208fdbc9405a80c66f34aa639994c2a2d70f5d482ab`
+completed run `d79d5a4c79024b7da3bbbe6b057a8bd7` with native PID5168,
+birth1793683562259, exit0. Both actual source/native arena groups sealed;
+2,585 raw identities and 2,558 user objects were accounted for, with no
+unresolved source blockers. The source remained offline/read-only. Its closed
+archive SHA256 is `d733ffe13d5f86202c47a6f0966b4f482e4cac47d3b75ea7219cb1d2b528d582`.
+The first attempt safely failed on an ordinary/verbatim path mismatch; its
+archive SHA256 is `9f297cdedb7510df6b477ee46a4221790567f41d4c9da5eb5378becf41ed2674`.
+See `evidence/resource-source-arena-20261103.json`. The successful source code
+was committed and pushed at `151db0a`; subsequent RAM-ledger changes at
+`5d6410e`, `69eeccc`, and `3c69bff` compiled, but were not in that VM run.
+The VM is Off/RAM0 with original source checkpoint `001f7611-257f-4c5a-8c5b-560ce8faa68d`.
+This is source observation only: no conversion, recovery, or release qualification.
+
+Current uncommitted V4 target, journal, recovery and native-memory work remains
+experimental and gated. The target/recovery scaffolding compiled on the shared
+target, but has not passed a native conversion or power-loss recovery; trusted
+ticket issuance and full cross-stage memory accounting remain incomplete.
+Do not change the released `7feb4c0` alpha or infer its qualification for V4.
+
 USER BUILD-SPEED DIRECTION: Reuse ONE Cargo target directory for experimental
 builds: D:\code\ntfs2refs\target\shared-experiments. It was seeded by a
 verified same-volume move of the completed a6d generated target (388066812B);

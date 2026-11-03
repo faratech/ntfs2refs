@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "kind": "resource-paged-source-cache-comparison",
+  "scope": "raw and native source observation only; no conversion",
+  "source_checkpoint": "001f7611-257f-4c5a-8c5b-560ce8faa68d",
+  "vm_memory_bytes": 4294967296,
+  "vm_cpus": 4,
+  "allocated_physical_records": 2585,
+  "user_objects": 2558,
+  "baseline": {
+    "source_commit": "51910d3177acffae65c80365aff15cbb3103bad1",
+    "run_id": "546b84134d1d4f0c98d543fc3be3e2ed",
+    "native_exit": 0,
+    "matched_user_objects": 2558,
+    "raw_source_reader_bytes": 114626560,
+    "wall_seconds": 641.207,
+    "result_sha256": "92778044199ae1b68b39a99ec87079ec2241e385ca885afd9ccb10a650f1aa00",
+    "archive_sha256": "3253d0fc2cb148b9405a71a08480d76dab174a72ae27ca06e1bc54be255ab35e"
+  },
+  "candidate": {
+    "source_commit": "a6d68d2488cadc6f5efd0cd7e0c3d98dceac3496",
+    "run_id": "4f9d147d427d45eba09c5a9de528d1c6",
+    "native_pid": 4472,
+    "native_birth_unix_ms": 1793677894288,
+    "native_exit": 0,
+    "scheduled_task_result": 0,
+    "matched_user_objects": 2558,
+    "raw_source_reader_bytes": 114626560,
+    "wall_seconds": 51.209,
+    "result_sha256": "302bf18f7c0fefa97c8dcea8b008c49e647c7b0654dcabbaf8cb80f6b7829e6e",
+    "archive_sha256": "c73b7d3858a73a5151486f83f172daf9dd582640a2f38757f772cd96af22e1b2"
+  },
+  "physical_io_measured": false,
+  "host_cache_controlled": false,
+  "independent_full_content_hashes_added": false,
+  "conversion_performed": false,
+  "stable_release": false,
+  "qualification": "The same saved VM source was restored before each observation. Both passed the same raw/native source comparisons. Host caching and other system conditions were not controlled, so the observed timing difference is not a controlled hardware benchmark or a full-conversion speed result."
+}

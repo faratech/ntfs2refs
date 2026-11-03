@@ -48,6 +48,12 @@ must be completed before the public command selects this profile by default.
 Legacy schemas, entry points and their historical limits remain available for
 existing recovery and qualification evidence.
 
+On the same saved 2,585-record source, raw/native observation completed in
+641.207 seconds before and 51.209 seconds after the page-cache changes; both
+matched all 2,558 user objects and recorded the same raw-reader byte count.
+The host cache was not controlled. These are source-inspection observations,
+not a full-conversion benchmark. See the [record](../evidence/resource-paged-cache-comparison-20261103.json).
+
 Geometry and feature support remain explicit: the active raw namespace/security
 walker still interprets 512-byte NTFS sectors and 4 KiB index records. Dedicated
 GPT basic data disks remain required by whole-disk exclusion; a data partition

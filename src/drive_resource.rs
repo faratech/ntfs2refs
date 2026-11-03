@@ -108,13 +108,24 @@ pub(crate) fn convert_owned(
         println!("Preparing NTFS file placement to reduce recovery storage.");
         let prepass = (|| -> Result<()> {
             let available = n2r_win32::resource_native::observe_available_resources(run)?;
-            let scratch = aligned(available.scratch_available_bytes
-                .checked_sub(keep)
-                .and_then(|n| n.checked_sub(observer.remaining_reservation_bytes()))
-                .context("prealignment cannot preserve free-space and evidence reserves")?);
+            let scratch = aligned(
+                available
+                    .scratch_available_bytes
+                    .checked_sub(keep)
+                    .and_then(|n| n.checked_sub(observer.remaining_reservation_bytes()))
+                    .context("prealignment cannot preserve free-space and evidence reserves")?,
+            );
             let resources = budget(available, scratch, observer.ram_bytes())?;
             let evidence_remaining = observer.remaining_reservation_bytes();
-            preparation::run(&pair, &journal, run, resources, keep, evidence_remaining, &mut observer)
+            preparation::run(
+                &pair,
+                &journal,
+                run,
+                resources,
+                keep,
+                evidence_remaining,
+                &mut observer,
+            )
         })();
         if let Err(error) = prepass {
             if let Ok(evidence) = observer.finish() {
@@ -262,6 +273,177 @@ fn parse_sha(text: &str) -> Result<[u8; 32]> {
     Ok(bytes)
 }
 
+fn recovery_metadata_limit() -> Result<u64> {
+    let os = std::env::var("SystemRoot").context("Windows system directory unavailable")?;
+    let root = os.get(..3).context("Windows system volume unavailable")?;
+    let sampled = n2r_win32::resource_native::observe_available_resources(Path::new(root))?;
+    Ok(sampled.available_physical_bytes / 64)
+}
+
+/// Read-only protocol selection from the independently supplied pin. This
+/// neither classifies mutable guard state nor grants any native transition.
+pub(super) fn preparation_intent_matches(directory: &Path, sha: &str) -> Result<bool> {
+    let expected = parse_sha(sha)?;
+    let path = directory.join("preparation-intent.json");
+    ensure!(
+        path.is_absolute()
+            && !path
+                .components()
+                .any(|c| matches!(c, Component::CurDir | Component::ParentDir)),
+        "absolute preparation recovery directory required"
+    );
+    let maximum = recovery_metadata_limit()?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .custom_flags(0x0020_0000)
+        .open(&path)?;
+    let before =
+        n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;
+    ensure!(
+        before.file_bytes > 0 && before.number_of_links == 1,
+        "bounded ordinary preparation intent required"
+    );
+    let actual = n2r_win32::sha256_native::hash_range(&mut file, 0, before.file_bytes)?;
+    ensure!(
+        n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?
+            == before,
+        "preparation route changed during protocol selection"
+    );
+    Ok(actual == expected)
+}
+
+/// Cancel only an authenticated, still-unconsumed pre-AP preparation. A final
+/// publication, missing file, or serialized phase cannot recreate authority.
+pub(super) fn recover_preparation(directory: &Path, sha: &str, rollback: bool) -> Result<u8> {
+    ensure!(
+        rollback,
+        "unfinished preparation can only be cancelled with --rollback; it cannot resume conversion"
+    );
+    let intent = directory.join("preparation-intent.json");
+    let checksum = parse_sha(sha)?;
+    let routes = crate::resource_preparation::early_guard::inspect_routes(
+        &intent,
+        checksum,
+        recovery_metadata_limit()?,
+    )?;
+    if let Some(delegated) = &routes.delegated {
+        let recovery_directory = delegated
+            .path
+            .parent()
+            .context("delegated recovery publication has no parent directory")?;
+        anyhow::bail!(
+            "preparation cancellation is closed; use normal recovery: ntfs2refs --recover \"{}\" --recovery-sha256 {}",
+            recovery_directory.display(),
+            delegated.sha256
+        );
+    }
+    println!(
+        "Pinned source: disk {}, partition {}.\nPreparation directory: {}\nAction: cancel unfinished preparation and restore NTFS access.\nObserved preparation state: {}",
+        routes.source.disk_number,
+        routes.source.identity.partition_number,
+        directory.display(),
+        routes.phase
+    );
+    print!("Proceed with cancellation of this preparation? [y/N] ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().lock().take(65).read_line(&mut answer)?;
+    if answer.len() >= 65 || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        println!("Cancelled.");
+        return Ok(0);
+    }
+    let pair = GeneralSourceShadowBinding {
+        source: routes.source,
+        shadow: routes.shadow,
+    };
+    let journal = routes.journal;
+    for data in [&pair.source, &pair.shadow] {
+        ensure!(
+            journal.disk.disk_number != data.disk_number
+                && n2r_win32::layout::guid_bytes(&journal.disk.identity.disk_guid)?
+                    != n2r_win32::layout::guid_bytes(&data.identity.disk_guid)?,
+            "preparation recovery journal aliases a data disk"
+        );
+    }
+    let mounts = n2r_win32::capture_mount_paths_for_journal(&journal)?;
+    let root = mounts
+        .paths
+        .iter()
+        .find(|path| {
+            path.len() == 3
+                && path.as_bytes()[0].is_ascii_alphabetic()
+                && path.as_bytes()[1] == b':'
+                && path.as_bytes()[2] == b'\\'
+        })
+        .map(PathBuf::from)
+        .context("the original preparation journal needs a mounted local drive letter")?;
+    let space = n2r_win32::resource_native::observe_available_resources(&root)?;
+    let mut hash = Sha256::new();
+    hash.update(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_nanos()
+            .to_le_bytes(),
+    );
+    hash.update(std::process::id().to_le_bytes());
+    let id = hex::encode(hash.finalize());
+    let output = root.join(format!("ntfs2refs-preparation-cancel-{}", &id[..32]));
+    let _ancestry = crate::resource_preparation::create_external_output(&output, &journal)?;
+    let log = output.join("native-events.log");
+    let log_ram = FilePreparationObserver::required_ram(&log)?;
+    let keep = reserve(space.scratch_available_bytes);
+    let mut observer = FilePreparationObserver::create(
+        &log,
+        &pair,
+        &journal,
+        aligned(space.scratch_available_bytes / 64),
+        log_ram,
+        keep,
+    )?;
+    let result = (|| -> Result<serde_json::Value> {
+        let actual = n2r_win32::resource_native::observe_available_resources(&output)?;
+        let scratch = actual
+            .scratch_available_bytes
+            .checked_sub(keep)
+            .and_then(|n| n.checked_sub(observer.remaining_reservation_bytes()))
+            .context("preparation cancellation cannot preserve evidence and free-space reserves")?;
+        let resources = budget(actual, aligned(scratch / 2), observer.ram_bytes())?;
+        let mut events = Vec::new();
+        let cancelled = crate::resource_preparation::early_guard::cancel_preparation(
+            &intent,
+            checksum,
+            resources,
+            &mut events,
+        );
+        let recorded = observer.native_events("preparation-cancellation", &mut events);
+        let cancelled = cancelled?;
+        if let Err(error) = recorded {
+            eprintln!(
+                "Preparation cancellation completed; native evidence could not be recorded: {error}"
+            );
+        }
+        Ok(cancelled)
+    })();
+    match observer.finish() {
+        Ok(evidence) => {
+            if let Err(error) = save(&output.join("native-events-summary.json"), &evidence) {
+                eprintln!("Could not save preparation cancellation evidence: {error}");
+            }
+        }
+        Err(error) => eprintln!("Could not close preparation cancellation evidence: {error}"),
+    }
+    let cancelled = result?;
+    if let Err(error) = save(&output.join("result.json"), &cancelled) {
+        eprintln!("Preparation cancellation completed; its result could not be saved: {error}");
+    }
+    println!(
+        "Preparation cancellation completed. Records: {}",
+        output.display()
+    );
+    Ok(0)
+}
+
 #[derive(Deserialize)]
 struct RouteFile {
     path: PathBuf,
@@ -394,10 +576,12 @@ pub(crate) fn recover(directory: &Path, sha: &str, rollback: bool) -> Result<u8>
     // Do not create even the recovery output directory until the actual
     // journal device is independently disjoint from both data devices.
     for data in [&pair.source, &pair.shadow] {
-        ensure!(journal.disk.disk_number != data.disk_number
-            && n2r_win32::layout::guid_bytes(&journal.disk.identity.disk_guid)?
-                != n2r_win32::layout::guid_bytes(&data.identity.disk_guid)?,
-            "journal route aliases a source or shadow disk");
+        ensure!(
+            journal.disk.disk_number != data.disk_number
+                && n2r_win32::layout::guid_bytes(&journal.disk.identity.disk_guid)?
+                    != n2r_win32::layout::guid_bytes(&data.identity.disk_guid)?,
+            "journal route aliases a source or shadow disk"
+        );
     }
     let mut route_events = Vec::new();
     let mounts = n2r_win32::capture_mount_paths_for_journal(&journal)?;

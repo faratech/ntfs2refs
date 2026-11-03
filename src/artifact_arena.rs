@@ -158,6 +158,30 @@ pub(crate) struct PreparedArenaClosure {
     // All retained vectors/owners drop before returning their collection RAM.
     _ram: ArenaRamLease,
 }
+/// An immediate read-only validation boundary over the exact closed arena.
+/// This private runtime borrow cannot be serialized or survive its callback.
+/// Every covered file is fully hashed before and after the callback; nested
+/// checks may reuse that work only for the identical retained file owner.
+pub(crate) struct PreparedArenaRevalidation<'boundary> {
+    closure: &'boundary PreparedArenaClosure,
+}
+impl PreparedArenaRevalidation<'_> {
+    fn require_artifact(&self, artifact: &ArtifactLease) -> Result<()> {
+        ensure!(
+            self.closure.arena.same_arena(&artifact.group.arena)
+                && self.closure.ordinary.iter().any(|seal| {
+                    seal.permit.group == artifact.group.group
+                        && seal
+                            .pins
+                            .pins
+                            .iter()
+                            .any(|pin| Arc::ptr_eq(pin, &artifact.pin))
+                }),
+            "artifact is not the exact held owner in this prepared arena boundary"
+        );
+        artifact.pin.revalidate_identity()
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct ArenaUsage {
     pub promised_bytes: u64,
@@ -444,6 +468,30 @@ impl PreparedArenaClosure {
             }
         }
         Ok(())
+    }
+
+    /// Preserve exhaustive before/after content checks while allowing nested
+    /// read-only checks to recognize a covered actual file object. Neither the
+    /// witness nor a validation failure can authorize device access.
+    pub(crate) fn with_revalidation<T>(
+        &self,
+        callback: impl for<'boundary> FnOnce(
+            &'boundary PreparedArenaRevalidation<'boundary>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        self.revalidate()?;
+        let witness = PreparedArenaRevalidation { closure: self };
+        let result = callback(&witness);
+        // A raw/admin alias is possible even though ordinary writes are
+        // excluded. Always run the final full check, including callback errors.
+        let closing = self.revalidate();
+        match (result, closing) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(closing)) => Err(error.context(format!(
+                "prepared arena also failed its final complete validation: {closing:#}"
+            ))),
+        }
     }
 }
 impl ArtifactArena {
@@ -1361,6 +1409,25 @@ impl Drop for ArtifactPathPermit {
     }
 }
 impl FilePin {
+    fn revalidate_identity(&self) -> Result<()> {
+        // Native GUID-path observation can grow its UTF-16 and UTF-8 buffers
+        // to the Windows path bound. Prepay that transient identity workspace.
+        let _ram = self.arena.reserve_ram(256 * 1024)?;
+        let held = self
+            .file
+            .lock()
+            .map_err(|_| anyhow::anyhow!("artifact file lock poisoned"))?;
+        let file = held.as_ref().context("artifact owner closed")?;
+        ensure!(
+            reference_file::observe_reference_file_handle_with_limit(
+                file,
+                self.snapshot.file_bytes
+            )? == self.snapshot
+                && file.metadata()?.modified()? == self.modified,
+            "artifact held identity changed inside prepared arena boundary"
+        );
+        Ok(())
+    }
     fn revalidate(&self) -> Result<()> {
         let _hash_ram = self
             .arena
@@ -1409,6 +1476,14 @@ impl ArtifactLease {
     }
     pub fn revalidate(&self) -> Result<()> {
         self.pin.revalidate()
+    }
+    /// Reuse only the complete content check from the current non-escaping
+    /// closed-arena boundary; actual held-file identity is still observed now.
+    pub(crate) fn revalidate_with_arena_witness(
+        &self,
+        witness: &PreparedArenaRevalidation<'_>,
+    ) -> Result<()> {
+        witness.require_artifact(self)
     }
     pub fn retire(self) -> Result<()> {
         {

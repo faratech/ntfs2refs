@@ -187,6 +187,18 @@ impl ClosedCaptureLiteral {
         Ok(())
     }
     pub(crate) fn revalidate(&self) -> Result<()> {
+        self.revalidate_using(|artifact| artifact.revalidate())
+    }
+    fn revalidate_with_arena_witness(
+        &self,
+        witness: &crate::artifact_arena::PreparedArenaRevalidation<'_>,
+    ) -> Result<()> {
+        self.revalidate_using(|artifact| artifact.revalidate_with_arena_witness(witness))
+    }
+    fn revalidate_using(
+        &self,
+        validate_artifact: impl FnOnce(&crate::artifact_arena::ArtifactLease) -> Result<()>,
+    ) -> Result<()> {
         let mut file = self.file.borrow_mut();
         let position = file.stream_position()?;
         let modified = file.metadata()?.modified()?;
@@ -197,17 +209,17 @@ impl ClosedCaptureLiteral {
                 && self.artifact.sha256() == self.pin.sha256,
             "closed capture literal and actual hashed artifact identities differ"
         );
-        // The actual same-file artifact owner hashes every byte and checks
-        // its original identity/mtime around that one pass. The literal handle
-        // is a readonly duplicate of that same file object. Restore its cursor
-        // even if hashing fails, before propagating the failure.
-        let verified = self.artifact.revalidate();
+        // The actual same-file artifact owner either hashes here or proves
+        // membership in an immediate exhaustive arena hashing boundary. The
+        // literal handle is a readonly duplicate of that same file object.
+        // Restore its cursor on either result before propagating a failure.
+        let verified = validate_artifact(&self.artifact);
         file.seek(SeekFrom::Start(position))?;
         ensure!(
             n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, self.limit)?
                 == self.pin.snapshot
                 && file.metadata()?.modified()? == modified,
-            "closed capture literal identity changed around artifact hashing"
+            "closed capture literal identity changed around artifact validation"
         );
         verified
     }
@@ -275,6 +287,24 @@ impl DiagnosticSelectedCapture {
         self.revalidate()?;
         let witness = CaptureRevalidation { capture: self };
         callback(&witness)
+    }
+
+    /// Reuse the complete literal hash only inside an already active closed-
+    /// arena before/after boundary covering this exact runtime artifact owner.
+    /// Keep the index's full structural checks and both actual literal-handle
+    /// identity bookends. The enclosing arena always hashes all bytes again.
+    pub(crate) fn with_arena_revalidation<T>(
+        &self,
+        arena: &crate::artifact_arena::PreparedArenaRevalidation<'_>,
+        callback: impl for<'boundary> FnOnce(&'boundary CaptureRevalidation<'boundary>) -> Result<T>,
+    ) -> Result<T> {
+        self.index.revalidate()?;
+        self.literal.revalidate_with_arena_witness(arena)?;
+        let witness = CaptureRevalidation { capture: self };
+        let result = callback(&witness);
+        self.index.revalidate()?;
+        self.literal.revalidate_with_arena_witness(arena)?;
+        result
     }
 }
 

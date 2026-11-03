@@ -1,4 +1,5 @@
 //! Exclusive unchanged-source cancellation. No raw payload writer is exposed.
+pub mod preparation;
 use crate::{
     attestation_native::Privileges,
     general_layout::GeneralDiskBinding,

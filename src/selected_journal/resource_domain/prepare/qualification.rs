@@ -75,6 +75,8 @@ struct Publication<'a> {
     expected: ExpectedPin<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recovery_maps: Option<MapPin<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    early_preparation_guard: Option<crate::resource_preparation::early_guard::GuardPin>,
     ticket_sha256: String,
     expected_mount_paths: &'a [String],
     expected_source_label: &'a n2r_win32::volume_label::VolumeLabel,
@@ -152,18 +154,43 @@ fn require_owners(
     maps: Option<&V4RecoveryMaps>,
     locator: &mut super::super::durable_anchor::DurableRecoveryLocator,
     journal_receipt: Option<&super::super::reopen::PreparedJournalIndex>,
+    arena: Option<&crate::artifact_arena::PreparedArenaRevalidation<'_>>,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<()> {
     let capture = prepared.candidate.protected_proof().captured();
-    // Bracket this entire read-only owner and journal check with the same
-    // capture's complete content hash. Nested source/target/lifecycle checks
-    // reuse this non-escaping witness; none gains write authority from it.
-    capture.with_revalidation(|witness| {
-        require_owners_with_capture_witness(prepared, expected, maps, locator, journal_receipt, witness, events)
-    })?;
-    // Ordinary share-zero handles do not rule out raw/admin aliases. Hash the
-    // capture again after all nested checks, retaining the prior boundary.
-    capture.revalidate()
+    // The current exhaustive arena boundary hashes this exact retained literal
+    // before and after all nested work. Reuse only that immediate same-owner
+    // check; keep the capture index, native identity and lifecycle checks.
+    match arena {
+        Some(arena) => capture.with_arena_revalidation(arena, |witness| {
+            require_owners_with_capture_witness(
+                prepared,
+                expected,
+                maps,
+                locator,
+                journal_receipt,
+                witness,
+                events,
+            )
+        }),
+        // Publication runs before the arena can close. Keep its complete
+        // original capture checks; it has no enclosing immutable witness.
+        None => {
+            let result = capture.with_revalidation(|witness| {
+                require_owners_with_capture_witness(
+                    prepared,
+                    expected,
+                    maps,
+                    locator,
+                    journal_receipt,
+                    witness,
+                    events,
+                )
+            });
+            capture.revalidate()?;
+            result
+        }
+    }
 }
 
 fn require_owners_with_capture_witness(
@@ -247,15 +274,24 @@ fn require_owners_with_capture_witness(
     } else {
         // Before the live receipt exists, retain the complete original
         // payload/descriptor/COPY readback at each publication boundary.
-        let _memory = prepared.inner._domain.scratch.lease_ram(12 * BUFFER as u64)?;
+        let _memory = prepared
+            .inner
+            ._domain
+            .scratch
+            .lease_ram(12 * BUFFER as u64)?;
         let mut buffer = vec![0; BUFFER];
         let mut compare = vec![0; BUFFER];
         let (immutable, _) = validate_readback(
-            prepared.inner._domain, prepared.inner._journal, &prepared.inner.ticket,
-            &mut buffer, &mut compare,
+            prepared.inner._domain,
+            prepared.inner._journal,
+            &prepared.inner.ticket,
+            &mut buffer,
+            &mut compare,
         )?;
-        ensure!(immutable == prepared.inner.ticket.immutable_sha256,
-            "prepared journal immutable bytes changed before qualification");
+        ensure!(
+            immutable == prepared.inner.ticket.immutable_sha256,
+            "prepared journal immutable bytes changed before qualification"
+        );
     }
     prepared.revalidate_with_capture_witness(witness, events)
 }
@@ -341,7 +377,15 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             checkpoint_events(events)?;
             ensure!(events.is_empty(), "native event checkpoint did not drain");
         }
-        require_owners(&mut prepared, expected, maps.as_ref(), &mut locator, None, events)?;
+        require_owners(
+            &mut prepared,
+            expected,
+            maps.as_ref(),
+            &mut locator,
+            None,
+            None,
+            events,
+        )?;
         checkpoint_events(events)?;
         ensure!(events.is_empty(), "native event checkpoint did not drain");
         let expected_path = expected.final_path();
@@ -383,6 +427,14 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 },
                 records: m.records(),
             }),
+            // All new fresh conversions must carry their actual pre-freeze
+            // guard. None remains a reader compatibility form for older V4
+            // publications, never a new source-admission bypass.
+            early_preparation_guard: Some(
+                context
+                    .early_preparation_guard_pin()
+                    .context("fresh publication has no original preparation guard")?,
+            ),
             ticket_sha256: hex::encode(serialization_pin(&prepared.inner.ticket, 4096)?.1),
             expected_mount_paths: &context.mount_paths().paths,
             expected_source_label: context.expected_label(),
@@ -390,7 +442,15 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         };
         let (publication, checksum) =
             save_publication(group, path, &publication, scratch.budget().record_bytes)?;
-        require_owners(&mut prepared, expected, maps.as_ref(), &mut locator, None, events)?;
+        require_owners(
+            &mut prepared,
+            expected,
+            maps.as_ref(),
+            &mut locator,
+            None,
+            None,
+            events,
+        )?;
         checkpoint_events(events)?;
         ensure!(events.is_empty(), "native event checkpoint did not drain");
         let write_index = if prepared.inner.ticket.marker_profile.is_none() {
@@ -415,6 +475,17 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             // not gain a fresh writer from the markerless SDK transition.
             None
         };
+        // Retire pre-AP cancellation before the arena closes and before any
+        // public or diagnostic path can obtain a fresh apply issuer. Bind the
+        // actual volume-GUID route, so later drive-letter changes cannot name
+        // a different publication. This syncs and checks both real state copies.
+        prepared.context.delegate_preparation_guard(
+            Path::new(&publication.snapshot().final_path),
+            publication.sha256(),
+            events,
+        )?;
+        checkpoint_events(events)?;
+        ensure!(events.is_empty(), "native event checkpoint did not drain");
         // All recovery producers ran above. No future ordinary artifact
         // writes/reservations/retirement may be accepted through this closure.
         let closure = arena.close_prepared(prepared.inner._facts.journal_quota)?;
@@ -436,21 +507,27 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     }
 
     pub(crate) fn revalidate(&mut self, events: &mut Vec<n2r_win32::NativeEvent>) -> Result<()> {
-        self.closure.revalidate()?;
-        self.publication.revalidate()?;
-        self.checksum.revalidate()?;
-        if let Some(index) = &self.write_index {
-            index.require_ticket(&self.prepared.inner.ticket)?;
-        }
-        require_owners(
-            &mut self.prepared,
-            self.expected,
-            self.maps.as_ref(),
-            &mut self.locator,
-            self.write_index.as_ref(),
-            events,
-        )?;
-        self.closure.revalidate()
+        self.closure.with_revalidation(|arena| {
+            self.publication.revalidate()?;
+            self.checksum.revalidate()?;
+            self.prepared.context.require_preparation_delegated(
+                Path::new(&self.publication.snapshot().final_path),
+                self.publication.sha256(),
+                events,
+            )?;
+            if let Some(index) = &self.write_index {
+                index.require_ticket(&self.prepared.inner.ticket)?;
+            }
+            require_owners(
+                &mut self.prepared,
+                self.expected,
+                self.maps.as_ref(),
+                &mut self.locator,
+                self.write_index.as_ref(),
+                Some(arena),
+                events,
+            )
+        })
     }
 
     /// Consume the published preparation once. Only the original live source

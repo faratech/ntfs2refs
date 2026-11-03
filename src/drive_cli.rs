@@ -28,10 +28,10 @@ pub struct DriveArgs {
     /// Recover an interrupted run using its original saved conversion directory.
     #[arg(long, requires = "recovery_sha256", conflicts_with_all = ["list", "drive", "partition", "scratch_directory"])]
     pub recover: Option<PathBuf>,
-    /// Original recovery-bundle SHA-256 printed before source writes began.
+    /// Original recovery or preparation SHA-256 printed before source changes.
     #[arg(long, requires = "recover")]
     pub recovery_sha256: Option<String>,
-    /// Restore NTFS instead of completing ReFS recovery, before handoff only.
+    /// Restore NTFS, or cancel unfinished preparation, before handoff only.
     #[arg(long, requires = "recover")]
     pub rollback: bool,
     /// Accepted for compatibility: allocation-bounded conversion is the default.
@@ -333,22 +333,28 @@ mod windows {
     }
     pub(super) fn run(args: DriveArgs) -> Result<u8> {
         if let Some(directory) = args.recover {
-            if directory.join("recovery-envelope.json").exists() {
-                return super::resource::recover(
-                    &directory,
-                    &args
-                        .recovery_sha256
-                        .context("original recovery checksum required")?,
-                    args.rollback,
-                );
+            let checksum = args
+                .recovery_sha256
+                .context("original recovery checksum required")?;
+            let has_preparation = directory.join("preparation-intent.json").exists();
+            // A matching external pin selects the early-cancellation protocol,
+            // even if a later publication exists. Only its actual paired state
+            // and native owner can authorize cancellation; absence of an
+            // envelope is never permission to clear source exclusion.
+            if has_preparation
+                && super::resource::preparation_intent_matches(&directory, &checksum)?
+            {
+                return super::resource::recover_preparation(&directory, &checksum, args.rollback);
             }
-            return crate::drive_recovery::run(
-                &directory,
-                &args
-                    .recovery_sha256
-                    .context("original recovery checksum required")?,
-                args.rollback,
-            );
+            if directory.join("recovery-envelope.json").exists() {
+                return super::resource::recover(&directory, &checksum, args.rollback);
+            }
+            if has_preparation {
+                // Preserve a bad/missing pin as a hard refusal in its selected
+                // protocol. Do not fall back to a legacy recovery writer.
+                return super::resource::recover_preparation(&directory, &checksum, args.rollback);
+            }
+            return crate::drive_recovery::run(&directory, &checksum, args.rollback);
         }
         let inventory = drive_inventory::inventory_drives_readonly()?;
         if args.list {

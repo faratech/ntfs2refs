@@ -32,6 +32,7 @@ mod placement_evidence;
 
 pub(crate) mod abort;
 pub(crate) mod file_observer;
+pub(crate) mod early_guard;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent,
@@ -356,10 +357,22 @@ where
         "diagnostic arena must use the actual external journal volume"
     );
     let mut events = EventLog::new(observer);
+    let locator_group = arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?;
+    events.phase("early-preparation-guard");
+    let early_guard = early_guard::EarlyPreparationGuard::create(
+        &request.pair, &request.journal, request.resources, output, &arena, &locator_group, &mut events)?;
+    events.observer.note(&serde_json::json!({"kind":"resource-preparation-cancellation-anchor",
+        "intent":early_guard.pin(),"source_payload_writes_authorized":false}))?;
+    {
+        let pin = early_guard.pin();
+        println!("Preparation recovery: {}\nPreparation SHA-256: {}", pin.path.display(), pin.sha256);
+        std::io::stdout().flush()?;
+    }
+    events.checkpoint()?;
     events.phase("source-preparation");
     let mut phase = "source-start";
     let restore_on_failure = events.observer.restore_source_on_pre_ap_failure();
-    let source_result = ResourceSourceContext::prepare_with_failure_restore(
+    let source_result = ResourceSourceContext::prepare_with_guard(
         request.pair.source.clone(),
         request.resources,
         request.verification_policy,
@@ -368,6 +381,7 @@ where
         &mut events,
         &mut phase,
         restore_on_failure,
+        Some(early_guard),
     );
     events.phase(phase);
     let mut context = source_result?;
@@ -660,8 +674,6 @@ where
             None
         };
         events.checkpoint()?;
-        let locator_group =
-            arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?;
         let locator_scratch =
             SourceScratch::new_auxiliary_in_arena(source_budget, locator_group.clone())?;
         events.phase("durable-locator");
@@ -768,6 +780,9 @@ where
                     Err(cleanup) => Err(original.context(format!("conversion failed before AP; durable cancellation did not complete and source may remain excluded or already be online: {cleanup:#}"))),
                 }
             } else {
+                if context.early_preparation_delegated()? {
+                    return Err(original.context("preparation delegated to its durable final publication; preserve it and the excluded source for explicit authenticated recovery"));
+                }
                 if output.join("recovery-envelope.json").exists() {
                     return Err(original.context("publication may be partial; preserve it and the excluded source for explicit recovery"));
                 }

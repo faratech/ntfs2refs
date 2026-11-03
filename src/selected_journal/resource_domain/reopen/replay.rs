@@ -156,20 +156,30 @@ impl BoundJournalObservation<'_> {
         target_length: u64,
     ) -> Result<[u8; 32]> {
         self.observation.revalidate_index()?;
-        ensure!(self.observation.lifecycle()? == SelectedLifecycle::Aborted,
-            "durable abort is required before restored-source verification");
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::Aborted,
+            "durable abort is required before restored-source verification"
+        );
         let mut intent = [0u8; GRANULE as usize];
         at(self.observation.journal, GRANULE, &mut intent)?;
         let digest = if intent.iter().all(|&b| b == 0) {
             self.observation.check_target_reader(
-                target, target_length, Some(self.observation.ticket.old_selected_sha256), true,
+                target,
+                target_length,
+                Some(self.observation.ticket.old_selected_sha256),
+                true,
             )?
         } else {
-            self.observation.check_restored_reader(target, target_length)?
+            self.observation
+                .check_restored_reader(target, target_length)?
         };
-        ensure!(self.observation.lifecycle()? == SelectedLifecycle::Aborted,
-            "abort lifecycle changed during restored-source verification");
-        self.observation.journal.require_native_mount_barriers(self.observation.ticket)?;
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::Aborted,
+            "abort lifecycle changed during restored-source verification"
+        );
+        self.observation
+            .journal
+            .require_native_mount_barriers(self.observation.ticket)?;
         Ok(digest)
     }
 
@@ -180,23 +190,55 @@ impl BoundJournalObservation<'_> {
         target: &mut R,
         target_length: u64,
     ) -> Result<()> {
-        ensure!(self.observation.ticket.marker_profile.is_none()
-            && self.facts.marker_native_qualified.is_none(),
-            "clear abandonment supports markerless journals only");
+        self.abandon_clear_data_with_before_abort(target, target_length, || Ok(()))
+    }
+
+    /// The callback exists only inside this actual clear-journal/OLD-source
+    /// proof boundary. It may retire a preparation-only guard before ABT; no
+    /// saved phase or successful earlier observation can invoke it separately.
+    pub(super) fn abandon_clear_data_with_before_abort<R: Read + Seek>(
+        &mut self,
+        target: &mut R,
+        target_length: u64,
+        before_abort: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        ensure!(
+            self.observation.ticket.marker_profile.is_none()
+                && self.facts.marker_native_qualified.is_none(),
+            "clear abandonment supports markerless journals only"
+        );
         self.observation.revalidate_index()?;
-        ensure!(self.observation.lifecycle()? == SelectedLifecycle::PreparedClear,
-            "actual journal is not clear for abandonment");
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::PreparedClear,
+            "actual journal is not clear for abandonment"
+        );
         self.observation.check_target_reader(
-            target, target_length, Some(self.observation.ticket.old_selected_sha256), true,
+            target,
+            target_length,
+            Some(self.observation.ticket.old_selected_sha256),
+            true,
         )?;
-        ensure!(self.observation.lifecycle()? == SelectedLifecycle::PreparedClear,
-            "journal changed during clear-source verification");
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::PreparedClear,
+            "journal changed during clear-source verification"
+        );
+        before_abort()?;
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::PreparedClear,
+            "journal changed during preparation-guard retirement"
+        );
         sj::write_lifecycle_marker(
-            self.observation.journal, self.observation.ticket, MarkerKind::Aborted,
+            self.observation.journal,
+            self.observation.ticket,
+            MarkerKind::Aborted,
         )?;
-        ensure!(self.observation.lifecycle()? == SelectedLifecycle::Aborted,
-            "durable abandonment marker did not read back");
-        self.observation.journal.require_native_mount_barriers(self.observation.ticket)?;
+        ensure!(
+            self.observation.lifecycle()? == SelectedLifecycle::Aborted,
+            "durable abandonment marker did not read back"
+        );
+        self.observation
+            .journal
+            .require_native_mount_barriers(self.observation.ticket)?;
         Ok(())
     }
 }
@@ -346,9 +388,18 @@ impl JournalObservation<'_> {
         self.check_restored_reader(target, length)
     }
 
-    fn check_restored_reader<R: Read + Seek>(&mut self, target: &mut R, target_length: u64) -> Result<[u8; 32]> {
+    fn check_restored_reader<R: Read + Seek>(
+        &mut self,
+        target: &mut R,
+        target_length: u64,
+    ) -> Result<[u8; 32]> {
         let Some(expected) = self.ticket.old_restored_selected_sha256 else {
-            return self.check_target_reader(target, target_length, Some(self.ticket.old_selected_sha256), false);
+            return self.check_target_reader(
+                target,
+                target_length,
+                Some(self.ticket.old_selected_sha256),
+                false,
+            );
         };
         ensure!(
             target_length == self.ticket.image_length,

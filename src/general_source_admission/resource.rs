@@ -85,6 +85,7 @@ pub struct ResourceSourceReport<'a> {
     pub execution_authorized: bool,
 }
 pub struct ResourceSourceContext {
+    early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
     source: GeneralFrozenPartition,
     raw: PagedInspection,
     native: GeneralLivePagedNtfsObservation,
@@ -594,6 +595,32 @@ fn short_names(
             })
 }
 
+fn guarded_collection_failure(
+    source: GeneralFrozenPartition,
+    workspace: Option<&SourceRamLease>,
+    geometry: &ntfs_inspect::NtfsGeometry,
+    events: &mut Vec<NativeEvent>,
+    original: anyhow::Error,
+    mut guard: Option<&mut crate::resource_preparation::early_guard::EarlyPreparationGuard>,
+) -> anyhow::Error {
+    let intent_error = if workspace.is_some() {
+        guard.as_deref_mut().and_then(|g| g.mark_live_cancel_intent().err())
+    } else { None };
+    // Preserve the existing actual source/fingerprint/full-hash restoration.
+    let mut error = crate::resource_preparation::abort::after_collection_failure(
+        source, workspace, geometry, events, original);
+    if let Some(intent_error) = intent_error {
+        error = error.context(format!("durable early cancellation intent did not close: {intent_error:#}"));
+    } else if workspace.is_some() {
+        if let Some(guard) = guard {
+            if let Err(closing) = guard.mark_live_cancelled(events) {
+                error = error.context(format!("early cancellation remains unresolved; inspect the actual source and guard: {closing:#}"));
+            }
+        }
+    }
+    error
+}
+
 impl ResourceSourceContext {
     /// Real source-evidence pipeline only. It deliberately cannot clear the
     /// missing cross-stage arena/target gates or issue a source certificate.
@@ -605,7 +632,7 @@ impl ResourceSourceContext {
         events: &mut Vec<NativeEvent>,
         phase: &mut &'static str,
     ) -> Result<Self> {
-        Self::collect(binding, budget, policy, output, events, phase, None, false)
+        Self::collect(binding, budget, policy, output, events, phase, None, false, None)
     }
 
     /// Reserve real source and native groups before any source freeze or
@@ -632,6 +659,20 @@ impl ResourceSourceContext {
         phase: &mut &'static str,
         restore_on_failure: bool,
     ) -> Result<Self> {
+        Self::prepare_with_guard(binding, budget, policy, output, arena, events, phase, restore_on_failure, None)
+    }
+
+    pub(crate) fn prepare_with_guard(
+        binding: GeneralDiskBinding,
+        budget: ResourceBudget,
+        policy: VerificationPolicy,
+        output: &Path,
+        arena: &ArtifactArena,
+        events: &mut Vec<NativeEvent>,
+        phase: &mut &'static str,
+        restore_on_failure: bool,
+        guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
+    ) -> Result<Self> {
         ensure!(
             arena.budget() == budget,
             "source arena differs from the observed resource budget"
@@ -651,6 +692,7 @@ impl ResourceSourceContext {
             phase,
             Some((arena.clone(), source, native)),
             restore_on_failure,
+            guard,
         )
     }
     fn collect(
@@ -662,6 +704,7 @@ impl ResourceSourceContext {
         phase: &mut &'static str,
         groups: Option<(ArtifactArena, ArtifactGroupPermit, ArtifactGroupPermit)>,
         restore_on_failure: bool,
+        mut early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
     ) -> Result<Self> {
         binding.validate()?;
         budget.validate()?;
@@ -781,7 +824,9 @@ impl ResourceSourceContext {
         } else {
             None
         };
-        let source = if restore_on_failure {
+        let source = if let Some(guard) = &mut early_preparation_guard {
+            guard.isolate(binding.clone(), budget, events)?
+        } else if restore_on_failure {
             GeneralFrozenPartition::isolate_observed_ntfs_with_resource_budget_restore_on_error(
                 binding.clone(), budget, events,
             )?
@@ -1283,6 +1328,7 @@ impl ResourceSourceContext {
         // Move it only once the complete source context is ready to form.
         let source = source_slot.take().context("isolated source owner absent")?;
         let mut context = Self {
+            early_preparation_guard: early_preparation_guard.take(),
             source,
             raw,
             native,
@@ -1340,8 +1386,9 @@ impl ResourceSourceContext {
         Ok(())
         })();
         if let Err(error) = finishing {
-            return Err(crate::resource_preparation::abort::after_collection_failure(
+            return Err(guarded_collection_failure(
                 context.source, cleanup_workspace.as_ref(), &geometry, events, error,
+                context.early_preparation_guard.as_mut(),
             ));
         }
         Ok(context)
@@ -1349,8 +1396,9 @@ impl ResourceSourceContext {
         match result {
             Ok(context) => Ok(context),
             Err(error) => match source_slot.take() {
-                Some(source) => Err(crate::resource_preparation::abort::after_collection_failure(
+                Some(source) => Err(guarded_collection_failure(
                     source, cleanup_workspace.as_ref(), &geometry, events, error,
+                    early_preparation_guard.as_mut(),
                 )),
                 None => Err(error),
             },
@@ -1499,6 +1547,7 @@ impl ResourceSourceContext {
         Ok(proof)
     }
     pub fn revalidate_evidence(&self) -> Result<()> {
+        if let Some(guard) = &self.early_preparation_guard { guard.revalidate()?; }
         if let Some(output) = &self._output_basis {
             output.revalidate(
                 self.source.binding(),
@@ -1620,6 +1669,7 @@ impl ResourceSourceContext {
         checkpoint(events)?;
         ensure!(self.source.freeze_observation().is_some(),
             "pre-AP NTFS freeze witness was consumed");
+        if let Some(guard) = &mut self.early_preparation_guard { guard.mark_live_cancel_intent()?; }
         self.source.bring_original_online_unchanged(&sha, events)
             .context("original NTFS online transition failed; source may require rediscovery")?;
         checkpoint(events)?;
@@ -1627,12 +1677,29 @@ impl ResourceSourceContext {
         n2r_win32::volume_label::validate_original_partition(&binding, &mounted)?;
         ensure!(n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == "NTFS",
             "original source did not return as NTFS");
+        if let Some(guard) = &mut self.early_preparation_guard { guard.mark_live_cancelled(events)?; }
         checkpoint(events)?;
         Ok(mounted)
     }
 
     pub(crate) fn has_original_freeze_witness(&self) -> bool {
         self.source.freeze_observation().is_some()
+    }
+    pub(crate) fn early_preparation_guard_pin(&self) -> Option<crate::resource_preparation::early_guard::GuardPin> {
+        self.early_preparation_guard.as_ref().map(|guard| guard.pin())
+    }
+    pub(crate) fn delegate_preparation_guard(&mut self, publication: &Path, sha: &str,
+        events: &mut Vec<NativeEvent>) -> Result<()> {
+        self.early_preparation_guard.as_mut().context("fresh V4 preparation guard absent")?
+            .delegate(publication, sha, events)
+    }
+    pub(crate) fn require_preparation_delegated(&self, publication: &Path, sha: &str,
+        events: &mut Vec<NativeEvent>) -> Result<()> {
+        self.early_preparation_guard.as_ref().context("fresh V4 preparation guard absent")?
+            .require_delegated(publication, sha, events)
+    }
+    pub(crate) fn early_preparation_delegated(&self) -> Result<bool> {
+        self.early_preparation_guard.as_ref().map(|guard| guard.delegated()).transpose().map(|s| s.unwrap_or(false))
     }
     pub fn inspection(&self) -> &PagedInspection {
         &self.raw

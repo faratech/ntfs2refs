@@ -106,6 +106,26 @@ impl GeneralFrozenPartition {
         budget: crate::tree_resources::ResourceBudget,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
+        Self::isolate_preparation_inner(binding, budget, events, None)
+    }
+
+    /// Persist the actual post-lock boot witness through the held preparation
+    /// guard before dismount or the first persistent attribute mutation.
+    pub fn isolate_observed_ntfs_with_preparation_guard(
+        binding: GeneralDiskBinding,
+        budget: crate::tree_resources::ResourceBudget,
+        guard: &mut crate::source_cancel::preparation::PreparationGuard,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        Self::isolate_preparation_inner(binding, budget, events, Some(guard))
+    }
+
+    fn isolate_preparation_inner(
+        binding: GeneralDiskBinding,
+        budget: crate::tree_resources::ResourceBudget,
+        events: &mut Vec<NativeEvent>,
+        mut guard: Option<&mut crate::source_cancel::preparation::PreparationGuard>,
+    ) -> io::Result<Self> {
         budget.validate()?;
         if mounted_filesystem_general(binding.clone(), events)? != "NTFS" {
             return Err(invalid("observed source freeze requires mounted NTFS"));
@@ -133,6 +153,10 @@ impl GeneralFrozenPartition {
             locked = true;
             // FSCTL_LOCK_VOLUME flushed cached NTFS writes before this pin.
             original_boot = Some(boot(&mut management, &binding, &mut buffer)?);
+            if let Some(guard) = guard.as_deref_mut() {
+                guard.record_locked(&binding, &pre_lock,
+                    original_boot.as_ref().expect("post-lock boot captured"))?;
+            }
             control(volume.as_ref().expect("volume owner"), "general-dismount-volume", DISMOUNT, &[], 0, events)?;
             set_attributes(&management, OFFLINE | READ_ONLY, events)?;
             let frozen = general_disk_state(&management, &binding, events)?;
@@ -155,8 +179,17 @@ impl GeneralFrozenPartition {
                     return Err(io::Error::new(original.kind(), format!("source isolation stopped before its locked NTFS boot pin; no disk attributes were requested: {original}")));
                 };
                 let mut cleanup_events = Vec::new();
-                let cleanup = restore(&mut management, &mut volume, &binding, &pre_lock,
+                let intent_error = guard.as_deref_mut()
+                    .and_then(|g| g.mark_live_cancel_intent().err());
+                let mut cleanup = restore(&mut management, &mut volume, &binding, &pre_lock,
                     &original_boot, &mut buffer, &mut cleanup_events);
+                if cleanup.is_ok() {
+                    if let Some(error) = intent_error {
+                        cleanup = Err(error);
+                    } else if let Some(guard) = guard.as_deref_mut() {
+                        cleanup = guard.mark_live_cancelled(&mut cleanup_events);
+                    }
+                }
                 events.extend(cleanup_events);
                 return match cleanup {
                     Ok(()) => Err(io::Error::new(original.kind(), format!("source isolation failed; original NTFS availability restored: {original}"))),

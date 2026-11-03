@@ -156,8 +156,10 @@ pub(super) fn capture_attribute<R: Read + Seek>(
                 && a.initialized_size == a.logical_size
                 && a.allocated_size == a.logical_size
                 && a.resident_sha256.as_deref()
-                    == Some(hex::encode(Sha256::digest(value)).as_str()),
-            "resident metadata length, digest or allocation differs"
+                    == Some(n2r_win32::content_digest::of(value).as_str()),
+            "resident metadata length, digest or allocation differs (type {:#x}, name {:?})",
+            a.type_code,
+            a.name_utf16
         );
     } else {
         ensure!(

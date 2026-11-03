@@ -15,7 +15,8 @@ param(
     [ValidateRange(1073741824,17179869184)][long]$MaximumWorkingBytes = 4294967296,
     [ValidateRange(1,16)][int]$Jobs = 4,
     [switch]$IncludeFullSourceBaseline,
-    [switch]$IncludeResourceSourceObservation
+    [switch]$IncludeResourceSourceObservation,
+    [switch]$ResourceSourceObservationOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -27,6 +28,7 @@ $sourcePaths = @('Cargo.toml','Cargo.lock','rust-toolchain.toml','.cargo/config.
 $binaries = @('ntfs2refs','lab-selected-marker-native','lab-convert-native-composite','lab-recover-native-composite','lab-content-digest','lab-managed-shadow','lab-inspect-paged-metadata')
 if ($IncludeFullSourceBaseline) { $binaries += 'lab-capture-full-source-baseline' }
 if ($IncludeResourceSourceObservation) { $binaries += 'lab-observe-resource-source' }
+if ($ResourceSourceObservationOnly) { $binaries = @('lab-observe-resource-source') }
 $held = [Collections.Generic.List[IO.FileStream]]::new()
 $commands = [Collections.Generic.List[object]]::new()
 $created = $false

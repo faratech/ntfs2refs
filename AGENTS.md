@@ -12,17 +12,20 @@ Old CURRENT/LIVE labels and preserve-all instructions in those archives are hist
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
-LIVE resource reader: VM Running, parent001f7611-257f-4c5a-8c5b-560ce8faa68d,
-six snapshots, source disk1 offline/read-only. Task
-N2R-ResourceFixed-546b84134d1d4f0c98d543fc3be3e2ed is Running; actual native
-lab-observe-resource-source.exe PID3068, birth1793676486424, confirmed live.
-Worker PID1064, birth1793676485073. Source51910d3177acffae65c80365aff15cbb3103bad1,
-binary SHA546cc8ed3647138e7437833b9ae6c6a4604f83c741e05d500cadcd3c154c854d.
-Guest stage C:\ntfs2refs\resource-source-fixed-546b84134d1d4f0c98d543fc3be3e2ed;
-host dispatch/current-resource-fixed-run.json in .lab/development identifies case.
-No conversion, journal or payload writes authorized by this observation. Poll the
-SAME task and PID/birth; no restart/restore based on timeout. The published7feb
-alpha remains unchanged on its separate branch. Parallel resource code is WIP.
+LATEST resource reader result: task N2R-ResourceFixed-546b84134d1d4f0c98d543fc3be3e2ed
+actually completed Ready/0; native PID3068/birth1793676486424/exit0 in641.207s.
+Source51910d3177acffae65c80365aff15cbb3103bad1, binary SHA
+546cc8ed3647138e7437833b9ae6c6a4604f83c741e05d500cadcd3c154c854d.
+Complete raw+native user views matched2558 objects; allocated MFT records2585
+exceed the previous2048 raw ceiling. This is source observation ONLY, no source
+admission, conversion, journal or payload writes. Closed archive2047 metadata
+files/61,348,728B compressed4,108,453B SHA3253d0fc2cb148b9405a71a08480d76dab174a72ae27ca06e1bc54be255ab35e.
+ResultSHA92778044199ae1b68b39a99ec87079ec2241e385ca885afd9ccb10a650f1aa00.
+VM now Off/RAM0, parent001f7611-257f-4c5a-8c5b-560ce8faa68d, six snapshots;
+active branch is post-observation NTFS excluded3, original checkpoint001f retained.
+Root identified repeated metadata-page rescans/thrashing and added WIP bounded
+reader/cache improvements on the resource branch. They were NOT in519 and have
+not been measured. The published7feb alpha remains unchanged and separate.
 
 LATEST USER DIRECTION: finish and package the preserved working alpha; keep
 broader cap-removal development separate. Experimental prerelease published in

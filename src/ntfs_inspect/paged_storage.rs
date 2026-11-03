@@ -962,6 +962,15 @@ impl PagedMetadataRange {
         writer.finish()
     }
     pub fn open(pin: &SourcePagePin, scratch: &SourceScratch) -> Result<Self> {
+        for digest in [&pin.file_sha256, &pin.logical_sha256] {
+            ensure!(
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "source range requires canonical SHA-256 pins before allocation"
+            );
+        }
         ensure!(
             !scratch.is_poisoned()
                 && pin.page_budget.max_page_bytes <= scratch.budget().page_bytes

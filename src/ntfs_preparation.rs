@@ -1,6 +1,8 @@
 //! Optional NTFS-owned collision preparation before the converter's freeze.
 //! Every later inspection/certificate is obtained anew; this plan/log cannot
 //! authorize raw conversion or recovery. NTFS performs and journals all moves.
+pub(crate) mod resource;
+
 use crate::{ntfs_admission::ResourceProfile, ntfs_evacuation as planner, ntfs_inspect};
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{general_layout::GeneralDiskBinding, ntfs_preparation as mover};

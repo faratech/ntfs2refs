@@ -112,17 +112,25 @@ impl NativeJournalAllocationOwner {
             &self.file,
             self.expected.file_bytes,
         )?;
-        ensure!(
-            actual.final_path == self.expected.final_path
-                && actual.volume_serial_number == self.expected.volume_serial_number
-                && actual.file_id_128 == self.expected.file_id_128
-                && actual.file_bytes == self.expected.file_bytes
-                && actual.file_attributes == self.expected.file_attributes
-                && actual.number_of_links == 1
-                && actual.allocation_bytes >= actual.file_bytes
-                && actual.allocation_bytes <= self.maximum_allocation,
-            "live native journal allocation or same-file identity changed"
-        );
+        ensure!(actual.final_path == self.expected.final_path,
+            "live native journal same-file path changed");
+        ensure!(actual.volume_serial_number == self.expected.volume_serial_number,
+            "live native journal volume serial changed");
+        ensure!(actual.file_id_128 == self.expected.file_id_128,
+            "live native journal file identity changed");
+        ensure!(actual.file_bytes == self.expected.file_bytes,
+            "live native journal EOF changed: expected {}, actual {}",
+            self.expected.file_bytes, actual.file_bytes);
+        ensure!(actual.file_attributes == self.expected.file_attributes,
+            "live native journal attributes changed: expected {:#x}, actual {:#x}",
+            self.expected.file_attributes, actual.file_attributes);
+        ensure!(actual.number_of_links == 1,
+            "live native journal link count changed: {}", actual.number_of_links);
+        ensure!(actual.allocation_bytes >= actual.file_bytes
+            && actual.allocation_bytes <= self.maximum_allocation,
+            "live native journal allocation outside reserved bounds: allocation {}, EOF {}, maximum {}, initial allocation {}",
+            actual.allocation_bytes, actual.file_bytes, self.maximum_allocation,
+            self.expected.allocation_bytes);
         // Credit only the fixed logical length, not the variable allocation
         // slack: this remains conservative if allocation quanta are reclaimed.
         Ok((actual.allocation_bytes, actual.file_bytes))
@@ -568,7 +576,7 @@ impl BoundNativeCreationJournal {
             crate::artifact_arena::ArtifactGroup::NativeJournal,
             quota_bytes,
         )?;
-        let (journal, identity) = NativeSelectedJournal::create_new(
+        let (mut journal, identity) = NativeSelectedJournal::create_new(
             path,
             binding,
             profile,
@@ -577,6 +585,23 @@ impl BoundNativeCreationJournal {
             None,
         )?;
         let actual_path = journal.observed_guid_path(binding)?;
+        // Reserve before streaming the body: ordinary buffered NTFS growth
+        // can speculatively allocate beyond EOF until the final handle closes.
+        // The group quota is already held; no allocation credit is issued here.
+        if let Storage::Buffered(file) = &mut journal.storage {
+            let before = observe_general_journal_file_with_profile(file, binding, profile)?;
+            ensure!(marker_profile.is_none() && before.identity == identity
+                && before.file_bytes == 0 && before.number_of_links == 1,
+                "fresh buffered journal changed before preallocation");
+            n2r_win32::file_storage::preallocate_empty_file(file, expected_journal_length, quota_bytes)?;
+            let after = observe_general_journal_file_with_profile(file, binding, profile)?;
+            ensure!(after.identity == identity && after.identity == before.identity
+                && after.final_path == before.final_path && Path::new(&after.final_path) == actual_path.as_path()
+                && after.file_bytes == 0
+                && after.file_attributes == before.file_attributes && after.number_of_links == 1
+                && after.allocation_bytes >= expected_journal_length && after.allocation_bytes <= quota_bytes,
+                "preallocated buffered journal identity, EOF, or allocation changed");
+        }
         ensure!(
             source.state(events)? == source_before && shadow.state(events)? == shadow_before,
             "frozen source or shadow changed while creating native journal"

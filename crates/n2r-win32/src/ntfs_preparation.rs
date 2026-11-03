@@ -6,6 +6,8 @@
 //! After any submitted request, success or failure, the actual post-state is
 //! observed once. A failed/unverifiable submission poisons its source owner.
 
+pub mod resource;
+
 use crate::{
     attestation::{FileIdentity, PrivilegeState, ResourceProfile},
     attestation_native::Privileges,

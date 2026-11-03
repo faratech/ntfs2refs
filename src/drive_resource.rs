@@ -1,5 +1,7 @@
 //! Confirmed public V4 conversion. Planning uses observed local resources;
 //! only the live issuer may activate, and completion uses reopened native proof.
+#[path = "drive_preparation.rs"]
+mod preparation;
 use crate::{
     resource_preparation::{
         PreparationObserver, ResourcePreparationRequest, file_observer::FilePreparationObserver,
@@ -100,8 +102,33 @@ pub(crate) fn convert_owned(
         log_ram,
         keep,
     )?;
+    // The public CLI selects this policy for --minimize-scratch. Prealignment
+    // runs on live NTFS before the final frozen source certificate exists.
+    if selected_capacity_policy == SelectedCapacityPolicy::SourceFreeActualBytesV1 {
+        println!("Preparing NTFS file placement to reduce recovery storage.");
+        let prepass = (|| -> Result<()> {
+            let available = n2r_win32::resource_native::observe_available_resources(run)?;
+            let scratch = aligned(available.scratch_available_bytes
+                .checked_sub(keep)
+                .and_then(|n| n.checked_sub(observer.remaining_reservation_bytes()))
+                .context("prealignment cannot preserve free-space and evidence reserves")?);
+            let resources = budget(available, scratch, observer.ram_bytes())?;
+            let evidence_remaining = observer.remaining_reservation_bytes();
+            preparation::run(&pair, &journal, run, resources, keep, evidence_remaining, &mut observer)
+        })();
+        if let Err(error) = prepass {
+            if let Ok(evidence) = observer.finish() {
+                if let Err(save_error) = save(&run.join("native-events-summary.json"), &evidence) {
+                    eprintln!("Could not save event ledger summary: {save_error}");
+                }
+            }
+            return Err(error.context("NTFS prealignment failed; conversion was not started"));
+        }
+    }
     // Only the first small chunk exists. Preserve the full independent log
     // ceiling outside the arena's promises before allowing later growth.
+    // Resample after prealignment so the frozen conversion uses actual free
+    // space and a fresh view of the source's post-move layout.
     let available = n2r_win32::resource_native::observe_available_resources(run)?;
     let scratch = aligned(
         available

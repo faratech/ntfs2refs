@@ -12,10 +12,55 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError},
     Storage::FileSystem::{
-        FILE_DISPOSITION_INFO, FILE_STANDARD_INFO, FileDispositionInfo, FileStandardInfo,
+        FILE_DISPOSITION_INFO, FILE_STANDARD_INFO, FileAllocationInfo, FileDispositionInfo, FileStandardInfo,
         GetCompressedFileSizeW, GetFileInformationByHandleEx, SetFileInformationByHandle,
     },
 };
+
+/// Allocate capacity on an already-held, fresh ordinary file without changing
+/// its EOF. This is not journal enrollment or permission to write a volume.
+/// The caller must reserve the full maximum before calling and retain the
+/// exclusive file owner. All observations use the same held handle.
+pub fn preallocate_empty_file(
+    file: &std::fs::File,
+    requested_bytes: u64,
+    maximum_allocation: u64,
+) -> io::Result<()> {
+    let before = crate::reference_file::observe_reference_file_handle_with_limit(file, 0)?;
+    if requested_bytes == 0 || requested_bytes > maximum_allocation
+        || before.file_bytes != 0 || before.number_of_links != 1
+        || before.allocation_bytes > maximum_allocation
+    {
+        return Err(io::Error::other("fresh bounded preallocation file required"));
+    }
+    let allocation = i64::try_from(requested_bytes)
+        .map_err(|_| io::Error::other("preallocation exceeds native signed range"))?;
+    // SAFETY: FILE_ALLOCATION_INFO consists of one aligned LARGE_INTEGER;
+    // this synchronous call uses the existing owned file handle and changes
+    // allocation only. EOF and identity are checked through that handle.
+    if unsafe {
+        SetFileInformationByHandle(file.as_raw_handle(), FileAllocationInfo,
+            (&allocation as *const i64).cast(), std::mem::size_of_val(&allocation) as u32)
+    } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let after = crate::reference_file::observe_reference_file_handle_with_limit(file, 0)?;
+    if after.final_path != before.final_path
+        || after.volume_serial_number != before.volume_serial_number
+        || after.file_id_128 != before.file_id_128
+        || after.file_attributes != before.file_attributes
+        || after.number_of_links != 1
+        || after.file_bytes != 0
+        || after.allocation_bytes < requested_bytes
+        || after.allocation_bytes > maximum_allocation
+    {
+        return Err(io::Error::other(format!(
+            "preallocated file identity, EOF, or quota differs: EOF {}, allocation {}, required {}, maximum {}",
+            after.file_bytes, after.allocation_bytes, requested_bytes, maximum_allocation
+        )));
+    }
+    Ok(())
+}
 
 #[derive(serde::Serialize)]
 pub struct StorageUse {

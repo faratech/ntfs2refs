@@ -20,7 +20,7 @@ use std::{
 };
 
 mod apply;
-pub(crate) use apply::{ResourceAppliedConversion, ResourceFreshApply};
+pub(crate) use apply::{FirstFlushedWrite, ResourceAppliedConversion, ResourceFreshApply};
 
 /// A complete fresh-source/target/preparation publication, still incapable of
 /// opening an activated writer. Borrowed owners cannot disappear or be replaced

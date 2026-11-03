@@ -45,14 +45,33 @@ source verification. None of these later changes has native qualification yet.
 Existing event records now include advisory elapsed/process-I/O samples, without
 adding a data pass or treating those counters as execution authority.
 
+The public already-online recovery command then passed on exact source`03868c1`.
+After a real cold boot and33 new-file mutations including grow/truncate/rename/
+delete, native recovery observed actual HND and reconciled the online ReFS
+volume without raw replay or stale selected-byte comparison. All33 new file
+lengths and hashes remained unchanged. Native exit0 took133.685 seconds;
+observer-close process transfers were36.76GB read, not physical storage traffic.
+Interrupted V4 resume/rollback, missing-path repair and ABT still require their
+own cases. See [the exact recovery result](../evidence/resource-online-terminal-recovery-20261103.json).
+
 The first public already-online recovery attempt on built source`a9f3436`
 refused before journal opening because output discovery used the source-only
 Windows-disk exclusion for the legitimate C: journal. The converted source
 remained online ReFS. The follow-up uses a typed journal-only read-only query,
 bracketing mount enumeration with complete `Role::Journal` discoveries. Source
 and shadow exclusions remain unchanged. Its focused Windows check passed in
-10.73 seconds; a new pinned executable/native rerun is still required. See
+10.73 seconds; the pinned native success above resolves this route refusal. See
 [the original refusal](../evidence/resource-recovery-os-journal-refusal-20261103.json).
+
+The diagnostic now has an opt-in `--apply-and-verify
+--interrupt-after-first-flushed-write` case. It preallocates a share-zero signal
+and bounded buffers on the independent journal volume before preparation. Only
+an actual native write followed by flush, exact readback, actual AP/offline
+checks and another still-different selected granule produces the durable signal
+and a real error exit. The public path supplies no callback and adds no flush or
+read. Its three-entry Windows check passed11.19 seconds; native interruption
+and restart qualification is pending. Signal data is evidence, never replay or
+fresh-source authority.
 
 ## Experimental integration checkpoint — 2026-11-03
 

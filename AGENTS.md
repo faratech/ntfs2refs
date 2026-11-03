@@ -68,6 +68,36 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST public terminal recovery PASSED on source03868c1/publicSHA
+0167246edb0c238463ecc22d8761418da551f9a232c6b3624840ef7fcd8a7b73,
+manifestef5047be7cbc41c0eb267c1b12974ce9b267654b0363d278b9bee319a10e6995.
+Native1664/birth1793723556816/exit0/133.6850253s, task
+N2R-ResourceOnlineRecovery-03868c1 Ready and no native workers remain. Actual
+productC:\ntfs2refs-recovery-56c2aff559caa5c0d661dae32c6de23d/result.json proves
+already-online HND, no raw replay, no stale selected-byte comparison and complete
+label/mount reconciliation. Root created33 new ordinary ReFS test files with
+grow/truncate/rename/delete beforehand; all lengths/SHA remained unchanged
+afterward. Original payload files were not written.11 closed files674098B,
+manifestSHA43cbfa0453a205344771d0ee95e00793c7064aa7e92b78dbdf1eec6f99d7c4de
+under currentcase/closed-online-recovery-03868c1. Source remains operational
+HND/ReFS, VM Running4GiB/4CPU/noNIC parent411c. NEVER raw-replay this branch.
+Build29024 and launcher64318 are COMPLETE, not live. No V4 AP/RB recovery yet.
+
+Latest first-write diagnostic code compiled11.185s, no units: explicit
+--apply-and-verify --interrupt-after-first-flushed-write prepays a share-zero
+4KiB independent signal+held buffers BEFORE preparation, then actual write/
+sync/readback/AP/offline+another different NEW granule precede real Err exit.
+Public None adds no read/flush. Needs pinned diagnostic build and real partial
+restart Resume/Rollback; never synthesize86 or a success. R slice is frozen.
+D power_dispatch owns NEW src/ntfs_preparation/resource.rs/children for actual
+paged online preparation inventory/planner; C release_status_review owns NEW
+SDK ntfs_preparation/resource.rs/children. Those WIP modules are not public
+wiring or qualified and must not be mixed into the first-write snapshot blindly.
+V4 currently bypasses the old NTFS prepass even with --minimize-scratch; that
+flag only changes capacity policy. Resource prealignment is necessary next;
+do not attribute all journal/time differences solely to hash repeats or compare
+default/conservative5a8 directly with older --minimize-scratch cases.
+
 LATEST recovery attempt: built sourcea9f3436/publicSHA900a5d39fb44a77e6d84a49fe467c8b6784fc5eaa7613f3be6048d09a6b8a818
 failed BEFORE journal opening on source-only C: output discovery ('current
 Windows disk is excluded'). Actual4020/birth1793722638392/exit1/1.2040996s,

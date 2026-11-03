@@ -135,8 +135,51 @@ fn check_selected<T: Read + Seek>(
     Ok(digest)
 }
 
-fn write_span<T: Read + Seek + Write>(
-    target: &mut T,
+#[derive(serde::Serialize)]
+pub(crate) struct FirstFlushedWrite {
+    pub offset: u64,
+    pub bytes: u64,
+    pub native_bytes_before: u64,
+    pub native_bytes_after: u64,
+    pub readback_sha256: String,
+    pub remaining_different_offset: u64,
+    pub remaining_different_bytes: u64,
+}
+
+/// Diagnostic-only proof that at least one other selected granule is still
+/// different from NEW. This observation never grants replay authority.
+fn find_remaining_difference(
+    target: &mut n2r_win32::BorrowedPagedWriter<'_>,
+    journal: &mut NativeSelectedJournal,
+    domain: &ResourceJournalDomain<'_>,
+    written_offset: u64,
+    written_length: u64,
+    buffers: &mut Buffers,
+) -> Result<Option<(u64, u64)>> {
+    let written_end = add(written_offset, written_length)?;
+    for ordinal in 0..u64::from(domain.facts.range_count) {
+        let row = domain.row(ordinal)?;
+        let mut within = 0;
+        while within < row.capture.length {
+            let offset = add(row.capture.offset, within)?;
+            let length = GRANULE.min(row.capture.length - within);
+            let end = add(offset, length)?;
+            if offset >= written_end || end <= written_offset {
+                let n = usize::try_from(length)?;
+                at(target, offset, &mut buffers.current[..n])?;
+                read_new(domain, journal, row, ordinal, within, &mut buffers.new[..n])?;
+                if buffers.current[..n] != buffers.new[..n] {
+                    return Ok(Some((offset, length)));
+                }
+            }
+            within = add(within, length)?;
+        }
+    }
+    Ok(None)
+}
+
+fn write_span(
+    target: &mut n2r_win32::BorrowedPagedWriter<'_>,
     journal: &mut NativeSelectedJournal,
     domain: &ResourceJournalDomain<'_>,
     ordinal: u64,
@@ -144,6 +187,10 @@ fn write_span<T: Read + Seek + Write>(
     start: u64,
     length: u64,
     buffers: &mut Buffers,
+    first_write_fault: &mut Option<&mut dyn FnMut(&FirstFlushedWrite) -> Result<()>>,
+    target_before: &n2r_win32::GeneralDiskState,
+    ticket: &SelectedTicket,
+    events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<()> {
     ensure!(
         start
@@ -186,11 +233,40 @@ fn write_span<T: Read + Seek + Write>(
             );
         }
         if buffers.current[..count] != buffers.new[..count] {
+            let before = target.native_bytes_written();
             target.seek(SeekFrom::Start(offset))?;
             ensure!(
                 target.write(&buffers.new[..count])? == count,
                 "short fresh selected target write"
             );
+            if first_write_fault.is_some() {
+                let after = target.native_bytes_written();
+                ensure!(before == 0 && after.checked_sub(before) == Some(count as u64),
+                    "diagnostic interruption requires the first actual native write");
+                target.sync_all()?;
+                at(target, offset, &mut buffers.current[..count])?;
+                ensure!(buffers.current[..count] == buffers.new[..count],
+                    "first flushed native write readback differs");
+                let hash = hex::encode(Sha256::digest(&buffers.current[..count]));
+                ensure!(target.state(events)? == *target_before && target_before.disk_attributes == 1,
+                    "source exclusion changed after first flushed write");
+                ensure!(sj::classify(journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
+                    "actual AP lifecycle absent after first flushed write");
+                let (remaining_offset, remaining_bytes) = find_remaining_difference(
+                    target, journal, domain, offset, count as u64, buffers,
+                )?.context("no independently observed remaining changed selected granule")?;
+                ensure!(target.state(events)? == *target_before
+                    && sj::classify(journal, ticket)? == sj::SelectedLifecycle::ApplyIntent,
+                    "source or AP changed during partial-progress observation");
+                let observation = FirstFlushedWrite {
+                    offset, bytes: count as u64, native_bytes_before: before,
+                    native_bytes_after: after, readback_sha256: hash,
+                    remaining_different_offset: remaining_offset,
+                    remaining_different_bytes: remaining_bytes,
+                };
+                first_write_fault.take().expect("fault callback present")(&observation)?;
+                anyhow::bail!("intentional diagnostic interruption after the first flushed and read-back native write");
+            }
         }
         done = add(done, count as u64)?;
     }
@@ -222,10 +298,23 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
     /// policy-bound target write is possible. Errors leave the source excluded
     /// for recovery from the already durable publication; no automatic retry.
     pub(crate) fn apply_and_handoff(
+        self,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+        checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
+        after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
+    ) -> Result<ResourceAppliedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>>
+    {
+        self.apply_and_handoff_with_first_write_fault(events, checkpoint_events, after_apply, None)
+    }
+
+    /// The callback can only observe a real flushed first write and request an
+    /// error. It never supplies a journal marker or native write authority.
+    pub(crate) fn apply_and_handoff_with_first_write_fault(
         mut self,
         events: &mut Vec<n2r_win32::NativeEvent>,
         mut checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
         after_apply: impl FnOnce(&SelectedResult) -> Result<()>,
+        mut first_write_fault: Option<&mut dyn FnMut(&FirstFlushedWrite) -> Result<()>>,
     ) -> Result<ResourceAppliedConversion<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>>
     {
         checkpoint_native_events(events, &mut checkpoint_events)?;
@@ -297,6 +386,10 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 skip,
                 row.capture.length - skip,
                 &mut buffers,
+                &mut first_write_fault,
+                &target_before,
+                ticket,
+                events,
             )?;
         }
         target.sync_all()?;
@@ -313,8 +406,13 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                 0,
                 GRANULE,
                 &mut buffers,
+                &mut first_write_fault,
+                &target_before,
+                ticket,
+                events,
             )?;
         }
+        ensure!(first_write_fault.is_none(), "diagnostic interruption requested but no actual changed write occurred");
         target.sync_all()?;
         let digest = check_selected(
             &mut target,

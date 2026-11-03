@@ -16,7 +16,7 @@ use crate::{
 
 mod qualification;
 pub(crate) use qualification::{
-    ResourceAppliedConversion, ResourceFreshApply, ResourcePreparedConversion,
+    FirstFlushedWrite, ResourceAppliedConversion, ResourceFreshApply, ResourcePreparedConversion,
 };
 
 /// Keeps the completed diagnostic journal and its capture alive, but exposes

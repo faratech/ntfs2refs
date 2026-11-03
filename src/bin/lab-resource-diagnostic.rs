@@ -22,6 +22,10 @@ fn main() -> anyhow::Result<()> {
         /// Omitted preserves the existing preparation-only diagnostic.
         #[arg(long)]
         apply_and_verify: bool,
+        /// Lab only: stop with an error after the first real flushed write,
+        /// its exact readback, and proof another selected granule still differs.
+        #[arg(long, requires = "apply_and_verify")]
+        interrupt_after_first_flushed_write: bool,
     }
     let args = Args::parse();
     ensure!(
@@ -70,7 +74,9 @@ fn main() -> anyhow::Result<()> {
         request,
         &args.output,
         args.acknowledge_disposable_shadow,
-        if args.apply_and_verify {
+        if args.interrupt_after_first_flushed_write {
+            ntfs2refs::resource_diagnostic::ResourceDiagnosticOperation::InterruptAfterFirstFlushedWrite
+        } else if args.apply_and_verify {
             ntfs2refs::resource_diagnostic::ResourceDiagnosticOperation::ApplyAndVerify
         } else {
             ntfs2refs::resource_diagnostic::ResourceDiagnosticOperation::PrepareOnly

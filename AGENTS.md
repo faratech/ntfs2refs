@@ -85,6 +85,16 @@ attachment, identities, source fingerprint and capacity before any guest work;
 the earlier managed disk6 identities are not this shadow.
 This is source observation only: no conversion, recovery, or release qualification.
 
+Fixture diagnostic `b9be10d8eeef4a60bdeedf771d9ac047` launched once with
+candidate `9e1fa648` and actual Job limits, then exited1 before source freeze:
+the existing source-output gate required the OS volume while this fixture's
+shared journal arena is on J:. Both source and shadow remained online and
+writable with no source payload or shadow writes. Closed worker evidence is
+`.lab/hyperv/streaming-v2-20261027/resource-fixture-b9be10d8eeef4a60bdeedf771d9ac047/closed-evidence.zip`,
+SHA256 `687995a88c68cc20306c3ad4fcdc5b2ea4b8d8a4d6c6f872ff17a500bd3fad54`.
+VM is Off/RAM0 at d8db; a narrowly scoped, independently verified held-arena
+output fix is in progress. Do not retry the old executable.
+
 Current uncommitted V4 target, journal, recovery and native-memory work remains
 experimental and gated. The target/recovery scaffolding compiled on the shared
 target, but has not passed a native conversion or power-loss recovery; trusted

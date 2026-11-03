@@ -60,3 +60,16 @@ GPT basic data disks remain required by whole-disk exclusion; a data partition
 on an OS disk needs a partition-scoped exclusion design. Unsupported encodings
 are refused. These implementation boundaries are not removed by deleting size
 checks. The host lab's original additional-storage allowance remains unchanged.
+# Native source-evidence observation (2026-11-03)
+
+The source-only observer built from `68ef19e` completed against the saved
+2,558-object NTFS fixture. Its source evidence checks passed for 2,585 raw
+identities and the expected-tree projection contains 2,558 user objects. The
+observer reported zero unresolved source blockers; its source disk remained
+offline and read-only at completion. The closed evidence archive and binary
+are pinned in [the observation record](../evidence/resource-live-source-evidence-20261103.json).
+
+This was not a conversion or recovery run. Shared artifact ownership,
+target security/timestamp preservation, and target resource-profile support
+remain incomplete; no source admission or execution authority was issued.
+

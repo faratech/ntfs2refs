@@ -277,6 +277,10 @@ struct RowIndex {
 /// writable mappings under the same artifact ownership contract as other pins.
 pub struct PagedNativeObservation {
     reader: RefCell<Reader>,
+    // File and namespace rows are written in separate phases. Independent
+    // authenticated page caches prevent an identity join from reloading and
+    // rehashing a full page every time it switches between those phases.
+    namespace_reader: RefCell<Reader>,
     header: Report,
     files: Vec<RowIndex>,
     namespace: Vec<RowIndex>,
@@ -460,8 +464,16 @@ impl PagedNativeObservation {
                 && files.len() == count,
             "native paged header contains rows or incomplete counts",
         )?;
+        let namespace_reader = Reader::open(path, sha256, PURPOSE, budget.pages)?;
+        require(
+            namespace_reader.final_path() == reader.final_path()
+                && namespace_reader.byte_len() == reader.byte_len()
+                && namespace_reader.len() == reader.len(),
+            "native observation readers differ",
+        )?;
         let result = Self {
             reader: RefCell::new(reader),
+            namespace_reader: RefCell::new(namespace_reader),
             header,
             files,
             namespace,
@@ -542,7 +554,7 @@ impl NativeObservationDomain for PagedNativeObservation {
             .get(i)
             .ok_or_else(|| io::Error::other("namespace index outside domain"))?;
         Ok(Cow::Owned(decode_row(
-            &mut self.reader.borrow_mut(),
+            &mut self.namespace_reader.borrow_mut(),
             row,
             self.budget,
         )?))
@@ -551,7 +563,8 @@ impl NativeObservationDomain for PagedNativeObservation {
         Ok(Cow::Owned(self.file_row(i)?.request))
     }
     fn revalidate(&self) -> io::Result<()> {
-        self.reader.borrow_mut().revalidate()
+        self.reader.borrow_mut().revalidate()?;
+        self.namespace_reader.borrow_mut().revalidate()
     }
     fn validate_encoded_size(&self, maximum: usize) -> io::Result<()> {
         require(

@@ -509,6 +509,10 @@ pub struct Reader {
     pages: u64,
     index: u64,
     cached: Option<Entry>,
+    // Ordinal, start and end of the last record decoded in the cached page.
+    // Sequential access can continue from that frame instead of rescanning
+    // every earlier record in the page for each lookup.
+    cached_record: Option<(u64, usize, usize)>,
     body: Vec<u8>,
 }
 impl Reader {
@@ -625,6 +629,7 @@ impl Reader {
             pages,
             index,
             cached,
+            cached_record: None,
             body,
         })
     }
@@ -668,18 +673,25 @@ impl Reader {
             )?;
             load_page(&mut self.file, e, self.budget, &mut self.body)?;
             self.cached = Some(e);
+            self.cached_record = None;
         }
         let e = self
             .cached
             .ok_or_else(|| io::Error::other("metadata page cache absent"))?;
-        let mut at = 0;
-        for current in e.first..=ordinal {
+        let (first, mut at) = match self.cached_record {
+            Some((previous, start, _)) if ordinal == previous => (previous, start),
+            Some((previous, _, end)) if ordinal > previous => (previous + 1, end),
+            _ => (e.first, 0),
+        };
+        for current in first..=ordinal {
             let (end, key, payload) = record_at(&self.body, at)?;
             if current == ordinal {
-                return Ok(Record {
+                let record = Record {
                     key: key.to_vec(),
                     payload: payload.to_vec(),
-                });
+                };
+                self.cached_record = Some((current, at, end));
+                return Ok(record);
             }
             at = end;
         }

@@ -18,6 +18,8 @@ param(
     [switch]$IncludeResourceSourceObservation,
     [switch]$ResourceSourceObservationOnly,
     [switch]$UseSharedExperimentalTarget,
+    [switch]$UseSharedExperimentalSource,
+    [ValidatePattern('\A(?:[0-9a-f]{64})?\z')][string]$ExpectedSharedSourceHelperSha256 = '',
     [ValidatePattern('\A[A-Za-z0-9_-]+\z')][string[]]$ExperimentalBinaries = @()
 )
 Set-StrictMode -Version Latest
@@ -28,7 +30,7 @@ $allowedRoot = Join-Path $labRoot 'development\release-candidates'
 $targetTriple = 'x86_64-pc-windows-msvc'
 # These switches explicitly select experimental builds, so they always use
 # the one workspace cache. The ordinary release invocation remains isolated.
-if ($ExperimentalBinaries.Count -gt 0 -or $ResourceSourceObservationOnly) { $UseSharedExperimentalTarget = $true }
+if ($ExperimentalBinaries.Count -gt 0 -or $ResourceSourceObservationOnly -or $UseSharedExperimentalSource) { $UseSharedExperimentalTarget = $true }
 $sourcePaths = @('Cargo.toml','Cargo.lock','rust-toolchain.toml','.cargo/config.toml','src','crates/n2r-win32/Cargo.toml','crates/n2r-win32/src','evidence/qualification-registry.json')
 $binaries = @('ntfs2refs','lab-selected-marker-native','lab-convert-native-composite','lab-recover-native-composite','lab-content-digest','lab-managed-shadow','lab-inspect-paged-metadata')
 if ($IncludeFullSourceBaseline) { $binaries += 'lab-capture-full-source-baseline' }
@@ -40,10 +42,15 @@ $created = $false
 $root = $null
 $childEnvironment = @{}
 $sharedTarget = 'D:\code\ntfs2refs\target\shared-experiments'
+$sharedStaging = 'D:\code\ntfs2refs\target\shared-experiments-staging'
 $sharedLockPath = 'D:\code\ntfs2refs\target\shared-experiments.build.lock'
 $sharedBaselinePath = Join-Path $labRoot 'development\shared-experimental-target-baseline.json'
 $sharedLock = $null; $sharedBaseline = $null; $sharedInitialBytes = [long]0
 $initialLabActual = [long]0; $lastSharedBytes = [long]0
+$stagingInitialBytes=[long]0;$lastStagingBytes=[long]0
+$sourceState=$null;$sourceRefresh=$null;$stableSourcePins=$null;$sourceHelper=$null;$sourceAfterVerified=$false
+$sourceContractSha256=$null;$sourceOwnPackagesRebuilt=$false
+$sourceCacheTag=$null
 
 function Need([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message } }
 function Ordinary([string]$Path,[bool]$Directory) {
@@ -95,7 +102,7 @@ function MissingWorkingEntry($Failure,[string]$Path) {
     }
 }
 function DirectoryBytes([string]$Path,[switch]$AllowTransient) {
-    Need ($Path -ceq $root -or ($UseSharedExperimentalTarget -and $Path -ceq $sharedTarget)) 'Resource scans are confined to the fresh candidate and explicit shared cache.'
+    Need ($Path -ceq $root -or ($UseSharedExperimentalTarget -and $Path -in @($sharedTarget,$sharedStaging))) 'Resource scans are confined to the fresh candidate and explicit shared cache/staging.'
     $queue = [Collections.Generic.Queue[string]]::new(); $queue.Enqueue($Path)
     $bytes = [long]0; $count = 0
     while ($queue.Count) {
@@ -129,13 +136,19 @@ function SharedBytes([switch]$AllowTransient) {
     if (-not $UseSharedExperimentalTarget) { return [long]0 }
     return (DirectoryBytes $sharedTarget -AllowTransient:$AllowTransient)
 }
+function StagingBytes {
+    if(-not$UseSharedExperimentalTarget-or-not(Test-Path -LiteralPath $sharedStaging)){return [long]0}
+    return (DirectoryBytes $sharedStaging)
+}
 function WorkingBytes([switch]$AllowTransient) {
     $candidate = DirectoryBytes $root -AllowTransient:$AllowTransient
     $shared = SharedBytes -AllowTransient:$AllowTransient
     $growth = [Math]::Max([long]0, [long]($shared-$sharedInitialBytes))
-    Need ($candidate -le [long]::MaxValue-$growth) 'Build growth accounting overflow.'
+    $staging=StagingBytes;$stagingGrowth=[Math]::Max([long]0,[long]($staging-$stagingInitialBytes))
+    Need ($candidate -le [long]::MaxValue-$growth-$stagingGrowth) 'Build growth accounting overflow.'
     $script:lastSharedBytes = $shared
-    return [long]($candidate+$growth)
+    $script:lastStagingBytes=$staging
+    return [long]($candidate+$growth+$stagingGrowth)
 }
 function GuardWorkingSpace([switch]$AllowTransient) {
     $working = WorkingBytes -AllowTransient:$AllowTransient
@@ -146,8 +159,8 @@ function GuardWorkingSpace([switch]$AllowTransient) {
         # Every shared byte is charged, including a moved warm seed. The
         # persisted baseline is provenance, never a deduction from the epoch.
         $currentLab=Get-LabCapacity -Configuration $configuration
-        Need ($currentLab.ActualBytes -le [long]::MaxValue-$sharedInitialBytes-$working) 'Shared lab accounting overflow.'
-        Need ($currentLab.ActualBytes+$sharedInitialBytes+$working -le $configuration.Settings.maximumActualBytes) 'Shared build exceeded the unchanged lab allocation epoch.'
+        Need ($currentLab.ActualBytes -le [long]::MaxValue-$sharedInitialBytes-$stagingInitialBytes-$working) 'Shared lab accounting overflow.'
+        Need ($currentLab.ActualBytes+$sharedInitialBytes+$stagingInitialBytes+$working -le $configuration.Settings.maximumActualBytes) 'Shared build exceeded the unchanged lab allocation epoch.'
     }
 }
 function AcquireSharedTarget {
@@ -171,6 +184,7 @@ function AcquireSharedTarget {
     $null=Ordinary $sharedTarget $true
     $script:sharedInitialBytes=DirectoryBytes $sharedTarget
     $script:lastSharedBytes=$sharedInitialBytes
+    $script:stagingInitialBytes=StagingBytes;$script:lastStagingBytes=$stagingInitialBytes
     if (-not (Test-Path -LiteralPath $sharedBaselinePath)) {
         $baseline=@{schema_version=1;kind='shared-experimental-cargo-target-baseline';created_utc=[DateTime]::UtcNow.ToString('o');workspace=$workspace;shared_target=$sharedTarget;initial_bytes=$sharedInitialBytes;maximum_actual_bytes=$configuration.Settings.maximumActualBytes;minimum_host_free_bytes=$configuration.Settings.minimumHostFreeBytes;accounting='all current shared bytes charged; initial size never subtracted';epoch_reset=$false}
         $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($baseline|ConvertTo-Json -Depth 8))
@@ -274,7 +288,7 @@ try {
     # Preserve the configured Hyper-V lab epoch. The additional candidate
     # reservation and host-volume free-space floor include this fresh output;
     # unrelated .lab research trees are not candidate build inputs.
-    $admittedCapacity=if($UseSharedExperimentalTarget){Need ($capacity.ActualBytes-le[long]::MaxValue-$sharedInitialBytes) 'Shared initial accounting overflow.';[pscustomobject]@{ActualBytes=([long]$capacity.ActualBytes+$sharedInitialBytes);FreeBytes=$capacity.FreeBytes;MaximumActualBytes=$capacity.MaximumActualBytes;MinimumFreeBytes=$capacity.MinimumFreeBytes}}else{$capacity}
+    $admittedCapacity=if($UseSharedExperimentalTarget){Need ($capacity.ActualBytes-le[long]::MaxValue-$sharedInitialBytes-$stagingInitialBytes) 'Shared initial accounting overflow.';[pscustomobject]@{ActualBytes=([long]$capacity.ActualBytes+$sharedInitialBytes+$stagingInitialBytes);FreeBytes=$capacity.FreeBytes;MaximumActualBytes=$capacity.MaximumActualBytes;MinimumFreeBytes=$capacity.MinimumFreeBytes}}else{$capacity}
     Assert-LabCapacity -Capacity $admittedCapacity -AdditionalBytes $MaximumWorkingBytes
     $null = New-Item -ItemType Directory -Path $root -ErrorAction Stop; $created = $true
     $source = Join-Path $root 'source'; $target = if($UseSharedExperimentalTarget){$sharedTarget}else{Join-Path $root 'target'}; $temporary = Join-Path $root 'tmp'
@@ -318,6 +332,35 @@ try {
     }
     $lock = @($sourcePins | Where-Object path -CEQ 'Cargo.lock')[0]
     Need ($lock.sha256 -ceq $ExpectedCargoLockSha256) 'Committed Cargo.lock differs from its supplied pin.'
+    if($UseSharedExperimentalSource){
+        Need ($UseSharedExperimentalTarget-and$null-ne$sharedLock) 'Stable experimental source requires the actual shared cache lock.'
+        # Preserve this candidate's verified source.zip and extracted source.
+        # The helper itself is archived/pinned before it may refresh only its
+        # literal positively owned disposable staging root.
+        Need ($ExpectedSharedSourceHelperSha256-cmatch'\A[0-9a-f]{64}\z') 'Stable source refresh helper requires its independently reviewed SHA-256 pin.'
+        $helperPin=PinFile (Join-Path $PSScriptRoot 'SharedExperimentalSourceSupport.ps1') $ExpectedSharedSourceHelperSha256 1MB
+        $helperCopy=Join-Path $root 'shared-source-helper.ps1'
+        $helperOut=[IO.File]::Open($helperCopy,'CreateNew','Write','Read')
+        try{$helperPin.stream.CopyTo($helperOut,65536);$helperOut.Flush($true)}finally{$helperOut.Dispose();$helperPin.stream.Position=0}
+        $sourceHelper=PinFile $helperCopy $helperPin.sha256 1MB
+        . $sourceHelper.path
+        $sourceState=Initialize-SharedExperimentalSource $workspace $sharedLock
+        $archiveSource=$source
+        Hold-SharedSourceDirectories $sourceState
+        $sourceRefresh=Sync-SharedExperimentalSource $sourceState $archiveSource $expected $sourcePins
+        $stableSourcePins=[Collections.Generic.List[object]]::new()
+        foreach($name in @($expected.Keys|Sort-Object -CaseSensitive)){
+            $original=@($sourcePins|Where-Object path -CEQ $name)
+            Need ($original.Count-eq1) 'Stable source requires its exact independently verified archive pin.'
+            $pin=PinFile (Join-Path $sourceState.source $name) $original[0].sha256 16MB
+            Need ($pin.bytes-eq$original[0].bytes) 'Stable source length differs from committed archive.'
+            $stableSourcePins.Add([pscustomobject]@{relative=$name;path=$pin.path;bytes=$pin.bytes;sha256=$pin.sha256;git_blob=$original[0].git_blob;stream=$pin.stream;file_id=[N2RSharedSourceIdentityV2]::Id($pin.stream.SafeFileHandle)})
+        }
+        Assert-SharedExperimentalSource $sourceState $expected $stableSourcePins
+        WriteRecord 'shared-source-before-build.json' @{schema_version=1;kind='verified-disposable-shared-source';source_commit=$SourceCommit;source_tree=$tree;build_source=$sourceState.source;archived_source='source';ownership=$sourceState.owner;helper=@{path='shared-source-helper.ps1';sha256=$sourceHelper.sha256;bytes=$sourceHelper.bytes};refresh=$sourceRefresh;held_source_files=$stableSourcePins.Count;exact_archive_file_set_verified=$true;exact_archive_bytes_verified=$true;cache_hits_measured=$false;clean_build_claimed=$false}
+        $source=$sourceState.source
+        GuardWorkingSpace
+    }
     $toolchainText = [IO.File]::ReadAllText((Join-Path $source 'rust-toolchain.toml'))
     Need ($toolchainText -cmatch '(?m)^channel\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$') 'Exact committed Rust release channel required.'
     $channel = $Matches[1]
@@ -352,9 +395,28 @@ try {
         Need ([string]::IsNullOrEmpty($ExpectedCargoHomeConfigSha256)) 'Cargo-home configuration pin supplied while no configuration exists.'
     }
     $childEnvironment = @{CARGO_HOME=$cargoHome;CARGO_TARGET_DIR=$target;CARGO_INCREMENTAL='0';RUSTC=$rustc.path;RUSTUP_TOOLCHAIN=$channel;RUSTC_WRAPPER='';RUSTC_WORKSPACE_WRAPPER='';TEMP=$temporary;TMP=$temporary}
+    if($UseSharedExperimentalSource){
+        # Cargo's mtime checks alone are insufficient after timestamp collision
+        # or clock rollback. Reuse owning-package outputs only when the exact
+        # byte/tool/config contract previously completed successfully here.
+        $contract=[ordered]@{source_files=$sourcePins.ToArray();cargo_sha256=$cargo.sha256;rustc_sha256=$rustc.sha256;toolchain=$channel;target=$targetTriple;cargo_home_config=$ExpectedCargoHomeConfigSha256;builder_sha256=(Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant();helper_sha256=$sourceHelper.sha256}
+        $contractBytes=[Text.UTF8Encoding]::new($false).GetBytes(($contract|ConvertTo-Json -Depth 12 -Compress))
+        $contractHash=[Security.Cryptography.SHA256]::Create();try{$sourceContractSha256=[Convert]::ToHexString($contractHash.ComputeHash($contractBytes)).ToLowerInvariant()}finally{$contractHash.Dispose()}
+        GuardWorkingSpace
+        $sourceCacheTag=Ensure-SharedExperimentalCargoTag $sourceState $sharedBaseline
+        WriteRecord 'shared-cargo-cache-tag.json' $sourceCacheTag
+        GuardWorkingSpace
+        $previous=Get-SharedSourceSuccessfulContract $sourceState
+        if($previous-cne$sourceContractSha256-or$sourceRefresh.updated_files.Count-ne0-or$sourceRefresh.removed_files.Count-ne0-or$sourceRefresh.case_only_tree_reset){
+            RunOwned 'cargo-clean-own-packages' $cargo.path @('--config',(Join-Path $source '.cargo\config.toml'),'clean','--manifest-path',(Join-Path $source 'Cargo.toml'),'--release','--locked','--offline','--target',$targetTriple,'--target-dir',$target,'--package','ntfs2refs','--package','n2r-win32') $cargoDirectory
+            $sourceOwnPackagesRebuilt=$true
+        }
+        Assert-SharedExperimentalSource $sourceState $expected $stableSourcePins
+    }
     $arguments = @('--config',(Join-Path $source '.cargo\config.toml'),'build','--manifest-path',(Join-Path $source 'Cargo.toml'),'--release','--locked','--offline','--target',$targetTriple,'--target-dir',$target,'--jobs',[string]$Jobs)
     foreach ($binary in $binaries) { $arguments += @('--bin',$binary) }
     RunOwned 'cargo-build' $cargo.path $arguments $cargoDirectory
+    if($UseSharedExperimentalSource){Assert-SharedExperimentalSource $sourceState $expected $stableSourcePins}
     $binaryPins = [Collections.Generic.List[object]]::new()
     foreach ($binary in $binaries) {
         $pin = PinFile (Join-Path $target ($targetTriple+'\release\'+$binary+'.exe')) '' 64MB
@@ -365,6 +427,11 @@ try {
         $binaryPins.Add([pscustomobject]@{name=$binary;path=('bin/'+$binary+'.exe');bytes=$pin.bytes;sha256=$pin.sha256})
     }
     foreach ($pin in $held) { $pin.Position = 0 }
+    if($UseSharedExperimentalSource){
+        Assert-SharedExperimentalSource $sourceState $expected $stableSourcePins
+        $sourceAfterVerified=$true
+        WriteRecord 'shared-source-after-build.json' @{schema_version=1;kind='verified-disposable-shared-source-after-build';source_commit=$SourceCommit;source_tree=$tree;build_source=$sourceState.source;held_source_files=$stableSourcePins.Count;exact_archive_file_set_verified=$true;held_source_bytes_unchanged=$true;original_archive_preserved=$true;copied_binaries_pinned=$true;cache_hits_measured=$false;qualification_inherited=$false}
+    }
     GuardWorkingSpace
     $finalBytes = WorkingBytes
     Need ($finalBytes -le $MaximumWorkingBytes) 'Final candidate exceeds its working-space budget.'
@@ -384,13 +451,38 @@ try {
         $manifestRecord['cache_hits_measured']=$false
         $manifestRecord['shared_lock']=@{path=$sharedLockPath;exclusive_handle_held_through_binary_copy_and_manifest=$true}
         $manifestRecord['cargo_incremental']='0'
+        $manifestRecord['shared_source_staging_bytes_at_start']=$stagingInitialBytes
+        $manifestRecord['shared_source_staging_bytes_at_finish']=$lastStagingBytes
+        $manifestRecord['all_existing_staging_bytes_charged']=$true
+        if($UseSharedExperimentalSource){
+            $manifestRecord.kind='experimental-committed-source-shared-target-and-source'
+            $manifestRecord['experimental_shared_source']=$true
+            $manifestRecord['build_source_path']=$sourceState.source
+            $manifestRecord['source_ownership']=$sourceState.owner
+            $manifestRecord['source_refresh']=$sourceRefresh
+            $manifestRecord['source_before_after_verified']=$sourceAfterVerified
+            $manifestRecord['source_staging_helper']=@{path='shared-source-helper.ps1';sha256=$sourceHelper.sha256;bytes=$sourceHelper.bytes}
+            $manifestRecord['archived_source_path']='source'
+            $manifestRecord['source_staging_lock_held_through_verification_copy_manifest']=$true
+            $manifestRecord['unchanged_source_mtimes_preserved']=$true
+            $manifestRecord['shared_source_helper_independently_pinned']=$true
+            $manifestRecord['source_path_file_ids_verified']=$true
+            $manifestRecord['source_directory_no_delete_handles_held']=$true
+            $manifestRecord['source_contract_sha256']=$sourceContractSha256
+            $manifestRecord['shared_target_cargo_tag']=$sourceCacheTag
+            $manifestRecord['own_packages_cleaned_for_changed_or_unproven_contract']=$sourceOwnPackagesRebuilt
+            $manifestRecord['own_package_clean_list']=@('ntfs2refs','n2r-win32')
+            $manifestRecord['dependency_artifacts_preserved']=$true
+        }
     }
     WriteRecord 'manifest.json' $manifestRecord
+    if($UseSharedExperimentalSource){Save-SharedSourceSuccessfulContract $sourceState $sourceContractSha256 $SourceCommit (Join-Path $root 'manifest.json') (Get-FileHash -LiteralPath (Join-Path $root 'manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()}
     [pscustomobject]@{output_directory=$root;manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $root 'manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant();source_commit=$SourceCommit;binaries=$binaryPins.Count;stable_release=$false;qualification_inherited=$false} | ConvertTo-Json
 } catch {
     if ($created) { WriteRecord 'build-failed.json' @{schema_version=1;kind='committed-source-candidate-build-failure';source_commit=$SourceCommit;error=$_.Exception.Message;commands=$commands.ToArray();retained_for_review=$true;unit_tests_run=$false;native_tools_invoked=$false;qualification_inherited=$false} }
     throw
 } finally {
     for ($i=$held.Count-1; $i -ge 0; $i--) { $held[$i].Dispose() }
+    if($null-ne$sourceState){Close-SharedSourceDirectories $sourceState}
     if($null-ne$sharedLock){$sharedLock.Dispose()}
 }

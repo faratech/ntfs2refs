@@ -95,8 +95,30 @@ pub(crate) fn bitmap_streamed_with_limits(
     template: &[u8],
     limits: crate::bitmap_streaming::Limits,
 ) -> io::Result<crate::bitmap_streaming::CollectedBitmap> {
+    bitmap_streamed_collector(
+        file,
+        template,
+        crate::bitmap_streaming::Collector::new(clusters, limits)?,
+    )
+}
+pub(crate) fn bitmap_streamed_with_bounded_ranges(
+    file: &File,
+    clusters: u64,
+    template: &[u8],
+    limits: crate::bitmap_streaming::Limits,
+) -> io::Result<crate::bitmap_streaming::CollectedBitmap> {
+    bitmap_streamed_collector(
+        file,
+        template,
+        crate::bitmap_streaming::Collector::new_with_bounded_ranges(clusters, limits)?,
+    )
+}
+fn bitmap_streamed_collector(
+    file: &File,
+    template: &[u8],
+    mut collector: crate::bitmap_streaming::Collector,
+) -> io::Result<crate::bitmap_streaming::CollectedBitmap> {
     crate::bitmap_paging::page_input(template, 0)?;
-    let mut collector = crate::bitmap_streaming::Collector::new(clusters, limits)?;
     let mut first = true;
     while collector.response_capacity() != 0 {
         let input = crate::bitmap_paging::page_input(template, collector.next_lcn())?;

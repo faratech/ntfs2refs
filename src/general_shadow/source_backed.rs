@@ -41,13 +41,19 @@ struct CandidateReadSpan {
     length: usize,
 }
 
-struct CandidateReadSpans {
+impl<'buf> CandidateChunk<'buf> {
+    pub(super) fn from_actual_reads(bytes: &'buf [u8], reads: CandidateReadSpans) -> Self {
+        Self { bytes, reads }
+    }
+}
+
+pub(super) struct CandidateReadSpans {
     spans: Vec<CandidateReadSpan>,
     available: bool,
 }
 
 impl CandidateReadSpans {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             spans: Vec::new(),
             available: true,
@@ -59,7 +65,7 @@ impl CandidateReadSpans {
         self.spans.clear();
     }
 
-    fn append(
+    pub(super) fn append(
         &mut self,
         base: usize,
         count: usize,
@@ -115,17 +121,24 @@ impl CandidateReadSpans {
 
 /// The receipt cannot outlive or be detached from these immutable actual
 /// candidate bytes. Neither it nor the session receipt is serializable.
-struct CandidateChunk<'buf> {
+pub(super) struct CandidateChunk<'buf> {
     bytes: &'buf [u8],
     reads: CandidateReadSpans,
 }
 
 impl CandidateChunk<'_> {
-    fn bytes(&self) -> &[u8] {
+    pub(super) fn bytes(&self) -> &[u8] {
         self.bytes
     }
 
-    fn covers_copy(&self, output_offset: usize, source_offset: u64, length: usize) -> bool {
+    pub(super) fn copy_source(&self, offset: usize, length: usize) -> Option<u64> {
+        let span = self.reads.spans.iter().find(|span| span.output_offset <= offset
+            && span.output_offset.checked_add(span.length).is_some_and(|end| offset < end))?;
+        let source = span.source_offset.checked_add((offset-span.output_offset) as u64)?;
+        self.covers_copy(offset, source, length).then_some(source)
+    }
+
+    pub(super) fn covers_copy(&self, output_offset: usize, source_offset: u64, length: usize) -> bool {
         if !self.reads.available || length == 0 {
             return false;
         }
@@ -741,6 +754,411 @@ pub(crate) trait ClosingSourceBytes {
         offset: u64,
         bytes: &[u8],
     ) -> Result<()>;
+}
+
+/// A borrowed expected-stream identity, never a source or write capability.
+/// The checked paged source and actual record reread must independently agree.
+pub struct PagedStreamIdentity<'a> {
+    pub record_number: u64,
+    pub sequence_number: u16,
+    pub name_utf16: &'a [u16],
+    pub length: u64,
+    pub sha256: Option<&'a str>,
+    pub allow_sparse: bool,
+}
+
+/// Logical bytes from the original protected source, using one checked DATA
+/// session. The legacy candidate and its Tree/NtfsInspection path stay intact.
+pub struct PagedSourceByteAdapter<'a> {
+    source: &'a mut GeneralFrozenPartition,
+    raw: &'a crate::ntfs_inspect::PagedInspection,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    before: n2r_win32::GeneralDiskState,
+    budget: crate::ntfs_inspect::StreamTransferBudget,
+    session: Option<crate::ntfs_inspect::PlainStreamRangeSession>,
+    sequence: Option<u16>,
+    allow_sparse: Option<bool>,
+    logical_bytes: u64,
+    poisoned: bool,
+    _session_ram: crate::ntfs_inspect::paged_storage::SourceRamLease,
+}
+
+impl<'a> PagedSourceByteAdapter<'a> {
+    pub fn new(
+        source: &'a mut GeneralFrozenPartition,
+        raw: &'a crate::ntfs_inspect::PagedInspection,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        maximum_logical_reads: u64,
+    ) -> Result<Self> {
+        use crate::ntfs_inspect::RootFileDomain;
+        admission.validate()?;
+        raw.require_paged_source(admission.source_pages, admission.semantic_byte_budget())?;
+        let pin: [u8; 32] = hex::decode(raw.canonical_sha256()?)?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("source pin length differs"))?;
+        ensure!(
+            pin == admission.source_inspection_sha256
+                && raw.file_count() == admission.raw_identities
+                && raw.header().mft_record_count == admission.mft_records
+                && (raw.header().geometry.volume_size == source.byte_len()
+                    || raw
+                        .header()
+                        .geometry
+                        .volume_size
+                        .checked_add(u64::from(raw.header().geometry.bytes_per_sector,))
+                        == Some(source.byte_len())),
+            "paged source byte owner differs from the admitted partition",
+        );
+        let mut events = Vec::new();
+        let before = source.state(&mut events)?;
+        ensure!(
+            before.disk_attributes == 3,
+            "original source must remain excluded read-only"
+        );
+        // One retained attribute/map plus the existing two intrinsic64KiB
+        // LZNT1 unit buffers; the legacy session representation stays unchanged.
+        let session_ram = raw.lease_working_ram(
+            admission
+                .budget
+                .max_row_bytes
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(2 * 16 * 4096))
+                .context("paged DATA session working RAM overflow")?,
+        )?;
+        Ok(Self {
+            source,
+            raw,
+            admission,
+            before,
+            // Individual NTFS logical lengths have the native signed-width
+            // bound. Aggregate actual reads retain the caller's explicit budget.
+            budget: crate::ntfs_inspect::StreamTransferBudget::new(
+                i64::MAX as u64,
+                maximum_logical_reads,
+            )?,
+            session: None,
+            sequence: None,
+            allow_sparse: None,
+            logical_bytes: 0,
+            poisoned: false,
+            _session_ram: session_ram,
+        })
+    }
+
+    fn prepare(&mut self, identity: &PagedStreamIdentity<'_>) -> Result<()> {
+        use crate::ntfs_inspect::RootFileDomain;
+        ensure!(
+            !self.poisoned,
+            "failed paged source byte adapter cannot continue"
+        );
+        let matches = self.session.as_ref().is_some_and(|session| {
+            session.matches_stream(identity.record_number, identity.name_utf16)
+                && self.sequence == Some(identity.sequence_number)
+                && self.allow_sparse == Some(identity.allow_sparse)
+        });
+        if !matches {
+            if let Some(session) = self.session.take() {
+                session.finish_domain(self.source, self.raw)?;
+            }
+            let file = self
+                .raw
+                .find_record(identity.record_number, Some(identity.sequence_number))?
+                .context("paged source byte identity is missing or stale")?;
+            ensure!(!file.is_directory, "directory cannot supply DATA payload");
+            let mut streams = file
+                .streams
+                .iter()
+                .filter(|s| s.name_utf16 == identity.name_utf16);
+            let stream = streams.next().context("paged source DATA stream absent")?;
+            ensure!(
+                streams.next().is_none()
+                    && stream.logical_size == identity.length
+                    && stream.logical_sha256.as_deref() == identity.sha256,
+                "expected stream differs from the complete paged source",
+            );
+            let session = if identity.allow_sparse {
+                crate::ntfs_inspect::PlainStreamRangeSession::open_sparse_named_domain(
+                    self.source,
+                    self.raw,
+                    identity.record_number,
+                    identity.name_utf16,
+                    identity.length,
+                )?
+            } else {
+                crate::ntfs_inspect::PlainStreamRangeSession::open_named_domain(
+                    self.source,
+                    self.raw,
+                    identity.record_number,
+                    identity.name_utf16,
+                    identity.length,
+                )?
+            };
+            self.session = Some(session);
+            self.sequence = Some(identity.sequence_number);
+            self.allow_sparse = Some(identity.allow_sparse);
+        }
+        let session = self.session.as_ref().context("paged DATA session absent")?;
+        ensure!(
+            session.stream_length() == identity.length
+                && session.expected_sha256() == identity.sha256,
+            "checked DATA session differs from expected stream length or evidence",
+        );
+        Ok(())
+    }
+
+    pub fn read_into(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<()> {
+        self.read_observed(identity, offset, output, false)
+            .map(|_| ())
+    }
+
+    pub(crate) fn read_with_direct_receipts(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<crate::ntfs_inspect::DirectReadReceipt> {
+        self.read_observed(identity, offset, output, true)?
+            .context("actual direct-read receipt absent")
+    }
+
+    fn read_observed(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &mut [u8],
+        direct: bool,
+    ) -> Result<Option<crate::ntfs_inspect::DirectReadReceipt>> {
+        let prepared = self.prepare(identity);
+        if prepared.is_err() {
+            self.poisoned = true;
+        }
+        prepared?;
+        self.poisoned = true;
+        let session = self.session.as_mut().context("paged DATA session absent")?;
+        let receipt = if direct {
+            Some(session.read_with_direct_receipts_domain(
+                self.source,
+                self.raw,
+                offset,
+                output,
+                &mut self.budget,
+            )?)
+        } else {
+            session.read_domain(self.source, self.raw, offset, output, &mut self.budget)?;
+            None
+        };
+        self.logical_bytes = self
+            .logical_bytes
+            .checked_add(output.len() as u64)
+            .context("paged source logical-read accounting overflow")?;
+        self.poisoned = false;
+        Ok(receipt)
+    }
+
+    pub fn logical_bytes_read(&self) -> u64 {
+        self.logical_bytes
+    }
+
+    pub fn source_binding(&self) -> &n2r_win32::general_layout::GeneralDiskBinding {
+        self.source.binding()
+    }
+
+    pub(crate) fn metadata_scratch(&self) -> crate::ntfs_inspect::paged_storage::SourceScratch {
+        self.raw.metadata_scratch()
+    }
+
+    pub(super) fn raw_source(&self) -> &crate::ntfs_inspect::PagedInspection {
+        self.raw
+    }
+
+    pub(crate) fn source_physical_for(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        length: u64,
+    ) -> Result<Option<u64>> {
+        let result = (|| {
+            self.prepare(identity)?;
+            self.session
+                .as_ref()
+                .context("checked COPY session absent")?
+                .contiguous_physical_range(offset, length)
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    pub(super) fn original_owner(&mut self) -> &mut GeneralFrozenPartition {
+        self.source
+    }
+
+    pub(super) fn original_owner_id(&self) -> usize {
+        std::ptr::from_ref(&*self.source) as usize
+    }
+
+    pub(crate) fn lease_working_ram(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::ntfs_inspect::paged_storage::SourceRamLease> {
+        self.raw.lease_working_ram(bytes)
+    }
+
+    pub(crate) fn require_admission(
+        &mut self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<()> {
+        ensure!(self.admission == admission, "source byte admission differs");
+        self.validate_protection()?;
+        self.raw
+            .require_paged_source(admission.source_pages, admission.semantic_byte_budget())
+    }
+
+    pub(crate) fn validate_protection(&mut self) -> Result<()> {
+        ensure!(!self.poisoned, "failed source adapter cannot validate");
+        let result = (|| {
+            ensure!(
+                self.source.state(&mut Vec::new())? == self.before
+                    && self.before.disk_attributes == 3,
+                "original source identity or physical exclusion changed"
+            );
+            Ok(())
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    pub(crate) fn finish_stream(&mut self) -> Result<()> {
+        ensure!(!self.poisoned, "failed source adapter cannot close stream");
+        self.poisoned = true;
+        if let Some(session) = self.session.take() {
+            session.finish_domain(self.source, self.raw)?;
+        }
+        self.sequence = None;
+        self.allow_sparse = None;
+        self.poisoned = false;
+        self.validate_protection()
+    }
+
+    pub(crate) fn require_reference(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        physical: u64,
+        length: u64,
+    ) -> Result<()> {
+        let result = (|| {
+            self.prepare(identity)?;
+            self.session
+                .as_ref()
+                .context("checked reference session absent")?
+                .require_physical_mapping(offset, physical, length)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    pub(crate) fn check_stream(&mut self, identity: &PagedStreamIdentity<'_>) -> Result<()> {
+        let result = self.prepare(identity);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    pub(crate) fn require_hole(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        length: u64,
+    ) -> Result<()> {
+        let result = (|| {
+            self.prepare(identity)?;
+            self.session
+                .as_ref()
+                .context("checked hole session absent")?
+                .require_zero_mapping(offset, length)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    /// Actual checked range bytes with mapping revalidated before returning to
+    /// a destination writer. Whole-stream content is claimed only when read.
+    pub(crate) fn read_range_proof(
+        &mut self,
+        identity: &PagedStreamIdentity<'_>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<crate::ntfs_inspect::StreamRangeReadProof> {
+        use sha2::Digest;
+        self.validate_protection()?;
+        self.read_into(identity, offset, output)?;
+        let allocation = if identity.allow_sparse {
+            Some(
+                self.session
+                    .as_ref()
+                    .context("range DATA session absent")?
+                    .allocation_evidence()?,
+            )
+        } else {
+            None
+        };
+        let whole = offset == 0 && output.len() as u64 == identity.length;
+        if whole && let Some(expected) = identity.sha256 {
+            if n2r_win32::content_digest::of(output) != expected {
+                self.poisoned = true;
+                anyhow::bail!("checked full source stream differs from expected content");
+            }
+        }
+        let sha256 = hex::encode(sha2::Sha256::digest(&*output));
+        self.finish_stream()?;
+        Ok(crate::ntfs_inspect::StreamRangeReadProof {
+            record_number: identity.record_number,
+            stream_name_utf16: identity.name_utf16.to_vec(),
+            logical_offset: offset,
+            logical_bytes: output.len() as u64,
+            stream_logical_bytes: identity.length,
+            expected_stream_sha256: identity.sha256.map(str::to_owned),
+            sha256,
+            whole_stream_hash_matched: whole && identity.sha256.is_some(),
+            allocation,
+        })
+    }
+
+    pub fn finish(mut self) -> Result<u64> {
+        ensure!(
+            !self.poisoned,
+            "failed paged source byte adapter cannot finish"
+        );
+        if let Some(session) = self.session.take() {
+            session.finish_domain(self.source, self.raw)?;
+        }
+        self.raw.require_paged_source(
+            self.admission.source_pages,
+            self.admission.semantic_byte_budget(),
+        )?;
+        let mut events = Vec::new();
+        ensure!(
+            self.source.state(&mut events)? == self.before && self.before.disk_attributes == 3,
+            "original source identity or protection changed around logical reads",
+        );
+        Ok(self.logical_bytes)
+    }
 }
 
 pub struct SourceBackedShadow<'a> {

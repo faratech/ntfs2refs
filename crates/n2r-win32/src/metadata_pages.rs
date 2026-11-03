@@ -649,6 +649,11 @@ impl Reader {
     pub fn final_path(&self) -> &str {
         &self.snapshot.final_path
     }
+    /// Compare complete native file identity and immutable metadata against an
+    /// independently retained handle. No path or serialized pin is authority.
+    pub fn same_file_as(&self, file: &File) -> io::Result<bool> {
+        Ok(Snapshot::observe(file)? == self.snapshot)
+    }
     pub fn get(&mut self, ordinal: u64) -> io::Result<Record> {
         require(ordinal < self.records, "metadata ordinal is out of bounds")?;
         if !self

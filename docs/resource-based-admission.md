@@ -1,5 +1,22 @@
 # Resource-based source and metadata admission
 
+## Experimental integration checkpoint — 2026-11-03
+
+The compiled V4 core now connects held source/target/resource admission to a
+one-shot paged writer, markerless apply and handoff, authenticated restart
+resume/rollback/clear abandonment, and protected native metadata/known-content
+and saved-map verification before writable access. The source's diagnostic
+report flags are not activation authority. The exact experimental source
+snapshot is `f469d146e530cb471060e1cbdea22127a7baaebd`; its release build used
+the shared experimental cache and does not establish reproducibility or native
+qualification. The public CLI switch is a separate subsequent change.
+
+The latest completed native attempt still stopped before source writes while
+preparing target intervals. Its actual input count exposed an eager RAM/8 sort
+reservation; the snapshot replaces that batch sizing with actual domain hints
+and preserves complete spill/merge processing. Full V4 conversion, reboot
+recovery, hardware coverage and the final release matrix remain required.
+
 This development path replaces fixture cardinality limits with complete,
 page-backed metadata and an explicit RAM/scratch budget. It does not enable a
 general conversion path or inherit native qualification from source `7feb4c0`.

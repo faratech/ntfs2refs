@@ -10,6 +10,60 @@ use n2r_win32::{GeneralFrozenPartition, WritePolicy, journal_file::MarkerStorage
 use reconstruct::selected_artifacts::Artifact;
 use reconstruct::selected_native_journal::NativeSelectedJournal;
 
+fn save_resource_expectation(
+    output: &Path,
+    value: &impl Serialize,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<String> {
+    use std::{
+        fs::OpenOptions,
+        io::{BufWriter, Write},
+        os::windows::fs::OpenOptionsExt,
+    };
+    admission.validate_constructor_metadata(value)?;
+    struct Encoded<'a, W: Write> {
+        writer: &'a mut W,
+        hash: Sha256,
+        bytes: u64,
+        maximum: u64,
+    }
+    impl<W: Write> Write for Encoded<'_, W> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= self.maximum)
+                .ok_or_else(|| {
+                    std::io::Error::other("resource expectation exceeds semantic budget")
+                })?;
+            self.writer.write_all(bytes)?;
+            self.hash.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.writer.flush()
+        }
+    }
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0)
+        .custom_flags(0x0020_0000)
+        .open(output.join("expectation.json"))?;
+    let mut buffered = BufWriter::with_capacity(admission.budget.page_bytes as usize, file);
+    let mut encoded = Encoded {
+        writer: &mut buffered,
+        hash: Sha256::new(),
+        bytes: 0,
+        maximum: admission.semantic_byte_budget(),
+    };
+    serde_json::to_writer_pretty(&mut encoded, value)?;
+    encoded.flush()?;
+    let hash = hex::encode(encoded.hash.finalize());
+    buffered.get_ref().sync_all()?;
+    Ok(hash)
+}
+
 /// The fresh alternative exposes no mutable journal between completed
 /// preparation and handoff. Legacy execution retains its original stream APIs.
 enum PreparedJournal<'a> {
@@ -334,16 +388,36 @@ fn convert_allocation_selected_inner(
         // Only the complete frozen-source admission is persisted for recovery.
         // Planning an envelope did not issue a certificate or widen any budget.
         let mut admitted_request = request.clone();
-        if resources.is_envelope() {
+        if resources.is_envelope() || resources.resource_admission()?.is_some() {
             resources.count_admission()?;
+            resources.resource_admission()?;
             admitted_request.source_resource_profile = Some(resources);
         }
         let request = &admitted_request;
         record_process_io(output, "qualified")?;
-        let expected_tree_sha256 = hex::encode(Sha256::digest(&expected));
+        let resource_admission = resources.resource_admission()?;
+        let expected_tree_sha256 = if let Some(admission) = resource_admission {
+            let pages = expected_pages
+                .as_ref()
+                .context("V4 conversion requires its actual expected page owner")?;
+            pages.require_resource_owner(admission)?;
+            if !expected.is_empty() {
+                ensure!(
+                    hex::encode(Sha256::digest(&expected)) == pages.semantic_sha256(),
+                    "supplementary legacy expectation differs from resource owner"
+                );
+            }
+            pages.semantic_sha256().to_owned()
+        } else {
+            hex::encode(Sha256::digest(&expected))
+        };
         ensure!(
             certificate.binds(&proof) && certificate.expected_tree_sha256() == expected_tree_sha256,
             "allocation-bounded certificate does not bind the live proof"
+        );
+        ensure!(
+            resource_admission.is_none() || expected_pages.is_some(),
+            "V4 conversion cannot fall back to inline expectation JSON"
         );
         let inline_expectation = if expected_pages.is_none() {
             Some(serde_json::from_slice::<crate::shadow_tree::ExpectedTree>(
@@ -359,25 +433,36 @@ fn convert_allocation_selected_inner(
         };
         use crate::shadow_tree::ExpectedObjectDomain as _;
         expectation.revalidate_domain()?;
-        let expectation_pin = Artifact::Expectation.save(output, &expectation)?;
+        let expectation_pin = if let Some(admission) = resource_admission {
+            save_resource_expectation(output, &expectation, admission)?
+        } else {
+            Artifact::Expectation.save(output, &expectation)?
+        };
         ensure!(
             expectation_pin == expected_tree_sha256,
-            "saved expectation differs from the admitted target"
+            "saved expectation differs from admitted target"
         );
         drop(expected);
         let paged_admission = resources
             .count_admission()?
             .filter(|a| a.requires_paged_metadata());
-        let expectation_pages_pin = if let Some(admission) = paged_admission {
-            let pages = expected_pages.as_ref().context(
-                "admitted paged resources require the actual held expected-object owner",
-            )?;
+        let expectation_pages_pin = if resource_admission.is_some() || paged_admission.is_some() {
+            let pages = expected_pages
+                .as_ref()
+                .context("admitted paged resources require actual held expected owner")?;
+            if let Some(admission) = resource_admission {
+                pages.require_resource_owner(admission)?;
+            } else if let Some(admission) = paged_admission {
+                ensure!(
+                    pages.budget() == admission.expected_page_budget()?
+                        && pages.semantic_byte_budget()
+                            == u64::from(admission.maximum_expected_tree_bytes),
+                    "legacy paged expected resources differ"
+                );
+            }
             ensure!(
-                pages.budget() == admission.expected_page_budget()?
-                    && pages.semantic_byte_budget()
-                        == u64::from(admission.maximum_expected_tree_bytes)
-                    && pages.semantic_sha256() == expectation_pin,
-                "held expectation pages differ from the admitted resource or semantic pin"
+                pages.semantic_sha256() == expectation_pin,
+                "held expected semantic pin differs"
             );
             let path = output.join("expectation.pages");
             pages.copy_to(&path)?;

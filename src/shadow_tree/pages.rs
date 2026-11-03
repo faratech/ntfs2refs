@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
+    fs::File,
     io::{self, Read, Write},
     path::{Path, PathBuf},
 };
@@ -99,6 +100,33 @@ pub struct PagedExpectedTree {
     semantic_byte_budget: u64,
     directory: Vec<ObjectEntry>,
     resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    arena: Option<crate::artifact_arena::ArtifactArena>,
+    _artifact: Option<crate::artifact_arena::ArtifactLease>,
+    // A reopened expected domain retains the already authenticated read-only
+    // file, but never gains a fresh-created ArtifactLease/source authority.
+    _reopened_file: Option<File>,
+    _reader_ram: Option<crate::artifact_arena::ArenaRamLease>,
+    _directory_ram: Option<crate::artifact_arena::ArenaRamLease>,
+    _header_ram: Option<crate::artifact_arena::ArenaRamLease>,
+}
+
+struct ExpectedMemoryOwner {
+    arena: crate::artifact_arena::ArtifactArena,
+    artifact: Option<crate::artifact_arena::ArtifactLease>,
+    reopened: Option<File>,
+}
+
+/// One decoded object keeps its actual shared-memory lease through all native
+/// views/caches. It has no Clone or Deserialize implementation.
+pub struct LeasedExpectedObject {
+    object: Object,
+    _ram: crate::artifact_arena::ArenaRamLease,
+}
+impl std::ops::Deref for LeasedExpectedObject {
+    type Target = Object;
+    fn deref(&self) -> &Object {
+        &self.object
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -629,7 +657,7 @@ impl<'de> serde::de::Visitor<'de> for MemorySeed<'_> {
         self.charge(0)
     }
 }
-fn check_object_memory(object: &Object, compact: u64, maximum: u64) -> Result<()> {
+fn object_memory_bytes(object: &Object, compact: u64, maximum: u64) -> Result<u64> {
     let mut bytes = compact
         .checked_add(std::mem::size_of::<Object>() as u64)
         .context("object memory overflow")?;
@@ -727,10 +755,45 @@ fn check_object_memory(object: &Object, compact: u64, maximum: u64) -> Result<()
             charge(sparse(layout)?)?;
         }
     }
-    charge(0)
+    charge(0)?;
+    Ok(bytes)
+}
+fn check_object_memory(object: &Object, compact: u64, maximum: u64) -> Result<()> {
+    object_memory_bytes(object, compact, maximum).map(|_| ())
 }
 
 impl PagedExpectedTree {
+    pub fn create_with_resources_in_group(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<(
+        ExpectedTreePageReceipt,
+        crate::artifact_arena::ArtifactLease,
+    )> {
+        ensure!(
+            group.group() == crate::artifact_arena::ArtifactGroup::Expected
+                && group.arena().budget() == admission.budget,
+            "actual expected arena group differs"
+        );
+        let page = u64::from(admission.expected_page_budget()?.max_page_bytes);
+        let working = page
+            .checked_mul(4)
+            .and_then(|n| {
+                admission
+                    .budget
+                    .max_row_bytes
+                    .checked_mul(8)
+                    .and_then(|row| n.checked_add(row))
+            })
+            .context("expected writer RAM overflow")?;
+        let _ram = group.arena().reserve_ram(working)?;
+        let permit = group.reserve_file(path, admission.expected_page_budget()?.max_file_bytes)?;
+        let receipt = Self::create_with_resources(tree, permit.path(), admission)?;
+        let artifact = permit.verify_closed(&receipt.file_sha256)?;
+        Ok((receipt, artifact))
+    }
     /// Create a separate paged projection; the original expectation.json and
     /// its exact pretty-JSON SHA remain unchanged. The same pinned max_file_bytes
     /// also bounds the streamed legacy semantic JSON representation.
@@ -888,6 +951,7 @@ impl PagedExpectedTree {
             budget,
             semantic_byte_budget,
             None,
+            None,
         )
     }
     pub fn open_with_resources(
@@ -904,6 +968,33 @@ impl PagedExpectedTree {
             admission.expected_page_budget()?,
             admission.semantic_byte_budget(),
             Some(admission),
+            None,
+        )
+    }
+    pub fn open_with_resources_in_group(
+        path: &Path,
+        file_sha256: &str,
+        legacy_semantic_sha256: &str,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        group: &crate::artifact_arena::ArtifactGroupPermit,
+        artifact: crate::artifact_arena::ArtifactLease,
+    ) -> Result<Self> {
+        admission.validate()?;
+        ensure!(
+            group.group() == crate::artifact_arena::ArtifactGroup::Expected
+                && group.arena().budget() == admission.budget
+                && artifact.same_group(group)
+                && artifact.sha256() == file_sha256,
+            "expected page file/arena owner differs"
+        );
+        Self::open_domain(
+            path,
+            file_sha256,
+            legacy_semantic_sha256,
+            admission.expected_page_budget()?,
+            admission.semantic_byte_budget(),
+            Some(admission),
+            Some((group.arena().clone(), artifact)),
         )
     }
     fn open_domain(
@@ -913,6 +1004,69 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
         resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+        memory: Option<(
+            crate::artifact_arena::ArtifactArena,
+            crate::artifact_arena::ArtifactLease,
+        )>,
+    ) -> Result<Self> {
+        Self::open_owned_domain(
+            path,
+            file_sha256,
+            legacy_semantic_sha256,
+            budget,
+            semantic_byte_budget,
+            resource_admission,
+            memory.map(|(arena, artifact)| ExpectedMemoryOwner {
+                arena,
+                artifact: Some(artifact),
+                reopened: None,
+            }),
+        )
+    }
+
+    /// Reopen the exact held recovery artifact with live runtime accounting.
+    /// This owner cannot satisfy the fresh-source artifact requirement.
+    pub(crate) fn open_recovery_with_resources(
+        file: &File,
+        snapshot: &n2r_win32::reference_file::ReferenceFileSnapshot,
+        file_sha256: &str,
+        semantic_sha256: &str,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+        arena: &crate::artifact_arena::ArtifactArena,
+    ) -> Result<Self> {
+        admission.validate()?;
+        ensure!(
+            n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                file,
+                admission.expected_page_budget()?.max_file_bytes,
+            )? == *snapshot,
+            "reopened expected artifact identity changed"
+        );
+        let tree = Self::open_owned_domain(
+            Path::new(&snapshot.final_path),
+            file_sha256,
+            semantic_sha256,
+            admission.expected_page_budget()?,
+            admission.semantic_byte_budget(),
+            Some(admission),
+            Some(ExpectedMemoryOwner {
+                arena: arena.clone(),
+                artifact: None,
+                reopened: Some(file.try_clone()?),
+            }),
+        )?;
+        tree.require_recovery_memory(arena)?;
+        Ok(tree)
+    }
+
+    fn open_owned_domain(
+        path: &Path,
+        file_sha256: &str,
+        legacy_semantic_sha256: &str,
+        budget: PageBudget,
+        semantic_byte_budget: u64,
+        resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+        mut memory: Option<ExpectedMemoryOwner>,
     ) -> Result<Self> {
         ensure!(
             (1..=i64::MAX as u64).contains(&semantic_byte_budget),
@@ -922,7 +1076,54 @@ impl PagedExpectedTree {
             canonical_sha(file_sha256) && canonical_sha(legacy_semantic_sha256),
             "canonical file and legacy expectation SHA-256 pins required"
         );
+        // Pay the page cache, immutable path/snapshot state and read/hash
+        // workspace BEFORE opening/validating any page. Cache Vec growth is
+        // bounded by twice the largest admitted page.
+        let arena = memory.as_ref().map(|owner| owner.arena.clone());
+        let reader_bytes = u64::from(budget.max_page_bytes)
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(65536 + 4096))
+            .and_then(|n| {
+                n.checked_add(memory.as_ref().map_or(0, |owner| {
+                    owner.artifact.as_ref().map_or(262144, |file| {
+                        file.snapshot().final_path.capacity() as u64 * 8
+                    })
+                }))
+            })
+            .context("expected reader RAM overflow")?;
+        let reader_ram = arena
+            .as_ref()
+            .map(|a| a.reserve_ram(reader_bytes))
+            .transpose()?;
+        let directory_bound = resource_admission
+            .map(|a| a.objects())
+            .transpose()?
+            .map(|n| {
+                n.checked_mul(48)
+                    .and_then(|n| n.checked_add(256))
+                    .context("expected directory RAM overflow")
+            })
+            .transpose()?;
+        let mut directory_ram = match (&arena, directory_bound) {
+            (Some(a), Some(bytes)) => Some(a.reserve_ram(bytes)?),
+            _ => None,
+        };
         let mut reader = Reader::open(path, file_sha256, PURPOSE, budget)?;
+        if let Some(owner) = &memory {
+            if let Some(artifact) = &owner.artifact {
+                ensure!(
+                    reader.final_path() == artifact.snapshot().final_path
+                        && reader.byte_len() == artifact.wire_bytes(),
+                    "expected reader changed actual arena file identity"
+                );
+            }
+            if let Some(file) = &owner.reopened {
+                ensure!(
+                    reader.same_file_as(file)?,
+                    "expected reader differs from held recovery file"
+                );
+            }
+        }
         ensure!(
             !reader.is_empty(),
             "paged expected tree lacks its scalar header"
@@ -932,7 +1133,35 @@ impl PagedExpectedTree {
             first.key.is_empty(),
             "expected-tree scalar header key differs"
         );
+        // Strings and the role-vector can amplify compact JSON. This is an
+        // allocation bound from the actual encoded header, not a role count cap.
+        let mut header_ram = arena
+            .as_ref()
+            .map(|a| {
+                a.reserve_ram(
+                    (first.payload.len() as u64)
+                        .checked_mul(32)
+                        .and_then(|n| {
+                            n.checked_add(std::mem::size_of::<ExpectedTreePageHeader>() as u64)
+                        })
+                        .context("expected header RAM overflow")?,
+                )
+            })
+            .transpose()?;
         let header: ExpectedTreePageHeader = serde_json::from_slice(&first.payload)?;
+        if let Some(lease) = &mut header_ram {
+            let actual = header.internal_replacement_pending.iter().try_fold(
+                (std::mem::size_of::<ExpectedTreePageHeader>()
+                    + header.profile.capacity()
+                    + header.internal_replacement_pending.capacity()
+                        * std::mem::size_of::<String>()) as u64,
+                |n, s| {
+                    n.checked_add(s.capacity() as u64)
+                        .context("expected header RAM overflow")
+                },
+            )?;
+            lease.shrink_to(actual)?;
+        }
         drop(first);
         ensure!(
             header.schema_version == (if resource_admission.is_some() { 3 } else { 2 })
@@ -958,6 +1187,13 @@ impl PagedExpectedTree {
         let maximum_chunk = chunk_bytes(budget)?;
         let mut directory = Vec::new();
         directory.try_reserve_exact(usize::try_from(header.total_objects)?)?;
+        if let Some(lease) = &mut directory_ram {
+            lease.shrink_to(
+                (directory.capacity() as u64)
+                    .checked_mul(std::mem::size_of::<ObjectEntry>() as u64)
+                    .context("expected directory capacity overflow")?,
+            )?;
+        }
         if let Some(admission) = resource_admission {
             ensure!(
                 (directory.capacity() as u64)
@@ -1028,6 +1264,12 @@ impl PagedExpectedTree {
             semantic_byte_budget,
             directory,
             resource_admission,
+            arena,
+            _artifact: memory.as_mut().and_then(|owner| owner.artifact.take()),
+            _reopened_file: memory.and_then(|owner| owner.reopened),
+            _reader_ram: reader_ram,
+            _directory_ram: directory_ram,
+            _header_ram: header_ram,
         };
         let counts = Cell::new(ExpectedTreePageCounts::default());
         let mut semantic = SemanticHash::new(semantic_byte_budget);
@@ -1081,6 +1323,10 @@ impl PagedExpectedTree {
     pub fn file_sha256(&self) -> &str {
         &self.file_sha256
     }
+    /// The actual constructor-held file owner, never a serialized page pin.
+    pub(crate) fn artifact_lease(&self) -> Option<&crate::artifact_arena::ArtifactLease> {
+        self._artifact.as_ref()
+    }
     pub fn semantic_sha256(&self) -> &str {
         &self.semantic_sha256
     }
@@ -1101,6 +1347,63 @@ impl PagedExpectedTree {
     }
 
     pub fn object(&self, index: usize) -> Result<Object> {
+        let _working = self.reserve_decode_ram()?;
+        self.decode_object(index)
+    }
+    fn reserve_decode_ram(&self) -> Result<Option<crate::artifact_arena::ArenaRamLease>> {
+        let Some(arena) = &self.arena else {
+            return Ok(None);
+        };
+        let admission = self
+            .resource_admission
+            .context("expected arena row lacks admission")?;
+        let bytes = admission
+            .budget
+            .max_row_bytes
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(u64::from(self.budget.max_page_bytes) * 3))
+            .context("expected row decode RAM overflow")?;
+        Ok(Some(arena.reserve_ram(bytes)?))
+    }
+    pub fn object_leased(&self, index: usize) -> Result<LeasedExpectedObject> {
+        let mut ram = self
+            .reserve_decode_ram()?
+            .context("actual shared expected memory owner required")?;
+        let object = self.decode_object(index)?;
+        let bytes = object_memory_bytes(
+            &object,
+            0,
+            self.resource_admission
+                .context("expected admission absent")?
+                .budget
+                .max_row_bytes,
+        )?;
+        // Keep room for the two native source-run/name views made from this
+        // object while its lease is alive, as well as its own exact capacities.
+        ram.shrink_to(
+            bytes
+                .checked_mul(3)
+                .context("expected leased native-view RAM overflow")?,
+        )?;
+        Ok(LeasedExpectedObject { object, _ram: ram })
+    }
+    pub(crate) fn require_shared_memory(
+        &self,
+        arena: &crate::artifact_arena::ArtifactArena,
+    ) -> Result<()> {
+        ensure!(
+            self.arena
+                .as_ref()
+                .is_some_and(|owned| owned.same_arena(arena))
+                && self._artifact.is_some()
+                && self._reader_ram.is_some()
+                && self._directory_ram.is_some()
+                && self._header_ram.is_some(),
+            "expected pages lack actual shared arena/index/cache memory ownership"
+        );
+        Ok(())
+    }
+    fn decode_object(&self, index: usize) -> Result<Object> {
         ensure!(
             index < self.len(),
             "expected-tree ordinal outside complete object domain"
@@ -1165,8 +1468,30 @@ impl PagedExpectedTree {
     }
 
     pub fn revalidate(&self) -> Result<()> {
-        self.reader.borrow_mut().revalidate()?;
+        let mut reader = self.reader.borrow_mut();
+        reader.revalidate()?;
+        if let Some(file) = &self._reopened_file {
+            ensure!(
+                reader.same_file_as(file)?,
+                "held recovered expected file changed"
+            );
+        }
         Ok(())
+    }
+    pub(crate) fn require_recovery_memory(
+        &self,
+        arena: &crate::artifact_arena::ArtifactArena,
+    ) -> Result<()> {
+        ensure!(
+            self._artifact.is_none()
+                && self._reopened_file.is_some()
+                && self.arena.as_ref().is_some_and(|a| a.same_arena(arena))
+                && self._reader_ram.is_some()
+                && self._directory_ram.is_some()
+                && self._header_ram.is_some(),
+            "recovered expected pages lack live reader/index/header accounting"
+        );
+        self.revalidate()
     }
     pub fn copy_to(&self, path: &Path) -> Result<()> {
         self.reader.borrow_mut().copy_to(path)?;

@@ -81,8 +81,38 @@ impl ExternalSort {
     pub fn new(base: &Path, purpose: [u8; 8], scratch: &SourceScratch) -> Result<Self> {
         let budget = scratch.budget();
         budget.validate()?;
-        let bytes = budget.ram_bytes / 8;
-        let capacity = usize::try_from((bytes / (size_of::<Row>() as u64 + 128)).max(1))?;
+        Self::with_batch_target(base, purpose, scratch, budget.ram_bytes / 8, None)
+    }
+
+    /// Size the in-memory batch from an actual domain count when available.
+    /// The count is ONLY a performance hint: extra records and unusually
+    /// large rows still spill through the exact same checked merge path.
+    pub fn with_record_hint(
+        base: &Path,
+        purpose: [u8; 8],
+        scratch: &SourceScratch,
+        record_hint: u64,
+    ) -> Result<Self> {
+        let budget = scratch.budget();
+        budget.validate()?;
+        let estimate = record_hint.saturating_mul(4096);
+        let target = estimate
+            .max(u64::from(budget.page_bytes))
+            .min(budget.ram_bytes / 8);
+        Self::with_batch_target(base, purpose, scratch, target, Some(record_hint))
+    }
+
+    fn with_batch_target(
+        base: &Path,
+        purpose: [u8; 8],
+        scratch: &SourceScratch,
+        bytes: u64,
+        record_hint: Option<u64>,
+    ) -> Result<Self> {
+        let budget = scratch.budget();
+        let calculated = (bytes / (size_of::<Row>() as u64 + 128)).max(1);
+        let capacity =
+            usize::try_from(record_hint.map_or(calculated, |hint| calculated.min(hint.max(1))))?;
         let ram = scratch.lease_ram(bytes)?;
         let mut batch = Vec::new();
         batch.try_reserve_exact(capacity)?;

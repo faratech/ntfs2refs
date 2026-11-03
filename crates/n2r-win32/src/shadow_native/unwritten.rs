@@ -181,6 +181,22 @@ pub(super) struct PrivatePlaceholder {
 }
 
 impl PrivatePlaceholder {
+    pub(super) fn retained_memory_bytes(&self) -> io::Result<u64> {
+        (self.path.capacity() as u64)
+            .checked_add(
+                (self.placed.capacity() as u64)
+                    .checked_mul(mem::size_of::<(u64, u64, u32)>() as u64)
+                    .ok_or_else(|| invalid("private mapping RAM overflow"))?,
+            )
+            .and_then(|n| {
+                n.checked_add(
+                    self.retire_identity
+                        .as_ref()
+                        .map_or(0, |v| v.capacity() as u64),
+                )
+            })
+            .ok_or_else(|| invalid("private placeholder RAM overflow"))
+    }
     /// Caller binds the independent writable ReFS shadow and enables volume
     /// privilege before this call. Security is applied atomically at creation.
     pub fn allocate(root: &str, experiment: &str, bytes: u64, partition: u64) -> io::Result<Self> {

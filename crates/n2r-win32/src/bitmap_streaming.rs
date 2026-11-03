@@ -256,6 +256,7 @@ pub struct Collector {
     allocated: u64,
     padding: u32,
     ranges: Vec<ClusterRange>,
+    range_capacity_limit: Option<usize>,
     complete: bool,
     poisoned: bool,
     first_page: Option<CollectedFirstPage>,
@@ -287,10 +288,44 @@ impl Collector {
             allocated: 0,
             padding: 0,
             ranges: Vec::new(),
+            range_capacity_limit: None,
             complete: false,
             poisoned: false,
             first_page: None,
         })
+    }
+    /// Resource-only checked owned-capacity envelope. Capacity is verified
+    /// after each allocation; an allocator may transiently over-allocate before
+    /// that check. This is not a strict process peak-memory proof or authority.
+    pub(crate) fn new_with_bounded_ranges(
+        expected_clusters: u64,
+        limits: Limits,
+    ) -> io::Result<Self> {
+        let mut collector = Self::new(expected_clusters, limits)?;
+        collector.range_capacity_limit = Some(
+            limits
+                .max_allocated_ranges
+                .checked_mul(2)
+                .ok_or_else(|| bad("bitmap capacity envelope overflow"))?,
+        );
+        Ok(collector)
+    }
+    fn clone_ranges(&self) -> io::Result<Vec<ClusterRange>> {
+        if let Some(maximum) = self.range_capacity_limit {
+            let mut ranges = Vec::new();
+            ranges
+                .try_reserve_exact(self.ranges.len())
+                .map_err(|_| bad("bitmap prefix range allocation failed"))?;
+            if ranges.capacity() > maximum {
+                return Err(bad(
+                    "bitmap prefix actual capacity exceeds its prepaid envelope",
+                ));
+            }
+            ranges.extend_from_slice(&self.ranges);
+            Ok(ranges)
+        } else {
+            Ok(self.ranges.clone())
+        }
     }
     pub fn next_lcn(&self) -> u64 {
         self.covered
@@ -356,7 +391,7 @@ impl Collector {
         let ranges = if complete {
             Vec::new()
         } else {
-            self.ranges.clone()
+            self.clone_ranges()?
         };
         self.first_page = Some(CollectedFirstPage {
             query,
@@ -389,7 +424,7 @@ impl Collector {
             allocated_clusters: self.allocated,
             free_clusters: self.expected - self.allocated,
             padding_bits_set: self.padding,
-            allocated_ranges: self.ranges.clone(),
+            allocated_ranges: self.clone_ranges()?,
         })
     }
 
@@ -451,9 +486,28 @@ impl Collector {
             if self.ranges.len() >= self.limits.max_allocated_ranges {
                 return Err(bad("streaming bitmap allocation-range budget exhausted"));
             }
-            self.ranges
-                .try_reserve(1)
-                .map_err(|_| bad("bitmap interval allocation failed"))?;
+            if let Some(maximum) = self.range_capacity_limit {
+                if self.ranges.len() == self.ranges.capacity() {
+                    let target = self
+                        .ranges
+                        .capacity()
+                        .saturating_mul(2)
+                        .max(4)
+                        .min(self.limits.max_allocated_ranges);
+                    self.ranges
+                        .try_reserve_exact(target - self.ranges.len())
+                        .map_err(|_| bad("bitmap interval allocation failed"))?;
+                    if self.ranges.capacity() > maximum {
+                        return Err(bad(
+                            "bitmap actual range capacity exceeds its prepaid envelope",
+                        ));
+                    }
+                }
+            } else {
+                self.ranges
+                    .try_reserve(1)
+                    .map_err(|_| bad("bitmap interval allocation failed"))?;
+            }
             self.ranges.push(ClusterRange {
                 starting_lcn,
                 clusters,

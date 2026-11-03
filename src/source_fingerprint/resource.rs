@@ -849,8 +849,18 @@ impl PagedSourceFingerprint {
         } else {
             (workers + 2, workers)
         };
+        // Each additional physical lane has its own SDK aligned buffer in
+        // addition to the caller-owned digest buffer. Reserve both before
+        // digest_frozen_chunks can open any lane. The original source buffer
+        // is already owned and paid by ResourceSourceContext.
+        let extra_lanes = depth.saturating_sub(1) as u64;
+        let lane_bytes = extra_lanes
+            .checked_mul(n2r_win32::GeneralFrozenPartition::read_buffer_memory_bytes())
+            .and_then(|n| n.checked_add(extra_lanes * 65536))
+            .context("fingerprint physical lane RAM overflow")?;
         let ram = (buffers as u64)
             .checked_mul(MAX_CHUNK_BYTES as u64)
+            .and_then(|n| n.checked_add(lane_bytes))
             .and_then(|n| n.checked_add(threads as u64 * 2 * 1024 * 1024))
             .and_then(|n| n.checked_add(batch as u64 * 256))
             .context("fingerprint worker RAM overflow")?;

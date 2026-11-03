@@ -59,11 +59,9 @@ pub mod ntfs_attribute_list;
 pub mod ntfs_backup;
 pub mod ntfs_compression;
 pub mod ntfs_data_attestation;
-pub mod ntfs_extended_attributes;
 pub mod ntfs_evacuation;
+pub mod ntfs_extended_attributes;
 pub(crate) mod ntfs_file_attributes;
-#[cfg(windows)]
-pub mod ntfs_preparation;
 #[cfg(windows)]
 pub mod ntfs_freeze;
 pub mod ntfs_index;
@@ -72,6 +70,8 @@ pub mod ntfs_internal;
 pub mod ntfs_log;
 pub mod ntfs_namespace;
 pub mod ntfs_namespace_attestation;
+#[cfg(windows)]
+pub mod ntfs_preparation;
 pub mod ntfs_reparse;
 pub mod ntfs_security;
 pub mod ntfs_source_view;
@@ -105,6 +105,12 @@ pub mod refs_retained_allocation;
 pub mod refs_split_refs;
 pub mod refs_virtual_roots;
 pub mod refs_write_set;
+#[cfg(windows)]
+pub mod resource_diagnostic;
+#[cfg(windows)]
+pub(crate) mod resource_preparation;
+#[cfg(windows)]
+pub(crate) mod resource_finalize;
 pub mod retained_compare;
 pub mod selected_capacity;
 pub mod selected_journal;
@@ -112,8 +118,8 @@ pub mod selected_ownership;
 #[cfg(windows)]
 pub mod shadow_freeze;
 pub mod shadow_tree;
-pub mod source_volume_label;
 #[cfg(windows)]
 pub mod source_fingerprint;
+pub mod source_volume_label;
 pub mod tree_placement;
 pub mod verification_policy;

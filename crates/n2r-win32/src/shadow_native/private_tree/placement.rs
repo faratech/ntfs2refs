@@ -835,6 +835,134 @@ fn plan_deferred(
     Ok(Ok(deferred))
 }
 
+/// Allocate only still-unmapped logical holes. The same implementation serves
+/// both phase orders; prior verified evacuation moves still consume the shared
+/// move/evidence budgets. Native destination and complete-map checks are unchanged.
+fn allocate_deferred(
+    tree: &mut PrivateTree,
+    wanted: Wanted<'_>,
+    holes: &[(usize, u64, u64)],
+    max_move_bytes: u64,
+    reservation: &Reservation,
+    evidence: &mut Evidence,
+    counters: &mut Counters,
+    move_bytes: &mut u64,
+) -> io::Result<()> {
+    // Plan every deferred hole from one snapshot of both native views. If
+    // ReFS allocates a planned destination after it, the mover refuses that
+    // step before submission; the rest of the phase is then planned again
+    // from one fresh snapshot, a bounded number of times.
+    let (legacy, metadata) = views(tree)?;
+    counters.phase_bitmap_snapshots += 1;
+    let base_moves = evidence.moves.len();
+    let mut deferred = match plan_deferred(wanted, &legacy, &metadata, holes, base_moves, counters)?
+    {
+        Ok(steps) => steps,
+        Err(message) => return Err(refuse(tree, counters, message)),
+    };
+    let mut next_step = 0;
+    while let Some(&step) = deferred.get(next_step) {
+        progress(
+            tree,
+            step.phase,
+            *move_bytes,
+            &evidence.moves,
+            Some(serde_json::json!({
+            "object_index":step.index,"logical_offset":step.logical,"destination":step.destination,
+            "length":step.length,"placement_result_recorded":false,"budget_charged":false})),
+            counters,
+        );
+        let current_extents = tree.file_by_slot(step.index)?.retrieval_extents();
+        charge_move(move_bytes, step.length, max_move_bytes)?;
+        tree.placement_progress["charged_move_bytes"] = (*move_bytes).into();
+        tree.placement_progress["pending"]["budget_charged"] = true.into();
+        let attempt = tree.place_slot_with_evidence(
+            step.index,
+            step.logical / 4096,
+            step.destination / 4096,
+            (step.length / 4096) as u32,
+            |destination| {
+                reserve_move(
+                    counters,
+                    evidence,
+                    reservation,
+                    current_extents,
+                    step.length,
+                    destination,
+                )
+            },
+        );
+        tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
+            counters.move_evidence_reservation_bytes.into();
+        let proof = match attempt {
+            Err(error) if destination_drifted(&error) => {
+                uncharge_move(tree, move_bytes, step.length);
+                if counters.deferred_drift_replans == MAX_DRIFT_REPLANS {
+                    return Err(refuse(
+                        tree,
+                        counters,
+                        format!(
+                            "deferred allocation destination allocated after {MAX_DRIFT_REPLANS} \
+                             fresh-snapshot re-plans: {error}; preserve shadow without retry"
+                        ),
+                    ));
+                }
+                counters.deferred_drift_replans += 1;
+                let remaining = remaining_holes(&deferred[next_step..]);
+                let (legacy, metadata) = views(tree)?;
+                counters.phase_bitmap_snapshots += 1;
+                let planned = match plan_deferred(
+                    wanted,
+                    &legacy,
+                    &metadata,
+                    &remaining,
+                    base_moves + next_step,
+                    counters,
+                )? {
+                    Ok(steps) => steps,
+                    Err(message) => return Err(refuse(tree, counters, message)),
+                };
+                deferred.truncate(next_step);
+                deferred.extend(planned);
+                continue;
+            }
+            result => result?,
+        };
+        if proof["native_error"] != serde_json::Value::Null || proof["all_placements_match"] != true
+        {
+            tree.placement_progress["failed_native_move"] = serde_json::json!({
+                "object_index":step.index,"phase":step.phase,"proof":proof
+            });
+            return Err(invalid(
+                "deferred unwritten allocation refused; preserve without retry",
+            ));
+        }
+        if step.phase == DEFERRED_ORIGINAL {
+            counters.deferred_original_submissions += 1;
+        } else {
+            counters.deferred_scratch_submissions += 1;
+        }
+        let recorded = evidence.push_move(
+            serde_json::json!({"object_index":step.index,"phase":step.phase,"proof":proof}),
+        );
+        counters.move_evidence_bytes = evidence.compact_bytes;
+        counters.placement_artifact_bytes = evidence.saved_bytes;
+        if let Err(message) = recorded {
+            return Err(refuse(tree, counters, message));
+        }
+        progress(
+            tree,
+            step.phase,
+            *move_bytes,
+            &evidence.moves,
+            None,
+            counters,
+        );
+        next_step += 1;
+    }
+    Ok(())
+}
+
 pub(super) fn run(
     tree: &mut PrivateTree,
     input: &[Input<'_>],
@@ -1018,115 +1146,21 @@ pub(super) fn run_domain(
         partition,
         max_moves,
     };
-    // Plan every deferred hole from one snapshot of both native views. If
-    // ReFS allocates a planned destination after it, the mover refuses that
-    // step before submission; the rest of the phase is then planned again
-    // from one fresh snapshot, a bounded number of times.
-    let (legacy, metadata) = views(tree)?;
-    counters.phase_bitmap_snapshots += 1;
-    let mut deferred = match plan_deferred(wanted, &legacy, &metadata, &holes, 0, &mut counters)? {
-        Ok(steps) => steps,
-        Err(message) => return Err(refuse(tree, &counters, message)),
-    };
-    let mut next_step = 0;
-    while let Some(&step) = deferred.get(next_step) {
-        progress(
+    // Preserve the frozen legacy/alpha order. Resource construction can
+    // evacuate the already tracked initial blockers before allocating holes,
+    // avoiding scratch allocation followed by a second final move.
+    let deferred_after_evacuation = tree.metadata_resource_admission.is_some();
+    if !deferred_after_evacuation {
+        allocate_deferred(
             tree,
-            step.phase,
-            move_bytes,
-            &evidence.moves,
-            Some(serde_json::json!({
-            "object_index":step.index,"logical_offset":step.logical,"destination":step.destination,
-            "length":step.length,"placement_result_recorded":false,"budget_charged":false})),
-            &counters,
-        );
-        let current_extents = tree.file_by_slot(step.index)?.retrieval_extents();
-        charge_move(&mut move_bytes, step.length, max_move_bytes)?;
-        tree.placement_progress["charged_move_bytes"] = move_bytes.into();
-        tree.placement_progress["pending"]["budget_charged"] = true.into();
-        let attempt = tree.place_slot_with_evidence(
-            step.index,
-            step.logical / 4096,
-            step.destination / 4096,
-            (step.length / 4096) as u32,
-            |destination| {
-                reserve_move(
-                    &mut counters,
-                    &evidence,
-                    &reservation,
-                    current_extents,
-                    step.length,
-                    destination,
-                )
-            },
-        );
-        tree.placement_progress["counters"]["move_evidence_reservation_bytes"] =
-            counters.move_evidence_reservation_bytes.into();
-        let proof = match attempt {
-            Err(error) if destination_drifted(&error) => {
-                uncharge_move(tree, &mut move_bytes, step.length);
-                if counters.deferred_drift_replans == MAX_DRIFT_REPLANS {
-                    return Err(refuse(
-                        tree,
-                        &counters,
-                        format!(
-                            "deferred allocation destination allocated after {MAX_DRIFT_REPLANS} \
-                             fresh-snapshot re-plans: {error}; preserve shadow without retry"
-                        ),
-                    ));
-                }
-                counters.deferred_drift_replans += 1;
-                let remaining = remaining_holes(&deferred[next_step..]);
-                let (legacy, metadata) = views(tree)?;
-                counters.phase_bitmap_snapshots += 1;
-                let planned = match plan_deferred(
-                    wanted,
-                    &legacy,
-                    &metadata,
-                    &remaining,
-                    next_step,
-                    &mut counters,
-                )? {
-                    Ok(steps) => steps,
-                    Err(message) => return Err(refuse(tree, &counters, message)),
-                };
-                deferred.truncate(next_step);
-                deferred.extend(planned);
-                continue;
-            }
-            result => result?,
-        };
-        if proof["native_error"] != serde_json::Value::Null || proof["all_placements_match"] != true
-        {
-            tree.placement_progress["failed_native_move"] = serde_json::json!({
-                "object_index":step.index,"phase":step.phase,"proof":proof
-            });
-            return Err(invalid(
-                "deferred unwritten allocation refused; preserve without retry",
-            ));
-        }
-        if step.phase == DEFERRED_ORIGINAL {
-            counters.deferred_original_submissions += 1;
-        } else {
-            counters.deferred_scratch_submissions += 1;
-        }
-        let recorded = evidence.push_move(
-            serde_json::json!({"object_index":step.index,"phase":step.phase,"proof":proof}),
-        );
-        counters.move_evidence_bytes = evidence.compact_bytes;
-        counters.placement_artifact_bytes = evidence.saved_bytes;
-        if let Err(message) = recorded {
-            return Err(refuse(tree, &counters, message));
-        }
-        progress(
-            tree,
-            step.phase,
-            move_bytes,
-            &evidence.moves,
-            None,
-            &counters,
-        );
-        next_step += 1;
+            wanted,
+            &holes,
+            max_move_bytes,
+            &reservation,
+            &mut evidence,
+            &mut counters,
+            &mut move_bytes,
+        )?;
     }
     let mut owned = Vec::new();
     let mut eligible = Vec::new();
@@ -1422,7 +1456,27 @@ pub(super) fn run_domain(
             &counters,
         );
     }
-    // Only actual post-flush views can make a destination newly eligible.
+    if deferred_after_evacuation {
+        // Initial blocker relocation leaves deferred VCN holes unchanged.
+        // The freshly observed, post-flush views alone decide whether each
+        // hole can now land directly at its own source coordinates. Scratch
+        // continues to exclude every desired run and both bootstrap margins.
+        allocate_deferred(
+            tree,
+            wanted,
+            &holes,
+            max_move_bytes,
+            &reservation,
+            &mut evidence,
+            &mut counters,
+            &mut move_bytes,
+        )?;
+        // Direct deferred allocations are now occupied and must not be planned
+        // again. Never infer these bitmap bits from submitted move receipts.
+        (legacy, metadata) = views(tree)?;
+        counters.phase_bitmap_snapshots += 1;
+    }
+    // Only actual post-flush/post-deferred views can make a destination eligible.
     let mut planner = legacy.retention_planner(&metadata, partition)?;
     for &index in &indexes {
         for run in &desired[&index] {

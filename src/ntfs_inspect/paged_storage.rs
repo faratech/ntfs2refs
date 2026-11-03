@@ -102,6 +102,26 @@ impl SourceScratch {
         scratch.0.borrow_mut().arena = Some(permit);
         Ok(scratch)
     }
+    /// Keep a canonical sub-stage page budget while every file/RAM lease is
+    /// still charged to the actual, possibly larger auxiliary group. This
+    /// neither enlarges the supplied budget nor grants an independent quota.
+    pub fn new_bounded_auxiliary_in_arena(
+        budget: SourceMetadataBudget,
+        permit: crate::artifact_arena::ArtifactGroupPermit,
+    ) -> Result<Self> {
+        ensure!(
+            matches!(
+                permit.group(),
+                crate::artifact_arena::ArtifactGroup::Auxiliary
+                    | crate::artifact_arena::ArtifactGroup::Capture
+                    | crate::artifact_arena::ArtifactGroup::RecoveryCopy
+            ) && budget.scratch_bytes <= permit.maximum_bytes()?,
+            "bounded non-source scratch requires its actual auxiliary/capture/recovery group"
+        );
+        let scratch = Self::new(budget)?;
+        scratch.0.borrow_mut().arena = Some(permit);
+        Ok(scratch)
+    }
     pub fn seal(&self) -> Result<crate::artifact_arena::ArtifactGroupSeal> {
         let permit = {
             let ledger = self.0.borrow();
@@ -405,7 +425,10 @@ impl SourceScratch {
             .context("metadata RAM overflow")?;
         ensure!(
             used <= ledger.budget.ram_bytes,
-            "source metadata working RAM exhausted"
+            "source metadata working RAM exhausted: active={}, requested={}, limit={}",
+            ledger.ram,
+            bytes,
+            ledger.budget.ram_bytes
         );
         let arena_ram = ledger
             .arena

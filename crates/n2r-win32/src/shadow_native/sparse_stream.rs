@@ -32,6 +32,12 @@ pub(super) struct CarrierDirectory {
     id: Vec<u8>,
 }
 impl CarrierDirectory {
+    pub(super) fn retained_memory_bytes(&self) -> io::Result<u64> {
+        (self.path.capacity() as u64)
+            .checked_add(self.component.capacity() as u64)
+            .and_then(|n| n.checked_add(self.id.capacity() as u64))
+            .ok_or_else(|| invalid("carrier directory RAM overflow"))
+    }
     pub fn create(root: &str) -> io::Result<Self> {
         let seed = format!(
             "{}-{}-{:?}",
@@ -96,6 +102,21 @@ impl CarrierDirectory {
 }
 
 impl Target {
+    pub(super) fn retained_memory_bytes(&self) -> io::Result<u64> {
+        (self.path.capacity() as u64)
+            .checked_add(
+                (self.layout.allocated.capacity() as u64)
+                    .checked_mul(mem::size_of::<LogicalRange>() as u64)
+                    .ok_or_else(|| invalid("sparse layout RAM overflow"))?,
+            )
+            .and_then(|n| {
+                n.checked_add(
+                    (self.islands.capacity() as u64).checked_mul(mem::size_of::<Island>() as u64)?,
+                )
+            })
+            .ok_or_else(|| invalid("sparse target RAM overflow"))
+    }
+
     pub fn create(
         root: &str,
         components: &[String],

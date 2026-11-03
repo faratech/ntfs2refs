@@ -3,7 +3,7 @@
 use crate::{
     bitmap_layout::{self, AllocationMap, Candidate},
     bitmap_paging::{self, Proof, StreamingProof},
-    bitmap_streaming::Summary,
+    bitmap_streaming::{Limits, Summary},
 };
 use std::{fs::File, io};
 
@@ -13,7 +13,12 @@ fn bad(message: &str) -> io::Error {
 
 pub(crate) enum Observation {
     Assembled(bitmap_paging::Capture),
-    Streamed { proof: Proof, summary: Summary },
+    Streamed {
+        proof: Proof,
+        summary: Summary,
+        limits: Limits,
+        range_capacity_limit: Option<usize>,
+    },
 }
 
 impl Observation {
@@ -27,34 +32,90 @@ impl Observation {
             return Err(bad("target bitmap partition geometry differs"));
         }
         if streaming {
-            let collected = crate::stream_native::bitmap_streamed_collected_with_input(
+            Self::capture_with_limits(
                 volume,
-                partition / 4096,
                 template,
-            )?;
-            let (first_proof, summary) = collected.into_observation_parts();
-            if summary.declared_clusters != partition / 4096 {
-                return Err(bad("target bitmap domain differs from partition"));
-            }
-            let proof = Proof {
-                encoding: summary.encoding.clone(),
-                cluster_count: summary.cluster_count,
-                canonical_bitmap_sha256: summary.canonical_bitmap_sha256.clone(),
-                pages: vec![first_proof],
-                assembly_profile: bitmap_paging::AssemblyProfile::Legacy,
-                streaming: Some(StreamingProof {
-                    bitmap_data_sha256: summary.bitmap_data_sha256.clone(),
-                    page_transcript_sha256: summary.page_transcript_sha256.clone(),
-                    complete_page_count: summary.pages,
-                    returned_bytes: summary.returned_bytes,
-                }),
-            };
-            Ok(Self::Streamed { proof, summary })
+                partition,
+                crate::bitmap_streaming::source_limits(partition / 4096)?,
+            )
         } else {
             Ok(Self::Assembled(crate::stream_native::bitmap_capture(
                 volume, template,
             )?))
         }
+    }
+    /// Keep the actual collection limits with the native result. Subsequent
+    /// views must not silently reapply the legacy volume/range ceilings.
+    pub(crate) fn capture_with_limits(
+        volume: &File,
+        template: &[u8],
+        partition: u64,
+        limits: Limits,
+    ) -> io::Result<Self> {
+        if partition == 0 || !partition.is_multiple_of(4096) {
+            return Err(bad("target bitmap partition geometry differs"));
+        }
+        let collected = crate::stream_native::bitmap_streamed_with_limits(
+            volume,
+            partition / 4096,
+            template,
+            limits,
+        )?;
+        Self::from_collected(collected, partition, limits, None)
+    }
+    /// Requires the enclosing collector's actual prepaid range/query lease.
+    /// Capacity checks detect excess owned allocation, not transient allocator
+    /// over-allocation, so this remains an experimental accounting path.
+    pub(crate) fn capture_with_bounded_ranges(
+        volume: &File,
+        template: &[u8],
+        partition: u64,
+        limits: Limits,
+    ) -> io::Result<Self> {
+        if partition == 0 || !partition.is_multiple_of(4096) {
+            return Err(bad("target bitmap partition geometry differs"));
+        }
+        let capacity = limits
+            .max_allocated_ranges
+            .checked_mul(2)
+            .ok_or_else(|| bad("target bitmap capacity envelope overflow"))?;
+        let collected = crate::stream_native::bitmap_streamed_with_bounded_ranges(
+            volume,
+            partition / 4096,
+            template,
+            limits,
+        )?;
+        Self::from_collected(collected, partition, limits, Some(capacity))
+    }
+    fn from_collected(
+        collected: crate::bitmap_streaming::CollectedBitmap,
+        partition: u64,
+        limits: Limits,
+        range_capacity_limit: Option<usize>,
+    ) -> io::Result<Self> {
+        let (first_proof, summary) = collected.into_observation_parts();
+        if summary.declared_clusters != partition / 4096 {
+            return Err(bad("target bitmap domain differs from partition"));
+        }
+        let proof = Proof {
+            encoding: summary.encoding.clone(),
+            cluster_count: summary.cluster_count,
+            canonical_bitmap_sha256: summary.canonical_bitmap_sha256.clone(),
+            pages: vec![first_proof],
+            assembly_profile: bitmap_paging::AssemblyProfile::Legacy,
+            streaming: Some(StreamingProof {
+                bitmap_data_sha256: summary.bitmap_data_sha256.clone(),
+                page_transcript_sha256: summary.page_transcript_sha256.clone(),
+                complete_page_count: summary.pages,
+                returned_bytes: summary.returned_bytes,
+            }),
+        };
+        Ok(Self::Streamed {
+            proof,
+            summary,
+            limits,
+            range_capacity_limit,
+        })
     }
     pub(crate) fn view(&self, partition: u64) -> io::Result<View<'_>> {
         match self {
@@ -62,11 +123,10 @@ impl Observation {
                 &capture.bitmap,
                 partition,
             )?)),
-            Self::Streamed { summary, .. } => {
-                summary.validate(
-                    partition / 4096,
-                    crate::bitmap_streaming::source_limits(partition / 4096)?,
-                )?;
+            Self::Streamed {
+                summary, limits, ..
+            } => {
+                summary.validate(partition / 4096, *limits)?;
                 if !partition.is_multiple_of(4096) || summary.declared_clusters != partition / 4096
                 {
                     return Err(bad("streamed target bitmap domain differs"));
@@ -78,16 +138,31 @@ impl Observation {
     pub(crate) fn allocation_map(&self, partition: u64) -> io::Result<AllocationMap> {
         match self {
             Self::Assembled(capture) => bitmap_layout::allocated_ranges(&capture.bitmap, partition),
-            Self::Streamed { summary, .. } => {
+            Self::Streamed {
+                summary,
+                range_capacity_limit,
+                ..
+            } => {
                 self.view(partition)?;
                 let mut ranges = Vec::new();
                 ranges
                     .try_reserve_exact(summary.allocated_ranges.len())
                     .map_err(|_| bad("allocation range storage unavailable"))?;
+                if range_capacity_limit.is_some_and(|maximum| ranges.capacity() > maximum) {
+                    return Err(bad(
+                        "allocation map actual capacity exceeds prepaid envelope",
+                    ));
+                }
                 for range in &summary.allocated_ranges {
                     ranges.push(bitmap_layout::AllocatedRange {
-                        offset: range.starting_lcn * 4096,
-                        length: range.clusters * 4096,
+                        offset: range
+                            .starting_lcn
+                            .checked_mul(4096)
+                            .ok_or_else(|| bad("allocation range offset overflow"))?,
+                        length: range
+                            .clusters
+                            .checked_mul(4096)
+                            .ok_or_else(|| bad("allocation range length overflow"))?,
                     });
                 }
                 Ok(AllocationMap {

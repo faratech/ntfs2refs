@@ -22,6 +22,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
 
+#[cfg(windows)]
+pub(crate) mod resource_domain;
+
 const GRANULE: u64 = 4096;
 const BODY: u64 = 8192;
 const REDUNDANT_BODY: u64 = 8 * GRANULE;

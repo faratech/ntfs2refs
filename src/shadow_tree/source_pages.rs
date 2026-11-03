@@ -40,6 +40,20 @@ pub struct SourceExpectedDomain {
     _role_ram: Vec<SourceRamLease>,
     _row_ram: SourceRamLease,
 }
+
+/// Retains the real immutable projection files after their complete semantic
+/// comparison. This owner deliberately cannot decode objects or serialize a
+/// new projection, and grants no source-admission or conversion authority.
+pub(crate) struct ProjectionRevalidationOwner {
+    objects: SortedRecordStore,
+    _scratch: SourceScratch,
+}
+
+impl ProjectionRevalidationOwner {
+    pub(crate) fn revalidate(&self) -> Result<()> {
+        self.objects.revalidate()
+    }
+}
 fn ordered_key(first: u64, second: u64) -> [u8; 16] {
     let mut key = [0; 16];
     key[..8].copy_from_slice(&first.to_be_bytes());
@@ -180,7 +194,8 @@ fn build_object(
     let sd = descriptor(source, file)?;
     let stored = hex::decode(&sd.relative_hex)?;
     n2r_win32::security_descriptor::validate_with_limit(&stored, admission.budget.max_row_bytes)?;
-    let observed = native.observation(usize::try_from(ordinal)?)?;
+    let native_row = native.row_view(usize::try_from(ordinal)?)?;
+    let observed = native_row.observation();
     ensure!(
         observed.identity.record_number == file.record_number
             && observed.identity.sequence_number == file.sequence_number
@@ -357,13 +372,25 @@ impl SourceExpectedDomain {
                 .checked_mul(8)
                 .context("source object working RAM overflow")?,
         )?;
-        let mut objects = ExternalSort::new(&output.join("source-objects"), *b"N2RSOBJ1", scratch)?;
-        let mut names =
-            ExternalSort::new(&output.join("destination-names"), *b"N2RDNAM1", scratch)?;
-        let mut physical = ExternalSort::new(
+        // The complete source counts size batches only; extra names or large
+        // rows still spill and merge without dropping any source evidence.
+        let mut objects = ExternalSort::with_record_hint(
+            &output.join("source-objects"),
+            *b"N2RSOBJ1",
+            scratch,
+            source.file_count(),
+        )?;
+        let mut names = ExternalSort::with_record_hint(
+            &output.join("destination-names"),
+            *b"N2RDNAM1",
+            scratch,
+            source.file_count(),
+        )?;
+        let mut physical = ExternalSort::with_record_hint(
             &output.join("retained-source-ranges"),
             *b"N2RPHYS1",
             scratch,
+            source.allocation().physical_intervals,
         )?;
         let mut roles = Vec::new();
         let mut role_ram = Vec::new();
@@ -529,6 +556,19 @@ impl SourceExpectedDomain {
     }
     pub fn source_inspection_sha256(&self) -> &str {
         &self.source_inspection_sha256
+    }
+
+    /// Drop decode-only workspace once the caller has completed its semantic
+    /// comparison, without replacing the held file owners with serialized pins.
+    pub(crate) fn into_revalidation_owner(self) -> Result<ProjectionRevalidationOwner> {
+        self.objects.revalidate()?;
+        let Self {
+            objects, scratch, ..
+        } = self;
+        Ok(ProjectionRevalidationOwner {
+            objects,
+            _scratch: scratch,
+        })
     }
 }
 impl ExpectedObjectDomain for SourceExpectedDomain {

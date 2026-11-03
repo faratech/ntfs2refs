@@ -319,13 +319,14 @@ pub fn compare_domain(
     };
     for ordinal in 0..expected.len() {
         let file = source.file(ordinal as u64)?;
-        let selector = native.request_row(ordinal)?;
+        let native_row = native.row_view(ordinal)?;
+        let selector = native_row.request();
         ensure!(
-            selector.as_ref() == expected.row(ordinal)?.as_ref(),
+            selector == expected.row(ordinal)?.as_ref(),
             "native selector row differs from independently decoded source"
         );
-        let observation = native.observation(ordinal)?;
-        let logical = native.logical_file(ordinal)?;
+        let observation = native_row.observation();
+        let logical = native_row.logical()?;
         ensure!(
             observation.identity == selector.identity && logical.identity == selector.identity,
             "native row identity differs from selected source record"
@@ -421,7 +422,7 @@ pub fn compare_domain(
             )?;
             Ok(())
         })());
-        let directory = native.namespace_file(ordinal)?;
+        let directory = native_row.namespace()?;
         ensure!(
             directory.identity == selector.identity,
             "native namespace row coverage/order differs"

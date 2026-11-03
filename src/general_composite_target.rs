@@ -1,6 +1,8 @@
 //! Frozen native-shadow target whose ordinary payload is supplied by the
 //! frozen NTFS source. Complete address-space comparison, not bitmap inference,
 //! proves the compact backing. This module issues no source/write certificate.
+pub(crate) mod paged;
+pub(crate) mod paged_memory;
 use crate::{
     general_shadow::source_backed::{
         CaptureBudget, CaptureProgress, ChangeClassSplit, ChangedClassCounters, DifferenceCapture,

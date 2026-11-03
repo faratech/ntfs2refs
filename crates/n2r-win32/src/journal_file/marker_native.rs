@@ -6,8 +6,9 @@
 //! pointers are the no-shared-allocation contract; no claim is made about a
 //! controller, virtual disk, storage filter or flash translation layer.
 //!
-//! There is deliberately no File/handle constructor, handle accessor, clone or
-//! deserializable capability. The same share-zero handle survives construction,
+//! There is no File/handle constructor, writable handle accessor, clone or
+//! deserializable capability. A read-only duplicate may be retained for actual
+//! allocation accounting. The same share-zero handle survives construction,
 //! the complete journal readback, sealing and marker writes; recovery obtains a
 //! newly bound share-zero owner. Callers must still exclude raw/admin aliases
 //! and surviving memory mappings. Production admission remains disabled until
@@ -363,6 +364,11 @@ impl UnbufferedJournalFile {
     /// Actual constructor observation, retained privately for this handle.
     pub fn identity(&self) -> &JournalFileIdentity {
         &self.identity
+    }
+
+    /// Volume-GUID route observed from the same retained journal handle.
+    pub fn observed_final_path(&self) -> &str {
+        &self.final_path
     }
 
     /// Facts from this constructor's actual same-handle metadata checks. No
@@ -1047,6 +1053,20 @@ impl MarkerJournalFile {
 
     pub fn observation(&self) -> &MarkerStorageObservation {
         &self.observation
+    }
+
+    /// Route retained by the same native owner; revalidate_storage verifies
+    /// that the actual handle still resolves to this path.
+    pub fn observed_final_path(&self) -> &str {
+        &self.io.final_path
+    }
+
+    /// Duplicate the same native owner with read-only access for file identity
+    /// and allocation queries. Storage is revalidated first. This handle may
+    /// be unbuffered and must not be used for arbitrary unaligned data reads.
+    pub fn duplicate_readonly_storage_handle(&mut self) -> io::Result<File> {
+        self.revalidate_storage()?;
+        crate::file_storage::duplicate_readonly(&self.io.file)
     }
 
     /// Actual scoped token observations; no assertion of process-wide or

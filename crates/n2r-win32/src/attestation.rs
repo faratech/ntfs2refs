@@ -929,6 +929,9 @@ pub struct Report {
 /// Complete source evidence with one owned row at a time. The header retains
 /// the exact native request, allocation and protection bracket; a paged header
 /// has empty row tables. This interface itself grants no live source authority.
+mod row_view;
+pub use row_view::NativeObservationRow;
+
 pub trait NativeObservationDomain {
     fn header(&self) -> &Report;
     fn len(&self) -> usize;
@@ -937,6 +940,20 @@ pub trait NativeObservationDomain {
     fn observation(&self, index: usize) -> io::Result<Cow<'_, Observation>>;
     fn logical_file(&self, index: usize) -> io::Result<Cow<'_, LogicalFile>>;
     fn namespace_file(&self, index: usize) -> io::Result<Cow<'_, NamespaceFile>>;
+    /// The returned non-Clone owner retains any actual shared-memory lease
+    /// through every borrowed field view. Historical Cow APIs stay available.
+    fn row_view(&self, index: usize) -> io::Result<NativeObservationRow<'_>> {
+        Ok(NativeObservationRow::new(
+            self.request_row(index)?,
+            self.observation(index)?,
+            (index < self.logical_len())
+                .then(|| self.logical_file(index))
+                .transpose()?,
+            (index < self.namespace_len())
+                .then(|| self.namespace_file(index))
+                .transpose()?,
+        ))
+    }
     fn request_row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
         self.header().request.row(index)
     }
@@ -1267,12 +1284,14 @@ pub fn measured_domain_resources(
         namespace_evidence_bytes: 0,
     };
     for index in 0..domain.len() {
-        let row = domain.observation(index)?;
+        let owner = domain.row_view(index)?;
+        let row = owner.observation();
         out.merge(measured_row_resources(profile, Some(&row), None, None)?)?;
     }
     if header.logical_data.is_some() {
         for index in 0..domain.logical_len() {
-            let row = domain.logical_file(index)?;
+            let owner = domain.row_view(index)?;
+            let row = owner.logical()?;
             out.merge(measured_row_resources(profile, None, Some(&row), None)?)?;
         }
     }
@@ -1310,7 +1329,8 @@ pub fn measured_domain_resources(
 
     if header.namespace.is_some() {
         for index in 0..domain.namespace_len() {
-            let row = domain.namespace_file(index)?;
+            let owner = domain.row_view(index)?;
+            let row = owner.namespace()?;
             out.merge(measured_row_resources(profile, None, None, Some(&row))?)?;
         }
     }
@@ -1327,7 +1347,8 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
         )
     };
     for index in 0..domain.len() {
-        let file = domain.observation(index)?;
+        let owner = domain.row_view(index)?;
+        let file = owner.observation();
         if let Some(fallback) = &file.case_only_fallback {
             if !matches!(header.schema_version, 13 | 14 | 15 | 16)
                 || file.open_error.is_none()
@@ -1422,7 +1443,8 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
     let mut ids = BTreeSet::new();
     let mut previous = None;
     for i in 0..domain.request_len()? {
-        let row = domain.request_row(i)?;
+        let owner = domain.row_view(i)?;
+        let row = owner.request();
         validate_request_row(&header.request, &row)?;
         if !ids.insert(row.identity.reference())
             || (header.request.has_paged_selectors()
@@ -1442,9 +1464,10 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
         return Err(invalid());
     }
     for index in 0..domain.logical_len() {
-        let file = domain.logical_file(index)?;
+        let owner = domain.row_view(index)?;
+        let file = owner.logical()?;
         let selected = if header.request.has_paged_selectors() {
-            Some(domain.request_row(index)?)
+            Some(owner.request())
         } else {
             None
         };
@@ -1538,7 +1561,8 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
     };
     let mut bad_logical = false;
     for i in 0..domain.logical_len() {
-        let file = domain.logical_file(i)?;
+        let owner = domain.row_view(i)?;
+        let file = owner.logical()?;
         bad_logical |= file.before.iter().chain(&file.after).any(|h| {
             h.logical_size > limits.maximum_stream_bytes
                 || h.name_utf16.len() > 255
@@ -1552,7 +1576,8 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
     }
     let mut bad_observation = false;
     for i in 0..domain.len() {
-        let file = domain.observation(i)?;
+        let owner = domain.row_view(i)?;
+        let file = owner.observation();
         bad_observation |= {
             file.before.iter().chain(file.after.iter()).any(|s| {
                 s.queries.len() > 4
@@ -1596,7 +1621,8 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
     }
     let mut bad_namespace = false;
     for i in 0..domain.namespace_len() {
-        let f = domain.namespace_file(i)?;
+        let owner = domain.row_view(i)?;
+        let f = owner.namespace()?;
         bad_namespace |= {
             f.identity_before
                 .iter()
@@ -1622,17 +1648,29 @@ pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::R
         || a.namespace_evidence_bytes > limits.namespace_evidence_bytes as u64
         || !same_ids(
             (0..domain.len())
-                .map(|i| domain.observation(i).map(|f| f.identity.reference()))
+                .map(|i| {
+                    domain
+                        .row_view(i)
+                        .map(|row| row.observation().identity.reference())
+                })
                 .collect::<io::Result<Vec<_>>>()?,
         )
         || !same_ids(
             (0..domain.logical_len())
-                .map(|i| domain.logical_file(i).map(|f| f.identity.reference()))
+                .map(|i| {
+                    domain
+                        .row_view(i)
+                        .and_then(|row| Ok(row.logical()?.identity.reference()))
+                })
                 .collect::<io::Result<Vec<_>>>()?,
         )
         || !same_ids(
             (0..domain.namespace_len())
-                .map(|i| domain.namespace_file(i).map(|f| f.identity.reference()))
+                .map(|i| {
+                    domain
+                        .row_view(i)
+                        .and_then(|row| Ok(row.namespace()?.identity.reference()))
+                })
                 .collect::<io::Result<Vec<_>>>()?,
         )
         || data.audit.limit_bytes != limits.logical_read_bytes

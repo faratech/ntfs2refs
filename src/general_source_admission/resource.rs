@@ -3,7 +3,8 @@
 //! V4 activation remains refused until the cross-stage artifact arena and
 //! actual same-tree target preservation are supplied by their owning paths.
 use crate::artifact_arena::{
-    ArtifactArena, ArtifactGroup, ArtifactGroupPermit, ArtifactGroupSeal, ArtifactLease,
+    ArenaRamLease, ArtifactArena, ArtifactGroup, ArtifactGroupPermit, ArtifactGroupSeal,
+    ArtifactLease,
 };
 use crate::{
     ntfs_admission::{self, Gate, InternalReplacement},
@@ -13,7 +14,7 @@ use crate::{
     ntfs_backup,
     ntfs_inspect::{
         self, PagedInspection, RootFileDomain, SourceMetadataBudget,
-        paged_storage::{SourceScratch, SourceTemporaryLease},
+        paged_storage::{SourceRamLease, SourceScratch, SourceTemporaryLease},
         record_store::{RecordStorePin, SortedRecordStore, SortedRecordWriter},
     },
     ntfs_internal, ntfs_log, ntfs_transactions,
@@ -36,6 +37,7 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     os::windows::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 #[derive(Serialize)]
@@ -115,6 +117,93 @@ pub struct ResourceSourceContext {
     source_seal: Option<ArtifactGroupSeal>,
     native_seal: Option<ArtifactGroupSeal>,
     native_artifact: Option<ArtifactLease>,
+    // The Arc accountant payload is prepaid before constructing it and drops
+    // after the paged native owner that retains that accountant.
+    _native_payer_ram: Option<SourceRamLease>,
+    // Both the temporary online reader and retained frozen source use this
+    // one prepaid SDK buffer. The physical source owner drops first.
+    _source_io_ram: SourceRamLease,
+    _output_basis: Option<ArenaOutputBasis>,
+}
+
+/// Original live source admission closed against the actual protected target
+/// and exhaustive prepared arena. This is intentionally neither serializable
+/// nor Clone. It has no constructor accepting persisted hashes or flags, and
+/// it cannot open a writer without the still-owned prepared journal.
+pub(crate) struct PreparedResourceSourceAdmission {
+    source_owner: usize,
+    admission: SourceResourceAdmission,
+    source_sha256: [u8; 32],
+    inspection_sha256: [u8; 32],
+    expected_sha256: [u8; 32],
+    target_scope: Arc<crate::general_composite_target::paged::CaptureScopeIdentity>,
+    expected: ArtifactLease,
+    source: ArtifactGroupSeal,
+    native: ArtifactGroupSeal,
+    arena: ArtifactArena,
+    _memory: ArenaRamLease,
+}
+
+fn source_admission_digest(value: &str) -> Result<[u8; 32]> {
+    Ok(hex::decode(value)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("source admission requires a complete SHA-256 pin"))?)
+}
+
+impl PreparedResourceSourceAdmission {
+    /// Runtime owner checks only; the caller must also recheck the source,
+    /// protected target and journal at the immediate activation boundary.
+    pub(crate) fn require_binding(
+        &self,
+        context: &ResourceSourceContext,
+        target: &crate::general_composite_target::paged::ProtectedPagedTargetSelection,
+        expected: &crate::shadow_tree::PagedExpectedTree,
+        closure: &crate::artifact_arena::PreparedArenaClosure,
+    ) -> Result<()> {
+        ensure!(
+            self.source_owner == context.source_owner_identity()
+                && self.admission == context.admission
+                && self.arena.same_arena(closure.arena())
+                && context.arena().is_some_and(|a| self.arena.same_arena(a))
+                && target.scope().matches_source_owner(self.source_owner)
+                && Arc::ptr_eq(&self.target_scope, &target.scope().capture_identity())
+                && expected
+                    .artifact_lease()
+                    .is_some_and(|p| p.same_owner(&self.expected))
+                && context
+                    .source_group_seal()
+                    .is_some_and(|p| p.same_owner(&self.source))
+                && context
+                    .native_group_seal()
+                    .is_some_and(|p| p.same_owner(&self.native))
+                && source_admission_digest(context.source_sha256())? == self.source_sha256
+                && source_admission_digest(context.inspection_sha256())? == self.inspection_sha256
+                && source_admission_digest(expected.semantic_sha256())? == self.expected_sha256,
+            "prepared resource source admission lost its original live owners"
+        );
+        Ok(())
+    }
+}
+
+struct SourceNativeMemory(ArtifactArena);
+struct SourceNativeMemoryLease(ArenaRamLease);
+impl n2r_win32::shadow_native::report_memory::ReportMemoryLease for SourceNativeMemoryLease {
+    fn shrink_to(&mut self, bytes: u64) -> io::Result<()> {
+        self.0.shrink_to(bytes).map_err(io::Error::other)
+    }
+}
+impl n2r_win32::shadow_native::report_memory::ReportMemoryAccountant for SourceNativeMemory {
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> io::Result<Box<dyn n2r_win32::shadow_native::report_memory::ReportMemoryLease>> {
+        Ok(Box::new(SourceNativeMemoryLease(
+            self.0.reserve_ram(bytes).map_err(io::Error::other)?,
+        )))
+    }
+    fn lease_heap_bytes(&self) -> u64 {
+        std::mem::size_of::<SourceNativeMemoryLease>() as u64
+    }
 }
 
 struct Counter {
@@ -310,6 +399,166 @@ fn output_independent(binding: &GeneralDiskBinding, output: &Path) -> Result<()>
     }
     Ok(())
 }
+/// Actual ordinary directory owners, held through the source lifetime. The
+/// caller's drive-letter spelling is never sufficient evidence of independence.
+struct ArenaOutputBasis {
+    parents: Vec<File>,
+    created: Vec<File>,
+    drive_root: String,
+    parent_guid: String,
+    volume: GeneralDiskBinding,
+    _ram: ArenaRamLease,
+}
+impl ArenaOutputBasis {
+    fn revalidate(&self, source: &GeneralDiskBinding, arena: &ArtifactArena) -> Result<()> {
+        arena.require_root_directory(
+            self.parents
+                .first()
+                .context("held source output parent absent")?,
+        )?;
+        let actual = n2r_win32::discovery::discover(
+            &self.drive_root,
+            n2r_win32::discovery::Role::Journal {
+                allow_additional_partitions: true,
+            },
+        )?;
+        ensure!(
+            actual.observed_twice_unchanged
+                && actual.read_only
+                && actual.source_write_requests == 0
+                && actual.binding == self.volume
+                && actual.binding.disk_number != source.disk_number
+                && n2r_win32::layout::guid_bytes(&actual.binding.identity.disk_guid)?
+                    != n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?
+                && n2r_win32::layout::guid_bytes(&actual.binding.identity.partition_guid)?
+                    != n2r_win32::layout::guid_bytes(&source.identity.partition_guid)?
+                && n2r_win32::layout::guid_bytes(&actual.binding.volume_guid)?
+                    != n2r_win32::layout::guid_bytes(&source.volume_guid)?
+                && actual
+                    .binding
+                    .volume_path()?
+                    .eq_ignore_ascii_case(arena.volume_guid_path()?),
+            "actual source output volume/disk differs or aliases the source"
+        );
+        Ok(())
+    }
+    fn create_directory(&mut self, ordinary: &Path, guid_path: &Path) -> Result<()> {
+        // Creation itself uses the independently observed volume-GUID route,
+        // before checking the caller's ordinary path can still reach it.
+        fs::create_dir(guid_path)?;
+        let file = OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(3)
+            .custom_flags(0x0200_0000 | 0x0020_0000)
+            .open(ordinary)?;
+        ensure!(
+            file.metadata()?.is_dir()
+                && file.metadata()?.file_attributes() & 0x400 == 0
+                && n2r_win32::file_storage::final_path_guid(&file)?.eq_ignore_ascii_case(
+                    guid_path
+                        .to_str()
+                        .context("Unicode source output GUID route required")?
+                ),
+            "created source output directory changed ordinary/GUID route"
+        );
+        self.created.push(file);
+        Ok(())
+    }
+}
+fn output_in_arena(
+    source: &GeneralDiskBinding,
+    output: &Path,
+    arena: &ArtifactArena,
+) -> Result<ArenaOutputBasis> {
+    use std::path::{Component, Prefix};
+    let text = output
+        .to_str()
+        .context("Unicode source output path required")?;
+    let bytes = text.as_bytes();
+    ensure!(
+        output.is_absolute()
+            && bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\'
+            && !text[2..].contains(':')
+            && matches!(output.components().next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_)))
+            && !output
+                .components()
+                .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+        "arena source output requires an unambiguous ordinary local path"
+    );
+    let leaf = output
+        .file_name()
+        .and_then(|v| v.to_str())
+        .context("source output leaf absent")?;
+    ensure!(
+        !leaf.is_empty()
+            && !leaf.ends_with([' ', '.'])
+            && !leaf.chars().any(|c| c.is_control()
+                || matches!(c, ':' | '/' | '\\' | '"' | '<' | '>' | '|' | '?' | '*')),
+        "ambiguous source output leaf refused"
+    );
+    let ram = arena.reserve_ram(
+        (text.len() as u64)
+            .checked_mul(32)
+            .and_then(|n| n.checked_add(4 * 1024 * 1024))
+            .context("source output route RAM overflow")?,
+    )?;
+    let parent = output.parent().context("source output parent absent")?;
+    let mut parents = Vec::new();
+    for ancestor in parent.ancestors().filter(|p| !p.as_os_str().is_empty()) {
+        let metadata = fs::symlink_metadata(ancestor)?;
+        ensure!(
+            metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+            "ordinary arena source-output ancestry required"
+        );
+        let file = OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(3)
+            .custom_flags(0x0200_0000 | 0x0020_0000)
+            .open(ancestor)?;
+        ensure!(
+            file.metadata()?.is_dir() && file.metadata()?.file_attributes() & 0x400 == 0,
+            "held arena source-output ancestry differs"
+        );
+        parents.push(file);
+    }
+    let held = parents
+        .first()
+        .context("held arena source-output parent absent")?;
+    arena.require_root_directory(held)?;
+    let parent_guid = n2r_win32::file_storage::final_path_guid(held)?;
+    let drive_root = text[..3].to_owned();
+    let volume = n2r_win32::discovery::discover(
+        &drive_root,
+        n2r_win32::discovery::Role::Journal {
+            allow_additional_partitions: true,
+        },
+    )?
+    .binding;
+    // Independently bind the requested source volume to its real physical
+    // disk before creating even a metadata directory. A caller-supplied disk
+    // number/GUID cannot make a source-volume alias look independent.
+    let source_probe = n2r_win32::probe_general(source.clone(), &mut Vec::new())?;
+    ensure!(
+        source_probe.binding == *source
+            && source_probe.read_only_probe
+            && source_probe.source_write_requests == 0,
+        "actual source route was not independently observed"
+    );
+    let basis = ArenaOutputBasis {
+        parents,
+        created: Vec::new(),
+        drive_root,
+        parent_guid,
+        volume,
+        _ram: ram,
+    };
+    basis.revalidate(source, arena)?;
+    Ok(basis)
+}
+
 fn short_names(
     source: &PagedInspection,
     observed: &GeneralLivePagedNtfsObservation,
@@ -401,17 +650,33 @@ impl ResourceSourceContext {
     ) -> Result<Self> {
         binding.validate()?;
         budget.validate()?;
-        output_independent(&binding, output)?;
+        let mut output_basis = if let Some((arena, _, _)) = &groups {
+            Some(output_in_arena(&binding, output, arena)?)
+        } else {
+            output_independent(&binding, output)?;
+            None
+        };
         let available = n2r_win32::resource_native::observe_available_resources(
             output.parent().context("output parent absent")?,
         )?;
         available.validate_budget(budget)?;
         ensure!(!output.exists(), "fresh resource source output required");
-        fs::create_dir(output)?;
         let source_output = output.join("source");
         let native_output = output.join("native");
-        fs::create_dir(&source_output)?;
-        fs::create_dir(&native_output)?;
+        if let Some(basis) = &mut output_basis {
+            let arena = &groups.as_ref().context("source arena owner absent")?.0;
+            basis.revalidate(&binding, arena)?;
+            let guid_output = PathBuf::from(&basis.parent_guid)
+                .join(output.file_name().context("source output leaf absent")?);
+            basis.create_directory(output, &guid_output)?;
+            basis.create_directory(&source_output, &guid_output.join("source"))?;
+            basis.create_directory(&native_output, &guid_output.join("native"))?;
+            basis.revalidate(&binding, arena)?;
+        } else {
+            fs::create_dir(output)?;
+            fs::create_dir(&source_output)?;
+            fs::create_dir(&native_output)?;
+        }
         let output = source_output.as_path();
         let source_budget = SourceMetadataBudget::from_resource_budget(budget)?;
         let scratch = if let Some((_, permit, _)) = &groups {
@@ -447,6 +712,7 @@ impl ResourceSourceContext {
             vss_before.source_volume_guid.eq_ignore_ascii_case(&volume),
             "VSS source route differs"
         );
+        let source_io_ram = scratch.lease_ram(GeneralFrozenPartition::read_buffer_memory_bytes())?;
         *phase = "source-freeze";
         let mut online = n2r_win32::GeneralPartitionReader::open(binding.clone(), events)?;
         let mut boot = [0; 512];
@@ -577,14 +843,34 @@ impl ResourceSourceContext {
         let native_destination = native_permit
             .as_ref()
             .map_or(native_path.as_path(), |p| p.path());
-        let native = source.observe_ntfs_files_paged_domain(
-            &selectors,
-            native_destination,
-            admission.native_observation_budget()?,
-            true,
-            true,
-            events,
-        )?;
+        let native_payer_ram = groups
+            .as_ref()
+            .map(|_| scratch.lease_ram(std::mem::size_of::<SourceNativeMemory>() as u64 + 128))
+            .transpose()?;
+        let native = if let Some((arena, _, _)) = &groups {
+            source.observe_ntfs_files_paged_domain_with_memory(
+                &selectors,
+                native_destination,
+                admission.native_observation_budget()?,
+                true,
+                true,
+                Arc::new(SourceNativeMemory(arena.clone())),
+                events,
+            )?
+        } else {
+            source.observe_ntfs_files_paged_domain(
+                &selectors,
+                native_destination,
+                admission.native_observation_budget()?,
+                true,
+                true,
+                events,
+            )?
+        };
+        ensure!(
+            groups.is_none() || native.domain().retained_storage_ram_accounted(),
+            "actual native source owner lost its shared memory leases"
+        );
         native.domain().revalidate()?;
         let native_artifact = native_permit
             .map(|permit| permit.verify_closed(native.domain().sha256()))
@@ -996,6 +1282,9 @@ impl ResourceSourceContext {
             source_seal: None,
             native_seal,
             native_artifact,
+            _native_payer_ram: native_payer_ram,
+            _source_io_ram: source_io_ram,
+            _output_basis: output_basis,
         };
         context.revalidate_evidence()?;
         let mut metadata = std::mem::take(&mut context._metadata);
@@ -1075,7 +1364,96 @@ impl ResourceSourceContext {
         );
         Ok(())
     }
+    /// Close the deferred target/resource obligations against real owners,
+    /// instead of rewriting the diagnostic assessment's false gate flags.
+    /// The resulting one-shot proof is usable only with this same frozen
+    /// source, target scope, expected file and already closed arena.
+    pub(crate) fn qualify_prepared_target(
+        &mut self,
+        target: &crate::general_composite_target::paged::ProtectedPagedTargetSelection,
+        expected: &crate::shadow_tree::PagedExpectedTree,
+        closure: &crate::artifact_arena::PreparedArenaClosure,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<PreparedResourceSourceAdmission> {
+        self.require_source_evidence()?;
+        self.recheck_source(events)?;
+        let arena = self
+            .arena
+            .as_ref()
+            .context("source admission needs its actual arena")?;
+        ensure!(
+            arena.same_arena(closure.arena()) && arena.budget() == self.admission.budget,
+            "source admission and exhaustive prepared closure differ"
+        );
+        closure.revalidate()?;
+        expected.require_resource_owner(self.admission)?;
+        expected.require_shared_memory(arena)?;
+        let scope = target.scope();
+        let native = target.native();
+        // The opaque native observation can be issued only by the complete
+        // same-tree metadata/namespace/security/time/map validator. Residual
+        // contents and the source-backed required selection close its payload
+        // obligation; no free-space or whole-image equality is inferred.
+        ensure!(
+            scope.matches_source_owner(self.source_owner_identity())
+                && scope.pair().source == *self.source.binding()
+                && scope.source_inspection_sha256() == self.inspection_sha
+                && scope.expected_tree_sha256() == expected.semantic_sha256()
+                && target.captured().is_for_scope(scope)
+                && native.report().pair() == scope.pair()
+                && native.before() == native.after()
+                && native.before().disk_attributes == 3
+                && native.observed_readonly().disk_attributes == 2
+                && native.report().residual_contents_verified()
+                && native.report().paged_residuals().is_some()
+                && native.report().native().retained_rows_ram_accounted()
+                && native.report().native().resource_profile
+                    == Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(
+                        Some(self.admission)
+                    ))
+                && native.report().native().objects.len() == expected.len(),
+            "actual target preservation does not close this original source's obligations"
+        );
+        scope.revalidate()?;
+        let source = self
+            .source_seal
+            .as_ref()
+            .context("actual source seal absent")?;
+        let native = self
+            .native_seal
+            .as_ref()
+            .context("actual native source seal absent")?;
+        let expected = expected
+            .artifact_lease()
+            .context("actual expected artifact owner absent")?;
+        // Only Arc clones, fixed-size digests and the small runtime token are
+        // retained here. Pay before allocating the digest decoding buffers.
+        let memory = arena.reserve_ram(4096)?;
+        let proof = PreparedResourceSourceAdmission {
+            source_owner: self.source_owner_identity(),
+            admission: self.admission,
+            source_sha256: source_admission_digest(&self.source_sha)?,
+            inspection_sha256: source_admission_digest(&self.inspection_sha)?,
+            expected_sha256: source_admission_digest(scope.expected_tree_sha256())?,
+            target_scope: scope.capture_identity(),
+            expected: expected.clone(),
+            source: source.clone(),
+            native: native.clone(),
+            arena: arena.clone(),
+            _memory: memory,
+        };
+        // This method does not bless a cached report or mutate the context.
+        // Its caller retains/rechecks the target and native journal as well.
+        closure.revalidate()?;
+        Ok(proof)
+    }
     pub fn revalidate_evidence(&self) -> Result<()> {
+        if let Some(output) = &self._output_basis {
+            output.revalidate(
+                self.source.binding(),
+                self.arena.as_ref().context("source arena owner absent")?,
+            )?;
+        }
         self.raw.revalidate()?;
         self.native.domain().revalidate()?;
         self.fingerprint.revalidate()?;
@@ -1151,6 +1529,10 @@ impl ResourceSourceContext {
         Ok(())
     }
     pub fn recheck_source(&mut self, events: &mut Vec<NativeEvent>) -> Result<()> {
+        ensure!(
+            self.source.freeze_observation().is_some(),
+            "original live NTFS freeze witness was consumed by an apply-intent attempt"
+        );
         self.revalidate_evidence()?;
         let before = self.source.state(events)?;
         ensure!(
@@ -1194,6 +1576,11 @@ impl ResourceSourceContext {
     }
     pub fn source_and_inspection(&mut self) -> (&mut GeneralFrozenPartition, &PagedInspection) {
         (&mut self.source, &self.raw)
+    }
+    /// Runtime association with this exact retained frozen source. A saved
+    /// value is not an ownership, device, admission, or write capability.
+    pub(crate) fn source_owner_identity(&self) -> usize {
+        std::ptr::from_ref(&self.source) as usize
     }
     pub fn arena(&self) -> Option<&ArtifactArena> {
         self.arena.as_ref()

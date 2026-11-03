@@ -176,8 +176,16 @@ fn main() -> anyhow::Result<()> {
                 phase = "expected-projection";
                 let projection_root = args.output.join("projection");
                 fs::create_dir(&projection_root)?;
-                let scratch =
-                    SourceScratch::new(SourceMetadataBudget::from_resource_budget(budget)?)?;
+                let source_template = SourceMetadataBudget::from_resource_budget(budget)?;
+                let scratch = if let Some(arena) = context.arena() {
+                    let group = arena.reserve_group(
+                        ntfs2refs::artifact_arena::ArtifactGroup::Auxiliary,
+                        source_template.scratch_bytes,
+                    )?;
+                    SourceScratch::new_auxiliary_in_arena(source_template, group)?
+                } else {
+                    SourceScratch::new(source_template)?
+                };
                 let admission = context.resource_admission();
                 let projected = ntfs2refs::shadow_tree::source_pages::SourceExpectedDomain::derive(
                     context.inspection(),
@@ -187,15 +195,38 @@ fn main() -> anyhow::Result<()> {
                     &scratch,
                 )?;
                 let path = args.output.join("expected.pages");
-                let receipt = ntfs2refs::shadow_tree::PagedExpectedTree::create_with_resources(
-                    &projected, &path, admission,
-                )?;
-                let expected = ntfs2refs::shadow_tree::PagedExpectedTree::open_with_resources(
-                    &path,
-                    &receipt.file_sha256,
-                    &receipt.semantic_sha256,
-                    admission,
-                )?;
+                let (receipt, expected) = if let Some(arena) = context.arena() {
+                    let group = arena.reserve_group(
+                        ntfs2refs::artifact_arena::ArtifactGroup::Expected,
+                        admission.expected_page_budget()?.max_file_bytes,
+                    )?;
+                    let (receipt, artifact) =
+                        ntfs2refs::shadow_tree::PagedExpectedTree::create_with_resources_in_group(
+                            &projected, &path, admission, &group,
+                        )?;
+                    let expected =
+                        ntfs2refs::shadow_tree::PagedExpectedTree::open_with_resources_in_group(
+                            &path,
+                            &receipt.file_sha256,
+                            &receipt.semantic_sha256,
+                            admission,
+                            &group,
+                            artifact,
+                        )?;
+                    let _seal = group.seal()?;
+                    (receipt, expected)
+                } else {
+                    let receipt = ntfs2refs::shadow_tree::PagedExpectedTree::create_with_resources(
+                        &projected, &path, admission,
+                    )?;
+                    let expected = ntfs2refs::shadow_tree::PagedExpectedTree::open_with_resources(
+                        &path,
+                        &receipt.file_sha256,
+                        &receipt.semantic_sha256,
+                        admission,
+                    )?;
+                    (receipt, expected)
+                };
                 expected.validate_with_resource_profile(
                     ntfs2refs::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission)),
                 )?;

@@ -12,6 +12,8 @@ use std::{
     path::Path,
 };
 
+pub(crate) mod memory;
+
 const PURPOSE: [u8; 8] = *b"N2RNAT01";
 const INDEX_BYTES: u64 = 24;
 
@@ -287,6 +289,8 @@ pub struct PagedNativeObservation {
     budget: NativeObservationBudget,
     total_bytes: u64,
     sha256: String,
+    // Drop decoded/header/index/cache storage before returning shared RAM.
+    memory: Option<memory::Memory>,
 }
 impl std::fmt::Debug for PagedNativeObservation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -299,6 +303,22 @@ impl std::fmt::Debug for PagedNativeObservation {
 }
 impl PagedNativeObservation {
     pub fn open(path: &Path, sha256: &str, budget: NativeObservationBudget) -> io::Result<Self> {
+        Self::open_accounted(path, sha256, budget, None)
+    }
+    pub(crate) fn open_with_memory(
+        path: &Path,
+        sha256: &str,
+        budget: NativeObservationBudget,
+        memory: memory::Memory,
+    ) -> io::Result<Self> {
+        Self::open_accounted(path, sha256, budget, Some(memory))
+    }
+    fn open_accounted(
+        path: &Path,
+        sha256: &str,
+        budget: NativeObservationBudget,
+        memory: Option<memory::Memory>,
+    ) -> io::Result<Self> {
         budget.validate()?;
         let mut reader = Reader::open(path, sha256, PURPOSE, budget.pages)?;
         // The terminal header is indexed by its own canonical last chunk key.
@@ -361,6 +381,12 @@ impl PagedNativeObservation {
                 .is_some_and(|n| n <= budget.max_index_bytes),
             "native observation index budget exceeded",
         )?;
+        if let Some(memory) = &memory {
+            require(
+                count == memory.expected_rows,
+                "native header count changed before index allocation",
+            )?;
+        }
         let mut files = Vec::new();
         let mut namespace = Vec::new();
         files.try_reserve_exact(count).map_err(io::Error::other)?;
@@ -471,7 +497,8 @@ impl PagedNativeObservation {
                 && namespace_reader.len() == reader.len(),
             "native observation readers differ",
         )?;
-        let result = Self {
+        let mut result = Self {
+            memory,
             reader: RefCell::new(reader),
             namespace_reader: RefCell::new(namespace_reader),
             header,
@@ -482,28 +509,29 @@ impl PagedNativeObservation {
             sha256: sha256.to_owned(),
         };
         for i in 0..result.len() {
-            {
-                let file: FileRow = result.file_row(i)?;
-                require(
-                    (result.header.request.has_paged_selectors()
-                        || file.request.identity == result.header.request.files[i])
-                        && file.observation.identity == file.request.identity
-                        && file.logical.identity == file.observation.identity,
-                    "native observation identity closure differs",
-                )?;
-            }
-            let identity = result.request_row(i)?.identity.clone();
-            let ns = result.namespace_file(i)?;
+            let row = result.row_view(i)?;
             require(
-                ns.identity == identity,
+                (result.header.request.has_paged_selectors()
+                    || row.request().identity == result.header.request.files[i])
+                    && row.observation().identity == row.request().identity
+                    && row.logical()?.identity == row.observation().identity
+                    && row.namespace()?.identity == row.request().identity,
                 "native observation identity closure differs",
             )?;
         }
         validate_domain_resources(&result)?;
         result.revalidate()?;
+        if let Some(memory) = &mut result.memory {
+            memory.close(&result.header, &result.files, &result.namespace)?;
+        }
         Ok(result)
     }
     fn file_row(&self, i: usize) -> io::Result<FileRow> {
+        let _decode = self
+            .memory
+            .as_ref()
+            .map(|m| m.decode(self.budget))
+            .transpose()?;
         let row = *self
             .files
             .get(i)
@@ -512,6 +540,11 @@ impl PagedNativeObservation {
     }
     pub fn sha256(&self) -> &str {
         &self.sha256
+    }
+    /// Collector, immutable header, index vectors and both page caches share
+    /// actual leases. Cow-returning decoded rows need separate consumer leases.
+    pub fn retained_storage_ram_accounted(&self) -> bool {
+        self.memory.is_some()
     }
     pub fn budget(&self) -> NativeObservationBudget {
         self.budget
@@ -542,6 +575,32 @@ impl NativeObservationDomain for PagedNativeObservation {
     fn namespace_len(&self) -> usize {
         self.namespace.len()
     }
+    fn row_view(&self, i: usize) -> io::Result<NativeObservationRow<'_>> {
+        let memory = self
+            .memory
+            .as_ref()
+            .map(|m| m.decode(self.budget))
+            .transpose()?
+            .flatten();
+        let row = *self
+            .files
+            .get(i)
+            .ok_or_else(|| io::Error::other("native row ordinal outside domain"))?;
+        let file: FileRow = decode_row(&mut self.reader.borrow_mut(), row, self.budget)?;
+        let row = *self
+            .namespace
+            .get(i)
+            .ok_or_else(|| io::Error::other("native namespace ordinal outside domain"))?;
+        let namespace: NamespaceFile =
+            decode_row(&mut self.namespace_reader.borrow_mut(), row, self.budget)?;
+        Ok(NativeObservationRow::new(
+            Cow::Owned(file.request),
+            Cow::Owned(file.observation),
+            Some(Cow::Owned(file.logical)),
+            Some(Cow::Owned(namespace)),
+        )
+        .with_memory(memory))
+    }
     fn observation(&self, i: usize) -> io::Result<Cow<'_, Observation>> {
         Ok(Cow::Owned(self.file_row(i)?.observation))
     }
@@ -549,6 +608,11 @@ impl NativeObservationDomain for PagedNativeObservation {
         Ok(Cow::Owned(self.file_row(i)?.logical))
     }
     fn namespace_file(&self, i: usize) -> io::Result<Cow<'_, NamespaceFile>> {
+        let _decode = self
+            .memory
+            .as_ref()
+            .map(|m| m.decode(self.budget))
+            .transpose()?;
         let row = *self
             .namespace
             .get(i)

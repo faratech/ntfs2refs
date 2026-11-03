@@ -26,6 +26,7 @@ pub enum ArtifactGroup {
     Auxiliary,
     RecoveryCopy,
     Capture,
+    NativeJournal,
 }
 impl ArtifactGroup {
     fn limit(self, budget: ResourceBudget) -> u64 {
@@ -37,7 +38,7 @@ impl ArtifactGroup {
             Self::RecoveryCopy => budget.scratch_bytes / 16 * 5,
             // Selected literal/index/route backing uses the actual remaining
             // shared total, never a disguised enlargement of source pages.
-            Self::Capture => budget.scratch_bytes,
+            Self::Capture | Self::NativeJournal => budget.scratch_bytes,
         }
     }
 }
@@ -47,6 +48,8 @@ struct Group {
     files: u64,
     sealed: bool,
     poisoned: bool,
+    native_journal:
+        Option<crate::general_reconstruct::selected_native_journal::NativeJournalAllocationOwner>,
 }
 struct Entry {
     group: ArtifactGroup,
@@ -68,6 +71,7 @@ struct State {
     index_bytes: u64,
     leased_ram_bytes: u64,
     ram_poisoned: bool,
+    prepared_closed: bool,
 }
 struct Inner {
     root: PathBuf,
@@ -143,6 +147,17 @@ pub struct ArtifactGroupSeal {
     wire_bytes: u64,
     allocated_bytes: u64,
 }
+/// Exhaustive live ownership after every preparation artifact has closed.
+/// It is neither serializable nor a source/journal activation capability.
+pub(crate) struct PreparedArenaClosure {
+    ordinary: Vec<ArtifactGroupSeal>,
+    native_quota: ArtifactGroupPermit,
+    arena: ArtifactArena,
+    native_length: u64,
+    native_reservation: u64,
+    // All retained vectors/owners drop before returning their collection RAM.
+    _ram: ArenaRamLease,
+}
 #[derive(Clone, Copy, Debug)]
 pub struct ArenaUsage {
     pub promised_bytes: u64,
@@ -157,6 +172,23 @@ fn add(a: u64, b: u64) -> Result<u64> {
         .context("artifact arena accounting overflow")
 }
 const HASH_WORKSPACE: u64 = 4 * 1024 * 1024;
+const ORDINARY_GROUPS: [ArtifactGroup; 8] = [
+    ArtifactGroup::Source,
+    ArtifactGroup::Native,
+    ArtifactGroup::Expected,
+    ArtifactGroup::Map,
+    ArtifactGroup::LegacyExpectation,
+    ArtifactGroup::Auxiliary,
+    ArtifactGroup::RecoveryCopy,
+    ArtifactGroup::Capture,
+];
+const PREPARED_REQUIRED: [ArtifactGroup; 5] = [
+    ArtifactGroup::Source,
+    ArtifactGroup::Native,
+    ArtifactGroup::Expected,
+    ArtifactGroup::Capture,
+    ArtifactGroup::RecoveryCopy,
+];
 fn parents(path: &Path) -> Result<Vec<File>> {
     let mut result = Vec::new();
     for parent in path.ancestors().filter(|p| !p.as_os_str().is_empty()) {
@@ -208,7 +240,388 @@ fn inspect(file: &mut File, maximum: u64, expected: &str) -> Result<Verified> {
         sha256: sha,
     })
 }
+fn validate_prepared_state(
+    arena: &ArtifactArena,
+    state: &State,
+    ordinary: &[ArtifactGroupSeal],
+    native_quota: &ArtifactGroupPermit,
+    native_length: u64,
+    native_reservation: u64,
+    closed: bool,
+) -> Result<ArenaUsage> {
+    ensure!(
+        state.prepared_closed == closed
+            && !state.ram_poisoned
+            && state.groups.len() == ordinary.len() + 1
+            && native_quota.group == ArtifactGroup::NativeJournal
+            && native_quota.arena.same_arena(arena),
+        "prepared arena membership or runtime identity differs"
+    );
+    for required in PREPARED_REQUIRED {
+        ensure!(
+            ordinary
+                .iter()
+                .any(|s| s.permit.group == required && !s.pins.pins.is_empty()),
+            "prepared arena required artifact group is absent or empty"
+        );
+    }
+    let (mut wire, mut allocated, mut registry, mut files) = (0, 0, 0, 0);
+    let mut previous = None;
+    for seal in ordinary {
+        let tag = seal.permit.group;
+        ensure!(
+            previous.is_none_or(|p| p < tag)
+                && tag != ArtifactGroup::NativeJournal
+                && seal.permit.arena.same_arena(arena),
+            "prepared group owner/order differs"
+        );
+        previous = Some(tag);
+        let group = state
+            .groups
+            .get(&tag)
+            .context("prepared actual group is missing")?;
+        ensure!(
+            !group.poisoned
+                && group.native_journal.is_none()
+                && group.held == seal.wire_bytes
+                && group.files == seal.pins.pins.len() as u64
+                && group.maximum >= group.held
+                && (!closed || (group.sealed && group.maximum == group.held)),
+            "prepared group quota/files/closure differ"
+        );
+        let mut entries = state.entries.values().filter(|e| e.group == tag);
+        let (mut group_wire, mut group_allocated) = (0, 0);
+        for pin in &seal.pins.pins {
+            let entry = entries.next().context("prepared artifact entry missing")?;
+            let verified = entry
+                .verified
+                .as_ref()
+                .context("prepared artifact is unverified")?;
+            let current = entry
+                .lease
+                .upgrade()
+                .context("prepared artifact owner expired")?;
+            ensure!(
+                Arc::ptr_eq(pin, &current)
+                    && pin.arena.same_arena(arena)
+                    && pin.snapshot == verified.snapshot
+                    && pin.sha256 == verified.sha256
+                    && pin.modified == verified.modified
+                    && entry.reserved == verified.snapshot.file_bytes
+                    && entry.maximum >= entry.reserved
+                    && verified.snapshot.allocation_bytes >= verified.snapshot.file_bytes,
+                "prepared artifact lease/identity/byte accounting differs"
+            );
+            group_wire = add(group_wire, verified.snapshot.file_bytes)?;
+            group_allocated = add(group_allocated, verified.snapshot.allocation_bytes)?;
+            registry = add(registry, entry.registry_bytes)?;
+            files = add(files, 1)?;
+        }
+        ensure!(
+            entries.next().is_none()
+                && group_wire == seal.wire_bytes
+                && group_allocated == seal.allocated_bytes,
+            "prepared group file set is not exhaustive"
+        );
+        wire = add(wire, group_wire)?;
+        allocated = add(allocated, group_allocated)?;
+    }
+    ensure!(
+        files == state.entries.len() as u64
+            && state.overhead
+                == allocated
+                    .checked_sub(wire)
+                    .context("prepared allocation underflow")?,
+        "prepared artifact allocation/index set differs"
+    );
+    let journal = state
+        .groups
+        .get(&ArtifactGroup::NativeJournal)
+        .context("prepared native quota missing")?;
+    let witness = journal
+        .native_journal
+        .as_ref()
+        .context("prepared native witness missing")?;
+    ensure!(
+        !journal.poisoned
+            && journal.sealed == closed
+            && journal.held == 0
+            && journal.files == 0
+            && journal.maximum == native_reservation
+            && witness.reservation_bytes() == native_reservation,
+        "prepared native journal quota/owner changed"
+    );
+    let (journal_allocated, journal_wire) = witness.observe()?;
+    ensure!(
+        journal_wire == native_length && native_length != 0,
+        "prepared native fixed EOF changed"
+    );
+    let witness_ram = (witness.final_path().encode_utf16().count() as u64)
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(256 * 1024))
+        .context("prepared native witness RAM overflow")?;
+    registry = add(registry, witness_ram)?;
+    let promised = add(add(wire, state.overhead)?, native_reservation)?;
+    let credit = add(allocated, journal_wire)?;
+    ensure!(
+        registry == state.index_bytes
+            && registry <= arena.0.budget.retained_index_bytes
+            && add(registry, state.leased_ram_bytes)? <= arena.0.budget.ram_bytes
+            && promised <= arena.0.budget.scratch_bytes,
+        "prepared aggregate artifact/RAM accounting differs"
+    );
+    let pending = promised
+        .checked_sub(credit)
+        .context("prepared physical credit exceeds reservation")?;
+    ensure!(
+        n2r_win32::resource_native::observe_available_resources(&arena.0.root)?
+            .scratch_available_bytes
+            >= pending,
+        "prepared arena free space cannot cover retained reservation"
+    );
+    Ok(ArenaUsage {
+        promised_bytes: promised,
+        actual_wire_bytes: add(wire, journal_wire)?,
+        actual_allocated_bytes: add(allocated, journal_allocated)?,
+        files: add(files, 1)?,
+        leased_ram_bytes: state.leased_ram_bytes,
+        registry_ram_bytes: registry,
+    })
+}
+impl PreparedArenaClosure {
+    pub(crate) fn arena(&self) -> &ArtifactArena {
+        &self.arena
+    }
+    /// Current bounded metadata accounting; full byte validation is separate.
+    pub(crate) fn usage(&self) -> Result<ArenaUsage> {
+        let _ram = self.arena.reserve_ram(256 * 1024)?;
+        let state = self
+            .arena
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        validate_prepared_state(
+            &self.arena,
+            &state,
+            &self.ordinary,
+            &self.native_quota,
+            self.native_length,
+            self.native_reservation,
+            true,
+        )
+    }
+    pub(crate) fn revalidate(&self) -> Result<()> {
+        let hash_bytes = add(
+            self.ordinary
+                .iter()
+                .flat_map(|s| &s.pins.pins)
+                .map(|p| p.snapshot.file_bytes.min(HASH_WORKSPACE))
+                .max()
+                .unwrap_or(0)
+                .max(256 * 1024),
+            512 * 1024,
+        )?;
+        let _ram = self.arena.reserve_ram(hash_bytes)?;
+        let state = self
+            .arena
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        validate_prepared_state(
+            &self.arena,
+            &state,
+            &self.ordinary,
+            &self.native_quota,
+            self.native_length,
+            self.native_reservation,
+            true,
+        )?;
+        for seal in &self.ordinary {
+            for pin in &seal.pins.pins {
+                pin.revalidate_prepaid()?;
+            }
+        }
+        Ok(())
+    }
+}
 impl ArtifactArena {
+    /// Close every actual preparation owner atomically. Ordinary file quotas
+    /// shrink only to verified bytes; the separately owned native journal keeps
+    /// its fixed-EOF quota/witness. No disk mutation or source authority results.
+    pub(crate) fn close_prepared(
+        &self,
+        native_quota: &ArtifactGroupPermit,
+    ) -> Result<PreparedArenaClosure> {
+        ensure!(
+            native_quota.group == ArtifactGroup::NativeJournal
+                && self.same_arena(&native_quota.arena),
+            "prepared closure requires the actual same-arena native quota"
+        );
+        let (counts, hash_bytes) = {
+            let state = self
+                .0
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+            ensure!(
+                !state.prepared_closed && !state.ram_poisoned,
+                "arena is closed or poisoned"
+            );
+            let mut counts = [None; ORDINARY_GROUPS.len()];
+            let mut hash_bytes = 256 * 1024;
+            for (slot, group) in ORDINARY_GROUPS.iter().enumerate() {
+                if state.groups.contains_key(group) {
+                    counts[slot] =
+                        Some(state.entries.values().filter(|e| e.group == *group).count());
+                }
+            }
+            for entry in state.entries.values() {
+                let verified = entry
+                    .verified
+                    .as_ref()
+                    .context("prepared arena has an active file creation")?;
+                hash_bytes = hash_bytes.max(verified.snapshot.file_bytes.min(HASH_WORKSPACE));
+            }
+            hash_bytes = add(hash_bytes, 512 * 1024)?;
+            (counts, hash_bytes)
+        };
+        let group_count = counts.iter().flatten().count();
+        let collection_bytes = (group_count as u64)
+            .checked_mul(2 * std::mem::size_of::<ArtifactGroupSeal>() as u64)
+            .and_then(|n| n.checked_add(256))
+            .context("prepared closure collection RAM overflow")?;
+        let collection_ram = self.reserve_ram(collection_bytes)?;
+        let mut group_ram: [Option<ArenaRamLease>; ORDINARY_GROUPS.len()] =
+            std::array::from_fn(|_| None);
+        for (slot, count) in counts.iter().enumerate() {
+            if let Some(count) = count {
+                let bytes = (*count as u64)
+                    .checked_mul(2 * std::mem::size_of::<Arc<FilePin>>() as u64)
+                    .and_then(|n| n.checked_add(256))
+                    .context("prepared group pin RAM overflow")?;
+                group_ram[slot] = Some(self.reserve_ram(bytes)?);
+            }
+        }
+        let _hash_ram = self.reserve_ram(hash_bytes)?;
+        // Declare all RAM-owning collections before the state guard, so every
+        // failure unlocks the mutex before their lease destructors run.
+        let mut ordinary = Vec::new();
+        ordinary.try_reserve_exact(group_count)?;
+        ensure!(
+            (ordinary.capacity() as u64)
+                .checked_mul(std::mem::size_of::<ArtifactGroupSeal>() as u64)
+                .is_some_and(|n| n <= collection_bytes),
+            "prepared closure allocation exceeded prepaid RAM"
+        );
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        ensure!(
+            !state.prepared_closed && !state.ram_poisoned,
+            "arena changed before prepared closure"
+        );
+        for (slot, group) in ORDINARY_GROUPS.iter().enumerate() {
+            let count = state
+                .groups
+                .get(group)
+                .map(|_| state.entries.values().filter(|e| e.group == *group).count());
+            ensure!(
+                count == counts[slot],
+                "arena groups/files changed before prepared closure"
+            );
+            let Some(count) = count else { continue };
+            let mut pins = Vec::new();
+            pins.try_reserve_exact(count)?;
+            ensure!(
+                pins.capacity() <= count.saturating_mul(2).max(1),
+                "prepared pin allocation exceeds prepaid RAM"
+            );
+            let mut wire = 0;
+            let mut allocated = 0;
+            for entry in state.entries.values().filter(|e| e.group == *group) {
+                let verified = entry
+                    .verified
+                    .as_ref()
+                    .context("prepared arena still has an active file creation")?;
+                ensure!(
+                    verified.snapshot.file_bytes.min(HASH_WORKSPACE) <= hash_bytes,
+                    "arena hash workspace changed before closure"
+                );
+                let pin = entry
+                    .lease
+                    .upgrade()
+                    .context("prepared artifact has no actual retained file owner")?;
+                pin.revalidate_prepaid()?;
+                wire = add(wire, verified.snapshot.file_bytes)?;
+                allocated = add(allocated, verified.snapshot.allocation_bytes)?;
+                pins.push(pin);
+            }
+            ensure!(
+                pins.len() == count && pins.capacity() <= count.saturating_mul(2).max(1),
+                "prepared pin collection differs"
+            );
+            // No fallible operation follows taking this lease until it has
+            // entered the outer collection declared before the state guard.
+            let ram = group_ram[slot].take().expect("prepaid present group");
+            ordinary.push(ArtifactGroupSeal {
+                permit: ArtifactGroupPermit {
+                    arena: self.clone(),
+                    group: *group,
+                },
+                pins: Arc::new(SealedPins { pins, _ram: ram }),
+                wire_bytes: wire,
+                allocated_bytes: allocated,
+            });
+        }
+        let journal = state
+            .groups
+            .get(&ArtifactGroup::NativeJournal)
+            .context("prepared native journal quota absent")?;
+        let native_reservation = journal.maximum;
+        let native_length = journal
+            .native_journal
+            .as_ref()
+            .context("prepared native journal witness absent")?
+            .observe()?
+            .1;
+        validate_prepared_state(
+            self,
+            &state,
+            &ordinary,
+            native_quota,
+            native_length,
+            native_reservation,
+            false,
+        )?;
+        for seal in &ordinary {
+            let group = state
+                .groups
+                .get_mut(&seal.permit.group)
+                .expect("validated actual group");
+            group.maximum = seal.wire_bytes;
+            group.held = seal.wire_bytes;
+            group.sealed = true;
+        }
+        state
+            .groups
+            .get_mut(&ArtifactGroup::NativeJournal)
+            .expect("validated native group")
+            .sealed = true;
+        state.prepared_closed = true;
+        drop(state);
+        Ok(PreparedArenaClosure {
+            ordinary,
+            native_quota: native_quota.clone(),
+            arena: self.clone(),
+            native_length,
+            native_reservation,
+            _ram: collection_ram,
+        })
+    }
     pub fn new(
         root: &Path,
         budget: ResourceBudget,
@@ -253,11 +666,53 @@ impl ArtifactArena {
                 index_bytes: 0,
                 leased_ram_bytes: 0,
                 ram_poisoned: false,
+                prepared_closed: false,
             }),
         })))
     }
     pub fn budget(&self) -> ResourceBudget {
         self.0.budget
+    }
+    pub fn allocation_slack_bytes(&self) -> u64 {
+        self.0.allocation_slack
+    }
+    /// Volume identity observed from the retained arena directory handle.
+    pub fn volume_guid_path(&self) -> Result<&str> {
+        let end = self
+            .0
+            .root_guid
+            .find("}\\")
+            .context("arena GUID volume path is malformed")?;
+        Ok(&self.0.root_guid[..=end])
+    }
+
+    /// Bind a caller's actual directory handle to the retained arena root.
+    /// This is a read-only route/identity check, not a storage or write permit.
+    pub(crate) fn require_root_directory(&self, file: &File) -> Result<()> {
+        let root = self
+            .0
+            ._parents
+            .first()
+            .context("held arena root is absent")?;
+        let actual = file.metadata()?;
+        let retained = root.metadata()?;
+        ensure!(
+            actual.is_dir()
+                && retained.is_dir()
+                && actual.file_attributes() & 0x400 == 0
+                && retained.file_attributes() & 0x400 == 0,
+            "arena root handles must be ordinary directories"
+        );
+        ensure!(
+            n2r_win32::file_storage::file_id_info(file)?
+                == n2r_win32::file_storage::file_id_info(root)?
+                && n2r_win32::file_storage::final_path_guid(file)?
+                    .eq_ignore_ascii_case(&self.0.root_guid)
+                && n2r_win32::file_storage::final_path_guid(root)?
+                    .eq_ignore_ascii_case(&self.0.root_guid),
+            "directory handle differs from the held arena root"
+        );
+        Ok(())
     }
     pub fn same_arena(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -271,7 +726,12 @@ impl ArtifactArena {
         let leased = add(state.leased_ram_bytes, bytes)?;
         ensure!(
             !state.ram_poisoned && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes,
-            "aggregate artifact arena RAM exhausted or poisoned"
+            "aggregate artifact arena RAM exhausted or poisoned: leased={}, registry={}, requested={}, limit={}, poisoned={}",
+            state.leased_ram_bytes,
+            state.index_bytes,
+            bytes,
+            self.0.budget.ram_bytes,
+            state.ram_poisoned
         );
         state.leased_ram_bytes = leased;
         Ok(ArenaRamLease {
@@ -290,7 +750,7 @@ impl ArtifactArena {
             .lock()
             .map_err(|_| anyhow::anyhow!("artifact arena lock poisoned"))?;
         ensure!(
-            !state.groups.contains_key(&group),
+            !state.prepared_closed && !state.groups.contains_key(&group),
             "artifact group already reserved; clone its real permit"
         );
         let held = state
@@ -310,6 +770,7 @@ impl ArtifactArena {
                 files: 0,
                 sealed: false,
                 poisoned: false,
+                native_journal: None,
             },
         );
         Ok(ArtifactGroupPermit {
@@ -317,16 +778,90 @@ impl ArtifactArena {
             group,
         })
     }
+
+    /// Attach an actual fixed-EOF native journal file owner to its already
+    /// reserved quota. The witness is non-serializable and constructed only
+    /// from the prepared same-file native journal; callers cannot supply a
+    /// scalar allocation credit. No group reservation is released here.
+    pub(crate) fn attach_native_journal(
+        &self,
+        permit: &ArtifactGroupPermit,
+        owner: crate::general_reconstruct::selected_native_journal::NativeJournalAllocationOwner,
+    ) -> Result<()> {
+        ensure!(
+            permit.group == ArtifactGroup::NativeJournal && self.same_arena(&permit.arena),
+            "native journal quota belongs to a different arena or group"
+        );
+        let volume_prefix =
+            format!("{}\\", self.volume_guid_path()?.trim_end_matches('\\')).to_ascii_lowercase();
+        ensure!(
+            owner
+                .final_path()
+                .to_ascii_lowercase()
+                .starts_with(&volume_prefix),
+            "native journal file is not on the arena's actual volume"
+        );
+        // This call performs metadata-only queries on the separate readonly
+        // duplicate. It holds neither the journal owner nor an arena lock.
+        let _ = owner.observe()?;
+        let memory = (owner.final_path().encode_utf16().count() as u64)
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(256 * 1024))
+            .context("native journal witness RAM overflow")?;
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("artifact arena lock poisoned"))?;
+        let group = state
+            .groups
+            .get(&ArtifactGroup::NativeJournal)
+            .context("native journal quota missing")?;
+        ensure!(
+            !state.prepared_closed
+                && !group.poisoned
+                && !group.sealed
+                && group.native_journal.is_none()
+                && owner.reservation_bytes() == group.maximum,
+            "native journal quota or owner differs"
+        );
+        // Re-observe under the arena lock before registering. The query does
+        // not acquire an arena/journal mutex and cannot invert lock order.
+        let _ = owner.observe()?;
+        let registry = add(state.index_bytes, memory)?;
+        ensure!(
+            registry <= self.0.budget.retained_index_bytes
+                && add(registry, state.leased_ram_bytes)? <= self.0.budget.ram_bytes,
+            "native journal witness RAM exceeds aggregate admission"
+        );
+        state.index_bytes = registry;
+        state
+            .groups
+            .get_mut(&ArtifactGroup::NativeJournal)
+            .unwrap()
+            .native_journal = Some(owner);
+        Ok(())
+    }
+
     fn check_free(&self, state: &State, additional: u64) -> Result<()> {
         let held = state
             .groups
             .values()
             .try_fold(state.overhead, |n, g| add(n, g.maximum))?;
-        let actual = state
+        let actual_files = state
             .entries
             .values()
             .filter_map(|e| e.verified.as_ref())
             .try_fold(0, |n, v| add(n, v.snapshot.allocation_bytes))?;
+        // The retained native witness only queries its own readonly file
+        // metadata. It acquires neither a journal lock nor this arena lock,
+        // so querying it while State is held cannot invert lock ordering.
+        let native_credit = state
+            .groups
+            .values()
+            .filter_map(|g| g.native_journal.as_ref())
+            .try_fold(0u64, |n, owner| add(n, owner.observe()?.1))?;
+        let actual = add(actual_files, native_credit)?;
         let pending = add(held, additional)?
             .checked_sub(actual)
             .context("artifact physical accounting underflow")?;
@@ -348,7 +883,7 @@ impl ArtifactArena {
             .groups
             .values()
             .try_fold(state.overhead, |n, g| add(n, g.maximum))?;
-        let (wire, allocated) = state
+        let (mut wire, mut allocated) = state
             .entries
             .values()
             .filter_map(|e| e.verified.as_ref())
@@ -358,11 +893,22 @@ impl ArtifactArena {
                     add(a, v.snapshot.allocation_bytes)?,
                 ))
             })?;
+        let mut native_files = 0u64;
+        for owner in state
+            .groups
+            .values()
+            .filter_map(|g| g.native_journal.as_ref())
+        {
+            let (actual, credit) = owner.observe()?;
+            allocated = add(allocated, actual)?;
+            wire = add(wire, credit)?;
+            native_files = add(native_files, 1)?;
+        }
         Ok(ArenaUsage {
             promised_bytes: promised,
             actual_wire_bytes: wire,
             actual_allocated_bytes: allocated,
-            files: state.entries.len() as u64,
+            files: add(state.entries.len() as u64, native_files)?,
             leased_ram_bytes: state.leased_ram_bytes,
             registry_ram_bytes: state.index_bytes,
         })
@@ -388,6 +934,10 @@ impl ArtifactGroupPermit {
             .maximum)
     }
     pub fn reserve_file(&self, path: &Path, maximum: u64) -> Result<ArtifactPathPermit> {
+        ensure!(
+            self.group != ArtifactGroup::NativeJournal,
+            "native journal quota is bound only through its actual native owner"
+        );
         ensure!(
             path.is_absolute()
                 && !path
@@ -454,7 +1004,7 @@ impl ArtifactGroupPermit {
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         ensure!(
-            !state.entries.contains_key(&path),
+            !state.prepared_closed && !state.entries.contains_key(&path),
             "artifact path already registered"
         );
         let group = state
@@ -512,6 +1062,10 @@ impl ArtifactGroupPermit {
                 .state
                 .lock()
                 .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+            ensure!(
+                !state.prepared_closed,
+                "prepared arena disk ledger is closed"
+            );
             let mut count = 0usize;
             let mut hash_bytes = 0u64;
             for entry in state.entries.values().filter(|e| e.group == self.group) {
@@ -539,12 +1093,13 @@ impl ArtifactGroupPermit {
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         ensure!(
-            state
-                .entries
-                .values()
-                .filter(|e| e.group == self.group)
-                .count()
-                == count,
+            !state.prepared_closed
+                && state
+                    .entries
+                    .values()
+                    .filter(|e| e.group == self.group)
+                    .count()
+                    == count,
             "artifact group changed before sealing"
         );
         let mut wire = 0;
@@ -581,7 +1136,12 @@ impl ArtifactGroupPermit {
             .groups
             .get_mut(&self.group)
             .context("artifact group missing")?;
-        ensure!(!group.poisoned, "artifact group is poisoned");
+        ensure!(
+            !group.poisoned
+                && group.native_journal.is_none()
+                && self.group != ArtifactGroup::NativeJournal,
+            "artifact group is poisoned or reserved for a native journal"
+        );
         group.maximum = wire;
         group.held = wire;
         group.sealed = true;
@@ -655,7 +1215,10 @@ impl ArtifactPathPermit {
             .get(&self.group.group)
             .context("artifact group missing")?;
         ensure!(
-            !group.sealed && !group.poisoned && add(group.held, bytes)? <= group.maximum,
+            !state.prepared_closed
+                && !group.sealed
+                && !group.poisoned
+                && add(group.held, bytes)? <= group.maximum,
             "artifact group cannot extend reservation"
         );
         self.group.arena.check_free(&state, 0)?;
@@ -684,17 +1247,24 @@ impl ArtifactPathPermit {
         self.verify_file(file, expected_sha256)
     }
     fn verify_file(mut self, mut file: File, expected_sha256: &str) -> Result<ArtifactLease> {
-        let maximum = self
-            .group
-            .arena
-            .0
-            .state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?
-            .entries
-            .get(&self.path)
-            .context("artifact entry absent")?
-            .maximum;
+        let maximum = {
+            let state = self
+                .group
+                .arena
+                .0
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+            ensure!(
+                !state.prepared_closed,
+                "prepared arena disk ledger is closed"
+            );
+            state
+                .entries
+                .get(&self.path)
+                .context("artifact entry absent")?
+                .maximum
+        };
         // The handle is read-only here; reserve the maximum hash buffer before
         // inspecting its current length, so a changing file cannot outgrow it.
         let _hash_ram = self.group.arena.reserve_ram(maximum.min(HASH_WORKSPACE))?;
@@ -740,6 +1310,10 @@ impl ArtifactPathPermit {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        ensure!(
+            !state.prepared_closed,
+            "prepared arena disk ledger is closed"
+        );
         let old = state
             .entries
             .get(&self.path)
@@ -811,6 +1385,10 @@ impl FilePin {
     }
 }
 impl ArtifactLease {
+    /// Equality of the actual shared runtime owner, never a saved file pin.
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.pin, &other.pin)
+    }
     pub(crate) fn same_group(&self, permit: &ArtifactGroupPermit) -> bool {
         self.group.group == permit.group && self.group.arena.same_arena(&permit.arena)
     }
@@ -833,6 +1411,19 @@ impl ArtifactLease {
         self.pin.revalidate()
     }
     pub fn retire(self) -> Result<()> {
+        {
+            let state = self
+                .group
+                .arena
+                .0
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+            ensure!(
+                !state.prepared_closed,
+                "prepared arena artifacts cannot be retired"
+            );
+        }
         ensure!(
             Arc::strong_count(&self.pin) == 1,
             "artifact still has surviving owners"
@@ -870,6 +1461,10 @@ impl ArtifactLease {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        ensure!(
+            !state.prepared_closed,
+            "prepared arena artifacts cannot be retired"
+        );
         let entry = state
             .entries
             .remove(&path)
@@ -899,6 +1494,10 @@ impl ArtifactLease {
     }
 }
 impl ArtifactGroupSeal {
+    /// Equality of the actual retained seal collection, not matching JSON.
+    pub(crate) fn same_owner(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.pins, &other.pins)
+    }
     /// A seal owns every file it covers until all seal clones are dropped.
     pub fn revalidate(&self) -> Result<()> {
         for pin in &self.pins.pins {

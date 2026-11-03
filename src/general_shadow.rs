@@ -5,7 +5,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 #[cfg(windows)]
+pub(crate) mod capture_index;
+#[cfg(windows)]
+pub mod paged_candidate;
+#[cfg(windows)]
+pub(crate) mod paged_capture;
+#[cfg(windows)]
+pub(crate) mod paged_supply;
+#[cfg(windows)]
 pub mod source_backed;
+#[cfg(windows)]
+pub use paged_supply::{
+    materialize_private_supply_plan_domain, materialize_private_system_payloads_paged_domain,
+    verify_private_hybrid_contents_domain,
+};
 
 /// Capture both descriptor views for the canonical source tree. The returned
 /// analysis is diagnostic; source admission separately binds actual image bytes.
@@ -131,13 +144,42 @@ impl<'a> n2r_win32::shadow_native::input_domain::InputDomain for TreeInputs<'a> 
 }
 
 pub(crate) struct PagedInputs<'a>(pub &'a crate::shadow_tree::PagedExpectedTree);
+pub(crate) enum PagedInputObject {
+    Legacy(crate::shadow_tree::Object),
+    Shared(crate::shadow_tree::pages::LeasedExpectedObject),
+}
+impl n2r_win32::shadow_native::input_domain::ObjectInput for PagedInputObject {
+    fn input(&self) -> n2r_win32::shadow_native::Input<'_> {
+        match self {
+            Self::Legacy(object) => native_object_input(object),
+            Self::Shared(object) => native_object_input(object),
+        }
+    }
+}
+impl n2r_win32::shadow_native::input_domain::ObjectInput
+    for crate::shadow_tree::pages::LeasedExpectedObject
+{
+    fn input(&self) -> n2r_win32::shadow_native::Input<'_> {
+        native_object_input(self)
+    }
+}
 impl n2r_win32::shadow_native::input_domain::InputDomain for PagedInputs<'_> {
-    type Object = crate::shadow_tree::Object;
+    type Object = PagedInputObject;
     fn len(&self) -> usize {
         self.0.len()
     }
     fn object(&self, index: usize) -> std::io::Result<Self::Object> {
-        self.0.object(index).map_err(std::io::Error::other)
+        if self.0.header().resource_admission.is_some() {
+            self.0
+                .object_leased(index)
+                .map(PagedInputObject::Shared)
+                .map_err(std::io::Error::other)
+        } else {
+            self.0
+                .object(index)
+                .map(PagedInputObject::Legacy)
+                .map_err(std::io::Error::other)
+        }
     }
     fn require_paged_metadata(
         &self,

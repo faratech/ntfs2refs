@@ -31,15 +31,14 @@ fn require_digest_free_residual(
     if length == prefix {
         return Ok(());
     }
-    let mut tails = observed
-        .residuals()
-        .iter()
-        .filter(|tail| tail.object_index == object_index && tail.stream_name_utf16 == name);
-    let tail = tails
-        .next()
+    // The held accessor validates the exact stream key and uniqueness for
+    // both legacy inline evidence and authenticated paged native residuals.
+    let tail = observed
+        .residual_for(object_index, name)?
         .ok_or_else(|| invalid("digest-free protected tail residual is absent"))?;
     if !observed.residual_contents_verified()
-        || tails.next().is_some()
+        || tail.object_index != object_index
+        || tail.stream_name_utf16 != name
         || tail.logical_offset != prefix
         || tail.length != length - prefix
         || tail.sha256.len() != 64
@@ -59,14 +58,124 @@ pub struct SourceBackedRoutes {
     payload_bytes: u64,
 }
 
+/// Issued only after complete validation of the actual protected observation
+/// against a still-borrowed immutable input owner. It permits read-route
+/// emission only, never target writes or reconstruction from saved facts.
+pub struct ValidatedSourceBackedRoutes<'observation, 'input, D: InputDomain> {
+    observation: &'observation native::GeneralLiveRefsLayoutObservation,
+    _input: &'input D,
+}
+impl<D: InputDomain> ValidatedSourceBackedRoutes<'_, '_, D> {
+    pub fn visit(self, emit: impl FnMut(PayloadRoute) -> io::Result<()>) -> io::Result<u64> {
+        SourceBackedRoutes::visit_protected_layout(self.observation, emit)
+    }
+}
+
 impl SourceBackedRoutes {
+    /// Stream routes from the actual protected observation while independently
+    /// binding all metadata, namespace, security and stream expectations to the
+    /// supplied immutable domain. The callback must close global destination
+    /// ordering/overlap itself; no serialized route can supply this witness.
+    pub fn visit_protected_layout_domain(
+        observation: &native::GeneralLiveRefsLayoutObservation,
+        input: &impl InputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        emit: impl FnMut(PayloadRoute) -> io::Result<()>,
+    ) -> io::Result<u64> {
+        Self::visit_protected_layout_domain_accounted(observation, input, same_security, None, emit)
+    }
+    pub fn visit_protected_layout_domain_with_memory(
+        observation: &native::GeneralLiveRefsLayoutObservation,
+        input: &impl InputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        memory: &dyn report_memory::ReportMemoryAccountant,
+        emit: impl FnMut(PayloadRoute) -> io::Result<()>,
+    ) -> io::Result<u64> {
+        Self::visit_protected_layout_domain_accounted(
+            observation,
+            input,
+            same_security,
+            Some(memory),
+            emit,
+        )
+    }
+
+    /// Separate complete validation from route emission so the caller need
+    /// not retain its unrelated route serializer workspace during paged input
+    /// decoding and independently prepaid global validation indexes.
+    pub fn validate_protected_layout_domain_with_memory<'observation, 'input, D: InputDomain>(
+        observation: &'observation native::GeneralLiveRefsLayoutObservation,
+        input: &'input D,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        memory: &dyn report_memory::ReportMemoryAccountant,
+    ) -> io::Result<ValidatedSourceBackedRoutes<'observation, 'input, D>> {
+        Self::validate_protected_layout_domain_accounted(
+            observation,
+            input,
+            same_security,
+            Some(memory),
+        )
+    }
+    fn visit_protected_layout_domain_accounted(
+        observation: &native::GeneralLiveRefsLayoutObservation,
+        input: &impl InputDomain,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+        emit: impl FnMut(PayloadRoute) -> io::Result<()>,
+    ) -> io::Result<u64> {
+        Self::validate_protected_layout_domain_accounted(observation, input, same_security, memory)?
+            .visit(emit)
+    }
+
+    fn validate_protected_layout_domain_accounted<'observation, 'input, D: InputDomain>(
+        observation: &'observation native::GeneralLiveRefsLayoutObservation,
+        input: &'input D,
+        same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+        memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+    ) -> io::Result<ValidatedSourceBackedRoutes<'observation, 'input, D>> {
+        let observed = observation.report();
+        if let Some(admission) = observed
+            .native()
+            .resource_profile
+            .map(crate::attestation::ResourceProfile::resource_admission)
+            .transpose()?
+            .flatten()
+        {
+            input.require_resource_metadata(admission)?;
+        }
+        validate_existing_content_domain_with_memory(
+            observed.native(),
+            input,
+            &same_security,
+            false,
+            None,
+            false,
+            false,
+            memory,
+        )?;
+        if input.len() != observed.expected_stream_sha256.len() {
+            return Err(invalid("protected route input coverage differs"));
+        }
+        input.for_each(|index, item| {
+            let digest = (!item.directory).then(|| item.logical_sha256()).flatten();
+            if observed.expected_stream_sha256[index].as_deref() != digest.as_deref() {
+                return Err(invalid("protected route content expectation differs"));
+            }
+            Ok(())
+        })?;
+        Ok(ValidatedSourceBackedRoutes {
+            observation,
+            _input: input,
+        })
+    }
     /// Re-derive every full-cluster source-backed prefix from the post-freeze
     /// native READ_ONLY witness. This consumes no saved success JSON and reads
     /// no placeholder payload. Expected hashes remain expectations: callers
     /// must bind them to the admitted source and prove the composite contents.
-    pub fn from_protected_layout(
+    pub fn visit_protected_layout(
         observation: &native::GeneralLiveRefsLayoutObservation,
-    ) -> io::Result<Self> {
+        mut emit: impl FnMut(PayloadRoute) -> io::Result<()>,
+    ) -> io::Result<u64> {
         let observed = observation.report();
         let report = observed.native();
         if observation.before() != observation.after()
@@ -78,7 +187,6 @@ impl SourceBackedRoutes {
         {
             return Err(invalid("protected source-backed layout context differs"));
         }
-        let mut entries = Vec::new();
         let mut payload_bytes = 0u64;
         for (index, object) in report.objects.iter().enumerate() {
             let standard = query_bytes(&object.before, 1, 24)?;
@@ -141,7 +249,7 @@ impl SourceBackedRoutes {
                     if (sparse.is_none() && at != covered) || bytes == 0 {
                         return Err(invalid("named prefix coverage differs"));
                     }
-                    entries.push(PayloadRoute {
+                    emit(PayloadRoute {
                         object_index: index,
                         stream_name_utf16: named.name_utf16.clone(),
                         logical_offset: at,
@@ -152,16 +260,17 @@ impl SourceBackedRoutes {
                         expected_sha256: named.expected_sha256.clone(),
                         native_file_id: id.clone(),
                         expected_link_count: layout::u32_at(ns, 16)?,
-                    });
-                    if entries.len() > 4096 {
-                        return Err(invalid("protected route budget exceeded"));
-                    }
-                    covered += bytes;
+                    })?;
+                    covered = covered
+                        .checked_add(bytes)
+                        .ok_or_else(|| invalid("named route coverage overflow"))?;
                 }
                 if covered != needed {
                     return Err(invalid("named full-cluster prefix incomplete"));
                 }
-                payload_bytes += needed;
+                payload_bytes = payload_bytes
+                    .checked_add(needed)
+                    .ok_or_else(|| invalid("named route payload overflow"))?;
             }
             let length = layout::u64_at(standard, 8)?;
             let prefix = length / 4096 * 4096;
@@ -218,7 +327,7 @@ impl SourceBackedRoutes {
                 if (sparse.is_none() && at != covered) || bytes == 0 {
                     return Err(invalid("protected payload prefix coverage differs"));
                 }
-                entries.push(PayloadRoute {
+                emit(PayloadRoute {
                     object_index: index,
                     stream_name_utf16: Vec::new(),
                     logical_offset: at,
@@ -229,10 +338,7 @@ impl SourceBackedRoutes {
                     expected_sha256: expected.clone(),
                     native_file_id: id.clone(),
                     expected_link_count: layout::u32_at(standard, 16)?,
-                });
-                if entries.len() > 4096 {
-                    return Err(invalid("protected source-backed route budget exceeded"));
-                }
+                })?;
                 covered = covered
                     .checked_add(bytes)
                     .ok_or_else(|| invalid("protected prefix total overflow"))?;
@@ -244,6 +350,21 @@ impl SourceBackedRoutes {
                 .checked_add(needed)
                 .ok_or_else(|| invalid("protected payload total overflow"))?;
         }
+        Ok(payload_bytes)
+    }
+
+    pub fn from_protected_layout(
+        observation: &native::GeneralLiveRefsLayoutObservation,
+    ) -> io::Result<Self> {
+        let observed = observation.report();
+        let mut entries = Vec::new();
+        let payload_bytes = Self::visit_protected_layout(observation, |route| {
+            if entries.len() >= 4096 {
+                return Err(invalid("protected source-backed route budget exceeded"));
+            }
+            entries.push(route);
+            Ok(())
+        })?;
         entries.sort_unstable_by_key(|route| route.target_physical_offset);
         let mut end = 0;
         for route in &entries {

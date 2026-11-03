@@ -543,6 +543,43 @@ pub(crate) fn collect_file_metadata_paged(
 ) -> io::Result<crate::observation_pages::PagedNativeObservation> {
     collect_file_metadata_paged_domain(request, path, budget, single_content_pass)
 }
+pub(crate) fn collect_file_metadata_paged_domain_with_memory(
+    selectors: &impl NativeRequestDomain,
+    path: &std::path::Path,
+    budget: crate::observation_pages::NativeObservationBudget,
+    single_content_pass: bool,
+    accountant: std::sync::Arc<dyn crate::shadow_native::report_memory::ReportMemoryAccountant>,
+) -> io::Result<crate::observation_pages::PagedNativeObservation> {
+    let admission = selectors
+        .header()
+        .resource_profile
+        .ok_or_else(|| invalid("accounted native source needs a resource profile"))?
+        .resource_admission()?
+        .ok_or_else(|| invalid("accounted native source needs actual V4 admission"))?;
+    if budget != admission.native_observation_budget()? {
+        return Err(invalid("accounted native source budget differs"));
+    }
+    let memory =
+        crate::observation_pages::memory::Memory::new(accountant, budget, selectors.len(), path)?;
+    validate_native_request_domain(selectors)?;
+    let profile = selectors.header().resource_profile.unwrap();
+    let mut sink = crate::observation_pages::NativePageWriter::new(path, budget, profile)?;
+    let header = collect_file_metadata_with_passes(
+        selectors.header(),
+        selectors,
+        single_content_pass,
+        Some(&mut sink),
+    )?;
+    let receipt = sink.finish(&header)?;
+    drop(header);
+    crate::observation_pages::PagedNativeObservation::open_with_memory(
+        path,
+        &receipt.sha256,
+        budget,
+        memory,
+    )
+}
+
 pub(crate) fn collect_file_metadata_paged_domain(
     selectors: &impl NativeRequestDomain,
     path: &std::path::Path,

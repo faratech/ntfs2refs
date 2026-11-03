@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "native-resource-target-interval-ram-refusal",
+  "source_commit": "153e74a0de8b8cae7b31730f25d1e64ed4d37ae1",
+  "binary_sha256": "849e84f2860afb28ff2916a059922f68c0e0965a5cf2ee70db9a1a57def06f31",
+  "run_id": "e02481c46fb3486ca7f83a839f318a15",
+  "ready_checkpoint": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+  "arena_bytes": 1456427008,
+  "archive_sha256": "5d547354bda26fc53d61ca5fccd089542d60eb76050db98dbef287c0e8db23a0",
+  "native_process": {
+    "exit_code": 1,
+    "pid": 5228,
+    "actual_exit_observed": true,
+    "creation_ms": 1793710544699,
+    "utc": "2026-11-03T12:59:10.0392932Z",
+    "stdout_bytes": 43228,
+    "stderr_bytes": 15204,
+    "wall_seconds": 205.31806079999998
+  },
+  "terminal_error": "Error: aggregate artifact arena RAM exhausted or poisoned: leased=1324927490, registry=3092238, requested=194636288, limit=1456427008, poisoned=false",
+  "routed_verification": {
+    "actual_source_logical_bytes_read": 1469829,
+    "conversion_qualified": false,
+    "execution_authorized": false,
+    "hole_bytes": 0,
+    "journal_copy_literal_split_pending": true,
+    "kind": "private-routed-prefix-verification",
+    "logical_bytes": 9885781381,
+    "ordered_receipt_sha256": "930c9a3e6b6236a7f839475fd231f19eb23ab2cd9f0eac0d44597892bad8ca37",
+    "relocated_prefix_routed_bytes": 5659201536,
+    "routed_plan_sha256": "232d3e0f3fbbbda86386a136b3bca57e9b9994cb0a4a6040b778fa585358d9e6",
+    "same_coordinate_reference_bytes": 4225110016,
+    "shadow_materialized_bytes": 1469829,
+    "source_admitted": false,
+    "source_payload_writes": 0,
+    "success": true,
+    "target_route_capture_pending": true
+  },
+  "source_payload_writes": 0,
+  "source_and_shadow_offline_readonly_at_completion": true,
+  "conversion_qualified": false
+}

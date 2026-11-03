@@ -31,12 +31,16 @@ pub mod journal_file;
 #[cfg(windows)]
 pub mod lab_compression_fixture;
 #[cfg(windows)]
+pub mod lab_job;
+#[cfg(windows)]
 pub mod lab_ntfs_fragmentation;
 #[cfg(windows)]
 pub mod lab_reparse_fixture;
 #[cfg(windows)]
 pub mod lab_security_fixture;
 pub mod layout;
+#[cfg(windows)]
+pub mod layout_residual_pages;
 pub mod logical_hash;
 #[cfg(windows)]
 pub mod managed_shadow;
@@ -92,13 +96,16 @@ pub use attestation_native::collect_file_metadata;
 mod native;
 #[cfg(windows)]
 pub use native::{
-    DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
-    GeneralAllocationSnapshot, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenLane,
-    GeneralFrozenPartition, GeneralJournalReadView, GeneralJournaledPartition,
-    GeneralLiveNtfsObservation, GeneralLivePagedNtfsObservation, GeneralLiveRefsLayoutObservation,
-    GeneralLiveRefsObservation, GeneralLockedPartition, GeneralPartitionReader, GeneralProbe,
-    GeneralReadonlyAllocationWitness, LiveNtfsObservation, MountPathObservation, NativeEvent,
-    OfflinePartition, PartitionSnapshot, WritePolicy, capture_mount_paths_general,
-    mounted_filesystem_general, observe_general_disk_state_readonly, probe_general,
-    rediscover_general_volume, rediscover_general_volume_wait, restore_drive_letter_general,
+    BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
+    GeneralAllocationSnapshot, GeneralDiskState, GeneralExclusiveRecoveryTarget,
+    GeneralFreezeObservation, GeneralFrozenLane, GeneralFrozenPartition, GeneralJournalReadView,
+    GeneralJournaledPartition, GeneralLiveConvertedObservation, GeneralLiveNtfsObservation, GeneralLivePagedNtfsObservation,
+    GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation, GeneralLockedPartition,
+    GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness, HeldPagedWritePolicy,
+    LiveNtfsObservation, MountPathObservation, NativeEvent, OfflinePartition,
+    PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow, PagedRecoveryDirection,
+    PagedRecoveryPins, PartitionSnapshot,
+    WritePolicy, capture_mount_paths_general, mounted_filesystem_general,
+    observe_general_disk_state_readonly, probe_general, rediscover_general_volume,
+    rediscover_general_volume_wait, restore_drive_letter_general,
 };

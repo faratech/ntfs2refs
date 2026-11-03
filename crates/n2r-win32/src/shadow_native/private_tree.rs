@@ -5,14 +5,19 @@ use super::input_domain::{DomainMetadata, InputDomain, ObjectInput, SliceInputs}
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 mod enrollment;
+mod memory;
 mod metadata;
 mod placement;
+mod routed_prefix;
 mod source_backed;
 mod supply;
 mod system_payloads;
 pub use enrollment::{ConstructionEnrollment, enroll, enroll_with_resource_profile};
-pub use source_backed::{MountedAllocation, PayloadRoute, SourceBackedRoutes};
-pub use supply::{SupplyPlan, SupplyRange};
+pub use routed_prefix::RoutedPrefixReady;
+pub use source_backed::{
+    MountedAllocation, PayloadRoute, SourceBackedRoutes, ValidatedSourceBackedRoutes,
+};
+pub use supply::{StreamSupplySummary, SupplyKind, SupplyPlan, SupplyRange};
 
 /// Tree-wide FSCTL_MOVE_FILE ceiling shared by deferred allocation, evacuation
 /// and final placement: about two submissions per retained NTFS run for a
@@ -56,6 +61,8 @@ pub struct PrivateTree {
     metadata_object_limit: usize,
     metadata_resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     construction_enrollment: Option<serde_json::Value>,
+    // All tree-owned maps, handles and receipts drop before returning RAM.
+    memory: Option<memory::Owner>,
 }
 
 #[derive(Clone, Serialize)]
@@ -114,19 +121,22 @@ impl PrivateTree {
         offset: u64,
         bytes: &[u8],
         native_file_id: Vec<u8>,
-    ) {
+    ) -> io::Result<()> {
         let prefix = logical_length / 4096 * 4096;
         if prefix == 0 || prefix == logical_length || offset > prefix {
-            return;
+            return Ok(());
         }
         let Some(end) = offset.checked_add(bytes.len() as u64) else {
-            return;
+            return Ok(());
         };
         if end < logical_length {
-            return;
+            return Ok(());
         }
         let start = (prefix - offset) as usize;
         let stop = (logical_length - offset) as usize;
+        if let Some(memory) = &self.memory {
+            memory.tail(key)?;
+        }
         self.materialized_tails.insert(
             key.clone(),
             MaterializedTail {
@@ -142,6 +152,7 @@ impl PrivateTree {
                 source_prefix_contents_verified: false,
             },
         );
+        Ok(())
     }
 
     fn require_materialized_tail(
@@ -355,6 +366,19 @@ impl PrivateTree {
     pub fn placement_progress(&self) -> &serde_json::Value {
         &self.placement_progress
     }
+    /// Observe real allocation/storage readiness without reading scratch data.
+    /// This proves no source contents and grants no conversion authority.
+    pub fn observe_routed_prefix_named(
+        &self,
+        index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        prefix: u64,
+    ) -> io::Result<RoutedPrefixReady> {
+        routed_prefix::observe(self, index, name, components, logical_length, prefix)
+    }
+
     pub fn validate_stream_shape(
         &self,
         index: usize,
@@ -475,6 +499,51 @@ impl PrivateTree {
     }
     pub fn supply_plan(&self) -> io::Result<SupplyPlan> {
         supply::plan(self)
+    }
+    /// Recheck this actual constructor's immutable input identity once per
+    /// supply/verification phase; no deserialized plan grants this binding.
+    pub fn validate_input_domain(&self, input: &impl InputDomain) -> io::Result<()> {
+        self.require_source_excluded()?;
+        self.require_bound_input_domain(input)
+    }
+    /// Obtain a conservative pre-query bound from the actual retained stream.
+    /// This getter allocates nothing and grants no stream-validity authority.
+    pub fn supply_stream_workspace_bytes(
+        &self,
+        object_index: usize,
+        name: &[u16],
+    ) -> io::Result<u64> {
+        supply::workspace_bytes(self, object_index, name)
+    }
+
+    /// Observe one live private stream in logical order, including sparse holes.
+    /// No whole-tree plan or retained callback row collection is constructed.
+    pub fn visit_supply_stream_named(
+        &self,
+        object_index: usize,
+        name: &[u16],
+        components: &[String],
+        logical_length: u64,
+        visitor: impl FnMut(SupplyKind, &SupplyRange) -> io::Result<()>,
+    ) -> io::Result<StreamSupplySummary> {
+        self.validate_stream_shape_named(object_index, name, components, logical_length)?;
+        let summary = supply::stream(self, &StreamKey::named(object_index, name), visitor)?;
+        if summary.logical_bytes != logical_length {
+            return Err(invalid(
+                "live supply stream length differs from canonical input",
+            ));
+        }
+        self.validate_stream_shape_named(object_index, name, components, logical_length)?;
+        Ok(summary)
+    }
+    /// This flag is set only after the owning system-supply operation's native
+    /// readback. Serialized receipts cannot mark an incomplete phase complete.
+    pub fn require_system_payloads_complete(&self) -> io::Result<()> {
+        self.require_source_excluded()?;
+        if !self.system_payloads_complete {
+            return Err(invalid("actual owning system payload supply is incomplete"));
+        }
+        Ok(())
     }
     pub fn place_source_prefixes(&mut self, input: &[Input<'_>]) -> io::Result<serde_json::Value> {
         placement::run(
@@ -675,6 +744,11 @@ impl PrivateTree {
         offset: u64,
         bytes: &[u8],
     ) -> io::Result<serde_json::Value> {
+        let _working = self
+            .memory
+            .as_ref()
+            .map(|m| m.materialization(bytes.len(), 0))
+            .transpose()?;
         let key = StreamKey::named(object_index, name);
         self.require_source_excluded()?;
         let write_end = offset
@@ -688,6 +762,21 @@ impl PrivateTree {
             self.materialized_tails.remove(&key);
         }
         if let Some(target) = self.sparse_targets.get(&key) {
+            let _island_memory = self
+                .memory
+                .as_ref()
+                .map(|m| {
+                    let count = target
+                        .islands
+                        .len()
+                        .min(bytes.len().div_ceil(4096).saturating_add(2));
+                    m.working(
+                        (count as u64)
+                            .checked_mul(1024)
+                            .ok_or_else(|| invalid("private island RAM overflow"))?,
+                    )
+                })
+                .transpose()?;
             let end = offset
                 .checked_add(bytes.len() as u64)
                 .ok_or_else(|| invalid("sparse materialization range overflow"))?;
@@ -764,7 +853,7 @@ impl PrivateTree {
             let plain = !target.sparse_mode;
             self.require_source_excluded()?;
             if plain {
-                self.record_materialized_tail(&key, logical_length, offset, bytes, native_file_id);
+                self.record_materialized_tail(&key, logical_length, offset, bytes, native_file_id)?;
             }
             return Ok(
                 serde_json::json!({"object_index":object_index,"stream_name_utf16":name,
@@ -798,8 +887,14 @@ impl PrivateTree {
         let proof = file.initialize_at(offset, bytes)?;
         let native_file_id = info(file.metadata_handle(), 18, 24)?;
         self.require_source_excluded()?;
-        self.record_materialized_tail(&key, logical_length, offset, bytes, native_file_id);
+        self.record_materialized_tail(&key, logical_length, offset, bytes, native_file_id)?;
         Ok(proof)
+    }
+
+    /// Scoped to allocation containers and materialize_range calls. Placement,
+    /// enrollment and final metadata/system stages are not covered by this bit.
+    pub fn allocation_ram_accounted(&self) -> bool {
+        self.memory.is_some()
     }
 
     pub fn source_binding(&self) -> &GeneralDiskBinding {
@@ -1128,11 +1223,42 @@ pub fn allocate_enrolled_domain(
     allocate_domain(&pair, input, Some(enrollment), Some(profile))
 }
 
+/// Explicit V4 allocation accounting. Enrollment observation, placement and
+/// final metadata/system stages remain separate resource obligations.
+pub fn allocate_enrolled_domain_with_memory(
+    enrollment: ConstructionEnrollment<'_>,
+    input: &impl InputDomain,
+    profile: crate::attestation::ResourceProfile,
+    memory: Arc<dyn report_memory::ReportMemoryAccountant>,
+) -> io::Result<PrivateTree> {
+    let admission = profile
+        .resource_admission()?
+        .ok_or_else(|| invalid("accounted private allocation requires actual V4 admission"))?;
+    let owner = memory::Owner::new(
+        memory,
+        input.len(),
+        usize::try_from(admission.data_streams).map_err(io::Error::other)?,
+        admission.budget.max_row_bytes,
+    )?;
+    let pair = enrollment.pair.clone();
+    allocate_domain_with_memory(&pair, input, Some(enrollment), Some(profile), Some(owner))
+}
+
 fn allocate_domain(
     pair: &GeneralSourceShadowBinding,
     input: &impl InputDomain,
     enrollment: Option<ConstructionEnrollment<'_>>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<PrivateTree> {
+    allocate_domain_with_memory(pair, input, enrollment, resource_profile, None)
+}
+
+fn allocate_domain_with_memory(
+    pair: &GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    enrollment: Option<ConstructionEnrollment<'_>>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: Option<memory::Owner>,
 ) -> io::Result<PrivateTree> {
     let admission = resource_profile
         .map(crate::attestation::ResourceProfile::count_admission)
@@ -1160,6 +1286,19 @@ fn allocate_domain(
         .map(|value| usize::try_from(value.data_streams).map_err(io::Error::other))
         .transpose()?
         .unwrap_or(streams::MAX_STREAMS);
+    if memory.is_some() && resource_admission.is_none() {
+        return Err(invalid(
+            "accounted private allocation requires actual V4 admission",
+        ));
+    }
+    let preflight_plan = memory
+        .as_ref()
+        .map(|_| super::domain_memory::input_plan(input))
+        .transpose()?;
+    let preflight_ram = match (&memory, &preflight_plan) {
+        (Some(memory), Some(plan)) => Some(memory.working(plan.preflight_bytes)?),
+        _ => None,
+    };
     if input.is_empty() || input.len() > maximum_objects {
         return Err(invalid("private tree root or object bound differs"));
     }
@@ -1280,6 +1419,9 @@ fn allocate_domain(
     {
         return Err(invalid("private tree geometry or object budget exceeded"));
     }
+    drop(names);
+    drop(directories);
+    drop(preflight_ram);
     let mut events = Vec::new();
     let source_before =
         native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
@@ -1415,13 +1557,36 @@ fn allocate_domain(
             metadata_targets.insert(index, handle);
         }
     }
-    let mut objects = Vec::with_capacity(input.len());
+    let global_query_memory = memory
+        .as_ref()
+        .map(|m| {
+            m.close_global_queries(
+                pair,
+                &source_before,
+                &events,
+                &system_identities,
+                &construction_enrollment,
+                &carrier_directory,
+            )
+        })
+        .transpose()?;
+    let mut objects = Vec::new();
+    objects
+        .try_reserve_exact(input.len())
+        .map_err(io::Error::other)?;
+    if memory.is_some() && objects.capacity() > input.len().saturating_mul(2) {
+        return Err(invalid("private object Vec exceeded prepaid capacity"));
+    }
     // Reuse a private file's atomic descriptor to create private directories.
     // Its descriptor is constant rather than derived from source ACLs.
     let sd = private_descriptor()?;
     for index in 0..input.len() {
         let owner = input.object(index)?;
         let item = owner.input();
+        let row_memory = memory
+            .as_ref()
+            .map(|m| m.row_peak(&item).and_then(|n| m.working(n)))
+            .transpose()?;
         let system = item
             .components
             .first()
@@ -1431,6 +1596,18 @@ fn allocate_domain(
                 serde_json::json!({"object_index":index,"components":item.components,
                 "disposition":"pending-system-or-root-metadata"}),
             );
+            if let (Some(memory), Some(guard)) = (&memory, row_memory) {
+                memory.retain(
+                    guard,
+                    memory::object_bytes(
+                        index,
+                        &objects,
+                        &files,
+                        &sparse_targets,
+                        &metadata_targets,
+                    )?,
+                )?;
+            }
             continue;
         }
         if item.directory {
@@ -1557,6 +1734,12 @@ fn allocate_domain(
             "source_security_sha256":hex::encode(Sha256::digest(item.security)),
             "source_metadata_restoration_pending":true,"payload_supply_pending":!item.directory}),
         );
+        if let (Some(memory), Some(guard)) = (&memory, row_memory) {
+            memory.retain(
+                guard,
+                memory::object_bytes(index, &objects, &files, &sparse_targets, &metadata_targets)?,
+            )?;
+        }
     }
     volume.sync_all()?;
     let mut stream_slots = BTreeMap::new();
@@ -1569,8 +1752,19 @@ fn allocate_domain(
             next += 1;
             n
         };
+        let slot_memory = memory
+            .as_ref()
+            .map(|m| memory::slot_bytes(key).and_then(|n| m.working(n)))
+            .transpose()?;
         stream_slots.insert(slot, key.clone());
+        if let (Some(memory), Some(guard)) = (&memory, slot_memory) {
+            memory.retain(guard, memory::slot_bytes(key)?)?;
+        }
     }
+    let metadata_input_sha256 = {
+        let _digest_memory = memory.as_ref().map(|m| m.metadata_digest()).transpose()?;
+        metadata::input_digest_domain(input)?
+    };
     let tree = PrivateTree {
         files,
         stream_slots,
@@ -1592,12 +1786,22 @@ fn allocate_domain(
         system_payloads_started: false,
         system_payloads_complete: false,
         metadata_targets,
-        metadata_input_sha256: metadata::input_digest_domain(input)?,
+        metadata_input_sha256,
         metadata_object_limit: maximum_objects,
         metadata_resource_admission: resource_admission,
         construction_enrollment,
+        memory,
     };
+    if let Some(memory) = &tree.memory {
+        memory.close_base(&tree)?;
+    }
     tree.require_source_excluded()?;
+    // All global temporary buffers finish before their query lease is freed.
+    drop(initial);
+    drop(root_name);
+    drop(root);
+    drop(sd);
+    drop(global_query_memory);
     Ok(tree)
 }
 

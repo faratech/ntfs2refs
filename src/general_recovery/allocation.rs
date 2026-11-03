@@ -12,6 +12,138 @@ use protocol::selected_artifacts::Artifact;
 use protocol::selected_native_journal::NativeSelectedJournal;
 use serde::Deserialize;
 use std::path::Component;
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    os::windows::fs::OpenOptionsExt,
+    time::SystemTime,
+};
+
+struct ResourceExpectationPin {
+    file: File,
+    snapshot: n2r_win32::reference_file::ReferenceFileSnapshot,
+    modified: SystemTime,
+    sha256: String,
+    maximum: u64,
+}
+impl ResourceExpectationPin {
+    fn open(path: &Path, sha256: &str, maximum: u64) -> Result<Self> {
+        ensure!(
+            sha256.len() == 64
+                && sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "canonical resource expectation pin required"
+        );
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        let snapshot =
+            n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;
+        ensure!(
+            snapshot.file_bytes > 0 && snapshot.number_of_links == 1,
+            "resource expectation must be an ordinary singly linked file"
+        );
+        let modified = file.metadata()?.modified()?;
+        let mut held = Self {
+            file,
+            snapshot,
+            modified,
+            sha256: sha256.into(),
+            maximum,
+        };
+        held.revalidate()?;
+        Ok(held)
+    }
+    fn revalidate(&mut self) -> Result<()> {
+        ensure!(
+            n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                &self.file,
+                self.maximum
+            )? == self.snapshot
+                && self.file.metadata()?.modified()? == self.modified,
+            "resource expectation identity/metadata changed"
+        );
+        let sha = hex::encode(n2r_win32::sha256_native::hash_range(
+            &mut self.file,
+            0,
+            self.snapshot.file_bytes,
+        )?);
+        ensure!(
+            sha == self.sha256
+                && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                    &self.file,
+                    self.maximum
+                )? == self.snapshot
+                && self.file.metadata()?.modified()? == self.modified,
+            "resource expectation bytes changed"
+        );
+        Ok(())
+    }
+    fn copy_to(&mut self, path: &Path) -> Result<()> {
+        self.revalidate()?;
+        let mut destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(0)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        self.file.seek(SeekFrom::Start(0))?;
+        let copied = std::io::copy(
+            &mut (&mut self.file).take(self.snapshot.file_bytes),
+            &mut destination,
+        )?;
+        ensure!(
+            copied == self.snapshot.file_bytes,
+            "resource expectation copy length differs"
+        );
+        destination.flush()?;
+        destination.sync_all()?;
+        drop(destination);
+        let mut copied = Self::open(path, &self.sha256, self.maximum)?;
+        copied.revalidate()?;
+        self.revalidate()
+    }
+}
+enum ExpectationInput {
+    Legacy(HeldInput),
+    Resource(ResourceExpectationPin),
+}
+impl ExpectationInput {
+    fn bytes(&self) -> Result<&[u8]> {
+        match self {
+            Self::Legacy(h) => Ok(&h.bytes),
+            Self::Resource(_) => {
+                anyhow::bail!("resource expectation must not be rehydrated as inline JSON")
+            }
+        }
+    }
+    fn snapshot(&self) -> &n2r_win32::reference_file::ReferenceFileSnapshot {
+        match self {
+            Self::Legacy(h) => &h.snapshot,
+            Self::Resource(h) => &h.snapshot,
+        }
+    }
+    fn revalidate(&mut self) -> Result<()> {
+        match self {
+            Self::Legacy(h) => h.revalidate(),
+            Self::Resource(h) => h.revalidate(),
+        }
+    }
+    fn release_bytes(&mut self) {
+        if let Self::Legacy(h) = self {
+            h.release_bytes();
+        }
+    }
+    fn copy_resource_to(&mut self, path: &Path) -> Result<()> {
+        match self {
+            Self::Legacy(_) => Ok(()),
+            Self::Resource(h) => h.copy_to(path),
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -173,6 +305,10 @@ fn recover_allocation_inner(
         .source_resource_profile
         .unwrap_or_default()
         .count_admission()?;
+    request
+        .source_resource_profile
+        .unwrap_or_default()
+        .resource_admission()?;
     ensure!(
         request.pair.source == bundle.source,
         "bundle source differs from its pinned request"
@@ -240,43 +376,63 @@ fn recover_allocation_inner(
             && !ticket.whole_image_verified,
         "allocation recovery ticket, plan and request differ"
     );
-    let mut expectation_input = HeldInput::open(
-        &bundle.expectation.path,
-        &bundle.expectation.sha256,
-        Artifact::Expectation.maximum_bytes() as u64,
-    )?;
     let resources = request.source_resource_profile.unwrap_or_default();
+    let resource_admission = resources.resource_admission()?;
     let paged_admission = resources
         .count_admission()?
         .filter(|a| a.requires_paged_metadata());
+    let mut expectation_input = if let Some(admission) = resource_admission {
+        ExpectationInput::Resource(ResourceExpectationPin::open(
+            &bundle.expectation.path,
+            &bundle.expectation.sha256,
+            admission.semantic_byte_budget(),
+        )?)
+    } else {
+        ExpectationInput::Legacy(HeldInput::open(
+            &bundle.expectation.path,
+            &bundle.expectation.sha256,
+            Artifact::Expectation.maximum_bytes() as u64,
+        )?)
+    };
     ensure!(
-        bundle.expectation_pages.is_some() == paged_admission.is_some(),
-        "expected-object page ownership must match the admitted resource descriptor"
+        bundle.expectation_pages.is_some()
+            == (paged_admission.is_some() || resource_admission.is_some()),
+        "expected-object page ownership must match admitted resources"
     );
-    let expectation_pages = if let Some(admission) = paged_admission {
+    let expectation_pages = if let Some(admission) = resource_admission {
+        let pin = bundle
+            .expectation_pages
+            .as_ref()
+            .context("resource expectation page pin absent")?;
+        Some(crate::shadow_tree::PagedExpectedTree::open_with_resources(
+            &pin.path,
+            &pin.sha256,
+            &bundle.expectation.sha256,
+            admission,
+        )?)
+    } else if let Some(admission) = paged_admission {
         let pin = bundle
             .expectation_pages
             .as_ref()
             .context("paged expectation pin absent")?;
         ensure!(
-            expectation_input.bytes.len() as u64
+            expectation_input.bytes()?.len() as u64
                 <= u64::from(admission.maximum_expected_tree_bytes),
-            "legacy expectation bytes exceed admitted semantic resource budget"
+            "legacy expectation bytes exceed admitted semantic budget"
         );
-        let pages = crate::shadow_tree::PagedExpectedTree::open_with_limits(
+        Some(crate::shadow_tree::PagedExpectedTree::open_with_limits(
             &pin.path,
             &pin.sha256,
             &bundle.expectation.sha256,
             admission.expected_page_budget()?,
             u64::from(admission.maximum_expected_tree_bytes),
-        )?;
-        Some(pages)
+        )?)
     } else {
         None
     };
     let inline_expectation = if expectation_pages.is_none() {
         Some(serde_json::from_slice::<crate::shadow_tree::ExpectedTree>(
-            &expectation_input.bytes,
+            expectation_input.bytes()?,
         )?)
     } else {
         None
@@ -315,7 +471,7 @@ fn recover_allocation_inner(
             )
         } else {
             ensure!(
-                paged_admission.is_none(),
+                paged_admission.is_none() && resource_admission.is_none(),
                 "admitted paged resources require a paged recovery map manifest"
             );
             let held = HeldInput::open(
@@ -350,7 +506,6 @@ fn recover_allocation_inner(
         &request_input,
         &plan_input,
         &ticket_input,
-        &expectation_input,
         &verification_input,
     ]
     .into_iter()
@@ -367,6 +522,17 @@ fn recover_allocation_inner(
             );
         }
     }
+    for binding in [&request.pair.source, &request.pair.shadow] {
+        ensure!(
+            !expectation_input
+                .snapshot()
+                .final_path
+                .to_ascii_lowercase()
+                .starts_with(&(binding.volume_path()?.to_ascii_lowercase() + "\\")),
+            "resource/legacy expectation must be outside both data volumes"
+        );
+    }
+    expectation_input.revalidate()?;
     if let Some(pages) = &expectation_pages {
         let path = pages.final_path();
         for binding in [&request.pair.source, &request.pair.shadow] {
@@ -440,6 +606,7 @@ fn recover_allocation_inner(
     if let Some(pages) = &expectation_pages {
         pages.copy_to(&output.join("expectation.pages"))?;
     }
+    expectation_input.copy_resource_to(&output.join("expectation.json"))?;
     // Parsed facts own their storage and all required original-byte copies are
     // complete. Keep the exact handles and pins through every later recheck.
     for held in [
@@ -447,7 +614,6 @@ fn recover_allocation_inner(
         &mut request_input,
         &mut plan_input,
         &mut ticket_input,
-        &mut expectation_input,
         &mut verification_input,
     ]
     .into_iter()
@@ -455,6 +621,7 @@ fn recover_allocation_inner(
     {
         held.release_bytes();
     }
+    expectation_input.release_bytes();
     artifacts::save(
         output,
         "intent.json",
@@ -539,7 +706,6 @@ fn recover_allocation_inner(
             &mut request_input,
             &mut plan_input,
             &mut ticket_input,
-            &mut expectation_input,
             &mut verification_input,
         ]
         .into_iter()
@@ -547,6 +713,7 @@ fn recover_allocation_inner(
         {
             held.revalidate()?;
         }
+        expectation_input.revalidate()?;
         expectation.revalidate_domain()?;
         if let Some(proof) = &recovery_payload_proof {
             proof.revalidate_paged_manifest()?;
@@ -683,7 +850,6 @@ fn recover_allocation_inner(
             &mut request_input,
             &mut plan_input,
             &mut ticket_input,
-            &mut expectation_input,
             &mut verification_input,
         ]
         .into_iter()
@@ -691,6 +857,7 @@ fn recover_allocation_inner(
         {
             held.revalidate()?;
         }
+        expectation_input.revalidate()?;
         expectation.revalidate_domain()?;
         if let Some(proof) = &recovery_payload_proof {
             proof.revalidate_paged_manifest()?;

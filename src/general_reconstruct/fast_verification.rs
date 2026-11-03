@@ -1,5 +1,6 @@
 //! Fresh conversion evidence and separately authenticated, read-only recovery
 //! map facts. Deserializing facts never recreates source or write admission.
+pub(crate) mod v4_maps;
 use super::*;
 use crate::{
     general_composite_target::FrozenAllocationTargetPreservation,
@@ -11,8 +12,9 @@ use anyhow::{Context, ensure};
 use n2r_win32::{attestation::Snapshot, metadata_pages, shadow_native::Report};
 use serde_json::Value;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
+    io::{self, Read, Write},
     path::Path,
     sync::Arc,
 };
@@ -34,6 +36,7 @@ pub(crate) struct FreshPayloadProof {
     tail_extent_streams: usize,
     tail_payload_bytes_verified: u64,
     map_page_budget: metadata_pages::PageBudget,
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +121,9 @@ pub(crate) const PAGED_MAP_FILENAME: &str = "recovery-payload-manifest.pages";
 fn map_page_budget(
     resources: crate::ntfs_admission::ResourceProfile,
 ) -> Result<metadata_pages::PageBudget> {
+    if let Some(admission) = resources.resource_admission()? {
+        return Ok(admission.map_page_budget()?);
+    }
     if let Some(admission) = resources
         .count_admission()?
         .filter(|a| a.requires_paged_metadata())
@@ -153,6 +159,8 @@ struct MapManifestHeader {
     bindings_count: u64,
     grants_write_authority: bool,
     initial_retained_content_digests_available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
 #[derive(Serialize)]
@@ -271,9 +279,18 @@ struct PagedStreamMapRef<'a> {
 }
 impl<'a> PagedStreamMapRef<'a> {
     fn new(map: StreamMapRef<'a>) -> Result<Self> {
+        Self::with_resources(map, None)
+    }
+    fn with_resources(
+        map: StreamMapRef<'a>,
+        resources: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    ) -> Result<Self> {
+        let maximum = resources.map_or(
+            n2r_win32::stream_layout::COMPLETE_RETRIEVAL_CAPACITY as u64,
+            |a| a.budget.max_row_bytes,
+        );
         ensure!(
-            map.retrieval.len() <= n2r_win32::stream_layout::COMPLETE_RETRIEVAL_CAPACITY
-                && map.integrity.len() <= 16,
+            map.retrieval.len() as u64 <= maximum && map.integrity.len() <= 16,
             "native map wire field exceeds complete bound"
         );
         if let Some(sparse) = map.sparse {
@@ -282,7 +299,12 @@ impl<'a> PagedStreamMapRef<'a> {
                     .allocated
                     .len()
                     .checked_add(sparse.holes.len())
-                    .is_some_and(|n| n <= n2r_win32::sparse_layout::MAX_LAYOUT_RANGES),
+                    .is_some_and(|n| n
+                        <= resources.map_or(n2r_win32::sparse_layout::MAX_LAYOUT_RANGES, |a| (a
+                            .budget
+                            .max_row_bytes
+                            / 16)
+                            as usize)),
                 "native sparse map wire exceeds complete bound"
             );
         }
@@ -327,7 +349,18 @@ struct PagedMapEntry {
     map: PagedStreamMap,
 }
 fn decode_ranges(value: &str) -> Result<Vec<n2r_win32::sparse_layout::LogicalRange>> {
-    let bytes = decode_base64(value, n2r_win32::sparse_layout::MAX_LAYOUT_RANGES * 16)?;
+    decode_ranges_with_limit(value, n2r_win32::sparse_layout::MAX_LAYOUT_RANGES)
+}
+fn decode_ranges_with_limit(
+    value: &str,
+    maximum_ranges: usize,
+) -> Result<Vec<n2r_win32::sparse_layout::LogicalRange>> {
+    let bytes = decode_base64(
+        value,
+        maximum_ranges
+            .checked_mul(16)
+            .context("sparse range budget overflow")?,
+    )?;
     ensure!(
         bytes.len().is_multiple_of(16),
         "packed sparse map length differs"
@@ -347,17 +380,39 @@ fn decode_ranges(value: &str) -> Result<Vec<n2r_win32::sparse_layout::LogicalRan
 impl PagedMapEntry {
     fn decode(bytes: &[u8]) -> Result<MapEntry> {
         let entry: Self = serde_json::from_slice(bytes)?;
+        entry.into_entry(None)
+    }
+    fn into_entry(
+        self,
+        resources: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    ) -> Result<MapEntry> {
+        let entry = self;
+        let maximum = resources
+            .map(|a| usize::try_from(a.budget.max_row_bytes))
+            .transpose()?
+            .unwrap_or(n2r_win32::stream_layout::COMPLETE_RETRIEVAL_CAPACITY);
+        let maximum_ranges = resources.map_or(n2r_win32::sparse_layout::MAX_LAYOUT_RANGES, |_| {
+            maximum / 16
+        });
         let map = entry.map;
         let sparse = map
             .sparse
             .map(|s| -> Result<_> {
-                let allocated = decode_ranges(&s.allocated)?;
-                let holes = decode_ranges(&s.holes)?;
+                let allocated = if resources.is_some() {
+                    decode_ranges_with_limit(&s.allocated, maximum_ranges)?
+                } else {
+                    decode_ranges(&s.allocated)?
+                };
+                let holes = if resources.is_some() {
+                    decode_ranges_with_limit(&s.holes, maximum_ranges)?
+                } else {
+                    decode_ranges(&s.holes)?
+                };
                 ensure!(
                     allocated
                         .len()
                         .checked_add(holes.len())
-                        .is_some_and(|n| n <= n2r_win32::sparse_layout::MAX_LAYOUT_RANGES),
+                        .is_some_and(|n| n <= maximum_ranges),
                     "decoded sparse map exceeds combined native bound"
                 );
                 Ok(n2r_win32::sparse_layout::SparseLayout {
@@ -373,10 +428,7 @@ impl PagedMapEntry {
             map: StreamMap {
                 file_id: map.file_id,
                 standard: map.standard,
-                retrieval: decode_base64(
-                    &map.retrieval,
-                    n2r_win32::stream_layout::COMPLETE_RETRIEVAL_CAPACITY,
-                )?,
+                retrieval: decode_base64(&map.retrieval, maximum)?,
                 complete_page_proof: map.complete_page_proof,
                 resident: map.resident,
                 sparse,
@@ -436,9 +488,465 @@ fn record_json(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn chunk_key(base: &[u8], ordinal: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(base.len() + 8);
+    key.extend_from_slice(base);
+    key.extend_from_slice(&ordinal.to_be_bytes());
+    key
+}
+fn chunk_capacity(budget: metadata_pages::PageBudget, key_bytes: usize) -> Result<usize> {
+    let available = (budget.max_page_bytes as usize)
+        .checked_sub(64 + 8 + key_bytes + 8 + 2)
+        .context("map key leaves no page chunk space")?;
+    let bytes = available / 4 * 3;
+    ensure!(bytes > 0, "map key leaves no page chunk space");
+    Ok(bytes)
+}
+fn row_size(value: &impl Serialize, maximum: u64) -> Result<u64> {
+    struct Count {
+        used: u64,
+        maximum: u64,
+    }
+    impl Write for Count {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            self.used = self
+                .used
+                .checked_add(b.len() as u64)
+                .filter(|n| *n <= self.maximum)
+                .ok_or_else(|| io::Error::other("map row encoding exceeds admitted budget"))?;
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count { used: 0, maximum };
+    serde_json::to_writer(&mut count, value)?;
+    Ok(count.used)
+}
+#[derive(Clone, Copy)]
+enum MapMemoryKind {
+    Entry,
+    Map,
+    Sparse,
+    Standard,
+    Path,
+    Name,
+    Fixed,
+    Text,
+    Blob,
+    RangeBlob,
+    Scalar,
+}
+#[derive(Clone, Copy)]
+struct MapMemory<'a> {
+    kind: MapMemoryKind,
+    used: &'a Cell<u64>,
+    maximum: u64,
+}
+impl MapMemory<'_> {
+    fn charge<E: serde::de::Error>(&self, n: u64) -> std::result::Result<(), E> {
+        self.used.set(
+            self.used
+                .get()
+                .checked_add(n)
+                .filter(|n| *n <= self.maximum)
+                .ok_or_else(|| {
+                    E::custom("map encoded/decoded allocation exceeds resource row budget")
+                })?,
+        );
+        Ok(())
+    }
+    fn text<E: serde::de::Error>(&self, length: u64) -> std::result::Result<(), E> {
+        let string = length
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(8))
+            .ok_or_else(|| E::custom("map string allocation overflow"))?;
+        self.charge(string)?;
+        let decoded = length
+            .checked_div(4)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or_else(|| E::custom("map decoded length overflow"))?;
+        match self.kind {
+            MapMemoryKind::Blob => self.charge(decoded),
+            MapMemoryKind::RangeBlob => self.charge(
+                decoded
+                    .checked_mul(2)
+                    .ok_or_else(|| E::custom("map range allocation overflow"))?,
+            ),
+            _ => Ok(()),
+        }
+    }
+    fn vector<E: serde::de::Error>(&self, count: u64, size: usize) -> std::result::Result<(), E> {
+        if count == 0 || size == 0 {
+            return Ok(());
+        }
+        let capacity = count
+            .checked_next_power_of_two()
+            .map(|n| n.max(8))
+            .ok_or_else(|| E::custom("map vector capacity overflow"))?;
+        self.charge(
+            capacity
+                .checked_mul(size as u64)
+                .ok_or_else(|| E::custom("map vector allocation overflow"))?,
+        )
+    }
+    fn field(self, name: &str) -> Option<MapMemoryKind> {
+        use MapMemoryKind::*;
+        Some(match (self.kind, name) {
+            (Entry, "components") => Path,
+            (Entry, "name_utf16") => Name,
+            (Entry, "map") => Map,
+            (Map, "file_id") => Fixed,
+            (Map, "standard") => Standard,
+            (Map, "retrieval" | "integrity") => Blob,
+            (Map, "complete_page_proof" | "resident") => Scalar,
+            (Map, "sparse") => Sparse,
+            (Sparse, "initialized_length") => Scalar,
+            (Sparse, "allocated" | "holes") => RangeBlob,
+            (Standard, "data" | "directory_links_and_type") => Fixed,
+            _ => return None,
+        })
+    }
+}
+impl<'de> serde::de::DeserializeSeed<'de> for MapMemory<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        decoder: D,
+    ) -> std::result::Result<(), D::Error> {
+        decoder.deserialize_any(self)
+    }
+}
+impl<'de> serde::de::Visitor<'de> for MapMemory<'_> {
+    type Value = ();
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("bounded typed recovery map row")
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<(), E> {
+        self.charge(0)
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> std::result::Result<(), E> {
+        self.charge(0)
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> std::result::Result<(), E> {
+        self.charge(0)
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> std::result::Result<(), E> {
+        self.charge(0)
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<(), E> {
+        self.charge(0)
+    }
+    fn visit_str<E: serde::de::Error>(self, text: &str) -> std::result::Result<(), E> {
+        if matches!(
+            self.kind,
+            MapMemoryKind::Text | MapMemoryKind::Blob | MapMemoryKind::RangeBlob
+        ) {
+            self.text(text.len() as u64)
+        } else {
+            self.charge(0)
+        }
+    }
+    fn visit_string<E: serde::de::Error>(self, text: String) -> std::result::Result<(), E> {
+        self.visit_str(&text)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<(), A::Error> {
+        use MapMemoryKind::*;
+        let (kind, size) = match self.kind {
+            Path => (Text, std::mem::size_of::<String>()),
+            Name => (Scalar, 2),
+            Fixed => (Scalar, 0),
+            _ => {
+                return Err(<A::Error as serde::de::Error>::custom(
+                    "unexpected map allocation sequence",
+                ));
+            }
+        };
+        let mut count = 0u64;
+        while seq
+            .next_element_seed(MapMemory {
+                kind,
+                used: self.used,
+                maximum: self.maximum,
+            })?
+            .is_some()
+        {
+            count = count.checked_add(1).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom("map vector count overflow")
+            })?;
+        }
+        self.vector(count, size)
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<(), A::Error> {
+        while let Some(field) = map.next_key::<String>()? {
+            let kind = self
+                .field(&field)
+                .ok_or_else(|| <A::Error as serde::de::Error>::custom("unknown typed map field"))?;
+            map.next_value_seed(MapMemory {
+                kind,
+                used: self.used,
+                maximum: self.maximum,
+            })?;
+        }
+        self.charge(0)
+    }
+}
+fn initial_row_memory(bytes: u64, maximum: u64) -> Result<Cell<u64>> {
+    let used = bytes
+        .checked_add(std::mem::size_of::<PagedMapEntry>() as u64)
+        .and_then(|n| n.checked_add(std::mem::size_of::<MapEntry>() as u64))
+        .filter(|n| *n <= maximum)
+        .context("map row base allocation exceeds resource budget")?;
+    Ok(Cell::new(used))
+}
+fn validate_borrowed_row_memory(entry: &MapEntryRef<'_>, bytes: u64, maximum: u64) -> Result<()> {
+    let used = initial_row_memory(bytes, maximum)?;
+    let charge = MapMemory {
+        kind: MapMemoryKind::Entry,
+        used: &used,
+        maximum,
+    };
+    charge.vector::<serde_json::Error>(
+        entry.components.len() as u64,
+        std::mem::size_of::<String>(),
+    )?;
+    charge.vector::<serde_json::Error>(entry.name_utf16.len() as u64, 2)?;
+    for component in entry.components {
+        MapMemory {
+            kind: MapMemoryKind::Text,
+            ..charge
+        }
+        .text::<serde_json::Error>(component.len() as u64)?;
+    }
+    let encoded = |bytes: usize| -> Result<u64> {
+        (bytes as u64)
+            .checked_add(2)
+            .and_then(|n| n.checked_div(3))
+            .and_then(|n| n.checked_mul(4))
+            .context("map wire length overflow")
+    };
+    for blob in [entry.map.retrieval.0, entry.map.integrity.0] {
+        MapMemory {
+            kind: MapMemoryKind::Blob,
+            ..charge
+        }
+        .text::<serde_json::Error>(encoded(blob.len())?)?;
+    }
+    if let Some(sparse) = &entry.map.sparse {
+        for ranges in [sparse.allocated.0, sparse.holes.0] {
+            let bytes = ranges
+                .len()
+                .checked_mul(16)
+                .context("map sparse wire length overflow")?;
+            MapMemory {
+                kind: MapMemoryKind::RangeBlob,
+                ..charge
+            }
+            .text::<serde_json::Error>(encoded(bytes)?)?;
+        }
+    }
+    Ok(())
+}
+struct MapChunkWriter<'a> {
+    writer: &'a mut metadata_pages::Writer,
+    key: &'a [u8],
+    maximum: usize,
+    limit: u64,
+    buffer: Vec<u8>,
+    chunks: u64,
+    bytes: u64,
+}
+impl MapChunkWriter<'_> {
+    fn emit(&mut self) -> io::Result<()> {
+        let encoded = serde_json::to_vec(&Base64Bytes(&self.buffer)).map_err(io::Error::other)?;
+        self.writer
+            .push(&chunk_key(self.key, self.chunks), &encoded)?;
+        self.chunks = self
+            .chunks
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("map chunk count overflow"))?;
+        self.buffer.clear();
+        Ok(())
+    }
+}
+impl Write for MapChunkWriter<'_> {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        let length = bytes.len();
+        self.bytes = self
+            .bytes
+            .checked_add(length as u64)
+            .filter(|n| *n <= self.limit)
+            .ok_or_else(|| io::Error::other("map row exceeds admitted resource budget"))?;
+        while !bytes.is_empty() {
+            let n = bytes.len().min(self.maximum - self.buffer.len());
+            self.buffer.extend_from_slice(&bytes[..n]);
+            bytes = &bytes[n..];
+            if self.buffer.len() == self.maximum {
+                self.emit()?;
+            }
+        }
+        Ok(length)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+struct MapChunkReader<'a> {
+    reader: &'a mut metadata_pages::Reader,
+    key: &'a [u8],
+    row: MapRowLocation,
+    maximum: usize,
+    next: u64,
+    loaded: u64,
+    buffer: Vec<u8>,
+    position: usize,
+}
+impl Read for MapChunkReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        while self.position == self.buffer.len() {
+            if self.next == self.row.chunks {
+                if self.loaded != self.row.bytes {
+                    return Err(io::Error::other("complete map chunk bytes differ"));
+                }
+                return Ok(0);
+            }
+            let record = self.reader.get(self.row.first + self.next)?;
+            if record.key != chunk_key(self.key, self.next) {
+                return Err(io::Error::other("map chunk key differs"));
+            }
+            let text: &str = serde_json::from_slice(&record.payload).map_err(io::Error::other)?;
+            self.buffer = decode_base64(text, self.maximum).map_err(io::Error::other)?;
+            self.loaded = self
+                .loaded
+                .checked_add(self.buffer.len() as u64)
+                .filter(|n| *n <= self.row.bytes)
+                .ok_or_else(|| io::Error::other("map chunk bytes overflow"))?;
+            self.next += 1;
+            self.position = 0;
+        }
+        let n = out.len().min(self.buffer.len() - self.position);
+        out[..n].copy_from_slice(&self.buffer[self.position..self.position + n]);
+        self.position += n;
+        Ok(n)
+    }
+}
+fn read_map_row(
+    reader: &mut metadata_pages::Reader,
+    key: &[u8],
+    row: MapRowLocation,
+    admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+) -> Result<MapEntry> {
+    if let Some(admission) = admission {
+        ensure!(
+            row.bytes <= admission.budget.max_row_bytes,
+            "map row exceeds resource budget"
+        );
+        let maximum = chunk_capacity(admission.map_page_budget()?, key.len())?;
+        {
+            let input = MapChunkReader {
+                reader: &mut *reader,
+                key,
+                row,
+                maximum,
+                next: 0,
+                loaded: 0,
+                buffer: Vec::new(),
+                position: 0,
+            };
+            let used = initial_row_memory(row.bytes, admission.budget.max_row_bytes)?;
+            let mut decoder = serde_json::Deserializer::from_reader(input);
+            serde::de::DeserializeSeed::deserialize(
+                MapMemory {
+                    kind: MapMemoryKind::Entry,
+                    used: &used,
+                    maximum: admission.budget.max_row_bytes,
+                },
+                &mut decoder,
+            )?;
+            decoder.end()?;
+        }
+        let input = MapChunkReader {
+            reader: &mut *reader,
+            key,
+            row,
+            maximum,
+            next: 0,
+            loaded: 0,
+            buffer: Vec::new(),
+            position: 0,
+        };
+        let mut decoder = serde_json::Deserializer::from_reader(input);
+        let entry = PagedMapEntry::deserialize(&mut decoder)?;
+        decoder.end()?;
+        let entry = entry.into_entry(Some(admission))?;
+        check_decoded_map_memory(&entry, row.bytes, admission.budget.max_row_bytes)?;
+        Ok(entry)
+    } else {
+        let record = reader.get(row.first)?;
+        ensure!(record.key == key, "held map record key changed");
+        PagedMapEntry::decode(&record.payload)
+    }
+}
+fn check_decoded_map_memory(entry: &MapEntry, compact: u64, maximum: u64) -> Result<()> {
+    let mut used = compact
+        .checked_add(std::mem::size_of::<MapEntry>() as u64)
+        .context("decoded map base allocation overflow")?;
+    let mut charge = |bytes: usize| -> Result<()> {
+        used = used
+            .checked_add(bytes as u64)
+            .filter(|n| *n <= maximum)
+            .context("actual decoded map exceeds resource budget")?;
+        Ok(())
+    };
+    charge(
+        entry
+            .components
+            .capacity()
+            .checked_mul(std::mem::size_of::<String>())
+            .context("map path allocation overflow")?,
+    )?;
+    for component in &entry.components {
+        charge(component.capacity())?;
+    }
+    charge(
+        entry
+            .name_utf16
+            .capacity()
+            .checked_mul(2)
+            .context("map stream name allocation overflow")?,
+    )?;
+    charge(entry.map.retrieval.capacity())?;
+    charge(entry.map.integrity.capacity())?;
+    if let Some(sparse) = &entry.map.sparse {
+        charge(
+            sparse
+                .allocated
+                .capacity()
+                .checked_add(sparse.holes.capacity())
+                .and_then(|n| {
+                    n.checked_mul(std::mem::size_of::<n2r_win32::sparse_layout::LogicalRange>())
+                })
+                .context("map sparse allocation overflow")?,
+        )?;
+    }
+    Ok(())
+}
+
 /// Only scalar facts are needed after parsing and checking the complete pinned
 /// manifest. Its binding buffers move into the proof's sole canonical map.
 struct RecoveryPayloadHeader {
+    schema_version: u32,
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
     source: n2r_win32::general_layout::GeneralDiskBinding,
     expected_tree_sha256: String,
     plan_sha256: String,
@@ -453,8 +961,15 @@ enum RecoveryMaps {
     Legacy(StreamMaps),
     Paged {
         reader: RefCell<metadata_pages::Reader>,
-        index: Vec<(StreamKey, u64)>,
+        index: Vec<(Vec<u8>, MapRowLocation)>,
+        resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
     },
+}
+#[derive(Clone, Copy)]
+struct MapRowLocation {
+    first: u64,
+    chunks: u64,
+    bytes: u64,
 }
 
 impl RecoveryMaps {
@@ -597,6 +1112,78 @@ fn maps(report: &Report) -> Result<Vec<StreamLocation>> {
     }
     Ok(maps.into_values().collect())
 }
+fn maps_with_resources(
+    report: &Report,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<Vec<StreamLocation>> {
+    admission.validate()?;
+    ensure!(
+        report.resource_profile
+            == Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(
+                Some(admission)
+            )),
+        "native map owner resource admission differs"
+    );
+    let count = report.objects.iter().try_fold(0usize, |n, o| {
+        n.checked_add(1)
+            .and_then(|n| n.checked_add(o.named_streams.len()))
+            .context("native map count overflow")
+    })?;
+    ensure!(
+        count as u64
+            == admission
+                .directories
+                .checked_add(admission.data_streams)
+                .context("native map count overflow")?,
+        "native complete map count differs from actual admitted tree"
+    );
+    let maximum = (count as u64)
+        .checked_mul(
+            (std::mem::size_of::<StreamLocation>() + std::mem::size_of::<(&StreamLocation, bool)>())
+                as u64,
+        )
+        .context("native map index memory overflow")?;
+    ensure!(
+        maximum <= admission.budget.retained_index_bytes,
+        "native map index exceeds resource budget"
+    );
+    let mut locations = Vec::new();
+    locations.try_reserve_exact(count)?;
+    ensure!(
+        (locations.capacity() as u64)
+            .checked_mul(std::mem::size_of::<StreamLocation>() as u64)
+            .is_some_and(|n| n <= admission.budget.retained_index_bytes),
+        "actual native map index allocation exceeds budget"
+    );
+    for (object_index, object) in report.objects.iter().enumerate() {
+        ensure!(
+            object.before == object.after,
+            "fast object metadata changed during observation"
+        );
+        locations.push(StreamLocation {
+            object: object_index,
+            named: None,
+        });
+        for (index, stream) in object.named_streams.iter().enumerate() {
+            ensure!(
+                stream.before == stream.after && !stream.name_utf16.is_empty(),
+                "fast named stream metadata changed or unnamed"
+            );
+            locations.push(StreamLocation {
+                object: object_index,
+                named: Some(index),
+            });
+        }
+    }
+    locations.sort_unstable_by(|a, b| a.key(report).cmp(&b.key(report)));
+    ensure!(
+        locations
+            .windows(2)
+            .all(|v| v[0].key(report) < v[1].key(report)),
+        "duplicate native map binding"
+    );
+    Ok(locations)
+}
 
 /// Compare every reported binding without constructing another owning map.
 /// The sorted index borrows keys and buffers from the proof; one seen flag per
@@ -702,6 +1289,33 @@ impl FreshPayloadProof {
             .native()
             .report()
             .native_observation();
+        let resource_admission = resources.resource_admission()?;
+        if let Some(admission) = resource_admission {
+            expected.require_resource_metadata(admission)?;
+            ensure!(
+                native.resource_profile == resources.native_profile(),
+                "fresh native map resource profile differs from admitted owner"
+            );
+        }
+        let native_maps = if let Some(admission) = resource_admission {
+            maps_with_resources(&native, admission)?
+        } else {
+            maps(&native)?
+        };
+        if let Some(admission) = resource_admission {
+            let expected_keys = resource_expected_keys(expected, admission)?;
+            ensure!(
+                expected_keys.len() == native_maps.len(),
+                "fresh native map set differs from actual expected owner"
+            );
+            for (key, location) in expected_keys.iter().zip(&native_maps) {
+                let (components, name) = location.key(&native);
+                ensure!(
+                    *key == encoded_stream_key(components, name)?,
+                    "fresh native map key set differs from actual expected owner"
+                );
+            }
+        }
         let protected = proof.protected_layout().native().report();
         let mut tail_extent_streams = 0usize;
         let mut tail_payload_bytes_verified = 0u64;
@@ -711,31 +1325,26 @@ impl FreshPayloadProof {
                 s.source_evidence
                     == Some(shadow_tree::SourceStreamEvidence::ExtentIdentityWithMaterializedTailV1)
             }) {
-                let matches: Vec<_> = protected
-                    .residuals()
-                    .iter()
-                    .filter(|r| {
-                        r.object_index == object_index && r.stream_name_utf16 == stream.name_utf16
-                    })
-                    .collect();
+                let actual = protected
+                    .residual_for(object_index, stream.name_utf16)?
+                    .context("extent-only partial tail has no retained protected observation")?;
                 ensure!(
                     protected.residual_contents_verified()
-                        && matches.len() == 1
-                        && matches[0].logical_offset == stream.length / 4096 * 4096
-                        && matches[0].length == stream.length % 4096
-                        && matches[0].sha256.len() == 64,
+                        && actual.logical_offset == stream.length / 4096 * 4096
+                        && actual.length == stream.length % 4096
+                        && actual.sha256.len() == 64,
                     "extent-only partial tail lacks exact protected source-to-target residual verification"
                 );
                 tail_extent_streams += 1;
                 tail_payload_bytes_verified = tail_payload_bytes_verified
-                    .checked_add(matches[0].length)
+                    .checked_add(actual.length)
                     .context("verified extent-tail byte count overflow")?;
             }
         }
         Ok(Self {
             expected_tree_sha256,
             source: proof.pair().source.clone(),
-            maps: maps(&native)?,
+            maps: native_maps,
             base_sectors: native.base_sectors,
             native,
             new_selected_sha256: ticket.new_selected_sha256,
@@ -746,6 +1355,7 @@ impl FreshPayloadProof {
             tail_extent_streams,
             tail_payload_bytes_verified,
             map_page_budget: map_page_budget(resources)?,
+            resource_admission,
         })
     }
 
@@ -753,8 +1363,17 @@ impl FreshPayloadProof {
     /// finished immutable page file, never a serialized capability.
     pub(crate) fn write_recovery_manifest(&self, path: &Path) -> Result<String> {
         let header = MapManifestHeader {
-            schema_version: 2,
-            kind: "protected-target-stream-map-pages-v2".into(),
+            schema_version: if self.resource_admission.is_some() {
+                3
+            } else {
+                2
+            },
+            kind: if self.resource_admission.is_some() {
+                "protected-target-stream-map-pages-v3"
+            } else {
+                "protected-target-stream-map-pages-v2"
+            }
+            .into(),
             source: self.source.clone(),
             expected_tree_sha256: self.expected_tree_sha256.clone(),
             plan_sha256: self.plan_sha256.clone(),
@@ -766,18 +1385,44 @@ impl FreshPayloadProof {
             bindings_count: self.maps.len() as u64,
             grants_write_authority: false,
             initial_retained_content_digests_available: false,
+            resource_admission: self.resource_admission,
         };
         let mut writer = metadata_pages::Writer::new(path, MAP_PAGE_PURPOSE, self.map_page_budget)?;
         writer.push(&[], &record_json(&header)?)?;
+        let mut total = 0u64;
         for location in &self.maps {
             let ((components, name_utf16), map) = location.view(&self.native)?;
             let key = encoded_stream_key(components, name_utf16)?;
             let entry = MapEntryRef {
                 components,
                 name_utf16,
-                map: PagedStreamMapRef::new(map)?,
+                map: if self.resource_admission.is_some() {
+                    PagedStreamMapRef::with_resources(map, self.resource_admission)?
+                } else {
+                    PagedStreamMapRef::new(map)?
+                },
             };
-            writer.push(&key, &record_json(&entry)?)?;
+            if let Some(admission) = self.resource_admission {
+                let compact = row_size(&entry, admission.budget.max_row_bytes)?;
+                validate_borrowed_row_memory(&entry, compact, admission.budget.max_row_bytes)?;
+                total = total
+                    .checked_add(compact)
+                    .filter(|n| *n <= admission.semantic_byte_budget())
+                    .context("complete map encoding exceeds semantic resource budget")?;
+                let mut chunks = MapChunkWriter {
+                    writer: &mut writer,
+                    key: &key,
+                    maximum: chunk_capacity(self.map_page_budget, key.len())?,
+                    limit: admission.budget.max_row_bytes,
+                    buffer: Vec::new(),
+                    chunks: 0,
+                    bytes: 0,
+                };
+                serde_json::to_writer(&mut chunks, &entry)?;
+                chunks.emit()?;
+            } else {
+                writer.push(&key, &record_json(&entry)?)?;
+            }
         }
         Ok(writer.finish()?.sha256)
     }
@@ -862,6 +1507,77 @@ fn expected_map_keys(
     }
     Ok(keys)
 }
+fn expected_binding_count(expected: &impl shadow_tree::ExpectedObjectDomain) -> Result<u64> {
+    let mut count = 0u64;
+    for i in 0..expected.object_count() {
+        let object = expected.object(i)?;
+        count = count
+            .checked_add(1)
+            .and_then(|n| n.checked_add(object.named_streams.len() as u64))
+            .context("map binding count overflow")?;
+    }
+    Ok(count)
+}
+fn resource_expected_keys(
+    expected: &impl shadow_tree::ExpectedObjectDomain,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<Vec<Vec<u8>>> {
+    expected.require_resource_metadata(admission)?;
+    let count = expected_binding_count(expected)?;
+    let fixed = count
+        .checked_mul(
+            (std::mem::size_of::<Vec<u8>>() + std::mem::size_of::<(Vec<u8>, MapRowLocation)>())
+                as u64,
+        )
+        .and_then(|n| {
+            (expected.object_count() as u64)
+                .checked_mul(24)
+                .and_then(|o| n.checked_add(o))
+        })
+        .context("map index memory overflow")?;
+    ensure!(
+        fixed <= admission.budget.retained_index_bytes,
+        "map index exceeds resource budget"
+    );
+    let mut keys = Vec::new();
+    keys.try_reserve_exact(usize::try_from(count)?)?;
+    let mut used = (keys.capacity() as u64)
+        .checked_mul(std::mem::size_of::<Vec<u8>>() as u64)
+        .and_then(|n| {
+            count
+                .checked_mul(std::mem::size_of::<(Vec<u8>, MapRowLocation)>() as u64)
+                .and_then(|i| n.checked_add(i))
+        })
+        .and_then(|n| {
+            (expected.object_count() as u64)
+                .checked_mul(24)
+                .and_then(|o| n.checked_add(o))
+        })
+        .context("actual map index allocation overflow")?;
+    ensure!(
+        used <= admission.budget.retained_index_bytes,
+        "actual map key index allocation exceeds budget"
+    );
+    for i in 0..expected.object_count() {
+        let object = expected.object(i)?;
+        for name in std::iter::once(&[][..])
+            .chain(object.named_streams.iter().map(|s| s.name_utf16.as_slice()))
+        {
+            let key = encoded_stream_key(&object.path, name)?;
+            used = used
+                .checked_add(key.capacity() as u64)
+                .filter(|n| *n <= admission.budget.retained_index_bytes)
+                .context("map key storage exceeds resource budget")?;
+            keys.push(key);
+        }
+    }
+    keys.sort_unstable();
+    ensure!(
+        keys.windows(2).all(|v| v[0] < v[1]),
+        "duplicate resource expected map key"
+    );
+    Ok(keys)
+}
 
 pub(crate) fn extent_stream_counts(
     expected: &impl shadow_tree::ExpectedObjectDomain,
@@ -887,7 +1603,11 @@ pub(crate) fn extent_stream_counts(
     Ok((extents, partials))
 }
 
-fn validate_map_entry(entry: &MapEntry, expected_keys: &BTreeSet<Vec<u8>>) -> Result<()> {
+fn validate_map_entry(
+    entry: &MapEntry,
+    expected_keys: &BTreeSet<Vec<u8>>,
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+) -> Result<()> {
     ensure!(
         expected_keys
             .contains(encoded_stream_key(&entry.components, &entry.name_utf16)?.as_slice())
@@ -895,7 +1615,11 @@ fn validate_map_entry(entry: &MapEntry, expected_keys: &BTreeSet<Vec<u8>>) -> Re
         "unexpected recovery map binding"
     );
     ensure!(
-        entry.map.retrieval.len() <= n2r_win32::retrieval_paging::MAX_RETURNED_BYTES,
+        entry.map.retrieval.len() as u64
+            <= resource_admission.map_or(
+                n2r_win32::retrieval_paging::MAX_RETURNED_BYTES as u64,
+                |a| a.budget.max_row_bytes
+            ),
         "recovery stream map exceeds retrieval bound"
     );
     Ok(())
@@ -912,6 +1636,14 @@ fn validate_map_header(
     resources: crate::ntfs_admission::ResourceProfile,
 ) -> Result<()> {
     resources.count_admission()?;
+    let resource_admission = resources.resource_admission()?;
+    ensure!(
+        facts.resource_admission == resource_admission,
+        "map manifest resource admission differs from the actual expected owner"
+    );
+    if let Some(admission) = resource_admission {
+        expected.require_resource_metadata(admission)?;
+    }
     ensure!(
         resources.is_streaming(),
         "recovery map facts require the pinned streaming resource profile"
@@ -937,7 +1669,12 @@ fn validate_map_header(
             && facts.new_selected_sha256 == ticket.new_selected_sha256
             && facts.selected_bytes == selected_bytes
             && facts.range_count == ticket.range_count
-            && facts.bindings_count == expected_map_keys(expected)?.len() as u64,
+            && facts.bindings_count
+                == if resource_admission.is_some() {
+                    expected_binding_count(expected)?
+                } else {
+                    expected_map_keys(expected)?.len() as u64
+                },
         "pinned recovery map facts differ from tree, source, selected plan or trusted ticket"
     );
     Ok(())
@@ -945,6 +1682,8 @@ fn validate_map_header(
 
 fn proof_header(facts: MapManifestHeader) -> RecoveryPayloadHeader {
     RecoveryPayloadHeader {
+        schema_version: facts.schema_version,
+        resource_admission: facts.resource_admission,
         source: facts.source,
         expected_tree_sha256: facts.expected_tree_sha256,
         plan_sha256: facts.plan_sha256,
@@ -967,6 +1706,10 @@ impl RecoveryPayloadProof {
         resources: crate::ntfs_admission::ResourceProfile,
     ) -> Result<Self> {
         ensure!(
+            resources.resource_admission()?.is_none(),
+            "V4 recovery requires its authenticated chunked map owner"
+        );
+        ensure!(
             bytes.len() <= super::selected_artifacts::Artifact::PayloadMap.maximum_bytes(),
             "recovery map artifact exceeds bound"
         );
@@ -986,6 +1729,7 @@ impl RecoveryPayloadProof {
             grants_write_authority: old.grants_write_authority,
             initial_retained_content_digests_available: old
                 .initial_retained_content_digests_available,
+            resource_admission: None,
         };
         validate_map_header(
             &header,
@@ -1000,7 +1744,7 @@ impl RecoveryPayloadProof {
         let keys = expected_map_keys(expected)?;
         let mut maps = BTreeMap::new();
         for entry in old.bindings {
-            validate_map_entry(&entry, &keys)?;
+            validate_map_entry(&entry, &keys, None)?;
             ensure!(
                 maps.insert((entry.components, entry.name_utf16), entry.map)
                     .is_none(),
@@ -1025,12 +1769,10 @@ impl RecoveryPayloadProof {
         ticket: &selected_journal::SelectedTicket,
         resources: crate::ntfs_admission::ResourceProfile,
     ) -> Result<Self> {
-        let mut reader = metadata_pages::Reader::open(
-            path,
-            expected_sha256,
-            MAP_PAGE_PURPOSE,
-            map_page_budget(resources)?,
-        )?;
+        let resource_admission = resources.resource_admission()?;
+        let budget = map_page_budget(resources)?;
+        let mut reader =
+            metadata_pages::Reader::open(path, expected_sha256, MAP_PAGE_PURPOSE, budget)?;
         let record = reader.get(0)?;
         ensure!(
             record.key.is_empty(),
@@ -1039,48 +1781,138 @@ impl RecoveryPayloadProof {
         let header: MapManifestHeader = serde_json::from_slice(&record.payload)?;
         validate_map_header(
             &header,
-            2,
-            "protected-target-stream-map-pages-v2",
+            if resource_admission.is_some() { 3 } else { 2 },
+            if resource_admission.is_some() {
+                "protected-target-stream-map-pages-v3"
+            } else {
+                "protected-target-stream-map-pages-v2"
+            },
             source,
             expected,
             plan,
             ticket,
             resources,
         )?;
-        ensure!(
-            header.bindings_count.checked_add(1) == Some(reader.len()),
-            "paged recovery map record count differs"
-        );
-        let keys = expected_map_keys(expected)?;
-        let mut index: Vec<(StreamKey, u64)> = Vec::new();
-        index
-            .try_reserve_exact(usize::try_from(header.bindings_count)?)
-            .context("recovery map index storage unavailable")?;
-        for ordinal in 1..reader.len() {
-            let record = reader.get(ordinal)?;
-            let entry = PagedMapEntry::decode(&record.payload)?;
-            validate_map_entry(&entry, &keys)?;
+        let mut index = Vec::new();
+        if let Some(admission) = resource_admission {
+            let keys = resource_expected_keys(expected, admission)?;
             ensure!(
-                record.key == encoded_stream_key(&entry.components, &entry.name_utf16)?,
-                "paged recovery map key differs from its payload"
+                header.bindings_count == keys.len() as u64,
+                "resource map binding count differs"
             );
-            let key = (entry.components, entry.name_utf16);
+            index.try_reserve_exact(keys.len())?;
+            let index_bytes = (keys.capacity() as u64)
+                .checked_mul(std::mem::size_of::<Vec<u8>>() as u64)
+                .and_then(|n| {
+                    (index.capacity() as u64)
+                        .checked_mul(std::mem::size_of::<(Vec<u8>, MapRowLocation)>() as u64)
+                        .and_then(|i| n.checked_add(i))
+                })
+                .and_then(|n| {
+                    (expected.object_count() as u64)
+                        .checked_mul(24)
+                        .and_then(|o| n.checked_add(o))
+                })
+                .context("map index capacity overflow")?;
+            let used = keys.iter().try_fold(index_bytes, |n, key| {
+                n.checked_add(key.capacity() as u64)
+                    .context("map key capacity overflow")
+            })?;
             ensure!(
-                index.last().is_none_or(|(previous, _)| previous < &key),
-                "paged recovery maps are duplicated or out of order"
+                used <= admission.budget.retained_index_bytes,
+                "actual retained map indexes exceed resource budget"
             );
-            index.push((key, ordinal));
+            let mut ordinal = 1u64;
+            let mut total = 0u64;
+            for key in keys {
+                let first = ordinal;
+                let maximum = chunk_capacity(budget, key.len())?;
+                let mut chunks = 0u64;
+                let mut bytes = 0u64;
+                loop {
+                    ensure!(
+                        ordinal < reader.len(),
+                        "resource map row lacks terminal chunk"
+                    );
+                    let record = reader.get(ordinal)?;
+                    ensure!(
+                        record.key == chunk_key(&key, chunks),
+                        "resource map chunk key/order differs"
+                    );
+                    let text: &str = serde_json::from_slice(&record.payload)?;
+                    let data = decode_base64(text, maximum)?;
+                    bytes = bytes
+                        .checked_add(data.len() as u64)
+                        .filter(|n| *n <= admission.budget.max_row_bytes)
+                        .context("resource map row byte budget exhausted")?;
+                    chunks = chunks.checked_add(1).context("map chunk count overflow")?;
+                    ordinal = ordinal
+                        .checked_add(1)
+                        .context("map record ordinal overflow")?;
+                    if data.len() < maximum {
+                        break;
+                    }
+                }
+                total = total
+                    .checked_add(bytes)
+                    .filter(|n| *n <= admission.semantic_byte_budget())
+                    .context("resource map complete semantic budget exceeded")?;
+                let location = MapRowLocation {
+                    first,
+                    chunks,
+                    bytes,
+                };
+                let entry = read_map_row(&mut reader, &key, location, Some(admission))?;
+                ensure!(
+                    entry.map.file_id != [0; 16]
+                        && encoded_stream_key(&entry.components, &entry.name_utf16)? == key,
+                    "resource map payload key/identity differs"
+                );
+                index.push((key, location));
+            }
+            ensure!(
+                ordinal == reader.len(),
+                "resource map has extra rows/chunks"
+            );
+        } else {
+            ensure!(
+                header.bindings_count.checked_add(1) == Some(reader.len()),
+                "paged recovery map record count differs"
+            );
+            let keys = expected_map_keys(expected)?;
+            index.try_reserve_exact(usize::try_from(header.bindings_count)?)?;
+            for ordinal in 1..reader.len() {
+                let record = reader.get(ordinal)?;
+                let entry = PagedMapEntry::decode(&record.payload)?;
+                validate_map_entry(&entry, &keys, None)?;
+                ensure!(
+                    record.key == encoded_stream_key(&entry.components, &entry.name_utf16)?,
+                    "paged recovery map key differs from payload"
+                );
+                ensure!(
+                    index
+                        .last()
+                        .is_none_or(|(previous, _)| previous < &record.key),
+                    "paged maps duplicated or out of order"
+                );
+                index.push((
+                    record.key,
+                    MapRowLocation {
+                        first: ordinal,
+                        chunks: 0,
+                        bytes: record.payload.len() as u64,
+                    },
+                ));
+            }
+            ensure!(index.len() == keys.len(), "complete paged map set differs");
         }
-        ensure!(
-            index.len() == keys.len(),
-            "complete paged recovery map set differs"
-        );
         reader.revalidate()?;
         Ok(Self {
             facts: proof_header(header),
             maps: RecoveryMaps::Paged {
                 reader: RefCell::new(reader),
                 index,
+                resource_admission,
             },
         })
     }
@@ -1116,25 +1948,58 @@ impl RecoveryPayloadProof {
                 |(key, _)| (key.0.as_slice(), key.1.as_slice()),
                 |(_, map)| Ok(map.as_ref()),
             ),
-            RecoveryMaps::Paged { reader, index } => {
-                let actual = maps(report)?;
+            RecoveryMaps::Paged {
+                reader,
+                index,
+                resource_admission,
+            } => {
+                let actual = if let Some(admission) = resource_admission {
+                    let held = (index.capacity() as u64)
+                        .checked_mul(std::mem::size_of::<(Vec<u8>, MapRowLocation)>() as u64)
+                        .and_then(|n| {
+                            admission
+                                .objects()
+                                .ok()
+                                .and_then(|o| o.checked_mul(24))
+                                .and_then(|o| n.checked_add(o))
+                        })
+                        .context("retained map index accounting overflow")?;
+                    let held = index.iter().try_fold(held, |n, (key, _)| {
+                        n.checked_add(key.capacity() as u64)
+                            .context("retained map key accounting overflow")
+                    })?;
+                    ensure!(
+                        (index.len() as u64)
+                            .checked_mul(std::mem::size_of::<StreamLocation>() as u64)
+                            .and_then(|n| n.checked_add(held))
+                            .is_some_and(|n| n <= admission.budget.retained_index_bytes),
+                        "mounted native map lookup exceeds retained index budget"
+                    );
+                    let actual = maps_with_resources(report, *admission)?;
+                    ensure!(
+                        (actual.capacity() as u64)
+                            .checked_mul(std::mem::size_of::<StreamLocation>() as u64)
+                            .and_then(|n| n.checked_add(held))
+                            .is_some_and(|n| n <= admission.budget.retained_index_bytes),
+                        "actual mounted map lookup allocation exceeds budget"
+                    );
+                    actual
+                } else {
+                    maps(report)?
+                };
                 if actual.len() != index.len() {
                     return Ok(false);
                 }
                 let mut reader = reader.borrow_mut();
-                for (location, (expected_key, ordinal)) in actual.iter().zip(index) {
+                for (location, (expected_key, row)) in actual.iter().zip(index) {
                     let ((components, name), value) = location.view(report)?;
-                    if components != expected_key.0.as_slice() || name != expected_key.1.as_slice()
-                    {
+                    if encoded_stream_key(components, name)? != *expected_key {
                         return Ok(false);
                     }
-                    let record = reader.get(*ordinal)?;
-                    let entry = PagedMapEntry::decode(&record.payload)?;
+                    let entry = read_map_row(&mut reader, expected_key, *row, *resource_admission)?;
                     ensure!(
-                        record.key == encoded_stream_key(&entry.components, &entry.name_utf16)?
-                            && entry.components == expected_key.0
-                            && entry.name_utf16 == expected_key.1,
-                        "held paged recovery map key changed"
+                        encoded_stream_key(&entry.components, &entry.name_utf16)? == *expected_key,
+                        "held map key changed"
                     );
                     if value != entry.map.as_ref() {
                         return Ok(false);
@@ -1163,7 +2028,7 @@ pub(crate) fn inspect_pinned_recovery_pages(
     )?;
     proof.revalidate_paged_manifest()?;
     expected.revalidate_domain()?;
-    let RecoveryMaps::Paged { reader, index } = &proof.maps else {
+    let RecoveryMaps::Paged { reader, index, .. } = &proof.maps else {
         anyhow::bail!("paged metadata inspection requires a page owner");
     };
     let reader = reader.borrow();
@@ -1172,6 +2037,8 @@ pub(crate) fn inspect_pinned_recovery_pages(
         "file_sha256":sha256,"actual_final_path":reader.final_path(),
         "bytes":reader.byte_len(),"pages":reader.page_count(),"records":reader.len(),
         "bindings":index.len(),"complete_paged_and_expected_map_set_validated":true,
+        "manifest_schema_version":proof.facts.schema_version,
+        "resource_admission":proof.facts.resource_admission,
         "source":proof.facts.source,
         "expected_tree_sha256":proof.facts.expected_tree_sha256,
         "plan_sha256":proof.facts.plan_sha256,"ticket_sha256":proof.facts.ticket_sha256,

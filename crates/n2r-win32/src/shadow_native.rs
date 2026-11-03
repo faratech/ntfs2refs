@@ -1,8 +1,13 @@
 //! Native creation on a separately bound empty ReFS volume. Never writes the
 //! source disk, manufactures ReFS bytes or grants conversion authority.
 pub mod cache_refresh;
+mod domain_memory;
 mod hard_links;
 pub mod input_domain;
+mod known_content_memory;
+pub mod report_memory;
+pub use known_content_memory::verify_known_contents_in_accounted_report;
+pub(crate) use known_content_memory::verify_known_contents_in_accounted_report_with_lease;
 mod sparse_stream;
 mod streams;
 pub use hard_links::Observation as HardLinkObservation;
@@ -22,7 +27,7 @@ use crate::{
     stream_layout,
 };
 use input_domain::{DomainMetadata, InputDomain, ObjectInput, SliceInputs};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
@@ -292,6 +297,18 @@ pub struct Report {
     pub post_mount_indexer_cache: Option<PostMountIndexerCache>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub shadow_user_evacuation: Vec<evacuation::Report>,
+    // Buffers above drop before their accounting guards release RAM credit.
+    #[serde(skip)]
+    memory: Option<report_memory::Retained>,
+}
+
+impl Report {
+    /// Actual prepaid ownership of retained object rows and their collection
+    /// buffers. This is deliberately not a claim that every preflight index,
+    /// validation temporary or paged-result cache shares that RAM accountant.
+    pub fn retained_rows_ram_accounted(&self) -> bool {
+        self.memory.is_some()
+    }
 }
 
 /// A newly generated, source-absent filesystem cache on the converted volume.
@@ -328,11 +345,23 @@ pub struct GeneralLayoutReport {
     data_integrity_disabled: bool,
     payload_bytes_read: u64,
     residuals: Vec<LayoutResidualExpectation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    paged_residuals: Option<crate::layout_residual_pages::PagedLayoutResidualResults>,
     residual_contents_verified: bool,
     logical_contents_verified: bool,
     raw_image_equality_verified: bool,
     complete_allocation_graph_verified: bool,
     conversion_qualified: bool,
+    #[serde(skip)]
+    expected_memory: Option<report_memory::LayoutRetained>,
+}
+
+impl Drop for GeneralLayoutReport {
+    fn drop(&mut self) {
+        // The native report retains the lease paying for this reader/cache.
+        // Close it before the native Arc can release its last accounting owner.
+        drop(self.paged_residuals.take());
+    }
 }
 
 impl GeneralLayoutReport {
@@ -353,11 +382,34 @@ impl GeneralLayoutReport {
     pub fn residual_contents_verified(&self) -> bool {
         self.residual_contents_verified
     }
+    pub fn paged_residuals(
+        &self,
+    ) -> Option<&crate::layout_residual_pages::PagedLayoutResidualResults> {
+        self.paged_residuals.as_ref()
+    }
+    pub fn residual_for(
+        &self,
+        object_index: usize,
+        name: &[u16],
+    ) -> io::Result<Option<LayoutResidualExpectation>> {
+        if let Some(pages) = &self.paged_residuals {
+            return Ok(pages.find(object_index, name)?.map(|r| r.expectation));
+        }
+        let mut found = self
+            .residuals
+            .iter()
+            .filter(|r| r.object_index == object_index && r.stream_name_utf16 == name);
+        let value = found.next().cloned();
+        if found.next().is_some() {
+            return Err(invalid("duplicate protected residual stream"));
+        }
+        Ok(value)
+    }
 }
 
 /// Source-derived expectation for the initialized suffix outside the routed
 /// full-cluster prefix. Never permits reading any byte before that suffix.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayoutResidualExpectation {
     pub object_index: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -399,6 +451,8 @@ pub struct KnownContentVerification {
     pub streams_without_content_baseline: usize,
     pub payload_bytes_read: u64,
     pub privilege_states: Vec<PrivilegeState>,
+    #[serde(skip)]
+    memory: Option<known_content_memory::KnownContentMemory>,
 }
 
 /// Independent lab readback through backup-intent handles. Access-time updates
@@ -1402,10 +1456,40 @@ fn validate_existing_content_domain(
     verify_contents: bool,
     allow_post_mount_svi: bool,
 ) -> io::Result<()> {
+    validate_existing_content_domain_with_memory(
+        report,
+        input,
+        same,
+        before_restore,
+        root_basic_after_mutation,
+        verify_contents,
+        allow_post_mount_svi,
+        None,
+    )
+}
+fn validate_existing_content_domain_with_memory(
+    report: &Report,
+    input: &impl InputDomain,
+    same: &impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    before_restore: bool,
+    root_basic_after_mutation: Option<&[u8; 40]>,
+    verify_contents: bool,
+    allow_post_mount_svi: bool,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+) -> io::Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
     if report.objects.len() != input.len() {
         return Err(invalid("existing shadow object coverage differs"));
     }
+    let _index_memory = memory
+        .map(|payer| {
+            payer.reserve(
+                domain_memory::validation_bytes(report, input)?
+                    .checked_add(payer.lease_heap_bytes())
+                    .ok_or_else(|| invalid("validation adapter RAM overflow"))?,
+            )
+        })
+        .transpose()?;
     let mut identities = BTreeMap::new();
     let mut unique = BTreeSet::new();
     let mut directories = Vec::new();
@@ -2573,6 +2657,42 @@ pub(crate) fn observe_general_layout_readonly_domain(
     protected: &native::GeneralReadonlyRefsVolume<'_>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralLayoutReport> {
+    observe_general_layout_readonly_domain_accounted(
+        pair,
+        input,
+        same_security,
+        protected,
+        resource_profile,
+        None,
+    )
+}
+
+pub(crate) fn observe_general_layout_readonly_domain_with_memory(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+) -> io::Result<GeneralLayoutReport> {
+    observe_general_layout_readonly_domain_accounted(
+        pair,
+        input,
+        same_security,
+        protected,
+        resource_profile,
+        Some(memory),
+    )
+}
+
+pub(crate) fn observe_general_layout_readonly_domain_accounted(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+) -> io::Result<GeneralLayoutReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if protected.binding() != &pair.shadow {
         return Err(invalid("protected ReFS layout lease binding differs"));
@@ -2582,7 +2702,7 @@ pub(crate) fn observe_general_layout_readonly_domain(
         volume_guid: pair.shadow.volume_guid.clone(),
         identity: pair.shadow.identity.clone(),
     };
-    let native = run_role_content_domain(
+    let native = run_role_content_domain_accounted(
         binding,
         pair.source.disk_number,
         input,
@@ -2597,13 +2717,26 @@ pub(crate) fn observe_general_layout_readonly_domain(
         resource_profile,
         true,
         None,
+        memory,
     )?;
-    validate_existing_content_domain(&native, input, &same_security, false, None, false, false)?;
+    validate_existing_content_domain_with_memory(
+        &native,
+        input,
+        &same_security,
+        false,
+        None,
+        false,
+        false,
+        memory,
+    )?;
     if native.payload_bytes_written != 0 || native.conversion_qualified {
         return Err(invalid(
             "protected layout observer granted mutation authority",
         ));
     }
+    let expected_memory = memory
+        .map(|payer| report_memory::LayoutRetained::new(payer, input.len(), &pair))
+        .transpose()?;
     let mut expected_stream_sha256 = Vec::new();
     expected_stream_sha256
         .try_reserve_exact(input.len())
@@ -2622,11 +2755,13 @@ pub(crate) fn observe_general_layout_readonly_domain(
         data_integrity_disabled: true,
         payload_bytes_read: 0,
         residuals: Vec::new(),
+        paged_residuals: None,
         residual_contents_verified: false,
         logical_contents_verified: false,
         raw_image_equality_verified: false,
         complete_allocation_graph_verified: false,
         conversion_qualified: false,
+        expected_memory,
     })
 }
 
@@ -2781,6 +2916,346 @@ pub(crate) fn observe_general_layout_residuals_readonly_domain(
     Ok(report)
 }
 
+fn required_residuals(
+    input: &impl InputDomain,
+    mut visit: impl FnMut(u64, usize, &[u16], u64) -> io::Result<()>,
+) -> io::Result<u64> {
+    let mut count = 0u64;
+    let needed = |length: u64, sparse: Option<&crate::sparse_layout::SparseLayout>| {
+        let offset = length / 4096 * 4096;
+        length % 4096 != 0
+            && sparse.is_none_or(|s| {
+                s.allocated.iter().any(|r| {
+                    r.offset <= offset
+                        && r.offset
+                            .checked_add(r.length)
+                            .is_some_and(|end| end > offset)
+                })
+            })
+    };
+    for index in 0..input.len() {
+        let owned = input.object(index)?;
+        let item = owned.input();
+        if item.directory {
+            continue;
+        }
+        if needed(item.logical_length(), item.sparse) {
+            visit(count, index, &[], item.logical_length())?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| invalid("residual stream count overflow"))?;
+        }
+        let mut order: Vec<usize> = Vec::new();
+        order
+            .try_reserve_exact(item.named_streams.len())
+            .map_err(io::Error::other)?;
+        for (n, stream) in item.named_streams.iter().enumerate() {
+            if needed(stream.expected_length, stream.sparse) {
+                order.push(n);
+            }
+        }
+        order.sort_unstable_by(|a, b| {
+            item.named_streams[*a]
+                .name_utf16
+                .cmp(item.named_streams[*b].name_utf16)
+        });
+        for n in order {
+            let stream = &item.named_streams[n];
+            visit(count, index, stream.name_utf16, stream.expected_length)?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| invalid("residual stream count overflow"))?;
+        }
+    }
+    Ok(count)
+}
+fn residual_input_sha(input: &impl InputDomain, maximum: u64) -> io::Result<String> {
+    struct Hash {
+        hash: Sha256,
+        bytes: u64,
+        maximum: u64,
+    }
+    impl Write for Hash {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes = self
+                .bytes
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= self.maximum)
+                .ok_or_else(|| invalid("residual metadata input exceeds resource budget"))?;
+            self.hash.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut hash = Hash {
+        hash: Sha256::new(),
+        bytes: 0,
+        maximum,
+    };
+    serde_json::to_writer(&mut hash, &DomainMetadata(input)).map_err(io::Error::other)?;
+    Ok(hex::encode(hash.hash.finalize()))
+}
+/// Resource-only initialized suffix observation. Expectations and results are
+/// never materialized as whole collections; every actual protected read and
+/// its complete identity/EOF/hash evidence precede the retained page closure.
+pub(crate) fn observe_general_layout_residuals_paged_readonly_domain(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+    result_path: &std::path::Path,
+    result_budget: crate::metadata_pages::PageBudget,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+) -> io::Result<GeneralLayoutReport> {
+    observe_general_layout_residuals_paged_readonly_domain_accounted(
+        pair,
+        input,
+        provider,
+        result_path,
+        result_budget,
+        same_security,
+        protected,
+        resource_profile,
+        None,
+    )
+}
+
+pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_with_memory(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+    result_path: &std::path::Path,
+    result_budget: crate::metadata_pages::PageBudget,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+) -> io::Result<GeneralLayoutReport> {
+    observe_general_layout_residuals_paged_readonly_domain_accounted(
+        pair,
+        input,
+        provider,
+        result_path,
+        result_budget,
+        same_security,
+        protected,
+        resource_profile,
+        Some(memory),
+    )
+}
+
+pub(crate) fn observe_general_layout_residuals_paged_readonly_domain_accounted(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    provider: &impl crate::layout_residual_pages::LayoutResidualProvider,
+    result_path: &std::path::Path,
+    result_budget: crate::metadata_pages::PageBudget,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+) -> io::Result<GeneralLayoutReport> {
+    let admission = resource_profile
+        .ok_or_else(|| invalid("paged residuals need actual resource admission"))?
+        .resource_admission()?
+        .ok_or_else(|| invalid("paged residuals require V4"))?;
+    input.require_resource_metadata(admission)?;
+    result_budget.validate()?;
+    if result_budget.max_page_bytes > admission.budget.page_bytes
+        || result_budget.max_file_bytes > admission.budget.scratch_bytes
+    {
+        return Err(invalid("paged residual result exceeds resource contract"));
+    }
+    let provider_sha = provider.file_sha256().to_owned();
+    if provider_sha.len() != 64
+        || !provider_sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid("paged residual expectation pin invalid"));
+    }
+    provider.revalidate()?;
+    let input_sha = residual_input_sha(input, admission.semantic_byte_budget())?;
+    let validate_expected = |ordinal: u64,
+                             index: usize,
+                             name: &[u16],
+                             length: u64|
+     -> io::Result<LayoutResidualExpectation> {
+        let expected = provider.expectation(ordinal)?;
+        if expected.object_index != index
+            || expected.stream_name_utf16 != name
+            || expected.logical_offset != length / 4096 * 4096
+            || expected.length != length % 4096
+            || expected.length == 0
+            || expected.sha256.len() != 64
+            || !expected
+                .sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(invalid(
+                "paged residual expectation coverage/offset/EOF/hash differs",
+            ));
+        }
+        Ok(expected)
+    };
+    let count = required_residuals(input, |ordinal, index, name, length| {
+        validate_expected(ordinal, index, name, length).map(|_| ())
+    })?;
+    if count != provider.len() || count > admission.data_streams {
+        return Err(invalid("paged residual complete stream count differs"));
+    }
+    provider.revalidate()?;
+    // Declare the writer lease before the report so it also outlives any
+    // report fields appended during this pass on every error path.
+    let mut residual_writer_memory;
+    let mut report = observe_general_layout_readonly_domain_accounted(
+        pair.clone(),
+        input,
+        &same_security,
+        protected,
+        resource_profile,
+        memory,
+    )?;
+    // Writer/control state survives the whole pass; descriptor query buffers
+    // are acquired only after the current paged input object has decoded.
+    residual_writer_memory = memory
+        .map(|payer| {
+            report_memory::residual_writer_peak(result_budget.max_page_bytes)
+                .and_then(|bytes| payer.reserve(bytes))
+        })
+        .transpose()?;
+    let native = Arc::get_mut(&mut report.native)
+        .ok_or_else(|| invalid("paged residual native observation already shared"))?;
+    let report_heap_before = report_memory::report_bytes(native)?;
+    let binding = &native.binding;
+    let before = protected.snapshot(binding, &mut native.events)?;
+    if before.disk_attributes != 2
+        || before.device != native.before.device
+        || before.layout != native.before.layout
+    {
+        return Err(invalid("paged residual native protection/binding differs"));
+    }
+    let mut privileges = Privileges::enable_for(&["SeBackupPrivilege", "SeSecurityPrivilege"])?;
+    let root = format!(
+        "\\\\?\\Volume{{{}}}\\",
+        binding.volume_guid.trim_matches(['{', '}'])
+    );
+    let mut writer = crate::layout_residual_pages::ResidualResultsWriter::new(
+        result_path,
+        result_budget,
+        pair,
+        input.len() as u64,
+        &provider_sha,
+        input_sha.clone(),
+        count,
+    )?;
+    let mut bytes_read = 0u64;
+    let mut buffer = [0u8; 4096];
+    let observed = required_residuals(input, |ordinal, index, name, length| {
+        let _query_memory = memory
+            .map(|payer| {
+                report_memory::residual_query_peak(admission.budget.max_row_bytes)?
+                    .checked_add(payer.lease_heap_bytes())
+                    .ok_or_else(|| invalid("residual query adapter RAM overflow"))
+                    .and_then(|bytes| payer.reserve(bytes))
+            })
+            .transpose()?;
+        let expected = validate_expected(ordinal, index, name, length)?;
+        let object = native
+            .objects
+            .get(index)
+            .ok_or_else(|| invalid("paged residual native object absent"))?;
+        let (before_stream, after_stream) = if name.is_empty() {
+            (&object.before, &object.after)
+        } else {
+            let stream = object
+                .named_streams
+                .iter()
+                .find(|s| s.name_utf16 == name)
+                .ok_or_else(|| invalid("paged residual named stream absent"))?;
+            (&stream.before, &stream.after)
+        };
+        let path = streams::path(&root, &object.components, name)?;
+        let mut file = open_protected_readonly(&path, false)?;
+        if repeat_snapshot(&file, before_stream) != *before_stream {
+            return Err(invalid(
+                "paged residual identity/metadata changed before read",
+            ));
+        }
+        let id: [u8; 16] = query_bytes(before_stream, 18, 24)?[8..24]
+            .try_into()
+            .map_err(|_| invalid("paged residual file identity length differs"))?;
+        file.seek(SeekFrom::Start(expected.logical_offset))?;
+        let length = expected.length as usize;
+        file.read_exact(&mut buffer[..length])?;
+        let mut eof_probe = [0u8; 1];
+        if file.read(&mut eof_probe)? != 0 {
+            return Err(invalid("paged residual expected EOF absent"));
+        }
+        let sha = hex::encode(Sha256::digest(&buffer[..length]));
+        if sha != expected.sha256 || repeat_snapshot(&file, after_stream) != *after_stream {
+            return Err(invalid("paged residual content/metadata differs"));
+        }
+        writer.push(&crate::layout_residual_pages::LayoutResidualResult {
+            expectation: expected,
+            native_file_id: id,
+            actual_sha256: sha,
+            bytes_read: length as u64,
+            eof_observed: true,
+        })?;
+        bytes_read = bytes_read
+            .checked_add(length as u64)
+            .ok_or_else(|| invalid("paged residual byte count overflow"))?;
+        Ok(())
+    })?;
+    if observed != count || provider.file_sha256() != provider_sha {
+        return Err(invalid("paged residual expectation owner/count changed"));
+    }
+    provider.revalidate()?;
+    if residual_input_sha(input, admission.semantic_byte_budget())? != input_sha {
+        return Err(invalid("paged residual metadata input changed"));
+    }
+    privileges.restore()?;
+    native
+        .privilege_states
+        .extend_from_slice(privileges.audit());
+    let after = protected.snapshot(binding, &mut native.events)?;
+    if serde_json::to_vec(&before).map_err(io::Error::other)?
+        != serde_json::to_vec(&after).map_err(io::Error::other)?
+    {
+        return Err(invalid("paged residual protection changed"));
+    }
+    let results = writer.finish(result_path, result_budget)?;
+    if results.len() != count || results.payload_bytes_read() != bytes_read {
+        return Err(invalid("paged residual result closure differs"));
+    }
+    // No transient native state/privilege/path owners may outlive shrinking
+    // the writer/control allowance to the returned reader and report extras.
+    drop(before);
+    drop(after);
+    drop(privileges);
+    drop(root);
+    if residual_writer_memory.is_some() {
+        let extra = report_memory::report_bytes(native)?
+            .checked_sub(report_heap_before)
+            .ok_or_else(|| invalid("native residual retained heap unexpectedly shrank"))?;
+        let retained = report_memory::residual_retained_peak(result_budget.max_page_bytes, extra)?;
+        native
+            .memory
+            .as_mut()
+            .ok_or_else(|| invalid("accounted native report lost its lease owner"))?
+            .retain_residual(&mut residual_writer_memory, retained)?;
+    }
+    report.payload_bytes_read = bytes_read;
+    report.residual_contents_verified = true;
+    report.paged_residuals = Some(results);
+    Ok(report)
+}
+
 /// Inspect the original data disk after the journal handoff has been made
 /// durable and it has mounted as ReFS. The caller supplies the pre-cutover
 /// source tree from separately pinned recovery artifacts.
@@ -2911,6 +3386,68 @@ pub fn observe_general_converted_metadata_domain(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<GeneralConvertedReport> {
+    observe_general_converted_metadata_domain_accounted(
+        pair,
+        input,
+        expected_label,
+        same_security,
+        resource_profile,
+        None,
+        None,
+    )
+}
+
+/// Native mounted-source metadata observation with the caller's live RAM
+/// payer retained by every returned report allocation. It is not a mount or
+/// journal-handoff capability.
+pub fn observe_general_converted_metadata_domain_with_memory(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: crate::attestation::ResourceProfile,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+) -> io::Result<GeneralConvertedReport> {
+    observe_general_converted_metadata_domain_accounted(
+        pair,
+        input,
+        expected_label,
+        same_security,
+        Some(resource_profile),
+        Some(memory),
+        None,
+    )
+}
+
+pub(crate) fn observe_general_converted_metadata_domain_readonly_with_memory(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: crate::attestation::ResourceProfile,
+    memory: &dyn report_memory::ReportMemoryAccountant,
+    protected: &native::GeneralReadonlyRefsVolume<'_>,
+) -> io::Result<GeneralConvertedReport> {
+    observe_general_converted_metadata_domain_accounted(
+        pair,
+        input,
+        expected_label,
+        same_security,
+        Some(resource_profile),
+        Some(memory),
+        Some(protected),
+    )
+}
+
+fn observe_general_converted_metadata_domain_accounted(
+    pair: GeneralSourceShadowBinding,
+    input: &impl InputDomain,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    memory: Option<&dyn report_memory::ReportMemoryAccountant>,
+    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+) -> io::Result<GeneralConvertedReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if let Some(label) = expected_label {
         label.validate()?;
@@ -2920,7 +3457,7 @@ pub fn observe_general_converted_metadata_domain(
         volume_guid: pair.source.volume_guid.clone(),
         identity: pair.source.identity.clone(),
     };
-    let native = run_role_content_domain(
+    let native = run_role_content_domain_accounted(
         binding,
         pair.source.disk_number,
         input,
@@ -2931,15 +3468,25 @@ pub fn observe_general_converted_metadata_domain(
         None,
         Some(&pair.source),
         expected_label,
-        None,
+        protected,
         resource_profile,
         false,
         None,
+        memory,
     )?;
     // Keep the converted observer's existing namespace policy independently
     // of whether admitted payload bytes were read. Protected shadow layout
     // observation keeps its stricter original namespace policy.
-    validate_existing_content_domain(&native, input, &same_security, false, None, false, true)?;
+    validate_existing_content_domain_with_memory(
+        &native,
+        input,
+        &same_security,
+        false,
+        None,
+        false,
+        true,
+        memory,
+    )?;
     if native.objects.iter().any(|object| {
         object.logical_sha256.is_some()
             || object
@@ -3088,6 +3635,7 @@ pub fn verify_general_converted_known_contents_domain(
         streams_without_content_baseline: skipped,
         payload_bytes_read: bytes,
         privilege_states: privileges.audit().to_vec(),
+        memory: None,
     });
     Ok(report)
 }
@@ -3501,7 +4049,7 @@ fn run_role_content_domain(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     converted: bool,
     ordinary: bool,
-    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
     protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
@@ -3509,13 +4057,57 @@ fn run_role_content_domain(
     hash_file_contents: bool,
     legacy_input: Option<&[Input<'_>]>,
 ) -> io::Result<Report> {
+    run_role_content_domain_accounted(
+        binding,
+        source_disk,
+        input,
+        mode,
+        same_security,
+        converted,
+        ordinary,
+        payload_writer,
+        general_shadow,
+        expected_label,
+        protected,
+        resource_profile,
+        hash_file_contents,
+        legacy_input,
+        None,
+    )
+}
+
+fn run_role_content_domain_accounted(
+    binding: DiskBinding,
+    source_disk: u32,
+    input: &impl InputDomain,
+    mode: Mode,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+    converted: bool,
+    ordinary: bool,
+    mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
+    general_shadow: Option<&GeneralDiskBinding>,
+    expected_label: Option<&crate::volume_label::VolumeLabel>,
+    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    resource_profile: Option<crate::attestation::ResourceProfile>,
+    hash_file_contents: bool,
+    legacy_input: Option<&[Input<'_>]>,
+    memory_accountant: Option<&dyn report_memory::ReportMemoryAccountant>,
+) -> io::Result<Report> {
+    let protected_converted_metadata = converted
+        && ordinary
+        && mode == Mode::Verify
+        && !hash_file_contents
+        && payload_writer.is_none()
+        && general_shadow.is_some()
+        && protected.is_some()
+        && memory_accountant.is_some();
     if !hash_file_contents
         && (!converted
             || !ordinary
             || mode != Mode::Verify
             || payload_writer.is_some()
             || general_shadow.is_none()
-            || protected.is_some())
+            || (protected.is_some() && !protected_converted_metadata))
     {
         return Err(invalid(
             "content-free observation requires the converted general metadata route",
@@ -3532,6 +4124,25 @@ fn run_role_content_domain(
         .transpose()?
         .flatten();
     let sd_limit = resource_admission.map(|a| a.budget.max_row_bytes);
+    let accounted_protected_layout = mode == Mode::ObserveLayout && protected.is_some();
+    let accounted_converted_metadata = mode == Mode::Verify
+        && converted
+        && ordinary
+        && general_shadow.is_some()
+        && !hash_file_contents
+        && payload_writer.is_none();
+    if memory_accountant.is_some()
+        && (resource_admission.is_none()
+            || !(accounted_protected_layout || accounted_converted_metadata)
+            || legacy_input.is_some())
+    {
+        return Err(invalid(
+            "accounted report collection requires protected or converted-metadata V4 domain route",
+        ));
+    }
+    let mut retained_memory = memory_accountant
+        .map(|payer| report_memory::Retained::new(payer, input.len(), sd_limit.unwrap_or(0)))
+        .transpose()?;
     let capture_snapshot = |file: &File| {
         if let Some(maximum) = sd_limit {
             crate::attestation_native::source_snapshot_paged(
@@ -3600,7 +4211,7 @@ fn run_role_content_domain(
             )
         }
     };
-    if protected.is_some() {
+    if protected.is_some() && !protected_converted_metadata {
         validate_protected_profile(
             mode,
             converted,
@@ -3666,6 +4277,19 @@ fn run_role_content_domain(
         "\\\\?\\Volume{{{}}}\\",
         binding.volume_guid.trim_matches(['{', '}'])
     );
+    let preflight_plan = memory_accountant
+        .map(|_| domain_memory::input_plan(input))
+        .transpose()?;
+    let preflight_memory = match (memory_accountant, &preflight_plan) {
+        (Some(payer), Some(plan)) => Some(
+            payer.reserve(
+                plan.preflight_bytes
+                    .checked_add(payer.lease_heap_bytes())
+                    .ok_or_else(|| invalid("preflight adapter RAM overflow"))?,
+            )?,
+        ),
+        _ => None,
+    };
     let valid_component = |part: &str| {
         if resource_profile.is_some_and(|p| p.is_streaming()) {
             crate::shadow_names::valid_unicode_component(part)
@@ -3727,6 +4351,14 @@ fn run_role_content_domain(
     }
     let mut total = 0u64;
     let mut source_allocations = Vec::new();
+    if let Some(plan) = &preflight_plan {
+        source_allocations
+            .try_reserve_exact(plan.source_ranges)
+            .map_err(io::Error::other)?;
+        if source_allocations.capacity() > plan.source_ranges.saturating_mul(2) {
+            return Err(invalid("source scalar index exceeds its prepaid capacity"));
+        }
+    }
     for index in 0..input.len() {
         let owner = input.object(index)?;
         let item = owner.input();
@@ -3792,7 +4424,7 @@ fn run_role_content_domain(
             if i.directory
                 || covered == 0
                 || covered > i.logical_length() / 4096 * 4096
-                || i.source_runs.len() > 1024
+                || (memory_accountant.is_none() && i.source_runs.len() > 1024)
             {
                 return Err(invalid("fragmented source placement coverage differs"));
             }
@@ -3863,6 +4495,8 @@ fn run_role_content_domain(
     {
         return Err(invalid("source placement allocations overlap"));
     }
+    drop(source_allocations);
+    drop(preflight_memory);
     let mut roots = 0usize;
     input.for_each(|_, i| {
         roots += usize::from(i.components.is_empty());
@@ -3995,6 +4629,9 @@ fn run_role_content_domain(
     } else {
         open(&root, true, true)?
     };
+    let root_query_memory = memory_accountant
+        .map(|payer| payer.reserve(report_memory::root_peak(sd_limit.unwrap_or(0))?))
+        .transpose()?;
     let root_state = capture_snapshot(&root_handle);
     let matched_before = security_matches(&root_input, &root_state, &same_security)?;
     let mut root_security = RootSecurity {
@@ -4004,6 +4641,9 @@ fn run_role_content_domain(
         matched_after: matched_before,
         backup: None,
     };
+    if let (Some(memory), Some(lease)) = (&mut retained_memory, root_query_memory) {
+        memory.retain_root(lease, &root_security)?;
+    }
     let mut security_restorations = vec![];
     let mut retention_attempts = vec![];
     let mut shadow_user_evacuation = Vec::new();
@@ -4016,6 +4656,7 @@ fn run_role_content_domain(
             observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
         privileges.restore()?;
         return Ok(Report {
+            memory: None,
             resource_profile,
             binding,
             before,
@@ -4078,6 +4719,7 @@ fn run_role_content_domain(
             let after = observed_shadow(&disk, &binding, general_shadow, &mut events)?;
             privileges.restore()?;
             return Ok(Report {
+                memory: None,
                 resource_profile,
                 binding,
                 before,
@@ -4320,7 +4962,7 @@ fn run_role_content_domain(
         )?;
         Some((legacy, metadata))
     };
-    let layout_metadata = if mode == Mode::ObserveLayout {
+    let mut layout_metadata = if mode == Mode::ObserveLayout {
         if protected.is_none() {
             return Err(invalid(
                 "layout allocation requires the protected read-only lease",
@@ -4328,12 +4970,32 @@ fn run_role_content_domain(
         }
         let mut input = [0u8; 16];
         input[8] = 1; // Same existing metadata-inclusive bitmap request.
-        Some(crate::bitmap_observation::Observation::capture(
-            volume,
-            &input,
-            binding.identity.partition_bytes,
-            resource_profile.is_some(),
-        )?)
+        Some(
+            if let (Some(admission), Some(payer), Some(memory)) =
+                (resource_admission, memory_accountant, &mut retained_memory)
+            {
+                let limits = crate::bitmap_streaming::resource_source_limits(
+                    binding.identity.partition_bytes / 4096,
+                    admission.budget.max_row_bytes,
+                )?;
+                memory.retain_bitmap_workspace(
+                    payer.reserve(report_memory::bitmap_peak(admission.budget.max_row_bytes)?)?,
+                )?;
+                crate::bitmap_observation::Observation::capture_with_bounded_ranges(
+                    volume,
+                    &input,
+                    binding.identity.partition_bytes,
+                    limits,
+                )?
+            } else {
+                crate::bitmap_observation::Observation::capture(
+                    volume,
+                    &input,
+                    binding.identity.partition_bytes,
+                    resource_profile.is_some(),
+                )?
+            },
+        )
     } else {
         None
     };
@@ -4343,6 +5005,22 @@ fn run_role_content_domain(
     let metadata_allocation = metadata_view
         .map(|metadata| metadata.allocation_map(binding.identity.partition_bytes))
         .transpose()?;
+    let metadata_allocation_page_proof = metadata_view.map(|metadata| metadata.proof());
+    if mode == Mode::ObserveLayout && resource_admission.is_some() && memory_accountant.is_some() {
+        // Layout-only collection never creates legacy candidate views below.
+        // The native summary/query owners are no longer needed after the real
+        // map and proof are captured, so release their working space before
+        // collecting object rows. Both returned values remain independently
+        // owned and charged until the report drops.
+        drop(layout_metadata.take());
+        retained_memory
+            .as_mut()
+            .ok_or_else(|| invalid("bitmap report memory owner absent"))?
+            .bitmap_captured(
+                metadata_allocation.as_ref(),
+                metadata_allocation_page_proof.as_ref(),
+            )?;
+    }
     // These maps are immutable for the complete verification pass. Hash each
     // only once even if many files report a source-placement candidate. Move
     // attempts above still collect and recheck fresh native bitmaps separately.
@@ -4594,8 +5272,35 @@ fn run_role_content_domain(
         result
             .try_reserve_exact(input.len())
             .map_err(io::Error::other)?;
+        if let Some(memory) = &mut retained_memory {
+            memory.observe_object_capacity(result.capacity())?;
+        }
         input.for_each(|_, item| {
-            result.push(observe(item)?);
+            let peak = if memory_accountant.is_some() {
+                report_memory::row_peak(item, sd_limit.unwrap_or(0))?
+            } else {
+                0
+            };
+            let lease =
+                memory_accountant
+                    .map(|payer| {
+                        payer.reserve(peak).map_err(|error| io::Error::other(format!(
+                    "native object row {}/{} query workspace {peak} bytes refused: {error}",
+                    result.len(), input.len()
+                )))
+                    })
+                    .transpose()?;
+            let mut row = observe(item)?;
+            if let (Some(memory), Some(lease)) = (&mut retained_memory, lease) {
+                report_memory::compact_row(&mut row);
+                memory.retain(lease, &row, peak)?;
+            }
+            if result.len() == result.capacity() {
+                return Err(invalid(
+                    "native object slots exceeded their initial reservation",
+                ));
+            }
+            result.push(row);
             Ok(())
         })?;
         result
@@ -4609,14 +5314,15 @@ fn run_role_content_domain(
     let after = observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
     validate_observation_access(after.disk_attributes, flags, protected.is_some())?;
     privileges.restore()?;
-    Ok(Report {
+    let mut report = Report {
+        memory: None,
         resource_profile,
         binding,
         before,
         after,
         objects,
         metadata_allocation,
-        metadata_allocation_page_proof: metadata_view.map(|metadata| metadata.proof()),
+        metadata_allocation_page_proof,
         base_sectors: 0,
         privilege_states: privileges.audit().to_vec(),
         events,
@@ -4629,7 +5335,19 @@ fn run_role_content_domain(
         retention_attempts,
         post_mount_indexer_cache,
         shadow_user_evacuation,
-    })
+    };
+    // Retain the query allowance until all simultaneous bitmap-query and
+    // decode owners have actually been dropped. Only the Report remains when
+    // the prelude reservation shrinks to its retained capacities.
+    drop(candidate_views);
+    drop(layout_metadata);
+    drop(bitmaps);
+    drop(privileges);
+    if let Some(mut memory) = retained_memory {
+        memory.finish(&report)?;
+        report.memory = Some(memory);
+    }
+    Ok(report)
 }
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,1189 @@
+//! Reopen a V4 recovery publication and its actual excluded storage owners.
+//!
+//! The independently pinned publication is a route to evidence, not write
+//! authority. This module deliberately exposes neither a target writer nor a
+//! replay operation. In particular, a successful scan does not prove that an
+//! earlier fresh-source admission or writable handoff occurred.
+use super::{BoundJournalObservation, BoundNativeRecoveryJournal, SelectedLifecycle};
+use crate::{
+    artifact_arena::{ArtifactGroup, ArtifactGroupPermit},
+    ntfs_inspect::paged_storage::{SourceRamLease, SourceScratch},
+    selected_journal::resource_domain::durable_anchor::DurableRecoveryLocator,
+    verification_policy::VerificationPolicy,
+};
+use anyhow::{Context, Result, ensure};
+use n2r_win32::{
+    GeneralExclusiveRecoveryTarget, GeneralFrozenPartition, NativeEvent, PagedRecoveryDirection,
+    attestation::ResourceProfile,
+    general_layout::{GeneralDiskBinding, GeneralSourceShadowBinding},
+    journal_file::GeneralJournalStorageBinding,
+    reference_file::ReferenceFileSnapshot,
+    tree_resources::SourceResourceAdmission,
+    volume_label::VolumeLabel,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Seek, SeekFrom, Write},
+    os::windows::fs::{MetadataExt, OpenOptionsExt},
+    path::{Component, Path, PathBuf},
+    time::SystemTime,
+};
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilePin {
+    path: String,
+    sha256: String,
+    bytes: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExpectedPin {
+    file: FilePin,
+    semantic_sha256: String,
+    objects: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MapPin {
+    file: FilePin,
+    records: u64,
+}
+
+// Field order and optional encoding match prepare::qualification::Publication.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Publication {
+    schema_version: u32,
+    kind: String,
+    source: GeneralDiskBinding,
+    shadow: GeneralDiskBinding,
+    resource_admission: SourceResourceAdmission,
+    verification_policy: VerificationPolicy,
+    source_fingerprint_kind: String,
+    source_sha256: String,
+    source_inspection_sha256: String,
+    source_views_sha256: String,
+    locator: FilePin,
+    expected: ExpectedPin,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_maps: Option<MapPin>,
+    ticket_sha256: String,
+    expected_mount_paths: Vec<String>,
+    expected_source_label: VolumeLabel,
+    serialized_publication_grants_authority: bool,
+}
+
+fn digest(text: &str) -> Result<[u8; 32]> {
+    ensure!(
+        text.len() == 64
+            && text
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)),
+        "noncanonical SHA-256 in recovery publication"
+    );
+    Ok(hex::decode(text)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid SHA-256 width"))?)
+}
+
+fn on_volume(path: &str, volume: &str) -> bool {
+    let root = format!("{}\\", volume.trim_end_matches('\\'));
+    path.get(..root.len())
+        .is_some_and(|p| p.eq_ignore_ascii_case(&root))
+}
+
+fn ordinary_path(path: &Path) -> Result<()> {
+    ensure!(
+        path.is_absolute()
+            && !path
+                .components()
+                .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+        "recovery path must be absolute without traversal"
+    );
+    Ok(())
+}
+
+/// Keep the actual ordinary index directory open on the independently bound
+/// journal volume. The arena still validates the complete path ancestry.
+fn hold_index_parent(path: &Path, volume: &str) -> Result<File> {
+    ordinary_path(path)?;
+    let parent = path.parent().context("recovery index parent absent")?;
+    let handle = OpenOptions::new()
+        .access_mode(0x80)
+        .share_mode(3)
+        .custom_flags(0x0200_0000 | 0x0020_0000)
+        .open(parent)?;
+    let meta = handle.metadata()?;
+    ensure!(
+        meta.is_dir()
+            && meta.file_attributes() & 0x400 == 0
+            && on_volume(
+                &format!(
+                    "{}\\",
+                    n2r_win32::file_storage::final_path_guid(&handle)?.trim_end_matches('\\')
+                ),
+                volume
+            ),
+        "recovery index must be on the held journal volume"
+    );
+    Ok(handle)
+}
+
+struct HashSink {
+    bytes: u64,
+    maximum: u64,
+    hash: Sha256,
+}
+impl Write for HashSink {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(bytes.len() as u64)
+            .filter(|n| *n <= self.maximum)
+            .ok_or_else(|| io::Error::other("canonical recovery publication exceeds its bound"))?;
+        self.hash.update(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Same held handle, identity and digest for a published external file.
+struct HeldFile {
+    file: File,
+    snapshot: ReferenceFileSnapshot,
+    modified: SystemTime,
+    sha256: [u8; 32],
+}
+impl HeldFile {
+    fn open(
+        path: &Path,
+        expected: [u8; 32],
+        bytes: Option<u64>,
+        maximum: u64,
+        scratch: &SourceScratch,
+    ) -> Result<Self> {
+        ordinary_path(path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        n2r_win32::file_storage::require_readonly_access(&file)?;
+        let snapshot =
+            n2r_win32::reference_file::observe_reference_file_handle_with_limit(&file, maximum)?;
+        ensure!(
+            snapshot.number_of_links == 1
+                && snapshot.file_bytes > 0
+                && bytes.is_none_or(|n| n == snapshot.file_bytes),
+            "recovery artifact length or link count differs"
+        );
+        let modified = file.metadata()?.modified()?;
+        let _ram = scratch.lease_ram(4 * 1024 * 1024)?;
+        ensure!(
+            n2r_win32::sha256_native::hash_range(&mut file, 0, snapshot.file_bytes)? == expected
+                && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                    &file, maximum
+                )? == snapshot
+                && file.metadata()?.modified()? == modified,
+            "recovery artifact identity or digest differs"
+        );
+        Ok(Self {
+            file,
+            snapshot,
+            modified,
+            sha256: expected,
+        })
+    }
+    fn revalidate(&mut self, scratch: &SourceScratch) -> Result<()> {
+        let _ram = scratch.lease_ram(4 * 1024 * 1024)?;
+        ensure!(
+            n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                &self.file,
+                self.snapshot.file_bytes
+            )? == self.snapshot
+                && self.file.metadata()?.modified()? == self.modified
+                && n2r_win32::sha256_native::hash_range(
+                    &mut self.file,
+                    0,
+                    self.snapshot.file_bytes
+                )? == self.sha256
+                && n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+                    &self.file,
+                    self.snapshot.file_bytes
+                )? == self.snapshot
+                && self.file.metadata()?.modified()? == self.modified,
+            "held recovery artifact changed"
+        );
+        Ok(())
+    }
+}
+
+enum ObservedTarget {
+    Frozen(GeneralFrozenPartition),
+    Activated(GeneralExclusiveRecoveryTarget),
+}
+impl ObservedTarget {
+    fn reopen(binding: GeneralDiskBinding, events: &mut Vec<NativeEvent>) -> Result<Self> {
+        // A prepared-but-unactivated disk retains OFFLINE|READ_ONLY. A disk
+        // interrupted after activation is OFFLINE only and must obtain the
+        // separate deny-writer recovery handle. Neither path grants writes.
+        match GeneralFrozenPartition::reopen(binding.clone(), events) {
+            Ok(target) => Ok(Self::Frozen(target)),
+            Err(frozen_error) => GeneralExclusiveRecoveryTarget::reopen(binding, events)
+                .map(Self::Activated)
+                .map_err(|error| anyhow::anyhow!("source is neither a held frozen target ({frozen_error}) nor an exclusive offline recovery target ({error})")),
+        }
+    }
+    fn state(&self, events: &mut Vec<NativeEvent>) -> io::Result<n2r_win32::GeneralDiskState> {
+        match self {
+            Self::Frozen(target) => target.state(events),
+            Self::Activated(target) => target.state(events),
+        }
+    }
+    fn exclusive(&self) -> bool {
+        matches!(self, Self::Activated(_))
+    }
+}
+
+/// Holds the exact reopened publication, artifacts, native journal and
+/// persistently offline target. It is read-only at the type boundary.
+pub(crate) struct ReopenedResourceRecovery {
+    publication: Publication,
+    publication_file: HeldFile,
+    expected: HeldFile,
+    maps: Option<HeldFile>,
+    locator: DurableRecoveryLocator,
+    journal: BoundNativeRecoveryJournal,
+    target: Option<ObservedTarget>,
+    initial_state: n2r_win32::GeneralDiskState,
+    initial_lifecycle: SelectedLifecycle,
+    mounted: Option<GeneralDiskBinding>,
+    scratch: SourceScratch,
+    _memory: SourceRamLease,
+}
+
+/// Same held, read-only actual artifact. The snapshot and digest alone do not
+/// recreate a live owner or authorize target writes.
+pub(crate) struct ReopenedArtifact<'a> {
+    pub file: &'a File,
+    pub snapshot: &'a ReferenceFileSnapshot,
+    pub sha256: [u8; 32],
+}
+
+/// A non-serializable observation of an actual durable HND and selected target
+/// digest. It retains the reopened publication, real journal and offline target
+/// through the borrow; it does not itself authorize a mount.
+pub(crate) struct VerifiedResourceHandoff<'a> {
+    recovery: &'a mut ReopenedResourceRecovery,
+    selected_sha256: [u8; 32],
+}
+
+/// Actual HND target resealed OFFLINE|READ_ONLY for the SDK's physically
+/// protected converted-filesystem observer. This is not writable-service or
+/// converted-namespace qualification.
+pub(crate) struct VerifiedProtectedHandoff<'a> {
+    recovery: &'a mut ReopenedResourceRecovery,
+    selected_sha256: [u8; 32],
+}
+
+pub(crate) struct ResourceReplayResult {
+    pub selected: crate::selected_journal::SelectedResult,
+    pub handoff: Option<crate::selected_journal::SelectedResult>,
+}
+
+impl<'a> VerifiedResourceHandoff<'a> {
+    pub(crate) fn recovery(&self) -> &ReopenedResourceRecovery {
+        self.recovery
+    }
+    pub(crate) fn selected_sha256(&self) -> [u8; 32] {
+        self.selected_sha256
+    }
+
+    /// Reseal the actual HND source for a physically read-only ReFS observer.
+    /// This keeps normal writable service closed until that observer and the
+    /// separate expected/map comparison have succeeded.
+    pub(crate) fn seal_for_protected_verification(
+        self,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<VerifiedProtectedHandoff<'a>> {
+        let recovery = self.recovery;
+        recovery.revalidate(events)?;
+        ensure!(
+            recovery.initial_lifecycle == SelectedLifecycle::Handoff
+                && self.selected_sha256 == recovery.locator.ticket().new_selected_sha256,
+            "actual retained HND witness differs"
+        );
+        let volume = recovery.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut bound = BoundJournalObservation::open(
+            &mut recovery.journal,
+            recovery.locator.ticket(),
+            group,
+            &recovery.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        ensure!(
+            bound.lifecycle()? == SelectedLifecycle::Handoff,
+            "actual held journal no longer reports HND"
+        );
+        let BoundJournalObservation {
+            mut observation,
+            facts,
+        } = bound;
+        let ticket = observation.ticket;
+        let pins = n2r_win32::PagedRecoveryPins {
+            journal_binding: facts.binding,
+            journal_identity: facts.identity,
+            journal_path: facts.path,
+            journal_profile: facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        let policy = observation.index.clone();
+        let target = recovery
+            .target
+            .take()
+            .context("handoff target was already consumed")?;
+        let result = {
+            let journal = observation.journal.markerless_recovery_file()?;
+            match target {
+                ObservedTarget::Activated(target) => {
+                    target.seal_paged_handoff_for_observation(&policy, journal, &pins, events)
+                }
+                ObservedTarget::Frozen(target) => Ok(target),
+            }
+        };
+        let source = result.context("handoff read-only reseal stopped; reopen the excluded source before any further action")?;
+        drop(policy);
+        observation.retire()?;
+        let after = source.state(events)?;
+        ensure!(
+            after.disk_attributes == 3,
+            "handoff source did not remain offline and read-only"
+        );
+        recovery.initial_state = after;
+        recovery.target = Some(ObservedTarget::Frozen(source));
+        recovery.revalidate(events)?;
+        Ok(VerifiedProtectedHandoff {
+            recovery,
+            selected_sha256: self.selected_sha256,
+        })
+    }
+}
+
+impl<'a> VerifiedProtectedHandoff<'a> {
+    pub(crate) fn recovery(&self) -> &ReopenedResourceRecovery {
+        self.recovery
+    }
+    pub(crate) fn selected_sha256(&self) -> [u8; 32] {
+        self.selected_sha256
+    }
+    /// The SDK source exposes only the physically read-only observer route;
+    /// any fresh apply still requires a different actual clear journal/owner.
+    pub(crate) fn source_mut(&mut self) -> Result<&mut GeneralFrozenPartition> {
+        ensure!(
+            self.recovery.initial_lifecycle == SelectedLifecycle::Handoff,
+            "protected converted observation requires durable HND"
+        );
+        match self
+            .recovery
+            .target
+            .as_mut()
+            .context("protected HND source was consumed")?
+        {
+            ObservedTarget::Frozen(source) => Ok(source),
+            ObservedTarget::Activated(_) => {
+                anyhow::bail!("protected HND source is not sealed read-only")
+            }
+        }
+    }
+
+    /// Enable ordinary writable service only after the same actual protected
+    /// native observation and exact reopened-map comparison have succeeded.
+    /// HND, journal/index and selected NEW bytes are checked again at the
+    /// native transition; no saved Boolean supplies this capability.
+    pub(crate) fn bring_online_after_verified_observation(
+        self,
+        observation: &n2r_win32::GeneralLiveConvertedObservation,
+        map_proof: &crate::general_reconstruct::fast_verification::v4_maps::reopened::VerifiedMapComparison<'_>,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<&'a mut ReopenedResourceRecovery> {
+        map_proof.require_same(&self, observation)?;
+        let mut expected_readonly = self.recovery.initial_state.clone();
+        expected_readonly.disk_attributes = 2;
+        let report = observation.report();
+        let content = report
+            .content_observation
+            .as_ref()
+            .context("protected native content observation absent")?;
+        let known = content
+            .known_content
+            .as_ref()
+            .context("protected known-content proof absent")?;
+        ensure!(
+            self.recovery.initial_lifecycle == SelectedLifecycle::Handoff
+                && self.selected_sha256 == self.recovery.locator.ticket().new_selected_sha256
+                && observation.before() == &self.recovery.initial_state
+                && observation.after() == &self.recovery.initial_state
+                && observation.observed_readonly() == &expected_readonly
+                && self.recovery.initial_state.disk_attributes == 3
+                && report.pair.source == self.recovery.publication.source
+                && report.pair.shadow == self.recovery.publication.shadow
+                && report.native.binding.identity == self.recovery.publication.source.identity
+                && !report.conversion_qualified
+                && content.metadata_and_namespace_verified
+                && content.complete_stream_mappings_observed
+                && content.data_storage_validity_checked
+                && !content.full_file_hashes
+                && known
+                    .streams_hashed
+                    .checked_add(known.streams_without_content_baseline)
+                    == Some(usize::try_from(
+                        self.recovery.publication.resource_admission.data_streams
+                    )?)
+                && known.payload_bytes_read == content.admitted_payload_bytes_read,
+            "actual protected converted observation or known-content coverage differs"
+        );
+        let native_observation = observation;
+        let recovery = self.recovery;
+        recovery.revalidate(events)?;
+        let volume = recovery.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut bound = BoundJournalObservation::open(
+            &mut recovery.journal,
+            recovery.locator.ticket(),
+            group,
+            &recovery.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        ensure!(
+            bound.lifecycle()? == SelectedLifecycle::Handoff,
+            "actual held journal no longer reports HND"
+        );
+        let BoundJournalObservation {
+            mut observation,
+            facts,
+        } = bound;
+        let ticket = observation.ticket;
+        let pins = n2r_win32::PagedRecoveryPins {
+            journal_binding: facts.binding,
+            journal_identity: facts.identity,
+            journal_path: facts.path,
+            journal_profile: facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        let policy = observation.index.clone();
+        let target = recovery
+            .target
+            .take()
+            .context("verified protected source was already consumed")?;
+        let transition = {
+            let journal = observation.journal.markerless_recovery_file()?;
+            match target {
+                ObservedTarget::Frozen(target) => target.bring_online_after_paged_handoff(
+                    &policy,
+                    journal,
+                    &pins,
+                    native_observation,
+                    events,
+                ),
+                ObservedTarget::Activated(_) => {
+                    anyhow::bail!("verified protected source lost its readonly owner")
+                }
+            }
+        };
+        drop(policy);
+        let index_retirement = observation.retire();
+        transition.context("verified HND online transition stopped; source may already be online and must be rediscovered")?;
+        let mounted = n2r_win32::rediscover_general_volume_wait(
+            recovery.publication.source.clone(),
+            events,
+        )
+        .context(
+            "verified HND source may be online but its ReFS volume could not be rediscovered",
+        )?;
+        n2r_win32::volume_label::validate_original_partition(
+            &recovery.publication.source,
+            &mounted,
+        )?;
+        recovery.mounted = Some(mounted);
+        index_retirement
+            .context("HND source is online but temporary authenticated-index retirement failed")?;
+        recovery.revalidate_handoff_artifacts_after_mount(events)?;
+        Ok(recovery)
+    }
+}
+
+impl ReopenedResourceRecovery {
+    /// The publication checksum must come from independently retained trusted
+    /// storage, never from the adjacent checksum file alone. `index_path` is a
+    /// fresh temporary artifact on the actual journal volume.
+    pub(crate) fn open_observed(
+        path: &Path,
+        independently_supplied_sha256: [u8; 32],
+        maximum_publication_bytes: u64,
+        expected_pair: &GeneralSourceShadowBinding,
+        expected_journal: &GeneralJournalStorageBinding,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<Self> {
+        ensure!(
+            group.group() == ArtifactGroup::RecoveryCopy
+                && maximum_publication_bytes > 0
+                && maximum_publication_bytes <= scratch.budget().record_bytes,
+            "reopened publication needs its bounded recovery arena"
+        );
+        let same = scratch
+            .artifact_group()
+            .context("recovery scratch has no arena")?;
+        ensure!(
+            same.group() == group.group() && same.arena().same_arena(group.arena()),
+            "recovery scratch and group differ"
+        );
+        let size = std::fs::symlink_metadata(path)?.len();
+        let reserve = size
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(8 * 1024 * 1024))
+            .and_then(|n| n.checked_add(GeneralFrozenPartition::read_buffer_memory_bytes()))
+            .context("reopened publication RAM overflow")?;
+        ensure!(
+            size > 0 && size <= maximum_publication_bytes,
+            "recovery publication exceeds admission"
+        );
+        let memory = scratch.lease_ram(reserve)?;
+        let mut publication_file = HeldFile::open(
+            path,
+            independently_supplied_sha256,
+            Some(size),
+            maximum_publication_bytes,
+            scratch,
+        )?;
+        publication_file.file.seek(SeekFrom::Start(0))?;
+        let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+        let mut canonical = HashSink {
+            bytes: 0,
+            maximum: size,
+            hash: Sha256::new(),
+        };
+        serde_json::to_writer(&mut canonical, &publication)?;
+        ensure!(
+            canonical.bytes == size
+                && <[u8; 32]>::from(canonical.hash.finalize()) == independently_supplied_sha256,
+            "recovery publication is not the original canonical encoding"
+        );
+        publication.resource_admission.validate()?;
+        ensure!(
+            publication.source == expected_pair.source
+                && publication.shadow == expected_pair.shadow,
+            "recovery publication differs from the independently pinned request"
+        );
+        GeneralSourceShadowBinding {
+            source: publication.source.clone(),
+            shadow: publication.shadow.clone(),
+        }
+        .validate_with_resource_profile(Some(ResourceProfile::ResourceBoundedV4(Some(
+            publication.resource_admission,
+        ))))?;
+        publication.expected_source_label.validate()?;
+        ensure!(
+            publication.schema_version == 1
+                && publication.kind == "resource-allocation-recovery-envelope-v1"
+                && !publication.serialized_publication_grants_authority
+                && publication.source_inspection_sha256
+                    == hex::encode(publication.resource_admission.source_inspection_sha256)
+                && publication.expected.objects == publication.resource_admission.objects()?
+                && publication.source_fingerprint_kind
+                    == if publication.verification_policy.is_full_content() {
+                        crate::source_fingerprint::resource::FULL_KIND
+                    } else {
+                        crate::source_fingerprint::resource::EXTENT_KIND
+                    },
+            "recovery publication profile or source facts differ"
+        );
+        for value in [
+            &publication.source_sha256,
+            &publication.source_inspection_sha256,
+            &publication.source_views_sha256,
+            &publication.expected.semantic_sha256,
+            &publication.ticket_sha256,
+        ] {
+            digest(value)?;
+        }
+        let locator_sha = digest(&publication.locator.sha256)?;
+        let locator = DurableRecoveryLocator::open_observed(
+            Path::new(&publication.locator.path),
+            locator_sha,
+            scratch,
+            publication.locator.bytes,
+        )?;
+        ensure!(
+            locator.snapshot().file_bytes == publication.locator.bytes
+                && locator.source() == &publication.source
+                && locator.journal_binding() == expected_journal,
+            "held recovery locator and publication differ"
+        );
+        let volume = locator.journal_binding().disk.volume_path()?;
+        ensure!(
+            on_volume(&publication_file.snapshot.final_path, &volume)
+                && on_volume(&locator.snapshot().final_path, &volume)
+                && locator.journal_binding().disk.disk_number != publication.shadow.disk_number
+                && n2r_win32::layout::guid_bytes(
+                    &locator.journal_binding().disk.identity.disk_guid
+                )? != n2r_win32::layout::guid_bytes(&publication.shadow.identity.disk_guid)?,
+            "recovery artifacts are not on the independent journal volume"
+        );
+        let expected = HeldFile::open(
+            Path::new(&publication.expected.file.path),
+            digest(&publication.expected.file.sha256)?,
+            Some(publication.expected.file.bytes),
+            publication.resource_admission.expected_pages.max_file_bytes,
+            scratch,
+        )?;
+        ensure!(
+            expected
+                .snapshot
+                .final_path
+                .eq_ignore_ascii_case(&publication.expected.file.path)
+                && on_volume(&expected.snapshot.final_path, &volume),
+            "reopened expected pages route differs"
+        );
+        let maps = if let Some(pin) = &publication.recovery_maps {
+            ensure!(pin.records > 0, "empty V4 recovery map is invalid");
+            let held = HeldFile::open(
+                Path::new(&pin.file.path),
+                digest(&pin.file.sha256)?,
+                Some(pin.file.bytes),
+                publication.resource_admission.map_pages.max_file_bytes,
+                scratch,
+            )?;
+            ensure!(
+                held.snapshot
+                    .final_path
+                    .eq_ignore_ascii_case(&pin.file.path)
+                    && on_volume(&held.snapshot.final_path, &volume),
+                "reopened recovery-map route differs"
+            );
+            Some(held)
+        } else {
+            None
+        };
+        ensure!(
+            locator
+                .snapshot()
+                .final_path
+                .eq_ignore_ascii_case(&publication.locator.path),
+            "reopened locator route differs"
+        );
+        let ticket_bytes = serde_json::to_vec(locator.ticket())?;
+        ensure!(
+            ticket_bytes.len() <= 4096
+                && <[u8; 32]>::from(Sha256::digest(&ticket_bytes))
+                    == digest(&publication.ticket_sha256)?,
+            "recovery locator ticket and publication differ"
+        );
+        let target = ObservedTarget::reopen(publication.source.clone(), events)?;
+        let initial_state = target.state(events)?;
+        ensure!(
+            matches!(initial_state.disk_attributes, 1 | 3),
+            "reopened recovery source is not persistently offline"
+        );
+        let identity = locator.journal_identity();
+        let marker_identity = locator
+            .ticket()
+            .marker_profile
+            .is_some()
+            .then_some(&identity);
+        let (mut journal, _) = BoundNativeRecoveryJournal::open(
+            locator.journal_path(),
+            locator.journal_binding(),
+            locator.journal_profile()?,
+            locator.ticket(),
+            marker_identity,
+            locator.marker_use(),
+        )?;
+        {
+            let (_, facts) = journal.split_for_observation()?;
+            ensure!(
+                facts.binding == locator.journal_binding()
+                    && *facts.identity == identity
+                    && facts.path == locator.journal_path()
+                    && facts.profile == locator.journal_profile()?
+                    && facts.marker_use == locator.marker_use()
+                    && facts.marker_native_qualified == locator.marker_native_qualified(),
+                "native journal owner and published locator differ"
+            );
+        }
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut observation = BoundJournalObservation::open(
+            &mut journal,
+            locator.ticket(),
+            group,
+            scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        let initial_lifecycle = observation.lifecycle()?;
+        observation.retire()?;
+        let mut recovered = Self {
+            publication,
+            publication_file,
+            expected,
+            maps,
+            locator,
+            journal,
+            target: Some(target),
+            initial_state,
+            initial_lifecycle,
+            mounted: None,
+            scratch: scratch.clone(),
+            _memory: memory,
+        };
+        // Complete the other side of the journal-scan boundary exactly once.
+        // The expected and map files were hashed when opened, and remain held
+        // while this rehash and the native lifecycle/state checks run.
+        recovered.revalidate(events)?;
+        Ok(recovered)
+    }
+
+    /// Rechecks held files and the real excluded target; no raw writes occur.
+    pub(crate) fn revalidate(&mut self, events: &mut Vec<NativeEvent>) -> Result<()> {
+        self.publication_file.revalidate(&self.scratch)?;
+        self.expected.revalidate(&self.scratch)?;
+        if let Some(maps) = &mut self.maps {
+            maps.revalidate(&self.scratch)?;
+        }
+        self.locator.revalidate()?;
+        self.journal.revalidate()?;
+        let (journal, _) = self.journal.split_for_observation()?;
+        ensure!(
+            super::sj::classify(journal, self.locator.ticket())? == self.initial_lifecycle,
+            "reopened journal lifecycle changed during observation"
+        );
+        ensure!(
+            self.target
+                .as_ref()
+                .context("recovery target was consumed after a failed operation")?
+                .state(events)?
+                == self.initial_state,
+            "reopened target exclusion or identity changed"
+        );
+        Ok(())
+    }
+
+    /// Recheck the still-held published artifacts and real HND journal after
+    /// the source has crossed the online boundary. This never re-admits the
+    /// old NTFS source and does not replace native ReFS/stream-map validation.
+    pub(crate) fn revalidate_handoff_artifacts_after_mount(
+        &mut self,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<GeneralDiskBinding> {
+        ensure!(
+            self.target.is_none() && self.initial_lifecycle == SelectedLifecycle::Handoff,
+            "online artifact revalidation requires a consumed HND target"
+        );
+        self.publication_file.revalidate(&self.scratch)?;
+        self.expected.revalidate(&self.scratch)?;
+        if let Some(maps) = &mut self.maps {
+            maps.revalidate(&self.scratch)?;
+        }
+        self.locator.revalidate()?;
+        self.journal.revalidate()?;
+        ensure!(
+            self.locator.ticket().marker_profile.is_none(),
+            "mounted V4 markerless HND required"
+        );
+        let body_bytes = self
+            .locator
+            .ticket()
+            .journal_length
+            .checked_sub(super::BODY)
+            .context("mounted HND journal is shorter than its marker area")?;
+        let immutable = self.locator.ticket().immutable_sha256;
+        let _journal_hash_ram = self.scratch.lease_ram(4 * 1024 * 1024)?;
+        let (journal, _) = self.journal.split_for_observation()?;
+        ensure!(
+            super::sj::classify(journal, self.locator.ticket())? == SelectedLifecycle::Handoff,
+            "actual native journal no longer reports HND"
+        );
+        ensure!(
+            n2r_win32::sha256_native::hash_range(journal, super::BODY, body_bytes)? == immutable,
+            "mounted HND journal immutable body changed"
+        );
+        ensure!(
+            super::sj::classify(journal, self.locator.ticket())? == SelectedLifecycle::Handoff,
+            "actual native HND changed during immutable journal verification"
+        );
+        let mounted = self
+            .mounted
+            .as_ref()
+            .context("mounted HND source has not been rediscovered")?
+            .clone();
+        n2r_win32::volume_label::validate_original_partition(&self.publication.source, &mounted)?;
+        let before = n2r_win32::observe_general_disk_state_readonly(mounted.clone(), events)?;
+        ensure!(
+            before.disk_attributes == 0,
+            "HND source is not online and writable"
+        );
+        ensure!(
+            n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == "ReFS",
+            "actual HND source did not mount as ReFS"
+        );
+        let after = n2r_win32::observe_general_disk_state_readonly(mounted.clone(), events)?;
+        ensure!(
+            after == before,
+            "mounted HND source route changed during observation"
+        );
+        Ok(mounted)
+    }
+
+    /// Reconstruct the paged policy from the same fully authenticated native
+    /// journal and replay only an already durable markerless AP/RB state. On
+    /// every failure the source stays offline and this owner must be reopened;
+    /// a successful HND/ABT returns with its raw write policy removed.
+    pub(crate) fn replay_markerless<
+        F: FnOnce(&crate::selected_journal::SelectedResult) -> Result<()>,
+    >(
+        &mut self,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        direction: PagedRecoveryDirection,
+        after_resume: F,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<ResourceReplayResult> {
+        self.revalidate(events)?;
+        ensure!(
+            match direction {
+                PagedRecoveryDirection::Resume =>
+                    self.initial_lifecycle == SelectedLifecycle::ApplyIntent,
+                PagedRecoveryDirection::Rollback => matches!(
+                    self.initial_lifecycle,
+                    SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent
+                ),
+            },
+            "actual recovery lifecycle refuses requested replay"
+        );
+        let volume = self.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let observation = BoundJournalObservation::open(
+            &mut self.journal,
+            self.locator.ticket(),
+            group,
+            &self.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        let target = match self
+            .target
+            .take()
+            .context("recovery target was previously consumed")?
+        {
+            ObservedTarget::Activated(target) => {
+                super::replay::MarkerlessRecoveryTarget::Activated(target)
+            }
+            ObservedTarget::Frozen(source) => {
+                super::replay::MarkerlessRecoveryTarget::Frozen(source)
+            }
+        };
+        let replayed = observation.replay_markerless(
+            target,
+            self.locator.source(),
+            direction,
+            after_resume,
+            events,
+        ).context("resource replay stopped; reopen the excluded source and classify its actual journal before any further action")?;
+        let after = replayed.target.state(events)?;
+        ensure!(
+            after.disk_attributes == 1,
+            "replayed source is not persistently offline"
+        );
+        self.initial_state = after;
+        self.target = Some(ObservedTarget::Activated(replayed.target));
+        self.initial_lifecycle = match direction {
+            PagedRecoveryDirection::Resume => SelectedLifecycle::Handoff,
+            PagedRecoveryDirection::Rollback => SelectedLifecycle::Aborted,
+        };
+        self.revalidate(events)?;
+        Ok(ResourceReplayResult {
+            selected: replayed.selected,
+            handoff: replayed.handoff,
+        })
+    }
+
+    /// Re-authenticate the actual journal and the selected postimage while
+    /// retaining the excluded source. This does not mount or claim that the
+    /// retained file-data extents or the ReFS namespace have been verified.
+    pub(crate) fn verify_handoff<'a>(
+        &'a mut self,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<VerifiedResourceHandoff<'a>> {
+        self.revalidate(events)?;
+        ensure!(
+            self.initial_lifecycle == SelectedLifecycle::Handoff,
+            "durable HND required"
+        );
+        let volume = self.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut observation = BoundJournalObservation::open(
+            &mut self.journal,
+            self.locator.ticket(),
+            group,
+            &self.scratch,
+            index_path,
+            maximum_index_bytes,
+        )?;
+        let target = self
+            .target
+            .as_mut()
+            .context("recovery target was consumed")?;
+        let before = target.state(events)?;
+        ensure!(
+            matches!(before.disk_attributes, 1 | 3),
+            "handoff source is not persistently offline"
+        );
+        let selected_sha256 = match &mut *target {
+            ObservedTarget::Activated(target) => {
+                ensure!(
+                    target.binding() == self.locator.source(),
+                    "handoff source binding differs"
+                );
+                let length = target.byte_len();
+                observation.verify_handoff_data(target, length)?
+            }
+            ObservedTarget::Frozen(target) => {
+                ensure!(
+                    target.binding() == self.locator.source(),
+                    "handoff source binding differs"
+                );
+                let length = target.byte_len();
+                observation.verify_handoff_data(target, length)?
+            }
+        };
+        ensure!(
+            target.state(events)? == before,
+            "handoff source identity or exclusion changed"
+        );
+        observation.retire()?;
+        self.revalidate(events)?;
+        Ok(VerifiedResourceHandoff {
+            recovery: self,
+            selected_sha256,
+        })
+    }
+
+    /// Abandon an actual clear publication with its unchanged OLD source. No
+    /// source bytes are written; ABT is durable before the source is exposed.
+    pub(crate) fn abandon_clear(
+        &mut self,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<()> {
+        self.revalidate(events)?;
+        ensure!(self.initial_lifecycle == SelectedLifecycle::PreparedClear,
+            "clear abandonment requires the actual clear lifecycle");
+        let volume = self.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut observation = BoundJournalObservation::open(
+            &mut self.journal, self.locator.ticket(), group, &self.scratch,
+            index_path, maximum_index_bytes,
+        )?;
+        let target = self.target.as_mut().context("clear source was consumed")?;
+        let before = target.state(events)?;
+        ensure!(matches!(before.disk_attributes, 1 | 3), "clear source is not offline");
+        match &mut *target {
+            ObservedTarget::Activated(source) => {
+                let length = source.byte_len();
+                observation.abandon_clear_data(source, length)?;
+            }
+            ObservedTarget::Frozen(source) => {
+                let length = source.byte_len();
+                observation.abandon_clear_data(source, length)?;
+            }
+        }
+        ensure!(target.state(events)? == before, "clear source changed during abandonment");
+        observation.retire()?;
+        self.initial_lifecycle = SelectedLifecycle::Aborted;
+        self.revalidate(events)?;
+        Ok(())
+    }
+
+    /// Recheck actual ABT, restore-required bytes and free-granule admissibility
+    /// on the held offline device, then consume that same owner via the native
+    /// rollback gate. This does not claim byte-for-byte restoration of free space.
+    pub(crate) fn restore_aborted(
+        &mut self,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<GeneralDiskBinding> {
+        self.revalidate(events)?;
+        ensure!(self.initial_lifecycle == SelectedLifecycle::Aborted, "durable ABT required");
+        let volume = self.locator.journal_binding().disk.volume_path()?;
+        let _index_parent = hold_index_parent(index_path, &volume)?;
+        let mut bound = BoundJournalObservation::open(
+            &mut self.journal, self.locator.ticket(), group, &self.scratch,
+            index_path, maximum_index_bytes,
+        )?;
+        let target = self.target.as_mut().context("rollback target was consumed")?;
+        let before = target.state(events)?;
+        ensure!(matches!(before.disk_attributes, 1 | 3), "rollback source is not offline");
+        match &mut *target {
+            ObservedTarget::Activated(source) => {
+                let length = source.byte_len();
+                bound.verify_aborted_data(source, length)?;
+            }
+            ObservedTarget::Frozen(source) => {
+                let length = source.byte_len();
+                bound.verify_aborted_data(source, length)?;
+            }
+        }
+        ensure!(target.state(events)? == before, "rollback source changed during validation");
+        let BoundJournalObservation { mut observation, facts } = bound;
+        let ticket = observation.ticket;
+        let pins = n2r_win32::PagedRecoveryPins {
+            journal_binding: facts.binding, journal_identity: facts.identity,
+            journal_path: facts.path, journal_profile: facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        let policy = observation.index.clone();
+        let target = self.target.take().context("rollback target was consumed")?;
+        let transition = {
+            let journal = observation.journal.markerless_recovery_file()?;
+            match target {
+                ObservedTarget::Activated(target) => target.bring_online_after_paged_abort(&policy, journal, &pins, events),
+                ObservedTarget::Frozen(target) => target.bring_online_after_paged_abort(&policy, journal, &pins, events),
+            }
+        };
+        drop(policy);
+        let retirement = observation.retire();
+        transition.context("ABT online transition stopped; source may already be online and must be rediscovered")?;
+        let mounted = n2r_win32::rediscover_general_volume_wait(self.publication.source.clone(), events)
+            .context("ABT source may be online but its volume could not be rediscovered")?;
+        n2r_win32::volume_label::validate_original_partition(&self.publication.source, &mounted)?;
+        ensure!(n2r_win32::mounted_filesystem_general(mounted.clone(), events)? == "NTFS",
+            "restored source did not mount as NTFS");
+        self.mounted = Some(mounted.clone());
+        retirement.context("ABT source is online but temporary index retirement failed")?;
+        self.publication_file.revalidate(&self.scratch)?;
+        self.expected.revalidate(&self.scratch)?;
+        if let Some(maps) = &mut self.maps { maps.revalidate(&self.scratch)?; }
+        self.locator.revalidate()?;
+        self.journal.revalidate()?;
+        let (journal, _) = self.journal.split_for_observation()?;
+        ensure!(super::sj::classify(journal, self.locator.ticket())? == SelectedLifecycle::Aborted,
+            "ABT journal changed after restoring NTFS");
+        Ok(mounted)
+    }
+
+    pub(crate) fn expected_artifact(&self) -> ReopenedArtifact<'_> {
+        ReopenedArtifact {
+            file: &self.expected.file,
+            snapshot: &self.expected.snapshot,
+            sha256: self.expected.sha256,
+        }
+    }
+    pub(crate) fn publication_artifact(&self) -> ReopenedArtifact<'_> {
+        ReopenedArtifact {
+            file: &self.publication_file.file,
+            snapshot: &self.publication_file.snapshot,
+            sha256: self.publication_file.sha256,
+        }
+    }
+    pub(crate) fn map_artifact(&self) -> Option<ReopenedArtifact<'_>> {
+        self.maps.as_ref().map(|maps| ReopenedArtifact {
+            file: &maps.file,
+            snapshot: &maps.snapshot,
+            sha256: maps.sha256,
+        })
+    }
+    pub(crate) fn resource_admission(&self) -> SourceResourceAdmission {
+        self.publication.resource_admission
+    }
+    pub(crate) fn verification_policy(&self) -> VerificationPolicy {
+        self.publication.verification_policy
+    }
+    pub(crate) fn expected_semantic_sha256(&self) -> &str {
+        &self.publication.expected.semantic_sha256
+    }
+    pub(crate) fn expected_objects(&self) -> u64 {
+        self.publication.expected.objects
+    }
+    pub(crate) fn expected_source_label(&self) -> &VolumeLabel {
+        &self.publication.expected_source_label
+    }
+    pub(crate) fn expected_mount_paths(&self) -> &[String] {
+        &self.publication.expected_mount_paths
+    }
+    pub(crate) fn map_records(&self) -> Option<u64> {
+        self.publication.recovery_maps.as_ref().map(|m| m.records)
+    }
+    pub(crate) fn ticket(&self) -> &crate::selected_journal::SelectedTicket {
+        self.locator.ticket()
+    }
+
+    pub(crate) fn observed_lifecycle(&self) -> SelectedLifecycle {
+        self.initial_lifecycle
+    }
+    pub(crate) fn source(&self) -> &GeneralDiskBinding {
+        &self.publication.source
+    }
+    pub(crate) fn mounted_source(&self) -> Option<&GeneralDiskBinding> {
+        self.mounted.as_ref()
+    }
+    pub(crate) fn shadow(&self) -> &GeneralDiskBinding {
+        &self.publication.shadow
+    }
+    pub(crate) fn source_sha256(&self) -> &str {
+        &self.publication.source_sha256
+    }
+    pub(crate) fn source_inspection_sha256(&self) -> &str {
+        &self.publication.source_inspection_sha256
+    }
+    pub(crate) fn source_views_sha256(&self) -> &str {
+        &self.publication.source_views_sha256
+    }
+    pub(crate) fn runtime_scratch(&self) -> &SourceScratch {
+        &self.scratch
+    }
+    pub(crate) fn source_disk_attributes(&self) -> u64 {
+        self.initial_state.disk_attributes
+    }
+    pub(crate) fn source_route_exclusive(&self) -> bool {
+        self.target.as_ref().is_some_and(ObservedTarget::exclusive)
+    }
+    pub(crate) fn publication_path(&self) -> PathBuf {
+        PathBuf::from(&self.publication_file.snapshot.final_path)
+    }
+}

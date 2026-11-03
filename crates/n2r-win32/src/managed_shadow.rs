@@ -254,7 +254,6 @@ impl CreatedDisk {
             .strip_prefix("\\\\.\\PhysicalDrive")
             .filter(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
             .and_then(|s| s.parse::<u32>().ok())
-            .filter(|n| *n <= 4095)
             .ok_or_else(|| invalid("provider disk path differs"))?;
         let attached = AttachedDisk {
             created: self,

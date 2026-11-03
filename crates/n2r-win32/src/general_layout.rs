@@ -78,18 +78,14 @@ impl GeneralDiskBinding {
     pub fn validate(&self) -> io::Result<()> {
         let p = &self.identity;
         require(
-            self.disk_number <= 4095,
-            "disk route exceeds bounded profile",
-        )?;
-        require(
             // Windows disk offsets are signed 64-bit values. The partition
             // and GPT checks below determine the actual minimum geometry;
             // the physical disk may be small or substantially larger than the
             // source partition without invalidating its identity.
             p.disk_bytes <= i64::MAX as u64
                 && p.disk_bytes.is_multiple_of(512)
-                && (1..=128).contains(&p.partition_number)
-                && p.partition_offset >= 1 << 20
+                && p.partition_number != 0
+                && p.partition_offset >= u64::from(p.physical_sector_bytes)
                 && p.partition_offset.is_multiple_of(4096)
                 && p.partition_bytes >= 4096
                 && p.partition_bytes.is_multiple_of(4096)
@@ -152,7 +148,8 @@ impl GeneralDiskBinding {
         )?;
         let count = layout::u32_at(bytes, 4)? as usize;
         require(
-            (1..=128).contains(&count) && bytes.len() == 48 + count * 144,
+            count != 0
+                && count.checked_mul(144).and_then(|n| n.checked_add(48)) == Some(bytes.len()),
             "GPT entry table incomplete",
         )?;
         let first = layout::u64_at(bytes, 24)?;
@@ -211,7 +208,10 @@ impl GeneralDiskBinding {
                 target += 1;
             } else {
                 require(
-                    kind == msr && size <= 16 << 20 && end <= self.identity.partition_offset,
+                    // An MSR has no independently mounted user filesystem.
+                    // Its historical 16/128 MiB size and ordering do not
+                    // change this owner's whole-disk exclusion contract.
+                    kind == msr,
                     "other data, EFI or system partitions exclude whole-disk isolation",
                 )?;
                 msr_count += 1;

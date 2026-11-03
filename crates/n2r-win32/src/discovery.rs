@@ -126,7 +126,7 @@ pub fn single_extent(bytes: &[u8]) -> io::Result<(u32, u64, u64)> {
     let offset = u64_at(bytes, 16)?;
     let length = u64_at(bytes, 24)?;
     require(
-        number <= 4095 && offset > 0 && length > 0 && offset.checked_add(length).is_some(),
+        offset > 0 && length > 0 && offset.checked_add(length).is_some(),
         "invalid volume extent",
     )?;
     Ok((number, offset, length))
@@ -172,7 +172,7 @@ pub fn binding_from_evidence(
     )?;
     let count = u32_at(raw, 4)? as usize;
     require(
-        (1..=128).contains(&count) && raw.len() == 48 + 144 * count,
+        count != 0 && count.checked_mul(144).and_then(|n| n.checked_add(48)) == Some(raw.len()),
         "incomplete or excessive GPT entry array",
     )?;
     let first = u64_at(raw, 24)?;

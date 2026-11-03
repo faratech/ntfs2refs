@@ -13,15 +13,11 @@ use windows_sys::Win32::{
         GetVolumePathNamesForVolumeNameW, QueryDosDeviceW,
     },
     System::{
-        IO::DeviceIoControl, Ioctl::IOCTL_DISK_IS_WRITABLE,
-        SystemInformation::GetWindowsDirectoryW,
+        IO::DeviceIoControl, Ioctl::IOCTL_DISK_IS_WRITABLE, SystemInformation::GetWindowsDirectoryW,
     },
 };
 
 const MAX_REPLY: usize = 1024 * 1024;
-const MAX_DISKS: usize = 1024;
-const MAX_VOLUMES: usize = 4096;
-const MAX_PARTITIONS: usize = 16384;
 const MAX_STRING_UNITS: usize = 65536;
 const MAX_RETAINED_TEXT: usize = 16 * 1024 * 1024;
 
@@ -45,9 +41,6 @@ fn multistring(buffer: &[u16]) -> io::Result<Vec<String>> {
             .ok_or_else(|| invalid("unterminated native MULTI_SZ"))?;
         if count == 0 {
             return Ok(result);
-        }
-        if result.len() >= 8192 {
-            return Err(invalid("native string count exceeds inventory bound"));
         }
         result.push(
             String::from_utf16(&buffer[cursor..cursor + count])
@@ -221,9 +214,6 @@ fn disk_numbers() -> io::Result<Vec<u32>> {
                     .parse()
                     .map_err(|_| invalid("physical disk number overflow"))?,
             );
-            if numbers.len() > MAX_DISKS {
-                return Err(invalid("available disks exceed inventory bound"));
-            }
         }
     }
     Ok(numbers.into_iter().collect())
@@ -239,7 +229,7 @@ fn layout(disk: &mut DiskInventory, bytes: &[u8]) -> io::Result<()> {
         .checked_mul(144)
         .and_then(|value| value.checked_add(48))
         .ok_or_else(|| invalid("drive layout size overflow"))?;
-    if count > 4096 || bytes.len() < required {
+    if bytes.len() < required {
         return Err(invalid(
             "partition layout count/reply exceeds bounds or is incomplete",
         ));
@@ -623,14 +613,23 @@ pub(super) fn inventory() -> io::Result<DriveInventory> {
         ));
     } else {
         let _search = VolumeSearch(handle);
-        let mut volume_steps = 0usize;
+        // Bound retained evidence bytes, not an arbitrary number of volumes.
+        // Repeated replies must refuse immediately rather than relying on an
+        // iteration ceiling to discover a non-progressing native enumeration.
+        let mut volume_names = BTreeSet::new();
         loop {
-            volume_steps += 1;
-            if volume_steps > MAX_VOLUMES {
-                return Err(invalid("volume enumeration exceeds inventory bound"));
-            }
-            if result.volumes.len() >= MAX_VOLUMES {
-                return Err(invalid("volume count exceeds inventory bound"));
+            let used = name
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(name.len());
+            let observed_name = name[..used].to_vec();
+            retained = retained
+                .checked_add(used.saturating_mul(2).saturating_add(96))
+                .ok_or_else(|| invalid("volume enumeration storage overflow"))?;
+            if retained > MAX_RETAINED_TEXT || !volume_names.insert(observed_name) {
+                return Err(invalid(
+                    "volume enumeration repeats or exceeds its retained-byte budget",
+                ));
             }
             match text(&name) {
                 Ok(root) => {
@@ -678,15 +677,8 @@ pub(super) fn inventory() -> io::Result<DriveInventory> {
                 .map(|extent| extent.disk_number)
                 .collect::<BTreeSet<_>>()
         });
-    let mut partition_count = 0usize;
     for number in numbers {
         let mut disk = disk(number);
-        partition_count = partition_count
-            .checked_add(disk.partitions.len())
-            .ok_or_else(|| invalid("partition count overflow"))?;
-        if partition_count > MAX_PARTITIONS {
-            return Err(invalid("total partitions exceed inventory bound"));
-        }
         for part in &mut disk.partitions {
             for volume in &result.volumes {
                 let matches = volume.extents.iter().any(|extent| {

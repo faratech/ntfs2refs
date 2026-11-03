@@ -230,3 +230,23 @@ closing metadata buffers while retaining both metadata brackets. Paged
 source/evidence records and bounded handle windows
 remain necessary for broad scale. Required-zone zero skipping remains disabled;
 any smaller footprint needs independently authenticated ownership evidence.
+
+## Immediate admission boundary reuse (2026-11-03)
+
+The fresh-apply qualification now brackets its immediate read-only admission
+operation once. Previously, two successive revalidations each performed a full
+opening and closing scan of the same frozen source fingerprint and consumed
+shadow ranges. The scoped implementation retains one complete opening and one
+complete closing scan, including on callback failure, while preserving both
+sets of owner, publication, preparation-guard, journal-index and native checks.
+A private nonescaping witness binds the exact live source and target owners;
+it cannot authorize writes or become a persisted validation cache. The separate
+fresh-apply validation and the SDK's checks before the AP transition remain.
+
+For the authenticated f856 minimum-scratch case, consumed shadow ranges total
+6,176,772,096 bytes. Removing two duplicated scans avoids 12,353,544,192 logical
+shadow bytes at this boundary. This is code-derived attribution against that
+saved ledger, not a measured speedup or physical-I/O result. The earlier frozen
+a0b native results do not qualify this changed build. Focused compilation passed;
+native qualification of the optimization remains pending. No unit tests were
+added or run.

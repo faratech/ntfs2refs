@@ -202,7 +202,85 @@ fn require_owners_with_capture_witness(
     witness: &crate::general_shadow::paged_capture::CaptureRevalidation<'_>,
     events: &mut Vec<n2r_win32::NativeEvent>,
 ) -> Result<()> {
+    with_frozen_preparation_revalidation(prepared, witness, events, |frozen, prepared, events| {
+        require_owners_between_frozen_checks(
+            frozen,
+            prepared,
+            expected,
+            maps,
+            locator,
+            journal_receipt,
+            events,
+        )
+    })
+}
+
+/// A borrow of the exact source and protected target whose complete frozen
+/// bytes were checked at this boundary's opening. It supplies no writer or
+/// admission authority and cannot escape the higher-ranked callback below.
+struct FrozenPreparedWitness<'boundary> {
+    source_owner: usize,
+    proof: &'boundary crate::general_composite_target::paged::ProtectedPagedTargetSelection,
+}
+impl FrozenPreparedWitness<'_> {
+    fn require(&self, prepared: &ProtectedPreparedJournal<'_, '_, '_, '_, '_>) -> Result<()> {
+        let actual = prepared.candidate.protected_proof();
+        ensure!(
+            self.source_owner == prepared.context.source_owner_identity()
+                && std::ptr::eq(self.proof, actual)
+                && actual.scope().matches_source_owner(self.source_owner),
+            "read-only preparation boundary lost its actual source or protected target owner"
+        );
+        Ok(())
+    }
+}
+
+fn finish_readonly_boundary<T>(result: Result<T>, closing: Result<()>) -> Result<T> {
+    match (result, closing) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(closing)) => Err(error.context(format!(
+            "read-only preparation also failed its complete closing validation: {closing:#}"
+        ))),
+    }
+}
+
+fn with_frozen_preparation_revalidation<'journal, 'domain, 'capture, 'proof, 'scope, T>(
+    prepared: &mut ProtectedPreparedJournal<'journal, 'domain, 'capture, 'proof, 'scope>,
+    witness: &crate::general_shadow::paged_capture::CaptureRevalidation<'_>,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    callback: impl for<'boundary> FnOnce(
+        &'boundary FrozenPreparedWitness<'boundary>,
+        &'boundary mut ProtectedPreparedJournal<'journal, 'domain, 'capture, 'proof, 'scope>,
+        &'boundary mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<T>,
+) -> Result<T> {
     prepared.revalidate_with_capture_witness(witness, events)?;
+    let frozen = FrozenPreparedWitness {
+        source_owner: prepared.context.source_owner_identity(),
+        proof: prepared.candidate.protected_proof(),
+    };
+    let result = callback(&frozen, prepared, events);
+    // Every callback here is read-only on source/target. Ordinary file/device
+    // exclusion does not prove raw aliases absent, so always repeat the FULL
+    // original source fingerprint and target consumed-range hash afterward,
+    // including callback errors. Only a successful close can release T.
+    let closing = prepared.revalidate_with_capture_witness(witness, events);
+    finish_readonly_boundary(result, closing)
+}
+
+/// Preserve all native/identity/lifecycle, expected/map, artifact and journal
+/// checks between the exact frozen-owner opening and closing byte scans.
+fn require_owners_between_frozen_checks(
+    frozen: &FrozenPreparedWitness<'_>,
+    prepared: &mut ProtectedPreparedJournal<'_, '_, '_, '_, '_>,
+    expected: &PagedExpectedTree,
+    maps: Option<&V4RecoveryMaps>,
+    locator: &mut super::super::durable_anchor::DurableRecoveryLocator,
+    journal_receipt: Option<&super::super::reopen::PreparedJournalIndex>,
+    _events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<()> {
+    frozen.require(prepared)?;
     let context = &prepared.context;
     context.require_source_evidence()?;
     let admission = context.resource_admission();
@@ -293,7 +371,41 @@ fn require_owners_with_capture_witness(
             "prepared journal immutable bytes changed before qualification"
         );
     }
-    prepared.revalidate_with_capture_witness(witness, events)
+    frozen.require(prepared)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn require_published_between_frozen_checks(
+    frozen: &FrozenPreparedWitness<'_>,
+    prepared: &mut ProtectedPreparedJournal<'_, '_, '_, '_, '_>,
+    expected: &PagedExpectedTree,
+    maps: Option<&V4RecoveryMaps>,
+    locator: &mut super::super::durable_anchor::DurableRecoveryLocator,
+    publication: &ArtifactLease,
+    checksum: &ArtifactLease,
+    journal_receipt: Option<&super::super::reopen::PreparedJournalIndex>,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<()> {
+    frozen.require(prepared)?;
+    publication.revalidate()?;
+    checksum.revalidate()?;
+    prepared.context.require_preparation_delegated(
+        Path::new(&publication.snapshot().final_path),
+        publication.sha256(),
+        events,
+    )?;
+    if let Some(index) = journal_receipt {
+        index.require_ticket(&prepared.inner.ticket)?;
+    }
+    require_owners_between_frozen_checks(
+        frozen,
+        prepared,
+        expected,
+        maps,
+        locator,
+        journal_receipt,
+        events,
+    )
 }
 
 fn save_publication(
@@ -538,27 +650,70 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
         mut checkpoint_events: impl FnMut(&mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
     ) -> Result<ResourceFreshApply<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>> {
         checkpoint_native_events(events, &mut checkpoint_events)?;
-        self.revalidate(events)?;
+        // Admission is one immediate read-only operation. Keep exhaustive
+        // arena/capture and frozen source/target checks on BOTH sides of the
+        // whole operation instead of nesting two complete before/after scans.
+        // The non-escaping witness binds the exact original live owners; only
+        // the final successful close releases the owned admission result.
+        let admission = self.closure.with_revalidation(|arena| {
+            let capture = self.prepared.candidate.protected_proof().captured();
+            capture.with_arena_revalidation(arena, |capture_witness| {
+                with_frozen_preparation_revalidation(
+                    &mut self.prepared,
+                    capture_witness,
+                    events,
+                    |frozen, prepared, events| {
+                        let result = (|| {
+                            require_published_between_frozen_checks(
+                                frozen, prepared, self.expected, self.maps.as_ref(),
+                                &mut self.locator, &self.publication, &self.checksum,
+                                self.write_index.as_ref(), events,
+                            )?;
+                            checkpoint_native_events(events, &mut checkpoint_events)?;
+                            ensure!(
+                                prepared.inner.ticket.marker_profile.is_none()
+                                    && self.write_index.is_some(),
+                                "fresh resource apply requires the actual prepared markerless write index"
+                            );
+                            frozen.require(prepared)?;
+                            let admission = prepared.context.qualify_prepared_target(
+                                prepared.candidate.protected_proof(),
+                                self.expected,
+                                &self.closure,
+                                events,
+                            )?;
+                            checkpoint_native_events(events, &mut checkpoint_events)?;
+                            admission.require_binding(
+                                prepared.context,
+                                prepared.candidate.protected_proof(),
+                                self.expected,
+                                &self.closure,
+                            )?;
+                            require_published_between_frozen_checks(
+                                frozen, prepared, self.expected, self.maps.as_ref(),
+                                &mut self.locator, &self.publication, &self.checksum,
+                                self.write_index.as_ref(), events,
+                            )?;
+                            Ok(admission)
+                        })();
+                        // Drain even a failed callback before the closing
+                        // source/device observations need their bounded batch.
+                        let drained = checkpoint_native_events(events, &mut checkpoint_events);
+                        match (result, drained) {
+                            (Ok(admission), Ok(())) => Ok(admission),
+                            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+                            (Err(error), Err(drain)) => Err(error.context(format!(
+                                "read-only admission native-event checkpoint also failed: {drain:#}"
+                            ))),
+                        }
+                    },
+                )
+            })
+        })?;
         checkpoint_native_events(events, &mut checkpoint_events)?;
-        ensure!(
-            self.prepared.inner.ticket.marker_profile.is_none() && self.write_index.is_some(),
-            "fresh resource apply requires the actual prepared markerless write index"
-        );
-        let admission = self.prepared.context.qualify_prepared_target(
-            self.prepared.candidate.protected_proof(),
-            self.expected,
-            &self.closure,
-            events,
-        )?;
-        checkpoint_native_events(events, &mut checkpoint_events)?;
-        admission.require_binding(
-            self.prepared.context,
-            self.prepared.candidate.protected_proof(),
-            self.expected,
-            &self.closure,
-        )?;
-        self.revalidate(events)?;
-        checkpoint_native_events(events, &mut checkpoint_events)?;
+        // ResourceFreshApply still performs its separate full revalidation,
+        // and the SDK independently proves OLD bytes/journal identity/body on
+        // both sides of its actual AP transition before any source write.
         Ok(ResourceFreshApply::new(self, admission))
     }
 

@@ -61,10 +61,9 @@ that candidate's pinned bin, source archive and manifest remain unchanged.
 Count ALL bytes in this shared target in addition to lab ActualBytes against
 the original fixed329374052988B maximum; do not reset the epoch. Preserve the
 17179869184B host-free floor. Use four jobs while host memory is constrained;
-build only the binaries actually needed. A shared-target mode for
-lab/Build-ReleaseCandidate.ps1 is in progress. Until available, use the pinned
-toolchain with --target-dir pointing at the shared path and --bin for the needed
-executable, then pin the actual source and binary before native execution.
+build only the binaries actually needed. The shared-target mode for
+lab/Build-ReleaseCandidate.ps1 is implemented and a real targeted build passed;
+use the invocation above and pin the resulting binary before native execution.
 Keep a separately isolated clean target for final release qualification and do
 not label a shared-cache experiment as independently reproducible.
 

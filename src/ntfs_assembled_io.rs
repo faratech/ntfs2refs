@@ -3,6 +3,12 @@ use super::*;
 use crate::ntfs_attribute_list::{self as lists, Assembly, RecordEvidence};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(windows)]
+#[path = "ntfs_assembled_paged.rs"]
+mod paged;
+#[cfg(windows)]
+pub(super) use paged::{PagedAssemblyEvidence, PagedMftResolver, SharedBitmap};
+
 pub(super) struct MftContext<'a> {
     pub data: &'a Attribute,
     pub bitmap: &'a [u8],

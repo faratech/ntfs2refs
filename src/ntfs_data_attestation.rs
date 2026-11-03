@@ -156,18 +156,73 @@ fn check_file_with_extent_evidence(
     observation: &n2r_win32::attestation::Observation,
     native: &Report,
 ) -> Result<(u64, usize, u64)> {
+    check_file_with_selectors(
+        &raw.geometry,
+        file,
+        logical,
+        observation,
+        native,
+        &native.request.extent_identity_streams,
+        |stream| crate::ntfs_attestation::extent_identity_stream_request(raw, file, stream),
+        None,
+    )
+}
+
+#[cfg(windows)]
+pub fn check_file_with_extent_evidence_domain(
+    source: &impl crate::ntfs_inspect::RootFileDomain,
+    file: &FileInventory,
+    logical: &LogicalFile,
+    observation: &n2r_win32::attestation::Observation,
+    native: &Report,
+    selector: &n2r_win32::attestation::NativeRequestRow,
+    resources: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<(u64, usize, u64)> {
+    resources.validate()?;
+    ensure!(
+        selector.identity == logical.identity,
+        "logical selector identity differs"
+    );
+    check_file_with_selectors(
+        &source.header().geometry,
+        file,
+        logical,
+        observation,
+        native,
+        &selector.extent_identity_streams,
+        |stream| {
+            crate::ntfs_attestation::extent_identity_stream_request_domain(
+                source, file, stream, true, true,
+            )
+        },
+        Some(resources),
+    )
+}
+
+fn check_file_with_selectors(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    file: &FileInventory,
+    logical: &LogicalFile,
+    observation: &n2r_win32::attestation::Observation,
+    native: &Report,
+    selectors: &[n2r_win32::attestation::ExtentIdentityStream],
+    mut candidate: impl FnMut(
+        &crate::ntfs_inspect::StreamInventory,
+    ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>>,
+    resources: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+) -> Result<(u64, usize, u64)> {
     if !logical
         .before
         .iter()
         .chain(&logical.after)
         .any(|h| h.outcome.status == Status::NotReadExtentIdentityV1)
     {
-        return Ok((check_file(file, logical, raw.geometry.serial_number)?, 0, 0));
+        return Ok((check_file(file, logical, geometry.serial_number)?, 0, 0));
     }
     ensure!(
         matches!(
             (native.schema_version, native.request.schema_version),
-            (12, 4) | (14, 6)
+            (12, 4) | (14, 6) | (16, 8)
         ),
         "native read elision lacks its explicit protocol"
     );
@@ -187,14 +242,16 @@ fn check_file_with_extent_evidence(
         "extent-identity retrieval base changed"
     );
     for capture in [&observation.streams_before, &observation.streams_after] {
-        crate::ntfs_stream_attestation::check_file(
-            file,
-            capture
-                .as_ref()
-                .context("complete native stream map absent")?,
-            base,
-            &raw.geometry,
-        )?;
+        let capture = capture
+            .as_ref()
+            .context("complete native stream map absent")?;
+        if let Some(resources) = resources {
+            crate::ntfs_stream_attestation::check_file_with_resources(
+                file, capture, base, geometry, resources,
+            )?;
+        } else {
+            crate::ntfs_stream_attestation::check_file(file, capture, base, geometry)?;
+        }
     }
     let mut full_bytes = 0u64;
     let mut extent_streams = 0;
@@ -211,8 +268,25 @@ fn check_file_with_extent_evidence(
         );
         for s in &file.streams {
             let h = pass.iter().find(|h| h.name_utf16 == s.name_utf16).unwrap();
+            let expected = if h.outcome.status == Status::NotReadExtentIdentityV1
+                || s.logical_hash_status == LogicalHashStatus::NotReadExtentIdentityV1
+            {
+                candidate(s)?
+            } else {
+                None
+            };
+            let source_valid = match s.logical_hash_status {
+                LogicalHashStatus::Complete => s
+                    .logical_sha256
+                    .as_deref()
+                    .is_some_and(n2r_win32::content_digest::is_hex),
+                LogicalHashStatus::NotReadExtentIdentityV1 => {
+                    s.logical_sha256.is_none() && expected.is_some()
+                }
+                _ => false,
+            };
             ensure!(
-                crate::ntfs_attestation::source_stream_evidence_valid(raw, file, s)?,
+                source_valid,
                 "raw stream has no supported content or extent evidence"
             );
             ensure!(
@@ -221,11 +295,8 @@ fn check_file_with_extent_evidence(
             );
             if h.outcome.status == Status::NotReadExtentIdentityV1 {
                 let expected =
-                    crate::ntfs_attestation::extent_identity_stream_request(raw, file, s)?
-                        .context("native elision requested for an ineligible raw stream")?;
-                let candidates: Vec<_> = native
-                    .request
-                    .extent_identity_streams
+                    expected.context("native elision requested for an ineligible raw stream")?;
+                let candidates: Vec<_> = selectors
                     .iter()
                     .filter(|candidate| {
                         candidate.identity == logical.identity
@@ -270,8 +341,8 @@ fn check_file_with_extent_evidence(
                         .context("full logical byte count overflow")?;
                 }
             }
-            identity(h.identity_before.as_ref(), file, raw.geometry.serial_number)?;
-            identity(h.identity_after.as_ref(), file, raw.geometry.serial_number)?;
+            identity(h.identity_before.as_ref(), file, geometry.serial_number)?;
+            identity(h.identity_after.as_ref(), file, geometry.serial_number)?;
             standard(h.standard_before.as_ref(), s.logical_size)?;
             standard(h.standard_after.as_ref(), s.logical_size)?;
             ensure!(

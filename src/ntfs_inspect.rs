@@ -18,6 +18,37 @@ mod assembled_io;
 mod mft_bootstrap;
 pub use assembled_io::validate_record_coverage;
 
+#[cfg(windows)]
+pub mod allocation_domain;
+#[cfg(windows)]
+pub mod external_sort;
+#[cfg(windows)]
+mod paged_files;
+#[cfg(windows)]
+mod paged_inspection;
+#[cfg(windows)]
+mod paged_roles;
+#[cfg(windows)]
+pub mod paged_storage;
+#[cfg(windows)]
+pub mod record_store;
+#[cfg(windows)]
+mod security_input;
+pub mod source_domain;
+#[cfg(windows)]
+pub use paged_files::PagedRawFiles;
+#[cfg(windows)]
+pub use paged_inspection::{PagedInspection, SourceInspectionPin, inspect_paged_with_policy};
+pub use source_domain::{
+    LegacySecurityRecord, RootDirectoryDomain, RootFileDomain, RootSecurityCaptureDomain,
+    SourceDirectoryHeader, SourceHeader, SourceIndexRanges, SourceMetadataBudget,
+    SourceMetadataRange,
+};
+mod namespace_capture;
+mod security_capture;
+use namespace_capture::NamespaceCapture;
+use security_capture::SecurityCapture;
+
 pub(crate) const MAX_MFT_RECORDS: u64 = 1_000_000;
 const STREAM_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const LARGE_STREAM_HASH_BYTES: usize = 4 * 1024 * 1024;
@@ -74,6 +105,12 @@ pub fn limits_for_resource_profile(
                     * 4,
             }
         }
+        // The resource-bounded pipeline requires its actual paged source
+        // owner. Never route it through the legacy owning-Vec inspector.
+        crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(_) => InspectionLimits {
+            max_report_bytes: 0,
+            max_stream_hash_bytes: 0,
+        },
     }
 }
 
@@ -2211,461 +2248,6 @@ fn directory_compression_root_policy(record: &Record, attribute: &Attribute) -> 
         })
 }
 
-#[derive(Default)]
-struct NamespaceCapture {
-    directories: Vec<crate::ntfs_namespace::Directory>,
-    upcase: Option<Vec<u16>>,
-    bytes_read: usize,
-    entries: usize,
-    name_units: usize,
-    failure: Option<String>,
-    incomplete_attributes: bool,
-}
-
-impl NamespaceCapture {
-    fn reserve(&mut self, bytes: u64) -> Result<()> {
-        let total = (self.bytes_read as u64)
-            .checked_add(bytes)
-            .context("index byte budget overflow")?;
-        ensure!(
-            total <= crate::ntfs_namespace::MAX_INDEX_BYTES as u64,
-            "global namespace read budget exceeded"
-        );
-        self.bytes_read = total as usize;
-        Ok(())
-    }
-
-    fn read<R: Read + Seek>(
-        &mut self,
-        reader: &mut R,
-        record: &Record,
-        number: u64,
-        geometry: &NtfsGeometry,
-    ) -> Result<()> {
-        use crate::ntfs_namespace as ns;
-        ensure!(
-            geometry.bytes_per_sector == 512
-                && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
-                && geometry.index_record_size == 4096,
-            "raw namespace requires supported clusters, 512-byte sectors and 4 KiB index records"
-        );
-        if number == 10 {
-            let table = unnamed(record, 0x80)?;
-            ensure!(
-                table.report.logical_size == 131_072,
-                "complete 128 KiB $UpCase stream required"
-            );
-            require_bitmap_bytes(&table.report, 131_072)?;
-            self.reserve(131_072)?;
-            let bytes = read_small_attribute(reader, table, geometry, 131_072)?;
-            self.upcase = Some(utf16(&bytes)?);
-        }
-        if record.flags & 2 == 0 {
-            return Ok(());
-        }
-        ensure!(
-            self.directories.len() < ns::MAX_DIRECTORIES,
-            "directory count limit exceeded"
-        );
-        let mut attributes = std::collections::BTreeMap::new();
-        for a in &record.attributes {
-            if ns::is_i30(&a.report.name_utf16) && [0x90, 0xa0, 0xb0].contains(&a.report.type_code)
-            {
-                ensure!(
-                    a.report.lowest_vcn == 0 && attributes.insert(a.report.type_code, a).is_none(),
-                    "duplicate or unassembled I30 attribute"
-                );
-            }
-        }
-        let root = attributes
-            .get(&0x90)
-            .context("directory lacks $I30 INDEX_ROOT")?;
-        ensure!(
-            root.report.resident
-                && (root.report.flags == 0 || directory_compression_root_policy(record, root)),
-            "unsupported directory INDEX_ROOT encoding"
-        );
-        self.reserve(root.report.logical_size)?;
-        let root_bytes = root
-            .resident_value
-            .as_deref()
-            .context("missing resident INDEX_ROOT")?;
-        let (allocation, initialized) = if let Some(a) = attributes.get(&0xa0) {
-            ensure!(
-                !a.report.resident && a.report.flags == 0,
-                "unsupported INDEX_ALLOCATION encoding"
-            );
-            validate_stream_mapping(&a.report, geometry)?;
-            ensure!(
-                attributes.contains_key(&0xb0),
-                "INDEX_ALLOCATION lacks its bitmap"
-            );
-            self.reserve(a.report.logical_size)?;
-            (
-                read_small_attribute(reader, a, geometry, ns::MAX_INDEX_BYTES as u64)?,
-                a.report.initialized_size,
-            )
-        } else {
-            (Vec::new(), 0)
-        };
-        let bitmap = if let Some(a) = attributes.get(&0xb0) {
-            require_bitmap_bytes(&a.report, a.report.logical_size)?;
-            self.reserve(a.report.logical_size)?;
-            read_small_attribute(reader, a, geometry, 4096)?
-        } else {
-            Vec::new()
-        };
-        let directory = ns::parse_directory_with_cluster_size(
-            number | (u64::from(record.sequence) << 48),
-            root_bytes,
-            &allocation,
-            initialized,
-            &bitmap,
-            geometry.cluster_size,
-        )?;
-        self.entries = self
-            .entries
-            .checked_add(directory.entries.len())
-            .context("global index entry overflow")?;
-        self.name_units += directory
-            .entries
-            .iter()
-            .map(|e| e.name.len())
-            .sum::<usize>();
-        ensure!(
-            self.entries <= ns::MAX_ENTRIES && self.name_units <= ns::MAX_NAME_UNITS,
-            "global namespace entry/name budget exceeded"
-        );
-        self.directories.push(directory);
-        Ok(())
-    }
-
-    fn observe<R: Read + Seek>(
-        &mut self,
-        reader: &mut R,
-        record: &Record,
-        number: u64,
-        geometry: &NtfsGeometry,
-    ) {
-        if record.base != 0 || record.attributes.iter().any(|a| a.report.type_code == 0x20) {
-            self.incomplete_attributes = true;
-            return;
-        }
-        if self.failure.is_none()
-            && (number == 10 || record.flags & 2 != 0)
-            && let Err(error) = self.read(reader, record, number, geometry)
-        {
-            self.failure = Some(format!("MFT record {number}: {error:#}"));
-        }
-    }
-
-    fn finish(self, files: &[FileInventory]) -> crate::ntfs_namespace::Reconciliation {
-        use crate::ntfs_namespace::{Reconciliation, Status};
-        let mut hash = Sha256::new();
-        hash.update(b"ntfs2refs-namespace-evidence-v1\0");
-        if let Some(table) = &self.upcase {
-            for unit in table {
-                hash.update(unit.to_le_bytes());
-            }
-        }
-        for dir in &self.directories {
-            hash.update(dir.reference.to_le_bytes());
-            hash.update(dir.evidence_sha256.as_bytes());
-        }
-        let mut result = Reconciliation {
-            status: Status::Rejected,
-            directories: self.directories.len(),
-            index_blocks: self.directories.iter().map(|d| d.index_blocks).sum(),
-            index_entries: self.entries,
-            reachable_objects: 0,
-            index_bytes_read: self.bytes_read,
-            evidence_sha256: hex::encode(hash.finalize()),
-            detail: String::new(),
-        };
-        if self.incomplete_attributes {
-            result.status = Status::IncompleteAttributeInventory;
-            result.detail = "Attribute-list or extension records require assembly before namespace reconciliation".into();
-        } else if let Some(error) = self.failure {
-            result.detail = error;
-        } else if let Some(upcase) = self.upcase {
-            match crate::ntfs_namespace::reconcile(files, &self.directories, &upcase) {
-                Ok(reachable) => {
-                    result.status = Status::ConsistentRawModel;
-                    result.reachable_objects = reachable;
-                    result.detail = "Allocated I30 nodes, key ordering, MFT names/references and root reachability reconcile; native enumeration remains unverified".into();
-                }
-                Err(error) => result.detail = format!("{error:#}"),
-            }
-        } else {
-            result.detail = "No complete $UpCase table was captured".into();
-        }
-        result
-    }
-}
-
-#[derive(Default)]
-struct SecurityCapture {
-    table: Option<crate::ntfs_security::Table>,
-    legacy: Vec<crate::ntfs_security::DescriptorRecord>,
-    bytes_read: usize,
-    descriptor_bytes: usize,
-    aces: usize,
-    sii_entries: usize,
-    sdh_entries: usize,
-    evidence: Sha256,
-    failure: Option<String>,
-    incomplete_attributes: bool,
-}
-
-impl SecurityCapture {
-    fn named<'a>(record: &'a Record, kind: u32, name: &str) -> Result<Option<&'a Attribute>> {
-        let name: Vec<u16> = name.encode_utf16().collect();
-        let mut found = record
-            .attributes
-            .iter()
-            .filter(|a| a.report.type_code == kind && a.report.name_utf16 == name);
-        let first = found.next();
-        ensure!(found.next().is_none(), "duplicate security attribute");
-        if let Some(a) = first {
-            ensure!(
-                a.report.lowest_vcn == 0,
-                "unassembled security attribute VCN"
-            );
-        }
-        Ok(first)
-    }
-    fn bytes<R: Read + Seek>(
-        &mut self,
-        reader: &mut R,
-        a: &Attribute,
-        geometry: &NtfsGeometry,
-        role: &str,
-        maximum: u64,
-    ) -> Result<Vec<u8>> {
-        use crate::ntfs_security as sec;
-        ensure!(
-            a.report.flags == 0
-                && a.report.lowest_vcn == 0
-                && a.report.initialized_size == a.report.logical_size,
-            "security metadata must be fully initialized and unencoded"
-        );
-        if !a.report.resident {
-            validate_stream_mapping(&a.report, geometry)?;
-            ensure!(
-                a.report.extents.iter().all(|e| e.physical_offset.is_some()),
-                "sparse security metadata is unsupported"
-            );
-        }
-        let total = (self.bytes_read as u64)
-            .checked_add(a.report.logical_size)
-            .context("security read budget overflow")?;
-        ensure!(
-            a.report.logical_size <= maximum && total <= sec::MAX_METADATA_BYTES as u64,
-            "security metadata read budget exceeded"
-        );
-        self.bytes_read = total as usize;
-        let value = read_small_attribute(reader, a, geometry, maximum)?;
-        self.evidence.update((role.len() as u64).to_le_bytes());
-        self.evidence.update(role.as_bytes());
-        self.evidence.update((value.len() as u64).to_le_bytes());
-        self.evidence.update(&value);
-        Ok(value)
-    }
-    fn index<R: Read + Seek>(
-        &mut self,
-        reader: &mut R,
-        record: &Record,
-        geometry: &NtfsGeometry,
-        name: &str,
-        kind: crate::ntfs_security::IndexKind,
-    ) -> Result<crate::ntfs_security::SecurityIndex> {
-        let root = Self::named(record, 0x90, name)?.context("missing security INDEX_ROOT")?;
-        ensure!(root.report.resident, "security INDEX_ROOT must be resident");
-        let root = self.bytes(reader, root, geometry, &format!("{name}:root"), 4096)?;
-        let allocation_attr = Self::named(record, 0xa0, name)?;
-        let bitmap_attr = Self::named(record, 0xb0, name)?;
-        let (allocation, initialized) = if let Some(a) = allocation_attr {
-            ensure!(
-                !a.report.resident && bitmap_attr.is_some(),
-                "security INDEX_ALLOCATION requires nonresident data and bitmap"
-            );
-            // Free trailing slots can be uninitialized; active-slot coverage is
-            // independently enforced by the common index reader.
-            ensure!(a.report.flags == 0, "encoded security index allocation");
-            validate_stream_mapping(&a.report, geometry)?;
-            ensure!(
-                a.report.extents.iter().all(|e| e.physical_offset.is_some()),
-                "sparse security index allocation"
-            );
-            let total = (self.bytes_read as u64)
-                .checked_add(a.report.logical_size)
-                .context("security index byte overflow")?;
-            ensure!(
-                total <= crate::ntfs_security::MAX_METADATA_BYTES as u64,
-                "security index read budget exceeded"
-            );
-            self.bytes_read = total as usize;
-            let bytes = read_small_attribute(
-                reader,
-                a,
-                geometry,
-                crate::ntfs_security::MAX_METADATA_BYTES as u64,
-            )?;
-            self.evidence.update(name.as_bytes());
-            self.evidence.update((bytes.len() as u64).to_le_bytes());
-            self.evidence.update(&bytes);
-            (bytes, a.report.initialized_size)
-        } else {
-            (Vec::new(), 0)
-        };
-        let bitmap = if let Some(a) = bitmap_attr {
-            self.bytes(reader, a, geometry, &format!("{name}:bitmap"), 4096)?
-        } else {
-            Vec::new()
-        };
-        crate::ntfs_security::parse_index_with_cluster_size(
-            crate::ntfs_index::Input {
-                root: &root,
-                allocation: &allocation,
-                initialized,
-                bitmap: &bitmap,
-            },
-            kind,
-            geometry.cluster_size,
-        )
-    }
-    fn charge_descriptors(
-        &mut self,
-        records: &[crate::ntfs_security::DescriptorRecord],
-    ) -> Result<()> {
-        use crate::ntfs_security as sec;
-        for r in records {
-            self.descriptor_bytes += r.descriptor.relative_hex.len() / 2;
-            self.aces += r.descriptor.dacl.aces.len() + r.descriptor.sacl.aces.len();
-        }
-        ensure!(
-            self.descriptor_bytes <= sec::MAX_TOTAL_DESCRIPTOR_BYTES
-                && self.aces <= sec::MAX_TOTAL_ACES,
-            "aggregate security descriptor/ACE budget exceeded"
-        );
-        Ok(())
-    }
-    fn read<R: Read + Seek>(
-        &mut self,
-        reader: &mut R,
-        record: &Record,
-        number: u64,
-        geometry: &NtfsGeometry,
-    ) -> Result<()> {
-        use crate::ntfs_security as sec;
-        if number == 9 {
-            ensure!(
-                geometry.bytes_per_sector == 512
-                    && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
-                    && geometry.index_record_size == 4096,
-                "security indexes require supported clusters, 512-byte sectors and 4 KiB index records"
-            );
-            let sds = Self::named(record, 0x80, "$SDS")?.context("$Secure lacks SDS data")?;
-            let sds = self.bytes(reader, sds, geometry, "SDS", sec::MAX_METADATA_BYTES as u64)?;
-            let sii = self.index(reader, record, geometry, "$SII", sec::IndexKind::Id)?;
-            let sdh = self.index(reader, record, geometry, "$SDH", sec::IndexKind::Hash)?;
-            self.sii_entries = sii.entries.len();
-            self.sdh_entries = sdh.entries.len();
-            let table = sec::reconcile_table(&sds, &sii, &sdh)?;
-            self.charge_descriptors(&table.records)?;
-            self.table = Some(table);
-        }
-        let mut legacy = record
-            .attributes
-            .iter()
-            .filter(|a| a.report.type_code == 0x50);
-        if let Some(a) = legacy.next() {
-            ensure!(
-                legacy.next().is_none() && a.report.name_utf16.is_empty(),
-                "ambiguous/named legacy security descriptor"
-            );
-            ensure!(
-                self.legacy.len() < sec::MAX_DESCRIPTORS,
-                "legacy descriptor count limit exceeded"
-            );
-            let bytes = self.bytes(
-                reader,
-                a,
-                geometry,
-                &format!("legacy:{number}"),
-                sec::MAX_DESCRIPTOR_BYTES as u64,
-            )?;
-            let descriptor = sec::DescriptorRecord {
-                security_id: None,
-                legacy_record: Some(number),
-                sds_offset: None,
-                ntfs_hash: None,
-                descriptor: sec::parse_descriptor(&bytes)?,
-            };
-            self.charge_descriptors(std::slice::from_ref(&descriptor))?;
-            self.legacy.push(descriptor);
-        }
-        Ok(())
-    }
-    fn observe<R: Read + Seek>(
-        &mut self,
-        reader: &mut R,
-        record: &Record,
-        number: u64,
-        geometry: &NtfsGeometry,
-    ) {
-        if record.base != 0 || record.attributes.iter().any(|a| a.report.type_code == 0x20) {
-            self.incomplete_attributes = true;
-            return;
-        }
-        if self.failure.is_none()
-            && let Err(error) = self.read(reader, record, number, geometry)
-        {
-            self.failure = Some(format!("MFT record {number}: {error:#}"));
-        }
-    }
-    fn finish(self, files: &[FileInventory]) -> crate::ntfs_security::Reconciliation {
-        use crate::ntfs_security::{self as sec, Reconciliation, Status};
-        let mut result = Reconciliation {
-            status: Status::Rejected,
-            metadata_bytes_read: self.bytes_read,
-            central_descriptors: self.table.as_ref().map_or(0, |t| t.records.len()),
-            legacy_descriptors: self.legacy.len(),
-            sii_entries: self.sii_entries,
-            sdh_entries: self.sdh_entries,
-            index_blocks: self.table.as_ref().map_or(0, |t| t.index_blocks),
-            bound_files: 0,
-            evidence_sha256: hex::encode(self.evidence.finalize()),
-            detail: String::new(),
-            descriptors: Vec::new(),
-            bindings: Vec::new(),
-        };
-        if self.incomplete_attributes {
-            result.status = Status::IncompleteAttributeInventory;
-            result.detail =
-                "Attribute-list/extension records require assembly before security reconciliation"
-                    .into();
-        } else if let Some(error) = self.failure {
-            result.detail = error;
-        } else if let Some(mut table) = self.table {
-            table.records.extend(self.legacy);
-            match sec::bind_files(files, &table.records) {
-                Ok(bindings) => {
-                    result.status = Status::ConsistentRawModel;
-                    result.bound_files = bindings.len();
-                    result.bindings = bindings;
-                    result.descriptors = table.records;
-                    result.detail="SDS mirrors/hashes, SII/SDH entries and central/legacy file bindings reconcile; native security attestation remains unverified".into();
-                }
-                Err(error) => result.detail = format!("{error:#}"),
-            }
-        } else {
-            result.detail = "No validated $Secure table was captured".into();
-        }
-        result
-    }
-}
-
 /// Inspect a raw NTFS partition without issuing writes. The report remains blocked
 /// until every semantic coverage requirement has a validated implementation.
 pub fn inspect<R: Read + Seek>(reader: &mut R, length: u64) -> Result<NtfsInspection> {
@@ -3651,6 +3233,294 @@ pub fn inspect_for_preparation<R: Read + Seek>(
     )
 }
 
+fn inventory_record<R: Read + Seek>(
+    reader: &mut R,
+    geometry: &NtfsGeometry,
+    record: Record,
+    number: u64,
+    report: &mut NtfsInspection,
+    budget: &mut ReportBudget,
+    hash_budget: &mut HashBudget,
+    policy: crate::verification_policy::VerificationPolicy,
+    preparation_only: bool,
+    observe: impl FnOnce(&mut R, &Record) -> Result<()>,
+) -> Result<FileInventory> {
+    let mut inventory = FileInventory {
+        record_number: number,
+        sequence_number: record.sequence,
+        hard_link_count: record.links,
+        is_directory: record.flags & 2 != 0,
+        is_metadata: number < 16,
+        metadata_role: MetadataRole::NotClassified,
+        metadata_role_issue: None,
+        base_file_reference: record.base,
+        names: Vec::new(),
+        standard_information: None,
+        streams: Vec::new(),
+        attributes: Vec::new(),
+        extended_attributes: Some(
+            capture_extended_attributes(reader, &record, geometry)
+                .with_context(|| format!("capturing EAs for MFT record {number}"))?,
+        ),
+        reparse: capture_reparse(reader, &record, geometry)
+            .with_context(|| format!("capturing reparse point for MFT record {number}"))?,
+    };
+    if record.base != 0 {
+        blocker(
+            report,
+            budget,
+            "extension_record_unassembled",
+            "Extension-record attributes have not been reconciled with their base file",
+            Some(number),
+        )?;
+    }
+    // Attribute order must not allow a DATA hash before a later list reveals
+    // that the stream is incomplete. Raw names avoid lossy UTF-16 collisions.
+    let has_attribute_list = record.attributes.iter().any(|a| a.report.type_code == 0x20);
+    if !has_attribute_list && record.base == 0 {
+        let mut data_names = std::collections::BTreeSet::new();
+        for attribute in &record.attributes {
+            if attribute.report.type_code == 0x80 {
+                ensure!(
+                    data_names.insert(&attribute.report.name_utf16),
+                    "duplicate DATA stream name without attribute-list assembly in record {number}"
+                );
+            }
+        }
+    }
+    observe(reader, &record)?;
+    // The SI bit is a file/directory compression policy. A resident DATA
+    // value may remain ordinary bytes under that policy; only the DATA
+    // encoding determines whether payload decoding is necessary.
+    let compression_policy_supported = record
+        .attributes
+        .iter()
+        .filter(|a| a.report.type_code == 0x80)
+        .all(|a| {
+            (a.report.flags == 0 && a.report.compression_unit == 0)
+                || crate::ntfs_compression::supported(&a.report, geometry).is_ok()
+        });
+    let policy_root_instances: Vec<_> = record
+        .attributes
+        .iter()
+        .filter(|a| directory_compression_root_policy(&record, a))
+        .map(|a| a.report.instance)
+        .collect();
+    for attribute in record.attributes {
+        let a = &attribute.report;
+        if a.flags & 0x00ff != 0
+            && crate::ntfs_compression::supported(a, geometry).is_err()
+            && !(a.type_code == 0x90
+                && a.resident
+                && a.flags == 1
+                && a.compression_unit == 0
+                && crate::ntfs_namespace::is_i30(&a.name_utf16)
+                && policy_root_instances.contains(&a.instance))
+        {
+            blocker(
+                report,
+                budget,
+                "ntfs_compression",
+                "Compressed attribute is outside the supported LZNT1 DATA profile",
+                Some(number),
+            )?;
+        }
+        if a.flags & 0x4000 != 0 {
+            blocker(
+                report,
+                budget,
+                "ntfs_encryption",
+                "Encrypted attribute is outside the initial conversion scope",
+                Some(number),
+            )?;
+        }
+        match a.type_code {
+            0x10 => {
+                let value = attribute
+                    .resident_value
+                    .as_ref()
+                    .context("nonresident standard information is unsupported")?;
+                ensure!(value.len() >= 48, "truncated standard information");
+                ensure!(
+                    inventory.standard_information.is_none(),
+                    "duplicate standard information"
+                );
+                let flags = u32le(value, 32)?;
+                inventory.standard_information = Some(StandardInformation {
+                    creation_time: u64le(value, 0)?,
+                    modification_time: u64le(value, 8)?,
+                    mft_change_time: u64le(value, 16)?,
+                    access_time: u64le(value, 24)?,
+                    file_attributes: flags,
+                    security_id: if value.len() >= 56 {
+                        Some(u32le(value, 52)?)
+                    } else {
+                        None
+                    },
+                });
+                if flags & 0x800 != 0 && !compression_policy_supported {
+                    blocker(
+                        report,
+                        budget,
+                        "compressed_file_attribute",
+                        "Compression policy has DATA outside the supported encoding profile",
+                        Some(number),
+                    )?;
+                }
+                if flags & 0x4000 != 0 {
+                    blocker(
+                        report,
+                        budget,
+                        "encrypted_file_attribute",
+                        "File or directory carries the EFS attribute",
+                        Some(number),
+                    )?;
+                }
+            }
+            0x20 => blocker(
+                report,
+                budget,
+                "attribute_list_unassembled",
+                "Attribute-list continuation mapping has not been validated",
+                Some(number),
+            )?,
+            0x30 => {
+                let value = attribute
+                    .resident_value
+                    .as_ref()
+                    .context("nonresident filename is unsupported")?;
+                ensure!(value.len() >= 66, "truncated filename attribute");
+                let name_bytes = value
+                    .get(66..66 + usize::from(value[64]) * 2)
+                    .context("truncated UTF-16 filename")?;
+                let name_utf16 = utf16(name_bytes)?;
+                let name = String::from_utf16_lossy(&name_utf16);
+                let parent = u64le(value, 0)?;
+                if value[65] == 2 {
+                    blocker(
+                        report,
+                        budget,
+                        "dos_short_name",
+                        "DOS short-name alias has no validated ReFS representation",
+                        Some(number),
+                    )?;
+                }
+                ensure!(value[65] <= 3, "unknown NTFS filename namespace");
+                if name.eq_ignore_ascii_case("hiberfil.sys") {
+                    blocker(
+                        report,
+                        budget,
+                        "hibernation_state_unverified",
+                        "Hibernation file is present; a fully shut-down state must be established independently",
+                        Some(number),
+                    )?;
+                }
+                inventory.names.push(NameInventory {
+                    name,
+                    name_utf16,
+                    namespace: value[65],
+                    parent_record_number: parent & 0x0000_ffff_ffff_ffff,
+                    parent_sequence_number: (parent >> 48) as u16,
+                });
+            }
+            0x40 => blocker(
+                report,
+                budget,
+                "object_id",
+                "NTFS object-ID semantics have no validated target mapping",
+                Some(number),
+            )?,
+            0x80 => {
+                // Ancestry is not known until all metadata is captured.
+                // Defer fully initialized plain DATA with a complete
+                // target-cluster prefix. Partial final-cluster bytes stay
+                // covered by fingerprint IO and actual tail materialization;
+                // every other form keeps the existing full-read fallback.
+                let deferred = policy.is_fast()
+                    && number >= 16
+                    && record.base == 0
+                    && !inventory.is_directory
+                    && !has_attribute_list
+                    && !a.resident
+                    && a.flags == 0
+                    && a.compression_unit == 0
+                    && a.lowest_vcn == 0
+                    && a.logical_size >= 4096
+                    && a.initialized_size == a.logical_size
+                    && a.extents.iter().all(|e| e.physical_offset.is_some());
+                let (logical_hash_status, logical_sha256) = if deferred || preparation_only {
+                    (LogicalHashStatus::NotComputed, None)
+                } else {
+                    hash_stream(
+                        reader,
+                        &attribute,
+                        geometry,
+                        hash_budget,
+                        has_attribute_list,
+                        record.base != 0,
+                        number,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "hashing DATA attribute {} in MFT record {number}",
+                            a.instance
+                        )
+                    })?
+                };
+                if !preparation_only
+                    && !deferred
+                    && logical_hash_status != LogicalHashStatus::Complete
+                {
+                    blocker(
+                        report,
+                        budget,
+                        "logical_stream_hash_unavailable",
+                        format!(
+                            "DATA attribute {} has no complete logical hash: {logical_hash_status:?}",
+                            a.instance
+                        ),
+                        Some(number),
+                    )?;
+                }
+                inventory.streams.push(StreamInventory {
+                    name: String::from_utf16_lossy(&a.name_utf16),
+                    name_utf16: a.name_utf16.clone(),
+                    resident: a.resident,
+                    flags: a.flags,
+                    logical_size: a.logical_size,
+                    initialized_size: a.initialized_size,
+                    allocated_size: a.allocated_size,
+                    extents: a.extents.clone(),
+                    resident_sha256: a.resident_sha256.clone(),
+                    logical_sha256,
+                    logical_hash_status,
+                });
+            }
+            // capture_reparse validated and retained the actual bytes
+            // before attributes were consumed. Unsupported tags/layouts
+            // return an error instead of losing their semantics.
+            0xc0 => ensure!(inventory.reparse.is_some(), "reparse capture missing"),
+            // The unique paired EA attrs were fully read and validated
+            // before consuming this record. Keep both original attrs and
+            // their complete allocations in the ownership inventory.
+            0xd0 | 0xe0 => {}
+            0x10..=0xb0 if a.type_code % 0x10 == 0 => {}
+            _ => blocker(
+                report,
+                budget,
+                "unsupported_attribute",
+                format!(
+                    "Attribute type {:#x} needs a preservation policy",
+                    a.type_code
+                ),
+                Some(number),
+            )?,
+        }
+        inventory.attributes.push(attribute.report);
+    }
+    Ok(inventory)
+}
+
 fn inspect_internal<R: Read + Seek>(
     reader: &mut R,
     length: u64,
@@ -3834,280 +3704,22 @@ fn inspect_internal<R: Read + Seek>(
             require_bitmap_bytes(&bitmap_attr.report, needed)?;
             volume_bitmap = Some(bitmap_attr.clone());
         }
-        let mut inventory = FileInventory {
-            record_number: number,
-            sequence_number: record.sequence,
-            hard_link_count: record.links,
-            is_directory: record.flags & 2 != 0,
-            is_metadata: number < 16,
-            metadata_role: MetadataRole::NotClassified,
-            metadata_role_issue: None,
-            base_file_reference: record.base,
-            names: Vec::new(),
-            standard_information: None,
-            streams: Vec::new(),
-            attributes: Vec::new(),
-            extended_attributes: Some(
-                capture_extended_attributes(reader, &record, &geometry)
-                    .with_context(|| format!("capturing EAs for MFT record {number}"))?,
-            ),
-            reparse: capture_reparse(reader, &record, &geometry)
-                .with_context(|| format!("capturing reparse point for MFT record {number}"))?,
-        };
-        if record.base != 0 {
-            blocker(
-                &mut report,
-                &mut budget,
-                "extension_record_unassembled",
-                "Extension-record attributes have not been reconciled with their base file",
-                Some(number),
-            )?;
-        }
-        // Attribute order must not allow a DATA hash before a later list reveals
-        // that the stream is incomplete. Raw names avoid lossy UTF-16 collisions.
-        let has_attribute_list = record.attributes.iter().any(|a| a.report.type_code == 0x20);
-        if !has_attribute_list && record.base == 0 {
-            let mut data_names = std::collections::BTreeSet::new();
-            for attribute in &record.attributes {
-                if attribute.report.type_code == 0x80 {
-                    ensure!(
-                        data_names.insert(&attribute.report.name_utf16),
-                        "duplicate DATA stream name without attribute-list assembly in record {number}"
-                    );
-                }
-            }
-        }
-        namespace.observe(reader, &record, number, &geometry);
-        security.observe(reader, &record, number, &geometry);
-        // The SI bit is a file/directory compression policy. A resident DATA
-        // value may remain ordinary bytes under that policy; only the DATA
-        // encoding determines whether payload decoding is necessary.
-        let compression_policy_supported = record
-            .attributes
-            .iter()
-            .filter(|a| a.report.type_code == 0x80)
-            .all(|a| {
-                (a.report.flags == 0 && a.report.compression_unit == 0)
-                    || crate::ntfs_compression::supported(&a.report, &geometry).is_ok()
-            });
-        let policy_root_instances: Vec<_> = record
-            .attributes
-            .iter()
-            .filter(|a| directory_compression_root_policy(&record, a))
-            .map(|a| a.report.instance)
-            .collect();
-        for attribute in record.attributes {
-            let a = &attribute.report;
-            if a.flags & 0x00ff != 0
-                && crate::ntfs_compression::supported(a, &geometry).is_err()
-                && !(a.type_code == 0x90
-                    && a.resident
-                    && a.flags == 1
-                    && a.compression_unit == 0
-                    && crate::ntfs_namespace::is_i30(&a.name_utf16)
-                    && policy_root_instances.contains(&a.instance))
-            {
-                blocker(
-                    &mut report,
-                    &mut budget,
-                    "ntfs_compression",
-                    "Compressed attribute is outside the supported LZNT1 DATA profile",
-                    Some(number),
-                )?;
-            }
-            if a.flags & 0x4000 != 0 {
-                blocker(
-                    &mut report,
-                    &mut budget,
-                    "ntfs_encryption",
-                    "Encrypted attribute is outside the initial conversion scope",
-                    Some(number),
-                )?;
-            }
-            match a.type_code {
-                0x10 => {
-                    let value = attribute
-                        .resident_value
-                        .as_ref()
-                        .context("nonresident standard information is unsupported")?;
-                    ensure!(value.len() >= 48, "truncated standard information");
-                    ensure!(
-                        inventory.standard_information.is_none(),
-                        "duplicate standard information"
-                    );
-                    let flags = u32le(value, 32)?;
-                    inventory.standard_information = Some(StandardInformation {
-                        creation_time: u64le(value, 0)?,
-                        modification_time: u64le(value, 8)?,
-                        mft_change_time: u64le(value, 16)?,
-                        access_time: u64le(value, 24)?,
-                        file_attributes: flags,
-                        security_id: if value.len() >= 56 {
-                            Some(u32le(value, 52)?)
-                        } else {
-                            None
-                        },
-                    });
-                    if flags & 0x800 != 0 && !compression_policy_supported {
-                        blocker(
-                            &mut report,
-                            &mut budget,
-                            "compressed_file_attribute",
-                            "Compression policy has DATA outside the supported encoding profile",
-                            Some(number),
-                        )?;
-                    }
-                    if flags & 0x4000 != 0 {
-                        blocker(
-                            &mut report,
-                            &mut budget,
-                            "encrypted_file_attribute",
-                            "File or directory carries the EFS attribute",
-                            Some(number),
-                        )?;
-                    }
-                }
-                0x20 => blocker(
-                    &mut report,
-                    &mut budget,
-                    "attribute_list_unassembled",
-                    "Attribute-list continuation mapping has not been validated",
-                    Some(number),
-                )?,
-                0x30 => {
-                    let value = attribute
-                        .resident_value
-                        .as_ref()
-                        .context("nonresident filename is unsupported")?;
-                    ensure!(value.len() >= 66, "truncated filename attribute");
-                    let name_bytes = value
-                        .get(66..66 + usize::from(value[64]) * 2)
-                        .context("truncated UTF-16 filename")?;
-                    let name_utf16 = utf16(name_bytes)?;
-                    let name = String::from_utf16_lossy(&name_utf16);
-                    let parent = u64le(value, 0)?;
-                    if value[65] == 2 {
-                        blocker(
-                            &mut report,
-                            &mut budget,
-                            "dos_short_name",
-                            "DOS short-name alias has no validated ReFS representation",
-                            Some(number),
-                        )?;
-                    }
-                    ensure!(value[65] <= 3, "unknown NTFS filename namespace");
-                    if name.eq_ignore_ascii_case("hiberfil.sys") {
-                        blocker(
-                            &mut report,
-                            &mut budget,
-                            "hibernation_state_unverified",
-                            "Hibernation file is present; a fully shut-down state must be established independently",
-                            Some(number),
-                        )?;
-                    }
-                    inventory.names.push(NameInventory {
-                        name,
-                        name_utf16,
-                        namespace: value[65],
-                        parent_record_number: parent & 0x0000_ffff_ffff_ffff,
-                        parent_sequence_number: (parent >> 48) as u16,
-                    });
-                }
-                0x40 => blocker(
-                    &mut report,
-                    &mut budget,
-                    "object_id",
-                    "NTFS object-ID semantics have no validated target mapping",
-                    Some(number),
-                )?,
-                0x80 => {
-                    // Ancestry is not known until all metadata is captured.
-                    // Defer fully initialized plain DATA with a complete
-                    // target-cluster prefix. Partial final-cluster bytes stay
-                    // covered by fingerprint IO and actual tail materialization;
-                    // every other form keeps the existing full-read fallback.
-                    let deferred = policy.is_fast()
-                        && number >= 16
-                        && record.base == 0
-                        && !inventory.is_directory
-                        && !has_attribute_list
-                        && !a.resident
-                        && a.flags == 0
-                        && a.compression_unit == 0
-                        && a.lowest_vcn == 0
-                        && a.logical_size >= 4096
-                        && a.initialized_size == a.logical_size
-                        && a.extents.iter().all(|e| e.physical_offset.is_some());
-                    let (logical_hash_status, logical_sha256) = if deferred || preparation_only {
-                        (LogicalHashStatus::NotComputed, None)
-                    } else {
-                        hash_stream(
-                            reader,
-                            &attribute,
-                            &geometry,
-                            &mut hash_budget,
-                            has_attribute_list,
-                            record.base != 0,
-                            number,
-                        )
-                        .with_context(|| {
-                            format!(
-                                "hashing DATA attribute {} in MFT record {number}",
-                                a.instance
-                            )
-                        })?
-                    };
-                    if !preparation_only
-                        && !deferred
-                        && logical_hash_status != LogicalHashStatus::Complete
-                    {
-                        blocker(
-                            &mut report,
-                            &mut budget,
-                            "logical_stream_hash_unavailable",
-                            format!(
-                                "DATA attribute {} has no complete logical hash: {logical_hash_status:?}",
-                                a.instance
-                            ),
-                            Some(number),
-                        )?;
-                    }
-                    inventory.streams.push(StreamInventory {
-                        name: String::from_utf16_lossy(&a.name_utf16),
-                        name_utf16: a.name_utf16.clone(),
-                        resident: a.resident,
-                        flags: a.flags,
-                        logical_size: a.logical_size,
-                        initialized_size: a.initialized_size,
-                        allocated_size: a.allocated_size,
-                        extents: a.extents.clone(),
-                        resident_sha256: a.resident_sha256.clone(),
-                        logical_sha256,
-                        logical_hash_status,
-                    });
-                }
-                // capture_reparse validated and retained the actual bytes
-                // before attributes were consumed. Unsupported tags/layouts
-                // return an error instead of losing their semantics.
-                0xc0 => ensure!(inventory.reparse.is_some(), "reparse capture missing"),
-                // The unique paired EA attrs were fully read and validated
-                // before consuming this record. Keep both original attrs and
-                // their complete allocations in the ownership inventory.
-                0xd0 | 0xe0 => {}
-                0x10..=0xb0 if a.type_code % 0x10 == 0 => {}
-                _ => blocker(
-                    &mut report,
-                    &mut budget,
-                    "unsupported_attribute",
-                    format!(
-                        "Attribute type {:#x} needs a preservation policy",
-                        a.type_code
-                    ),
-                    Some(number),
-                )?,
-            }
-            inventory.attributes.push(attribute.report);
-        }
+        let inventory = inventory_record(
+            reader,
+            &geometry,
+            record,
+            number,
+            &mut report,
+            &mut budget,
+            &mut hash_budget,
+            policy,
+            preparation_only,
+            |reader, record| {
+                namespace.observe(reader, record, number, &geometry);
+                security.observe(reader, record, number, &geometry);
+                Ok(())
+            },
+        )?;
         let retained = file_heap_bytes(&inventory)?;
         budget
             .push(&mut report.files, inventory, retained)

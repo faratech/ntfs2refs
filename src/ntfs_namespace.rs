@@ -39,7 +39,7 @@ pub struct Reconciliation {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     pub child: u64,
     pub parent: u64,
@@ -317,4 +317,251 @@ pub fn reconcile(
         "unreachable namespace component or directory cycle"
     );
     Ok(reachable.len())
+}
+
+/// Reconcile complete owning page domains without retaining all file records,
+/// names, index entries or graph edges. Every join uses the actual sorted
+/// domains. Counts bound traversal by the source itself, not a fixture ceiling.
+pub fn reconcile_domains(
+    files: &impl crate::ntfs_inspect::RootFileDomain,
+    directories: &impl crate::ntfs_inspect::RootDirectoryDomain,
+) -> Result<u64> {
+    use crate::ntfs_inspect::{RootDirectoryDomain, RootFileDomain};
+    files.revalidate()?;
+    directories.revalidate()?;
+    let upcase_range = directories.upcase();
+    ensure!(
+        upcase_range.byte_len() == 131_072,
+        "complete $UpCase required"
+    );
+    let mut bytes = vec![0u8; 131_072];
+    upcase_range.read_exact_at(0, &mut bytes)?;
+    let upcase: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|word| u16::from_le_bytes([word[0], word[1]]))
+        .collect();
+    drop(bytes);
+    ensure!(
+        (0..65536).all(|i| upcase[usize::from(upcase[i])] == upcase[i])
+            && (b'a'..=b'z').all(|c| upcase[usize::from(c)] == u16::from(c - 32)),
+        "invalid complete $UpCase mappings"
+    );
+    fn reference(file: &FileInventory) -> Result<u64> {
+        ensure!(
+            file.record_number < 1 << 48 && file.sequence_number != 0,
+            "invalid canonical MFT identity"
+        );
+        Ok(file.record_number | (u64::from(file.sequence_number) << 48))
+    }
+    fn owner(files: &impl RootFileDomain, id: u64) -> Result<FileInventory> {
+        files
+            .find_record(id & 0xffff_ffff_ffff, Some((id >> 48) as u16))?
+            .context("namespace identity absent or sequence stale")
+    }
+    fn directory(
+        directories: &impl RootDirectoryDomain,
+        id: u64,
+    ) -> Result<(u64, crate::ntfs_inspect::SourceDirectoryHeader)> {
+        let number = id & 0xffff_ffff_ffff;
+        let mut low = 0;
+        let mut high = directories.directory_count();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let candidate = directories.directory(middle)?;
+            match candidate.record_number.cmp(&number) {
+                Ordering::Less => low = middle + 1,
+                Ordering::Greater => high = middle,
+                Ordering::Equal => {
+                    ensure!(
+                        candidate.sequence_number == (id >> 48) as u16,
+                        "directory index sequence stale"
+                    );
+                    return Ok((middle, candidate));
+                }
+            }
+        }
+        anyhow::bail!("directory missing its complete I30 index")
+    }
+    let root = files
+        .find_record(5, None)?
+        .context("missing root directory")?;
+    let root_ref = reference(&root)?;
+    ensure!(
+        root.is_directory
+            && root.names.len() == 1
+            && root.names[0].name_utf16 == [46]
+            && root.names[0].parent_record_number == 5
+            && root.names[0].parent_sequence_number == root.sequence_number,
+        "invalid root self-reference"
+    );
+    let root_namespace = root.names[0].namespace;
+    drop(root);
+    // Establish the complete binary-search directory domain before any join.
+    let mut prior_directory = None;
+    for ordinal in 0..directories.directory_count() {
+        let entry = directories.directory(ordinal)?;
+        ensure!(
+            entry.record_number < 1 << 48
+                && entry.sequence_number != 0
+                && prior_directory.is_none_or(|prior| prior < entry.record_number),
+            "duplicate or unordered directory identity"
+        );
+        prior_directory = Some(entry.record_number);
+        let file = owner(
+            files,
+            entry.record_number | (u64::from(entry.sequence_number) << 48),
+        )?;
+        ensure!(file.is_directory, "I30 owner is not a directory");
+    }
+    let mut prior_file = None;
+    let mut file_directories = 0u64;
+    let mut reserved_nameless = 0u64;
+    for ordinal in 0..files.file_count() {
+        let file = files.file(ordinal)?;
+        let id = reference(&file)?;
+        ensure!(
+            prior_file.is_none_or(|prior| prior < file.record_number)
+                && file.base_file_reference == 0
+                && !file.attributes.iter().any(|a| a.type_code == 0x20),
+            "duplicate, unordered or incomplete MFT identity"
+        );
+        prior_file = Some(file.record_number);
+        if file.names.is_empty() {
+            ensure!(
+                (12..16).contains(&file.record_number)
+                    && !file.is_directory
+                    && file.hard_link_count == 0,
+                "allocated object has no namespace name"
+            );
+            reserved_nameless += 1;
+            continue;
+        }
+        let links = file.names.iter().filter(|name| name.namespace != 2).count();
+        ensure!(
+            usize::from(file.hard_link_count) == links && (!file.is_directory || links == 1),
+            "hard-link/name count differs"
+        );
+        if file.is_directory {
+            file_directories += 1;
+            directory(directories, id)?;
+        }
+        for name in &file.names {
+            ensure!(
+                name.namespace <= 3
+                    && name.parent_sequence_number != 0
+                    && name.parent_record_number < 1 << 48,
+                "invalid MFT parent/name namespace"
+            );
+            let parent = name.parent_record_number | (u64::from(name.parent_sequence_number) << 48);
+            let root_dot = id == root_ref && parent == id && name.name_utf16 == [46];
+            ensure!(
+                name_valid(&name.name_utf16, root_dot),
+                "invalid MFT namespace name"
+            );
+            if root_dot {
+                continue;
+            }
+            let (parent_ordinal, parent_header) = directory(directories, parent)?;
+            let mut low = 0;
+            let mut high = parent_header.entries;
+            let mut found = false;
+            while low < high {
+                let middle = low + (high - low) / 2;
+                let entry = directories.entry(parent_ordinal, middle)?;
+                match compare(&entry.name, &name.name_utf16, &upcase) {
+                    Ordering::Less => low = middle + 1,
+                    Ordering::Greater => high = middle,
+                    Ordering::Equal => {
+                        ensure!(
+                            entry.parent == parent
+                                && entry.child == id
+                                && entry.namespace == name.namespace
+                                && entry.name == name.name_utf16,
+                            "index/MFT name disagreement"
+                        );
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            ensure!(found, "MFT name missing from directory index");
+        }
+    }
+    ensure!(
+        file_directories == directories.directory_count(),
+        "directory coverage differs"
+    );
+    for ordinal in 0..directories.directory_count() {
+        let header = directories.directory(ordinal)?;
+        let id = header.record_number | (u64::from(header.sequence_number) << 48);
+        let mut previous: Option<Vec<u16>> = None;
+        for position in 0..header.entries {
+            let entry = directories.entry(ordinal, position)?;
+            ensure!(
+                entry.parent == id
+                    && entry.namespace <= 3
+                    && name_valid(&entry.name, id == root_ref && entry.child == root_ref),
+                "invalid/misrouted index entry"
+            );
+            if let Some(previous) = &previous {
+                ensure!(
+                    compare(previous, &entry.name, &upcase) == Ordering::Less,
+                    "directory keys unordered or case-colliding"
+                );
+            }
+            previous = Some(entry.name.clone());
+            let child = owner(files, entry.child)?;
+            ensure!(
+                child.base_file_reference == 0,
+                "index points to extension record"
+            );
+            if id == root_ref && entry.child == root_ref && entry.name == [46] {
+                ensure!(
+                    entry.namespace == root_namespace,
+                    "root self-entry namespace differs"
+                );
+            } else {
+                ensure!(
+                    child
+                        .names
+                        .iter()
+                        .filter(|name| {
+                            name.parent_record_number == header.record_number
+                                && name.parent_sequence_number == header.sequence_number
+                                && name.namespace == entry.namespace
+                                && name.name_utf16 == entry.name
+                        })
+                        .count()
+                        == 1,
+                    "index child name missing or ambiguous in MFT"
+                );
+            }
+        }
+        // Directories have one canonical parent. Check that every such chain
+        // reaches the root; a source-derived hop bound detects all cycles while
+        // retaining only one record, rather than an all-object edge graph.
+        let mut ancestor = id;
+        let mut hops = 0u64;
+        while ancestor != root_ref {
+            ensure!(hops < files.file_count(), "unreachable directory cycle");
+            let file = owner(files, ancestor)?;
+            ensure!(file.is_directory, "namespace parent is not a directory");
+            let mut names = file.names.iter().filter(|name| name.namespace != 2);
+            let parent = names.next().context("directory has no canonical parent")?;
+            ensure!(
+                names.next().is_none(),
+                "directory has multiple canonical parents"
+            );
+            ancestor =
+                parent.parent_record_number | (u64::from(parent.parent_sequence_number) << 48);
+            hops += 1;
+        }
+    }
+    upcase_range.revalidate()?;
+    directories.revalidate()?;
+    files.revalidate()?;
+    files
+        .file_count()
+        .checked_sub(reserved_nameless)
+        .context("namespace count underflow")
 }

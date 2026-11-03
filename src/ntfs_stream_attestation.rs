@@ -159,12 +159,22 @@ fn check_streamed_bitmap(
     Ok(())
 }
 fn normalized(items: &[Extent], volume: u64, cluster: u64) -> Result<Vec<Extent>> {
+    normalized_with_limit(
+        items,
+        volume,
+        cluster,
+        retrieval_paging::MAX_COMPLETE_EXTENTS,
+    )
+}
+fn normalized_with_limit(
+    items: &[Extent],
+    volume: u64,
+    cluster: u64,
+    maximum: usize,
+) -> Result<Vec<Extent>> {
     let mut out: Vec<Extent> = vec![];
     let mut next = 0;
-    ensure!(
-        items.len() <= retrieval_paging::MAX_COMPLETE_EXTENTS,
-        "extent count exceeds profile"
-    );
+    ensure!(items.len() <= maximum, "extent count exceeds profile");
     for e in items {
         ensure!(
             e.logical_offset == next
@@ -220,6 +230,64 @@ pub fn check_file(
     base_sectors: u64,
     geometry: &crate::ntfs_inspect::NtfsGeometry,
 ) -> Result<()> {
+    check_file_inner(file, native, base_sectors, geometry, None)
+}
+
+/// Reconcile one complete authenticated source/native row under its resource
+/// admission. These scalar facts never supply a source lease or write authority.
+pub fn check_file_with_resources(
+    file: &FileInventory,
+    native: &StreamCapture,
+    base_sectors: u64,
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<()> {
+    admission.validate()?;
+    let maximum_streams = usize::try_from(
+        admission.budget.max_row_bytes / std::mem::size_of::<layout::Entry>() as u64,
+    )?;
+    ensure!(
+        file.record_number < admission.mft_records
+            && file.streams.len() <= maximum_streams
+            && native.streams.len() <= maximum_streams,
+        "stream row escapes its complete source resource domain"
+    );
+    validate_row_bytes(file, admission.budget.max_row_bytes)?;
+    validate_row_bytes(native, admission.budget.max_row_bytes)?;
+    check_file_inner(file, native, base_sectors, geometry, Some(admission))
+}
+
+fn validate_row_bytes(value: &impl Serialize, maximum: u64) -> Result<()> {
+    struct Counter {
+        used: u64,
+        maximum: u64,
+    }
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.used = self
+                .used
+                .checked_add(bytes.len() as u64)
+                .filter(|n| *n <= self.maximum)
+                .ok_or_else(|| {
+                    std::io::Error::other("stream metadata row exceeds admitted working bytes")
+                })?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(&mut Counter { used: 0, maximum }, value)?;
+    Ok(())
+}
+
+fn check_file_inner(
+    file: &FileInventory,
+    native: &StreamCapture,
+    base_sectors: u64,
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    resources: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+) -> Result<()> {
     ensure!(
         file.base_file_reference == 0
             && !file
@@ -243,7 +311,19 @@ pub fn check_file(
         );
         return Ok(());
     }
-    let (entries, end) = layout::parse_streams(&native.enumeration.bytes)?;
+    let (entries, end) = if let Some(admission) = resources {
+        let maximum = usize::try_from(admission.budget.max_row_bytes)?;
+        layout::parse_streams_with_limits(
+            &native.enumeration.bytes,
+            maximum,
+            usize::try_from(
+                admission.budget.max_row_bytes / std::mem::size_of::<layout::Entry>() as u64,
+            )?
+            .max(1),
+        )?
+    } else {
+        layout::parse_streams(&native.enumeration.bytes)?
+    };
     ensure!(
         end == native.enumeration.bytes.len()
             && entries.len() == file.streams.len()
@@ -252,11 +332,11 @@ pub fn check_file(
     );
     let parsed: BTreeMap<_, _> = entries.iter().map(|e| (&e.name, e)).collect();
     let source: BTreeSet<_> = file.streams.iter().map(|s| &s.name_utf16).collect();
-    let observed: BTreeSet<_> = native.streams.iter().map(|s| &s.name_utf16).collect();
+    let observed: BTreeMap<_, _> = native.streams.iter().map(|s| (&s.name_utf16, s)).collect();
     ensure!(
         source.len() == file.streams.len()
             && observed.len() == native.streams.len()
-            && source == observed
+            && source == observed.keys().copied().collect()
             && source == parsed.keys().copied().collect(),
         "missing, duplicate or unexpected stream name"
     );
@@ -271,11 +351,9 @@ pub fn check_file(
         .context("retrieval base overflow")?;
     for s in &file.streams {
         let e = parsed.get(&s.name_utf16).unwrap();
-        let q = native
-            .streams
-            .iter()
-            .find(|q| q.name_utf16 == s.name_utf16)
-            .unwrap();
+        let q = observed
+            .get(&s.name_utf16)
+            .context("native stream disappeared from complete name index")?;
         ensure!(
             q.logical_size == e.logical_size
                 && q.allocated_size == e.allocated_size
@@ -351,7 +429,18 @@ pub fn check_file(
             );
             continue;
         }
-        let runs = retrieval_paging::assemble_queries(r, &q.retrieval_continuation)?.runs;
+        let runs = if let Some(admission) = resources {
+            retrieval_paging::assemble_queries_with_limits(
+                r,
+                &q.retrieval_continuation,
+                retrieval_paging::Limits::for_resource_bytes(usize::try_from(
+                    admission.budget.max_row_bytes,
+                )?)?,
+            )?
+            .runs
+        } else {
+            retrieval_paging::assemble_queries(r, &q.retrieval_continuation)?.runs
+        };
         let mut extents = vec![];
         for run in runs {
             extents.push(Extent {
@@ -373,9 +462,18 @@ pub fn check_file(
                     .transpose()?,
             });
         }
-        ensure!(
+        let mappings_match = if let Some(admission) = resources {
+            let maximum = usize::try_from(
+                admission.budget.max_row_bytes / std::mem::size_of::<Extent>() as u64,
+            )?;
+            normalized_with_limit(&extents, geometry.volume_size, cluster, maximum)?
+                == normalized_with_limit(&s.extents, geometry.volume_size, cluster, maximum)?
+        } else {
             normalized(&extents, geometry.volume_size, cluster)?
-                == normalized(&s.extents, geometry.volume_size, cluster)?,
+                == normalized(&s.extents, geometry.volume_size, cluster)?
+        };
+        ensure!(
+            mappings_match,
             "native VCN/LCN mapping differs from NTFS runs"
         );
         let physical = s
@@ -516,4 +614,34 @@ pub fn reconcile(raw: &NtfsInspection, native: &Report) -> Result<Reconciliation
         matched_streams,
         conversion_qualified: false,
     })
+}
+
+/// Complete streamed bitmap comparison for the paged source domain. The actual
+/// collector's first-page transcript, full bitmap digest and exact allocation
+/// counts are checked; a deserialized success flag is never native evidence.
+pub fn check_streamed_bitmap_with_resources(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    source: &crate::ntfs_allocation::BitmapSummary,
+    first: &IoctlQuery,
+    summary: &n2r_win32::bitmap_streaming::Summary,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<()> {
+    admission.validate()?;
+    summary.validate_source_first_with_limits(
+        first,
+        n2r_win32::bitmap_streaming::resource_source_limits(
+            geometry.total_clusters,
+            admission.budget.max_row_bytes,
+        )?,
+    )?;
+    ensure!(
+        geometry.total_clusters > 0
+            && source.bitmap_bytes == geometry.total_clusters.div_ceil(8)
+            && summary.cluster_count == geometry.total_clusters
+            && summary.bitmap_data_sha256 == source.sha256
+            && summary.allocated_clusters == source.allocated_clusters
+            && summary.free_clusters == source.free_clusters,
+        "streamed native bitmap differs from the complete initialized frozen resource source bitmap"
+    );
+    Ok(())
 }

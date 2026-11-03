@@ -242,6 +242,7 @@ pub trait ExpectedObjectDomain: Serialize + expected_domain_sealed::Sealed {
     fn object(&self, index: usize) -> Result<std::borrow::Cow<'_, Object>>;
     fn profile(&self) -> &str;
     fn logical_bytes(&self) -> u64;
+    fn internal_replacement_pending(&self) -> &[String];
     fn has_extent_only_streams(&self) -> Result<bool> {
         for index in 0..self.object_count() {
             if self
@@ -265,6 +266,13 @@ pub trait ExpectedObjectDomain: Serialize + expected_domain_sealed::Sealed {
     ) -> Result<()> {
         anyhow::bail!("source admission requires authenticated paged metadata ownership")
     }
+    #[cfg(windows)]
+    fn require_resource_metadata(
+        &self,
+        _admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<()> {
+        anyhow::bail!("resource source admission requires bounded typed page ownership")
+    }
 }
 
 impl ExpectedObjectDomain for ExpectedTree {
@@ -283,6 +291,9 @@ impl ExpectedObjectDomain for ExpectedTree {
     fn logical_bytes(&self) -> u64 {
         self.logical_bytes
     }
+    fn internal_replacement_pending(&self) -> &[String] {
+        &self.internal_replacement_pending
+    }
 }
 
 pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
@@ -298,6 +309,13 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             && count <= object_limit,
         "expected general tree profile or root differs"
     );
+    let resource_admission = resources.resource_admission()?;
+    let resource_ranges = if let Some(admission) = resource_admission {
+        domain.require_resource_metadata(admission)?;
+        Some(preflight_resource_indexes(domain, admission)?)
+    } else {
+        None
+    };
     let first = domain.object(0)?;
     ensure!(
         first.directory && first.path.is_empty(),
@@ -322,6 +340,9 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
     let mut name_count = 0usize;
     let mut stream_count = 0usize;
     let mut source_ranges = Vec::new();
+    if let Some(ranges) = resource_ranges {
+        source_ranges.try_reserve_exact(ranges)?;
+    }
     for index in 0..count {
         let owned = domain.object(index)?;
         let object = owned.as_ref();
@@ -348,12 +369,16 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             .and_then(|n| n.checked_add(object.additional_names.len()))
             .context("expected name count overflow")?;
         ensure!(
-            name_count <= crate::ntfs_namespace::MAX_ENTRIES,
+            resource_admission.is_some() || name_count <= crate::ntfs_namespace::MAX_ENTRIES,
             "expected namespace name count exceeds the raw namespace bound"
         );
         if let Some(api) = &object.api_security {
-            ensure!(api.len() <= 65536, "API descriptor exceeds bound");
-            ntfs_security::parse_descriptor(api)?;
+            if let Some(admission) = resource_admission {
+                ntfs_security::parse_descriptor_with_limit(api, admission.budget.max_row_bytes)?;
+            } else {
+                ensure!(api.len() <= 65536, "API descriptor exceeds bound");
+                ntfs_security::parse_descriptor(api)?;
+            }
         }
         if let Some(eas) = &object.extended_attributes {
             eas.validate()?;
@@ -383,11 +408,25 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
                 "junction must be a directory"
             );
         }
-        ntfs_security::parse_descriptor(&object.security)?;
-        n2r_win32::security_descriptor::validate(&object.security)?;
+        if let Some(admission) = resource_admission {
+            ntfs_security::parse_descriptor_with_limit(
+                &object.security,
+                admission.budget.max_row_bytes,
+            )?;
+        } else {
+            ntfs_security::parse_descriptor(&object.security)?;
+        }
+        if let Some(admission) = resource_admission {
+            n2r_win32::security_descriptor::validate_with_limit(
+                &object.security,
+                admission.budget.max_row_bytes,
+            )?;
+        } else {
+            n2r_win32::security_descriptor::validate(&object.security)?;
+        }
         let path_key = destination_key(&object.path, resources);
         ensure!(
-            object.path.len() <= 16
+            expected_path_fits(&object.path, resource_admission.is_some())
                 && object
                     .path
                     .iter()
@@ -452,7 +491,7 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             // Reject an oversized path before allocating/checking prefixes.
             ensure!(
                 !alias.is_empty()
-                    && alias.len() <= 16
+                    && expected_path_fits(alias, resource_admission.is_some())
                     && alias
                         .iter()
                         .all(|part| valid_component_with_resources(part, resources)),
@@ -466,7 +505,7 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             );
             ensure!(
                 !alias.is_empty()
-                    && alias.len() <= 16
+                    && expected_path_fits(alias, resource_admission.is_some())
                     && alias
                         .iter()
                         .all(|part| valid_component_with_resources(part, resources))
@@ -481,7 +520,7 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
                 .and_then(|count| count.checked_add(object.named_streams.len()))
                 .context("expected DATA stream count overflow")?;
             ensure!(
-                stream_count <= ntfs_admission::MAX_DATA_STREAMS,
+                resource_admission.is_some() || stream_count <= ntfs_admission::MAX_DATA_STREAMS,
                 "expected total DATA stream count exceeds 16,384"
             );
             ensure!(
@@ -504,7 +543,8 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
                 .checked_add(object.length)
                 .context("expected byte overflow")?;
             ensure!(
-                object.named_streams.len() < n2r_win32::stream_layout::MAX_STREAMS,
+                resource_admission.is_some()
+                    || object.named_streams.len() < n2r_win32::stream_layout::MAX_STREAMS,
                 "expected named stream count exceeds the native stream-list bound"
             );
             let mut exact_names = BTreeSet::new();
@@ -562,6 +602,12 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
         "expected tree must contain exactly one canonical root"
     );
     validate_source_overlap(&mut source_ranges)?;
+    if let Some(ranges) = resource_ranges {
+        ensure!(
+            source_ranges.len() == ranges,
+            "expected source-range count changed"
+        );
+    }
     ensure!(
         bytes == domain.logical_bytes() && bytes <= limits.maximum_logical_bytes,
         "expected logical byte total differs"
@@ -576,8 +622,93 @@ pub(crate) fn validate_expected_domain<T: ExpectedObjectDomain>(
             admission.validate_tree(count - directories, directories, stream_count)?;
             admission.validate_expected_bytes(domain)?;
         }
+        if let Some(admission) = resource_admission {
+            admission.validate_tree(
+                u64::try_from(count - directories)?,
+                u64::try_from(directories)?,
+                u64::try_from(stream_count)?,
+            )?;
+            admission.validate_constructor_metadata(domain)?;
+            domain.require_resource_metadata(admission)?;
+        }
     }
+    domain.revalidate_domain()?;
     Ok(())
+}
+
+/// The resource profile uses the native extended-path representation rather
+/// than an arbitrary directory-depth ceiling. Native creation still checks the
+/// complete path including its actual owned root prefix before any source write.
+pub(crate) fn expected_path_fits(path: &[String], resource_based: bool) -> bool {
+    if !resource_based {
+        return path.len() <= 16;
+    }
+    path.iter()
+        .try_fold(0usize, |n, part| {
+            n.checked_add(part.encode_utf16().count())?.checked_add(1)
+        })
+        .is_some_and(|units| units < u16::MAX as usize / 2)
+}
+
+/// Charge the complete retained scalar indexes before constructing any of
+/// them. Variable object data remains under the authenticated row owner's
+/// budget. This pass reads pages, not payload data, and never materializes the
+/// whole tree. B-tree node/allocator overhead and UTF-8 case expansion are
+/// conservatively included in addition to the physical-range vector capacity.
+fn preflight_resource_indexes(
+    domain: &impl ExpectedObjectDomain,
+    admission: n2r_win32::tree_resources::SourceResourceAdmission,
+) -> Result<usize> {
+    admission.validate()?;
+    let mut bytes = 4096u64;
+    let mut ranges = 0usize;
+    for index in 0..domain.object_count() {
+        let object = domain.object(index)?;
+        bytes = bytes
+            .checked_add(256)
+            .context("expected identity index overflow")?;
+        for path in std::iter::once(&object.path).chain(object.additional_names.iter()) {
+            ensure!(
+                expected_path_fits(path, true),
+                "expected native path is too long"
+            );
+            let key_bytes = path
+                .iter()
+                .try_fold(0u64, |n, part| {
+                    n.checked_add(part.len() as u64)?.checked_add(1)
+                })
+                .context("expected path-index length overflow")?;
+            let entry = key_bytes
+                .checked_mul(8)
+                .and_then(|n| n.checked_add(256))
+                .context("expected path-index allocation overflow")?;
+            bytes = bytes
+                .checked_add(entry)
+                .context("expected path index overflow")?;
+            if object.reparse.is_some() && std::ptr::eq(path, &object.path) {
+                bytes = bytes
+                    .checked_add(entry)
+                    .context("reparse path index overflow")?;
+            }
+        }
+        for stream in object.data_streams() {
+            ranges = ranges
+                .checked_add(usize::from(stream.source_offset.is_some()))
+                .and_then(|n| n.checked_add(stream.source_extents.len()))
+                .context("expected physical-range count overflow")?;
+        }
+        let range_bytes = u64::try_from(ranges)?
+            .checked_mul(32)
+            .context("expected physical-range index overflow")?;
+        ensure!(
+            bytes
+                .checked_add(range_bytes)
+                .is_some_and(|n| n <= admission.budget.retained_index_bytes),
+            "expected path/identity/physical-range indexes exceed admitted RAM"
+        );
+    }
+    domain.revalidate_domain()?;
+    Ok(ranges)
 }
 
 pub fn derive(raw: &ntfs::NtfsInspection) -> Result<Tree> {

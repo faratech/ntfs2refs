@@ -10,7 +10,7 @@ mod placement;
 mod source_backed;
 mod supply;
 mod system_payloads;
-pub use enrollment::{ConstructionEnrollment, enroll};
+pub use enrollment::{ConstructionEnrollment, enroll, enroll_with_resource_profile};
 pub use source_backed::{MountedAllocation, PayloadRoute, SourceBackedRoutes};
 pub use supply::{SupplyPlan, SupplyRange};
 
@@ -54,6 +54,7 @@ pub struct PrivateTree {
     metadata_targets: BTreeMap<usize, File>,
     metadata_input_sha256: [u8; 32],
     metadata_object_limit: usize,
+    metadata_resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     construction_enrollment: Option<serde_json::Value>,
 }
 
@@ -806,6 +807,21 @@ impl PrivateTree {
     }
 
     fn require_source_excluded(&self) -> io::Result<()> {
+        if let Some(admission) = self.metadata_resource_admission {
+            admission.validate()?;
+            let held = (self.files.len() as u64)
+                .checked_add(self.sparse_targets.len() as u64)
+                .and_then(|n| n.checked_add(self.metadata_targets.len() as u64))
+                .and_then(|n| n.checked_add(u64::from(self.carrier_directory.is_some())))
+                // Volume, privilege leases and temporary native control opens.
+                .and_then(|n| n.checked_add(8))
+                .ok_or_else(|| invalid("native owned handle count overflow"))?;
+            if held > admission.budget.handle_slots {
+                return Err(invalid(
+                    "actual native owner handles exceed admitted resource budget",
+                ));
+            }
+        }
         let mut events = Vec::new();
         if native::observe_general_disk_state_readonly(self.pair.source.clone(), &mut events)?
             != self.source_before
@@ -824,6 +840,9 @@ impl PrivateTree {
         self.require_bound_input_domain(&SliceInputs(input))
     }
     fn require_bound_input_domain(&self, input: &impl InputDomain) -> io::Result<()> {
+        if let Some(admission) = self.metadata_resource_admission {
+            input.require_resource_metadata(admission)?;
+        }
         if metadata::input_digest_domain(input)? != self.metadata_input_sha256 {
             return Err(invalid("private constructor source input changed"));
         }
@@ -1119,32 +1138,65 @@ fn allocate_domain(
         .map(crate::attestation::ResourceProfile::count_admission)
         .transpose()?
         .flatten();
+    let resource_admission = resource_profile
+        .map(crate::attestation::ResourceProfile::resource_admission)
+        .transpose()?
+        .flatten();
+    if let Some(value) = resource_admission {
+        input.require_resource_metadata(value)?;
+    }
     if let Some(value) = admission.filter(|value| value.requires_paged_metadata()) {
         input.require_paged_metadata(
             value.expected_page_budget()?,
             u64::from(value.maximum_expected_tree_bytes),
         )?;
     }
-    let maximum_objects = admission.map_or(1280, |value| value.object_slots as usize);
+    let maximum_objects = if let Some(value) = resource_admission {
+        usize::try_from(value.objects()?).map_err(io::Error::other)?
+    } else {
+        admission.map_or(1280, |value| value.object_slots as usize)
+    };
+    let maximum_streams = resource_admission
+        .map(|value| usize::try_from(value.data_streams).map_err(io::Error::other))
+        .transpose()?
+        .unwrap_or(streams::MAX_STREAMS);
     if input.is_empty() || input.len() > maximum_objects {
         return Err(invalid("private tree root or object bound differs"));
     }
-    super::hard_links::validate_domain(
-        input,
-        super::hard_links::MAX_NAMES,
-        crate::shadow_names::valid_unicode_component,
-    )?;
+    let resource_root = format!("{}\\", pair.shadow.volume_path()?);
+    if let Some(admission) = resource_admission {
+        super::hard_links::validate_resource_domain(
+            input,
+            admission.maximum_namespace_names()?,
+            &resource_root,
+            crate::shadow_names::valid_unicode_component,
+        )?;
+    } else {
+        super::hard_links::validate_domain(
+            input,
+            super::hard_links::MAX_NAMES,
+            crate::shadow_names::valid_unicode_component,
+        )?;
+    }
     let mut stream_count = 0usize;
     input.for_each(|_, item| {
         stream_count = stream_count
             .checked_add(usize::from(!item.directory))
             .and_then(|count| count.checked_add(item.named_streams.len()))
-            .filter(|count| *count <= streams::MAX_STREAMS)
+            .filter(|count| *count <= maximum_streams)
             .ok_or_else(|| invalid("constructor complete stream domain exceeds bound"))?;
-        streams::validate(
-            std::slice::from_ref(item),
-            pair.shadow.identity.partition_bytes,
-        )
+        if resource_admission.is_some() {
+            streams::validate_resource(
+                std::slice::from_ref(item),
+                pair.shadow.identity.partition_bytes,
+                maximum_streams,
+            )
+        } else {
+            streams::validate(
+                std::slice::from_ref(item),
+                pair.shadow.identity.partition_bytes,
+            )
+        }
     })?;
     let root_owner = if input.is_empty() {
         return Err(invalid("private tree root or object bound differs"));
@@ -1168,11 +1220,12 @@ fn allocate_domain(
         let owner = input.object(index)?;
         let item = owner.input();
         let key = crate::shadow_names::conservative_path_key(item.components);
-        if item.components.len() > 16
-            || item
-                .components
-                .iter()
-                .any(|s| !crate::shadow_names::valid_unicode_component(s))
+        if resource_admission.map_or(item.components.len() > 16, |_| {
+            !super::hard_links::resource_path_valid(&resource_root, item.components)
+        }) || item
+            .components
+            .iter()
+            .any(|s| !crate::shadow_names::valid_unicode_component(s))
             || !names.insert(key.clone())
             || (!item.components.is_empty()
                 && !directories.contains(&crate::shadow_names::conservative_path_key(
@@ -1183,7 +1236,11 @@ fn allocate_domain(
                 "private tree path collision, ordering or parent differs",
             ));
         }
-        descriptor(item.security)?;
+        if let Some(a) = resource_admission {
+            descriptor_with_limit(item.security, a.budget.max_row_bytes)?;
+        } else {
+            descriptor(item.security)?;
+        }
         if item.directory {
             if item.logical_length() != 0 {
                 return Err(invalid("directory has payload"));
@@ -1208,8 +1265,17 @@ fn allocate_domain(
         )?;
         admission.validate_constructor_metadata(&DomainMetadata(input))?;
     }
+    if let Some(admission) = resource_admission {
+        admission.validate_tree(
+            (input.len() - directories.len()) as u64,
+            directories.len() as u64,
+            stream_count as u64,
+        )?;
+        admission.validate_constructor_metadata(&DomainMetadata(input))?;
+    }
     if total > pair.shadow.identity.partition_bytes
         || (admission.is_none()
+            && resource_admission.is_none()
             && (directories.len() > 256 || input.len() - directories.len() > 1024))
     {
         return Err(invalid("private tree geometry or object budget exceeded"));
@@ -1527,7 +1593,8 @@ fn allocate_domain(
         system_payloads_complete: false,
         metadata_targets,
         metadata_input_sha256: metadata::input_digest_domain(input)?,
-        metadata_object_limit: admission.map_or(1280, |value| value.object_slots as usize),
+        metadata_object_limit: maximum_objects,
+        metadata_resource_admission: resource_admission,
         construction_enrollment,
     };
     tree.require_source_excluded()?;

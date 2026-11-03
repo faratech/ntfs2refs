@@ -11,6 +11,13 @@ struct ProtectionRestore {
 }
 
 fn restore_acl_protection(file: &File, item: &Input<'_>) -> io::Result<ProtectionRestore> {
+    restore_acl_protection_with_limit(file, item, None)
+}
+fn restore_acl_protection_with_limit(
+    file: &File,
+    item: &Input<'_>,
+    maximum: Option<u64>,
+) -> io::Result<ProtectionRestore> {
     use crate::security_descriptor::{self, Presence};
     use windows_sys::Win32::Security::{
         Authorization::{SE_FILE_OBJECT, SetSecurityInfo},
@@ -18,7 +25,7 @@ fn restore_acl_protection(file: &File, item: &Input<'_>) -> io::Result<Protectio
         PROTECTED_SACL_SECURITY_INFORMATION, SACL_SECURITY_INFORMATION,
         UNPROTECTED_DACL_SECURITY_INFORMATION, UNPROTECTED_SACL_SECURITY_INFORMATION,
     };
-    let actual = snapshot(file);
+    let actual = security_snapshot_with_limit(file, maximum);
     let kernel = actual
         .kernel_security
         .as_ref()
@@ -26,8 +33,16 @@ fn restore_acl_protection(file: &File, item: &Input<'_>) -> io::Result<Protectio
     if kernel.native_error.is_some() || kernel.bytes.len() < 20 {
         return Err(invalid("kernel protection query failed"));
     }
-    let source = security_descriptor::validate(item.security)?;
-    let observed = security_descriptor::validate(&kernel.bytes)?;
+    let source = if let Some(maximum) = maximum {
+        security_descriptor::validate_with_limit(item.security, maximum)?
+    } else {
+        security_descriptor::validate(item.security)?
+    };
+    let observed = if let Some(maximum) = maximum {
+        security_descriptor::validate_with_limit(&kernel.bytes, maximum)?
+    } else {
+        security_descriptor::validate(&kernel.bytes)?
+    };
     let changed = ProtectionRestore {
         dacl: source.dacl_protected() != observed.dacl_protected(),
         sacl: source.sacl_protected() != observed.sacl_protected(),
@@ -35,7 +50,11 @@ fn restore_acl_protection(file: &File, item: &Input<'_>) -> io::Result<Protectio
     if !changed.dacl && !changed.sacl {
         return Ok(changed);
     }
-    let mut sd = descriptor(item.security)?;
+    let mut sd = if let Some(maximum) = maximum {
+        descriptor_with_limit(item.security, maximum)?
+    } else {
+        descriptor(item.security)?
+    };
     let mut flags = 0;
     if changed.dacl {
         flags |= if source.dacl_protected() {
@@ -142,6 +161,7 @@ pub(super) fn complete_owned_metadata(
         &SliceInputs(input),
         handles,
         1280,
+        None,
         same_security,
     )
 }
@@ -153,13 +173,25 @@ pub(super) fn complete_owned_metadata_domain(
     input: &impl InputDomain,
     handles: &BTreeMap<usize, File>,
     maximum_objects: usize,
+    resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
-    super::hard_links::validate_domain(
-        input,
-        super::hard_links::MAX_NAMES,
-        crate::shadow_names::valid_unicode_component,
-    )?;
+    let resource_root = format!("{}\\", pair.shadow.volume_path()?);
+    if let Some(admission) = resource_admission {
+        input.require_resource_metadata(admission)?;
+        super::hard_links::validate_resource_domain(
+            input,
+            admission.maximum_namespace_names()?,
+            &resource_root,
+            crate::shadow_names::valid_unicode_component,
+        )?;
+    } else {
+        super::hard_links::validate_domain(
+            input,
+            super::hard_links::MAX_NAMES,
+            crate::shadow_names::valid_unicode_component,
+        )?;
+    }
     if input.is_empty()
         || maximum_objects == 0
         || input.len() > maximum_objects
@@ -201,11 +233,12 @@ pub(super) fn complete_owned_metadata_domain(
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;
-        if item.components.len() > 16
-            || item
-                .components
-                .iter()
-                .any(|part| !crate::shadow_names::valid_unicode_component(part))
+        if resource_admission.map_or(item.components.len() > 16, |_| {
+            !super::hard_links::resource_path_valid(&resource_root, item.components)
+        }) || item
+            .components
+            .iter()
+            .any(|part| !crate::shadow_names::valid_unicode_component(part))
             || !paths.insert(crate::shadow_names::conservative_path_key(item.components))
             || item.times.iter().any(|v| *v == 0 || *v >= i64::MAX as u64)
             || !attributes_allowed(item)
@@ -215,9 +248,17 @@ pub(super) fn complete_owned_metadata_domain(
                 "owning metadata input outside bounded source profile",
             ));
         }
-        descriptor(item.security)?;
+        if let Some(a) = resource_admission {
+            descriptor_with_limit(item.security, a.budget.max_row_bytes)?;
+        } else {
+            descriptor(item.security)?;
+        }
         if let Some(api) = item.expected_api_security {
-            descriptor(api)?;
+            if let Some(a) = resource_admission {
+                descriptor_with_limit(api, a.budget.max_row_bytes)?;
+            } else {
+                descriptor(api)?;
+            }
         }
         for path in super::hard_links::paths(item) {
             if namespace_index
@@ -336,12 +377,34 @@ pub(super) fn complete_owned_metadata_domain(
                 "owned identity changed before security restoration",
             ));
         }
-        if !security_matches(item, &snapshot(handle), &same_security)? {
-            let restored = restore_acl_protection(handle, item)?;
+        if !security_matches(
+            item,
+            &security_snapshot_with_limit(
+                handle,
+                resource_admission.map(|a| a.budget.max_row_bytes),
+            ),
+            &same_security,
+        )? {
+            let restored = restore_acl_protection_with_limit(
+                handle,
+                item,
+                resource_admission.map(|a| a.budget.max_row_bytes),
+            )?;
             dacl_protection_updates += usize::from(restored.dacl);
             sacl_protection_updates += usize::from(restored.sacl);
-            backup_security(handle, item.security)?;
-            if !security_matches(item, &snapshot(handle), &same_security)? {
+            backup_security_with_limit(
+                handle,
+                item.security,
+                resource_admission.map(|a| a.budget.max_row_bytes),
+            )?;
+            if !security_matches(
+                item,
+                &security_snapshot_with_limit(
+                    handle,
+                    resource_admission.map(|a| a.budget.max_row_bytes),
+                ),
+                &same_security,
+            )? {
                 return Err(invalid(
                     "owned source security views differ after restoration",
                 ));
@@ -413,7 +476,11 @@ pub(super) fn complete_owned_metadata_domain(
         let view = owned.input();
         let item = &view;
         let handle = &handles[&index];
-        let actual = metadata_snapshot(handle, item);
+        let actual = metadata_snapshot_with_limit(
+            handle,
+            item,
+            resource_admission.map(|a| a.budget.max_row_bytes),
+        );
         if query_bytes(&actual, 18, 24)? != identities[&index]
             || !basic_matches(item, query_bytes(&actual, 0, 40)?)
             || !security_matches(item, &actual, &same_security)?

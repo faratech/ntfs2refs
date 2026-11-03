@@ -82,11 +82,21 @@ pub(crate) fn bitmap_streamed_collected_with_input(
     clusters: u64,
     template: &[u8],
 ) -> io::Result<crate::bitmap_streaming::CollectedBitmap> {
-    crate::bitmap_paging::page_input(template, 0)?;
-    let mut collector = crate::bitmap_streaming::Collector::new(
+    bitmap_streamed_with_limits(
+        file,
         clusters,
+        template,
         crate::bitmap_streaming::source_limits(clusters)?,
-    )?;
+    )
+}
+pub(crate) fn bitmap_streamed_with_limits(
+    file: &File,
+    clusters: u64,
+    template: &[u8],
+    limits: crate::bitmap_streaming::Limits,
+) -> io::Result<crate::bitmap_streaming::CollectedBitmap> {
+    crate::bitmap_paging::page_input(template, 0)?;
+    let mut collector = crate::bitmap_streaming::Collector::new(clusters, limits)?;
     let mut first = true;
     while collector.response_capacity() != 0 {
         let input = crate::bitmap_paging::page_input(template, collector.next_lcn())?;
@@ -148,7 +158,22 @@ pub(crate) fn bitmap_capture(
     crate::bitmap_paging::assemble_queries(&first, &continuation, template)
 }
 pub(crate) fn retrieval_queries(file: &File) -> (IoctlQuery, Vec<IoctlQuery>) {
-    let mut assembler = crate::retrieval_paging::Assembler::default();
+    retrieval_queries_assembled(file, crate::retrieval_paging::Assembler::default())
+}
+pub(crate) fn retrieval_queries_resource(
+    file: &File,
+    evidence_bytes: usize,
+) -> io::Result<(IoctlQuery, Vec<IoctlQuery>)> {
+    let limits = crate::retrieval_paging::Limits::for_resource_bytes(evidence_bytes)?;
+    Ok(retrieval_queries_assembled(
+        file,
+        crate::retrieval_paging::Assembler::with_limits(limits)?,
+    ))
+}
+fn retrieval_queries_assembled(
+    file: &File,
+    mut assembler: crate::retrieval_paging::Assembler,
+) -> (IoctlQuery, Vec<IoctlQuery>) {
     let mut queries = Vec::new();
     while assembler.response_capacity() != 0 {
         let query = ioctl(
@@ -294,19 +319,38 @@ pub(crate) struct ExtentContext {
     pub cluster_bytes: u32,
     pub retrieval_base_bytes: u64,
 }
+fn request_resource_bytes(request: &Request) -> io::Result<Option<usize>> {
+    request
+        .resource_profile
+        .map(|p| p.resource_admission())
+        .transpose()?
+        .flatten()
+        .map(|a| usize::try_from(a.budget.max_row_bytes).map_err(io::Error::other))
+        .transpose()
+}
 
 fn extent_map_matches(
     expected: &ExtentIdentityStream,
     context: ExtentContext,
     first: &IoctlQuery,
     continuation: &[IoctlQuery],
+    resource_bytes: Option<usize>,
 ) -> io::Result<()> {
     if expected.cluster_bytes != context.cluster_bytes {
         return Err(io::Error::other(
             "extent-identity native cluster geometry differs",
         ));
     }
-    let runs = crate::retrieval_paging::assemble_queries(first, continuation)?.runs;
+    let runs = if let Some(bytes) = resource_bytes {
+        crate::retrieval_paging::assemble_queries_with_limits(
+            first,
+            continuation,
+            crate::retrieval_paging::Limits::for_resource_bytes(bytes)?,
+        )?
+        .runs
+    } else {
+        crate::retrieval_paging::assemble_queries(first, continuation)?.runs
+    };
     let cluster = u64::from(context.cluster_bytes);
     let mut extents: Vec<ExtentIdentityExtent> = Vec::new();
     for run in runs {
@@ -403,7 +447,15 @@ fn hash_stream(
             .as_ref()
             .map(|q| u64::from_le_bytes(q.bytes[..8].try_into().unwrap()));
         match (allocated == Some(wanted.allocated_size) && wanted.logical_size == expected)
-            .then(|| extent_map_matches(wanted, context, first, continuation))
+            .then(|| {
+                extent_map_matches(
+                    wanted,
+                    context,
+                    first,
+                    continuation,
+                    request_resource_bytes(r)?,
+                )
+            })
             .unwrap_or_else(|| {
                 Err(io::Error::other(
                     "extent-identity stream allocation or EOF differs",
@@ -447,7 +499,28 @@ pub(crate) fn capture(
     extent_context: Option<ExtentContext>,
 ) -> (StreamCapture, Vec<StreamHash>) {
     let mut hashes = vec![];
+    let resource = match request_resource_bytes(r) {
+        Ok(resource) => resource,
+        Err(error) => {
+            return (
+                StreamCapture {
+                    enumeration: info(file, 7, layout::MAX_STREAM_BUFFER),
+                    parse_error: Some(error.to_string()),
+                    streams: Vec::new(),
+                },
+                hashes,
+            );
+        }
+    };
     let mut enumeration = info(file, 7, layout::MAX_STREAM_BUFFER);
+    if resource.is_some() {
+        let mut capacity = layout::MAX_STREAM_BUFFER;
+        let maximum = evidence_limit.min(u32::MAX as usize);
+        while matches!(enumeration.native_error, Some(122 | 234)) && capacity < maximum {
+            capacity = capacity.saturating_mul(2).min(maximum);
+            enumeration = info(file, 7, capacity);
+        }
+    }
     let mut result = StreamCapture {
         enumeration: enumeration.clone(),
         parse_error: None,
@@ -456,7 +529,16 @@ pub(crate) fn capture(
     if enumeration.native_error.is_some() {
         return (result, hashes);
     }
-    let entries = match layout::parse_streams(&enumeration.bytes) {
+    let parsed = if resource.is_some() {
+        layout::parse_streams_with_limits(
+            &enumeration.bytes,
+            enumeration.bytes.len(),
+            evidence_limit / std::mem::size_of::<layout::Entry>(),
+        )
+    } else {
+        layout::parse_streams(&enumeration.bytes)
+    };
+    let entries = match parsed {
         Ok((entries, end)) => {
             enumeration.bytes.truncate(end);
             enumeration.bytes.shrink_to_fit();
@@ -502,7 +584,24 @@ pub(crate) fn capture(
             continue;
         }
         q.identity_before = Some(before);
-        let (first, continuation) = retrieval_queries(f);
+        let retrieval = if resource.is_some() {
+            let remaining = evidence_limit
+                .saturating_sub(result.retained_bytes())
+                .saturating_sub(hash_retained_bytes(&hashes));
+            retrieval_queries_resource(f, remaining)
+        } else {
+            Ok(retrieval_queries(f))
+        };
+        let (first, continuation) = match retrieval {
+            Ok(q) => q,
+            Err(error) => {
+                q.binding_error = Some(error.to_string());
+                q.identity_after = Some(info(f, 18, 24));
+                result.streams.push(q);
+                result.parse_error = Some("native retrieval resource budget exhausted".into());
+                break;
+            }
+        };
         q.retrieval = Some(first);
         q.retrieval_continuation = continuation;
         let wanted = r

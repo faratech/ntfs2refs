@@ -47,14 +47,29 @@ pub(super) fn path(root: &str, components: &[String], name: &[u16]) -> io::Resul
 }
 
 pub(super) fn validate(input: &[Input<'_>], partition: u64) -> io::Result<()> {
+    validate_with_limit(input, partition, MAX_STREAMS, false)
+}
+pub(super) fn validate_resource(
+    input: &[Input<'_>],
+    partition: u64,
+    streams: usize,
+) -> io::Result<()> {
+    validate_with_limit(input, partition, streams, true)
+}
+fn validate_with_limit(
+    input: &[Input<'_>],
+    partition: u64,
+    maximum_streams: usize,
+    resource: bool,
+) -> io::Result<()> {
     let mut count = 0usize;
     for object in input {
         count = count
             .checked_add(usize::from(!object.directory))
             .and_then(|n| n.checked_add(object.named_streams.len()))
             .ok_or_else(|| invalid("stream count overflow"))?;
-        if count > MAX_STREAMS
-            || object.named_streams.len() >= stream_layout::MAX_STREAMS
+        if count > maximum_streams
+            || (!resource && object.named_streams.len() >= stream_layout::MAX_STREAMS)
             || (object.directory && !object.named_streams.is_empty())
         {
             return Err(invalid(

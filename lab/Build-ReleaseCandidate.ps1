@@ -14,7 +14,8 @@ param(
     [string]$RustupPath = (Join-Path $env:USERPROFILE '.cargo\bin\rustup.exe'),
     [ValidateRange(1073741824,17179869184)][long]$MaximumWorkingBytes = 4294967296,
     [ValidateRange(1,16)][int]$Jobs = 4,
-    [switch]$IncludeFullSourceBaseline
+    [switch]$IncludeFullSourceBaseline,
+    [switch]$IncludeResourceSourceObservation
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -25,6 +26,7 @@ $targetTriple = 'x86_64-pc-windows-msvc'
 $sourcePaths = @('Cargo.toml','Cargo.lock','rust-toolchain.toml','.cargo/config.toml','src','crates/n2r-win32/Cargo.toml','crates/n2r-win32/src','evidence/qualification-registry.json')
 $binaries = @('ntfs2refs','lab-selected-marker-native','lab-convert-native-composite','lab-recover-native-composite','lab-content-digest','lab-managed-shadow','lab-inspect-paged-metadata')
 if ($IncludeFullSourceBaseline) { $binaries += 'lab-capture-full-source-baseline' }
+if ($IncludeResourceSourceObservation) { $binaries += 'lab-observe-resource-source' }
 $held = [Collections.Generic.List[IO.FileStream]]::new()
 $commands = [Collections.Generic.List[object]]::new()
 $created = $false

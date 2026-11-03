@@ -151,6 +151,14 @@ impl n2r_win32::shadow_native::input_domain::InputDomain for PagedInputs<'_> {
         }
         self.0.revalidate().map_err(std::io::Error::other)
     }
+    fn require_resource_metadata(
+        &self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> std::io::Result<()> {
+        self.0
+            .require_resource_owner(admission)
+            .map_err(std::io::Error::other)
+    }
 }
 
 /// Native views borrow inline objects or own one decoded paged object. The
@@ -187,6 +195,14 @@ impl<'a, D: crate::shadow_tree::ExpectedObjectDomain>
             .require_paged_metadata(budget, semantic_bytes)
             .map_err(std::io::Error::other)
     }
+    fn require_resource_metadata(
+        &self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> std::io::Result<()> {
+        self.0
+            .require_resource_metadata(admission)
+            .map_err(std::io::Error::other)
+    }
 }
 
 pub(crate) fn allocate_private_tree_enrolled_domain(
@@ -195,7 +211,12 @@ pub(crate) fn allocate_private_tree_enrolled_domain(
     input: &impl n2r_win32::shadow_native::input_domain::InputDomain,
     resources: crate::ntfs_admission::ResourceProfile,
 ) -> Result<n2r_win32::shadow_native::private_tree::PrivateTree> {
-    let enrollment = n2r_win32::shadow_native::private_tree::enroll(source, pair)?;
+    let profile = resources
+        .native_profile()
+        .context("enrolled construction requires a native resource profile")?;
+    let enrollment = n2r_win32::shadow_native::private_tree::enroll_with_resource_profile(
+        source, pair, profile,
+    )?;
     Ok(
         n2r_win32::shadow_native::private_tree::allocate_enrolled_domain(
             enrollment,

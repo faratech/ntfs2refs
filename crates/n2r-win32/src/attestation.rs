@@ -1,6 +1,6 @@
 //! Read-only native file-handle observations. These do not authorize conversion.
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, io};
+use std::{borrow::Cow, collections::BTreeSet, io};
 
 pub const MAX_FILES: usize = 256;
 pub const MAX_SECURITY_BYTES: usize = 65_536;
@@ -18,6 +18,7 @@ pub enum ResourceProfile {
     ExperimentalLargeTreeV1,
     ExperimentalStreamingTreeV2,
     ExperimentalObjectEnvelopeV3(Option<crate::tree_resources::CountAdmission>),
+    ResourceBoundedV4(Option<crate::tree_resources::SourceResourceAdmission>),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceLimits {
@@ -30,17 +31,45 @@ pub struct ResourceLimits {
     pub namespace_evidence_bytes: usize,
 }
 impl ResourceProfile {
-    pub const fn maximum_partition_bytes(self) -> u64 {
+    pub fn maximum_partition_bytes(self) -> u64 {
         match self {
             Self::ExperimentalLargeTreeV1
             | Self::ExperimentalStreamingTreeV2
             | Self::ExperimentalObjectEnvelopeV3(_) => {
                 crate::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES
             }
+            Self::ResourceBoundedV4(Some(admission)) if admission.validate().is_ok() => {
+                i64::MAX as u64
+            }
+            Self::ResourceBoundedV4(_) => 0,
         }
     }
     pub fn limits(self) -> ResourceLimits {
         match self {
+            Self::ResourceBoundedV4(admission) => {
+                let Some(admission) = admission.filter(|a| a.validate().is_ok()) else {
+                    return ResourceLimits {
+                        maximum_identities: 0,
+                        maximum_stream_bytes: 0,
+                        logical_read_bytes: 0,
+                        logical_read_calls: 0,
+                        security_bytes: 0,
+                        stream_evidence_bytes: 0,
+                        namespace_evidence_bytes: 0,
+                    };
+                };
+                let semantic =
+                    usize::try_from(admission.semantic_byte_budget()).unwrap_or(usize::MAX);
+                ResourceLimits {
+                    maximum_identities: usize::try_from(admission.raw_identities).unwrap_or(0),
+                    maximum_stream_bytes: i64::MAX as u64,
+                    logical_read_bytes: u64::MAX,
+                    logical_read_calls: u64::MAX,
+                    security_bytes: semantic,
+                    stream_evidence_bytes: semantic,
+                    namespace_evidence_bytes: semantic,
+                }
+            }
             Self::ExperimentalLargeTreeV1 => ResourceLimits {
                 maximum_identities: 2048,
                 maximum_stream_bytes: 4 << 30,
@@ -67,7 +96,9 @@ impl ResourceProfile {
     pub const fn is_streaming(self) -> bool {
         matches!(
             self,
-            Self::ExperimentalStreamingTreeV2 | Self::ExperimentalObjectEnvelopeV3(_)
+            Self::ExperimentalStreamingTreeV2
+                | Self::ExperimentalObjectEnvelopeV3(_)
+                | Self::ResourceBoundedV4(_)
         )
     }
 
@@ -75,6 +106,10 @@ impl ResourceProfile {
     /// inventory to be counted before a versioned descriptor is selected.
     pub fn maximum_objects(self) -> usize {
         match self {
+            Self::ResourceBoundedV4(Some(a)) if a.validate().is_ok() => {
+                usize::try_from(a.objects().unwrap_or(0)).unwrap_or(0)
+            }
+            Self::ResourceBoundedV4(_) => 0,
             Self::ExperimentalObjectEnvelopeV3(Some(a)) if a.requires_paged_metadata() => {
                 (a.object_slots as usize).min(crate::tree_resources::RAW_IDENTITIES)
             }
@@ -96,6 +131,20 @@ impl ResourceProfile {
             _ => Ok(None),
         }
     }
+    pub fn resource_admission(
+        self,
+    ) -> io::Result<Option<crate::tree_resources::SourceResourceAdmission>> {
+        match self {
+            Self::ResourceBoundedV4(Some(admission)) => {
+                admission.validate()?;
+                Ok(Some(admission))
+            }
+            Self::ResourceBoundedV4(None) => Err(io::Error::other(
+                "resource profile has no complete frozen source admission",
+            )),
+            _ => Ok(None),
+        }
+    }
 }
 impl Request {
     pub fn limits(&self) -> ResourceLimits {
@@ -111,6 +160,24 @@ impl Request {
             },
             ResourceProfile::limits,
         )
+    }
+}
+
+pub fn source_bitmap_limits(
+    profile: Option<ResourceProfile>,
+    clusters: u64,
+) -> io::Result<crate::bitmap_streaming::Limits> {
+    if let Some(admission) = profile
+        .map(ResourceProfile::resource_admission)
+        .transpose()?
+        .flatten()
+    {
+        crate::bitmap_streaming::resource_source_limits(
+            clusters,
+            admission.budget.max_row_bytes / 2,
+        )
+    } else {
+        crate::bitmap_streaming::source_limits(clusters)
     }
 }
 
@@ -144,6 +211,124 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extent_identity_streams: Vec<ExtentIdentityStream>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NativeRequestRow {
+    pub identity: FileIdentity,
+    pub extent_identity_streams: Vec<ExtentIdentityStream>,
+}
+/// Ordered selectors supplied by the retained, completely validated raw page
+/// owner. This describes reads only; neither this trait nor its JSON supplies
+/// a frozen source lease or fresh conversion authority.
+pub trait NativeRequestDomain {
+    fn header(&self) -> &Request;
+    fn len(&self) -> usize;
+    fn row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>>;
+    fn identity(&self, index: usize) -> io::Result<FileIdentity> {
+        Ok(self.row(index)?.identity.clone())
+    }
+    fn revalidate(&self) -> io::Result<()>;
+    fn require_paged_source(
+        &self,
+        _budget: crate::tree_resources::MetadataPageBudget,
+        _semantic_bytes: u64,
+    ) -> io::Result<()> {
+        Err(io::Error::other(
+            "native selector requires the retained complete raw page owner",
+        ))
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+impl NativeRequestDomain for Request {
+    fn header(&self) -> &Request {
+        self
+    }
+    fn len(&self) -> usize {
+        self.files.len()
+    }
+    fn row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
+        let identity = self
+            .files
+            .get(index)
+            .ok_or_else(|| io::Error::other("native request ordinal absent"))?;
+        Ok(Cow::Owned(NativeRequestRow {
+            identity: identity.clone(),
+            extent_identity_streams: self
+                .extent_identity_streams
+                .iter()
+                .filter(|s| s.identity == *identity)
+                .cloned()
+                .collect(),
+        }))
+    }
+    fn revalidate(&self) -> io::Result<()> {
+        self.validate()
+    }
+}
+pub fn validate_native_request_domain(domain: &impl NativeRequestDomain) -> io::Result<()> {
+    let header = domain.header();
+    header.validate()?;
+    if domain.len() != header.selected_count()? {
+        return Err(io::Error::other("native selector complete count differs"));
+    }
+    if header.has_paged_selectors() {
+        let admission = header
+            .resource_profile
+            .unwrap()
+            .resource_admission()?
+            .unwrap();
+        domain.require_paged_source(admission.source_pages, admission.semantic_byte_budget())?;
+    }
+    let mut previous = None;
+    for i in 0..domain.len() {
+        let row = domain.row(i)?;
+        validate_request_row(header, &row)?;
+        if header.has_paged_selectors() && previous.is_some_and(|n| n >= row.identity.record_number)
+        {
+            return Err(io::Error::other(
+                "native selectors are not strict ordered unique base records",
+            ));
+        }
+        previous = Some(row.identity.record_number);
+    }
+    domain.revalidate()
+}
+fn validate_request_row(header: &Request, row: &NativeRequestRow) -> io::Result<()> {
+    if row.identity.record_number >= 1 << 48
+        || row.identity.sequence_number == 0
+        || (!header.uses_extent_identity() && !row.extent_identity_streams.is_empty())
+    {
+        return Err(io::Error::other("invalid native selector row"));
+    }
+    let mut names = BTreeSet::new();
+    for stream in &row.extent_identity_streams {
+        if let Some(admission) = header
+            .resource_profile
+            .map(ResourceProfile::resource_admission)
+            .transpose()?
+            .flatten()
+        {
+            stream.validate_with_limit(
+                header.partition_length,
+                usize::try_from(admission.budget.max_row_bytes).map_err(io::Error::other)?
+                    / std::mem::size_of::<ExtentIdentityExtent>(),
+            )?;
+        } else {
+            stream.validate(header.partition_length)?;
+        }
+        if stream.identity != row.identity
+            || !names.insert(&stream.name_utf16)
+            || stream.logical_size > header.limits().maximum_stream_bytes
+        {
+            return Err(io::Error::other(
+                "native selector stream identity or complete mapping differs",
+            ));
+        }
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -166,6 +351,9 @@ pub struct ExtentIdentityStream {
 
 impl ExtentIdentityStream {
     fn validate(&self, partition: u64) -> io::Result<()> {
+        self.validate_with_limit(partition, crate::stream_layout::MAX_COMPLETE_EXTENTS)
+    }
+    fn validate_with_limit(&self, partition: u64, maximum_extents: usize) -> io::Result<()> {
         let fail = || {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -191,7 +379,7 @@ impl ExtentIdentityStream {
                 .iter()
                 .any(|n| matches!(*n, 0 | 0x2f | 0x5c | 0x3a))
             || self.extents.is_empty()
-            || self.extents.len() > crate::stream_layout::MAX_COMPLETE_EXTENTS
+            || self.extents.len() > maximum_extents
         {
             return Err(fail());
         }
@@ -220,11 +408,26 @@ impl ExtentIdentityStream {
 }
 impl Request {
     pub fn requires_directory_case_sensitivity(&self) -> bool {
-        matches!(self.schema_version, 5 | 6)
+        matches!(self.schema_version, 5 | 6 | 7 | 8)
     }
 
     pub fn uses_extent_identity(&self) -> bool {
-        matches!(self.schema_version, 4 | 6)
+        matches!(self.schema_version, 4 | 6 | 8)
+    }
+    pub fn has_paged_selectors(&self) -> bool {
+        matches!(self.schema_version, 7 | 8)
+    }
+    pub fn selected_count(&self) -> io::Result<usize> {
+        if self.has_paged_selectors() {
+            let admission = self
+                .resource_profile
+                .ok_or_else(|| io::Error::other("paged selection has no resource profile"))?
+                .resource_admission()?
+                .ok_or_else(|| io::Error::other("paged selection lacks complete admission"))?;
+            usize::try_from(admission.raw_identities).map_err(io::Error::other)
+        } else {
+            Ok(self.files.len())
+        }
     }
 
     pub fn validate(&self) -> io::Result<()> {
@@ -260,8 +463,12 @@ impl Request {
                         .checked_add(self.partition_length)
                         .is_some_and(|n| n <= 64 * 1024 * 1024 * 1024 * 1024)
             }
-            3 | 4 | 5 | 6 => {
-                self.disk_number <= 4095
+            3 | 4 | 5 | 6 | 7 | 8 => {
+                (self.disk_number <= 4095
+                    || matches!(
+                        self.resource_profile,
+                        Some(ResourceProfile::ResourceBoundedV4(_))
+                    ))
                     && self.resource_profile.is_some_and(|profile| {
                         self.partition_length <= profile.maximum_partition_bytes()
                     })
@@ -277,11 +484,12 @@ impl Request {
                 (self.schema_version, self.resource_profile),
                 (1 | 2 | 5, None)
                     | (
-                        3 | 4 | 5 | 6,
+                        3 | 4 | 5 | 6 | 7 | 8,
                         Some(
                             ResourceProfile::ExperimentalLargeTreeV1
                                 | ResourceProfile::ExperimentalStreamingTreeV2
                                 | ResourceProfile::ExperimentalObjectEnvelopeV3(_)
+                                | ResourceProfile::ResourceBoundedV4(_)
                         )
                     )
             )
@@ -292,8 +500,15 @@ impl Request {
             || self.partition_length == 0
             || !self.partition_length.is_multiple_of(4096)
             || self.ntfs_serial == 0
-            || self.files.is_empty()
-            || self.files.len() > self.limits().maximum_identities
+            || (!self.has_paged_selectors()
+                && (self.files.is_empty() || self.files.len() > self.limits().maximum_identities))
+            || (self.has_paged_selectors()
+                && (!self.files.is_empty()
+                    || !self.extent_identity_streams.is_empty()
+                    || !matches!(
+                        self.resource_profile,
+                        Some(ResourceProfile::ResourceBoundedV4(Some(_)))
+                    )))
             || self.source_inspection_sha256.len() != 64
             || !self
                 .source_inspection_sha256
@@ -323,6 +538,20 @@ impl Request {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "native identities or inspection pin differ from admitted source counts",
+                ));
+            }
+        }
+        if let Some(admission) = self
+            .resource_profile
+            .map(ResourceProfile::resource_admission)
+            .transpose()?
+            .flatten()
+        {
+            if self.selected_count()? as u64 != admission.raw_identities
+                || self.source_inspection_sha256 != hex::encode(admission.source_inspection_sha256)
+            {
+                return Err(io::Error::other(
+                    "native selection differs from resource admitted complete source",
                 ));
             }
         }
@@ -696,6 +925,76 @@ pub struct Report {
     #[serde(default = "two_content_passes")]
     pub content_passes: u8,
 }
+
+/// Complete source evidence with one owned row at a time. The header retains
+/// the exact native request, allocation and protection bracket; a paged header
+/// has empty row tables. This interface itself grants no live source authority.
+pub trait NativeObservationDomain {
+    fn header(&self) -> &Report;
+    fn len(&self) -> usize;
+    fn logical_len(&self) -> usize;
+    fn namespace_len(&self) -> usize;
+    fn observation(&self, index: usize) -> io::Result<Cow<'_, Observation>>;
+    fn logical_file(&self, index: usize) -> io::Result<Cow<'_, LogicalFile>>;
+    fn namespace_file(&self, index: usize) -> io::Result<Cow<'_, NamespaceFile>>;
+    fn request_row(&self, index: usize) -> io::Result<Cow<'_, NativeRequestRow>> {
+        self.header().request.row(index)
+    }
+    fn request_len(&self) -> io::Result<usize> {
+        self.header().request.selected_count()
+    }
+    fn revalidate(&self) -> io::Result<()>;
+    fn validate_encoded_size(&self, maximum: usize) -> io::Result<()>;
+    fn maximum_security_descriptor_bytes(&self) -> usize {
+        MAX_SECURITY_BYTES
+    }
+    fn is_paged(&self) -> bool {
+        false
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+impl NativeObservationDomain for Report {
+    fn header(&self) -> &Report {
+        self
+    }
+    fn len(&self) -> usize {
+        self.files.len()
+    }
+    fn logical_len(&self) -> usize {
+        self.logical_data.as_ref().map_or(0, |d| d.files.len())
+    }
+    fn namespace_len(&self) -> usize {
+        self.namespace.as_ref().map_or(0, |d| d.files.len())
+    }
+    fn observation(&self, index: usize) -> io::Result<Cow<'_, Observation>> {
+        self.files
+            .get(index)
+            .map(Cow::Borrowed)
+            .ok_or_else(|| io::Error::other("missing native observation row"))
+    }
+    fn logical_file(&self, index: usize) -> io::Result<Cow<'_, LogicalFile>> {
+        self.logical_data
+            .as_ref()
+            .and_then(|d| d.files.get(index))
+            .map(Cow::Borrowed)
+            .ok_or_else(|| io::Error::other("missing native logical row"))
+    }
+    fn namespace_file(&self, index: usize) -> io::Result<Cow<'_, NamespaceFile>> {
+        self.namespace
+            .as_ref()
+            .and_then(|d| d.files.get(index))
+            .map(Cow::Borrowed)
+            .ok_or_else(|| io::Error::other("missing native namespace row"))
+    }
+    fn revalidate(&self) -> io::Result<()> {
+        Ok(())
+    }
+    fn validate_encoded_size(&self, maximum: usize) -> io::Result<()> {
+        self.serialized_size_bounded(maximum).map(|_| ())
+    }
+}
 fn two_content_passes() -> u8 {
     2
 }
@@ -709,6 +1008,23 @@ pub struct ResourceAudit {
     pub stream_evidence_bytes: u64,
     pub bitmap_evidence_bytes: u64,
     pub namespace_evidence_bytes: u64,
+}
+impl ResourceAudit {
+    pub(crate) fn merge(&mut self, row: Self) -> io::Result<()> {
+        if self.profile != row.profile {
+            return Err(io::Error::other("native resource profiles differ"));
+        }
+        let sum = |a: u64, b: u64| {
+            a.checked_add(b)
+                .ok_or_else(|| io::Error::other("native evidence accounting overflow"))
+        };
+        self.security_bytes = sum(self.security_bytes, row.security_bytes)?;
+        self.stream_evidence_bytes = sum(self.stream_evidence_bytes, row.stream_evidence_bytes)?;
+        self.bitmap_evidence_bytes = sum(self.bitmap_evidence_bytes, row.bitmap_evidence_bytes)?;
+        self.namespace_evidence_bytes =
+            sum(self.namespace_evidence_bytes, row.namespace_evidence_bytes)?;
+        Ok(())
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NamespaceData {
@@ -888,156 +1204,8 @@ impl Report {
     /// Recompute payload accounting from the evidence, never from JSON success
     /// flags. Vector/table counts are checked separately by the replay paths.
     pub fn measured_resources(&self, profile: ResourceProfile) -> io::Result<ResourceAudit> {
-        fn add(total: &mut u64, n: usize) -> io::Result<()> {
-            *total = total
-                .checked_add(n as u64)
-                .ok_or_else(|| io::Error::other("native evidence accounting overflow"))?;
-            Ok(())
-        }
-        fn query(total: &mut u64, q: &Query) -> io::Result<()> {
-            add(total, q.bytes.len())
-        }
-        fn ioctl(total: &mut u64, q: &IoctlQuery) -> io::Result<()> {
-            add(total, q.input.len())?;
-            add(total, q.bytes.len())
-        }
-        let mut out = ResourceAudit {
-            profile,
-            security_bytes: 0,
-            stream_evidence_bytes: 0,
-            bitmap_evidence_bytes: 0,
-            namespace_evidence_bytes: 0,
-        };
-        for file in &self.files {
-            if let Some(fallback) = &file.case_only_fallback {
-                add(&mut out.stream_evidence_bytes, fallback.retained_bytes()?)?;
-            }
-            for snapshot in file.before.iter().chain(file.after.iter()) {
-                add(&mut out.security_bytes, snapshot.security.len())?;
-                if let Some(s) = &snapshot.kernel_security {
-                    add(&mut out.security_bytes, s.bytes.len())?;
-                }
-                for q in &snapshot.queries {
-                    query(&mut out.stream_evidence_bytes, q)?;
-                }
-                add(
-                    &mut out.stream_evidence_bytes,
-                    snapshot.extended_attribute_bytes()?,
-                )?;
-                add(&mut out.stream_evidence_bytes, snapshot.reparse_bytes()?)?;
-                add(
-                    &mut out.stream_evidence_bytes,
-                    snapshot.directory_case_sensitivity_bytes()?,
-                )?;
-            }
-            for capture in file.streams_before.iter().chain(file.streams_after.iter()) {
-                query(&mut out.stream_evidence_bytes, &capture.enumeration)?;
-                add(
-                    &mut out.stream_evidence_bytes,
-                    capture.parse_error.as_ref().map_or(0, String::len),
-                )?;
-                for stream in &capture.streams {
-                    add(&mut out.stream_evidence_bytes, stream.name_utf16.len() * 2)?;
-                    add(
-                        &mut out.stream_evidence_bytes,
-                        stream.binding_error.as_ref().map_or(0, String::len),
-                    )?;
-                    for q in stream
-                        .identity_before
-                        .iter()
-                        .chain(stream.identity_after.iter())
-                    {
-                        query(&mut out.stream_evidence_bytes, q)?;
-                    }
-                    for q in stream
-                        .retrieval
-                        .iter()
-                        .chain(&stream.retrieval_continuation)
-                    {
-                        ioctl(&mut out.stream_evidence_bytes, q)?;
-                    }
-                }
-            }
-        }
-        if let Some(data) = &self.logical_data {
-            for file in &data.files {
-                for stream in file.before.iter().chain(&file.after) {
-                    add(&mut out.stream_evidence_bytes, stream.name_utf16.len() * 2)?;
-                    add(
-                        &mut out.stream_evidence_bytes,
-                        stream.outcome.sha256.as_ref().map_or(0, String::len),
-                    )?;
-                    add(
-                        &mut out.stream_evidence_bytes,
-                        stream.outcome.detail.as_ref().map_or(0, String::len),
-                    )?;
-                    for q in stream
-                        .identity_before
-                        .iter()
-                        .chain(stream.identity_after.iter())
-                        .chain(stream.standard_before.iter())
-                        .chain(stream.standard_after.iter())
-                    {
-                        query(&mut out.stream_evidence_bytes, q)?;
-                    }
-                }
-            }
-        }
-        if let Some(a) = &self.allocation {
-            ioctl(&mut out.stream_evidence_bytes, &a.base_before)?;
-            ioctl(&mut out.stream_evidence_bytes, &a.base_after)?;
-            for q in std::iter::once(&a.bitmap_before)
-                .chain(&a.bitmap_before_continuation)
-                .chain(std::iter::once(&a.bitmap_after))
-                .chain(&a.bitmap_after_continuation)
-            {
-                ioctl(&mut out.bitmap_evidence_bytes, q)?;
-            }
-            for summary in a.streamed_before.iter().chain(a.streamed_after.iter()) {
-                summary.validate(
-                    summary.cluster_count,
-                    crate::bitmap_streaming::source_limits(summary.cluster_count)?,
-                )?;
-                add(
-                    &mut out.bitmap_evidence_bytes,
-                    summary.encoding.len()
-                        + summary.bitmap_data_sha256.len()
-                        + summary.canonical_bitmap_sha256.len()
-                        + summary.page_transcript_sha256.len()
-                        + 7 * 8
-                        + 4,
-                )?;
-                add(
-                    &mut out.bitmap_evidence_bytes,
-                    summary.allocated_ranges.len()
-                        * std::mem::size_of::<crate::bitmap_streaming::ClusterRange>(),
-                )?;
-            }
-        }
-        if let Some(data) = &self.namespace {
-            for file in &data.files {
-                for q in file
-                    .identity_before
-                    .iter()
-                    .chain(file.identity_after.iter())
-                    .chain(file.standard.iter())
-                {
-                    query(&mut out.namespace_evidence_bytes, q)?;
-                }
-                for capture in file.before.iter().chain(file.after.iter()) {
-                    add(
-                        &mut out.namespace_evidence_bytes,
-                        capture.refusal.as_ref().map_or(0, String::len),
-                    )?;
-                    for q in &capture.calls {
-                        query(&mut out.namespace_evidence_bytes, q)?;
-                    }
-                }
-            }
-        }
-        Ok(out)
+        measured_domain_resources(self, profile)
     }
-
     /// Count the actual JSON encoding without materializing an output Vec.
     /// This catches numeric-array and hexadecimal expansion before the caller's
     /// existing 64 MiB artifact writer allocates the serialized report.
@@ -1071,269 +1239,432 @@ impl Report {
     }
 
     pub fn validate_resources(&self) -> io::Result<()> {
-        let invalid = || {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "native report resource profile or accounting differs",
-            )
-        };
-        for file in &self.files {
-            if let Some(fallback) = &file.case_only_fallback {
-                if !matches!(self.schema_version, 13 | 14)
-                    || file.open_error.is_none()
-                    || file.before.is_some()
-                    || file.after.is_some()
-                {
-                    return Err(invalid());
-                }
-                fallback.validate()?;
-            }
-            for snapshot in file.before.iter().chain(file.after.iter()) {
-                snapshot.validate_extended_attributes(matches!(
-                    self.schema_version,
-                    10 | 11 | 12 | 13 | 14
-                ))?;
-                snapshot.validate_reparse(matches!(self.schema_version, 11 | 12 | 13 | 14))?;
-                snapshot
-                    .validate_directory_case_sensitivity(matches!(self.schema_version, 13 | 14))?;
-            }
+        validate_domain_resources(self)
+    }
+}
+
+/// Recompute complete evidence accounting without retaining row collections.
+pub fn measured_domain_resources(
+    domain: &impl NativeObservationDomain,
+    profile: ResourceProfile,
+) -> io::Result<ResourceAudit> {
+    let header = domain.header();
+    fn add(total: &mut u64, n: usize) -> io::Result<()> {
+        *total = total
+            .checked_add(n as u64)
+            .ok_or_else(|| io::Error::other("native evidence accounting overflow"))?;
+        Ok(())
+    }
+    fn ioctl(total: &mut u64, q: &IoctlQuery) -> io::Result<()> {
+        add(total, q.input.len())?;
+        add(total, q.bytes.len())
+    }
+    let mut out = ResourceAudit {
+        profile,
+        security_bytes: 0,
+        stream_evidence_bytes: 0,
+        bitmap_evidence_bytes: 0,
+        namespace_evidence_bytes: 0,
+    };
+    for index in 0..domain.len() {
+        let row = domain.observation(index)?;
+        out.merge(measured_row_resources(profile, Some(&row), None, None)?)?;
+    }
+    if header.logical_data.is_some() {
+        for index in 0..domain.logical_len() {
+            let row = domain.logical_file(index)?;
+            out.merge(measured_row_resources(profile, None, Some(&row), None)?)?;
         }
-        let Some(profile) = self.request.resource_profile else {
-            let legacy = (2..=7).contains(&self.schema_version)
-                && matches!(self.request.schema_version, 1 | 2);
-            let canonical_case = self.schema_version == 13 && self.request.schema_version == 5;
-            if canonical_case {
-                self.request.validate()?;
-            }
-            return if (legacy || canonical_case)
-                && self.resources.is_none()
-                && self
-                    .allocation
-                    .as_ref()
-                    .is_none_or(|a| a.streamed_before.is_none() && a.streamed_after.is_none())
+    }
+    if let Some(a) = &header.allocation {
+        ioctl(&mut out.stream_evidence_bytes, &a.base_before)?;
+        ioctl(&mut out.stream_evidence_bytes, &a.base_after)?;
+        for q in std::iter::once(&a.bitmap_before)
+            .chain(&a.bitmap_before_continuation)
+            .chain(std::iter::once(&a.bitmap_after))
+            .chain(&a.bitmap_after_continuation)
+        {
+            ioctl(&mut out.bitmap_evidence_bytes, q)?;
+        }
+        for summary in a.streamed_before.iter().chain(a.streamed_after.iter()) {
+            summary.validate(
+                summary.cluster_count,
+                source_bitmap_limits(Some(profile), summary.cluster_count)?,
+            )?;
+            add(
+                &mut out.bitmap_evidence_bytes,
+                summary.encoding.len()
+                    + summary.bitmap_data_sha256.len()
+                    + summary.canonical_bitmap_sha256.len()
+                    + summary.page_transcript_sha256.len()
+                    + 7 * 8
+                    + 4,
+            )?;
+            add(
+                &mut out.bitmap_evidence_bytes,
+                summary.allocated_ranges.len()
+                    * std::mem::size_of::<crate::bitmap_streaming::ClusterRange>(),
+            )?;
+        }
+    }
+
+    if header.namespace.is_some() {
+        for index in 0..domain.namespace_len() {
+            let row = domain.namespace_file(index)?;
+            out.merge(measured_row_resources(profile, None, None, Some(&row))?)?;
+        }
+    }
+    Ok(out)
+}
+
+/// Validate the same native evidence rules through borrowed or paged rows.
+pub fn validate_domain_resources(domain: &impl NativeObservationDomain) -> io::Result<()> {
+    let header = domain.header();
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native report resource profile or accounting differs",
+        )
+    };
+    for index in 0..domain.len() {
+        let file = domain.observation(index)?;
+        if let Some(fallback) = &file.case_only_fallback {
+            if !matches!(header.schema_version, 13 | 14 | 15 | 16)
+                || file.open_error.is_none()
+                || file.before.is_some()
+                || file.after.is_some()
             {
-                Ok(())
-            } else {
-                Err(invalid())
-            };
-        };
-        self.request.validate()?;
-        if !matches!(
-            (self.request.schema_version, self.schema_version),
-            (3, 8 | 9 | 10 | 11) | (4, 12) | (5, 13) | (6, 14)
-        ) {
-            return Err(invalid());
-        }
-        let limits = profile.limits();
-        let a = self.resources.as_ref().ok_or_else(invalid)?;
-        let data = self.logical_data.as_ref().ok_or_else(invalid)?;
-        let namespace = self.namespace.as_ref().ok_or_else(invalid)?;
-        let allocation = self.allocation.as_ref().ok_or_else(invalid)?;
-        if matches!(self.schema_version, 9 | 10 | 11 | 12 | 13 | 14) {
-            allocation
-                .streamed_before
-                .as_ref()
-                .ok_or_else(invalid)?
-                .validate_source_first(&allocation.bitmap_before)?;
-            allocation
-                .streamed_after
-                .as_ref()
-                .ok_or_else(invalid)?
-                .validate_source_first(&allocation.bitmap_after)?;
-        }
-        let ids: BTreeSet<_> = self
-            .request
-            .files
-            .iter()
-            .map(FileIdentity::reference)
-            .collect();
-        let same_ids = |actual: Vec<u64>| {
-            actual.len() == ids.len() && actual.iter().copied().collect::<BTreeSet<_>>() == ids
-        };
-        let mut observed = 0u64;
-        let mut complete_reservations = 0u64;
-        let mut complete_streams = 0u64;
-        if !matches!(self.content_passes, 1 | 2) {
-            return Err(invalid());
-        }
-        for file in &data.files {
-            // A single content pass is mirrored into `after`; count it once.
-            if self.content_passes == 1 && file.after != file.before {
                 return Err(invalid());
             }
-            let passes: &[&Vec<StreamHash>] = if self.content_passes == 1 {
-                &[&file.before]
-            } else {
-                &[&file.before, &file.after]
-            };
-            for pass in passes.iter().copied() {
-                if pass.len() > crate::stream_layout::MAX_STREAMS {
-                    return Err(invalid());
-                }
-                for h in pass {
-                    if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
-                        && (!matches!(
-                            (self.request.schema_version, self.schema_version),
-                            (4, 12) | (6, 14)
-                        ) || h.outcome.bytes_read != 0
-                            || h.outcome.eof_confirmed
-                            || h.outcome.sha256.is_some()
-                            || h.outcome.native_error.is_some()
-                            || h.outcome.detail.is_some()
-                            || !self.request.extent_identity_streams.iter().any(|wanted| {
+            fallback.validate()?;
+        }
+        for snapshot in file.before.iter().chain(file.after.iter()) {
+            snapshot.validate_extended_attributes(matches!(
+                header.schema_version,
+                10 | 11 | 12 | 13 | 14 | 15 | 16
+            ))?;
+            snapshot
+                .validate_reparse(matches!(header.schema_version, 11 | 12 | 13 | 14 | 15 | 16))?;
+            snapshot.validate_directory_case_sensitivity(matches!(
+                header.schema_version,
+                13 | 14 | 15 | 16
+            ))?;
+        }
+    }
+    let Some(profile) = header.request.resource_profile else {
+        let legacy = (2..=7).contains(&header.schema_version)
+            && matches!(header.request.schema_version, 1 | 2);
+        let canonical_case = header.schema_version == 13 && header.request.schema_version == 5;
+        if canonical_case {
+            header.request.validate()?;
+        }
+        return if (legacy || canonical_case)
+            && header.resources.is_none()
+            && header
+                .allocation
+                .as_ref()
+                .is_none_or(|a| a.streamed_before.is_none() && a.streamed_after.is_none())
+        {
+            Ok(())
+        } else {
+            Err(invalid())
+        };
+    };
+    header.request.validate()?;
+    if !matches!(
+        (header.request.schema_version, header.schema_version),
+        (3, 8 | 9 | 10 | 11) | (4, 12) | (5, 13) | (6, 14) | (7, 15) | (8, 16)
+    ) {
+        return Err(invalid());
+    }
+    let limits = profile.limits();
+    let resource_admission = profile.resource_admission()?;
+    if resource_admission.is_some() && !domain.is_paged() {
+        return Err(invalid());
+    }
+    let maximum_retrieval_pages = resource_admission
+        .map(|a| {
+            usize::try_from(a.budget.max_row_bytes)
+                .map_err(io::Error::other)
+                .and_then(crate::retrieval_paging::Limits::for_resource_bytes)
+                .map(|l| l.max_pages)
+        })
+        .transpose()?
+        .unwrap_or(crate::retrieval_paging::MAX_PAGES);
+    let a = header.resources.as_ref().ok_or_else(invalid)?;
+    let data = header.logical_data.as_ref().ok_or_else(invalid)?;
+    let _namespace = header.namespace.as_ref().ok_or_else(invalid)?;
+    let allocation = header.allocation.as_ref().ok_or_else(invalid)?;
+    if matches!(header.schema_version, 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16) {
+        allocation
+            .streamed_before
+            .as_ref()
+            .ok_or_else(invalid)?
+            .validate_source_first_with_limits(
+                &allocation.bitmap_before,
+                source_bitmap_limits(
+                    Some(profile),
+                    allocation.streamed_before.as_ref().unwrap().cluster_count,
+                )?,
+            )?;
+        allocation
+            .streamed_after
+            .as_ref()
+            .ok_or_else(invalid)?
+            .validate_source_first_with_limits(
+                &allocation.bitmap_after,
+                source_bitmap_limits(
+                    Some(profile),
+                    allocation.streamed_after.as_ref().unwrap().cluster_count,
+                )?,
+            )?;
+    }
+    let mut ids = BTreeSet::new();
+    let mut previous = None;
+    for i in 0..domain.request_len()? {
+        let row = domain.request_row(i)?;
+        validate_request_row(&header.request, &row)?;
+        if !ids.insert(row.identity.reference())
+            || (header.request.has_paged_selectors()
+                && previous.is_some_and(|n| n >= row.identity.record_number))
+        {
+            return Err(invalid());
+        }
+        previous = Some(row.identity.record_number);
+    }
+    let same_ids = |actual: Vec<u64>| {
+        actual.len() == ids.len() && actual.iter().copied().collect::<BTreeSet<_>>() == ids
+    };
+    let mut observed = 0u64;
+    let mut complete_reservations = 0u64;
+    let mut complete_streams = 0u64;
+    if !matches!(header.content_passes, 1 | 2) {
+        return Err(invalid());
+    }
+    for index in 0..domain.logical_len() {
+        let file = domain.logical_file(index)?;
+        let selected = if header.request.has_paged_selectors() {
+            Some(domain.request_row(index)?)
+        } else {
+            None
+        };
+        // A single content pass is mirrored into `after`; count it once.
+        if header.content_passes == 1 && file.after != file.before {
+            return Err(invalid());
+        }
+        let passes: &[&Vec<StreamHash>] = if header.content_passes == 1 {
+            &[&file.before]
+        } else {
+            &[&file.before, &file.after]
+        };
+        for pass in passes.iter().copied() {
+            if pass.len()
+                > resource_admission.map_or(crate::stream_layout::MAX_STREAMS, |a| {
+                    usize::try_from(a.budget.max_row_bytes).unwrap_or(0)
+                        / std::mem::size_of::<StreamHash>()
+                })
+            {
+                return Err(invalid());
+            }
+            for h in pass {
+                if h.outcome.status == crate::logical_hash::Status::NotReadExtentIdentityV1
+                    && (!matches!(
+                        (header.request.schema_version, header.schema_version),
+                        (4, 12) | (6, 14) | (8, 16)
+                    ) || h.outcome.bytes_read != 0
+                        || h.outcome.eof_confirmed
+                        || h.outcome.sha256.is_some()
+                        || h.outcome.native_error.is_some()
+                        || h.outcome.detail.is_some()
+                        || !selected
+                            .as_ref()
+                            .map_or(header.request.extent_identity_streams.as_slice(), |s| {
+                                s.extent_identity_streams.as_slice()
+                            })
+                            .iter()
+                            .any(|wanted| {
                                 wanted.identity == file.identity
                                     && wanted.name_utf16 == h.name_utf16
                                     && wanted.logical_size == h.logical_size
                             }))
-                    {
-                        return Err(invalid());
-                    }
-                    observed = observed
-                        .checked_add(h.outcome.bytes_read)
+                {
+                    return Err(invalid());
+                }
+                observed = observed
+                    .checked_add(h.outcome.bytes_read)
+                    .ok_or_else(invalid)?;
+                let reservation = h.logical_size.checked_add(1).ok_or_else(invalid)?;
+                if h.outcome.bytes_read > reservation {
+                    return Err(invalid());
+                }
+                if h.outcome.status == crate::logical_hash::Status::Complete {
+                    complete_reservations = complete_reservations
+                        .checked_add(reservation)
                         .ok_or_else(invalid)?;
-                    let reservation = h.logical_size.checked_add(1).ok_or_else(invalid)?;
-                    if h.outcome.bytes_read > reservation {
-                        return Err(invalid());
-                    }
-                    if h.outcome.status == crate::logical_hash::Status::Complete {
-                        complete_reservations = complete_reservations
-                            .checked_add(reservation)
-                            .ok_or_else(invalid)?;
-                        complete_streams = complete_streams.checked_add(1).ok_or_else(invalid)?;
-                        if h.outcome.bytes_read != h.logical_size
-                            || !h.outcome.eof_confirmed
-                            || h.outcome.native_error.is_some()
-                            || h.outcome.detail.is_some()
-                            || !h
-                                .outcome
-                                .sha256
-                                .as_deref()
-                                .is_some_and(crate::content_digest::is_hex)
-                        {
-                            return Err(invalid());
-                        }
-                    } else if h.outcome.sha256.is_some()
-                        || h.outcome.eof_confirmed
-                        || (h.outcome.status == crate::logical_hash::Status::BudgetExceeded
-                            && h.outcome.bytes_read != 0)
-                        || (h.outcome.status == crate::logical_hash::Status::ExpectedEofMissing
-                            && h.outcome.bytes_read != reservation)
+                    complete_streams = complete_streams.checked_add(1).ok_or_else(invalid)?;
+                    if h.outcome.bytes_read != h.logical_size
+                        || !h.outcome.eof_confirmed
+                        || h.outcome.native_error.is_some()
+                        || h.outcome.detail.is_some()
+                        || !h
+                            .outcome
+                            .sha256
+                            .as_deref()
+                            .is_some_and(crate::content_digest::is_hex)
                     {
                         return Err(invalid());
                     }
+                } else if h.outcome.sha256.is_some()
+                    || h.outcome.eof_confirmed
+                    || (h.outcome.status == crate::logical_hash::Status::BudgetExceeded
+                        && h.outcome.bytes_read != 0)
+                    || (h.outcome.status == crate::logical_hash::Status::ExpectedEofMissing
+                        && h.outcome.bytes_read != reservation)
+                {
+                    return Err(invalid());
                 }
             }
         }
-        let streaming_shape = match self.schema_version {
-            8 => allocation.streamed_before.is_none() && allocation.streamed_after.is_none(),
-            9 | 10 | 11 | 12 | 13 | 14 => {
-                allocation.streamed_before.is_some()
-                    && allocation.streamed_after.is_some()
-                    && allocation.bitmap_before_continuation.is_empty()
-                    && allocation.bitmap_after_continuation.is_empty()
-            }
-            _ => false,
-        };
-        if !streaming_shape
-            || self.conversion_qualified
-            || self.allocation.is_none()
-            || a != &self.measured_resources(profile)?
-            || a.security_bytes > limits.security_bytes as u64
-            || a.stream_evidence_bytes > limits.stream_evidence_bytes as u64
-            || a.bitmap_evidence_bytes > MAX_TOTAL_BITMAP_BYTES as u64
-            || a.namespace_evidence_bytes > limits.namespace_evidence_bytes as u64
-            || !same_ids(self.files.iter().map(|f| f.identity.reference()).collect())
-            || !same_ids(data.files.iter().map(|f| f.identity.reference()).collect())
-            || !same_ids(
-                namespace
-                    .files
-                    .iter()
-                    .map(|f| f.identity.reference())
-                    .collect(),
-            )
-            || data.audit.limit_bytes != limits.logical_read_bytes
-            || data.audit.reserved_bytes > limits.logical_read_bytes
-            || data.audit.bytes_read > data.audit.reserved_bytes
-            || data.audit.bytes_read != observed
-            || data.audit.reserved_bytes < complete_reservations
-            || data.audit.read_calls > limits.logical_read_calls
-            || data.audit.eof_probes > data.audit.read_calls
-            || data.audit.eof_probes < complete_streams
-            || !data
-                .audit
-                .read_calls
-                .checked_mul(crate::logical_hash::CHUNK as u64)
-                .is_some_and(|maximum| observed <= maximum)
-            || data
-                .files
-                .iter()
-                .flat_map(|f| f.before.iter().chain(&f.after))
-                .any(|h| {
-                    h.logical_size > limits.maximum_stream_bytes
-                        || h.name_utf16.len() > 255
-                        || h.identity_before
-                            .iter()
-                            .chain(h.identity_after.iter())
-                            .chain(h.standard_before.iter())
-                            .chain(h.standard_after.iter())
-                            .any(|q| q.bytes.len() > 24)
-                })
-            || self.files.iter().any(|file| {
-                file.before.iter().chain(file.after.iter()).any(|s| {
-                    s.queries.len() > 4
-                        || s.queries.iter().any(|q| q.bytes.len() > 40)
-                        || s.security.len() > MAX_SECURITY_BYTES
-                        || s.kernel_security
-                            .as_ref()
-                            .is_some_and(|s| s.bytes.len() > MAX_SECURITY_BYTES)
-                }) || file
-                    .streams_before
-                    .iter()
-                    .chain(file.streams_after.iter())
-                    .any(|c| {
-                        c.streams.len() > crate::stream_layout::MAX_STREAMS
-                            || c.enumeration.bytes.len() > crate::stream_layout::MAX_STREAM_BUFFER
-                            || c.streams.iter().any(|s| {
-                                s.name_utf16.len() > 255
-                                    || s.identity_before
-                                        .iter()
-                                        .chain(s.identity_after.iter())
-                                        .any(|q| q.bytes.len() > 24)
-                                    || s.retrieval_continuation.len()
-                                        >= crate::retrieval_paging::MAX_PAGES
-                                    || s.retrieval.iter().chain(&s.retrieval_continuation).any(
-                                        |q| {
-                                            q.bytes.len() > crate::retrieval_paging::PAGE_CAPACITY
-                                                || q.input.len() > 8
-                                        },
-                                    )
-                            })
-                    })
-            })
-            || namespace.files.iter().any(|f| {
-                f.identity_before
-                    .iter()
-                    .chain(f.identity_after.iter())
-                    .chain(f.standard.iter())
-                    .any(|q| q.bytes.len() > 24)
-                    || f.before.iter().chain(f.after.iter()).any(|c| {
-                        c.calls.len() > crate::namespace_layout::MAX_CALLS
-                            || c.calls
-                                .iter()
-                                .any(|q| q.bytes.len() > crate::namespace_layout::CAPACITY)
-                    })
-            })
-            || allocation.bitmap_before_continuation.len() >= crate::bitmap_paging::MAX_PAGES
-            || allocation.bitmap_after_continuation.len() >= crate::bitmap_paging::MAX_PAGES
-            || std::iter::once(&allocation.bitmap_before)
-                .chain(&allocation.bitmap_before_continuation)
-                .chain(std::iter::once(&allocation.bitmap_after))
-                .chain(&allocation.bitmap_after_continuation)
-                .any(|q| q.bytes.len() > crate::bitmap_paging::PAGE_BYTES || q.input.len() > 16)
-        {
-            return Err(invalid());
+    }
+    let streaming_shape = match header.schema_version {
+        8 => allocation.streamed_before.is_none() && allocation.streamed_after.is_none(),
+        9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 => {
+            allocation.streamed_before.is_some()
+                && allocation.streamed_after.is_some()
+                && allocation.bitmap_before_continuation.is_empty()
+                && allocation.bitmap_after_continuation.is_empty()
         }
-        let maximum = self
+        _ => false,
+    };
+    let mut bad_logical = false;
+    for i in 0..domain.logical_len() {
+        let file = domain.logical_file(i)?;
+        bad_logical |= file.before.iter().chain(&file.after).any(|h| {
+            h.logical_size > limits.maximum_stream_bytes
+                || h.name_utf16.len() > 255
+                || h.identity_before
+                    .iter()
+                    .chain(h.identity_after.iter())
+                    .chain(h.standard_before.iter())
+                    .chain(h.standard_after.iter())
+                    .any(|q| q.bytes.len() > 24)
+        });
+    }
+    let mut bad_observation = false;
+    for i in 0..domain.len() {
+        let file = domain.observation(i)?;
+        bad_observation |= {
+            file.before.iter().chain(file.after.iter()).any(|s| {
+                s.queries.len() > 4
+                    || s.queries.iter().any(|q| q.bytes.len() > 40)
+                    || s.security.len() > domain.maximum_security_descriptor_bytes()
+                    || s.kernel_security
+                        .as_ref()
+                        .is_some_and(|s| s.bytes.len() > domain.maximum_security_descriptor_bytes())
+            }) || file
+                .streams_before
+                .iter()
+                .chain(file.streams_after.iter())
+                .any(|c| {
+                    c.streams.len()
+                        > resource_admission.map_or(crate::stream_layout::MAX_STREAMS, |a| {
+                            usize::try_from(a.budget.max_row_bytes).unwrap_or(0)
+                                / std::mem::size_of::<StreamQuery>()
+                        })
+                        || c.enumeration.bytes.len()
+                            > resource_admission
+                                .map_or(crate::stream_layout::MAX_STREAM_BUFFER, |a| {
+                                    usize::try_from(a.budget.max_row_bytes).unwrap_or(0)
+                                })
+                        || c.streams.iter().any(|s| {
+                            s.name_utf16.len() > 255
+                                || s.identity_before
+                                    .iter()
+                                    .chain(s.identity_after.iter())
+                                    .any(|q| q.bytes.len() > 24)
+                                || s.retrieval_continuation.len() >= maximum_retrieval_pages
+                                || s.retrieval
+                                    .iter()
+                                    .chain(&s.retrieval_continuation)
+                                    .any(|q| {
+                                        q.bytes.len() > crate::retrieval_paging::PAGE_CAPACITY
+                                            || q.input.len() > 8
+                                    })
+                        })
+                })
+        };
+    }
+    let mut bad_namespace = false;
+    for i in 0..domain.namespace_len() {
+        let f = domain.namespace_file(i)?;
+        bad_namespace |= {
+            f.identity_before
+                .iter()
+                .chain(f.identity_after.iter())
+                .chain(f.standard.iter())
+                .any(|q| q.bytes.len() > 24)
+                || f.before.iter().chain(f.after.iter()).any(|c| {
+                    (!domain.is_paged() && c.calls.len() > crate::namespace_layout::MAX_CALLS)
+                        || c.calls
+                            .iter()
+                            .any(|q| q.bytes.len() > crate::namespace_layout::CAPACITY)
+                })
+        };
+    }
+    if !streaming_shape
+        || header.conversion_qualified
+        || header.allocation.is_none()
+        || a != &measured_domain_resources(domain, profile)?
+        || a.security_bytes > limits.security_bytes as u64
+        || a.stream_evidence_bytes > limits.stream_evidence_bytes as u64
+        || a.bitmap_evidence_bytes
+            > resource_admission.map_or(MAX_TOTAL_BITMAP_BYTES as u64, |a| a.semantic_byte_budget())
+        || a.namespace_evidence_bytes > limits.namespace_evidence_bytes as u64
+        || !same_ids(
+            (0..domain.len())
+                .map(|i| domain.observation(i).map(|f| f.identity.reference()))
+                .collect::<io::Result<Vec<_>>>()?,
+        )
+        || !same_ids(
+            (0..domain.logical_len())
+                .map(|i| domain.logical_file(i).map(|f| f.identity.reference()))
+                .collect::<io::Result<Vec<_>>>()?,
+        )
+        || !same_ids(
+            (0..domain.namespace_len())
+                .map(|i| domain.namespace_file(i).map(|f| f.identity.reference()))
+                .collect::<io::Result<Vec<_>>>()?,
+        )
+        || data.audit.limit_bytes != limits.logical_read_bytes
+        || data.audit.reserved_bytes > limits.logical_read_bytes
+        || data.audit.bytes_read > data.audit.reserved_bytes
+        || data.audit.bytes_read != observed
+        || data.audit.reserved_bytes < complete_reservations
+        || data.audit.read_calls > limits.logical_read_calls
+        || data.audit.eof_probes > data.audit.read_calls
+        || data.audit.eof_probes < complete_streams
+        || !data
+            .audit
+            .read_calls
+            .checked_mul(crate::logical_hash::CHUNK as u64)
+            .is_some_and(|maximum| observed <= maximum)
+        || bad_logical
+        || bad_observation
+        || bad_namespace
+        || allocation.bitmap_before_continuation.len() >= crate::bitmap_paging::MAX_PAGES
+        || allocation.bitmap_after_continuation.len() >= crate::bitmap_paging::MAX_PAGES
+        || std::iter::once(&allocation.bitmap_before)
+            .chain(&allocation.bitmap_before_continuation)
+            .chain(std::iter::once(&allocation.bitmap_after))
+            .chain(&allocation.bitmap_after_continuation)
+            .any(|q| q.bytes.len() > crate::bitmap_paging::PAGE_BYTES || q.input.len() > 16)
+    {
+        return Err(invalid());
+    }
+    let maximum = if let Some(admission) = resource_admission {
+        usize::try_from(admission.semantic_byte_budget()).map_err(io::Error::other)?
+    } else {
+        header
             .request
             .resource_profile
             .map(ResourceProfile::count_admission)
@@ -1341,8 +1672,132 @@ impl Report {
             .flatten()
             .map_or(MAX_SERIALIZED_REPORT_BYTES, |a| {
                 a.maximum_native_report_bytes as usize
-            });
-        self.serialized_size_bounded(maximum)?;
+            })
+    };
+    domain.validate_encoded_size(maximum)?;
+    Ok(())
+}
+
+/// Identical accounting for a collector row before its buffer is released.
+pub(crate) fn measured_row_resources(
+    profile: ResourceProfile,
+    observation: Option<&Observation>,
+    logical: Option<&LogicalFile>,
+    namespace: Option<&NamespaceFile>,
+) -> io::Result<ResourceAudit> {
+    fn add(total: &mut u64, n: usize) -> io::Result<()> {
+        *total = total
+            .checked_add(n as u64)
+            .ok_or_else(|| io::Error::other("native evidence accounting overflow"))?;
         Ok(())
     }
+    fn query(total: &mut u64, q: &Query) -> io::Result<()> {
+        add(total, q.bytes.len())
+    }
+    fn ioctl(total: &mut u64, q: &IoctlQuery) -> io::Result<()> {
+        add(total, q.input.len())?;
+        add(total, q.bytes.len())
+    }
+    let mut out = ResourceAudit {
+        profile,
+        security_bytes: 0,
+        stream_evidence_bytes: 0,
+        bitmap_evidence_bytes: 0,
+        namespace_evidence_bytes: 0,
+    };
+    if let Some(file) = observation {
+        if let Some(fallback) = &file.case_only_fallback {
+            add(&mut out.stream_evidence_bytes, fallback.retained_bytes()?)?;
+        }
+        for snapshot in file.before.iter().chain(file.after.iter()) {
+            add(&mut out.security_bytes, snapshot.security.len())?;
+            if let Some(s) = &snapshot.kernel_security {
+                add(&mut out.security_bytes, s.bytes.len())?;
+            }
+            for q in &snapshot.queries {
+                query(&mut out.stream_evidence_bytes, q)?;
+            }
+            add(
+                &mut out.stream_evidence_bytes,
+                snapshot.extended_attribute_bytes()?,
+            )?;
+            add(&mut out.stream_evidence_bytes, snapshot.reparse_bytes()?)?;
+            add(
+                &mut out.stream_evidence_bytes,
+                snapshot.directory_case_sensitivity_bytes()?,
+            )?;
+        }
+        for capture in file.streams_before.iter().chain(file.streams_after.iter()) {
+            query(&mut out.stream_evidence_bytes, &capture.enumeration)?;
+            add(
+                &mut out.stream_evidence_bytes,
+                capture.parse_error.as_ref().map_or(0, String::len),
+            )?;
+            for stream in &capture.streams {
+                add(&mut out.stream_evidence_bytes, stream.name_utf16.len() * 2)?;
+                add(
+                    &mut out.stream_evidence_bytes,
+                    stream.binding_error.as_ref().map_or(0, String::len),
+                )?;
+                for q in stream
+                    .identity_before
+                    .iter()
+                    .chain(stream.identity_after.iter())
+                {
+                    query(&mut out.stream_evidence_bytes, q)?;
+                }
+                for q in stream
+                    .retrieval
+                    .iter()
+                    .chain(&stream.retrieval_continuation)
+                {
+                    ioctl(&mut out.stream_evidence_bytes, q)?;
+                }
+            }
+        }
+    }
+    if let Some(file) = logical {
+        for stream in file.before.iter().chain(&file.after) {
+            add(&mut out.stream_evidence_bytes, stream.name_utf16.len() * 2)?;
+            add(
+                &mut out.stream_evidence_bytes,
+                stream.outcome.sha256.as_ref().map_or(0, String::len),
+            )?;
+            add(
+                &mut out.stream_evidence_bytes,
+                stream.outcome.detail.as_ref().map_or(0, String::len),
+            )?;
+            for q in stream
+                .identity_before
+                .iter()
+                .chain(stream.identity_after.iter())
+                .chain(stream.standard_before.iter())
+                .chain(stream.standard_after.iter())
+            {
+                query(&mut out.stream_evidence_bytes, q)?;
+            }
+        }
+    }
+    if let Some(file) = namespace {
+        {
+            for q in file
+                .identity_before
+                .iter()
+                .chain(file.identity_after.iter())
+                .chain(file.standard.iter())
+            {
+                query(&mut out.namespace_evidence_bytes, q)?;
+            }
+            for capture in file.before.iter().chain(file.after.iter()) {
+                add(
+                    &mut out.namespace_evidence_bytes,
+                    capture.refusal.as_ref().map_or(0, String::len),
+                )?;
+                for q in &capture.calls {
+                    query(&mut out.namespace_evidence_bytes, q)?;
+                }
+            }
+        }
+    }
+    Ok(out)
 }

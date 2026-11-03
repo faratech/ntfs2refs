@@ -56,12 +56,20 @@ fn open(volume: &File, id: &FileIdentity) -> io::Result<File> {
     Ok(unsafe { File::from_raw_handle(h) })
 }
 fn pass(file: &File, budget: &mut usize) -> DirectoryCapture {
+    pass_with_budget(file, budget, false)
+}
+fn pass_with_budget(file: &File, budget: &mut usize, paged: bool) -> DirectoryCapture {
     let mut out = DirectoryCapture {
         calls: vec![],
         refusal: None,
     };
-    for i in 0..layout::MAX_CALLS {
-        if *budget < layout::CAPACITY {
+    let mut i = 0usize;
+    loop {
+        if !paged && i == layout::MAX_CALLS {
+            out.refusal = Some("directory call budget exhausted".into());
+            return out;
+        }
+        if !paged && *budget < layout::CAPACITY {
             out.refusal = Some("directory evidence budget exhausted".into());
             return out;
         }
@@ -77,7 +85,16 @@ fn pass(file: &File, budget: &mut usize) -> DirectoryCapture {
         let end = q.native_error.is_some();
         let confirm_empty = i == 0 && q.native_error == Some(layout::FIRST_EMPTY);
         if !end {
-            match layout::parse(&q.bytes) {
+            let parsed = if paged {
+                layout::parse_with_limits(
+                    &q.bytes,
+                    layout::CAPACITY,
+                    (*budget / std::mem::size_of::<layout::Entry>()).max(1),
+                )
+            } else {
+                layout::parse(&q.bytes)
+            };
+            match parsed {
                 Ok((_, used)) => q.bytes.truncate(used),
                 Err(e) => {
                     out.refusal = Some(e.to_string());
@@ -86,19 +103,53 @@ fn pass(file: &File, budget: &mut usize) -> DirectoryCapture {
             }
         }
         q.bytes.shrink_to_fit();
-        *budget -= q.bytes.len();
+        let Some(remaining) = budget.checked_sub(q.bytes.len()) else {
+            out.refusal = Some("directory evidence budget exhausted".into());
+            return out;
+        };
+        *budget = remaining;
         out.calls.push(q);
         if end && !confirm_empty {
             return out;
         }
+        let Some(next) = i.checked_add(1) else {
+            out.refusal = Some("directory call count overflow".into());
+            return out;
+        };
+        i = next;
     }
-    out.refusal = Some("directory call budget exhausted".into());
-    out
 }
 pub(crate) fn collect(volume: &File, request: &Request) -> NamespaceData {
     let mut files = vec![];
+    // This in-memory sink cannot fail. Keep the historical Report interface.
+    collect_rows(volume, request, false, |row| {
+        files.push(row);
+        Ok(())
+    })
+    .expect("infallible namespace sink");
+    NamespaceData { files }
+}
+pub(crate) fn collect_rows(
+    volume: &File,
+    request: &Request,
+    paged: bool,
+    mut sink: impl FnMut(NamespaceFile) -> io::Result<()>,
+) -> io::Result<()> {
+    collect_rows_domain(volume, request, request, paged, None, sink)
+}
+pub(crate) fn collect_rows_domain(
+    volume: &File,
+    request: &Request,
+    selectors: &impl crate::attestation::NativeRequestDomain,
+    paged: bool,
+    row_limit: Option<usize>,
+    mut sink: impl FnMut(NamespaceFile) -> io::Result<()>,
+) -> io::Result<()> {
     let mut budget = request.limits().namespace_evidence_bytes;
-    for id in &request.files {
+    for index in 0..selectors.len() {
+        let id = selectors.identity(index)?;
+        let mut row_budget = budget.min(row_limit.unwrap_or(budget));
+        let row_start = row_budget;
         let mut out = NamespaceFile {
             identity: id.clone(),
             open_error: None,
@@ -108,20 +159,29 @@ pub(crate) fn collect(volume: &File, request: &Request) -> NamespaceData {
             before: None,
             after: None,
         };
-        match open(volume, id) {
+        match open(volume, &id) {
             Err(e) => out.open_error = Some(e.raw_os_error().unwrap_or(31)),
             Ok(file) => {
                 out.identity_before = Some(info(&file, 18, 24));
                 let standard = info(&file, 1, 24);
                 if standard.native_error.is_none() && standard.bytes[21] == 1 {
-                    out.before = Some(pass(&file, &mut budget));
-                    out.after = Some(pass(&file, &mut budget));
+                    out.before = Some(if paged {
+                        pass_with_budget(&file, &mut row_budget, true)
+                    } else {
+                        pass(&file, &mut row_budget)
+                    });
+                    out.after = Some(if paged {
+                        pass_with_budget(&file, &mut row_budget, true)
+                    } else {
+                        pass(&file, &mut row_budget)
+                    });
                 }
                 out.standard = Some(standard);
                 out.identity_after = Some(info(&file, 18, 24));
             }
         }
-        files.push(out);
+        budget -= row_start - row_budget;
+        sink(out)?;
     }
-    NamespaceData { files }
+    Ok(())
 }

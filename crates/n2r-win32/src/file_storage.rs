@@ -1,4 +1,4 @@
-//! Read-only filesystem storage accounting for ordinary scratch files. This
+//! Filesystem storage accounting and held-file scratch retirement. Accounting
 //! measures GetCompressedFileSizeW storage, not physical device write traffic.
 use std::{
     fs::OpenOptions,
@@ -11,7 +11,10 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError},
-    Storage::FileSystem::{GetCompressedFileSizeW, GetFileInformationByHandleEx},
+    Storage::FileSystem::{
+        FILE_DISPOSITION_INFO, FILE_STANDARD_INFO, FileDispositionInfo, FileStandardInfo,
+        GetCompressedFileSizeW, GetFileInformationByHandleEx, SetFileInformationByHandle,
+    },
 };
 
 #[derive(serde::Serialize)]
@@ -40,6 +43,53 @@ pub fn file_id_info(file: &std::fs::File) -> io::Result<String> {
             .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<_>>(),
     ))
+}
+
+/// Actual link count on this same retained handle, using the stable SDK ABI.
+pub fn number_of_links(file: &std::fs::File) -> io::Result<u32> {
+    // SAFETY: FILE_STANDARD_INFO contains only initialized integer/BOOL fields.
+    let mut info: FILE_STANDARD_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: exact aligned SDK structure and live synchronous metadata handle.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStandardInfo,
+            (&mut info as *mut FILE_STANDARD_INFO).cast(),
+            std::mem::size_of_val(&info) as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.NumberOfLinks)
+}
+
+/// Mark only this already-held ordinary file for deletion when its owner
+/// closes it. The caller owns DELETE access and must already have verified its
+/// registered scratch identity, path, full pin and exclusion from live refs.
+/// No pathname lookup, reopen, permission change or shell deletion is used.
+pub fn mark_delete_on_close(file: &std::fs::File) -> io::Result<()> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & 0x400 != 0 {
+        return Err(io::Error::other(
+            "registered ordinary non-reparse scratch file required",
+        ));
+    }
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: caller retains the live handle; the initialized SDK structure
+    // has its exact size and this synchronous API only changes that file.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfo,
+            (&disposition as *const FILE_DISPOSITION_INFO).cast(),
+            std::mem::size_of_val(&disposition) as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 pub fn observe(path: &Path) -> io::Result<StorageUse> {

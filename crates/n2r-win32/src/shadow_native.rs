@@ -1085,7 +1085,16 @@ pub struct SecurityBackup {
     pub context_released: bool,
 }
 fn security_stream(sd: &[u8]) -> io::Result<Vec<u8>> {
-    if !(20..=65536).contains(&sd.len()) {
+    security_stream_with_limit(sd, 65536)
+}
+fn security_stream_with_limit(sd: &[u8], maximum: u64) -> io::Result<Vec<u8>> {
+    if sd.len() < 20
+        || sd.len() as u64 > maximum
+        || sd
+            .len()
+            .checked_add(20)
+            .is_none_or(|n| n > u32::MAX as usize)
+    {
         return Err(invalid("security backup length"));
     }
     // WIN32_STREAM_ID ends at cStreamName (offset 20), not sizeof(struct),
@@ -1098,8 +1107,20 @@ fn security_stream(sd: &[u8]) -> io::Result<Vec<u8>> {
     Ok(stream)
 }
 fn backup_security(file: &File, sd: &[u8]) -> io::Result<SecurityBackup> {
-    descriptor(sd)?;
-    let stream = security_stream(sd)?;
+    backup_security_with_limit(file, sd, None)
+}
+fn backup_security_with_limit(
+    file: &File,
+    sd: &[u8],
+    maximum: Option<u64>,
+) -> io::Result<SecurityBackup> {
+    let stream = if let Some(maximum) = maximum {
+        descriptor_with_limit(sd, maximum)?;
+        security_stream_with_limit(sd, maximum)?
+    } else {
+        descriptor(sd)?;
+        security_stream(sd)?
+    };
     let mut accepted = 0;
     let mut context = ptr::null_mut();
     // SAFETY: synchronous backup-semantics handle with WRITE_DAC, WRITE_OWNER
@@ -1195,8 +1216,46 @@ fn metadata_snapshot(file: &File, input: &Input<'_>) -> Snapshot {
         snapshot(file)
     }
 }
+fn metadata_snapshot_with_limit(file: &File, input: &Input<'_>, maximum: Option<u64>) -> Snapshot {
+    if let Some(maximum) = maximum {
+        let mut observed = crate::attestation_native::source_snapshot_paged(
+            file,
+            false,
+            usize::try_from(maximum).unwrap_or(usize::MAX),
+        );
+        if input.extended_attributes.is_none() {
+            observed.extended_attributes = None;
+            observed.extended_attributes_error = None;
+        }
+        if input.extended_attributes.is_none() && input.reparse.is_none() {
+            observed.reparse = None;
+        }
+        observed
+    } else {
+        metadata_snapshot(file, input)
+    }
+}
+fn security_snapshot_with_limit(file: &File, maximum: Option<u64>) -> Snapshot {
+    if let Some(maximum) = maximum {
+        crate::attestation_native::source_snapshot_paged(
+            file,
+            false,
+            usize::try_from(maximum).unwrap_or(usize::MAX),
+        )
+    } else {
+        snapshot(file)
+    }
+}
 fn repeat_snapshot(file: &File, previous: &Snapshot) -> Snapshot {
-    let mut observation = if previous.extended_attributes.is_some()
+    let maximum = previous.security.len().max(
+        previous
+            .kernel_security
+            .as_ref()
+            .map_or(0, |q| q.bytes.len()),
+    );
+    let mut observation = if maximum > crate::attestation::MAX_SECURITY_BYTES {
+        crate::attestation_native::source_snapshot_paged(file, false, maximum)
+    } else if previous.extended_attributes.is_some()
         || previous.extended_attributes_error.is_some()
         || previous.reparse.is_some()
     {
@@ -2144,9 +2203,19 @@ fn existing_system_entries_domain(
     Ok(existing)
 }
 pub(crate) fn descriptor(bytes: &[u8]) -> io::Result<Vec<u64>> {
+    descriptor_checked(bytes, None)
+}
+pub(crate) fn descriptor_with_limit(bytes: &[u8], maximum: u64) -> io::Result<Vec<u64>> {
+    descriptor_checked(bytes, Some(maximum))
+}
+fn descriptor_checked(bytes: &[u8], maximum: Option<u64>) -> io::Result<Vec<u64>> {
     // Check self-relative components and known SID/ACE bounds before Windows
     // receives a pointer. ACL absence and NULL ACLs remain distinct states.
-    crate::security_descriptor::validate(bytes)?;
+    if let Some(maximum) = maximum {
+        crate::security_descriptor::validate_with_limit(bytes, maximum)?;
+    } else {
+        crate::security_descriptor::validate(bytes)?;
+    }
     let mut aligned = vec![0u64; bytes.len().div_ceil(8)];
     // SAFETY: initialized aligned storage covers all bytes; the safe validator
     // checked component offsets and known SID/GUID bounds before native calls.
@@ -3458,12 +3527,32 @@ fn run_role_content_domain(
             "ReFS layout observation requires a protected native lease",
         ));
     }
+    let resource_admission = resource_profile
+        .map(crate::attestation::ResourceProfile::resource_admission)
+        .transpose()?
+        .flatten();
+    let sd_limit = resource_admission.map(|a| a.budget.max_row_bytes);
+    let capture_snapshot = |file: &File| {
+        if let Some(maximum) = sd_limit {
+            crate::attestation_native::source_snapshot_paged(
+                file,
+                false,
+                usize::try_from(maximum).unwrap_or(usize::MAX),
+            )
+        } else {
+            snapshot(file)
+        }
+    };
+    let capture_metadata =
+        |file: &File, input: &Input<'_>| metadata_snapshot_with_limit(file, input, sd_limit);
+    let capture_backup = |file: &File, sd: &[u8]| backup_security_with_limit(file, sd, sd_limit);
     let (maximum_objects, maximum_logical_bytes) = match resource_profile {
         None => (160usize, 256u64 * 1024 * 1024),
         Some(
             profile @ (crate::attestation::ResourceProfile::ExperimentalLargeTreeV1
             | crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2
-            | crate::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(_)),
+            | crate::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(_)
+            | crate::attestation::ResourceProfile::ResourceBoundedV4(_)),
         ) => {
             if !ordinary || general_shadow.is_none() {
                 return Err(invalid(
@@ -3490,11 +3579,23 @@ fn run_role_content_domain(
                 }
                 admission.validate_tree(input.len() - directories, directories, stream_count)?;
                 admission.validate_constructor_metadata(&DomainMetadata(input))?;
+            } else if let Some(admission) = resource_admission {
+                input.require_resource_metadata(admission)?;
+                admission.validate_tree(
+                    (input.len() - directories) as u64,
+                    directories as u64,
+                    stream_count as u64,
+                )?;
+                admission.validate_constructor_metadata(&DomainMetadata(input))?;
             } else if directories > 256 || input.len() - directories > 1024 {
                 return Err(invalid("large-tree shadow object budget exceeded"));
             }
             (
-                admission.map_or(1280usize, |value| value.object_slots as usize),
+                if let Some(value) = resource_admission {
+                    usize::try_from(value.objects()?).map_err(io::Error::other)?
+                } else {
+                    admission.map_or(1280usize, |value| value.object_slots as usize)
+                },
                 profile.limits().maximum_stream_bytes,
             )
         }
@@ -3561,21 +3662,47 @@ fn run_role_content_domain(
             "streaming payload callback is restricted to ordinary shadow construction",
         ));
     }
-    hard_links::validate_domain(input, hard_links::MAX_NAMES, |part| {
+    let resource_root = format!(
+        "\\\\?\\Volume{{{}}}\\",
+        binding.volume_guid.trim_matches(['{', '}'])
+    );
+    let valid_component = |part: &str| {
         if resource_profile.is_some_and(|p| p.is_streaming()) {
             crate::shadow_names::valid_unicode_component(part)
         } else {
             valid_shadow_component(part)
         }
-    })?;
+    };
+    if let Some(admission) = resource_admission {
+        hard_links::validate_resource_domain(
+            input,
+            admission.maximum_namespace_names()?,
+            &resource_root,
+            valid_component,
+        )?;
+    } else {
+        hard_links::validate_domain(input, hard_links::MAX_NAMES, valid_component)?;
+    }
     let mut all_streams = 0usize;
+    let maximum_streams = resource_admission
+        .map(|value| usize::try_from(value.data_streams).map_err(io::Error::other))
+        .transpose()?
+        .unwrap_or(streams::MAX_STREAMS);
     input.for_each(|_, item| {
         all_streams = all_streams
             .checked_add(usize::from(!item.directory))
             .and_then(|n| n.checked_add(item.named_streams.len()))
-            .filter(|n| *n <= streams::MAX_STREAMS)
+            .filter(|n| *n <= maximum_streams)
             .ok_or_else(|| invalid("native complete stream count exceeds bound"))?;
-        streams::validate(std::slice::from_ref(item), binding.identity.partition_bytes)
+        if resource_admission.is_some() {
+            streams::validate_resource(
+                std::slice::from_ref(item),
+                binding.identity.partition_bytes,
+                maximum_streams,
+            )
+        } else {
+            streams::validate(std::slice::from_ref(item), binding.identity.partition_bytes)
+        }
     })?;
     if verify_file_contents
         && input.any(|item| {
@@ -3691,15 +3818,15 @@ fn run_role_content_domain(
         if payload_writer.is_some() && !i.directory && !digest_only {
             return Err(invalid("streaming source lacks a hash-only expectation"));
         }
-        if i.components.len() > 16
-            || i.components.iter().any(|s| {
-                if resource_profile.is_some_and(|p| p.is_streaming()) {
-                    !crate::shadow_names::valid_unicode_component(s)
-                } else {
-                    !valid_shadow_component(s)
-                }
-            })
-            || i.times.iter().any(|t| *t == 0 || *t >= i64::MAX as u64)
+        if resource_admission.map_or(i.components.len() > 16, |_| {
+            !hard_links::resource_path_valid(&resource_root, i.components)
+        }) || i.components.iter().any(|s| {
+            if resource_profile.is_some_and(|p| p.is_streaming()) {
+                !crate::shadow_names::valid_unicode_component(s)
+            } else {
+                !valid_shadow_component(s)
+            }
+        }) || i.times.iter().any(|t| *t == 0 || *t >= i64::MAX as u64)
             || !attributes_allowed(i)
             || (i.attributes & 16 != 0) != i.directory
             || (i.directory && !i.payload.is_empty())
@@ -3715,7 +3842,11 @@ fn run_role_content_domain(
         if total > maximum_logical_bytes {
             return Err(invalid("shadow payload budget"));
         }
-        descriptor(i.security)?;
+        if let Some(admission) = resource_admission {
+            descriptor_with_limit(i.security, admission.budget.max_row_bytes)?;
+        } else {
+            descriptor(i.security)?;
+        }
         if !ordinary
             && !i.components.is_empty()
             && u16::from_le_bytes(i.security[2..4].try_into().unwrap()) & 0x1000 == 0
@@ -3757,7 +3888,11 @@ fn run_role_content_domain(
             "shadow protection state differs from its native access route",
         ));
     }
-    let root = format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid);
+    let root = if resource_admission.is_some() {
+        resource_root.clone()
+    } else {
+        format!("\\\\?\\Volume{{{}}}\\", binding.volume_guid)
+    };
     let opened_volume;
     let volume = if let Some(lease) = protected {
         lease.volume()
@@ -3860,7 +3995,7 @@ fn run_role_content_domain(
     } else {
         open(&root, true, true)?
     };
-    let root_state = snapshot(&root_handle);
+    let root_state = capture_snapshot(&root_handle);
     let matched_before = security_matches(&root_input, &root_state, &same_security)?;
     let mut root_security = RootSecurity {
         before: root_state.clone(),
@@ -3928,8 +4063,8 @@ fn run_role_content_domain(
             std::collections::BTreeMap::new()
         };
         if !matched_before {
-            root_security.backup = Some(backup_security(&root_handle, input[0].security)?);
-            root_security.after = snapshot(&root_handle);
+            root_security.backup = Some(capture_backup(&root_handle, input[0].security)?);
+            root_security.after = capture_snapshot(&root_handle);
             root_security.matched_after =
                 security_matches(&input[0], &root_security.after, &same_security)?;
             if !root_security.matched_after {
@@ -3968,7 +4103,7 @@ fn run_role_content_domain(
             let path = format!("{}{}", root, i.components.join("\\"));
             if let Some(expected_id) = existing_system.get(i.components) {
                 let mut file = open(&path, i.directory, true)?;
-                if &query_bytes(&snapshot(&file), 18, 24)?[8..24] != expected_id {
+                if &query_bytes(&capture_snapshot(&file), 18, 24)?[8..24] != expected_id {
                     return Err(invalid(
                         "target system cache identity changed after preflight",
                     ));
@@ -4131,10 +4266,10 @@ fn run_role_content_domain(
                 i.directory,
                 true,
             )?;
-            let before = snapshot(&h);
+            let before = capture_snapshot(&h);
             if !security_matches(i, &before, &same_security)? {
-                let backup = backup_security(&h, i.security)?;
-                let after = snapshot(&h);
+                let backup = capture_backup(&h, i.security)?;
+                let after = capture_snapshot(&h);
                 if !security_matches(i, &after, &same_security)? {
                     return Err(invalid(
                         "object backup-security restoration differs from the source",
@@ -4228,7 +4363,7 @@ fn run_role_content_domain(
     let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
         let path = format!("{}{}", root, i.components.join("\\"));
         let mut h = open_input(&path, i, protected.is_some())?;
-        let before = metadata_snapshot(&h, i);
+        let before = capture_metadata(&h, i);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
         let mut retrieval_page_proof = None;
@@ -4370,7 +4505,7 @@ fn run_role_content_domain(
                     vec![],
                 )
             };
-        let after = metadata_snapshot(&h, i);
+        let after = capture_metadata(&h, i);
         if before != after {
             return Err(invalid("shadow metadata changed during observation"));
         }

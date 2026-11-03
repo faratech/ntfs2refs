@@ -26,6 +26,8 @@ pub struct ExpectedTreePageHeader {
     pub logical_bytes: u64,
     pub internal_replacement_pending: Vec<String>,
     pub total_objects: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
 #[derive(Serialize)]
@@ -35,6 +37,8 @@ struct HeaderRef<'a> {
     logical_bytes: u64,
     internal_replacement_pending: &'a [String],
     total_objects: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -81,6 +85,8 @@ pub struct ExpectedTreePageReceipt {
     pub bytes: u64,
     pub page_budget: PageBudget,
     pub semantic_byte_budget: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
 pub struct PagedExpectedTree {
@@ -92,6 +98,7 @@ pub struct PagedExpectedTree {
     budget: PageBudget,
     semantic_byte_budget: u64,
     directory: Vec<ObjectEntry>,
+    resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
 }
 
 #[derive(Clone, Copy)]
@@ -433,6 +440,296 @@ fn canonical_sha(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+// Schema-aware allocation preflight. It consumes JSON tokens and counters,
+// never a JSON Value or an Object. Vec growth and owned strings are charged
+// conservatively before the typed deserializer may allocate them.
+#[derive(Clone, Copy)]
+enum MemoryKind {
+    Object,
+    Named,
+    Extent,
+    Sparse,
+    Range,
+    EaSet,
+    Ea,
+    Point,
+    Text,
+    Scalar,
+    Path,
+    Paths,
+    Bytes,
+    Units,
+    Extents,
+    Ranges,
+    Names,
+    Eas,
+    Fixed,
+}
+#[derive(Clone, Copy)]
+struct MemorySeed<'a> {
+    kind: MemoryKind,
+    used: &'a Cell<u64>,
+    limit: u64,
+}
+impl MemorySeed<'_> {
+    fn charge<E: serde::de::Error>(&self, bytes: u64) -> std::result::Result<(), E> {
+        let next = self
+            .used
+            .get()
+            .checked_add(bytes)
+            .filter(|n| *n <= self.limit)
+            .ok_or_else(|| {
+                E::custom("object compact/decoded allocation exceeds resource row budget")
+            })?;
+        self.used.set(next);
+        Ok(())
+    }
+    fn field(self, name: &str) -> Option<MemoryKind> {
+        use MemoryKind::*;
+        Some(match (self.kind, name) {
+            (Object, "path") => Path,
+            (Object, "additional_names") => Paths,
+            (Object, "security" | "api_security") => Bytes,
+            (Object, "extended_attributes") => EaSet,
+            (Object, "reparse") => Point,
+            (Object, "named_streams") => Names,
+            (Object | Named, "source_extents") => Extents,
+            (Object | Named, "sparse") => Sparse,
+            (Object | Named, "sha256") => Text,
+            (Object, "stored_times") => Fixed,
+            (
+                Object,
+                "record_number"
+                | "sequence_number"
+                | "directory"
+                | "attributes"
+                | "ntfs_compression_normalized",
+            ) => Scalar,
+            (Object | Named, "source_offset" | "length" | "source_evidence") => Scalar,
+            (Named, "name_utf16") => Units,
+            (Extent, "logical_offset" | "physical_offset" | "length") => Scalar,
+            (Sparse, "initialized_length") => Scalar,
+            (Sparse, "allocated" | "holes") => Ranges,
+            (Range, "offset" | "length") => Scalar,
+            (EaSet, "entries") => Eas,
+            (Ea, "flags") => Scalar,
+            (Ea, "name" | "value") => Bytes,
+            (Point, "buffer") => Bytes,
+            _ => return None,
+        })
+    }
+}
+impl<'de> serde::de::DeserializeSeed<'de> for MemorySeed<'_> {
+    type Value = ();
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        decoder: D,
+    ) -> std::result::Result<(), D::Error> {
+        decoder.deserialize_any(self)
+    }
+}
+impl<'de> serde::de::Visitor<'de> for MemorySeed<'_> {
+    type Value = ();
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("bounded expected object JSON")
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<(), E> {
+        Ok(())
+    }
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> std::result::Result<(), E> {
+        Ok(())
+    }
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> std::result::Result<(), E> {
+        Ok(())
+    }
+    fn visit_str<E: serde::de::Error>(self, text: &str) -> std::result::Result<(), E> {
+        if matches!(self.kind, MemoryKind::Text) {
+            self.charge(
+                (text.len() as u64)
+                    .checked_mul(2)
+                    .and_then(|n| n.checked_add(8))
+                    .ok_or_else(|| E::custom("object string size overflow"))?,
+            )?;
+        }
+        Ok(())
+    }
+    fn visit_string<E: serde::de::Error>(self, text: String) -> std::result::Result<(), E> {
+        self.visit_str(&text)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<(), A::Error> {
+        use MemoryKind::*;
+        let (kind, size) = match self.kind {
+            Path => (Text, std::mem::size_of::<String>()),
+            Paths => (Path, std::mem::size_of::<Vec<String>>()),
+            Bytes => (Scalar, 1),
+            Units => (Scalar, 2),
+            Extents => (Extent, std::mem::size_of::<crate::ntfs_inspect::Extent>()),
+            Ranges => (Range, std::mem::size_of::<super::LogicalRange>()),
+            Names => (Named, std::mem::size_of::<super::NamedStream>()),
+            Eas => (
+                Ea,
+                std::mem::size_of::<n2r_win32::extended_attributes::Entry>(),
+            ),
+            Fixed => (Scalar, 0),
+            _ => {
+                return Err(<A::Error as serde::de::Error>::custom(
+                    "unexpected object allocation sequence",
+                ));
+            }
+        };
+        let mut count = 0u64;
+        while seq
+            .next_element_seed(MemorySeed {
+                kind,
+                used: self.used,
+                limit: self.limit,
+            })?
+            .is_some()
+        {
+            count = count.checked_add(1).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom("object allocation count overflow")
+            })?;
+        }
+        if count > 0 && size > 0 {
+            let capacity = count
+                .checked_next_power_of_two()
+                .map(|n| n.max(8))
+                .ok_or_else(|| {
+                    <A::Error as serde::de::Error>::custom("object vector capacity overflow")
+                })?;
+            self.charge(capacity.checked_mul(size as u64).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom("object vector allocation overflow")
+            })?)?;
+        }
+        Ok(())
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<(), A::Error> {
+        while let Some(field) = map.next_key::<String>()? {
+            let kind = self.field(&field).ok_or_else(|| {
+                <A::Error as serde::de::Error>::custom("unknown typed object allocation field")
+            })?;
+            map.next_value_seed(MemorySeed {
+                kind,
+                used: self.used,
+                limit: self.limit,
+            })?;
+        }
+        self.charge(0)
+    }
+}
+fn check_object_memory(object: &Object, compact: u64, maximum: u64) -> Result<()> {
+    let mut bytes = compact
+        .checked_add(std::mem::size_of::<Object>() as u64)
+        .context("object memory overflow")?;
+    let mut charge = |n: usize| -> Result<()> {
+        bytes = bytes
+            .checked_add(n as u64)
+            .filter(|n| *n <= maximum)
+            .context("actual decoded object exceeds resource row budget")?;
+        Ok(())
+    };
+    let path = |v: &Vec<String>| -> Result<usize> {
+        v.iter().try_fold(
+            v.capacity()
+                .checked_mul(std::mem::size_of::<String>())
+                .context("path memory overflow")?,
+            |n, s| n.checked_add(s.capacity()).context("path memory overflow"),
+        )
+    };
+    let sparse = |s: &super::SparseLayout| -> Result<usize> {
+        s.allocated
+            .capacity()
+            .checked_add(s.holes.capacity())
+            .and_then(|n| n.checked_mul(std::mem::size_of::<super::LogicalRange>()))
+            .context("sparse memory overflow")
+    };
+    charge(path(&object.path)?)?;
+    charge(
+        object
+            .additional_names
+            .capacity()
+            .checked_mul(std::mem::size_of::<Vec<String>>())
+            .context("alias memory overflow")?,
+    )?;
+    for alias in &object.additional_names {
+        charge(path(alias)?)?;
+    }
+    charge(object.security.capacity())?;
+    if let Some(api) = &object.api_security {
+        charge(api.capacity())?;
+    }
+    if let Some(ea) = &object.extended_attributes {
+        charge(
+            ea.entries
+                .capacity()
+                .checked_mul(std::mem::size_of::<n2r_win32::extended_attributes::Entry>())
+                .context("EA memory overflow")?,
+        )?;
+        for entry in &ea.entries {
+            charge(entry.name.capacity())?;
+            charge(entry.value.capacity())?;
+        }
+    }
+    if let Some(point) = &object.reparse {
+        charge(point.buffer.capacity())?;
+    }
+    charge(
+        object
+            .source_extents
+            .capacity()
+            .checked_mul(std::mem::size_of::<crate::ntfs_inspect::Extent>())
+            .context("extent memory overflow")?,
+    )?;
+    if let Some(digest) = &object.sha256 {
+        charge(digest.capacity())?;
+    }
+    if let Some(layout) = &object.sparse {
+        charge(sparse(layout)?)?;
+    }
+    charge(
+        object
+            .named_streams
+            .capacity()
+            .checked_mul(std::mem::size_of::<super::NamedStream>())
+            .context("stream memory overflow")?,
+    )?;
+    for stream in &object.named_streams {
+        charge(
+            stream
+                .name_utf16
+                .capacity()
+                .checked_mul(2)
+                .context("stream name memory overflow")?,
+        )?;
+        charge(
+            stream
+                .source_extents
+                .capacity()
+                .checked_mul(std::mem::size_of::<crate::ntfs_inspect::Extent>())
+                .context("stream extent memory overflow")?,
+        )?;
+        if let Some(digest) = &stream.sha256 {
+            charge(digest.capacity())?;
+        }
+        if let Some(layout) = &stream.sparse {
+            charge(sparse(layout)?)?;
+        }
+    }
+    charge(0)
+}
+
 impl PagedExpectedTree {
     /// Create a separate paged projection; the original expectation.json and
     /// its exact pretty-JSON SHA remain unchanged. The same pinned max_file_bytes
@@ -453,12 +750,45 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
     ) -> Result<ExpectedTreePageReceipt> {
+        Self::create_domain(tree, path, budget, semantic_byte_budget, None)
+    }
+    pub fn create_with_resources(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<ExpectedTreePageReceipt> {
+        admission.validate()?;
+        ensure!(
+            tree.object_count() as u64 == admission.objects()?,
+            "resource expected object count differs"
+        );
+        ensure!(
+            (tree.object_count() as u64)
+                .checked_mul(24)
+                .is_some_and(|n| n <= admission.budget.retained_index_bytes),
+            "resource expected index exceeds budget"
+        );
+        Self::create_domain(
+            tree,
+            path,
+            admission.expected_page_budget()?,
+            admission.semantic_byte_budget(),
+            Some(admission),
+        )
+    }
+    fn create_domain(
+        tree: &impl ExpectedObjectDomain,
+        path: &Path,
+        budget: PageBudget,
+        semantic_byte_budget: u64,
+        resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    ) -> Result<ExpectedTreePageReceipt> {
         budget.validate()?;
         ensure!(
             (1..=i64::MAX as u64).contains(&semantic_byte_budget),
             "invalid expected semantic byte budget"
         );
-        let objects = u64::try_from(tree.objects.len())?;
+        let objects = u64::try_from(tree.object_count())?;
         let records = objects
             .checked_add(1)
             .context("paged expected-tree record count overflow")?;
@@ -470,27 +800,41 @@ impl PagedExpectedTree {
         serde_json::to_writer_pretty(&mut semantic, tree)?;
         let semantic_sha256 = semantic.finish();
         let header = HeaderRef {
-            schema_version: 2,
-            profile: &tree.profile,
-            logical_bytes: tree.logical_bytes,
-            internal_replacement_pending: &tree.internal_replacement_pending,
+            schema_version: if resource_admission.is_some() { 3 } else { 2 },
+            profile: tree.profile(),
+            logical_bytes: tree.logical_bytes(),
+            internal_replacement_pending: tree.internal_replacement_pending(),
             total_objects: objects,
+            resource_admission,
         };
         let maximum_chunk = chunk_bytes(budget)?;
         let mut writer = Writer::new(path, PURPOSE, budget)?;
         writer.push(&[], &record(&header, budget)?)?;
-        for (ordinal, object) in tree.objects.iter().enumerate() {
+        let mut counts = ExpectedTreePageCounts::default();
+        for ordinal in 0..tree.object_count() {
+            let object = tree.object(ordinal)?;
+            counts.include(&object)?;
+            if let Some(admission) = resource_admission {
+                check_object_memory(&object, 0, admission.budget.max_row_bytes)?;
+            }
             let mut chunks = ChunkWriter {
                 writer: &mut writer,
                 object: u64::try_from(ordinal)?,
                 chunks: 0,
                 bytes: 0,
-                maximum: semantic_byte_budget,
+                maximum: resource_admission
+                    .map_or(semantic_byte_budget, |a| a.budget.max_row_bytes),
                 buffer: Vec::new(),
                 chunk_bytes: maximum_chunk,
             };
-            serde_json::to_writer(&mut chunks, object)?;
+            serde_json::to_writer(&mut chunks, object.as_ref())?;
+            if let Some(admission) = resource_admission {
+                check_object_memory(&object, chunks.bytes, admission.budget.max_row_bytes)?;
+            }
             chunks.finish()?;
+        }
+        if let Some(admission) = resource_admission {
+            admission.validate_tree(counts.files, counts.directories, counts.data_streams)?;
         }
         let summary = writer.finish()?;
         ensure!(
@@ -498,7 +842,7 @@ impl PagedExpectedTree {
             "written expected-tree record domain differs"
         );
         Ok(ExpectedTreePageReceipt {
-            schema_version: 2,
+            schema_version: if resource_admission.is_some() { 3 } else { 2 },
             path: path.to_owned(),
             file_sha256: summary.sha256,
             semantic_sha256,
@@ -508,6 +852,7 @@ impl PagedExpectedTree {
             bytes: summary.bytes,
             page_budget: budget,
             semantic_byte_budget,
+            resource_admission,
         })
     }
 
@@ -536,6 +881,39 @@ impl PagedExpectedTree {
         budget: PageBudget,
         semantic_byte_budget: u64,
     ) -> Result<Self> {
+        Self::open_domain(
+            path,
+            file_sha256,
+            legacy_semantic_sha256,
+            budget,
+            semantic_byte_budget,
+            None,
+        )
+    }
+    pub fn open_with_resources(
+        path: &Path,
+        file_sha256: &str,
+        legacy_semantic_sha256: &str,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<Self> {
+        admission.validate()?;
+        Self::open_domain(
+            path,
+            file_sha256,
+            legacy_semantic_sha256,
+            admission.expected_page_budget()?,
+            admission.semantic_byte_budget(),
+            Some(admission),
+        )
+    }
+    fn open_domain(
+        path: &Path,
+        file_sha256: &str,
+        legacy_semantic_sha256: &str,
+        budget: PageBudget,
+        semantic_byte_budget: u64,
+        resource_admission: Option<n2r_win32::tree_resources::SourceResourceAdmission>,
+    ) -> Result<Self> {
         ensure!(
             (1..=i64::MAX as u64).contains(&semantic_byte_budget),
             "invalid expected semantic byte budget"
@@ -557,7 +935,8 @@ impl PagedExpectedTree {
         let header: ExpectedTreePageHeader = serde_json::from_slice(&first.payload)?;
         drop(first);
         ensure!(
-            header.schema_version == 2
+            header.schema_version == (if resource_admission.is_some() { 3 } else { 2 })
+                && header.resource_admission == resource_admission
                 && header
                     .total_objects
                     .checked_add(1)
@@ -566,9 +945,27 @@ impl PagedExpectedTree {
         );
         usize::try_from(header.total_objects)
             .context("expected-tree object domain exceeds addressable ordinals")?;
+        if let Some(admission) = resource_admission {
+            ensure!(
+                header.total_objects == admission.objects()?
+                    && header
+                        .total_objects
+                        .checked_mul(24)
+                        .is_some_and(|n| n <= admission.budget.retained_index_bytes),
+                "resource expected index/count exceeds budget"
+            );
+        }
         let maximum_chunk = chunk_bytes(budget)?;
         let mut directory = Vec::new();
         directory.try_reserve_exact(usize::try_from(header.total_objects)?)?;
+        if let Some(admission) = resource_admission {
+            ensure!(
+                (directory.capacity() as u64)
+                    .checked_mul(24)
+                    .is_some_and(|n| n <= admission.budget.retained_index_bytes),
+                "actual expected index allocation exceeds resource budget"
+            );
+        }
         let mut cursor = 1u64;
         let mut total_compact = 0u64;
         for ordinal in 0..header.total_objects {
@@ -596,8 +993,11 @@ impl PagedExpectedTree {
                 previous = raw.len();
                 bytes = bytes
                     .checked_add(raw.len() as u64)
-                    .filter(|n| *n <= semantic_byte_budget)
-                    .context("object exceeds legacy semantic budget")?;
+                    .filter(|n| {
+                        *n <= semantic_byte_budget
+                            && resource_admission.is_none_or(|a| *n <= a.budget.max_row_bytes)
+                    })
+                    .context("object exceeds semantic/decoded resource budget")?;
                 chunks = chunks
                     .checked_add(1)
                     .context("object chunk count overflow")?;
@@ -627,6 +1027,7 @@ impl PagedExpectedTree {
             budget,
             semantic_byte_budget,
             directory,
+            resource_admission,
         };
         let counts = Cell::new(ExpectedTreePageCounts::default());
         let mut semantic = SemanticHash::new(semantic_byte_budget);
@@ -646,6 +1047,13 @@ impl PagedExpectedTree {
             view.counts.objects == view.header.total_objects,
             "typed object count differs from the complete header domain"
         );
+        if let Some(admission) = resource_admission {
+            admission.validate_tree(
+                view.counts.files,
+                view.counts.directories,
+                view.counts.data_streams,
+            )?;
+        }
         Ok(view)
     }
 
@@ -698,16 +1106,62 @@ impl PagedExpectedTree {
             "expected-tree ordinal outside complete object domain"
         );
         let entry = self.directory[index];
-        let chunks = ChunkReader {
+        let chunks = || ChunkReader {
             tree: self,
-            object: u64::try_from(index)?,
+            object: index as u64,
             entry,
             next: 0,
             loaded: 0,
             buffer: Vec::new(),
             position: 0,
         };
-        serde_json::from_reader(chunks).context("decode complete expected-tree object chunks")
+        if let Some(admission) = self.resource_admission {
+            ensure!(
+                entry.bytes <= admission.budget.max_row_bytes,
+                "resource object compact bytes exceed budget"
+            );
+            let used = Cell::new(
+                entry
+                    .bytes
+                    .checked_add(std::mem::size_of::<Object>() as u64)
+                    .context("object memory counter overflow")?,
+            );
+            let mut decoder = serde_json::Deserializer::from_reader(chunks());
+            serde::de::DeserializeSeed::deserialize(
+                MemorySeed {
+                    kind: MemoryKind::Object,
+                    used: &used,
+                    limit: admission.budget.max_row_bytes,
+                },
+                &mut decoder,
+            )?;
+            decoder.end()?;
+        }
+        let object: Object = serde_json::from_reader(chunks())
+            .context("decode complete expected-tree object chunks")?;
+        if let Some(admission) = self.resource_admission {
+            check_object_memory(&object, entry.bytes, admission.budget.max_row_bytes)?;
+        }
+        Ok(object)
+    }
+
+    pub fn require_resource_owner(
+        &self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<()> {
+        admission.validate()?;
+        ensure!(
+            self.resource_admission == Some(admission)
+                && self.budget == admission.expected_page_budget()?
+                && self.semantic_byte_budget == admission.semantic_byte_budget(),
+            "expected resource page owner differs from admission"
+        );
+        admission.validate_tree(
+            self.counts.files,
+            self.counts.directories,
+            self.counts.data_streams,
+        )?;
+        self.revalidate()
     }
 
     pub fn revalidate(&self) -> Result<()> {
@@ -738,6 +1192,15 @@ impl ExpectedObjectDomain for PagedExpectedTree {
     }
     fn logical_bytes(&self) -> u64 {
         PagedExpectedTree::logical_bytes(self)
+    }
+    fn internal_replacement_pending(&self) -> &[String] {
+        PagedExpectedTree::internal_replacement_pending(self)
+    }
+    fn require_resource_metadata(
+        &self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<()> {
+        self.require_resource_owner(admission)
     }
     fn revalidate_domain(&self) -> Result<()> {
         self.revalidate()
@@ -791,6 +1254,21 @@ impl ExpectedObjectDomain for ExpectedTreeView<'_> {
         match self {
             Self::Inline(tree) => tree.logical_bytes,
             Self::Paged(tree) => tree.logical_bytes(),
+        }
+    }
+    fn internal_replacement_pending(&self) -> &[String] {
+        match self {
+            Self::Inline(tree) => &tree.internal_replacement_pending,
+            Self::Paged(tree) => tree.internal_replacement_pending(),
+        }
+    }
+    fn require_resource_metadata(
+        &self,
+        admission: n2r_win32::tree_resources::SourceResourceAdmission,
+    ) -> Result<()> {
+        match self {
+            Self::Inline(tree) => tree.require_resource_metadata(admission),
+            Self::Paged(tree) => tree.require_resource_owner(admission),
         }
     }
     fn revalidate_domain(&self) -> Result<()> {

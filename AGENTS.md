@@ -3,14 +3,54 @@
 @C:\Users\mfara\.codex\RTK.md
 
 Read RTK. Work in **D:\code\ntfs2refs**, branch
-`codex/isolated-journal-observation`, private origin faratech/ntfs2refs.
+`codex/resource-based-admission`, private origin faratech/ntfs2refs.
 The environment's C: workspace path is stale. This is a current handoff, not a
 chronological log. Prior instructions and results are preserved verbatim in
 [the November 1 archive](docs/history/AGENTS-through-20261101T0225.md) and
 [the October 29 archive](docs/history/AGENTS-through-20261029.md).
 Old CURRENT/LIVE labels and preserve-all instructions in those archives are history.
 
-## CURRENT release continuation (2026-11-03 00:41 UTC)
+## CURRENT resource-based hardware continuation (2026-11-03)
+
+Latest user instruction: "Also remove all the caps so it can work on most
+hardware." This authorizes the resource/generalization work below and supersedes
+the earlier feature freeze for that scope. Do not delete correctness, format,
+unsupported-feature or actual resource checks. Replace artificial limits with
+complete paged evidence and observed RAM/scratch/geometry admission; never just
+raise constants or truncate inventories. No unit tests. Preserve approved mainc6.
+
+The verified native-shadow candidate remains on `codex/isolated-journal-observation`
+at21087bb, with exact source7feb binaries/evidence. New source is on the separate
+`codex/resource-based-admission` branch. Hardware discovery slice48e1d54 is pushed;
+it removes arbitrary disk/partition-number/table-count/placement restrictions
+while retaining checked GPT/identity/bounds and dedicated-disk exclusion rules.
+
+WIP actual paged raw MFT/attribute-list/namespace/security/allocation domains,
+resource native selectors/observations, expected-tree pages and native V4 owners
+are being connected. Root owns shared validators, new ntfs_attestation/paged.rs,
+ntfs_admission/paged.rs and comparison/source-view joins. B power_dispatch owns
+actual paged inspector/role/record producer. A public_readonly_completion owns
+native request/observation/target paging +resource query variants/pre-count entry.
+C release_status_review owns paged MFT resolver/allocation/security/native stream
+join and native security_descriptor resource validator. Root alone runs builds,
+Git and VM mutations. Complete4bin check passed27.61s (public/new resource-source
+observer/native composite converter/recovery); no units run. Actual PagedInspection
+producer and raw/native comparison are connected through the new owning-machine
+lab-observe-resource-source entry. Public V4 conversion/certificate/recovery
+orchestration is pending; no new native qualification is inherited. Details in
+docs/resource-based-admission.md. B now owns NEW shadow_tree/source_pages.rs only.
+
+VM is Off/RAM0,33 checkpoints,parent58bd; active working branch has completed
+Rollback/ABT/NTFS (case5cc9b3f4), NOT original interrupted source. Native5812/
+1793666832841/0 and Ready0/all811 hashes/1534 objects passed. Closed74file archive
+108102734B SHA7c3d78b1af9f5ebca13b02637a0aa16000beed04ab30e92bc10d4d38e9c639f9.
+Original58bd remains the interrupted AP1 origin. Resume and normal archives are
+preserved. Latest capacity actual302305191385/free37210034176, fixed original
+max329374052988/min17179869184 unchanged. Preserve all original recovery origins.
+No new VM work is active. Pending pinned7feb mutation/coldboot helper3522 remains
+separate from resource-source development; no universal hardware/release claim.
+
+## Earlier release continuation (2026-11-03 00:41 UTC)
 
 USER FREEZE (00:52 UTC): "Do not keep making changes to the code if we are close
 to release stability." Stop feature/performance/refactor work and new harness

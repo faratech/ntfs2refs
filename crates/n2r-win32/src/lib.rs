@@ -48,6 +48,8 @@ mod namespace_native;
 #[cfg(windows)]
 pub mod ntfs_preparation;
 #[cfg(windows)]
+pub mod observation_pages;
+#[cfg(windows)]
 pub mod preparation_shadow;
 #[cfg(windows)]
 pub mod process_io;
@@ -58,6 +60,8 @@ pub mod region_layout;
 pub mod reparse_layout;
 #[cfg(windows)]
 pub mod reparse_native;
+#[cfg(windows)]
+pub mod resource_native;
 pub mod retention_layout;
 pub mod retrieval_paging;
 pub mod security_descriptor;
@@ -91,10 +95,10 @@ pub use native::{
     DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
     GeneralAllocationSnapshot, GeneralDiskState, GeneralFreezeObservation, GeneralFrozenLane,
     GeneralFrozenPartition, GeneralJournalReadView, GeneralJournaledPartition,
-    GeneralLiveNtfsObservation, GeneralLiveRefsLayoutObservation, GeneralLiveRefsObservation,
-    GeneralLockedPartition, GeneralPartitionReader, GeneralProbe, GeneralReadonlyAllocationWitness,
-    LiveNtfsObservation, MountPathObservation, NativeEvent, OfflinePartition, PartitionSnapshot,
-    WritePolicy, capture_mount_paths_general, mounted_filesystem_general,
-    observe_general_disk_state_readonly, probe_general, rediscover_general_volume,
-    rediscover_general_volume_wait, restore_drive_letter_general,
+    GeneralLiveNtfsObservation, GeneralLivePagedNtfsObservation, GeneralLiveRefsLayoutObservation,
+    GeneralLiveRefsObservation, GeneralLockedPartition, GeneralPartitionReader, GeneralProbe,
+    GeneralReadonlyAllocationWitness, LiveNtfsObservation, MountPathObservation, NativeEvent,
+    OfflinePartition, PartitionSnapshot, WritePolicy, capture_mount_paths_general,
+    mounted_filesystem_general, observe_general_disk_state_readonly, probe_general,
+    rediscover_general_volume, rediscover_general_volume_wait, restore_drive_letter_general,
 };

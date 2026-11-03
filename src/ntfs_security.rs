@@ -95,12 +95,449 @@ pub struct Ace {
     pub application_data_offset: Option<usize>,
     pub application_data_length: usize,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Header {
     pub hash: u32,
     pub id: u32,
     pub offset: u64,
     pub length: u32,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagedReconciliationPin {
+    pub schema_version: u32,
+    pub central: crate::ntfs_inspect::record_store::RecordStorePin,
+    pub legacy: crate::ntfs_inspect::record_store::RecordStorePin,
+    pub bindings: crate::ntfs_inspect::record_store::RecordStorePin,
+    pub central_descriptors: u64,
+    pub legacy_descriptors: u64,
+    pub bound_files: u64,
+    pub sii_entries: u64,
+    pub sdh_entries: u64,
+    pub index_blocks: u64,
+    pub descriptor_bytes: u64,
+    pub aces: u64,
+    pub evidence_sha256: String,
+}
+
+/// Complete immutable raw-security facts, not source or native authority.
+#[cfg(windows)]
+pub struct PagedReconciliation {
+    central: crate::ntfs_inspect::record_store::SortedRecordStore,
+    legacy: crate::ntfs_inspect::record_store::SortedRecordStore,
+    bindings: crate::ntfs_inspect::record_store::SortedRecordStore,
+    pin: PagedReconciliationPin,
+}
+
+fn identity_key(number: u64) -> [u8; 16] {
+    let mut key = [0; 16];
+    key[..8].copy_from_slice(&number.to_be_bytes());
+    key
+}
+
+#[cfg(windows)]
+impl PagedReconciliation {
+    pub fn pin(&self) -> &PagedReconciliationPin {
+        &self.pin
+    }
+    pub fn descriptor_count(&self) -> u64 {
+        self.pin.central_descriptors + self.pin.legacy_descriptors
+    }
+    pub fn descriptor(&self, ordinal: u64) -> Result<DescriptorRecord> {
+        if ordinal < self.central.len() {
+            self.central.get(ordinal)
+        } else {
+            self.legacy.get(
+                ordinal
+                    .checked_sub(self.central.len())
+                    .context("security ordinal underflow")?,
+            )
+        }
+    }
+    pub fn find_id(&self, id: u32) -> Result<Option<DescriptorRecord>> {
+        self.central.find(identity_key(u64::from(id)))
+    }
+    pub fn find_legacy(&self, number: u64) -> Result<Option<DescriptorRecord>> {
+        self.legacy.find(identity_key(number))
+    }
+    pub fn binding(&self, ordinal: u64) -> Result<Binding> {
+        self.bindings.get(ordinal)
+    }
+    pub fn find_binding(&self, number: u64) -> Result<Option<Binding>> {
+        self.bindings.find(identity_key(number))
+    }
+    pub fn revalidate(&self) -> Result<()> {
+        self.central.revalidate()?;
+        self.legacy.revalidate()?;
+        self.bindings.revalidate()?;
+        Ok(())
+    }
+}
+
+fn descriptor_header(record: &DescriptorRecord) -> Result<Header> {
+    Ok(Header {
+        hash: record.ntfs_hash.context("central descriptor hash absent")?,
+        id: record.security_id.context("central descriptor ID absent")?,
+        offset: record
+            .sds_offset
+            .context("central descriptor offset absent")?,
+        length: u32::try_from(record.descriptor.relative_hex.len() / 2)?
+            .checked_add(20)
+            .context("descriptor header length overflow")?,
+    })
+}
+
+fn descriptor_at(
+    sds: &dyn crate::ntfs_inspect::source_domain::SourceMetadataRange,
+    wanted: &Header,
+    maximum_record_bytes: u64,
+) -> Result<DescriptorRecord> {
+    let length = u64::from(wanted.length);
+    let within = wanted.offset % PAIR as u64;
+    ensure!(
+        within < HALF as u64
+            && within.checked_add(length).is_some_and(|n| n <= HALF as u64)
+            && length
+                .checked_sub(20)
+                .is_some_and(|n| n <= maximum_record_bytes),
+        "indexed SDS descriptor escapes primary half or record budget"
+    );
+    let mirror_at = wanted
+        .offset
+        .checked_add(HALF as u64)
+        .context("SDS mirror offset overflow")?;
+    ensure!(
+        mirror_at
+            .checked_add(length)
+            .is_some_and(|n| n <= sds.byte_len()),
+        "indexed SDS mirror is absent"
+    );
+    let mut bytes = vec![0; usize::try_from(length)?];
+    let mut mirror = vec![0; bytes.len()];
+    sds.read_exact_at(wanted.offset, &mut bytes)?;
+    sds.read_exact_at(mirror_at, &mut mirror)?;
+    ensure!(
+        header(&bytes[..20])? == *wanted && bytes == mirror,
+        "indexed SDS header/mirror differs"
+    );
+    ensure!(
+        ntfs_hash(&bytes[20..])? == wanted.hash,
+        "indexed SDS content hash differs"
+    );
+    Ok(DescriptorRecord {
+        security_id: Some(wanted.id),
+        legacy_record: None,
+        sds_offset: Some(wanted.offset),
+        ntfs_hash: Some(wanted.hash),
+        descriptor: parse_descriptor_with_limit(&bytes[20..], maximum_record_bytes)?,
+    })
+}
+
+/// Reconcile the complete security graph through authenticated metadata ranges
+/// and disk-resident record indexes. Nothing here opens a source device or
+/// manufactures a live source/native admission capability.
+#[cfg(windows)]
+pub fn reconcile_paged(
+    capture: &impl crate::ntfs_inspect::source_domain::RootSecurityCaptureDomain,
+    files: &impl crate::ntfs_inspect::source_domain::RootFileDomain,
+    base: &std::path::Path,
+    scratch: &crate::ntfs_inspect::paged_storage::SourceScratch,
+) -> Result<PagedReconciliation> {
+    use crate::ntfs_inspect::{
+        record_store::{SortedRecordStore, SortedRecordWriter},
+        source_domain::SourceMetadataRange,
+    };
+    let budget = scratch.budget();
+    budget.validate()?;
+    // Account for a current source object and descriptor row together with
+    // the intrinsic SDS mirror/descriptor parser windows. Page owners retain
+    // their own separate leases in this same aggregate ledger.
+    let transient = budget
+        .record_bytes
+        .checked_mul(2)
+        .and_then(|n| n.checked_add((MAX_DESCRIPTOR_BYTES as u64) * 32))
+        .and_then(|n| n.checked_add((2 * HALF + 65536) as u64))
+        .context("security working-memory reservation overflow")?;
+    let _working = scratch.lease_ram(transient)?;
+    files.revalidate()?;
+    capture.revalidate()?;
+    ensure!(
+        files.header().geometry.bytes_per_sector == 512
+            && files.header().geometry.index_record_size == 4096
+            && ntfs_index::supports_cluster_size(files.header().geometry.cluster_size),
+        "paged security indexes require supported NTFS index geometry"
+    );
+    let cluster = files.header().geometry.cluster_size;
+    let mut central_writer =
+        SortedRecordWriter::new(&base.join("security-central"), *b"N2RSCEN1", scratch)?;
+    let mut previous: Option<Header> = None;
+    let mut descriptor_bytes = 0u64;
+    let mut aces = 0u64;
+    let sii = ntfs_index::paged::walk_ranges(
+        capture.index(IndexKind::Id)?,
+        Profile::SECURITY_ID,
+        cluster,
+        scratch,
+        &base.join("security-sii.visited"),
+        |_entry, key, value| {
+            let h = header(value)?;
+            ensure!(
+                key.len() == 4
+                    && u32le(key, 0)? == h.id
+                    && previous.as_ref().is_none_or(|prior| prior.id < h.id),
+                "SII keys duplicate, unordered or differ from their values"
+            );
+            let record = descriptor_at(capture.sds(), &h, budget.record_bytes)?;
+            descriptor_bytes = descriptor_bytes
+                .checked_add((record.descriptor.relative_hex.len() / 2) as u64)
+                .context("security descriptor byte count overflow")?;
+            aces = aces
+                .checked_add(
+                    (record.descriptor.dacl.aces.len() + record.descriptor.sacl.aces.len()) as u64,
+                )
+                .context("security ACE count overflow")?;
+            central_writer.push(identity_key(u64::from(h.id)), &record)?;
+            previous = Some(h);
+            Ok(())
+        },
+    )?;
+    let central_pin = central_writer.finish()?;
+    let central = SortedRecordStore::open(&central_pin, scratch)?;
+    ensure!(
+        sii.entries == central.len(),
+        "complete SII descriptor domain differs"
+    );
+    let mut previous: Option<Header> = None;
+    let sdh = ntfs_index::paged::walk_ranges(
+        capture.index(IndexKind::Hash)?,
+        Profile::SECURITY_HASH,
+        cluster,
+        scratch,
+        &base.join("security-sdh.visited"),
+        |_entry, key, value| {
+            let h = header(value)?;
+            ensure!(
+                key.len() == 8
+                    && u32le(key, 0)? == h.hash
+                    && u32le(key, 4)? == h.id
+                    && previous
+                        .as_ref()
+                        .is_none_or(|prior| (prior.hash, prior.id) < (h.hash, h.id)),
+                "SDH keys duplicate, unordered or differ from their values"
+            );
+            let record: DescriptorRecord = central
+                .find(identity_key(u64::from(h.id)))?
+                .context("SDH descriptor is absent from SII")?;
+            ensure!(
+                descriptor_header(&record)? == h,
+                "SDH/SII/SDS header differs"
+            );
+            previous = Some(h);
+            Ok(())
+        },
+    )?;
+    ensure!(
+        sdh.entries == central.len(),
+        "complete SDH/SII descriptor sets differ"
+    );
+    let sds = scan_sds_range(capture.sds(), budget, |h, _bytes| {
+        let record: DescriptorRecord = central
+            .find(identity_key(u64::from(h.id)))?
+            .context("unindexed primary SDS descriptor")?;
+        ensure!(
+            descriptor_header(&record)? == h,
+            "SDS primary ID/header is duplicated or differs from SII/SDH"
+        );
+        Ok(())
+    })?;
+    ensure!(
+        sds.records == central.len() && sds.descriptor_bytes == descriptor_bytes,
+        "complete SDS/SII/SDH record and byte domains differ"
+    );
+    let mut legacy_writer =
+        SortedRecordWriter::new(&base.join("security-legacy"), *b"N2RSLEG1", scratch)?;
+    for ordinal in 0..capture.legacy_count() {
+        let item = capture.legacy(ordinal)?;
+        ensure!(
+            item.sequence_number != 0
+                && item.bytes.len() as u64 <= budget.record_bytes
+                && files
+                    .find_record(item.record_number, Some(item.sequence_number))?
+                    .is_some(),
+            "legacy descriptor lacks its exact canonical MFT identity or exceeds record budget"
+        );
+        // Central SDS records are bounded by their on-disk half block. Legacy
+        // descriptors instead belong to this admitted physical attribute row.
+        // Charge any larger retained representation before decoding it.
+        let _legacy_extra = scratch.lease_ram(
+            (item.bytes.len() as u64)
+                .saturating_sub(MAX_DESCRIPTOR_BYTES as u64)
+                .checked_mul(4)
+                .context("legacy security working RAM overflow")?,
+        )?;
+        let descriptor = parse_descriptor_with_limit(&item.bytes, budget.record_bytes)?;
+        descriptor_bytes = descriptor_bytes
+            .checked_add(item.bytes.len() as u64)
+            .context("security descriptor byte count overflow")?;
+        aces = aces
+            .checked_add((descriptor.dacl.aces.len() + descriptor.sacl.aces.len()) as u64)
+            .context("security ACE count overflow")?;
+        let record = DescriptorRecord {
+            security_id: None,
+            legacy_record: Some(item.record_number),
+            sds_offset: None,
+            ntfs_hash: None,
+            descriptor,
+        };
+        legacy_writer.push(identity_key(item.record_number), &record)?;
+    }
+    let legacy_pin = legacy_writer.finish()?;
+    let legacy = SortedRecordStore::open(&legacy_pin, scratch)?;
+    ensure!(
+        legacy.len() == capture.legacy_count(),
+        "complete legacy descriptor domain differs"
+    );
+    let mut binding_writer =
+        SortedRecordWriter::new(&base.join("security-bindings"), *b"N2RSBND1", scratch)?;
+    let mut legacy_bound = 0u64;
+    let mut previous = None;
+    for ordinal in 0..files.file_count() {
+        let file = files.file(ordinal)?;
+        ensure!(
+            file.base_file_reference == 0
+                && !file.attributes.iter().any(|a| a.type_code == 0x20)
+                && file.sequence_number != 0
+                && previous.is_none_or(|number| number < file.record_number),
+            "unassembled, duplicate or unordered security binding identity"
+        );
+        previous = Some(file.record_number);
+        if (12..16).contains(&file.record_number)
+            && file.names.is_empty()
+            && file.attributes.is_empty()
+            && !file.is_directory
+            && file.hard_link_count == 0
+        {
+            continue;
+        }
+        let id = file
+            .standard_information
+            .as_ref()
+            .and_then(|si| si.security_id)
+            .filter(|id| *id != 0);
+        let record: DescriptorRecord = if let Some(id) = id {
+            ensure!(
+                !file.attributes.iter().any(|a| a.type_code == 0x50)
+                    && legacy
+                        .find::<DescriptorRecord>(identity_key(file.record_number))?
+                        .is_none(),
+                "file has both central and legacy security"
+            );
+            central
+                .find(identity_key(u64::from(id)))?
+                .context("MFT security ID absent from complete SDS/index domain")?
+        } else {
+            let record: DescriptorRecord = legacy
+                .find(identity_key(file.record_number))?
+                .context("allocated MFT file lacks resolvable security")?;
+            let mut attributes = file.attributes.iter().filter(|a| a.type_code == 0x50);
+            let attribute = attributes
+                .next()
+                .context("legacy descriptor lacks its source attribute")?;
+            ensure!(
+                attributes.next().is_none()
+                    && attribute.name_utf16.is_empty()
+                    && attribute.flags == 0
+                    && attribute.lowest_vcn == 0
+                    && attribute.initialized_size == attribute.logical_size
+                    && attribute.logical_size == (record.descriptor.relative_hex.len() / 2) as u64,
+                "legacy descriptor/source attribute differs"
+            );
+            if attribute.resident {
+                let bytes = hex::decode(&record.descriptor.relative_hex)?;
+                ensure!(
+                    attribute.resident_sha256.as_deref()
+                        == Some(n2r_win32::content_digest::of(&bytes).as_str()),
+                    "legacy resident descriptor hash differs"
+                );
+            }
+            legacy_bound = legacy_bound
+                .checked_add(1)
+                .context("legacy binding count overflow")?;
+            record
+        };
+        binding_writer.push(
+            identity_key(file.record_number),
+            &Binding {
+                record_number: file.record_number,
+                sequence_number: file.sequence_number,
+                security_id: id,
+                descriptor_sha256: record.descriptor.sha256,
+            },
+        )?;
+    }
+    ensure!(
+        legacy_bound == legacy.len(),
+        "legacy descriptor has no exact MFT binding"
+    );
+    let bindings_pin = binding_writer.finish()?;
+    let bindings = SortedRecordStore::open(&bindings_pin, scratch)?;
+    capture.revalidate()?;
+    files.revalidate()?;
+    let mut evidence = Sha256::new();
+    evidence.update(b"ntfs2refs-paged-security-v1\0");
+    evidence.update(sds.sha256.as_bytes());
+    // Commit every captured index byte as well as the independently walked
+    // reachable rows. Working memory stays one small fixed read window.
+    let mut buffer = [0u8; 65536];
+    for kind in [IndexKind::Id, IndexKind::Hash] {
+        let index = capture.index(kind)?;
+        for range in [Some(index.root), index.allocation, index.bitmap]
+            .into_iter()
+            .flatten()
+        {
+            evidence.update(range.byte_len().to_le_bytes());
+            let mut at = 0u64;
+            while at < range.byte_len() {
+                let n = (range.byte_len() - at).min(buffer.len() as u64) as usize;
+                range.read_exact_at(at, &mut buffer[..n])?;
+                evidence.update(&buffer[..n]);
+                at += n as u64;
+            }
+            range.revalidate()?;
+        }
+    }
+    for pin in [&central_pin, &legacy_pin, &bindings_pin] {
+        evidence.update(pin.data.logical_sha256.as_bytes());
+        evidence.update(pin.directory.logical_sha256.as_bytes());
+    }
+    let pin = PagedReconciliationPin {
+        schema_version: 1,
+        central_descriptors: central.len(),
+        legacy_descriptors: legacy.len(),
+        bound_files: bindings.len(),
+        sii_entries: sii.entries,
+        sdh_entries: sdh.entries,
+        index_blocks: sii
+            .index_blocks
+            .checked_add(sdh.index_blocks)
+            .context("security index block count overflow")?,
+        descriptor_bytes,
+        aces,
+        evidence_sha256: hex::encode(evidence.finalize()),
+        central: central_pin,
+        legacy: legacy_pin,
+        bindings: bindings_pin,
+    };
+    let result = PagedReconciliation {
+        central,
+        legacy,
+        bindings,
+        pin,
+    };
+    result.revalidate()?;
+    Ok(result)
 }
 #[derive(Clone, Copy)]
 pub enum IndexKind {
@@ -114,6 +551,107 @@ pub struct SecurityIndex {
 pub struct Table {
     pub records: Vec<DescriptorRecord>,
     pub index_blocks: usize,
+}
+
+/// Complete streamed SDS facts. Counts do not constitute file/native admission.
+#[derive(Clone, Debug, Serialize)]
+pub struct SdsRangeSummary {
+    pub records: u64,
+    pub descriptor_bytes: u64,
+    pub logical_bytes: u64,
+    pub sha256: String,
+}
+
+/// Visit every primary descriptor and verify its exact mirror with two fixed
+/// 256-KiB windows. Unlike the legacy slice reader, no SDS-sized allocation or
+/// aggregate descriptor collection is needed. ID/index closure is caller-owned.
+pub fn scan_sds_range(
+    source: &dyn crate::ntfs_inspect::source_domain::SourceMetadataRange,
+    budget: crate::ntfs_inspect::source_domain::SourceMetadataBudget,
+    mut emit: impl FnMut(Header, &[u8]) -> Result<()>,
+) -> Result<SdsRangeSummary> {
+    budget.validate()?;
+    ensure!(
+        (2 * HALF) as u64 <= budget.ram_bytes / 4,
+        "security mirror windows exceed source working-memory budget"
+    );
+    source.revalidate()?;
+    let mut primary = vec![0u8; HALF];
+    let mut mirror = vec![0u8; HALF];
+    let length = source.byte_len();
+    let mut base = 0u64;
+    let mut records = 0u64;
+    let mut descriptor_bytes = 0u64;
+    let mut digest = Sha256::new();
+    while base < length {
+        let first = usize::try_from((length - base).min(HALF as u64))?;
+        source.read_exact_at(base, &mut primary[..first])?;
+        digest.update(&primary[..first]);
+        let mirror_base = base
+            .checked_add(HALF as u64)
+            .context("SDS mirror offset overflow")?;
+        let second = usize::try_from(length.saturating_sub(mirror_base).min(HALF as u64))?;
+        if second != 0 {
+            source.read_exact_at(mirror_base, &mut mirror[..second])?;
+            digest.update(&mirror[..second]);
+        }
+        let mut at = 0usize;
+        while at.checked_add(20).is_some_and(|end| end <= first) {
+            if primary[at..at + 20].iter().all(|byte| *byte == 0) {
+                break;
+            }
+            let h = header(&primary[at..at + 20])?;
+            let n = usize::try_from(h.length)?;
+            ensure!(
+                h.offset == base + at as u64 && n <= first - at,
+                "SDS header position/record boundary differs"
+            );
+            ensure!(
+                at.checked_add(n).is_some_and(|end| end <= second),
+                "missing SDS mirror record"
+            );
+            ensure!(
+                primary[at..at + n] == mirror[at..at + n],
+                "SDS primary/mirror mismatch"
+            );
+            let bytes = &primary[at + 20..at + n];
+            ensure!(
+                bytes.len() as u64 <= budget.record_bytes,
+                "security descriptor exceeds pinned record budget"
+            );
+            ensure!(ntfs_hash(bytes)? == h.hash, "SDS descriptor hash mismatch");
+            records = records
+                .checked_add(1)
+                .context("SDS descriptor count overflow")?;
+            descriptor_bytes = descriptor_bytes
+                .checked_add(bytes.len() as u64)
+                .context("SDS descriptor byte count overflow")?;
+            emit(h, bytes)?;
+            at = at
+                .checked_add(n)
+                .and_then(|n| n.checked_add(15))
+                .context("SDS record alignment overflow")?
+                & !15;
+        }
+        ensure!(
+            primary[at.min(first)..first].iter().all(|byte| *byte == 0),
+            "unparsed nonzero SDS primary tail"
+        );
+        ensure!(
+            mirror[at.min(second)..second].iter().all(|byte| *byte == 0),
+            "unparsed nonzero SDS mirror tail"
+        );
+        base = base
+            .checked_add(PAIR as u64)
+            .context("SDS pair offset overflow")?;
+    }
+    source.revalidate()?;
+    Ok(SdsRangeSummary {
+        records,
+        descriptor_bytes,
+        logical_bytes: length,
+        sha256: hex::encode(digest.finalize()),
+    })
 }
 
 fn u16le(b: &[u8], at: usize) -> Result<u16> {
@@ -280,7 +818,7 @@ fn acl(bytes: &[u8], offset: usize, present: bool) -> Result<Acl> {
     let length = usize::from(u16le(bytes, offset + 2)?);
     let count = usize::from(u16le(bytes, offset + 4)?);
     ensure!(
-        length >= 8 && length.is_multiple_of(4) && count <= 8192,
+        length >= 8 && length.is_multiple_of(4) && count <= (length - 8) / 16,
         "invalid ACL size/ACE count"
     );
     let data = bytes
@@ -362,8 +900,15 @@ fn acl(bytes: &[u8], offset: usize, present: bool) -> Result<Acl> {
 /// Preserves all relative bytes and ordered ACEs. Conditional/resource ACE
 /// application data is retained by offset, not evaluated or normalized.
 pub fn parse_descriptor(bytes: &[u8]) -> Result<Descriptor> {
+    parse_descriptor_with_limit(bytes, MAX_DESCRIPTOR_BYTES as u64)
+}
+
+/// Parse one complete relative descriptor under the owning metadata row's
+/// admitted byte window. SDS callers separately enforce primary/mirror framing;
+/// ACL/ACE/SID offsets, lengths, order and exact relative bytes remain unchanged.
+pub fn parse_descriptor_with_limit(bytes: &[u8], maximum_bytes: u64) -> Result<Descriptor> {
     ensure!(
-        bytes.len() >= 20 && bytes.len() <= MAX_DESCRIPTOR_BYTES && bytes.len().is_multiple_of(4),
+        bytes.len() >= 20 && bytes.len() as u64 <= maximum_bytes && bytes.len().is_multiple_of(4),
         "security descriptor size bound differs"
     );
     ensure!(bytes[0] == 1, "unsupported security descriptor revision");

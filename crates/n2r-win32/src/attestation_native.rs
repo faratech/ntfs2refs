@@ -136,6 +136,9 @@ fn query(file: &File, class: i32, count: usize) -> Query {
     }
 }
 fn security(file: &File) -> (Vec<u8>, Option<i32>) {
+    security_with_limit(file, MAX_SECURITY_BYTES)
+}
+fn security_with_limit(file: &File, maximum: usize) -> (Vec<u8>, Option<i32>) {
     let mut sd = ptr::null_mut();
     // SAFETY: borrowed file handle; all optional component pointers are null.
     // The returned descriptor is owned by LocalFree, including error paths.
@@ -163,7 +166,7 @@ fn security(file: &File) -> (Vec<u8>, Option<i32>) {
         } else {
             0
         };
-        if !(20..=MAX_SECURITY_BYTES).contains(&length) {
+        if !(20..=maximum).contains(&length) {
             (vec![], Some(1338))
         } else {
             (
@@ -257,6 +260,97 @@ fn source_directory_case(file: &File, queries: &[Query]) -> Option<Query> {
 
 fn source_snapshot(file: &File, require_case: bool) -> Snapshot {
     let mut snapshot = snapshot_with_ea(file);
+    if require_case {
+        snapshot.directory_case_sensitivity = source_directory_case(file, &snapshot.queries);
+    }
+    snapshot
+}
+
+/// The new paged source path asks Windows for the complete required descriptor
+/// length. Its explicit row budget replaces the old fixed output buffer; both
+/// independent security APIs still run on the same held metadata handle.
+pub(crate) fn source_snapshot_paged(file: &File, require_case: bool, maximum: usize) -> Snapshot {
+    let queries = [(0, 40), (1, 24), (18, 24), (9, 8)]
+        .into_iter()
+        .map(|(class, bytes)| query(file, class, bytes))
+        .collect();
+    let (security, security_error) = security_with_limit(file, maximum);
+    let kernel = (|| -> io::Result<Vec<u8>> {
+        let mut required = 0u32;
+        // SAFETY: size-only synchronous query; no output buffer is passed.
+        let ok =
+            unsafe { GetKernelObjectSecurity(raw(file), 0x1f, ptr::null_mut(), 0, &mut required) };
+        if ok == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(122) {
+                return Err(error);
+            }
+        }
+        let length = required as usize;
+        if !(20..=maximum).contains(&length) {
+            return Err(invalid("required security descriptor exceeds row budget"));
+        }
+        let words = length
+            .checked_add(7)
+            .ok_or_else(|| invalid("security descriptor size overflow"))?
+            / 8;
+        let mut storage = Vec::<u64>::new();
+        storage.try_reserve_exact(words).map_err(io::Error::other)?;
+        storage.resize(words, 0);
+        let mut used = 0;
+        // SAFETY: live handle and aligned initialized output of required bytes.
+        let ok = unsafe {
+            GetKernelObjectSecurity(
+                raw(file),
+                0x1f,
+                storage.as_mut_ptr().cast(),
+                required,
+                &mut used,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if used < 20 || used > required {
+            return Err(invalid("security descriptor returned size differs"));
+        }
+        // SAFETY: successful API initialized exactly the checked returned span.
+        Ok(
+            unsafe { std::slice::from_raw_parts(storage.as_ptr().cast::<u8>(), used as usize) }
+                .to_vec(),
+        )
+    })();
+    let kernel_security = Some(match kernel {
+        Ok(bytes) => SecurityQuery {
+            bytes,
+            native_error: None,
+        },
+        Err(error) => SecurityQuery {
+            bytes: Vec::new(),
+            native_error: Some(error.raw_os_error().unwrap_or(13)),
+        },
+    });
+    let mut snapshot = Snapshot {
+        queries,
+        security,
+        security_error,
+        kernel_security,
+        extended_attributes: None,
+        extended_attributes_error: None,
+        reparse: None,
+        directory_case_sensitivity: None,
+    };
+    match crate::extended_attributes_native::capture(file) {
+        Ok(set) => snapshot.extended_attributes = Some(set),
+        Err(error) => snapshot.extended_attributes_error = Some(error.to_string()),
+    }
+    snapshot.reparse = Some(match crate::reparse_native::capture(file) {
+        Ok(point) => ReparseObservation { point, error: None },
+        Err(error) => ReparseObservation {
+            point: None,
+            error: Some(error.to_string()),
+        },
+    });
     if require_case {
         snapshot.directory_case_sensitivity = source_directory_case(file, &snapshot.queries);
     }
@@ -432,20 +526,68 @@ impl Drop for Privileges {
 }
 
 pub fn collect_file_metadata(request: &Request) -> io::Result<Report> {
-    collect_file_metadata_with_passes(request, false)
+    collect_file_metadata_with_passes(request, request, false, None)
 }
 
 /// Read each stream's content once and mirror it as the second capture. Only
 /// for callers that bracket the whole observation over the frozen source.
 pub fn collect_file_metadata_single_content_pass(request: &Request) -> io::Result<Report> {
-    collect_file_metadata_with_passes(request, true)
+    collect_file_metadata_with_passes(request, request, true, None)
+}
+
+pub(crate) fn collect_file_metadata_paged(
+    request: &Request,
+    path: &std::path::Path,
+    budget: crate::observation_pages::NativeObservationBudget,
+    single_content_pass: bool,
+) -> io::Result<crate::observation_pages::PagedNativeObservation> {
+    collect_file_metadata_paged_domain(request, path, budget, single_content_pass)
+}
+pub(crate) fn collect_file_metadata_paged_domain(
+    selectors: &impl NativeRequestDomain,
+    path: &std::path::Path,
+    budget: crate::observation_pages::NativeObservationBudget,
+    single_content_pass: bool,
+) -> io::Result<crate::observation_pages::PagedNativeObservation> {
+    let request = selectors.header();
+    validate_native_request_domain(selectors)?;
+    let profile = request
+        .resource_profile
+        .ok_or_else(|| invalid("paged native observation needs an explicit resource profile"))?;
+    if let Some(admission) = profile.resource_admission()? {
+        if budget != admission.native_observation_budget()? {
+            return Err(invalid(
+                "native observation budget differs from complete resource admission",
+            ));
+        }
+    }
+    let mut sink = crate::observation_pages::NativePageWriter::new(path, budget, profile)?;
+    let header = collect_file_metadata_with_passes(
+        request,
+        selectors,
+        single_content_pass,
+        Some(&mut sink),
+    )?;
+    let receipt = sink.finish(&header)?;
+    crate::observation_pages::PagedNativeObservation::open(path, &receipt.sha256, budget)
 }
 
 fn collect_file_metadata_with_passes(
     request: &Request,
+    selectors: &impl NativeRequestDomain,
     single_content_pass: bool,
+    mut sink: Option<&mut crate::observation_pages::NativePageWriter>,
 ) -> io::Result<Report> {
     request.validate()?;
+    if matches!(
+        request.resource_profile,
+        Some(ResourceProfile::ResourceBoundedV4(_))
+    ) && sink.is_none()
+    {
+        return Err(invalid(
+            "resource bounded source requires the actual paged observation sink",
+        ));
+    }
     let limits = request.limits();
     let volume = open(request.volume.trim_end_matches('\\'))?;
     let disk = open(&format!(r"\\.\PhysicalDrive{}", request.disk_number))?;
@@ -469,7 +611,13 @@ fn collect_file_metadata_with_passes(
     let clusters = u64le(&before.1, 16)?;
     let (bitmap_before, bitmap_before_continuation, streamed_before) =
         if request.resource_profile.is_some() {
-            let (first, summary) = crate::stream_native::bitmap_streamed(&volume, clusters)?;
+            let (first, summary) = crate::stream_native::bitmap_streamed_with_limits(
+                &volume,
+                clusters,
+                &[0; 8],
+                source_bitmap_limits(request.resource_profile, clusters)?,
+            )?
+            .into_legacy_parts();
             (first, Vec::new(), Some(summary))
         } else {
             let (first, continuation) = crate::stream_native::bitmap(&volume)?;
@@ -494,8 +642,24 @@ fn collect_file_metadata_with_passes(
     } else {
         crate::logical_hash::Budget::new(crate::logical_hash::DEFAULT_LIMIT)
     };
-    let mut security_bytes = 0;
-    for identity in &request.files {
+    let mut security_bytes = 0usize;
+    let paged_security_limit = sink
+        .as_deref()
+        .map(|sink| usize::try_from(sink.maximum_row_bytes()).unwrap_or(usize::MAX));
+    for index in 0..selectors.len() {
+        let selected = selectors.row(index)?;
+        let identity = &selected.identity;
+        let row_request;
+        let capture_request = if request.has_paged_selectors() {
+            row_request = Request {
+                files: vec![identity.clone()],
+                extent_identity_streams: selected.extent_identity_streams.clone(),
+                ..request.clone()
+            };
+            &row_request
+        } else {
+            request
+        };
         let mut logical = LogicalFile {
             identity: identity.clone(),
             before: vec![],
@@ -546,16 +710,24 @@ fn collect_file_metadata_with_passes(
         } else {
             // SAFETY: transfer the newly acquired unique file-handle ownership.
             let file = unsafe { File::from_raw_handle(handle) };
-            obs.before = Some(source_snapshot(
-                &file,
-                request.requires_directory_case_sensitivity(),
-            ));
+            obs.before = Some(match paged_security_limit {
+                Some(maximum) => source_snapshot_paged(
+                    &file,
+                    request.requires_directory_case_sensitivity(),
+                    maximum,
+                ),
+                None => source_snapshot(&file, request.requires_directory_case_sensitivity()),
+            });
+            let row_stream_budget = limits
+                .stream_evidence_bytes
+                .saturating_sub(stream_bytes)
+                .min(paged_security_limit.unwrap_or(usize::MAX));
             let (capture, hashes) = crate::stream_native::capture(
                 &file,
-                request,
+                capture_request,
                 identity,
                 &mut read_budget,
-                limits.stream_evidence_bytes.saturating_sub(stream_bytes),
+                row_stream_budget,
                 extent_context,
             );
             obs.streams_before = Some(capture);
@@ -566,12 +738,10 @@ fn collect_file_metadata_with_passes(
             } else {
                 let (capture, hashes) = crate::stream_native::capture(
                     &file,
-                    request,
+                    capture_request,
                     identity,
                     &mut read_budget,
-                    limits
-                        .stream_evidence_bytes
-                        .saturating_sub(stream_bytes)
+                    row_stream_budget
                         .saturating_sub(
                             obs.streams_before
                                 .as_ref()
@@ -583,13 +753,21 @@ fn collect_file_metadata_with_passes(
                 obs.streams_after = Some(capture);
                 logical.after = hashes;
             }
-            obs.after = Some(source_snapshot(
-                &file,
-                request.requires_directory_case_sensitivity(),
-            ));
+            obs.after = Some(match paged_security_limit {
+                Some(maximum) => source_snapshot_paged(
+                    &file,
+                    request.requires_directory_case_sensitivity(),
+                    maximum,
+                ),
+                None => source_snapshot(&file, request.requires_directory_case_sensitivity()),
+            });
             for s in [&obs.before, &obs.after].into_iter().flatten() {
-                security_bytes +=
-                    s.security.len() + s.kernel_security.as_ref().map_or(0, |q| q.bytes.len());
+                security_bytes = security_bytes
+                    .checked_add(s.security.len())
+                    .and_then(|n| {
+                        n.checked_add(s.kernel_security.as_ref().map_or(0, |q| q.bytes.len()))
+                    })
+                    .ok_or_else(|| invalid("native security evidence accounting overflow"))?;
                 stream_bytes = stream_bytes
                     .checked_add(s.extended_attribute_bytes()?)
                     .ok_or_else(|| invalid("native EA evidence budget overflow"))?;
@@ -616,13 +794,23 @@ fn collect_file_metadata_with_passes(
                 return Err(invalid("native stream evidence budget exhausted"));
             }
         }
-        files.push(obs);
-        logical_files.push(logical);
+        if let Some(sink) = sink.as_deref_mut() {
+            sink.file(&selected, &obs, &logical)?;
+        } else {
+            files.push(obs);
+            logical_files.push(logical);
+        }
     }
     let base_after = crate::stream_native::base(&volume);
     let (bitmap_after, bitmap_after_continuation, streamed_after) =
         if request.resource_profile.is_some() {
-            let (first, summary) = crate::stream_native::bitmap_streamed(&volume, clusters)?;
+            let (first, summary) = crate::stream_native::bitmap_streamed_with_limits(
+                &volume,
+                clusters,
+                &[0; 8],
+                source_bitmap_limits(request.resource_profile, clusters)?,
+            )?
+            .into_legacy_parts();
             (first, Vec::new(), Some(summary))
         } else {
             let (first, continuation) = crate::stream_native::bitmap(&volume)?;
@@ -637,11 +825,29 @@ fn collect_file_metadata_with_passes(
     if stream_bytes > limits.stream_evidence_bytes {
         return Err(invalid("native allocation evidence budget exhausted"));
     }
-    let namespace = crate::namespace_native::collect(&volume, request);
+    let namespace = if let Some(sink) = sink.as_deref_mut() {
+        let row_limit = usize::try_from(sink.maximum_row_bytes()).map_err(io::Error::other)?;
+        crate::namespace_native::collect_rows_domain(
+            &volume,
+            request,
+            selectors,
+            true,
+            Some(row_limit),
+            |row| sink.namespace(&row),
+        )?;
+        NamespaceData { files: Vec::new() }
+    } else {
+        crate::namespace_native::collect(&volume, request)
+    };
+    selectors.revalidate()?;
     privileges.restore()?;
     let after = route(&volume, &disk, request)?;
     let mut report = Report {
-        schema_version: if request.schema_version == 6 {
+        schema_version: if request.schema_version == 8 {
+            16
+        } else if request.schema_version == 7 {
+            15
+        } else if request.schema_version == 6 {
             14
         } else if request.schema_version == 5 {
             13
@@ -684,9 +890,27 @@ fn collect_file_metadata_with_passes(
         content_passes: if single_content_pass { 1 } else { 2 },
     };
     if let Some(profile) = request.resource_profile {
-        report.resources = Some(report.measured_resources(profile)?);
+        let mut resources = report.measured_resources(profile)?;
+        if let Some(sink) = sink.as_deref() {
+            let rows = sink.resources();
+            resources.security_bytes = resources
+                .security_bytes
+                .checked_add(rows.security_bytes)
+                .ok_or_else(|| invalid("native security accounting overflow"))?;
+            resources.stream_evidence_bytes = resources
+                .stream_evidence_bytes
+                .checked_add(rows.stream_evidence_bytes)
+                .ok_or_else(|| invalid("native stream accounting overflow"))?;
+            resources.namespace_evidence_bytes = resources
+                .namespace_evidence_bytes
+                .checked_add(rows.namespace_evidence_bytes)
+                .ok_or_else(|| invalid("native namespace accounting overflow"))?;
+        }
+        report.resources = Some(resources);
     }
-    if request.resource_profile.is_some() || request.requires_directory_case_sensitivity() {
+    if sink.is_none()
+        && (request.resource_profile.is_some() || request.requires_directory_case_sensitivity())
+    {
         report.validate_resources()?;
     }
     Ok(report)

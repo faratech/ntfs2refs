@@ -50,29 +50,48 @@ pub fn check_security_views(
     before: &Snapshot,
     after: &Snapshot,
 ) -> Result<SecurityView> {
+    check_security_views_with_limit(
+        sd,
+        before,
+        after,
+        crate::ntfs_security::MAX_DESCRIPTOR_BYTES as u64,
+    )
+}
+
+pub fn check_security_views_with_limit(
+    sd: &[u8],
+    before: &Snapshot,
+    after: &Snapshot,
+    maximum: u64,
+) -> Result<SecurityView> {
     for snapshot in [before, after] {
         let kernel = snapshot
             .kernel_security
             .as_ref()
             .context("kernel security view absent")?;
         ensure!(
-            kernel.native_error.is_none() && ntfs_attestation::same_security(sd, &kernel.bytes)?,
+            kernel.native_error.is_none()
+                && ntfs_attestation::same_security_with_limit(sd, &kernel.bytes, maximum)?,
             "stored/kernel security semantics differ"
         );
         ensure!(
             snapshot.security_error.is_none(),
             "API security query failed"
         );
-        crate::ntfs_security::parse_descriptor(&snapshot.security)?;
+        crate::ntfs_security::parse_descriptor_with_limit(&snapshot.security, maximum)?;
     }
     ensure!(
-        ntfs_attestation::same_security(&before.security, &after.security)?,
+        ntfs_attestation::same_security_with_limit(&before.security, &after.security, maximum)?,
         "API security projection changed"
     );
     Ok(SecurityView {
         stored_sha256: hex::encode(Sha256::digest(sd)),
         api_descriptor_hex: hex::encode(&before.security),
-        api_matches_stored: ntfs_attestation::same_security(sd, &before.security)?,
+        api_matches_stored: ntfs_attestation::same_security_with_limit(
+            sd,
+            &before.security,
+            maximum,
+        )?,
         api_stable: true,
         target_must_reproduce_both_views: true,
     })
@@ -120,9 +139,27 @@ pub fn check_metadata(
     before: &Snapshot,
     after: &Snapshot,
 ) -> Result<TimestampView> {
+    check_metadata_with_limit(
+        f,
+        serial,
+        sd,
+        before,
+        after,
+        crate::ntfs_security::MAX_DESCRIPTOR_BYTES as u64,
+    )
+}
+
+pub fn check_metadata_with_limit(
+    f: &FileInventory,
+    serial: u64,
+    sd: &[u8],
+    before: &Snapshot,
+    after: &Snapshot,
+    maximum_security_bytes: u64,
+) -> Result<TimestampView> {
     let a = ntfs_attestation::check_non_security_snapshot(f, serial, before)?;
     let b = ntfs_attestation::check_non_security_snapshot(f, serial, after)?;
-    check_security_views(sd, before, after)?;
+    check_security_views_with_limit(sd, before, after, maximum_security_bytes)?;
     let si = f
         .standard_information
         .as_ref()
@@ -145,7 +182,12 @@ pub fn check_metadata(
             .as_ref()
             .context("kernel security view absent")?;
         ensure!(
-            k.native_error.is_none() && ntfs_attestation::same_security(sd, &k.bytes)?,
+            k.native_error.is_none()
+                && ntfs_attestation::same_security_with_limit(
+                    sd,
+                    &k.bytes,
+                    maximum_security_bytes
+                )?,
             "stored/kernel security semantics differ"
         );
         ntfs_attestation::check_reparse_snapshot(f, s)?;

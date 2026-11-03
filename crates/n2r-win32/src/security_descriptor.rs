@@ -148,7 +148,7 @@ fn ace(bytes: &[u8], start: usize, acl_end: usize, acl_revision: u8) -> io::Resu
     Ok(end)
 }
 
-fn acl(bytes: &[u8], field: usize, present: bool) -> io::Result<AclLayout> {
+fn acl(bytes: &[u8], field: usize, present: bool, resource_based: bool) -> io::Result<AclLayout> {
     let offset = component_offset(bytes, field)?;
     if !present {
         if offset.is_some() {
@@ -180,7 +180,12 @@ fn acl(bytes: &[u8], field: usize, present: bool) -> io::Result<AclLayout> {
         || header[6..8] != [0; 2]
         || length < 8
         || !length.is_multiple_of(4)
-        || usize::from(count) > MAX_ACES
+        || usize::from(count)
+            > if resource_based {
+                (length - 8) / 16
+            } else {
+                MAX_ACES
+            }
     {
         return Err(invalid(
             "invalid ACL revision, size, count or reserved header",
@@ -206,7 +211,18 @@ fn acl(bytes: &[u8], field: usize, present: bool) -> io::Result<AclLayout> {
 /// or the semantics of opaque conditions/claims. Native validity and exact
 /// kernel/API descriptor readback remain independent requirements.
 pub fn validate(bytes: &[u8]) -> io::Result<Layout> {
-    if !(HEADER_BYTES..=MAX_DESCRIPTOR_BYTES).contains(&bytes.len())
+    validate_profile(bytes, MAX_DESCRIPTOR_BYTES as u64, false)
+}
+
+/// Validate the same complete relative layout inside the owning resource row.
+/// ACL counts remain bounded by each u16 ACL length and the supported minimum
+/// 16-byte ACE shape. No source provenance or native restore is implied.
+pub fn validate_with_limit(bytes: &[u8], maximum_bytes: u64) -> io::Result<Layout> {
+    validate_profile(bytes, maximum_bytes, true)
+}
+fn validate_profile(bytes: &[u8], maximum_bytes: u64, resource_based: bool) -> io::Result<Layout> {
+    if bytes.len() < HEADER_BYTES
+        || bytes.len() as u64 > maximum_bytes
         || !bytes.len().is_multiple_of(4)
         || bytes[0] != 1
     {
@@ -226,8 +242,8 @@ pub fn validate(bytes: &[u8]) -> io::Result<Layout> {
     let group = component_offset(bytes, 8)?
         .map(|offset| sid(bytes, offset, bytes.len()))
         .transpose()?;
-    let sacl = acl(bytes, 12, control & SE_SACL_PRESENT != 0)?;
-    let dacl = acl(bytes, 16, control & SE_DACL_PRESENT != 0)?;
+    let sacl = acl(bytes, 12, control & SE_SACL_PRESENT != 0, resource_based)?;
+    let dacl = acl(bytes, 16, control & SE_DACL_PRESENT != 0, resource_based)?;
     let mut minimum_length = HEADER_BYTES;
     for range in [owner, group].into_iter().flatten() {
         minimum_length = minimum_length.max(range.offset + range.length);

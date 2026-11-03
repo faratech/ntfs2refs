@@ -9,6 +9,8 @@ use crate::{
 #[cfg(windows)]
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+pub(crate) mod paged;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
@@ -74,6 +76,7 @@ pub enum ResourceProfile {
     ExperimentalLargeTreeV1,
     ExperimentalStreamingTreeV2,
     ExperimentalObjectEnvelopeV3(Option<n2r_win32::tree_resources::CountAdmission>),
+    ResourceBoundedV4(Option<n2r_win32::tree_resources::SourceResourceAdmission>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +100,8 @@ impl ResourceProfile {
                 Self::AlphaV1 => geometry.cluster_size == 4096,
                 Self::ExperimentalLargeTreeV1
                 | Self::ExperimentalStreamingTreeV2
-                | Self::ExperimentalObjectEnvelopeV3(_) => {
+                | Self::ExperimentalObjectEnvelopeV3(_)
+                | Self::ResourceBoundedV4(_) => {
                     geometry.cluster_size >= 4096
                         && crate::ntfs_index::supports_cluster_size(geometry.cluster_size)
                 }
@@ -116,10 +120,13 @@ impl ResourceProfile {
             Self::ExperimentalObjectEnvelopeV3(admission) => Some(
                 n2r_win32::attestation::ResourceProfile::ExperimentalObjectEnvelopeV3(admission),
             ),
+            Self::ResourceBoundedV4(admission) => Some(
+                n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(admission),
+            ),
         }
     }
 
-    pub const fn limits(self) -> ResourceLimits {
+    pub fn limits(self) -> ResourceLimits {
         match self {
             Self::AlphaV1 => ResourceLimits {
                 maximum_files: MAX_FILES,
@@ -151,6 +158,22 @@ impl ResourceProfile {
                 maximum_logical_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
                 maximum_stream_bytes: n2r_win32::general_layout::MAX_EXPERIMENTAL_PARTITION_BYTES,
             },
+            Self::ResourceBoundedV4(admission) => {
+                let Some(admission) = admission.filter(|value| value.validate().is_ok()) else {
+                    return ResourceLimits {
+                        maximum_files: 0,
+                        maximum_directories: 0,
+                        maximum_logical_bytes: 0,
+                        maximum_stream_bytes: 0,
+                    };
+                };
+                ResourceLimits {
+                    maximum_files: usize::try_from(admission.files).unwrap_or(0),
+                    maximum_directories: usize::try_from(admission.directories).unwrap_or(0),
+                    maximum_logical_bytes: i64::MAX as u64,
+                    maximum_stream_bytes: i64::MAX as u64,
+                }
+            }
         }
     }
 
@@ -160,6 +183,7 @@ impl ResourceProfile {
             Self::ExperimentalLargeTreeV1 => "ordinary-data-tree-large-v1",
             Self::ExperimentalStreamingTreeV2 => "ordinary-data-tree-streaming-v2",
             Self::ExperimentalObjectEnvelopeV3(_) => "ordinary-data-tree-object-envelope-v3",
+            Self::ResourceBoundedV4(_) => "ordinary-data-tree-resource-bounded-v4",
         }
     }
 
@@ -171,13 +195,16 @@ impl ResourceProfile {
             Self::ExperimentalObjectEnvelopeV3(_) => {
                 "native-ordinary-tree-shadow-object-envelope-v3"
             }
+            Self::ResourceBoundedV4(_) => "native-ordinary-tree-shadow-resource-bounded-v4",
         }
     }
 
     pub const fn is_streaming(self) -> bool {
         matches!(
             self,
-            Self::ExperimentalStreamingTreeV2 | Self::ExperimentalObjectEnvelopeV3(_)
+            Self::ExperimentalStreamingTreeV2
+                | Self::ExperimentalObjectEnvelopeV3(_)
+                | Self::ResourceBoundedV4(_)
         )
     }
     pub const fn is_envelope(self) -> bool {
@@ -185,6 +212,12 @@ impl ResourceProfile {
     }
     pub fn maximum_objects(self) -> usize {
         match self {
+            Self::ResourceBoundedV4(Some(admission)) if admission.validate().is_ok() => admission
+                .objects()
+                .ok()
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0),
+            Self::ResourceBoundedV4(_) => 0,
             Self::ExperimentalObjectEnvelopeV3(Some(a)) if a.requires_paged_metadata() => {
                 (a.object_slots as usize).min(n2r_win32::tree_resources::RAW_IDENTITIES)
             }
@@ -199,6 +232,17 @@ impl ResourceProfile {
         Ok(self
             .native_profile()
             .map(n2r_win32::attestation::ResourceProfile::count_admission)
+            .transpose()?
+            .flatten())
+    }
+    /// Resource facts are not write authority. Fresh source admission also
+    /// requires the actual complete raw/native page owners from the same lease.
+    pub fn resource_admission(
+        self,
+    ) -> Result<Option<n2r_win32::tree_resources::SourceResourceAdmission>> {
+        Ok(self
+            .native_profile()
+            .map(n2r_win32::attestation::ResourceProfile::resource_admission)
             .transpose()?
             .flatten())
     }
@@ -1029,6 +1073,15 @@ pub(crate) fn user_paths(
 /// Recognition only identifies the replacement obligation; it does not prove
 /// clean state, permit dropping allocations, or authorize replacement.
 pub fn internal_role(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<String> {
+    internal_role_with_path(f, || path(raw, f))
+}
+
+/// Shared exact identity/attribute rules. Only path lookup differs between the
+/// historical inline inventory and the complete paged source domain.
+fn internal_role_with_path(
+    f: &FileInventory,
+    source_path: impl FnOnce() -> Option<Vec<String>>,
+) -> Option<String> {
     if crate::ntfs_reparse::file_point(f).ok()?.is_some() {
         return None;
     }
@@ -1065,7 +1118,7 @@ pub fn internal_role(raw: &ntfs::NtfsInspection, f: &FileInventory) -> Option<St
             }))
         .then(|| "reserved_mft_slot".into());
     }
-    let p = path(raw, f)?;
+    let p = source_path()?;
     let canonical = match f.record_number {
         0 => "$MFT",
         1 => "$MFTMirr",
@@ -1746,6 +1799,11 @@ pub(crate) fn bind_large_native_profile(
         }
         Some(NativeProfile::ExperimentalObjectEnvelopeV3(admission)) => {
             ResourceProfile::ExperimentalObjectEnvelopeV3(admission)
+        }
+        Some(NativeProfile::ResourceBoundedV4(_)) => {
+            anyhow::bail!(
+                "resource-bounded source admission requires the actual paged native lease"
+            )
         }
         None => anyhow::bail!("expanded source profile requires native resource evidence"),
     };

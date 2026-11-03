@@ -1,6 +1,8 @@
 //! Shared bounded NTFS index structure reader. Key semantics live in callers.
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(windows)]
+pub mod paged;
 pub const MAX_INDEX_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 16_384;
 const MAX_DEPTH: usize = 64;

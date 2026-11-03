@@ -4,7 +4,7 @@
 //! Layout follows Microsoft's ATTRIBUTE_LIST_ENTRY fields: the attribute
 //! instance at +24 is local to the referenced record.
 use crate::ntfs_inspect::{AttributeInventory, NtfsGeometry};
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,6 +13,147 @@ pub const MAX_LIST_BYTES: usize = 65_536;
 pub const MAX_EXTENSION_RECORDS: usize = 1024;
 pub const MAX_RUNS: usize = 1024;
 const RECORD_MASK: u64 = 0x0000_ffff_ffff_ffff;
+
+/// Per-assembly working bounds. Legacy entry points retain their historical
+/// profile; resource owners derive these values from an admitted RAM window.
+#[derive(Clone, Copy, Debug)]
+pub struct AssemblyLimits {
+    pub list_bytes: usize,
+    pub extension_records: usize,
+    pub runs: usize,
+    pub raw_attributes: usize,
+    pub streams: usize,
+    pub mft_records: u64,
+    pub mft_bitmap_bytes: u64,
+    pub working_bytes: Option<u64>,
+}
+impl AssemblyLimits {
+    const LEGACY: Self = Self {
+        list_bytes: MAX_LIST_BYTES,
+        extension_records: MAX_EXTENSION_RECORDS,
+        runs: MAX_RUNS,
+        raw_attributes: MAX_LIST_BYTES / 32 + 1,
+        streams: n2r_win32::stream_layout::MAX_STREAMS,
+        mft_records: crate::ntfs_inspect::MAX_MFT_RECORDS,
+        mft_bitmap_bytes: crate::ntfs_inspect::MAX_MFT_RECORDS.div_ceil(8),
+        working_bytes: None,
+    };
+    pub fn from_working_bytes(bytes: u64, record_bytes: u32) -> Result<Self> {
+        ensure!(record_bytes > 0, "zero physical record working bytes");
+        let list_bytes = usize::try_from(bytes / 16)?;
+        let extension_records = usize::try_from(bytes / (u64::from(record_bytes) * 16))?;
+        let runs = usize::try_from(
+            bytes / (std::mem::size_of::<crate::ntfs_inspect::Extent>() as u64 * 16),
+        )?;
+        let raw_attributes =
+            usize::try_from(bytes / (std::mem::size_of::<AttributeInventory>() as u64 * 16))?;
+        ensure!(
+            list_bytes >= 32 && extension_records > 0 && runs > 0 && raw_attributes > 1,
+            "assembly RAM window cannot represent one complete physical record"
+        );
+        Ok(Self {
+            list_bytes,
+            extension_records,
+            runs,
+            raw_attributes,
+            streams: raw_attributes,
+            mft_records: RECORD_MASK,
+            mft_bitmap_bytes: u64::MAX,
+            working_bytes: Some(bytes),
+        })
+    }
+}
+
+fn validate_working_assembly(
+    base: &RecordEvidence,
+    extensions: &[RecordEvidence],
+    list_bytes: usize,
+    limits: AssemblyLimits,
+) -> Result<()> {
+    let Some(maximum) = limits.working_bytes else {
+        return Ok(());
+    };
+    let mut bytes = (list_bytes as u64)
+        .checked_mul(8)
+        .context("list working RAM overflow")?;
+    for record in std::iter::once(base).chain(extensions) {
+        bytes = bytes
+            .checked_add(std::mem::size_of::<RecordEvidence>() as u64 * 8)
+            .and_then(|n| n.checked_add(record.raw_record_sha256.capacity() as u64 * 8))
+            .context("assembly record working RAM overflow")?;
+        for attribute in &record.attributes {
+            let heap =
+                (std::mem::size_of::<AttributeInventory>() as u64)
+                    .checked_add((attribute.name_utf16.capacity() as u64) * 2)
+                    .and_then(|n| {
+                        n.checked_add((attribute.extents.capacity() as u64).checked_mul(
+                            std::mem::size_of::<crate::ntfs_inspect::Extent>() as u64,
+                        )?)
+                    })
+                    .and_then(|n| {
+                        n.checked_add(
+                            attribute
+                                .resident_sha256
+                                .as_ref()
+                                .map_or(0, |s| s.capacity() as u64),
+                        )
+                    })
+                    .and_then(|n| {
+                        n.checked_add(
+                            attribute
+                                .resident_metadata_hex
+                                .as_ref()
+                                .map_or(0, |s| s.capacity() as u64),
+                        )
+                    })
+                    .context("attribute working RAM overflow")?;
+            // Raw/canonical copies, resident bytes and origin/order/coverage
+            // indexes coexist during assembly and replay inside this lease.
+            bytes = bytes
+                .checked_add(heap.checked_mul(16).context("assembly RAM overflow")?)
+                .context("assembly RAM overflow")?;
+        }
+    }
+    ensure!(
+        bytes <= maximum,
+        "complete assembly exceeds admitted working RAM"
+    );
+    Ok(())
+}
+
+trait BitmapInput {
+    fn byte_len(&self) -> u64;
+    fn allocated(&self, record: u64) -> Result<bool>;
+    fn tail_zero(&self, records: u64) -> Result<()>;
+    fn resident_matches(&self, digest: &str) -> Result<bool>;
+    fn retained_hex(&self) -> Option<String>;
+}
+struct SliceBitmap<'a>(&'a [u8]);
+impl BitmapInput for SliceBitmap<'_> {
+    fn byte_len(&self) -> u64 {
+        self.0.len() as u64
+    }
+    fn allocated(&self, record: u64) -> Result<bool> {
+        Ok(self
+            .0
+            .get(usize::try_from(record / 8)?)
+            .is_some_and(|b| b & (1 << (record % 8)) != 0))
+    }
+    fn tail_zero(&self, records: u64) -> Result<()> {
+        ensure!(
+            (usize::try_from(records)?..self.0.len() * 8)
+                .all(|bit| self.0[bit / 8] & (1 << (bit % 8)) == 0),
+            "MFT bitmap allocates records beyond EOF"
+        );
+        Ok(())
+    }
+    fn resident_matches(&self, digest: &str) -> Result<bool> {
+        Ok(resident_digest_matches(digest, self.0))
+    }
+    fn retained_hex(&self) -> Option<String> {
+        Some(hex::encode(self.0))
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -97,8 +238,12 @@ pub fn resident_digest_matches(expected: &str, bytes: &[u8]) -> bool {
 /// Decode a complete unnamed list. Padding within each entry is retained by
 /// the assembly ledger, while trailing bytes outside entries are not accepted.
 pub fn parse(bytes: &[u8]) -> Result<Vec<Entry>> {
+    parse_with_limit(bytes, MAX_LIST_BYTES)
+}
+
+pub fn parse_with_limit(bytes: &[u8], maximum: usize) -> Result<Vec<Entry>> {
     ensure!(
-        !bytes.is_empty() && bytes.len() <= MAX_LIST_BYTES,
+        !bytes.is_empty() && bytes.len() <= maximum,
         "attribute-list byte bound exceeded or list is empty"
     );
     let mut entries = Vec::new();
@@ -201,7 +346,7 @@ pub fn validate_list_storage(
     attribute: &AttributeInventory,
     geometry: &NtfsGeometry,
 ) -> Result<()> {
-    validate_initialized_metadata(attribute, geometry, 0x20, MAX_LIST_BYTES as u64)
+    validate_initialized_metadata(attribute, geometry, 0x20, MAX_LIST_BYTES as u64, MAX_RUNS)
 }
 
 pub fn validate_mft_bitmap_storage(
@@ -218,6 +363,7 @@ pub fn validate_mft_bitmap_storage(
         geometry,
         0xb0,
         crate::ntfs_inspect::MAX_MFT_RECORDS.div_ceil(8),
+        MAX_RUNS,
     )?;
     ensure!(
         attribute.logical_size >= records.div_ceil(8),
@@ -231,6 +377,7 @@ fn validate_initialized_metadata(
     geometry: &NtfsGeometry,
     kind: u32,
     maximum: u64,
+    maximum_runs: usize,
 ) -> Result<()> {
     ensure!(
         attribute.type_code == kind
@@ -272,7 +419,7 @@ fn validate_initialized_metadata(
             && attribute.resident_metadata_hex.is_none()
             && attribute.allocated_size == rounded
             && !attribute.extents.is_empty()
-            && attribute.extents.len() <= MAX_RUNS,
+            && attribute.extents.len() <= maximum_runs,
         "nonresident attribute-list allocation/form exceeds profile"
     );
     let mut next = 0u64;
@@ -318,7 +465,14 @@ pub fn assemble(
     list_value: &[u8],
     geometry: &NtfsGeometry,
 ) -> Result<(Vec<AttributeInventory>, Assembly)> {
-    assemble_profile(base, extensions, list_value, geometry, None)
+    assemble_profile(
+        base,
+        extensions,
+        list_value,
+        geometry,
+        None,
+        AssemblyLimits::LEGACY,
+    )
 }
 
 pub fn assemble_mft(
@@ -328,7 +482,14 @@ pub fn assemble_mft(
     bitmap: &[u8],
     geometry: &NtfsGeometry,
 ) -> Result<(Vec<AttributeInventory>, Assembly)> {
-    assemble_profile(base, extensions, list_value, geometry, Some(bitmap))
+    assemble_profile(
+        base,
+        extensions,
+        list_value,
+        geometry,
+        Some(&SliceBitmap(bitmap)),
+        AssemblyLimits::LEGACY,
+    )
 }
 
 fn assemble_profile(
@@ -336,14 +497,16 @@ fn assemble_profile(
     extensions: Vec<RecordEvidence>,
     list_value: &[u8],
     geometry: &NtfsGeometry,
-    mft_bitmap: Option<&[u8]>,
+    mft_bitmap: Option<&dyn BitmapInput>,
+    limits: AssemblyLimits,
 ) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    validate_working_assembly(&base, &extensions, list_value.len(), limits)?;
     let mft = mft_bitmap.is_some();
     ensure!(
-        !extensions.is_empty() && extensions.len() <= MAX_EXTENSION_RECORDS,
+        !extensions.is_empty() && extensions.len() <= limits.extension_records,
         "extension record count is empty or exceeds bound"
     );
-    let entries = parse(list_value)?;
+    let entries = parse_with_limit(list_value, limits.list_bytes)?;
     ensure!(
         if mft {
             base.attributes.len() == 5
@@ -376,7 +539,13 @@ fn assemble_profile(
                 "legacy security must be resident and standalone"
             ),
             0xb0 if mft => {} // Validated against the actual MFT domain below.
-            0x20 => validate_list_storage(attribute, geometry)?,
+            0x20 => validate_initialized_metadata(
+                attribute,
+                geometry,
+                0x20,
+                limits.list_bytes as u64,
+                limits.runs,
+            )?,
             0x80 => plain_data(attribute)?,
             _ => anyhow::bail!("unsupported extra base attribute"),
         }
@@ -408,30 +577,30 @@ fn assemble_profile(
         );
         let records = data.logical_size / u64::from(geometry.file_record_size);
         let attribute = types.get(&0xb0).context("MFT base bitmap missing")?;
-        validate_mft_bitmap_storage(attribute, geometry, records)?;
         ensure!(
-            bitmap.len() as u64 == attribute.logical_size && bitmap[0] & 1 != 0,
+            records <= limits.mft_records && attribute.logical_size <= limits.mft_bitmap_bytes,
+            "MFT record/bitmap exceeds the selected assembly profile"
+        );
+        validate_bitmap_resource(attribute, geometry, records, limits.runs)?;
+        ensure!(
+            bitmap.byte_len() == attribute.logical_size && bitmap.allocated(0)?,
             "MFT bitmap length or base allocation differs"
         );
-        ensure!(
-            (records as usize..bitmap.len() * 8).all(|bit| bitmap[bit / 8] & (1 << (bit % 8)) == 0),
-            "MFT bitmap allocates records beyond EOF"
-        );
+        bitmap.tail_zero(records)?;
         if attribute.resident {
             ensure!(
                 attribute
                     .resident_sha256
                     .as_deref()
-                    .is_some_and(|hash| resident_digest_matches(hash, bitmap)),
+                    .map(|hash| bitmap.resident_matches(hash))
+                    .transpose()?
+                    .unwrap_or(false),
                 "MFT resident bitmap bytes changed"
             );
         }
         for extension in &extensions {
             ensure!(
-                extension.record_number < records
-                    && bitmap[extension.record_number as usize / 8]
-                        & (1 << (extension.record_number % 8))
-                        != 0,
+                extension.record_number < records && bitmap.allocated(extension.record_number)?,
                 "MFT extension record is unallocated"
             );
         }
@@ -538,7 +707,7 @@ fn assemble_profile(
         );
         for extent in &segment.extents {
             ensure!(
-                extents.len() < MAX_RUNS,
+                extents.len() < limits.runs,
                 "assembled DATA run budget exceeded"
             );
             ensure!(
@@ -613,11 +782,7 @@ fn assemble_profile(
         canonical,
         Assembly {
             schema_version: if mft {
-                if list.resident {
-                    3
-                } else {
-                    4
-                }
+                if list.resident { 3 } else { 4 }
             } else if list.resident {
                 1
             } else {
@@ -626,7 +791,7 @@ fn assemble_profile(
             base,
             extensions,
             list_value_hex: hex::encode(list_value),
-            mft_bitmap_hex: mft_bitmap.map(hex::encode),
+            mft_bitmap_hex: mft_bitmap.and_then(BitmapInput::retained_hex),
             canonical_origins: None,
         },
     ))
@@ -637,8 +802,12 @@ fn assemble_profile(
 /// checked here; stream coverage is checked by name and VCN during assembly.
 /// We do not substitute a guessed Unicode comparator for NTFS's $UpCase table.
 pub fn parse_stream_entries(bytes: &[u8]) -> Result<Vec<StreamEntry>> {
+    parse_stream_entries_with_limit(bytes, MAX_LIST_BYTES)
+}
+
+pub fn parse_stream_entries_with_limit(bytes: &[u8], maximum: usize) -> Result<Vec<StreamEntry>> {
     ensure!(
-        !bytes.is_empty() && bytes.len() <= MAX_LIST_BYTES,
+        !bytes.is_empty() && bytes.len() <= maximum,
         "ordinary attribute-list byte bound exceeded or list is empty"
     );
     let mut entries = Vec::new();
@@ -783,13 +952,30 @@ pub fn assemble_streams(
     list_value: &[u8],
     geometry: &NtfsGeometry,
 ) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    assemble_streams_resource(
+        base,
+        extensions,
+        list_value,
+        geometry,
+        AssemblyLimits::LEGACY,
+    )
+}
+
+pub fn assemble_streams_resource(
+    base: RecordEvidence,
+    extensions: Vec<RecordEvidence>,
+    list_value: &[u8],
+    geometry: &NtfsGeometry,
+    limits: AssemblyLimits,
+) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    validate_working_assembly(&base, &extensions, list_value.len(), limits)?;
     let cluster = u64::from(geometry.cluster_size);
     ensure!(
         cluster > 0 && cluster.is_power_of_two() && geometry.volume_size > 0,
         "invalid ordinary assembly geometry"
     );
     ensure!(
-        extensions.len() <= MAX_EXTENSION_RECORDS,
+        extensions.len() <= limits.extension_records,
         "ordinary extension record count exceeds bound"
     );
     stream_record_identity(&base)?;
@@ -816,7 +1002,7 @@ pub fn assemble_streams(
         })
         .context("ordinary raw attribute count overflow")?;
     ensure!(
-        raw_count > 1 && raw_count <= MAX_LIST_BYTES / 32 + 1,
+        raw_count > 1 && raw_count <= limits.raw_attributes,
         "ordinary raw attribute count exceeds list capacity"
     );
 
@@ -851,7 +1037,13 @@ pub fn assemble_streams(
                             && list.replace(attribute).is_none(),
                         "ordinary list must be a single base-record attribute"
                     );
-                    validate_list_storage(attribute, geometry)?;
+                    validate_initialized_metadata(
+                        attribute,
+                        geometry,
+                        0x20,
+                        limits.list_bytes as u64,
+                        limits.runs,
+                    )?;
                 }
                 0x10 | 0x30 | 0x50 => {
                     ordinary_resident(attribute, true)?;
@@ -891,7 +1083,7 @@ pub fn assemble_streams(
             && name_count > 0
             && security_count <= 1
             && streams.contains_key(&Vec::new())
-            && streams.len() <= n2r_win32::stream_layout::MAX_STREAMS,
+            && streams.len() <= limits.streams,
         "ordinary semantic metadata or DATA stream inventory differs"
     );
     let list = list.context("ordinary base attribute list is absent")?;
@@ -911,7 +1103,7 @@ pub fn assemble_streams(
         );
     }
     let mut listed = BTreeSet::new();
-    for entry in parse_stream_entries(list_value)? {
+    for entry in parse_stream_entries_with_limit(list_value, limits.list_bytes)? {
         let origin = (entry.record_number, entry.instance);
         let (sequence, attribute) = attributes
             .get(&origin)
@@ -969,7 +1161,7 @@ pub fn assemble_streams(
                         .checked_add(1)
                         .context("ordinary DATA run count overflow")?;
                     ensure!(
-                        total_runs <= MAX_RUNS
+                        total_runs <= limits.runs
                             && extent.logical_offset == next
                             && extent.length > 0
                             && extent.length.is_multiple_of(cluster),
@@ -1059,4 +1251,115 @@ pub fn assemble_streams(
             canonical_origins: Some(origins),
         },
     ))
+}
+
+/// Resource-bound list validation; the caller owns the admitted working RAM.
+pub fn validate_list_resource(
+    attribute: &AttributeInventory,
+    geometry: &NtfsGeometry,
+    limits: AssemblyLimits,
+) -> Result<()> {
+    validate_initialized_metadata(
+        attribute,
+        geometry,
+        0x20,
+        limits.list_bytes as u64,
+        limits.runs,
+    )
+}
+pub fn validate_bitmap_resource(
+    attribute: &AttributeInventory,
+    geometry: &NtfsGeometry,
+    records: u64,
+    maximum_runs: usize,
+) -> Result<()> {
+    ensure!(
+        records > 6 && records <= RECORD_MASK,
+        "invalid intrinsic MFT record domain"
+    );
+    validate_initialized_metadata(
+        attribute,
+        geometry,
+        0xb0,
+        attribute.logical_size,
+        maximum_runs,
+    )?;
+    ensure!(
+        attribute.logical_size >= records.div_ceil(8),
+        "MFT bitmap is too short"
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+struct RangeBitmap<'a>(&'a dyn crate::ntfs_inspect::SourceMetadataRange);
+#[cfg(windows)]
+impl BitmapInput for RangeBitmap<'_> {
+    fn byte_len(&self) -> u64 {
+        self.0.byte_len()
+    }
+    fn allocated(&self, record: u64) -> Result<bool> {
+        if record / 8 >= self.byte_len() {
+            return Ok(false);
+        }
+        let mut byte = [0];
+        self.0.read_exact_at(record / 8, &mut byte)?;
+        Ok(byte[0] & (1 << (record % 8)) != 0)
+    }
+    fn tail_zero(&self, records: u64) -> Result<()> {
+        ensure!(
+            self.byte_len() >= records.div_ceil(8),
+            "short streamed MFT bitmap"
+        );
+        let mut offset = records / 8;
+        let mut buffer = [0u8; 4096];
+        while offset < self.byte_len() {
+            let count = usize::try_from((self.byte_len() - offset).min(buffer.len() as u64))?;
+            self.0.read_exact_at(offset, &mut buffer[..count])?;
+            for (i, byte) in buffer[..count].iter().enumerate() {
+                let bit = (offset + i as u64) * 8;
+                let allowed = if bit >= records {
+                    0
+                } else {
+                    (1u8 << (records - bit)) - 1
+                };
+                ensure!(
+                    *byte & !allowed == 0,
+                    "MFT bitmap allocates records beyond EOF"
+                );
+            }
+            offset += count as u64;
+        }
+        Ok(())
+    }
+    fn resident_matches(&self, digest: &str) -> Result<bool> {
+        let mut bytes = vec![0; usize::try_from(self.byte_len())?];
+        self.0.read_exact_at(0, &mut bytes)?;
+        Ok(resident_digest_matches(digest, &bytes))
+    }
+    fn retained_hex(&self) -> Option<String> {
+        None
+    }
+}
+#[cfg(windows)]
+pub fn assemble_mft_resource(
+    base: RecordEvidence,
+    extensions: Vec<RecordEvidence>,
+    list_value: &[u8],
+    bitmap: &dyn crate::ntfs_inspect::SourceMetadataRange,
+    geometry: &NtfsGeometry,
+    limits: AssemblyLimits,
+) -> Result<(Vec<AttributeInventory>, Assembly)> {
+    let (canonical, mut ledger) = assemble_profile(
+        base,
+        extensions,
+        list_value,
+        geometry,
+        Some(&RangeBitmap(bitmap)),
+        limits,
+    )?;
+    // This is a working row, never replayed as legacy schema 3/4 evidence.
+    // Its complete bitmap is pinned separately by the paged resolver.
+    ledger.schema_version = 7;
+    Ok((canonical, ledger))
 }

@@ -27,6 +27,17 @@ pub trait InputDomain {
             "native constructor requires authenticated paged metadata ownership",
         ))
     }
+    /// ResourceBoundedV4 additionally requires the real owner to have checked
+    /// each object's decode size and its retained indexes against the admitted
+    /// RAM contract before decoding. A legacy page-budget flag cannot do this.
+    fn require_resource_metadata(
+        &self,
+        _admission: crate::tree_resources::SourceResourceAdmission,
+    ) -> io::Result<()> {
+        Err(io::Error::other(
+            "native resource construction requires bounded typed page ownership",
+        ))
+    }
     fn is_empty(&self) -> bool {
         self.len() == 0
     }

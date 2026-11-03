@@ -77,7 +77,39 @@ fn parse_page(bytes: &[u8]) -> io::Result<Vec<Run>> {
     }
     Ok(runs)
 }
-#[derive(Default)]
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub max_returned_bytes: usize,
+    pub max_extents: usize,
+    pub max_pages: usize,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_returned_bytes: MAX_RETURNED_BYTES,
+            max_extents: MAX_COMPLETE_EXTENTS,
+            max_pages: MAX_PAGES,
+        }
+    }
+}
+impl Limits {
+    pub fn for_resource_bytes(bytes: usize) -> io::Result<Self> {
+        let per_page = std::mem::size_of::<PageProof>()
+            .checked_add(std::mem::size_of::<IoctlQuery>())
+            .and_then(|n| n.checked_add(8 + 8 + 64))
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| bad("retrieval page resource accounting overflow"))?;
+        if bytes / 4 < 32 || bytes / per_page == 0 || bytes / (4 * std::mem::size_of::<Run>()) == 0
+        {
+            return Err(bad("retrieval resource row has no complete response space"));
+        }
+        Ok(Self {
+            max_returned_bytes: bytes / 4,
+            max_extents: (bytes / (4 * std::mem::size_of::<Run>())).min(u32::MAX as usize),
+            max_pages: bytes / per_page,
+        })
+    }
+}
 pub struct Assembler {
     runs: Vec<Run>,
     covered: u64,
@@ -85,16 +117,40 @@ pub struct Assembler {
     returned: usize,
     complete: bool,
     poisoned: bool,
+    limits: Limits,
+}
+impl Default for Assembler {
+    fn default() -> Self {
+        Self::with_limits(Limits::default()).expect("fixed retrieval limits")
+    }
 }
 impl Assembler {
+    pub fn with_limits(limits: Limits) -> io::Result<Self> {
+        if limits.max_returned_bytes < 32
+            || limits.max_extents == 0
+            || limits.max_extents > u32::MAX as usize
+            || limits.max_pages == 0
+        {
+            return Err(bad("invalid retrieval resource budgets"));
+        }
+        Ok(Self {
+            runs: Vec::new(),
+            covered: 0,
+            pages: Vec::new(),
+            returned: 0,
+            complete: false,
+            poisoned: false,
+            limits,
+        })
+    }
     pub fn next_vcn(&self) -> u64 {
         self.covered
     }
     pub fn response_capacity(&self) -> usize {
-        if self.complete || self.poisoned || self.pages.len() >= MAX_PAGES {
+        if self.complete || self.poisoned || self.pages.len() >= self.limits.max_pages {
             return 0;
         }
-        let n = (MAX_RETURNED_BYTES - self.returned).min(PAGE_CAPACITY);
+        let n = (self.limits.max_returned_bytes - self.returned).min(PAGE_CAPACITY);
         if n < 32 { 0 } else { 16 + (n - 16) / 16 * 16 }
     }
     pub fn push(&mut self, query: &IoctlQuery) -> io::Result<bool> {
@@ -109,13 +165,13 @@ impl Assembler {
     }
     fn push_page(&mut self, query: &IoctlQuery) -> io::Result<bool> {
         if self.complete
-            || self.pages.len() >= MAX_PAGES
+            || self.pages.len() >= self.limits.max_pages
             || query.code != stream_layout::GET_RETRIEVAL
             || query.input != self.covered.to_le_bytes()
             || self
                 .returned
                 .checked_add(query.bytes.len())
-                .is_none_or(|n| n > MAX_RETURNED_BYTES)
+                .is_none_or(|n| n > self.limits.max_returned_bytes)
             || query.native_error.is_some_and(|e| e != MORE_DATA)
         {
             return Err(bad("retrieval continuation, status or budget differs"));
@@ -165,7 +221,7 @@ impl Assembler {
                 if merge {
                     self.runs.last_mut().unwrap().clusters += appended.clusters;
                 } else {
-                    if self.runs.len() >= MAX_COMPLETE_EXTENTS {
+                    if self.runs.len() >= self.limits.max_extents {
                         return Err(bad("complete retrieval extent budget exceeded"));
                     };
                     self.runs.push(appended);
@@ -188,8 +244,18 @@ impl Assembler {
         if self.poisoned || !self.complete || self.runs.is_empty() {
             return Err(bad("retrieval capture is incomplete"));
         }
-        let mut canonical = Vec::with_capacity(16 + self.runs.len() * 16);
-        canonical.extend_from_slice(&(self.runs.len() as u32).to_le_bytes());
+        let count = u32::try_from(self.runs.len()).map_err(io::Error::other)?;
+        let bytes = self
+            .runs
+            .len()
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(16))
+            .ok_or_else(|| bad("canonical retrieval size overflow"))?;
+        let mut canonical = Vec::new();
+        canonical
+            .try_reserve_exact(bytes)
+            .map_err(io::Error::other)?;
+        canonical.extend_from_slice(&count.to_le_bytes());
         canonical.extend_from_slice(&[0; 12]);
         for run in &self.runs {
             canonical.extend_from_slice(&end(run).to_le_bytes());
@@ -210,7 +276,14 @@ impl Assembler {
     }
 }
 pub fn assemble_queries(first: &IoctlQuery, continuation: &[IoctlQuery]) -> io::Result<Capture> {
-    let mut assembler = Assembler::default();
+    assemble_queries_with_limits(first, continuation, Limits::default())
+}
+pub fn assemble_queries_with_limits(
+    first: &IoctlQuery,
+    continuation: &[IoctlQuery],
+    limits: Limits,
+) -> io::Result<Capture> {
+    let mut assembler = Assembler::with_limits(limits)?;
     for query in std::iter::once(first).chain(continuation) {
         assembler.push(query)?;
     }

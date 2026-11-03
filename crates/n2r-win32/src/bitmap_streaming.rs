@@ -79,9 +79,24 @@ impl Summary {
     pub fn validate_source_first(&self, first: &IoctlQuery) -> io::Result<()> {
         self.validate_first_page(first, &[0; 8])
     }
+    pub fn validate_source_first_with_limits(
+        &self,
+        first: &IoctlQuery,
+        limits: Limits,
+    ) -> io::Result<()> {
+        self.validate_first_page_with_limits(first, &[0; 8], limits)
+    }
 
     pub fn validate_first_page(&self, first: &IoctlQuery, template: &[u8]) -> io::Result<()> {
         let limits = source_limits(self.cluster_count)?;
+        self.validate_first_page_with_limits(first, template, limits)
+    }
+    pub fn validate_first_page_with_limits(
+        &self,
+        first: &IoctlQuery,
+        template: &[u8],
+        limits: Limits,
+    ) -> io::Result<()> {
         self.validate(self.cluster_count, limits)?;
         let mut collector = Collector::new(self.cluster_count, limits)?;
         let complete = collector.push(first, template, &mut |_| Ok(()))?;
@@ -199,6 +214,26 @@ pub fn source_limits(expected_clusters: u64) -> io::Result<Limits> {
         max_pages,
         max_returned_bytes,
         max_allocated_ranges: 65_536,
+    })
+}
+/// No image-sized bitmap allocation is admitted here. Native pages remain
+/// fixed windows; only maximal allocation intervals occupy the explicit row
+/// budget. Strict byte progress bounds calls by the actual bitmap byte domain.
+pub fn resource_source_limits(expected_clusters: u64, row_bytes: u64) -> io::Result<Limits> {
+    if expected_clusters == 0 || expected_clusters > i64::MAX as u64 {
+        return Err(bad("invalid resource bitmap geometry"));
+    }
+    let max_allocated_ranges =
+        usize::try_from(row_bytes / (2 * std::mem::size_of::<ClusterRange>() as u64))
+            .map_err(io::Error::other)?;
+    if max_allocated_ranges == 0 {
+        return Err(bad("bitmap row resource has no allocation interval space"));
+    }
+    Ok(Limits {
+        max_bitmap_bytes: expected_clusters.div_ceil(8),
+        max_pages: expected_clusters.div_ceil(8),
+        max_returned_bytes: u64::MAX,
+        max_allocated_ranges,
     })
 }
 
@@ -367,8 +402,9 @@ impl Collector {
             .take()
             .ok_or_else(|| bad("owned first bitmap page absent"))?;
         let expected = self.expected;
+        let limits = self.limits;
         let summary = self.finish()?;
-        summary.validate(expected, source_limits(expected)?)?;
+        summary.validate(expected, limits)?;
         if let Some(single) = first.complete_summary {
             if single != summary {
                 return Err(bad(

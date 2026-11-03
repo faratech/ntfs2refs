@@ -46,6 +46,30 @@ pub(super) fn validate_domain(
     maximum_names: usize,
     valid_component: impl Fn(&str) -> bool,
 ) -> io::Result<()> {
+    validate_domain_inner(input, maximum_names, None, valid_component)
+}
+pub(super) fn resource_path_valid(root: &str, path: &[String]) -> bool {
+    path.iter()
+        .try_fold(root.encode_utf16().count(), |n, part| {
+            n.checked_add(part.encode_utf16().count())
+                .and_then(|n| n.checked_add(1))
+        })
+        .is_some_and(|n| n.saturating_sub(usize::from(!path.is_empty())) < 32767)
+}
+pub(super) fn validate_resource_domain(
+    input: &impl InputDomain,
+    maximum_names: usize,
+    root: &str,
+    valid_component: impl Fn(&str) -> bool,
+) -> io::Result<()> {
+    validate_domain_inner(input, maximum_names, Some(root), valid_component)
+}
+fn validate_domain_inner(
+    input: &impl InputDomain,
+    maximum_names: usize,
+    root: Option<&str>,
+    valid_component: impl Fn(&str) -> bool,
+) -> io::Result<()> {
     if !input.any(|i| !i.additional_names.is_empty())? {
         return Ok(());
     }
@@ -73,7 +97,7 @@ pub(super) fn validate_domain(
             ));
         }
         for path in paths(item) {
-            if path.len() > 16
+            if root.map_or(path.len() > 16, |root| !resource_path_valid(root, path))
                 || path.iter().any(|p| !valid_component(p))
                 || !names.insert(crate::shadow_names::conservative_path_key(path))
                 || names.len() > maximum_names
@@ -239,14 +263,38 @@ pub(super) fn create_owned_domain(
     input: &impl InputDomain,
     handles: &BTreeMap<usize, File>,
 ) -> io::Result<Vec<serde_json::Value>> {
+    create_owned_domain_inner(input, handles, None)
+}
+pub(super) fn create_owned_resource_domain(
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+    maximum_names: usize,
+    root: &str,
+) -> io::Result<Vec<serde_json::Value>> {
+    create_owned_domain_inner(input, handles, Some((maximum_names, root)))
+}
+fn create_owned_domain_inner(
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+    resources: Option<(usize, &str)>,
+) -> io::Result<Vec<serde_json::Value>> {
     if !input.any(|i| !i.additional_names.is_empty())? {
         return Ok(Vec::new());
     }
-    validate_domain(
-        input,
-        MAX_NAMES,
-        crate::shadow_names::valid_unicode_component,
-    )?;
+    if let Some((maximum_names, root)) = resources {
+        validate_resource_domain(
+            input,
+            maximum_names,
+            root,
+            crate::shadow_names::valid_unicode_component,
+        )?;
+    } else {
+        validate_domain(
+            input,
+            MAX_NAMES,
+            crate::shadow_names::valid_unicode_component,
+        )?;
+    }
     let mut directories = BTreeMap::new();
     input.for_each(|index, item| {
         if item.directory

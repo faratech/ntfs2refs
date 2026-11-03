@@ -190,9 +190,11 @@ pub(super) fn complete_domain(
             "complete placement and system supply required before metadata",
         ));
     }
-    tree.pair.validate_with_resource_profile(Some(
-        crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
-    ))?;
+    tree.pair
+        .validate_with_resource_profile(Some(tree.metadata_resource_admission.map_or(
+            crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
+            |a| crate::attestation::ResourceProfile::ResourceBoundedV4(Some(a)),
+        )))?;
     let mut extent_only_tails = Vec::new();
     for (key, file) in &tree.files {
         let owner = input.object(key.object_index)?;
@@ -270,7 +272,16 @@ pub(super) fn complete_domain(
         }
     }
     tree.require_source_excluded()?;
-    let links = super::super::hard_links::create_owned_domain(input, &tree.metadata_targets)?;
+    let links = if let Some(admission) = tree.metadata_resource_admission {
+        super::super::hard_links::create_owned_resource_domain(
+            input,
+            &tree.metadata_targets,
+            admission.maximum_namespace_names()?,
+            &format!("{}\\", tree.pair.shadow.volume_path()?),
+        )?
+    } else {
+        super::super::hard_links::create_owned_domain(input, &tree.metadata_targets)?
+    };
     tree.require_source_excluded()?;
     // This consumes the only tree owner on success AND failure. A diagnostic
     // return cannot resume a partially public/private metadata transition.
@@ -281,6 +292,7 @@ pub(super) fn complete_domain(
         input,
         &tree.metadata_targets,
         tree.metadata_object_limit,
+        tree.metadata_resource_admission,
         same_security,
     )?;
     tree.require_source_excluded()?;

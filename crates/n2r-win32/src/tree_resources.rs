@@ -30,7 +30,7 @@ pub struct MetadataPageBudget {
 
 impl MetadataPageBudget {
     #[cfg(windows)]
-    fn native(self) -> io::Result<crate::metadata_pages::PageBudget> {
+    pub fn native(self) -> io::Result<crate::metadata_pages::PageBudget> {
         let budget = crate::metadata_pages::PageBudget {
             max_page_bytes: self.max_page_bytes,
             max_records_per_page: self.max_records_per_page,
@@ -40,6 +40,243 @@ impl MetadataPageBudget {
         };
         budget.validate()?;
         Ok(budget)
+    }
+}
+
+/// A caller-selected share of observed available hardware and ordinary scratch
+/// space. This is a resource contract, not a filesystem count/size allowance or
+/// live source authority. Fresh callers must bind it to their actual observation.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceBudget {
+    pub schema_version: u32,
+    pub ram_bytes: u64,
+    pub scratch_bytes: u64,
+    pub page_bytes: u32,
+    pub max_row_bytes: u64,
+    pub retained_index_bytes: u64,
+    pub handle_slots: u64,
+}
+impl ResourceBudget {
+    pub fn validate(self) -> io::Result<()> {
+        let working = self
+            .max_row_bytes
+            .checked_mul(8)
+            .and_then(|n| {
+                u64::from(self.page_bytes.max(crate::logical_hash::CHUNK as u32))
+                    .checked_mul(8)
+                    .and_then(|p| n.checked_add(p))
+            })
+            .and_then(|n| n.checked_add(self.retained_index_bytes))
+            .and_then(|n| {
+                self.handle_slots
+                    .checked_mul(256)
+                    .and_then(|h| n.checked_add(h))
+            });
+        if self.schema_version != 1
+            || !(256..=METADATA_PAGE_BYTES).contains(&self.page_bytes)
+            || self.max_row_bytes == 0
+            || self.retained_index_bytes == 0
+            || !working.is_some_and(|n| n <= self.ram_bytes)
+            || self.ram_bytes > isize::MAX as u64
+            || self.scratch_bytes > i64::MAX as u64
+            || self.scratch_bytes / 4 <= u64::from(self.page_bytes) + 192
+            || self.max_row_bytes > self.scratch_bytes / 8
+            || self.handle_slots < 8
+            || self.handle_slots > self.ram_bytes / 256
+        {
+            return Err(io::Error::other(
+                "invalid observed metadata resource budget",
+            ));
+        }
+        Ok(())
+    }
+    /// Each of the four retained source/observation/expected/map artifacts has
+    /// its own pinned quarter of scratch. Counts follow the smallest possible
+    /// encoded record/page, never a fixture cardinality.
+    pub fn page_budget(self) -> io::Result<MetadataPageBudget> {
+        self.validate()?;
+        let bytes = self.scratch_bytes / 4;
+        Ok(MetadataPageBudget {
+            max_page_bytes: self.page_bytes,
+            max_records_per_page: (self.page_bytes - 64) / 9,
+            max_records: (bytes - 192) / 9,
+            max_pages: (bytes - 192) / 137,
+            max_file_bytes: bytes,
+        })
+    }
+}
+
+/// Complete actual source counts, authenticated by the caller's frozen raw
+/// inspection pin. Saved JSON preserves these facts for recovery; it cannot
+/// recreate the frozen owner, native observation or fresh Apply certificate.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceResourceAdmission {
+    pub schema_version: u32,
+    pub source_inspection_sha256: [u8; 32],
+    pub mft_records: u64,
+    pub raw_identities: u64,
+    pub files: u64,
+    pub directories: u64,
+    pub data_streams: u64,
+    pub budget: ResourceBudget,
+    pub source_pages: MetadataPageBudget,
+    pub native_pages: MetadataPageBudget,
+    pub expected_pages: MetadataPageBudget,
+    pub map_pages: MetadataPageBudget,
+}
+impl SourceResourceAdmission {
+    pub fn new(
+        source_inspection_sha256: [u8; 32],
+        mft_records: u64,
+        raw_identities: u64,
+        files: u64,
+        directories: u64,
+        data_streams: u64,
+        budget: ResourceBudget,
+    ) -> io::Result<Self> {
+        let pages = budget.page_budget()?;
+        let value = Self {
+            schema_version: 1,
+            source_inspection_sha256,
+            mft_records,
+            raw_identities,
+            files,
+            directories,
+            data_streams,
+            budget,
+            source_pages: pages,
+            native_pages: pages,
+            expected_pages: pages,
+            map_pages: pages,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+    pub fn objects(self) -> io::Result<u64> {
+        self.files
+            .checked_add(self.directories)
+            .ok_or_else(|| io::Error::other("source object count overflow"))
+    }
+    pub fn projected_handles(self) -> io::Result<u64> {
+        self.data_streams
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(self.files))
+            .and_then(|n| n.checked_add(self.directories))
+            .and_then(|n| n.checked_add(8))
+            .ok_or_else(|| io::Error::other("source owned handle count overflow"))
+    }
+    pub fn validate(self) -> io::Result<()> {
+        self.budget.validate()?;
+        let pages = self.budget.page_budget()?;
+        // Per-entry state covers scalar source/native identity indexes and
+        // target/map ordinal indexes. Large bytes remain in paged records.
+        let indexes = self.raw_identities.checked_mul(256).and_then(|n| {
+            self.objects()
+                .ok()
+                .and_then(|o| o.checked_add(self.data_streams))
+                .and_then(|o| o.checked_mul(64))
+                .and_then(|o| n.checked_add(o))
+        });
+        if self.schema_version != 1
+            || self.source_inspection_sha256 == [0; 32]
+            || self.directories == 0
+            || self.raw_identities == 0
+            || self.raw_identities > self.mft_records
+            || self.mft_records > 1 << 48
+            || self.objects()? > self.raw_identities
+            || self.files > self.data_streams
+            || !indexes.is_some_and(|n| n <= self.budget.retained_index_bytes)
+            || self.projected_handles()? > self.budget.handle_slots
+            || self.source_pages != pages
+            || self.native_pages != pages
+            || self.expected_pages != pages
+            || self.map_pages != pages
+        {
+            return Err(io::Error::other(
+                "complete source domain exceeds its pinned resource budget",
+            ));
+        }
+        Ok(())
+    }
+    pub fn validate_tree(self, files: u64, directories: u64, streams: u64) -> io::Result<()> {
+        self.validate()?;
+        if (files, directories, streams) != (self.files, self.directories, self.data_streams) {
+            return Err(io::Error::other(
+                "actual tree differs from complete resource admission",
+            ));
+        }
+        Ok(())
+    }
+    pub fn semantic_byte_budget(self) -> u64 {
+        self.budget.scratch_bytes / 8
+    }
+    pub fn maximum_namespace_names(self) -> io::Result<usize> {
+        self.validate()?;
+        usize::try_from(self.budget.retained_index_bytes / 128).map_err(io::Error::other)
+    }
+    pub fn validate_constructor_metadata(self, value: &impl Serialize) -> io::Result<u64> {
+        self.validate()?;
+        struct Counter {
+            used: u64,
+            maximum: u64,
+        }
+        impl io::Write for Counter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.used = self
+                    .used
+                    .checked_add(bytes.len() as u64)
+                    .filter(|n| *n <= self.maximum)
+                    .ok_or_else(|| {
+                        io::Error::other("constructor metadata exceeds pinned resource budget")
+                    })?;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut counter = Counter {
+            used: 0,
+            maximum: self.semantic_byte_budget(),
+        };
+        serde_json::to_writer_pretty(&mut counter, value).map_err(io::Error::other)?;
+        Ok(counter.used)
+    }
+    #[cfg(windows)]
+    pub fn expected_page_budget(self) -> io::Result<crate::metadata_pages::PageBudget> {
+        self.validate()?;
+        self.expected_pages.native()
+    }
+    #[cfg(windows)]
+    pub fn map_page_budget(self) -> io::Result<crate::metadata_pages::PageBudget> {
+        self.validate()?;
+        self.map_pages.native()
+    }
+    #[cfg(windows)]
+    pub fn source_page_budget(self) -> io::Result<crate::metadata_pages::PageBudget> {
+        self.validate()?;
+        self.source_pages.native()
+    }
+    #[cfg(windows)]
+    pub fn native_page_budget(self) -> io::Result<crate::metadata_pages::PageBudget> {
+        self.validate()?;
+        self.native_pages.native()
+    }
+    #[cfg(windows)]
+    pub fn native_observation_budget(
+        self,
+    ) -> io::Result<crate::observation_pages::NativeObservationBudget> {
+        self.validate()?;
+        let result = crate::observation_pages::NativeObservationBudget {
+            pages: self.native_pages.native()?,
+            max_row_bytes: self.budget.max_row_bytes,
+            max_total_row_bytes: self.semantic_byte_budget(),
+            max_index_bytes: self.budget.retained_index_bytes,
+        };
+        result.validate()?;
+        Ok(result)
     }
 }
 

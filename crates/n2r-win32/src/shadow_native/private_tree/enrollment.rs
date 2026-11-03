@@ -21,9 +21,19 @@ pub fn enroll<'source>(
     source: &'source native::GeneralFrozenPartition,
     pair: &GeneralSourceShadowBinding,
 ) -> io::Result<ConstructionEnrollment<'source>> {
-    pair.validate_with_resource_profile(Some(
+    enroll_with_resource_profile(
+        source,
+        pair,
         crate::attestation::ResourceProfile::ExperimentalStreamingTreeV2,
-    ))?;
+    )
+}
+pub fn enroll_with_resource_profile<'source>(
+    source: &'source native::GeneralFrozenPartition,
+    pair: &GeneralSourceShadowBinding,
+    profile: crate::attestation::ResourceProfile,
+) -> io::Result<ConstructionEnrollment<'source>> {
+    profile.resource_admission()?;
+    pair.validate_with_resource_profile(Some(profile))?;
     if source.binding() != &pair.source || source.freeze_observation().is_none() {
         return Err(invalid(
             "construction enrollment requires the original observed source freeze",

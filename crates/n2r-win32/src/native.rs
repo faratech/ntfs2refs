@@ -119,6 +119,45 @@ pub struct GeneralLiveNtfsObservation {
     before: GeneralDiskState,
     after: GeneralDiskState,
 }
+/// Same live physical protection lease as GeneralLiveNtfsObservation, with
+/// complete metadata rows retained in an authenticated ordinary file.
+#[derive(Debug)]
+pub struct GeneralLivePagedNtfsObservation {
+    domain: crate::observation_pages::PagedNativeObservation,
+    txf: Option<crate::txf_native::GeneralObservation>,
+    txf_error: Option<String>,
+    vss_observation: Option<crate::vss_observation::Observation>,
+    before: GeneralDiskState,
+    after: GeneralDiskState,
+}
+impl GeneralLivePagedNtfsObservation {
+    pub fn domain(&self) -> &crate::observation_pages::PagedNativeObservation {
+        &self.domain
+    }
+    pub fn txf(&self) -> Option<&crate::txf_native::GeneralObservation> {
+        self.txf.as_ref()
+    }
+    pub fn txf_error(&self) -> Option<&str> {
+        self.txf_error.as_deref()
+    }
+    pub fn vss_observation(&self) -> Option<&crate::vss_observation::Observation> {
+        self.vss_observation.as_ref()
+    }
+    pub fn before(&self) -> &GeneralDiskState {
+        &self.before
+    }
+    pub fn after(&self) -> &GeneralDiskState {
+        &self.after
+    }
+}
+struct CollectedGeneralNtfs<T> {
+    domain: T,
+    txf: Option<crate::txf_native::GeneralObservation>,
+    txf_error: Option<String>,
+    vss_observation: Option<crate::vss_observation::Observation>,
+    before: GeneralDiskState,
+    after: GeneralDiskState,
+}
 /// Constructed only while a frozen ReFS partition is published through a
 /// physically read-only lease and returned to persistent exclusion. The raw
 /// before/after image equality remains the caller's independent obligation.
@@ -1240,6 +1279,7 @@ pub struct GeneralFrozenPartition {
     position: u64,
     buffer: AlignedBuffer,
     native_bytes_read: u64,
+    resource_budget: Option<crate::tree_resources::ResourceBudget>,
     freeze_observation: Option<GeneralFreezeObservation>,
     allocation_capture: Option<Arc<()>>,
 }
@@ -1693,6 +1733,23 @@ pub struct GeneralJournaledPartition {
 }
 
 impl GeneralFrozenPartition {
+    /// Pre-count source freeze with an explicit observed resource contract.
+    /// Counts and raw pins do not exist yet; this creates no admission facts.
+    /// All original NTFS/TxF, lock/dismount and physical route checks execute
+    /// through the same implementation as the historical observed freeze.
+    pub fn isolate_observed_ntfs_with_resource_budget(
+        binding: GeneralDiskBinding,
+        budget: crate::tree_resources::ResourceBudget,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        budget.validate()?;
+        let mut frozen = Self::isolate_observed_ntfs(binding, events)?;
+        frozen.resource_budget = Some(budget);
+        Ok(frozen)
+    }
+    pub fn resource_budget(&self) -> Option<crate::tree_resources::ResourceBudget> {
+        self.resource_budget
+    }
     pub fn isolate_observed_ntfs(
         binding: GeneralDiskBinding,
         events: &mut Vec<NativeEvent>,
@@ -1891,6 +1948,7 @@ impl GeneralFrozenPartition {
                 position: 0,
                 buffer,
                 native_bytes_read: 0,
+                resource_budget: None,
                 freeze_observation: None,
                 allocation_capture: Some(token),
             },
@@ -1983,6 +2041,7 @@ impl GeneralFrozenPartition {
             position: 0,
             buffer,
             native_bytes_read: 0,
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
         })
@@ -2011,6 +2070,7 @@ impl GeneralFrozenPartition {
             position: 0,
             buffer: AlignedBuffer::new()?,
             native_bytes_read: 0,
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
         })
@@ -2229,8 +2289,125 @@ impl GeneralFrozenPartition {
         single_content_pass: bool,
         require_vss: bool,
     ) -> io::Result<GeneralLiveNtfsObservation> {
+        let collected =
+            self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
+                if single_content_pass {
+                    crate::attestation_native::collect_file_metadata_single_content_pass(request)
+                } else {
+                    crate::attestation_native::collect_file_metadata(request)
+                }
+            })?;
+        Ok(GeneralLiveNtfsObservation {
+            report: collected.domain,
+            txf: collected.txf,
+            txf_error: collected.txf_error,
+            vss_observation: collected.vss_observation,
+            before: collected.before,
+            after: collected.after,
+        })
+    }
+
+    /// Complete paged source observation through the same physical READ_ONLY
+    /// lease. No report rows are rehydrated into a whole collection. The file
+    /// must be on ordinary metadata storage outside both conversion devices.
+    pub fn observe_ntfs_files_paged(
+        &mut self,
+        request: &crate::attestation::Request,
+        path: &std::path::Path,
+        budget: crate::observation_pages::NativeObservationBudget,
+        single_content_pass: bool,
+        require_vss: bool,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLivePagedNtfsObservation> {
+        budget.validate()?;
+        if let Some(admission) = request
+            .resource_profile
+            .map(crate::attestation::ResourceProfile::resource_admission)
+            .transpose()?
+            .flatten()
+        {
+            if self.resource_budget != Some(admission.budget) {
+                return Err(invalid(
+                    "native source resource budget differs from original pre-count frozen owner",
+                ));
+            }
+        }
+        let collected =
+            self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
+                crate::attestation_native::collect_file_metadata_paged(
+                    request,
+                    path,
+                    budget,
+                    single_content_pass,
+                )
+            })?;
+        Ok(GeneralLivePagedNtfsObservation {
+            domain: collected.domain,
+            txf: collected.txf,
+            txf_error: collected.txf_error,
+            vss_observation: collected.vss_observation,
+            before: collected.before,
+            after: collected.after,
+        })
+    }
+
+    /// Page-backed selectors are read from the same retained complete raw
+    /// metadata owner, one record at a time. The actual selectors are retained
+    /// beside their native rows in the authenticated observation file.
+    pub fn observe_ntfs_files_paged_domain(
+        &mut self,
+        selectors: &impl crate::attestation::NativeRequestDomain,
+        path: &std::path::Path,
+        budget: crate::observation_pages::NativeObservationBudget,
+        single_content_pass: bool,
+        require_vss: bool,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<GeneralLivePagedNtfsObservation> {
+        crate::attestation::validate_native_request_domain(selectors)?;
+        let request = selectors.header();
+        if !request.has_paged_selectors() {
+            return Err(invalid("paged selector entry requires request7/8"));
+        }
+        let admission = request
+            .resource_profile
+            .unwrap()
+            .resource_admission()?
+            .ok_or_else(|| invalid("paged selector resource admission absent"))?;
+        if self.resource_budget != Some(admission.budget) {
+            return Err(invalid(
+                "native paged source resource budget differs from original frozen owner",
+            ));
+        }
+        let collected =
+            self.observe_ntfs_files_with_collector(request, events, require_vss, |request| {
+                let _ = request;
+                crate::attestation_native::collect_file_metadata_paged_domain(
+                    selectors,
+                    path,
+                    budget,
+                    single_content_pass,
+                )
+            })?;
+        selectors.revalidate()?;
+        Ok(GeneralLivePagedNtfsObservation {
+            domain: collected.domain,
+            txf: collected.txf,
+            txf_error: collected.txf_error,
+            vss_observation: collected.vss_observation,
+            before: collected.before,
+            after: collected.after,
+        })
+    }
+
+    fn observe_ntfs_files_with_collector<T: crate::attestation::NativeObservationDomain>(
+        &mut self,
+        request: &crate::attestation::Request,
+        events: &mut Vec<NativeEvent>,
+        require_vss: bool,
+        collector: impl FnOnce(&crate::attestation::Request) -> io::Result<T>,
+    ) -> io::Result<CollectedGeneralNtfs<T>> {
         request.validate()?;
-        if !matches!(request.schema_version, 2 | 3 | 4 | 5 | 6)
+        if !matches!(request.schema_version, 2 | 3 | 4 | 5 | 6 | 7 | 8)
             || request.disk_number != self.binding.disk_number
             || request.volume != format!("{}\\", self.binding.volume_path()?)
             || request.partition_offset != self.binding.identity.partition_offset
@@ -2288,11 +2465,7 @@ impl GeneralFrozenPartition {
                 "general read-only volume was not published within 15 seconds",
             ));
         }
-        let collected = if single_content_pass {
-            crate::attestation_native::collect_file_metadata_single_content_pass(request)
-        } else {
-            crate::attestation_native::collect_file_metadata(request)
-        };
+        let collected = collector(request);
         let (txf, txf_error) = match crate::txf_native::observe_general(self.binding.clone()) {
             Ok(observation) => (Some(observation), None),
             Err(error) => (None, Some(error.to_string())),
@@ -2324,12 +2497,15 @@ impl GeneralFrozenPartition {
                 "general source exclusion changed during native observation",
             ));
         }
-        let report = collected?;
+        let domain = collected?;
+        let report = domain.header();
         let vss_observation = vss_observation?;
         if report.request != *request
             || report.conversion_qualified
             || report.schema_version
                 != match request.schema_version {
+                    8 => 16,
+                    7 => 15,
                     6 => 14,
                     5 => 13,
                     4 => 12,
@@ -2340,10 +2516,10 @@ impl GeneralFrozenPartition {
             return Err(invalid("general native source report profile differs"));
         }
         if request.schema_version >= 3 {
-            report.validate_resources()?;
+            crate::attestation::validate_domain_resources(&domain)?;
         }
-        Ok(GeneralLiveNtfsObservation {
-            report,
+        Ok(CollectedGeneralNtfs {
+            domain,
             txf,
             txf_error,
             vss_observation,
@@ -3067,6 +3243,7 @@ impl GeneralJournaledPartition {
         }
         Ok(Self {
             inner: GeneralFrozenPartition {
+                resource_budget: None,
                 freeze_observation: None,
                 allocation_capture: None,
                 file,
@@ -4236,6 +4413,7 @@ mod tests {
             position: 0,
             buffer,
             native_bytes_read: 0,
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: Some(token),
         };
@@ -4406,6 +4584,7 @@ mod tests {
             identity: binding.identity,
         };
         let mut reader = GeneralFrozenPartition {
+            resource_budget: None,
             freeze_observation: None,
             allocation_capture: None,
             file,
@@ -4442,6 +4621,7 @@ mod tests {
         } = ordinary_stream();
         let mut target = GeneralJournaledPartition {
             inner: GeneralFrozenPartition {
+                resource_budget: None,
                 freeze_observation: None,
                 allocation_capture: None,
                 file,

@@ -84,6 +84,28 @@ pub struct ArenaRamLease {
     arena: ArtifactArena,
     bytes: u64,
 }
+impl ArenaRamLease {
+    /// Return unused capacity while retaining the remainder of this lease.
+    pub fn shrink_to(&mut self, bytes: u64) -> Result<()> {
+        ensure!(
+            bytes <= self.bytes,
+            "arena RAM lease cannot grow by shrinking"
+        );
+        let mut state = self
+            .arena
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        ensure!(!state.ram_poisoned, "arena RAM ledger is poisoned");
+        state.leased_ram_bytes = state
+            .leased_ram_bytes
+            .checked_sub(self.bytes - bytes)
+            .context("arena RAM lease shrink underflow")?;
+        self.bytes = bytes;
+        Ok(())
+    }
+}
 #[derive(Clone)]
 pub struct ArtifactGroupPermit {
     arena: ArtifactArena,

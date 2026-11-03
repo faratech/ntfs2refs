@@ -132,8 +132,29 @@ duplicate of the creator's writable file object closed. Fully closing the
 writer before reopening readonly produced stable final metadata. The SDK
 ordering fix at`a0b29e04dd2e83086823349724e7e2a8ccf905f5` preserves complete index
 checks and strict retirement and compiled in10.07 seconds. Its pinned build is
-in progress; native recovery with that fix remains pending. The saved AP
+complete; separate Resume remains pending. The saved AP
 origin remains protected. See [the refusal and probes](../evidence/resource-restart-retirement-refusal-20261103.json).
+
+The corrected a0b public command then completed actual Rollback after restart
+from the original first-metadata-write AP checkpoint. Native exit0 took462.837
+seconds; ABT closed before writable original NTFS returned. Restore-required
+selected bytes across8,399 ranges/11,403,739,136 scoped bytes and F: were verified;
+free-space contents were not restored byte-for-byte. An independent observer
+matched all811 original XXH3 streams/9,885,801,949 bytes and1,534 baseline
+path/type/length objects. It captured and rechecked1,024 additional directory
+names on NTFS for subsequent comparison; this did not independently audit all
+ACLs/times or prove absence of extra objects. See
+[the rollback record](../evidence/resource-v4-restart-rollback-20261103.json).
+This qualifies the old acbcc producer with the new a0b recovery reader, not
+fresh a0b preparation/guard behavior, copied-user-payload interruption, Resume,
+or physical power loss. The closed ABT branch must never be replayed.
+
+After restoring the original AP origin, a separate corrected a0b public Resume
+is running. The last actual poll at20:06:43.712Z matched native PID1432 and
+creation1793735658561 ms, task Running and source attributes3 during protected
+observation/verification. No HND, exit0 or completed recovery is asserted.
+Independent ReFS content/namespace comparison must wait for actual termination;
+the successful Rollback observation is not substituted for Resume evidence.
 
 Resource-native NTFS prealignment now has an online paged inventory, complete
 stream decision/move planner, checked SDK mover/shadow-hint interfaces and a

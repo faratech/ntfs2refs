@@ -47,6 +47,7 @@ struct CreatedFile {
     modified: SystemTime,
     readers: u64,
     ram: u64,
+    _arena_ram: Option<crate::artifact_arena::ArenaRamLease>,
     artifact: Option<crate::artifact_arena::ArtifactLease>,
 }
 #[derive(Clone)]
@@ -205,6 +206,11 @@ impl SourceScratch {
             total <= ledger.budget.ram_bytes,
             "created scratch identity registry RAM exhausted"
         );
+        let arena_ram = ledger
+            .arena
+            .as_ref()
+            .map(|permit| permit.arena().reserve_ram(ram))
+            .transpose()?;
         ledger.ram = total;
         ledger.created.insert(
             pin.path.clone(),
@@ -216,6 +222,7 @@ impl SourceScratch {
                 modified: metadata.modified()?,
                 readers: 0,
                 ram,
+                _arena_ram: arena_ram,
                 artifact,
             },
         );
@@ -400,10 +407,16 @@ impl SourceScratch {
             used <= ledger.budget.ram_bytes,
             "source metadata working RAM exhausted"
         );
+        let arena_ram = ledger
+            .arena
+            .as_ref()
+            .map(|permit| permit.arena().reserve_ram(bytes))
+            .transpose()?;
         ledger.ram = used;
         Ok(SourceRamLease {
             scratch: self.clone(),
             bytes,
+            _arena_ram: arena_ram,
         })
     }
     fn lease_window(&self) -> Result<SourceRamLease> {
@@ -521,6 +534,7 @@ impl SourceScratch {
 pub struct SourceRamLease {
     scratch: SourceScratch,
     bytes: u64,
+    _arena_ram: Option<crate::artifact_arena::ArenaRamLease>,
 }
 struct CreatedReaderLease {
     scratch: SourceScratch,

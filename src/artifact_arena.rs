@@ -66,6 +66,8 @@ struct State {
     entries: BTreeMap<PathBuf, Entry>,
     overhead: u64,
     index_bytes: u64,
+    leased_ram_bytes: u64,
+    ram_poisoned: bool,
 }
 struct Inner {
     root: PathBuf,
@@ -77,6 +79,11 @@ struct Inner {
 }
 #[derive(Clone)]
 pub struct ArtifactArena(Arc<Inner>);
+/// A live share of the arena's aggregate working-memory budget.
+pub struct ArenaRamLease {
+    arena: ArtifactArena,
+    bytes: u64,
+}
 #[derive(Clone)]
 pub struct ArtifactGroupPermit {
     arena: ArtifactArena,
@@ -114,6 +121,8 @@ pub struct ArenaUsage {
     pub actual_wire_bytes: u64,
     pub actual_allocated_bytes: u64,
     pub files: u64,
+    pub leased_ram_bytes: u64,
+    pub registry_ram_bytes: u64,
 }
 fn add(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b)
@@ -213,6 +222,8 @@ impl ArtifactArena {
                 entries: BTreeMap::new(),
                 overhead: 0,
                 index_bytes: 0,
+                leased_ram_bytes: 0,
+                ram_poisoned: false,
             }),
         })))
     }
@@ -221,6 +232,23 @@ impl ArtifactArena {
     }
     pub fn same_arena(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+    pub fn reserve_ram(&self, bytes: u64) -> Result<ArenaRamLease> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
+        let leased = add(state.leased_ram_bytes, bytes)?;
+        ensure!(
+            !state.ram_poisoned && add(leased, state.index_bytes)? <= self.0.budget.ram_bytes,
+            "aggregate artifact arena RAM exhausted or poisoned"
+        );
+        state.leased_ram_bytes = leased;
+        Ok(ArenaRamLease {
+            arena: self.clone(),
+            bytes,
+        })
     }
     pub fn reserve_group(&self, group: ArtifactGroup, maximum: u64) -> Result<ArtifactGroupPermit> {
         ensure!(
@@ -306,6 +334,8 @@ impl ArtifactArena {
             actual_wire_bytes: wire,
             actual_allocated_bytes: allocated,
             files: state.entries.len() as u64,
+            leased_ram_bytes: state.leased_ram_bytes,
+            registry_ram_bytes: state.index_bytes,
         })
     }
 }
@@ -415,7 +445,10 @@ impl ArtifactGroupPermit {
             "artifact allocation slack exceeds aggregate budget"
         );
         ensure!(
-            add(state.index_bytes, memory)? <= self.arena.0.budget.retained_index_bytes,
+            !state.ram_poisoned
+                && add(state.index_bytes, memory)? <= self.arena.0.budget.retained_index_bytes
+                && add(add(state.index_bytes, memory)?, state.leased_ram_bytes)?
+                    <= self.arena.0.budget.ram_bytes,
             "artifact registry RAM exhausted"
         );
         self.arena
@@ -480,6 +513,17 @@ impl ArtifactGroupPermit {
             wire_bytes: wire,
             allocated_bytes: allocated,
         })
+    }
+}
+impl Drop for ArenaRamLease {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.arena.0.state.lock() {
+            if let Some(remaining) = state.leased_ram_bytes.checked_sub(self.bytes) {
+                state.leased_ram_bytes = remaining;
+            } else {
+                state.ram_poisoned = true;
+            }
+        }
     }
 }
 impl ArtifactPathPermit {

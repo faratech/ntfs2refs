@@ -73,6 +73,36 @@ read. Its three-entry Windows check passed11.19 seconds; native interruption
 and restart qualification is pending. Signal data is evidence, never replay or
 fresh-source authority.
 
+The first enrolled interruption attempt on source`96f9587` stopped before its
+first placement submission:942,034,628 leased bytes plus3,087,768 registry bytes
+could not admit a571,816,544-byte workspace under the same1,456,427,008-byte RAM
+budget. The source stayed offline/read-only and the preallocated signal remained
+all zero. Exit1 is therefore a preparation refusal, not successful fault
+injection. See [the recorded refusal](../evidence/resource-first-write-placement-refusal-20261103.json).
+
+The follow-up removes an unused full-serialization-buffer allowance from the
+streamed resource placement path, preserving both actual JSON values and the
+unchanged query/window/proof bounds. Metadata page readers and their paired
+leases are also being sized to the actual held immutable file instead of
+allocating full page buffers for every tiny table. The admitted RAM budget is
+unchanged; a new native run must establish the result.
+
+The paired reader/cache fix compiled in8.89 seconds. It validates the actual
+held ordinary file and EOF before allocation, pays constructor key-comparison
+workspace separately, then retains only the actual body and two possible
+decoded chunks. Borrowed record access avoids an extra encoded-payload copy.
+Full file/page hashes, record bounds, counts and same-file checks remain. The
+placement change removes91,026,944 declared bytes for this fixture; this is
+code-derived quota arithmetic, not a heap or conversion-speed measurement.
+
+Resource-native NTFS prealignment now has a compiled online paged inventory,
+all-stream decision/move planner and checked SDK mover/shadow-hint interfaces.
+These private components are not wired into the public command yet. They do
+not issue source admission and must be followed by a fresh frozen source
+inspection/certificate. A streamed execution/receipt layer and public
+`--minimize-scratch` orchestration remain necessary; the current fast inspector
+may still hash some exceptional user data during this prepass.
+
 ## Experimental integration checkpoint — 2026-11-03
 
 The compiled V4 core now connects held source/target/resource admission to a

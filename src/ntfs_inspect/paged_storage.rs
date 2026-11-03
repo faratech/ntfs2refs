@@ -560,6 +560,30 @@ pub struct SourceRamLease {
     bytes: u64,
     _arena_ram: Option<crate::artifact_arena::ArenaRamLease>,
 }
+impl SourceRamLease {
+    /// Return only verified unused RAM while retaining the same local/global
+    /// owner. The source ledger and shared arena receive exactly one credit.
+    pub fn shrink_to(&mut self, bytes: u64) -> Result<()> {
+        ensure!(
+            bytes <= self.bytes,
+            "source RAM lease cannot grow by shrinking"
+        );
+        let delta = self.bytes - bytes;
+        let remaining = self
+            .scratch
+            .0
+            .borrow()
+            .ram
+            .checked_sub(delta)
+            .context("source RAM shrink underflow")?;
+        if let Some(lease) = self._arena_ram.as_mut() {
+            lease.shrink_to(bytes)?;
+        }
+        self.scratch.0.borrow_mut().ram = remaining;
+        self.bytes = bytes;
+        Ok(())
+    }
+}
 struct CreatedReaderLease {
     scratch: SourceScratch,
     path: PathBuf,
@@ -902,12 +926,13 @@ pub struct PagedMetadataRange {
     reader: RefCell<Reader>,
     decoded: RefCell<DecodedChunks>,
     pin: SourcePagePin,
-    _ram: SourceRamLease,
-    // An optional second decoded chunk is charged to the same shared source
-    // budget. On constrained systems the reader keeps the existing one-chunk
-    // behavior rather than increasing the required memory.
-    _extra_cache_ram: Option<SourceRamLease>,
+    // Both possible decoded chunks are prepaid. Retain the same file-inventory
+    // cache policy without allocating an independently maximum-sized window.
+    second_chunk_cache: bool,
     _created: Option<CreatedReaderLease>,
+    // All cache/path/registry payloads above drop before their RAM credits.
+    _ram: SourceRamLease,
+    _path_ram: SourceRamLease,
 }
 #[derive(Default)]
 struct DecodedChunks {
@@ -939,55 +964,112 @@ impl PagedMetadataRange {
     pub fn open(pin: &SourcePagePin, scratch: &SourceScratch) -> Result<Self> {
         ensure!(
             !scratch.is_poisoned()
-                && pin.page_budget.max_page_bytes <= scratch.0.borrow().budget.page_bytes
-                && pin.wire_bytes <= scratch.0.borrow().budget.scratch_bytes,
+                && pin.page_budget.max_page_bytes <= scratch.budget().page_bytes
+                && pin.wire_bytes <= scratch.budget().scratch_bytes,
             "source range exceeds owner resources"
         );
-        let ram = scratch.lease_window()?;
-        let mut reader = Reader::open(&pin.path, &pin.file_sha256, pin.purpose, pin.page_budget)?;
+        let declared_chunk = pin
+            .page_budget
+            .max_page_bytes
+            .checked_sub(192)
+            .context("source chunk window differs")?
+            / 4
+            * 3;
         ensure!(
-            reader.byte_len() == pin.wire_bytes && reader.len() >= 2,
-            "source range wire length differs"
+            declared_chunk > 0 && pin.chunk_bytes == declared_chunk,
+            "source chunk protocol differs before allocation"
         );
-        let head = reader.get(0)?;
-        ensure!(head.key.is_empty(), "source range header key differs");
-        let header: RangeHeader = serde_json::from_slice(&head.payload)?;
+        // Prepay native path/snapshot construction before opening a file.
+        // The fixed allowance covers native UTF16/GUID path workspace; the
+        // retained amount below is then reduced using the actual held route.
+        let path_work = (pin.path.as_os_str().as_encoded_bytes().len() as u64)
+            .checked_mul(12)
+            .and_then(|n| n.checked_add(32768 * 24 + 65536))
+            .context("source reader path memory overflow")?;
+        let mut path_ram = scratch.lease_ram(path_work)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(&pin.path)?;
+        let metadata = file.metadata()?;
         ensure!(
-            header.schema_version == 1
-                && header.chunk_bytes == pin.chunk_bytes
-                && pin.chunk_bytes
-                    == pin
-                        .page_budget
-                        .max_page_bytes
-                        .checked_sub(192)
-                        .context("source chunk window differs")?
-                        / 4
-                        * 3,
-            "source range chunk protocol differs"
+            metadata.is_file()
+                && metadata.file_attributes() & 0x400 == 0
+                && metadata.len() == pin.wire_bytes,
+            "source range actual held length/type differs before cache allocation"
         );
-        let last = reader.get(reader.len() - 1)?;
+        let body = Reader::body_capacity_for_file(pin.page_budget, metadata.len())? as u64;
+        // A source chunk uses lossless base64, so no decoded chunk can exceed
+        // the actual complete file length even before its logical footer closes.
+        let initial_decoded = u64::from(declared_chunk).min(metadata.len());
+        let initial_cache = body
+            .checked_add(
+                initial_decoded
+                    .checked_mul(2)
+                    .context("source decode memory overflow")?,
+            )
+            .context("source reader memory overflow")?;
+        // Reader's complete key-order validation may briefly retain both the
+        // previous and next key. Pay for arbitrary valid page keys before the
+        // typed source header/footer has narrowed the retained cache sizes.
+        let constructor = body
+            .checked_mul(3)
+            .context("source reader construction memory overflow")?;
+        let mut ram = scratch.lease_ram(initial_cache.max(constructor))?;
+        let mut reader = Reader::open_held(file, &pin.file_sha256, pin.purpose, pin.page_budget)?;
         ensure!(
-            last.key == u64::MAX.to_be_bytes(),
-            "source range footer key differs"
+            reader.byte_len() == pin.wire_bytes
+                && reader.len() >= 2
+                && reader.body_capacity() as u64 <= body,
+            "source range wire length or actual cache capacity differs"
         );
-        let footer: RangeFooter = serde_json::from_slice(&last.payload)?;
+        let header: RangeHeader = reader.with_record(0, |key, payload| {
+            if !key.is_empty() {
+                return Err(io::Error::other("source range header key differs"));
+            }
+            serde_json::from_slice(payload).map_err(io::Error::other)
+        })?;
+        ensure!(
+            header.schema_version == 1 && header.chunk_bytes == declared_chunk,
+            "source range actual chunk header differs"
+        );
+        let last = reader.len() - 1;
+        let footer: RangeFooter = reader.with_record(last, |key, payload| {
+            if key != u64::MAX.to_be_bytes() {
+                return Err(io::Error::other("source range footer key differs"));
+            }
+            serde_json::from_slice(payload).map_err(io::Error::other)
+        })?;
         ensure!(
             footer.logical_bytes == pin.logical_bytes
                 && footer.logical_sha256 == pin.logical_sha256
                 && footer.chunks.checked_add(2) == Some(reader.len())
-                && footer.chunks == pin.logical_bytes.div_ceil(u64::from(pin.chunk_bytes)),
-            "source range footer domain differs"
+                && footer.chunks == footer.logical_bytes.div_ceil(u64::from(declared_chunk)),
+            "source range actual logical footer differs"
         );
+        // Only actual held-file and authenticated logical sizes determine the
+        // retained cache budget. No pin alone can reduce the prepaid window.
+        let decoded = footer.logical_bytes.min(u64::from(declared_chunk));
+        ram.shrink_to(
+            body.checked_add(
+                decoded
+                    .checked_mul(2)
+                    .context("source retained decode memory overflow")?,
+            )
+            .context("source retained reader memory overflow")?,
+        )?;
         let mut hash = Sha256::new();
         let mut total = 0u64;
         for ordinal in 0..footer.chunks {
-            let row = reader.get(ordinal + 1)?;
-            ensure!(
-                row.key == ordinal.to_be_bytes(),
-                "source range chunk order differs"
-            );
-            let chunk = decode(&row.payload, pin.chunk_bytes as usize)?;
-            let expected = (pin.logical_bytes - total).min(u64::from(pin.chunk_bytes));
+            let chunk = reader.with_record(ordinal + 1, |key, payload| {
+                if key != ordinal.to_be_bytes() {
+                    return Err(io::Error::other("source range chunk order differs"));
+                }
+                decode(payload, usize::try_from(decoded).map_err(io::Error::other)?)
+                    .map_err(io::Error::other)
+            })?;
+            let expected = (footer.logical_bytes - total).min(u64::from(declared_chunk));
             ensure!(
                 chunk.len() as u64 == expected,
                 "source range has a short interior chunk"
@@ -996,29 +1078,34 @@ impl PagedMetadataRange {
             total += chunk.len() as u64;
         }
         ensure!(
-            total == pin.logical_bytes && hex::encode(hash.finalize()) == pin.logical_sha256,
+            total == footer.logical_bytes && hex::encode(hash.finalize()) == pin.logical_sha256,
             "complete source range logical SHA differs"
         );
         reader.revalidate()?;
         let created = scratch.reader_lease(pin)?;
-        // File inventory lookups repeatedly alternate between an object and
-        // its root/parent record. Other range types are normally sequential;
-        // avoid reserving a second window for every directory/index/descriptor.
-        let extra_cache_ram = if pin.purpose == *b"N2RFILE1"
-            && pin.logical_bytes > u64::from(pin.chunk_bytes)
-            && u64::from(pin.chunk_bytes) <= scratch.budget().ram_bytes / 64
-        {
-            scratch.lease_ram(u64::from(pin.chunk_bytes)).ok()
-        } else {
-            None
-        };
+        let second_chunk_cache = pin.purpose == *b"N2RFILE1"
+            && footer.logical_bytes > u64::from(declared_chunk)
+            && u64::from(declared_chunk) <= scratch.budget().ram_bytes / 64;
+        // Both decoded slots were prepaid above, including the old/new overlap
+        // on a miss. Preserve the existing file-inventory two-chunk behavior.
+        let actual_path = (pin.path.as_os_str().as_encoded_bytes().len() as u64)
+            .checked_add(reader.final_path().len() as u64)
+            .and_then(|n| n.checked_mul(12))
+            .and_then(|n| n.checked_add(65536 + 4096))
+            .context("source retained path memory overflow")?;
+        ensure!(
+            actual_path <= path_work,
+            "actual source route exceeds its prepaid path workspace"
+        );
+        path_ram.shrink_to(actual_path)?;
         Ok(Self {
             reader: RefCell::new(reader),
             decoded: RefCell::new(DecodedChunks::default()),
             pin: pin.clone(),
             _ram: ram,
-            _extra_cache_ram: extra_cache_ram,
+            second_chunk_cache,
             _created: created,
+            _path_ram: path_ram,
         })
     }
     pub fn slice(self: &Rc<Self>, offset: u64, bytes: u64) -> Result<SourceMetadataSlice> {
@@ -1069,19 +1156,24 @@ impl SourceMetadataRange for PagedMetadataRange {
             {
                 {
                     let mut cache = self.decoded.borrow_mut();
-                    cache.previous = if self._extra_cache_ram.is_some() {
+                    cache.previous = if self.second_chunk_cache {
                         cache.recent.take()
                     } else {
                         cache.recent = None;
                         None
                     };
                 }
-                let row = self.reader.borrow_mut().get(ordinal + 1)?;
-                ensure!(
-                    row.key == ordinal.to_be_bytes(),
-                    "held source range chunk key differs"
-                );
-                let chunk = decode(&row.payload, self.pin.chunk_bytes as usize)?;
+                let chunk = self
+                    .reader
+                    .borrow_mut()
+                    .with_record(ordinal + 1, |key, payload| {
+                        if key != ordinal.to_be_bytes() {
+                            return Err(io::Error::other("held source range chunk key differs"));
+                        }
+                        let maximum = self.pin.logical_bytes.min(u64::from(self.pin.chunk_bytes));
+                        decode(payload, usize::try_from(maximum).map_err(io::Error::other)?)
+                            .map_err(io::Error::other)
+                    })?;
                 let remaining = self.pin.logical_bytes - ordinal * u64::from(self.pin.chunk_bytes);
                 ensure!(
                     chunk.len() as u64 == remaining.min(u64::from(self.pin.chunk_bytes)),

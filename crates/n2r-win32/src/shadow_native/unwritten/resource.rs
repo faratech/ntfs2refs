@@ -121,10 +121,15 @@ impl ResourcePlacement {
         // Serialization happens after native query temporaries drop. Keep
         // the larger peak, then TRANSFER this prepaid guard into the returned
         // JSON owner: no allocator reservation is required after movement.
-        // Three Value slots per canonical byte cover both owned array copies
-        // and their serialization buffer; every paging field is retained.
+        // into_resource_value first owns the raw canonical bytes and one
+        // Value array, then drops that raw Placement before returning. The
+        // enclosing move record creates a second Value array while the first
+        // owner/guard stays live. Both compact sizing and the resource sink
+        // serialize into streaming writers, not a third whole-proof buffer.
+        // Two Value slots per canonical byte therefore cover both stages;
+        // every paging/window allowance below remains independently paid.
         let json = canonical
-            .checked_mul(3 * mem::size_of::<serde_json::Value>() as u64)
+            .checked_mul(2 * mem::size_of::<serde_json::Value>() as u64)
             .and_then(|n| n.checked_add((retrieval.max_pages as u64).checked_mul(6144)?))
             .and_then(|n| n.checked_add((windows.max_returned_bytes as u64).checked_mul(32)?))
             .and_then(|n| n.checked_add((windows.max_window_bytes as u64).checked_mul(16)?))

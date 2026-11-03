@@ -68,6 +68,41 @@ copied bin and manifest remain unchanged; only its disposable target was moved.
 
 ## CURRENT resource-based hardware continuation (2026-11-03)
 
+LATEST memory fixes are final-checked8.893s: SDKactual-file Readered473871,
+Rootpairedleases3fb02336 andplacementJSON2×allowancee2785df8. Completefile/
+page/record/hash checks and acceptedquery/prooflimits remain. Constructor
+key-comparisonworkspace prepaid; earlypathguarderror-droporder fixed; no
+encoded-recordclone inRootreads. No units or budgetraises. Stop65593 COMPLETE;
+VM should be Off/RAM0,parent3343 after the prewrite618 refusal (fresh-verify
+before nextaction). There is no valid partialwrite signal/recoveryorigin yet.
+Source96 diagnostic build8393 is COMPLETE, manifest
+6e76228aeef91afe64ed925aa1e1142ad9945575ca4f7f996db73a157548517e; do not
+rerun96 without these latermemoryfixes. D is now implementing NEW resource
+prealignment executor/receipts; its newexports may be WIP. Preserve the compiled
+inventory/planner/SDKmover slices and do not stage uncompiled executor changes.
+
+LATEST native diagnostic6189937fca3445bfb0f216c4588641d5 from96f9587 failed
+BEFORE its intended first-write interruption:5272/birth1793725411361/exit1 in
+65.2511025s, Source3, evacuation_submissions0, no valid signal (4096 all-zero
+bytes). Actual leased942034628+registry3087768+requested571816544 exceeded
+unchangedRAM1456427008.15 closed files80472B/manifestSHA
+08b5df397ca2dff5ce4a52fe74c62e0363879806b0d2ee3f9bf9c70e4b1839e4 are in
+resource-fixture-6189937fca3445bfb0f216c4588641d5/closed-refusal. DO NOT call
+nativeexit1 a successful fault. All workers terminal; normal stop65593 is the
+latest host shutdown handle (poll it; no duplicate stop/restore on timeout).
+The completed operational HND+33-file state was separately saved Off at
+ba81a1f8-eee9-40d6-957f-31acbb09b98e child411c before one restore3343 for this
+diagnostic. Critical frozen alpha/normal/source/recovery states remain intact.
+
+C's multiplier3→2 actual JSON allowance fix saves91026944 declared bytes, not
+a heap measurement; all accepted limits unchanged. D/C also paired actual-file
+Reader/cache sizing and borrowed record reads. First combined check passed
+15.94s; final path-lease error-order and constructor-key-workspace review fixes
+are being applied before final check. Root owns the two prealignment module
+hooks; full Root+SDK P3 inventory/planner/mover slices compiled22.74s but have
+NO executor/CLI hookup or native qualification. Keep those source modules as
+experimental, not a completed --minimize prepass. No budget raise or unit tests.
+
 LATEST public terminal recovery PASSED on source03868c1/publicSHA
 0167246edb0c238463ecc22d8761418da551f9a232c6b3624840ef7fcd8a7b73,
 manifestef5047be7cbc41c0eb267c1b12974ce9b267654b0363d278b9bee319a10e6995.

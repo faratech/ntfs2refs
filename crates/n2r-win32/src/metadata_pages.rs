@@ -110,11 +110,14 @@ fn ordinary(path: &Path) -> io::Result<()> {
                     // Authenticated recovery pins use the actual volume-GUID
                     // route saved by the held file. Accept only that exact
                     // filesystem prefix, never device/GLOBALROOT/UNC aliases.
-                    Prefix::Verbatim(name) => name.to_str()
+                    Prefix::Verbatim(name) => name
+                        .to_str()
                         .and_then(|s| s.strip_prefix("Volume{"))
                         .and_then(|s| s.strip_suffix('}'))
-                        .is_some_and(|guid| guid.len() == 36
-                            && crate::layout::guid_bytes(guid).is_ok_and(|v| v != [0;16])),
+                        .is_some_and(|guid| {
+                            guid.len() == 36
+                                && crate::layout::guid_bytes(guid).is_ok_and(|v| v != [0; 16])
+                        }),
                     _ => false,
                 };
                 require(local, "local ordinary metadata path required")?;
@@ -447,10 +450,20 @@ fn entry(file: &mut File, index: u64, page: u64) -> io::Result<Entry> {
         sha: raw[32..].try_into().unwrap(),
     })
 }
-fn load_page(file: &mut File, e: Entry, budget: PageBudget, body: &mut Vec<u8>) -> io::Result<()> {
+fn load_page(
+    file: &mut File,
+    e: Entry,
+    budget: PageBudget,
+    data_end: u64,
+    body_limit: usize,
+    body: &mut Vec<u8>,
+) -> io::Result<()> {
     require(
         e.bytes as u64 > FRAME
             && e.bytes <= budget.max_page_bytes
+            && (e.bytes as u64 - FRAME) <= body_limit as u64
+            && e.offset >= HEADER
+            && add(e.offset, e.bytes as u64)? <= data_end
             && e.count > 0
             && e.count <= budget.max_records_per_page,
         "metadata page budget/count differs",
@@ -525,8 +538,22 @@ pub struct Reader {
     // every earlier record in the page for each lookup.
     cached_record: Option<(u64, usize, usize)>,
     body: Vec<u8>,
+    body_limit: usize,
 }
 impl Reader {
+    /// Pre-allocation body bound for an actual held ordinary file length.
+    /// This is sizing only; open still authenticates the exact file, format,
+    /// purpose, pinned budget and complete SHA before returning any record.
+    pub fn body_capacity_for_file(budget: PageBudget, actual_file_bytes: u64) -> io::Result<usize> {
+        budget.validate()?;
+        require(
+            (HEADER + FOOTER..=budget.max_file_bytes).contains(&actual_file_bytes),
+            "metadata file size exceeds pinned budget",
+        )?;
+        usize::try_from((u64::from(budget.max_page_bytes) - FRAME).min(actual_file_bytes))
+            .map_err(io::Error::other)
+    }
+
     pub fn open(
         path: &Path,
         expected_sha256: &str,
@@ -535,6 +562,25 @@ impl Reader {
     ) -> io::Result<Self> {
         budget.validate()?;
         ordinary(path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(path)?;
+        Self::open_held(file, expected_sha256, purpose, budget)
+    }
+
+    /// Authenticate the caller's actual preopened readonly file. This lets
+    /// the caller reserve its body bound from that same held file's length
+    /// before Reader allocates; no saved length or path supplies authority.
+    pub fn open_held(
+        mut file: File,
+        expected_sha256: &str,
+        purpose: [u8; 8],
+        budget: PageBudget,
+    ) -> io::Result<Self> {
+        budget.validate()?;
+        crate::file_storage::require_readonly_access(&file)?;
         require(
             purpose != [0; 8]
                 && expected_sha256.len() == 64
@@ -547,16 +593,9 @@ impl Reader {
             .map_err(io::Error::other)?
             .try_into()
             .map_err(|_| io::Error::other("metadata SHA length differs"))?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .share_mode(1)
-            .custom_flags(0x0020_0000)
-            .open(path)?;
         let snapshot = Snapshot::observe(&file)?;
-        require(
-            (HEADER + FOOTER..=budget.max_file_bytes).contains(&snapshot.bytes),
-            "metadata file size exceeds pinned budget",
-        )?;
+        ordinary(Path::new(&snapshot.final_path))?;
+        let body_limit = Self::body_capacity_for_file(budget, snapshot.bytes)?;
         require(
             file_hash(&mut file, snapshot.bytes)? == sha256,
             "metadata complete-file SHA differs",
@@ -595,7 +634,11 @@ impl Reader {
             &footer[48..80] == index_hash.finalize().as_slice(),
             "metadata complete index SHA differs",
         )?;
-        let mut body = Vec::with_capacity(budget.max_page_bytes as usize - FRAME as usize);
+        let mut body = Vec::with_capacity(body_limit);
+        require(
+            body.capacity() <= body_limit,
+            "metadata body allocation exceeds its actual-file bound",
+        )?;
         let mut cursor = HEADER;
         let mut count = 0;
         let mut previous: Option<Vec<u8>> = None;
@@ -606,7 +649,7 @@ impl Reader {
                 e.offset == cursor && e.first == count && add(cursor, e.bytes as u64)? <= index,
                 "metadata page index has a gap/overlap or missing records",
             )?;
-            load_page(&mut file, e, budget, &mut body)?;
+            load_page(&mut file, e, budget, index, body_limit, &mut body)?;
             let mut at = 0;
             for _ in 0..e.count {
                 let (end, key, payload) = record_at(&body, at)?;
@@ -642,6 +685,7 @@ impl Reader {
             cached,
             cached_record: None,
             body,
+            body_limit,
         })
     }
     pub fn len(&self) -> u64 {
@@ -656,6 +700,10 @@ impl Reader {
     pub fn byte_len(&self) -> u64 {
         self.snapshot.bytes
     }
+    /// Actual retained allocation, for the caller's prepaid bound check.
+    pub fn body_capacity(&self) -> usize {
+        self.body.capacity()
+    }
     /// Actual retained-handle route, for the caller's independent-volume gate.
     pub fn final_path(&self) -> &str {
         &self.snapshot.final_path
@@ -666,6 +714,21 @@ impl Reader {
         Ok(Snapshot::observe(file)? == self.snapshot)
     }
     pub fn get(&mut self, ordinal: u64) -> io::Result<Record> {
+        self.with_record(ordinal, |key, payload| {
+            Ok(Record {
+                key: key.to_vec(),
+                payload: payload.to_vec(),
+            })
+        })
+    }
+    /// Borrow one completely authenticated page record without allocating
+    /// owned key/payload copies. The callback cannot retain page references
+    /// beyond this mutable Reader borrow or bypass its index/cache checks.
+    pub fn with_record<T>(
+        &mut self,
+        ordinal: u64,
+        callback: impl FnOnce(&[u8], &[u8]) -> io::Result<T>,
+    ) -> io::Result<T> {
         require(ordinal < self.records, "metadata ordinal is out of bounds")?;
         if !self
             .cached
@@ -687,7 +750,14 @@ impl Reader {
                 ordinal >= e.first && ordinal - e.first < e.count as u64,
                 "metadata indexed ordinal has a gap",
             )?;
-            load_page(&mut self.file, e, self.budget, &mut self.body)?;
+            load_page(
+                &mut self.file,
+                e,
+                self.budget,
+                self.index,
+                self.body_limit,
+                &mut self.body,
+            )?;
             self.cached = Some(e);
             self.cached_record = None;
         }
@@ -702,12 +772,8 @@ impl Reader {
         for current in first..=ordinal {
             let (end, key, payload) = record_at(&self.body, at)?;
             if current == ordinal {
-                let record = Record {
-                    key: key.to_vec(),
-                    payload: payload.to_vec(),
-                };
                 self.cached_record = Some((current, at, end));
-                return Ok(record);
+                return callback(key, payload);
             }
             at = end;
         }

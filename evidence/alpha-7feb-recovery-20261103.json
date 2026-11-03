@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "kind": "alpha-7feb-paged-recovery-observations",
+  "source_commit": "7feb4c06d21e9de73bb88961197f5b745463e490",
+  "public_binary_sha256": "c7b5809f4456f55e71f19b47d4e4cb9b7ee6cad86c4ff0fac36c1db5a5b909d1",
+  "source_objects": 1534,
+  "independent_stream_hashes": 811,
+  "interruption": {
+    "run_id": "fe086985340548db9eb098a884f4d1be",
+    "native_pid": 6004,
+    "native_birth_unix_ms": 1793661913763,
+    "native_exit": 86,
+    "instrumented_lab_producer": true,
+    "public_binary_fault_injection_claimed": false,
+    "first_source_write_flushed": true,
+    "original_observer_result": 1,
+    "original_observer_failure_preserved": true,
+    "read_only_completion_run": "2d3370475c7f4d21a5ee52475cc94c90",
+    "read_only_completion_result": 0,
+    "combined_archive_sha256": "37d67de193964d714522a67de6aa67d07029ec7a8456ba73f393eed53a12f5ee",
+    "journal_format": "N2ROLD01",
+    "source_free_ranges": 0
+  },
+  "resume": {
+    "run_id": "bd4eee3b50504bc3b0cea5ad89212cd2",
+    "native_pid": 2456,
+    "native_birth_unix_ms": 1793664719382,
+    "native_exit": 0,
+    "scheduled_task_result": 0,
+    "independent_stream_hashes_matched": 811,
+    "objects_verified": 1534,
+    "archive_sha256": "b3838c824b4c3314c6b2e6028f47b2f21d7363bb38bf1de592c1becd1d27e355"
+  },
+  "rollback": {
+    "run_id": "5cc9b3f4a5854b35bc7cb98c0e8172bd",
+    "native_pid": 5812,
+    "native_birth_unix_ms": 1793666832841,
+    "native_exit": 0,
+    "scheduled_task_result": 0,
+    "independent_stream_hashes_matched": 811,
+    "objects_verified": 1534,
+    "old_selected_bytes_digest_matched": true,
+    "whole_volume_identity_claimed": false,
+    "archive_sha256": "7c3d78b1af9f5ebca13b02637a0aa16000beed04ab30e92bc10d4d38e9c639f9"
+  },
+  "power_cut_qualification_for_this_exact_build": false,
+  "stable_release": false
+}

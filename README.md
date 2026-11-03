@@ -4,6 +4,17 @@ An experimental Rust NTFS-to-ReFS converter for data volumes, with a Hyper-V
 laboratory. Conversion runs on the Windows machine owning the disk; the program
 does not require a hypervisor. Windows OS-volume and boot conversion remain deferred.
 
+The frozen `7feb4c0` experimental alpha converted an independently populated
+1,534-object NTFS tree on its original partition, then passed native file
+mutation and cold-boot readback. It also passed controlled interruption, resume
+and rollback on that source. The observed test used a 52 GiB dedicated data
+partition and a Windows 11 Dev Drive target; it does not qualify arbitrary
+hardware, standard ReFS formatting or physical power-loss recovery. See the
+[conversion](evidence/paged-metadata-public1534-7feb4c0-20261102.json),
+[recovery](evidence/alpha-7feb-recovery-20261103.json), and
+[mutation and reboot](evidence/alpha-7feb-mutation-coldboot-20261103.json)
+records. Keep a separate backup and the original recovery-bundle checksum.
+
 The [frozen 2026-10-29 drive alpha](docs/frozen-drive-alpha-20261029.md) passed
 normal conversion, ordinary file mutation and reboot readback on its 52 GiB
 fixture: 15 objects and all 10 file hashes matched. Its exact executable and

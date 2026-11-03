@@ -1,4 +1,20 @@
 # Resource-based source and metadata admission
+## Actual restart recovery and next performance run — 2026-11-03
+
+Corrected reader `a0b29e0` completed genuine public rollback and resume on
+separate restarts from the same authenticated original AP checkpoint. The
+producer was `acbcc1b`; this is not fresh guard qualification. Rollback returned
+NTFS in 462.84s; resume returned healthy ReFS in 935.26s with 2558 verified
+metadata/map bindings. All811 original XXH3 stream hashes matched independently
+in both directions. The additional1024 directory paths were captured on restored
+NTFS and matched exactly on resumed ReFS. See the exact
+[rollback](../evidence/resource-v4-restart-rollback-20261103.json) and
+[resume](../evidence/resource-v4-restart-resume-20261103.json) records.
+
+The frozen a0b public `--minimize-scratch` command is now running on a fresh
+NTFS branch. Its result, storage savings and performance remain pending.
+The verified HND branch and original partial-write origin remain saved.
+No new code changes or unit tests accompany this performance run.
 
 ## First completed public V4 conversion — 2026-11-03
 

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "kind": "actual-partition-readonly-converted-fidelity-adapter",
+  "status": "public-check-passed-terminal-owner-integration-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 200650,
+      "sha256": "c17e1c520d39146aaa8b22f7b2c03c70a109823f11fc6dfbf8851f0ce964dd5d"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/readonly_refs_access.rs",
+      "bytes": 1408,
+      "sha256": "ae86674d5a28e696db64f7a7b97122465f52ed2eebeb9ea73b57f374d37508f5"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native.rs",
+      "bytes": 217648,
+      "sha256": "7ef5e3eac6a3f2e28f3b0ba2fb37fe28d292d9ea38c779a57ecb0e3d06b1b333"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/known_content_memory.rs",
+      "bytes": 12266,
+      "sha256": "b663d2341b570a1aaf411a9df12228807457a186ee9e6cd31f852fa3f5951ed1"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/partition_converted.rs",
+      "bytes": 4486,
+      "sha256": "666f6519d9764bd25c250a1c5fe455fc350a09ceeffb894783b36344d7bd86fc"
+    }
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 33.2102706,
+  "check_receipt_sha256": "b9bd2c1ebbbb1318cff613a7541a7d77155d14a9288592e2b156036cd62fb779",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "writer_cli_enabled": false,
+  "behavior": [
+    "SDK-internal protected access distinguishes actual dedicated disk READ_ONLY from actual selected-partition READ_ONLY on a writable disk.",
+    "Dedicated snapshot implementation and original storage-access predicate remain unchanged.",
+    "Only the selected-partition converted metadata route can observe a Windows-disk data partition, with actual native snapshot, physical attributes0 and FILE_READ_ONLY_VOLUME.",
+    "Existing namespace/security/ADS/reparse/EA/full retrieval/storage-validity and optional known-content collectors are reused.",
+    "Opaque terminal-native observation binds actual partition owner token, binding, actual label and successful native report; no DTO constructor.",
+    "Parallel object collector captures readonly access mode only, imposing no unsafe Sync implementation on lifecycle owners."
+  ],
+  "remaining": [
+    "Actual terminal-readonly guard implementation and SDK-internal trait issuer.",
+    "AP/writer and authenticated restart integration.",
+    "Native end-to-end shared-disk qualification."
+  ]
+}

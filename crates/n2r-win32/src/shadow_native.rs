@@ -690,7 +690,7 @@ fn observed_shadow_profile(
     disk: &File,
     binding: &DiskBinding,
     general: Option<&GeneralDiskBinding>,
-    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<crate::PartitionSnapshot> {
     match protected {
@@ -3464,7 +3464,7 @@ fn observe_general_converted_metadata_domain_accounted(
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
     memory: Option<&dyn report_memory::ReportMemoryAccountant>,
-    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
 ) -> io::Result<GeneralConvertedReport> {
     pair.validate_with_resource_profile(resource_profile)?;
     if let Some(label) = expected_label {
@@ -3543,6 +3543,10 @@ fn observe_general_converted_metadata_domain_accounted(
         conversion_qualified: false,
     })
 }
+
+mod partition_converted;
+pub use partition_converted::PartitionReadonlyFidelity;
+pub(crate) use partition_converted::observe_partition_converted_readonly_with_memory;
 
 /// Recovery keeps full logical reads for every stream with a real original
 /// digest. Streams without such a digest remain explicitly un-hashed and must
@@ -3995,6 +3999,22 @@ fn validate_observation_access(attributes: u64, flags: u32, protected: bool) -> 
     Ok(())
 }
 
+fn validate_scoped_observation_access(
+    attributes: u64,
+    flags: u32,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
+) -> io::Result<()> {
+    match protected.map(|access| access.scope()) {
+        Some(native::ReadonlyRefsScope::SelectedPartition) => {
+            if attributes != 0 || flags & 0x80000 == 0 {
+                return Err(invalid("selected partition lost native read-only protection"));
+            }
+            Ok(())
+        }
+        _ => validate_observation_access(attributes, flags, protected.is_some()),
+    }
+}
+
 fn run_role_profile(
     binding: DiskBinding,
     source_disk: u32,
@@ -4006,7 +4026,7 @@ fn run_role_profile(
     payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
-    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
 ) -> io::Result<Report> {
     run_role_content_profile(
@@ -4037,7 +4057,7 @@ fn run_role_content_profile(
     payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
-    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
     hash_file_contents: bool,
 ) -> io::Result<Report> {
@@ -4070,7 +4090,7 @@ fn run_role_content_domain(
     payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
-    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
     hash_file_contents: bool,
     legacy_input: Option<&[Input<'_>]>,
@@ -4105,7 +4125,7 @@ fn run_role_content_domain_accounted(
     mut payload_writer: Option<&mut dyn FnMut(usize, &mut File) -> io::Result<()>>,
     general_shadow: Option<&GeneralDiskBinding>,
     expected_label: Option<&crate::volume_label::VolumeLabel>,
-    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
     resource_profile: Option<crate::attestation::ResourceProfile>,
     hash_file_contents: bool,
     legacy_input: Option<&[Input<'_>]>,
@@ -4119,6 +4139,12 @@ fn run_role_content_domain_accounted(
         && general_shadow.is_some()
         && protected.is_some()
         && memory_accountant.is_some();
+    let partition_readonly = protected.is_some_and(|access| {
+        access.scope() == native::ReadonlyRefsScope::SelectedPartition
+    });
+    if partition_readonly && !protected_converted_metadata {
+        return Err(invalid("partition read-only access is restricted to converted metadata"));
+    }
     if !hash_file_contents
         && (!converted
             || !ordinary
@@ -4526,14 +4552,14 @@ fn run_role_content_domain_accounted(
         return Err(invalid("one first directory root required"));
     }
     let mut events = vec![];
-    if native::current_windows_disk(&mut events)? == binding.disk_number {
+    if native::current_windows_disk(&mut events)? == binding.disk_number && !partition_readonly {
         return Err(invalid("shadow routes to Windows disk"));
     }
     let disk = File::options()
         .read(true)
         .share_mode(3)
         .open(format!("\\\\.\\PhysicalDrive{}", binding.disk_number))?;
-    let expected_attributes = if protected.is_some() { 2 } else { 0 };
+    let expected_attributes = if protected.is_some() && !partition_readonly { 2 } else { 0 };
     let before = observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
     if before.disk_attributes != expected_attributes {
         return Err(invalid(
@@ -4624,7 +4650,7 @@ fn run_role_content_domain_accounted(
         .position(|unit| *unit == 0)
         .ok_or_else(|| invalid("unterminated converted volume label"))?;
     let label_matches = volume_label_matches(&label[..label_end], expected_label)?;
-    validate_observation_access(before.disk_attributes, flags, protected.is_some())?;
+    validate_scoped_observation_access(before.disk_attributes, flags, protected)?;
     if text(&fs) != "ReFS" || !label_matches || spc != 8 || bps != 512 {
         return Err(invalid(
             "shadow filesystem, label, geometry or read-only flag differs",
@@ -5056,9 +5082,10 @@ fn run_role_content_domain_accounted(
     // Objects are independent: each is opened, snapshotted, queried and, when
     // verifying, hashed under its own handle. Observe them on the available
     // cores in input order; the first failure in input order is returned.
+    let readonly_object_access = protected.is_some();
     let observe = |i: &Input<'_>| -> io::Result<ObjectReport> {
         let path = format!("{}{}", root, i.components.join("\\"));
-        let mut h = open_input(&path, i, protected.is_some())?;
+        let mut h = open_input(&path, i, readonly_object_access)?;
         let before = capture_metadata(&h, i);
         let expected_allocation = layout::u64_at(query_bytes(&before, 1, 24)?, 0)?;
         let mut resident_data = false;
@@ -5233,7 +5260,7 @@ fn run_role_content_domain_accounted(
                 &root,
                 i,
                 &before,
-                protected.is_some(),
+                readonly_object_access,
                 verify_file_contents,
                 clusters,
             )?,
@@ -5241,7 +5268,7 @@ fn run_role_content_domain_accounted(
                 .sparse
                 .map(|s| sparse_stream::observe(&h, s, i.logical_length()))
                 .transpose()?,
-            additional_names: hard_links::observe(&root, i, &before, protected.is_some())?,
+            additional_names: hard_links::observe(&root, i, &before, readonly_object_access)?,
             before,
             after,
             logical_sha256,
@@ -5330,7 +5357,7 @@ fn run_role_content_domain_accounted(
             None
         };
     let after = observed_shadow_profile(&disk, &binding, general_shadow, protected, &mut events)?;
-    validate_observation_access(after.disk_attributes, flags, protected.is_some())?;
+    validate_scoped_observation_access(after.disk_attributes, flags, protected)?;
     privileges.restore()?;
     let mut report = Report {
         memory: None,

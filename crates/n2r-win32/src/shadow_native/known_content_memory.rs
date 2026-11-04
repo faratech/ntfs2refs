@@ -88,7 +88,7 @@ pub(crate) fn verify_known_contents_in_accounted_report_with_lease(
     admission: crate::tree_resources::SourceResourceAdmission,
     payer: &dyn report_memory::ReportMemoryAccountant,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
-    protected: Option<&native::GeneralReadonlyRefsVolume<'_>>,
+    protected: Option<&dyn native::ProtectedReadonlyRefsAccess>,
 ) -> io::Result<GeneralConvertedReport> {
     admission.validate()?;
     input.require_resource_metadata(admission)?;

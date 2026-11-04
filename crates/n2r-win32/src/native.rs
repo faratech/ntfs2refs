@@ -232,6 +232,9 @@ pub(crate) struct GeneralReadonlyRefsVolume<'a> {
     volume: &'a File,
     expected_state: &'a GeneralDiskState,
 }
+mod readonly_refs_access;
+pub(crate) use readonly_refs_access::{ProtectedReadonlyRefsAccess, ReadonlyRefsScope};
+pub use crate::shadow_native::PartitionReadonlyFidelity as PartitionTerminalNativeObservation;
 impl GeneralReadonlyRefsVolume<'_> {
     pub(crate) fn binding(&self) -> &GeneralDiskBinding {
         self.binding

@@ -35,6 +35,44 @@ instructions. Earlier detailed handoffs remain under docs/history/.
 
 ## Current state: frozen alpha packaged
 
+**LATEST RUN IS LIVE, overriding older completed-case state below:**
+Public cec225215f6487ddc9eaeb6564f358f5e20b9823 run
+e7cd48e25fdf4552ae726e00de3ac454, actualPID5340/birth1793774388609 independently
+matched live; boot1793774364006, VMRunning4GiB/parent3343. Root launcher67141
+completed0 after one intentional baseline restore/start. Exact publicbinary
+3600c145ed48ca8e997aed8b2ce6e7a92f02178bf274aa0a5d2f3b217fa16f0a,
+argv `--drive F --partition 2 --minimize-scratch`. Gueststage
+`C:\ntfs2refs\resource-fixture-e7cd48e25fdf4552ae726e00de3ac454`; actualengine
+`C:\ProgramData\ntfs2refs\runs\59d38def8a5d06402476a7e983f7c8bd`.
+Hostroot `.lab/hyperv/streaming-v2-20261027/resource-fixture-e7cd48e25fdf4552ae726e00de3ac454`;
+SYSTEMtaskN2R-ResourceFixture-e7cd48e25fdf4552ae726e00de3ac454,
+workerSHAea822d7308da90a5d2cf46ed89b1d57dc8d441238215d276afcf9130022dce2c,
+configSHA88e278856338094455e54ad37263671e8e2104eddf67b65d112b4b39a2f2bb91.
+Do not restore, power off, duplicate dispatch or infer completion. Latest
+06:43:40UTC samePID/birth R5998618646/W143946792/working31657984B, no terminal.
+Counters are live logical process I/O, not final/physical traffic or peak RAM.
+The native ledger is exclusive while live; do not bypass its sharing owner.
+
+This candidate adds a scalar forward allocation cursor (gap binary seeks,
+unchanged random COPY queries) and checked incremental arena allocation credit,
+independently reconciled against the full registry at usage/seal/prepared closure.
+One mutex covers retirement deletion plus credit commit. Capacity-query count,
+full source/target checks, data classifications, journal/lifecycle guards and
+write/flush order remain unchanged. Cursor RAM is prepaid; no unit tests ran.
+Focusedcheck53344 passed21.11s; release83492 passed2m44s, two-toolmanifest
+9ac0bad3eeb288b87290ae6f32deda44f68b88b77a16b5f37d842d1cc50a8d36
+at `.lab/development/release-candidates/resource-capture-cursor-cec2252`.
+See `evidence/capture-cursor-arena-build-20261104.json`; native qualification
+is pending, not inherited from a225 or frozen814. Source main SHA is unchanged.
+
+Root full-census native admission: actual295668432172/free110890270720,
+forecast21474836480B under unchanged329374052988/17179869184/50GB epoch.
+The same fixture's measured conversion+reboot growth was11153050031B;20GiB
+adds10321786449B headroom. This is a measured phase forecast, no cap increase
+or baseline reset. Launcher `launch-public-resource-min-measured20-k.ps1` SHA
+c53991ddce7e4bbd1cc18b2e0d4ea835c6ccb7f0030da132c97e1669ee5df6f3.
+Frozen814 package/snapshots and completed a225 HND9702 remain preserved.
+
 **The finite 814 native matrix and public-only local package are complete.**
 Root packaging session `71622` actually exited 0. Root independently read back
 all **11 ZIP entries**, checking lengths and SHA-256. No release was published;

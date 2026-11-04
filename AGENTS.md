@@ -35,6 +35,43 @@ instructions. Earlier detailed handoffs remain under docs/history/.
 
 ## Current state: frozen alpha packaged
 
+**LATEST 740 LARGE-FORMAT WORK, overriding the older c60/Off state below:**
+Current committed source74025098aedc54a0d0e3fe08111c336402a781fc added a
+consuming thin formatter and private shared GPT/ReFS gates. Focused check passed
+28.23s, embeddedPSparse0, release2m20s. Build
+`.lab/development/release-candidates/private-thin-format-7402509`, manifest
+13629945e827a276e67deee68b2f964b88df4577f738631325a6953e8c4f87af.
+Native72TiBcase37faa5206c6240269dcf347592269bdd, actual5808/birth1793784988401,
+exited1/16.9998085s. Constructor/GPT/readonlyerror-closing passed; Windowsformat
+exited4 with status112 at filesystem initialization. NO formatted owner issued.
+Pool remained healthy, nominal free7748976640B, backingKfree33134178304B;
+two member files remained37748736B each. Low nominal capacity is an inference,
+not a proven Windows-internal cause. Preserve the failed case; no format retry.
+Closed25files49129B manifestc9fa78c1b587a05599350f6e2e43cc8d5fffeacb33de58bae9675dd67de110d1
+at `.lab/development/native-thin-format-37faa5206c6240269dcf347592269bdd/closed-failed-format`.
+Common VHDX740 smoke fcdd0e39202d49a09ec86533221d718b independently passed
+creation/format/isolation/retirement/sentinel:3208/birth1793785590957/exit0/1.9802705s.
+Closed13files97920B manifest97e335bc1da6530f05953ff1134e0c697724eea9c61ec2c6e5d7b260e8f8415d.
+This is an empty-shadow smoke, not new public V4/recovery qualification.
+
+VM is currently Running/4GiB/parent3343, boot1793784849960; both jobs are
+terminal, sourceF observedNTFS. Root restored3343 once after preserving c60.
+Superseded a724 and ee42 were retired through Hyper-V after318file pins passed;
+audit4430f02687d25cd8b04bc4f809d558ef90acab6642f118c9034335d6f09b161e,
+retirementreceipt76b12c97b434f066aedaacc2950843b395efcabb439a12391ef63c504d28ab65.
+A fresh process verified12remaining nodes/currentc60 before that baseline restore.
+Never restore/recreate those retired IDs. Frozen814 origins, guardedf4bf and
+latest converted c60 remain. Postcleanup census294432974523B/free112093974528B;
+unchanged16GiB native forecast passed under the original50GB epoch.
+
+SDK bounded-carrier implementation is IN PROGRESS, uncommitted/uncompiled:
+min owns managed_shadow parent/thin_pool/children; root owns the format labbin,
+now calling planned create_bounded_with_carrier. Do not duplicate their edits.
+It will keep large nominal member files inside a fresh small owned NTFS carrier,
+so host accounting counts carrier backing once and nominal pool space separately.
+No quota/global permission/public default/recovery dependency changes. Existing
+create_new fixed profile stays intact. No native bounded-carrier case dispatched.
+
 **b7 CONVERSION/CLEANUP/REBOOT COMPLETE, overriding older state below:**
 Root saved the closed thin-addressability/retirement-probe branch as checkpoint
 `a7242adb-27dc-4548-adb3-64b3719789f5`, parent3343, after normal shutdown.

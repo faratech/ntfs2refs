@@ -107,3 +107,31 @@ not establish thin-provider reattachment or recovery after a new boot.
 Microsoft documents the native management contracts in
 [New-StoragePool](https://learn.microsoft.com/en-us/powershell/module/storage/new-storagepool)
 and [New-VirtualDisk](https://learn.microsoft.com/en-us/powershell/module/storage/new-virtualdisk).
+
+The separate `7402509` format attempt reached a newly owned **72 TiB GPT
+partition**, then Windows refused Dev Drive initialization while creating
+filesystem structures. The formatter reported status 112 and exited 4; the
+Rust process exited 1 in 16.9998085 seconds. The constructor and GPT observations
+succeeded, and the read-only error-closing observation succeeded. That closing
+success does not mean formatting succeeded: no formatted owner was issued and
+the ordinary 64 KiB file probe was never reached. All assets were preserved
+without a retry, fallback or cleanup.
+
+At refusal, the pool reported 9,628,024,832 bytes of usable capacity,
+1,879,048,192 allocated and 7,748,976,640 free; K: still had 33,134,178,304 bytes
+free. Each nominal 5 GiB member's VHDX backing file was 37,748,736 bytes long.
+These describe different storage layers. A nominal pool-capacity or Dev Drive
+initialization requirement is a plausible explanation, **not a proved internal
+cause**; host physical storage exhaustion was not established. F: was observed
+as NTFS during closure; its payload was not rehashed.
+
+The same build's existing VHDX path separately formatted, isolated and retired
+one fresh empty 50 GiB shadow, preserving its external sentinel. Its actual
+process exited 0 in 1.9802705 seconds. This is a small common-path smoke result;
+it qualifies neither large thin formatting nor source conversion. The failure's
+25 metadata files / 49,129 bytes and the smoke case's 13 files / 97,920 bytes
+were closed with source/host length and SHA checks, excluding images and payloads.
+See [the scoped refusal evidence](../evidence/private-thin-format-refusal-20261104.json).
+The next bounded-carrier implementation has no native qualification from either
+result. Public conversion/recovery and the frozen alpha retain their existing
+scope.

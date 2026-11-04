@@ -298,6 +298,15 @@ no working-tree inputs/no units/native. Host session8897 is TERMINAL0, Cargo2m30
 Next: operator preparing actual normal-source conversion helper with literal pins, Off07ca/all17/fresh6GiB forecast; converter GO still pending Root review.
 Focused review found no additional inevitable blocker after90083 and bounded-publication fixes; actual VDS/remount behavior still requires the native run.
 
+SUPERSEDING NATIVE HOLD: c495365 exact executable is built but MUST NOT run yet. Focused review found inevitable128-NativeEvent
+accumulation in nested partition J creation (16 source-owner checks) and opening protected target observations.
+Confirmed target sequence reaches127 before required RO SET/attribute read, so it fails before native collect; don't spend a VM run proving it.
+Frozen_candidate_cases is implementing COPIED actual guard Rc/RefCell observer sink, durable admission bookends and witness start/end drains;
+lowspace_case_impl coordinates only nonoverlapping target/private-tree drain call sites. No larger cap, dropped events or removed checks.
+Actual durable drains must run BEFORE lower target RO lease/setter and during nested J bookends, not merely afterward.
+All canonical code remains c495365; next fixed committed build will supersede the unexecuted candidate. Source fixture stays Off07ca/all17.
+Operator's next helper must accept externally pinned build inputs for that fixed candidate; no converter GO has been issued.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

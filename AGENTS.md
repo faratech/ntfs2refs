@@ -42,11 +42,35 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current state: verify before acting
 
+**NEW814 PUBLIC CONVERSION69c38a6bf34043b39c4389b119c50087 IS LIVE.**
+Exact nativePID5312/birth1793754588845 was independently matched live; SYSTEM
+workerPID5168/birth1793754583258, boot1793754562770. Parent3343, Running/4GiB.
+Root's launcher session32898 completed0; do not repeat restore/start/task.
+Hostroot.lab/hyperv/streaming-v2-20261027/resource-fixture-69c38a6bf34043b39c4389b119c50087;
+gueststageC:\ntfs2refs\resource-fixture-69c38a6bf34043b39c4389b119c50087.
+Actual engineC:\ProgramData\ntfs2refs\runs\9b2d1123c929f1533a6d1702d873d2d9.
+Actual argv --drive F --partition2 --minimize-scratch. Inspect newer owned
+native-process/PID/birth/terminal before ANY power/restore/dispatch.
+This LIVE run has no qualification yet; prior terminal cases below do not
+authorize stopping it or claiming this new build passed.
+
+Frozen source814f380aa38be4d94e2a71ad221c779e5ab4dc7b combines publication reuse
+and CNG paged hashing. Pinned three-tool release build completed successfully:
+.lab/development/release-candidates/resource-publication-cng-814f380/manifest.json
+SHAea6d55adaa40b1bf2bfd04cb7842bdef63b9cbffb0f038697d23ae9330af8f64.
+Public0f5be1c72b05ff030aad85b21be2c37f32ecccbf214af1ee4d6f7afd4807fafb;
+diagnostic790de5dba9eaf3b17b58fb871e9733f73ee2531de7534c08037bd4e5071b092a;
+recovery-observere8a5bd07ad59bf54cd6a22c152b7ac8055ebfb7e37f594af010dda8f13823276.
+ONEsharedbuild cache/source, no unit tests. No unrelated source changes before
+native qualification. Compiler checks/builds are not native qualification.
+
 **PUBLIC CONVERSION33a1bb206c51427298b6240fe5a261f9 IS COMPLETE.**
 Actual cad nativePID5364/birth1793751740787 exited0/1101.1730916s at
-2026-11-04T00:40:42.0251926Z; worker also completed0. VM remains Running,
-parent3343, boot1793751711106; F is operational ReFS/source attributes0/HND.
-No native project worker/task remains. NEVER replay this closed old raw J.
+2026-11-04T00:40:42.0251926Z; worker also completed0. Its branch was normally
+shut down/savedOff/RAM0 atfcfbba6e-353c-4792-a936-333fc26fe0d3(parent3343),
+boot1793751711106; F operational ReFS/source attributes0/HND. Then Root restored
+3343 ONCE for the distinct LIVE814 run above. NEVER replay the cad branch's
+closed old raw J. Its terminal/idle facts do not describe the live814 run.
 Actual argv --drive F --partition2 --minimize-scratch. Native finalization
 matched2558 bindings/157 known streams119009B/654extent-only, label+mounts.
 Hostroot.lab/hyperv/streaming-v2-20261027/resource-fixture-33a1bb206c51427298b6240fe5a261f9;
@@ -59,7 +83,7 @@ This new cad branch has NOT had its own reboot/mutation/AP recovery cases.
 Closed metadata.zip SHA5ddd7e45c7ad125af741123f4d9eeec4063ac671b8cc4f1adcec995c2dba8e7e,
 manifestd9cbc058b4bf48280ecf94a3a6d6a7a930b2f5020304acc0449f5d2b056f0244;
 ALL4271 entries157372594B independently length/SHA-verified on host underclosed/.
-Large J/shadow/literal stay in guest; no new cad checkpoint saved yet.
+Large J/shadow/literal remain in savedfcfb guest; no raw replay after HND.
 J186527632logical/186527744allocatedB; retained regularfileallocation1214679968B,
 4198files, NOT peak scratch and excludes global MFT/directory overhead.
 Last observed process highwater178360320B is NOT final peak; admitted4GiB VM.
@@ -103,14 +127,35 @@ PublicSHA6ffe59ce8a6f9118b49a5b14202c3618b950e8ed08978e5f0d10fb24cc544789;
 readonly observerSHA51fb56bf2b4e557c36d33645da6d3ea4230bd6b80e778df44f5371df92b13984.
 The earlier native-qualified a0b candidate and frozen alpha remain preserved.
 
-NEXT checked source change combines publication's two owner checks inside one
+Frozen814 source change combines publication's two owner checks inside one
 complete frozen/capture opening+closing, leaving index/delegation/arena-close/
 final-result revalidation and SDK AP gates separate. It also switches ONLY
 PagedShadowClosing to existing native CNG SHA-256; v1 bytes/framing/chunks/digest
 and all raw reads unchanged, errors propagate, three workspace admissions add
 2KiB context headroom. Main unchanged; focused four-bin check passed8.42s,
-no unit tests. This combined change still needs committed-source release build
-and its OWN native qualification; do not keep making unrelated source changes.
+no unit tests. Committed-source release build passed; its OWN native run is
+LIVE above. Do not keep making unrelated source changes.
+
+Old Alpha AP leaf58bd9ceb-60bc-4b34-81e1-7af197523a80 was retired through
+Hyper-V AFTER369 archived entries/861118515B,13 power-report pins and10 powerZIP
+entries, frozenr7febmanifestd4afec214f672fe4eb3b12c5e82a5315ccbee25f92f9222ef426605948f54814,
+all8bins/291sources/sourceZIP matched. Frozen Alpha package/evidence remain;
+only that old AP's direct disk/J/shadow restore capability was discarded.
+Fresh graph kepta51V4AP,7d81HND,fcfbnewHND,766partition and guardedf4bf.
+Never restore/recreate retired58 or b1de IDs. All-lab/cache/staging aftermerge
+281624601059B, hostfree124954193920B; unchanged40GiB forecast passed original
+max329374052988/minfree17179869184. No cap/epoch reset.
+
+Future Windows-disk partition helper is PREPARED ONLY (no execution):
+.lab/development/fresh-lock-no-T-partition-samebytes-probe.ps1,
+SHAd3d58c76961598613800a47170b6574fe4b26cad45ba52a2b580dab43e5f1d7d.
+Only on saved766 T fixture after newer active run closes/saves. Explicitly
+acknowledge capturedT removal, new AttemptId, fixtureb35/support7df/guid026 pins;
+hold same actual FSCTL lock+dismount owner through GPT+runtimeoffline and ONE
+same8192-byte marker write/flush/readback. No retries or automatic restoration.
+Root must review its body before executing. Old unexecuted v1 ec4b... preservesT;
+do not select it by accident. This does not yet qualify a source writer or
+post-reboot lock reacquisition. Do not touch current live814 VM for this probe.
 
 Native partition probe: mountvol T:\ /p established runtime exclusion but
 failed reboot persistence. Target-only GPT_OFFLINE0800000000000000 plus separate

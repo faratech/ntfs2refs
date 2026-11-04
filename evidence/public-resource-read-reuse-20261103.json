@@ -109,6 +109,14 @@
     "uncompressed_bytes": 157372594,
     "large_shadow_journal_literal_backings_copied": false
   },
+  "saved_branch": {
+    "normal_shutdown": true,
+    "checkpoint_id": "fcfbba6e-353c-4792-a936-333fc26fe0d3",
+    "parent_id": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+    "saved_state": "Off",
+    "assigned_RAM_bytes": 0,
+    "receipt_sha256": "f2a6abcbc9be6126c7f66cdb5e48e097bce8319ff3fd6b8120152add3dda05c7"
+  },
   "unit_tests_added_or_run": false,
   "qualification_inherited_by_later_source_changes": false,
   "stable_release": false

@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "kind": "finite-already-private-partition-RW-reopen-after-normal-start",
+  "status": "observed-pass-limited-interface",
+  "date": "2026-11-04",
+  "attempt": "5ba59491d9b74e0db63893453518b9b7",
+  "private_probe": {
+    "reopen_sha256": "3e75e83b3e748052c4cb9df76933503923dcd9f01058b11e5a8a4f9034f29959",
+    "runner_sha256": "25d0051ec1f7a8850abd13d026fa12d06f605b1217a02dd9ef4d75beb2f11cf9",
+    "input_pins_sha256": "46460a3338e4afb79ebc72a00ff026bbca72dce49a54363248a47eac1cbd200d",
+    "source_pins_sha256": "aceb7d8c0bc202acc00bd1ac11a8d4d8cbf5f45a4cb9dcc7b02aa2c19c8902ac",
+    "worker_sha256": "87cbf7d09edd17f6595ede114a115e7bd907711b8893dd9eb0f9619849167544",
+    "binary_sha256": "26bebdf9c4247e102f4ef5cca7d36badd8ea76dce7d2699cf611b3c22c189ef8",
+    "source_sha256": "cae525a6ebd7309b4e74124b1f0923200b712f7b3dd296fa800e7aa864936761",
+    "build_receipt_sha256": "9266aac770b1f5249b9806111c5cfcf604c1fa19df1794235bd79222579c2f1c",
+    "raw_state_sha256": "2076602b494247effc5cdf52e21de24f858cfe5893a375703467954e9515900f",
+    "binary_bytes": 585728,
+    "critical_sha256": "c99857b13bf0c6b67dccff478ba7f8d9e00276133325dd6675947832924c8989"
+  },
+  "public_alpha": {
+    "whole_disk_guards_unchanged": true,
+    "unchanged": true,
+    "source_commit": "aef1ab3b3a6ea08f7093d83cc60462f8b799b79a"
+  },
+  "runtime": {
+    "retry_or_fallback": false,
+    "restore_calls": 0,
+    "same_current_private_branch_started_once": true,
+    "actual_boot_ms": 1793821098326,
+    "actual_owned_terminal_observed": true,
+    "terminal_utc": "2026-11-04T19:39:18.6718721Z",
+    "stderr_bytes": 955,
+    "native_attempts": 1,
+    "native_exit": 0,
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "stdout_bytes": 0,
+    "actual_native_birth_ms": 1793821158068,
+    "actual_native_pid": 5716,
+    "wall_seconds": 0.5876082,
+    "owned_through_terminal": true
+  },
+  "source": {
+    "original_marker_sha256": "153758bfed87777818c67e021f91ee89f8d96c365177d08f51f7e6371b7bf5aa",
+    "current_Windows_and_all_active_pagefile_extents_verified_disjoint": true,
+    "partition_guid": "20e3748f-b912-47c3-86aa-2285ab2b5583",
+    "marker_absolute_offset": 65714388992,
+    "marker_bytes": 8192,
+    "marker_relative_offset": 1291976704,
+    "already_private_type": "b627aadb-a893-48b6-aa0b-71e5f30ee370",
+    "disk_number": 0,
+    "partition_length": 2147483648,
+    "target_actual_partition": 4,
+    "partition_offset": 64422412288,
+    "RW_route": "\\\\?\\GLOBALROOT\\Device\\Harddisk0\\Partition4",
+    "raw_GPT_slot": 4
+  },
+  "actual_source_write_outcome": {
+    "rw_partition_open_succeeded": true,
+    "write_calls": 1,
+    "write_api_succeeded": true,
+    "write_native_error": null,
+    "write_returned_bytes": 8192,
+    "flush_called": true,
+    "flush_succeeded": true,
+    "flush_native_error": null,
+    "readback_matches_original": true
+  },
+  "scope": {
+    "type_changes": 0,
+    "offline_calls": 0,
+    "exact_original_data_write_bytes": 8192,
+    "ordinary_target_file_APIs_used": false,
+    "physical_RW_payload_handle_opened": false,
+    "restoration_calls": 0,
+    "new_checkpoint_calls": 0,
+    "setter_calls": 0
+  },
+  "independent_observation": {
+    "before_sha256": "d5c177d0a160716f12da0bc1831072740b9a0f4577f286163eb2023168c9c104",
+    "after_sha256": "f7733a4d34898690977cc5d52b7cf6baeb11fdcf13e4446263cf5ccea728b0f1",
+    "all_read_handles_closed_before_native": true,
+    "canonical_observed_private_state_equal": true,
+    "C_identity_bounds_health_control_paging_unchanged": true,
+    "complete_private_GPT_MBR_native_layout_unchanged": true,
+    "fresh_processes": true,
+    "raw_original_marker_unchanged": true,
+    "observer_sha256": "0e5ea60f041fa98f76212fd3553eb3b74d6550128ed11684d73a878ea5f65c09",
+    "after_exit": 0
+  },
+  "native_volume_route_observation": {
+    "guid_volume_route": {
+      "open_error": "The system cannot find the file specified. (os error 2)",
+      "open_native_error": 2,
+      "open_succeeded": false,
+      "path": "\\\\?\\Volume{20e3748f-b912-47c3-86aa-2285ab2b5583}",
+      "read_api_succeeded": false,
+      "read_attempted": false,
+      "target_partition_matches": null
+    },
+    "letter_volume_route": {
+      "open_error": "The system cannot find the file specified. (os error 2)",
+      "open_native_error": 2,
+      "open_succeeded": false,
+      "path": "\\\\.\\T:",
+      "read_api_succeeded": false,
+      "read_attempted": false,
+      "target_partition_matches": null
+    },
+    "missing_namespace_is_not_exclusion_proof": true,
+    "ordinary_target_file_APIs_used": false,
+    "persistent_exclusion_or_public_recovery_authority_issued": false
+  },
+  "independent_file_route_observation": [
+    {
+      "Path": "\\\\?\\Volume{20e3748f-b912-47c3-86aa-2285ab2b5583}\\n2r-new-partition-marker.bin",
+      "Sha256": null,
+      "MetadataError": null,
+      "OpenSucceeded": false,
+      "ReadAttempted": false,
+      "ReadApiSucceeded": false,
+      "ExactOriginalMarkerRead": false,
+      "OpenError": 3,
+      "ReadError": 0,
+      "ReadReturnedBytes": 0,
+      "Metadata": null
+    },
+    {
+      "Path": "T:\\n2r-new-partition-marker.bin",
+      "Sha256": null,
+      "MetadataError": null,
+      "OpenSucceeded": false,
+      "ReadAttempted": false,
+      "ReadApiSucceeded": false,
+      "ExactOriginalMarkerRead": false,
+      "OpenError": 3,
+      "ReadError": 0,
+      "ReadReturnedBytes": 0,
+      "Metadata": null
+    }
+  ],
+  "qualification": {
+    "full_crash_safety_qualified": false,
+    "finite_RW_reopen_after_normal_restart_observed": true,
+    "authenticated_conversion_replay_qualified": false,
+    "physical_power_loss_qualified": false,
+    "partition_conversion_qualified": false,
+    "changed_data_writer_qualified": false,
+    "ordinary_namespace_absence_proves_exclusion": false,
+    "persistent_exclusion_qualified": false,
+    "same_original_bytes_write_flush_readback_observed": true
+  },
+  "archive": {
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\private-reopen-marker-5ba59491d9b74e0db63893453518b9b7\\closed",
+    "native_receipts": 49,
+    "all_source_host_lengths_and_SHA256_verified": true,
+    "manifest_sha256": "92ee9e2097df25323bc784db04a0006eb82317b27c61e1194293ae3d3524e245",
+    "bytes": 171860.0,
+    "files": 57
+  },
+  "final_state": {
+    "RAM": 0,
+    "capacity": {
+      "actual_bytes": 317250100370,
+      "free_bytes": 89303965696,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 0,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "state": "Off",
+    "current_parent": "766c9abc-8582-4de6-b497-8acbc81274da",
+    "type_last_observed_private": true,
+    "all16_preserved": true,
+    "fresh_separate_process_verified": true
+  },
+  "capacity_policy": {
+    "initial_epoch_actual_bytes": 279374052988,
+    "minimum_host_free_bytes": 17179869184,
+    "maximum_actual_bytes": 329374052988,
+    "epoch_reset": false,
+    "sample_not_peak_or_hard_quota": true,
+    "forecast_bytes": 6442450944,
+    "maximum_additional_epoch_bytes": 50000000000
+  },
+  "limits": [
+    "One exact already-private partition-route same-bytes RW reopen after a normal start, not authenticated conversion replay.",
+    "No setter, restoration, changed-data conversion, process-death/crash or physical-power safety qualification.",
+    "Ordinary namespace failures do not themselves establish exclusion; public source guards remain unchanged."
+  ],
+  "stable_release": false
+}

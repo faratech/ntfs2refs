@@ -114,10 +114,27 @@ sourcece6cfd39eb703ddde3123d12b6f6e511a71a3737eb43e916bf1d7340b27a8419,module7a1
 inputpins4377cfdd59437acabd2a81ac8b93f05b96095c1d69253f453fbe5f3a4bd8c997,buildreceipt56d74cf4f998b8d7d77117eff605f663ec6a74ff7d8c3d49008d0f8b297c09b6.
 That binary was built against pre-accounting SDK; preserve it/sourcepins. SDKsourcehasnew observational changes now; don't claim oldpinsmatchcurrenttree.
 
-NEXT case: separate ignored Rust `.lab/development/partition-private-reopen-probe` is reviewed and BUILT0/36.7441847s, sharedtarget reused, no unit tests.
-Test already-private target via `\\?\GLOBALROOT\Device\Harddisk0\Partition4` RW, held device/partition/fullrawGPT/C checks and atmostone SAME8192B write.
-No setters/typechanges/offline/wholelayout/physicalRW/fallback/autoRestore or publiccertificate. RetainedEXE585728B/SHA26bebdf9c4247e102f4ef5cca7d36badd8ea76dce7d2699cf611b3c22c189ef8; source-pinsaceb7d8c0bc202acc00bd1ac11a8d4d8cbf5f45a4cb9dcc7b02aa2c19c8902ac; input46460a3338e4afb79ebc72a00ff026bbca72dce49a54363248a47eac1cbd200d; lock0b56038991f092fb8e6b8d4b6562b869761b381135615e05b3924f4ba8cc03a1; receipt9266aac770b1f5249b9806111c5cfcf604c1fa19df1794235bd79222579c2f1c. See evidence/partition-private-reopen-build-20261104.json.
-**Do not restore766 before this reopen test**: it needs current private state acrossnormalboot. Operator remains exclusiveVMowner. Root issued ONEreopenGO: worker87cbf7d09edd17f6595ede114a115e7bd907711b8893dd9eb0f9619849167544 /runner25d0051ec1f7a8850abd13d026fa12d06f605b1217a02dd9ef4d75beb2f11cf9, fresh6GiB forecast, one SAMEprivateStart/no restore, Before/After readonlycoldobserver0e5ea60f041fa98f76212fd3553eb3b74d6550128ed11684d73a878ea5f65c09. No result inferred until actual native terminal+archive.
+Already-private RW reopen **5ba59491d9b74e0db63893453518b9b7 PASSED** after a further normalStart withoutrestore:
+native5716/birth1793821158068/exit0/0.5876082s, actualboot1793821098326. Opened `\\?\GLOBALROOT\Device\Harddisk0\Partition4` RW,
+validated actualheld device0/partition4/privateGPT/ID/extent pluscurrentWindows/allactivepagefiles; oneSAME8192B write/flush/readback succeeded.
+No setters/offline/typechange/physicalRW/fallback/retry/restore. Independent Before/After exactprivateGPT/MBR/nativeinfo/C/rawmarker matched;
+source ordinaryfile opens remainederror3, native volumealiaseserror2. Evidence `evidence/private-reopen-interface-20261104.json`,
+SHA16725fc6826f74d6df2898a6bdebd1733ca24e0876b0b90a2134452affc8c2de;57-file171860B archive/all49native receipts pinned,
+manifest92ee9e2097df25323bc784db04a0006eb82317b27c61e1194293ae3d3524e245. This is finite same-bytes RWinterfaceproof, NOT authenticated replay/conversion/crash qualification.
+
+**LATEST VM Off/RAM0/current766/all16, T STILL PRIVATE, NO RESTORE**, freshly verified after this case.
+Finalcensus317250100370/free89303965696; fixed50GB epoch/cap unchanged. No furthernativeGO. Do not repeat completed primitives orrestore766 casually.
+Retained reopen EXE `.lab/development/partition-private-reopen-probe/bin/partition-private-reopen-probe.exe`,585728B,
+SHA26bebdf9c4247e102f4ef5cca7d36badd8ea76dce7d2699cf611b3c22c189ef8; source-pinsaceb7d8c0bc202acc00bd1ac11a8d4d8cbf5f45a4cb9dcc7b02aa2c19c8902ac;
+input46460a3338e4afb79ebc72a00ff026bbca72dce49a54363248a47eac1cbd200d; buildreceipt9266aac770b1f5249b9806111c5cfcf604c1fa19df1794235bd79222579c2f1c.
+Built0/36.7441847s/sharedtarget/25registry rows matchroot, all120inputs revalidated; dependencycommit9651516379024dde8308e831eadd2e8e3d622aff.
+`evidence/partition-private-reopen-build-20261104.json` preserves buildscope. Frozenalpha remains unchanged.
+
+NEXT actual SDK integration is being written ONLY as copiedfiles/patch in `.lab/development/partition-owner-integration-draft` byfrozen_candidate_cases.
+Opaque partition-scoped owner and bounded paged adapter alongside legacywhole-disk types; completeWindows/pagefile/configureddump checks;
+no newpublicCLI bypass, no JSON/path-only certificate, no observation-derived writeauthority. ExistingHeldPagedWritePolicy/authenticatedjournal/OLD-NEW gates remain prerequisites.
+Upper SourceContext/recovery/finalization and same-disk C journal disjointness mustbe integrated; do not mistake unused lowerprimitives for completedconversion.
+No application/build/nativeGO for this integration patch yet. Operator remains exclusiveVMowner; code/build/Git ownership rules remain.
 Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volumeI/O;
 private-type route avoids that dead path. Existing whole-disk guards/certificates stay unchanged.
 See `docs/ntfs-conversion-policy.md` for implemented preserve/materialize/refuse semantics and qualification boundaries.

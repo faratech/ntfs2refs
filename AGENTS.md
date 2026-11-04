@@ -64,10 +64,12 @@ pending Root's prepared helper. This was CaptureNtfs, not ReFS verification.
 Its stage `C:\ntfs2refs\resource-recovery-observe-9646d5eb347045ee894ed4803c3e7903`.
 
 Allocation fix is committed/pushed **b5663b87d6bd124d2c235a2684a2c60a166c6f21**.
-Focused check passed22.03s; no units. Release build **session86723 is LIVE** until
-its actual terminal is observed, output
+Focused check passed22.03s; no units. Release86723 actually completed0/2m43s, output
 `.lab/development/release-candidates/allocation-normalized-b5663b8`, selected
-`ntfs2refs` and `lab-artifact-allocation`. Observe the SAME handle, no duplicate.
+`ntfs2refs` and `lab-artifact-allocation`. Buildmanifest
+a46365c34bcb3c385296ccdbdf25300a095eeee431347da568611120e5794b04.
+Public SHAa26e29dd40aab859c41230a4007c291afba6b0ac85ba6ecd88580327bae708b4;
+probeSHA21f12319fd220da7a7001c27090113f335191fdacd14fa993cd57a4d7fe88b2b.
 The fix touches file_storage.rs, artifact_arena.rs, paged_capture.rs and a small
 native artifact-growth probe (no units). Literal
 finalization duplicates the same FILE_OBJECT before sealing, keeping transient
@@ -81,7 +83,20 @@ slack/hash/arena sealing while retaining the file object. CLI `--directory <fres
 --acknowledge-new-disposable-staging`. Run this focused native probe before another
 full conversion; only after it passes use the newly built public binary on a FRESH
 baseline/new run. Never reuse the failed8be artifacts as fresh conversion authority.
-No corrected native probe/full conversion has run yet. Root owns builds/VM/Git.
+Focusednativeprobe **b969ca56204f4c129090a4499a1d6a70** DID run once:
+actual5988/birth1793793655718/exit1/6.0920276s at12:01:01.822UTC. Stage
+`C:\ntfs2refs\artifact-allocation-stage-b969ca56204f4c129090a4499a1d6a70`, output
+`C:\ntfs2refs\artifact-allocation-b969ca56204f4c129090a4499a1d6a70`, host
+`.lab/development/artifact-allocation-b969ca56204f4c129090a4499a1d6a70`.
+**Baseline did NOT reproduce original guard** (arena_error=null); do not call
+this overall pass. Normalized case DID trim104923136B allocation to104861696B EOF,
+sameFileID/fullhash/originalarena+groupsealed. Mechanism evidence only, not proof
+of original failing artifact. Original8be literalEOF86695936B and route/index
+finalization patterns differ; original error had no path. Min is inspecting
+these exact paths before any broader normalization/repro. Do not raise slack,
+relax baseline criterion, or rerun full conversion until focused evidence answers.
+Both probe file objects closed at actual exit, artifacts retained. SourceF remains
+restoredNTFS; no corrected full conversion. Root owns builds/VM/Git.
 
 Root closed the successful NTFS observer into57files250809B, every source/host
 length/SHA and13actual owned digest terminals checked; manifest

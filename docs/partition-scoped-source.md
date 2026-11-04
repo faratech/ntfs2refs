@@ -62,5 +62,7 @@ The test partition's original GPT attributes and T: access were restored, its
 NTFS marker matched, and C: remained healthy. The VM was normally shut down and
 the completed branch saved. See the exact build, receipts and limits in
 [the recorded experiment](../evidence/partition-scoped-source-20261103.json).
-The changed converter's performance optimization has not yet had its own full
-native conversion run. No unit tests were added or run.
+The separate frozen `814f380` converter has since completed its own native
+conversion and recovery cases; see the [packaged alpha](frozen-resource-alpha-20261104.md).
+Those dedicated-disk results do not qualify this partition-scoped writer.
+No unit tests were added or run.

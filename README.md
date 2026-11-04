@@ -4,6 +4,16 @@ An experimental Rust NTFS-to-ReFS converter for data volumes, with a Hyper-V
 laboratory. Conversion runs on the Windows machine owning the disk; the program
 does not require a hypervisor. Windows OS-volume and boot conversion remain deferred.
 
+The [frozen resource-bounded alpha](docs/frozen-resource-alpha-20261104.md)
+is now packaged from unchanged source `814f380`. That exact executable passed
+conversion, mutation/reboot readback, separately restarted resume and rollback,
+preparation cancellation, and the recorded refusal cases. Independent checks
+matched 811 streams totaling 9.9 GB, 1,534 baseline objects and 1,024 additional
+directory paths. See the [package record](evidence/frozen-resource-alpha-814-package-20261104.json)
+and [exact qualification scope](evidence/frozen-resource-alpha-814-qualification-20261104.json).
+It remains experimental: dedicated nonboot data disks only, with broader
+hardware, feature, size and power-loss qualification still open.
+
 The [frozen 2026-10-29 drive alpha](docs/frozen-drive-alpha-20261029.md) passed
 normal conversion, ordinary file mutation and reboot readback on its 52 GiB
 fixture: 15 objects and all 10 file hashes matched. Its exact executable and
@@ -16,7 +26,7 @@ Other interruption points and physical power loss remain unqualified.
 
 The current default uses allocation-bounded capture and payload retention;
 `--whole-image-verification` selects the earlier whole-image path. Repeated
-allocated-range reads, fixed resource limits and relocation costs remain, so
+allocated-range reads, backend/geometry limits and relocation costs remain, so
 this is not yet a metadata-proportional, arbitrary-volume release. See the
 [current performance and compatibility limits](docs/release-0.0.1-readiness.md).
 

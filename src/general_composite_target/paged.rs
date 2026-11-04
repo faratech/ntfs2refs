@@ -566,6 +566,10 @@ fn result_budget(
     Ok(budget)
 }
 
+// Fixed application headroom for native hash handles/context, not a measured
+// total OS allocation or a hard cap on the provider's private allocations.
+const HASH_CONTEXT_RESERVE: u64 = 2 * 1024;
+
 struct PagedShadowClosing<'a> {
     target_owner: usize,
     binding: n2r_win32::general_layout::GeneralDiskBinding,
@@ -575,20 +579,20 @@ struct PagedShadowClosing<'a> {
     loaded_offset: u64,
     loaded_bytes: usize,
     buffer: Vec<u8>,
-    hash: Sha256,
+    hash: n2r_win32::sha256_native::Sha256,
     read: u64,
     reused: u64,
 }
 impl<'a> PagedShadowClosing<'a> {
     fn new(target: &n2r_win32::GeneralFrozenPartition, intervals: &'a Intervals) -> Result<Self> {
-        let mut hash = Sha256::new();
-        hash.update(b"n2r-paged-target-consumed-bytes-v1\0");
-        hash.update(intervals.image.to_le_bytes());
-        hash.update(intervals.store.len().to_le_bytes());
+        let mut hash = n2r_win32::sha256_native::Sha256::new()?;
+        hash.update(b"n2r-paged-target-consumed-bytes-v1\0")?;
+        hash.update(&intervals.image.to_le_bytes())?;
+        hash.update(&intervals.store.len().to_le_bytes())?;
         for ordinal in 0..intervals.store.len() {
             let row = intervals.row(ordinal)?;
-            hash.update(row.offset.to_le_bytes());
-            hash.update(row.length.to_le_bytes());
+            hash.update(&row.offset.to_le_bytes())?;
+            hash.update(&row.length.to_le_bytes())?;
         }
         Ok(Self {
             target_owner: std::ptr::from_ref(target) as usize,
@@ -624,9 +628,9 @@ impl<'a> PagedShadowClosing<'a> {
         let n = (row.length - self.done).min(self.buffer.len() as u64) as usize;
         target.seek(SeekFrom::Start(at))?;
         target.read_exact(&mut self.buffer[..n])?;
-        self.hash.update(at.to_le_bytes());
-        self.hash.update((n as u64).to_le_bytes());
-        self.hash.update(&self.buffer[..n]);
+        self.hash.update(&at.to_le_bytes())?;
+        self.hash.update(&(n as u64).to_le_bytes())?;
+        self.hash.update(&self.buffer[..n])?;
         self.loaded_offset = at;
         self.loaded_bytes = n;
         self.read = self
@@ -649,7 +653,7 @@ impl<'a> PagedShadowClosing<'a> {
             self.read == self.intervals.bytes,
             "closing raw coverage differs"
         );
-        Ok((hex::encode(self.hash.finalize()), self.read, self.reused))
+        Ok((hex::encode(self.hash.finish()?), self.read, self.reused))
     }
 }
 impl crate::general_shadow::source_backed::ClosingShadowBytes for PagedShadowClosing<'_> {
@@ -891,9 +895,11 @@ impl ProtectedPagedTargetSelection {
             &before == self.native.after() && before.disk_attributes == 3,
             "target recheck requires original frozen device state"
         );
-        let _ram = self
-            ._scratch
-            .lease_ram(crate::ntfs_inspect::SESSION_READ_BYTES as u64)?;
+        let _ram = self._scratch.lease_ram(
+            (crate::ntfs_inspect::SESSION_READ_BYTES as u64)
+                .checked_add(HASH_CONTEXT_RESERVE)
+                .context("target recheck hash workspace overflow")?,
+        )?;
         self.scope.revalidate()?;
         ensure!(
             self.captured.is_for_scope(&self.scope),
@@ -1049,6 +1055,7 @@ pub(crate) fn observe_and_select_paged(
         .max_row_bytes
         .checked_mul(8)
         .and_then(|n| n.checked_add(2 * crate::ntfs_inspect::SESSION_READ_BYTES as u64))
+        .and_then(|n| n.checked_add(HASH_CONTEXT_RESERVE))
         .context("target stage RAM overflow")?;
     let stage_ram = scratch.lease_ram(stage_ram_bytes)?;
     let result_budget = result_budget(&source_tails, &pair, &scratch)?;
@@ -1340,7 +1347,11 @@ pub(crate) fn observe_and_select_paged(
     // The capture candidate and reducer independently pay for their source
     // session, decoded object/routes and I/O buffers. Only the closing reader
     // below needs a buffer from this layer during consume().
-    let _closing_read_ram = scratch.lease_ram(crate::ntfs_inspect::SESSION_READ_BYTES as u64)?;
+    let _closing_read_ram = scratch.lease_ram(
+        (crate::ntfs_inspect::SESSION_READ_BYTES as u64)
+            .checked_add(HASH_CONTEXT_RESERVE)
+            .context("closing hash workspace overflow")?,
+    )?;
     drop(_stage_ram);
     let mut closing = PagedShadowClosing::new(target, &scope.consumed)?;
     let captured = consume(context, target, expected, &native, &scope, &mut closing)?;

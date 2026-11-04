@@ -42,17 +42,34 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current state: verify before acting
 
-**NEW PUBLIC CONVERSION33a1bb206c51427298b6240fe5a261f9 IS LIVE.**
-Root's launch-public-resource-min-k helper completed exit0 (session67606 closed).
-Actual nativePID5364/birth1793751740787 was independently matched live; SYSTEM
-workerPID5208/birth1793751734250, boot1793751711106. No native terminal yet.
-Exact pinned
-cad public binary/manifest below, --drive F --partition2 --minimize-scratch.
+**PUBLIC CONVERSION33a1bb206c51427298b6240fe5a261f9 IS COMPLETE.**
+Actual cad nativePID5364/birth1793751740787 exited0/1101.1730916s at
+2026-11-04T00:40:42.0251926Z; worker also completed0. VM remains Running,
+parent3343, boot1793751711106; F is operational ReFS/source attributes0/HND.
+No native project worker/task remains. NEVER replay this closed old raw J.
+Actual argv --drive F --partition2 --minimize-scratch. Native finalization
+matched2558 bindings/157 known streams119009B/654extent-only, label+mounts.
 Hostroot.lab/hyperv/streaming-v2-20261027/resource-fixture-33a1bb206c51427298b6240fe5a261f9;
 gueststageC:\ntfs2refs\resource-fixture-33a1bb206c51427298b6240fe5a261f9.
 VM actually restored ONCE to3343f2a4-cf81-4fa9-a504-030425a8011e and is Running.
-Inspect owned dispatch/task/native-process+PID/birth/terminal before any power
-or repeat launch; dispatch alone does not prove a native process started.
+Independent SYSTEM observer1f240b970aff401cba6f0829811588dd, workerPID3000/
+birth1793753061398, matchedALL811 XXH3 streams9885801949B/1534baselineobjects/
+1024extra paths, opening+closing,13 real digest exits0. Fullstreamread11.0066204s.
+This new cad branch has NOT had its own reboot/mutation/AP recovery cases.
+Closed metadata.zip SHA5ddd7e45c7ad125af741123f4d9eeec4063ac671b8cc4f1adcec995c2dba8e7e,
+manifestd9cbc058b4bf48280ecf94a3a6d6a7a930b2f5020304acc0449f5d2b056f0244;
+ALL4271 entries157372594B independently length/SHA-verified on host underclosed/.
+Large J/shadow/literal stay in guest; no new cad checkpoint saved yet.
+J186527632logical/186527744allocatedB; retained regularfileallocation1214679968B,
+4198files, NOT peak scratch and excludes global MFT/directory overhead.
+Last observed process highwater178360320B is NOT final peak; admitted4GiB VM.
+Authenticated40-frame closed ledger read179627699712B/write3461695592B: logical,
+not physical or exact final. Exact638 consumedranges6176772096B; immediate
+admission4→2scans removes12353544192 raw shadow bytes. Phase aggregate drops
+27577485632→14215644770B; overall close reads9989575064B lower, writes431350092B
+higher than f856. Runtime65.010655s LONGER: never claim a wall-clock speedup.
+See evidence/public-resource-read-reuse-20261103.json. Check actual newer
+task/PID/birth before power/restore; these terminal case facts cannot prove idle.
 The helper's K fixture path is unused by public CLI; derive real engine output
 from actual stdout. Root admitted unchanged40GiB forecast against ALL lab/cache/
 staging277388706458B/free129186086912B after cleanup; no cap/epoch reset.
@@ -77,13 +94,23 @@ partition-scoped SDK reader and root lab observer. Earlier commitc4aef9e fuses
 immediate fresh-apply read-only admission bookends, removing two duplicate
 consumed-shadow scans while preserving both complete source/target checks.
 For the closed f856 range set that is12,353,544,192 fewer logical shadow bytes;
-**the changed converter has NOT had its own full native conversion run**.
+The cad build now has the scoped full native result above. Subsequent source
+changes must not inherit it.
 Focused cargo check and pinned four-tool release build passed; no unit tests.
 Shared build manifest7096f004b68eca13f6594c692c87f6c87245be2125b76a4836737d929169d395
 at.lab/development/release-candidates/partition-readonly-cad9139/manifest.json.
 PublicSHA6ffe59ce8a6f9118b49a5b14202c3618b950e8ed08978e5f0d10fb24cc544789;
 readonly observerSHA51fb56bf2b4e557c36d33645da6d3ea4230bd6b80e778df44f5371df92b13984.
 The earlier native-qualified a0b candidate and frozen alpha remain preserved.
+
+NEXT checked source change combines publication's two owner checks inside one
+complete frozen/capture opening+closing, leaving index/delegation/arena-close/
+final-result revalidation and SDK AP gates separate. It also switches ONLY
+PagedShadowClosing to existing native CNG SHA-256; v1 bytes/framing/chunks/digest
+and all raw reads unchanged, errors propagate, three workspace admissions add
+2KiB context headroom. Main unchanged; focused four-bin check passed8.42s,
+no unit tests. This combined change still needs committed-source release build
+and its OWN native qualification; do not keep making unrelated source changes.
 
 Native partition probe: mountvol T:\ /p established runtime exclusion but
 failed reboot persistence. Target-only GPT_OFFLINE0800000000000000 plus separate

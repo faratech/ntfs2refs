@@ -250,3 +250,36 @@ saved ledger, not a measured speedup or physical-I/O result. The earlier frozen
 a0b native results do not qualify this changed build. Focused compilation passed;
 native qualification of the optimization remains pending. No unit tests were
 added or run.
+
+## Publication and paged hashing follow-up
+
+The cad9139 public conversion completed successfully in 1,101.1730916 seconds.
+An independent observer matched all 811 original XXH3 streams (9,885,801,949
+bytes), 1,534 baseline objects and 1,024 added directories. Its authenticated
+closed ledger confirms that immediate fresh-apply admission now performs two
+complete consumed-shadow scans rather than four: exactly 12,353,544,192 raw
+shadow bytes avoided on this run's 638-range set. The measured phase aggregate
+fell from 27,577,485,632 to 14,215,644,770 logical process-read bytes.
+
+Overall observer-close reads fell by 9,989,575,064 bytes, while writes rose by
+431,350,092 bytes. Runtime increased by 65.010655 seconds versus f856, so this
+run establishes a read reduction, not a wall-clock speedup. The counts are
+logical process transfers, not physical storage I/O or exact final counters.
+See [the recorded result](../evidence/public-resource-read-reuse-20261103.json).
+
+The next change applies the same scoped opening/closing pattern to publication
+of independent recovery-copy files. It retains both complete owner/journal
+checks and error-path closing, then separately creates the write index,
+delegates the guard, closes the arena and revalidates the prepared result.
+For the saved f856 ranges, it removes another 12,353,544,192 shadow-read bytes,
+251,011,072 fingerprint-read bytes and 171,892,736 literal-read bytes. These
+figures describe code-derived scan removal, not a new native timing result.
+
+The paged consumed-range hasher also now uses the existing Microsoft CNG
+SHA-256 backend. The v1 domain, interval and chunk framing, chunk boundaries,
+input bytes, digest and source/target checks are unchanged. Every native hash
+error propagates; handles are released by the existing RAII wrapper. Three
+existing workspace admissions reserve 2 KiB of application headroom, without
+claiming an exact size for private Windows allocations. File-content hashes
+remain XXH3-128. Focused compilation passed; the combined change still needs
+its own native result. No unit tests were added or run.

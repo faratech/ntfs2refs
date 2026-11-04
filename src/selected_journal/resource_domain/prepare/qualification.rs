@@ -489,82 +489,109 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             checkpoint_events(events)?;
             ensure!(events.is_empty(), "native event checkpoint did not drain");
         }
-        require_owners(
-            &mut prepared,
-            expected,
-            maps.as_ref(),
-            &mut locator,
-            None,
-            None,
-            events,
-        )?;
-        checkpoint_events(events)?;
-        ensure!(events.is_empty(), "native event checkpoint did not drain");
-        let expected_path = expected.final_path();
-        let map_path = maps
-            .as_ref()
-            .map(|m| m.artifact_lease().snapshot().final_path.as_str());
-        let context = &prepared.context;
-        let locator_sha = hex::encode(locator.external_sha256());
-        let publication = Publication {
-            schema_version: 1,
-            kind: "resource-allocation-recovery-envelope-v1",
-            source: prepared.inner._facts.source,
-            shadow: prepared.inner._facts.shadow,
-            resource_admission: context.resource_admission(),
-            verification_policy: context.report().policy,
-            source_fingerprint_kind: context.fingerprint().kind(),
-            source_sha256: context.source_sha256(),
-            source_inspection_sha256: context.inspection_sha256(),
-            source_views_sha256: context.source_views_sha256(),
-            locator: FilePin {
-                path: &locator.snapshot().final_path,
-                sha256: &locator_sha,
-                bytes: locator.snapshot().file_bytes,
-            },
-            expected: ExpectedPin {
-                file: FilePin {
-                    path: &expected_path,
-                    sha256: expected.file_sha256(),
-                    bytes: expected.byte_len(),
+        // Only independent recovery-copy files are written here. Keep both
+        // complete owner/journal checks inside one non-escaping frozen
+        // source/target boundary, with full capture checks at its bookends.
+        let capture = prepared.candidate.protected_proof().captured();
+        let publication_result = capture.with_revalidation(|capture_witness| {
+            with_frozen_preparation_revalidation(
+                &mut prepared,
+                capture_witness,
+                events,
+                |frozen, prepared, events| {
+                    let result = (|| {
+                        require_owners_between_frozen_checks(
+                            frozen,
+                            prepared,
+                            expected,
+                            maps.as_ref(),
+                            &mut locator,
+                            None,
+                            events,
+                        )?;
+                        checkpoint_native_events(events, &mut checkpoint_events)?;
+                        let expected_path = expected.final_path();
+                        let map_path = maps
+                            .as_ref()
+                            .map(|m| m.artifact_lease().snapshot().final_path.as_str());
+                        let context = &prepared.context;
+                        let locator_sha = hex::encode(locator.external_sha256());
+                        let publication = Publication {
+                            schema_version: 1,
+                            kind: "resource-allocation-recovery-envelope-v1",
+                            source: prepared.inner._facts.source,
+                            shadow: prepared.inner._facts.shadow,
+                            resource_admission: context.resource_admission(),
+                            verification_policy: context.report().policy,
+                            source_fingerprint_kind: context.fingerprint().kind(),
+                            source_sha256: context.source_sha256(),
+                            source_inspection_sha256: context.inspection_sha256(),
+                            source_views_sha256: context.source_views_sha256(),
+                            locator: FilePin {
+                                path: &locator.snapshot().final_path,
+                                sha256: &locator_sha,
+                                bytes: locator.snapshot().file_bytes,
+                            },
+                            expected: ExpectedPin {
+                                file: FilePin {
+                                    path: &expected_path,
+                                    sha256: expected.file_sha256(),
+                                    bytes: expected.byte_len(),
+                                },
+                                semantic_sha256: expected.semantic_sha256(),
+                                objects: expected.len() as u64,
+                            },
+                            recovery_maps: maps.as_ref().zip(map_path).map(|(m, p)| MapPin {
+                                file: FilePin {
+                                    path: p,
+                                    sha256: m.sha256(),
+                                    bytes: m.bytes(),
+                                },
+                                records: m.records(),
+                            }),
+                            // Older publications may omit this guard; fresh
+                            // preparation must retain its actual runtime pin.
+                            early_preparation_guard: Some(
+                                context.early_preparation_guard_pin().context(
+                                    "fresh publication has no original preparation guard",
+                                )?,
+                            ),
+                            ticket_sha256: hex::encode(
+                                serialization_pin(&prepared.inner.ticket, 4096)?.1,
+                            ),
+                            expected_mount_paths: &context.mount_paths().paths,
+                            expected_source_label: context.expected_label(),
+                            serialized_publication_grants_authority: false,
+                        };
+                        let artifacts = save_publication(
+                            group,
+                            path,
+                            &publication,
+                            scratch.budget().record_bytes,
+                        )?;
+                        require_owners_between_frozen_checks(
+                            frozen,
+                            prepared,
+                            expected,
+                            maps.as_ref(),
+                            &mut locator,
+                            None,
+                            events,
+                        )?;
+                        Ok(artifacts)
+                    })();
+                    // Closing source/device observations need their bounded
+                    // event batch even when publication or an owner check fails.
+                    let drained = checkpoint_native_events(events, &mut checkpoint_events);
+                    finish_readonly_boundary(result, drained)
                 },
-                semantic_sha256: expected.semantic_sha256(),
-                objects: expected.len() as u64,
-            },
-            recovery_maps: maps.as_ref().zip(map_path).map(|(m, p)| MapPin {
-                file: FilePin {
-                    path: p,
-                    sha256: m.sha256(),
-                    bytes: m.bytes(),
-                },
-                records: m.records(),
-            }),
-            // All new fresh conversions must carry their actual pre-freeze
-            // guard. None remains a reader compatibility form for older V4
-            // publications, never a new source-admission bypass.
-            early_preparation_guard: Some(
-                context
-                    .early_preparation_guard_pin()
-                    .context("fresh publication has no original preparation guard")?,
-            ),
-            ticket_sha256: hex::encode(serialization_pin(&prepared.inner.ticket, 4096)?.1),
-            expected_mount_paths: &context.mount_paths().paths,
-            expected_source_label: context.expected_label(),
-            serialized_publication_grants_authority: false,
-        };
+            )
+        });
+        // A raw alias is not excluded by held ordinary files. Rehash the full
+        // original capture after both success and failure before releasing leases.
         let (publication, checksum) =
-            save_publication(group, path, &publication, scratch.budget().record_bytes)?;
-        require_owners(
-            &mut prepared,
-            expected,
-            maps.as_ref(),
-            &mut locator,
-            None,
-            None,
-            events,
-        )?;
-        checkpoint_events(events)?;
-        ensure!(events.is_empty(), "native event checkpoint did not drain");
+            finish_readonly_boundary(publication_result, capture.revalidate())?;
+        checkpoint_native_events(events, &mut checkpoint_events)?;
         let write_index = if prepared.inner.ticket.marker_profile.is_none() {
             let index_path = path.with_extension("write-index");
             let index_bytes = u64::from(prepared.inner.ticket.range_count)

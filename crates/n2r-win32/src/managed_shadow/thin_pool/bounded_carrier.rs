@@ -252,7 +252,35 @@ impl BoundedCarrier {
         }
         let mut volume = self.volume.try_clone()?;
         let (data, boot) = ntfs_geometry(&mut volume, &self.binding, Some(self.ntfs_serial))?;
-        let available = resource_native::observe_available_resources(&self.member_root)?;
+        // Generic resource sampling canonicalizes via a DOS final path, which
+        // is absent on this deliberately letterless carrier. Sample system RAM
+        // through the ordinary external backing parent, then query the actual
+        // already-verified carrier VolumeGUID directly for filesystem space.
+        let external_parent = self
+            .member
+            .path
+            .parent()
+            .ok_or_else(|| invalid("carrier external backing parent absent"))?;
+        let external =
+            resource_native::observe_available_resources(external_parent).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("carrier RAM/external-backing sample: {error}"),
+                )
+            })?;
+        let space = discovery::observe_volume_space(&(self.binding.volume_path()? + "\\"))
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("carrier verified VolumeGUID free-space sample: {error}"),
+                )
+            })?;
+        let available = resource_native::AvailableResources {
+            total_physical_bytes: external.total_physical_bytes,
+            available_physical_bytes: external.available_physical_bytes,
+            scratch_available_bytes: space.available_bytes_to_caller,
+            scratch_total_bytes: space.total_bytes_available_to_caller,
+        };
         if available.scratch_available_bytes < budget.minimum_free_bytes {
             return Err(invalid(&format!(
                 "actual NTFS carrier free reserve breached: available {}, minimum {}",

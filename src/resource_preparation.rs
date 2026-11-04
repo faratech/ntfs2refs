@@ -34,6 +34,8 @@ pub(crate) mod early_guard;
 pub(crate) mod file_observer;
 #[path = "resource_partition_target.rs"]
 pub(crate) mod partition_target;
+#[path = "resource_partition_preparation.rs"]
+pub(crate) mod partition_preparation;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent,

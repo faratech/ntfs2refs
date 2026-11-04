@@ -26,6 +26,55 @@ mod bounded_carrier;
 pub use bounded_carrier::CarrierObservation;
 mod formatted;
 pub use formatted::{FormattedThinShadow, FormattingObservation};
+mod retirement;
+pub use retirement::ThinShadowRetirementReceipt;
+
+fn powershell_executable() -> io::Result<PathBuf> {
+    let mut system = [0u16; 32768];
+    // SAFETY: initialized system directory output and explicit WCHAR count.
+    let count = unsafe { GetSystemDirectoryW(system.as_mut_ptr(), system.len() as u32) } as usize;
+    if count == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if count >= system.len() {
+        return Err(invalid("system PowerShell directory exceeds bound"));
+    }
+    Ok(PathBuf::from(
+        String::from_utf16(&system[..count])
+            .map_err(|_| invalid("system PowerShell directory UTF16 differs"))?,
+    )
+    .join("WindowsPowerShell\\v1.0\\powershell.exe"))
+}
+
+/// Read-only discovery, not permission to adopt any pool/member or issue writes.
+pub fn discover_windows_storage_subsystem() -> io::Result<String> {
+    const QUERY: &str = "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$s=@(Get-StorageSubSystem|Where-Object{$_.FriendlyName-like'Windows Storage*'});if($s.Count-ne1){throw 'One Windows Storage subsystem required'};$id=[string]$s[0].UniqueId;if($id.Length-eq0-or$id.Length-gt4096-or$id-cmatch'[\\x00-\\x1f]'){throw 'Bounded storage subsystem identity required'};[Console]::Out.Write($id)";
+    let mut child = Command::new(powershell_executable()?)
+        .args(["-NoProfile", "-NonInteractive", "-Command", QUERY])
+        .creation_flags(0x0800_0000)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut bytes = Vec::with_capacity(16385);
+    let read = child
+        .stdout
+        .take()
+        .ok_or_else(|| invalid("subsystem discovery output absent"))?
+        .take(16385)
+        .read_to_end(&mut bytes);
+    let status = child.wait()?;
+    read?;
+    if !status.success() || bytes.len() > 16384 {
+        return Err(invalid(
+            "read-only storage subsystem discovery refused or exceeded output bound",
+        ));
+    }
+    let value =
+        String::from_utf8(bytes).map_err(|_| invalid("storage subsystem identity is not UTF8"))?;
+    text(&value)?;
+    Ok(value)
+}
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Budget {

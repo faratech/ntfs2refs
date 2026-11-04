@@ -234,7 +234,7 @@ impl BoundedCarrier {
         Ok(self.member_root.join(format!("member-{index}.vhdx")))
     }
 
-    pub(super) fn observe(&self, budget: Budget) -> io::Result<CarrierObservation> {
+    fn identity(&self) -> io::Result<(Vec<u8>, Vec<u8>)> {
         self.member.revalidate()?;
         let actual = native_disk(
             &self.disk,
@@ -251,7 +251,51 @@ impl BoundedCarrier {
             return Err(invalid("held carrier members directory identity changed"));
         }
         let mut volume = self.volume.try_clone()?;
-        let (data, boot) = ntfs_geometry(&mut volume, &self.binding, Some(self.ntfs_serial))?;
+        ntfs_geometry(&mut volume, &self.binding, Some(self.ntfs_serial))
+    }
+
+    /// Identity-only cleanup gate. It does not loosen the ordinary construction
+    /// or formatting admission and does not promise another full scratch budget.
+    pub(super) fn verify_retirement_identity(&self) -> io::Result<()> {
+        self.identity().map(|_| ())
+    }
+
+    pub(super) fn maximum_additional_host_backing_bytes(&self) -> io::Result<u64> {
+        self.member.revalidate()?;
+        let allocated = file_snapshot(&self.member.backing)?.allocation_bytes;
+        self.member
+            .attachment
+            .created
+            .size
+            .checked_add(MEMBER_OVERHEAD)
+            .and_then(|maximum| maximum.checked_sub(allocated))
+            .and_then(|remaining| remaining.checked_add(EXTERNAL_METADATA_RESERVE))
+            .ok_or_else(|| {
+                invalid(
+                    "bounded carrier remaining host backing overflow or allocation exceeds bound",
+                )
+            })
+    }
+
+    pub(super) fn into_retirement_member(self) -> io::Result<Member> {
+        self.verify_retirement_identity()?;
+        let Self {
+            member,
+            disk,
+            volume,
+            root,
+            ..
+        } = self;
+        // Release every inner filesystem/directory/raw reference before the
+        // original carrier provider is explicitly detached by its live owner.
+        drop(volume);
+        drop(root);
+        drop(disk);
+        Ok(member)
+    }
+
+    pub(super) fn observe(&self, budget: Budget) -> io::Result<CarrierObservation> {
+        let (data, boot) = self.identity()?;
         // Generic resource sampling canonicalizes via a DOS final path, which
         // is absent on this deliberately letterless carrier. Sample system RAM
         // through the ordinary external backing parent, then query the actual

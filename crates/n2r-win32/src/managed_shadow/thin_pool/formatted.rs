@@ -45,6 +45,26 @@ pub struct FormattedThinShadow {
 }
 
 impl FormattedThinShadow {
+    pub fn provider_root(&self) -> &Path {
+        &self._owner.root
+    }
+    /// Historical constructor snapshot, before GPT/formatting. It is not a
+    /// current RAW-state observation or runtime authority.
+    pub fn constructor_observation(&self) -> &Observation {
+        &self._owner.observation
+    }
+    /// Conservative remaining carrier/header growth plus external metadata.
+    /// This is a planning bound, not a reservation or a file-data capacity.
+    pub fn maximum_additional_host_backing_bytes(&self) -> io::Result<u64> {
+        self._owner
+            .carrier
+            .as_ref()
+            .ok_or_else(|| invalid("host backing growth requires the bounded carrier profile"))?
+            .maximum_additional_host_backing_bytes()
+    }
+    pub(super) fn into_retirement_parts(self) -> (ThinPool, GeneralDiskBinding) {
+        (self._owner, self.binding)
+    }
     pub fn binding(&self) -> &GeneralDiskBinding {
         &self.binding
     }

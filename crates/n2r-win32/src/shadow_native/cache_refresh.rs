@@ -353,9 +353,21 @@ pub(super) fn complete_owned_metadata_domain(
         Ok(())
     };
     namespace(false)?;
+    const DIRECTORY: u8 = 1;
+    const EXTENDED_ATTRIBUTES: u8 = 2;
+    const REPARSE: u8 = 4;
+    // Reuse the existing prepaid scalar slot; the feature flags add no index
+    // allocation. The held InputDomain is immutable throughout completion.
+    const _: () = assert!(
+        std::mem::size_of::<(usize, usize, u8)>()
+            == std::mem::size_of::<(usize, usize, bool)>()
+    );
     let mut ordered = Vec::new();
     input.for_each(|index, item| {
-        ordered.push((index, item.components.len(), item.directory));
+        let flags = (u8::from(item.directory) * DIRECTORY)
+            | (u8::from(item.extended_attributes.is_some()) * EXTENDED_ATTRIBUTES)
+            | (u8::from(item.reparse.is_some()) * REPARSE);
+        ordered.push((index, item.components.len(), flags));
         Ok(())
     })?;
     ordered.sort_by_key(|(_, depth, _)| *depth);
@@ -365,8 +377,8 @@ pub(super) fn complete_owned_metadata_domain(
     // file. A shallow canonical file may also have a name under a deep parent.
     for &(index, _, _) in ordered
         .iter()
-        .filter(|(_, _, directory)| *directory)
-        .chain(ordered.iter().filter(|(_, _, directory)| !*directory))
+        .filter(|(_, _, flags)| *flags & DIRECTORY != 0)
+        .chain(ordered.iter().filter(|(_, _, flags)| *flags & DIRECTORY == 0))
     {
         let owned = input.object(index)?;
         let view = owned.input();
@@ -416,7 +428,10 @@ pub(super) fn complete_owned_metadata_domain(
     // hard-link name. Native mutation precedes final timestamp restoration.
     let mut ea_objects = 0usize;
     let mut ea_entries = 0usize;
-    for &(index, _, _) in &ordered {
+    for &(index, _, flags) in &ordered {
+        if flags & EXTENDED_ATTRIBUTES == 0 {
+            continue;
+        }
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;
@@ -435,7 +450,10 @@ pub(super) fn complete_owned_metadata_domain(
     // Install points only after all parent-first ACL propagation has finished;
     // no security operation may traverse a newly installed junction target.
     let mut reparse_objects = 0usize;
-    for &(index, _, _) in &ordered {
+    for &(index, _, flags) in &ordered {
+        if flags & REPARSE == 0 {
+            continue;
+        }
         let owned = input.object(index)?;
         let view = owned.input();
         let item = &view;

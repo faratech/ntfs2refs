@@ -30,7 +30,14 @@ Old LIVE labels and retired checkpoint instructions there are historical.
 
 ## Current authoritative state and immediate action
 
-Current committed HEAD **44cca72e4118b5f475de4b8cffc1a5d2eaf435c7** is pushed.
+Current committed source **b0b576a** adds the exact N2RCAP02 artifact probe;
+its focused check passed0.55s. Native9f6f3c888f85406aafd06fbde4c6f567 exited1:
+the required baseline refusal did NOT reproduce; exact results are below.
+The closed failed attempt used44cca72; a fresh publicb566 run is now LIVE.
+Runf9a192c850934463af838a44deb480fe, actualPID5348/birth1793795529382,
+started12:32:09UTC; terminal absent at Root's observation. Gueststage
+`C:\ntfs2refs\resource-fixture-f9a192c850934463af838a44deb480fe`.
+Only Root monitors this process. No full native pass or cleanup success is claimed.
 SDK graph retirement/getters/discovery, typed CLI staging wrapper, hidden forced
 thin mode, remaining-provider-growth reservation, and geometry diagnostics compile.
 The final public check passed13.91s; no units ran. Public thin/native graph cleanup
@@ -47,7 +54,9 @@ ActualPID5404/birth1793791444645 exited1/732.9981954s at11:36:17.748UTC;
 process absent. Error `artifact physical allocation exceeds reserved slack`.
 The preparation cancellation restored sourceNTFS automatically; source1 is now
 online/read-write and F: returned. No J/publication/HND/cleanup was reached.
-VM Running/4GiB/parent3343/boot1793791414487; do not retry this old run.
+At failed-run closure VM was Running/4GiB/parent3343/boot1793791414487;
+the archived active branch was subsequently discarded as recorded below.
+Do not retry this old run.
 Gueststage `C:\ntfs2refs\resource-fixture-8be515c3788d416b94d4991efddd5141`;
 host `.lab/hyperv/streaming-v2-20261027/resource-fixture-8be515c3788d416b94d4991efddd5141`.
 Actual argv is the seven-option thin qualification command described below.
@@ -58,9 +67,10 @@ Root closed19metadatafiles865455B; manifest
 390b5aa659079e7d683250a6e09e97087be89ad0b1f5fafc26e9e6d319e9401b at
 `closed-public-terminal`. IndependentNTFS observer9646d5eb347045ee894ed4803c3e7903
 reported success: worker4752/birth1793792565158/SYSTEM, all811XXH3 streams9885801949B,
-1534baseline objects/1024extra directories,13batches10.772807s. Extra namespace
-comparison against the original manifest and all owned-terminal archives remain
-pending Root's prepared helper. This was CaptureNtfs, not ReFS verification.
+1534baseline objects/1024extra directories,13batches10.772807s. All13actual owned
+terminals and the57-file archive are complete. All1024UTF16 paths and the full
+paths structure matched frozen8f14; exact closure pins are below. This was
+CaptureNtfs, not ReFS verification.
 Its stage `C:\ntfs2refs\resource-recovery-observe-9646d5eb347045ee894ed4803c3e7903`.
 
 Allocation fix is committed/pushed **b5663b87d6bd124d2c235a2684a2c60a166c6f21**.
@@ -71,18 +81,19 @@ a46365c34bcb3c385296ccdbdf25300a095eeee431347da568611120e5794b04.
 Public SHAa26e29dd40aab859c41230a4007c291afba6b0ac85ba6ecd88580327bae708b4;
 probeSHA21f12319fd220da7a7001c27090113f335191fdacd14fa993cd57a4d7fe88b2b.
 The fix touches file_storage.rs, artifact_arena.rs, paged_capture.rs and a small
-native artifact-growth probe (no units). Literal
-finalization duplicates the same FILE_OBJECT before sealing, keeping transient
-NTFS growth allocation alive. ALL files were within slack after process exit.
-Normalize allocation at exact held-writer EOF before readonly duplication;
+native artifact-growth probe (no units). Literal finalization used a duplicate
+of the same FILE_OBJECT before sealing; this alone does not identify the artifact
+that failed8be. ALL observed files were within slack after process exit.
+The b566 change normalizes allocation at exact held-writer EOF before readonly duplication;
 preserve EOF/FileID/content/full hash and the original unchanged slack check.
 Do not merely increase slack. This does NOT prove a hard transient NTFS quota.
-The new probe writes two fresh100MiB+4KiB ordinary files in separate512MiB arenas,
-must reproduce baseline actual guard refusal, then normalize and pass SAME original
+The original b566 probe writes two fresh100MiB+4KiB ordinary files in separate512MiB
+arenas and requires baseline actual guard refusal, then normalization and SAME original
 slack/hash/arena sealing while retaining the file object. CLI `--directory <fresh>
---acknowledge-new-disposable-staging`. Run this focused native probe before another
-full conversion; only after it passes use the newly built public binary on a FRESH
-baseline/new run. Never reuse the failed8be artifacts as fresh conversion authority.
+--acknowledge-new-disposable-staging`. Both focused probes are now closed without
+deterministic baseline reproduction. Root selected a FRESH publicb566 run with
+actual failing-artifact context rather than more speculative patches/probes.
+Never reuse the failed8be artifacts as fresh conversion authority.
 Focusednativeprobe **b969ca56204f4c129090a4499a1d6a70** DID run once:
 actual5988/birth1793793655718/exit1/6.0920276s at12:01:01.822UTC. Stage
 `C:\ntfs2refs\artifact-allocation-stage-b969ca56204f4c129090a4499a1d6a70`, output
@@ -92,9 +103,9 @@ actual5988/birth1793793655718/exit1/6.0920276s at12:01:01.822UTC. Stage
 this overall pass. Normalized case DID trim104923136B allocation to104861696B EOF,
 sameFileID/fullhash/originalarena+groupsealed. Mechanism evidence only, not proof
 of original failing artifact. Original8be literalEOF86695936B and route/index
-finalization patterns differ; original error had no path. Min is inspecting
-these exact paths before any broader normalization/repro. Do not raise slack,
-relax baseline criterion, or rerun full conversion until focused evidence answers.
+finalization patterns differ; original error had no path. The exact-pattern
+follow-up below also did not reproduce it. Do not raise slack, relax the baseline
+criterion, or treat either probe as proof of the original failing artifact.
 Both probe file objects closed at actual exit, artifacts retained. SourceF remains
 restoredNTFS; no corrected full conversion. Root owns builds/VM/Git.
 
@@ -103,19 +114,38 @@ length/SHA and13actual owned digest terminals checked; manifest
 e4450691e296efb7692ac7bd367cd942b4a47b26a1d3fd00c4e1fd251064a280,
 result45bcbf4a7b306c749f05326cc1477dd5ce337213dceaf1673dab09fc6c42c56c.
 All1024fresh UTF16 paths and full paths structure matched frozen8f14 namespace.
-Archive `closed-independent-ntfs` under8be hostroot. No live N2R jobs remain;
-VM stays Running3343, sourceF is restoredNTFS, original NTFS prealignment moves
-remain legitimate. This is logical preservation, not bit-identical physical layout.
+Archive `closed-independent-ntfs` under8be hostroot. At observer closure all N2R
+jobs were terminal and sourceF was restoredNTFS; original NTFS prealignment moves
+remained legitimate. This is logical preservation, not bit-identical physical layout.
 
-LATEST DIAGNOSTIC REFINEMENT:8be capture.index EOF564576 equals128-byte header
-+7054*80-byte rows+128-byte footer exactly. In actual capture flow literal sealing
-precedes index.finish, so the footer is evidence that literal may ALREADY have
-passed. The index writer's same-FILE_OBJECT sealing is now the leading suspected
-offender; NOT proven. Min is updating only the focused native probe to include
-the actual literalEOF86695936 and index80-byte/header/footer pattern. Preserve
-existing b969 no-reproduction result; do not retroactively call it a pass, bulk
-normalize other artifacts, or rerun the long conversion without focused evidence.
-No native jobs are active. CurrentHEAD docs c698e10, product fix sourceb5663b8.
+LATEST EXACT-PATTERN RESULT:8be capture.index EOF564576 equals128-byte header
++7054*80-byte rows+128-byte footer exactly. The footer follows initial literal
+sealing; it suggested an index investigation but did not identify the failure.
+Nativeb0b576a probe9f6f3c888f85406aafd06fbde4c6f567 actual3604/birth1793795117389
+exited1/7.4564207s at12:25:24.858UTC: NO baseline reproduction. LiteralEOF86695936
+had86704128B allocation; indexEOF564576 had589824B. Both unmodified original seals
+passed. Normalized literal/index seals and unnormalized production-route seals
+also passed. Route content/lengths were not identical to the original run.
+Do not call the overall probe a pass or infer an index/literal cause. No index
+production patch follows. The original unchanged allocation/slack guards remain.
+Root archived4199files216627913B from the failed engine (excluding thin-provider
+graph), both probe stages/results and original artifacts. Every host ZIP entry
+length/SHA was independently checked. Archive
+`.lab/development/exact-allocation-9f6f3c888f85406aafd06fbde4c6f567/closed-evidence.zip`
+SHAe2163a0630c949eac2f89f64eda15a30c6c8f511522a3958d0aa982b6eecb9b0,
+manifestSHA1a53a45698840da00082abcd9dd3daf47f7e2ecaec346c750f0462243ccd63a3.
+Exact-probe buildmanifest1f64dad9e73e6c9912c1524052f20fef22045ded2e941ceb2724428bd232b744.
+See evidence/exact-capture-allocation-probe-20261104.json. Preserve b969's earlier
+non-reproduction. The closed failed engine has no journal-layout.index; index
+remains an unproved suspect. Root's fresh publicb566 run above has improved
+actual failing-artifact context; no corrected full conversion is yet qualified.
+After archive closure Root orderly shut down and restored3343 ONCE; a fresh
+separate process verifiedOff/RAM0 before the new dispatch. Discarding the archived
+disposable active branch reclaimed about10GB. Frozen origins and saved4b8 remain.
+Complete census305248164376B/free101261185024B admitted the unchanged22GiB forecast
+23622320128B under329374052988B. No epoch/cap/runtime-limit change. New no-restore
+launcherSHAea5702c3c91496cc964a01a0e25add42fb82543a99a880cfe313ce088199708c.
+Root owns the fresh dispatch/run identity and all VM/Git actions; no pass inferred.
 
 Before that run VM2401593c-4b30-472e-9b6d-c9534cbaa599 was saved
 **Off/RAM0/parent4b8dafbf-7500-4c51-ab12-d0a697bf7264**, freshly verified.

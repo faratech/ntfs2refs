@@ -84,9 +84,13 @@ pub struct ResourceSourceReport<'a> {
     pub certificate_issued: bool,
     pub execution_authorized: bool,
 }
+#[path = "resource_owner.rs"]
+pub(crate) mod source_owner;
+use source_owner::ResourceSourceOwner;
+
 pub struct ResourceSourceContext {
     early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
-    source: GeneralFrozenPartition,
+    source: ResourceSourceOwner,
     raw: PagedInspection,
     native: GeneralLivePagedNtfsObservation,
     fingerprint: PagedSourceFingerprint,
@@ -133,6 +137,7 @@ pub struct ResourceSourceContext {
 /// it cannot open a writer without the still-owned prepared journal.
 pub(crate) struct PreparedResourceSourceAdmission {
     source_owner: usize,
+    partition_owner: Option<n2r_win32::PartitionOwnerToken>,
     admission: SourceResourceAdmission,
     source_sha256: [u8; 32],
     inspection_sha256: [u8; 32],
@@ -163,6 +168,11 @@ impl PreparedResourceSourceAdmission {
     ) -> Result<()> {
         ensure!(
             self.source_owner == context.source_owner_identity()
+                && match (&self.partition_owner, context.source.partition_token()) {
+                    (None, None) => true,
+                    (Some(expected), Some(actual)) => expected.same_owner(&actual),
+                    _ => false,
+                }
                 && self.admission == context.admission
                 && self.arena.same_arena(closure.arena())
                 && context.arena().is_some_and(|a| self.arena.same_arena(a))
@@ -1329,7 +1339,7 @@ impl ResourceSourceContext {
         let source = source_slot.take().context("isolated source owner absent")?;
         let mut context = Self {
             early_preparation_guard: early_preparation_guard.take(),
-            source,
+            source: ResourceSourceOwner::dedicated(source),
             raw,
             native,
             fingerprint,
@@ -1387,7 +1397,7 @@ impl ResourceSourceContext {
         })();
         if let Err(error) = finishing {
             return Err(guarded_collection_failure(
-                context.source, cleanup_workspace.as_ref(), &geometry, events, error,
+                context.source.into_dedicated()?, cleanup_workspace.as_ref(), &geometry, events, error,
                 context.early_preparation_guard.as_mut(),
             ));
         }
@@ -1474,6 +1484,7 @@ impl ResourceSourceContext {
         closure: &crate::artifact_arena::PreparedArenaClosure,
         events: &mut Vec<NativeEvent>,
     ) -> Result<PreparedResourceSourceAdmission> {
+        self.source.require_complete_partition_admission(events)?;
         self.require_source_evidence()?;
         self.recheck_source(events)?;
         let arena = self
@@ -1530,6 +1541,7 @@ impl ResourceSourceContext {
         let memory = arena.reserve_ram(4096)?;
         let proof = PreparedResourceSourceAdmission {
             source_owner: self.source_owner_identity(),
+            partition_owner: self.source.partition_token(),
             admission: self.admission,
             source_sha256: source_admission_digest(&self.source_sha)?,
             inspection_sha256: source_admission_digest(&self.inspection_sha)?,
@@ -1639,7 +1651,7 @@ impl ResourceSourceContext {
             before == self.before && before.disk_attributes == 3,
             "original frozen source state changed"
         );
-        let digest = self.fingerprint.hash(&mut self.source)?;
+        let digest = self.fingerprint.hash(self.source.require_dedicated_mut()?)?;
         let after = self.source.state(events)?;
         ensure!(
             after == before && digest == self.source_sha,
@@ -1728,13 +1740,18 @@ impl ResourceSourceContext {
     pub fn expected_label(&self) -> &n2r_win32::volume_label::VolumeLabel {
         self.label.label()
     }
-    pub fn source_and_inspection(&mut self) -> (&mut GeneralFrozenPartition, &PagedInspection) {
+    pub fn source_and_inspection(&mut self) -> Result<(&mut GeneralFrozenPartition, &PagedInspection)> {
+        // Existing dedicated callers keep exact native guards. Partition
+        // scope cannot enter whole-disk transitions through this adapter.
+        Ok((self.source.require_dedicated_mut()?, &self.raw))
+    }
+    pub(crate) fn scoped_source_and_inspection(&mut self) -> (&mut ResourceSourceOwner, &PagedInspection) {
         (&mut self.source, &self.raw)
     }
     /// Runtime association with this exact retained frozen source. A saved
     /// value is not an ownership, device, admission, or write capability.
     pub(crate) fn source_owner_identity(&self) -> usize {
-        std::ptr::from_ref(&self.source) as usize
+        self.source.owner_identity()
     }
     pub fn arena(&self) -> Option<&ArtifactArena> {
         self.arena.as_ref()

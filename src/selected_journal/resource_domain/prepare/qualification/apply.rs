@@ -357,7 +357,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
             new_selected_sha256: ticket.new_selected_sha256,
         };
-        let (source, _) = prepared.context.source_and_inspection();
+        let (source, _) = prepared.context.source_and_inspection()?;
         let mut target = prepared.inner._journal.begin_sealed_fresh_apply(
             source, index.policy(), &pins, events,
         )?;
@@ -530,7 +530,7 @@ impl ResourceAppliedConversion<'_, '_, '_, '_, '_, '_> {
             old_restored_selected_sha256: ticket.old_restored_selected_sha256,
             new_selected_sha256: ticket.new_selected_sha256,
         };
-        let (source, _) = prepared.context.source_and_inspection();
+        let (source, _) = prepared.context.source_and_inspection()?;
         prepared.inner._journal.seal_sealed_handoff_for_observation(
             source, &index.policy(), &pins, events,
         )?;

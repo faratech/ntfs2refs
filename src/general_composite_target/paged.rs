@@ -992,7 +992,7 @@ pub(crate) fn observe_and_select_paged(
     let memory = super::paged_memory::ArenaReportMemory(arena);
     context.recheck_source(events)?;
     let source_before = {
-        let (source, _) = context.source_and_inspection();
+        let (source, _) = context.source_and_inspection()?;
         ensure!(
             source.binding() == &pair.source,
             "actual frozen source association differs"
@@ -1035,7 +1035,7 @@ pub(crate) fn observe_and_select_paged(
     // now-unused object decoding workspace.
     let source_projection = source_projection.into_revalidation_owner()?;
     let source_tails = {
-        let (source, raw) = context.source_and_inspection();
+        let (source, raw) = context.source_and_inspection()?;
         let mut bytes =
             PagedSourceByteAdapter::new(source, raw, admission, expected.logical_bytes().max(1))?;
         let provider = SourceTailProvider::capture(
@@ -1098,7 +1098,7 @@ pub(crate) fn observe_and_select_paged(
     // across those independently accounted allocations.
     drop(stage_ram);
     let opening_routes = {
-        let (source, raw) = context.source_and_inspection();
+        let (source, raw) = context.source_and_inspection()?;
         let mut bytes = PagedSourceByteAdapter::new(source, raw, admission, 1)?;
         let routes = crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
             &preliminary,
@@ -1118,7 +1118,7 @@ pub(crate) fn observe_and_select_paged(
         &scratch,
     )?;
     let in_place = {
-        let (source, raw) = context.source_and_inspection();
+        let (source, raw) = context.source_and_inspection()?;
         let mut bytes = PagedSourceByteAdapter::new(source, raw, admission, 1)?;
         let result = source_in_place(
             &mut bytes,
@@ -1227,7 +1227,7 @@ pub(crate) fn observe_and_select_paged(
     let closing_lease = closing_permit.verify_closed(closing_results.sha256())?;
     drop(stage_ram);
     let closing_routes = {
-        let (source, raw) = context.source_and_inspection();
+        let (source, raw) = context.source_and_inspection()?;
         let mut bytes = PagedSourceByteAdapter::new(source, raw, admission, 1)?;
         let routes = crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
             &native,
@@ -1320,7 +1320,7 @@ pub(crate) fn observe_and_select_paged(
     // before allocation. Its identity never enters a serialized receipt.
     let identity_ram = scratch.lease_ram(128)?;
     let source_owner = {
-        let (source, _) = context.source_and_inspection();
+        let (source, _) = context.source_and_inspection()?;
         std::ptr::from_ref(source) as usize
     };
     let scope = PagedTargetScope {
@@ -1384,7 +1384,7 @@ pub(crate) fn observe_and_select_paged(
     source_projection.revalidate()?;
     expected.require_resource_owner(admission)?;
     context.recheck_source(events)?;
-    let (source, _) = context.source_and_inspection();
+    let (source, _) = context.source_and_inspection()?;
     ensure!(
         source.state(events)? == source_before,
         "frozen source changed during target selection/capture"

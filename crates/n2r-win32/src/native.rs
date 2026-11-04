@@ -37,6 +37,7 @@ pub use paged_recovery::{BorrowedPagedWriter, GeneralLiveConvertedObservation, P
 mod partition_dump_locations;
 mod partition_runtime_roles;
 mod partition_owner;
+pub mod partition_lifecycle;
 pub use partition_owner::{PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner};
 
 const DEVICE: u32 = 0x002d1080;

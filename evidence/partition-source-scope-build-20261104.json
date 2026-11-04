@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "kind": "explicit-resource-source-owner-scope-and-read-lanes",
+  "status": "focused-public-check-passed-real-partition-admission-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/lib.rs",
+      "bytes": 3562,
+      "sha256": "36a3b61cf16bf2bd9bacd90e12926f833893af647851cfac8cabe2722117e865"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle.rs",
+      "bytes": 7893,
+      "sha256": "7dd6f482b78fa5cad278ca7c4e6dfaece99916c82476e4db315f55819dba04a7"
+    },
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 200278,
+      "sha256": "71a3eb152d528cfb685920d5f6796d0b5252115aa05f7869e2823b88ad33bc92"
+    },
+    {
+      "path": "src/general_composite_target/paged.rs",
+      "bytes": 53802,
+      "sha256": "a62e3cc9133c455c759e75f9f5bafd88f9b2c468b5abb8c1f094cd7433a3af08"
+    },
+    {
+      "path": "src/general_source_admission/resource.rs",
+      "bytes": 71349,
+      "sha256": "30b5a909605d6e8123e4a67bc8e7148c1b1310f039924af3acd887daaf5091c4"
+    },
+    {
+      "path": "src/general_source_admission/resource_owner.rs",
+      "bytes": 10560,
+      "sha256": "9decdbe78b3e497089818daf707e0446e8935ff323f7d6471021dcb64274fdf0"
+    },
+    {
+      "path": "src/resource_preparation.rs",
+      "bytes": 37635,
+      "sha256": "da4d3b777109542933dba43325182ce97c871aa2425083d3ac8ae19a18ed9e6f"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/captured_candidate.rs",
+      "bytes": 9964,
+      "sha256": "4d12554445220201046e6527952e652c2dad3215964c9fb4a20f691d37259c10"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification/apply.rs",
+      "bytes": 21875,
+      "sha256": "1e287d119cbe493df5c3479fc77e34be76c31b8cfdec078c3f8d1af8d5383959"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification.rs",
+      "bytes": 40517,
+      "sha256": "13f167777fcb78774f7ec988fb3b8ec42d25b9427be994addfba419c5e93c034"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare.rs",
+      "bytes": 35630,
+      "sha256": "2f333de5f168a12e07928d695fe35d305c9609213fe640062b09d6e3cfbe3cc7"
+    }
+  ],
+  "reviewed_patch_sha256": "e78f4a2f1eb67feefc992512871be6f3f7e71fce083de38f2f9210664ed403f1",
+  "applied_matches_reviewed_copies_except_line_endings": true,
+  "check_exit": 0,
+  "check_wall_seconds": 35.0075151,
+  "check_receipt_sha256": "c6e247d0d8edb47dbeea0433bbedcc72746ec95fc0afe360fd2754238cd2486d",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "frozen_alpha_rebuilt": false,
+  "native_qualified": false,
+  "shared_disk_cli_enabled": false,
+  "behavior": [
+    "Explicit Dedicated(default)/Partition owner and independent bounded read-lane dispatch.",
+    "Dedicated identity preserves original inner native-owner pointer; actual partition token is retained and compared.",
+    "Bounded raw NTFS inspection through actual private owner is unadmitted and cannot issue conversion authority.",
+    "Dedicated guard order is preserved; partition may not masquerade as legacy disk attributes/freeze observation.",
+    "Caller errors propagate without whole-disk fallback; lifecycle interface has no witness/guard issuer yet."
+  ],
+  "remaining": [
+    "Actual Basic/readonly/private native lifecycle and protected native evidence.",
+    "MIXED OLD-or-NEW recovery, versioned publication/source scope and target-only HND/ABT.",
+    "Same-disk C journal/output actual extent disjointness and native qualification."
+  ]
+}

@@ -484,7 +484,7 @@ where
 
         // Every native allocation uses this actual shared arena accountant.
         let mut private = {
-            let (source, _) = context.source_and_inspection();
+            let (source, _) = context.source_and_inspection()?;
             let native_profile = profile
                 .native_profile()
                 .context("native resource profile absent")?;
@@ -531,7 +531,7 @@ where
         drop(placement);
         private.prepare_source_backed_prefixes()?;
         {
-            let (source, raw) = context.source_and_inspection();
+            let (source, raw) = context.source_and_inspection()?;
             let mut bytes =
                 PagedSourceByteAdapter::new(source, raw, admission, maximum_source_read_bytes)?;
             let mut routed = general_shadow::paged_supply::routed::prepare(
@@ -584,7 +584,7 @@ where
             &output.join("target"),
             &mut events,
             |context, target, expected, native, scope, closing| {
-                let (source, raw) = context.source_and_inspection();
+                let (source, raw) = context.source_and_inspection()?;
                 let mut bytes =
                     PagedSourceByteAdapter::new(source, raw, admission, maximum_source_read_bytes)?;
                 let routes = PagedPayloadRoutes::capture(
@@ -639,7 +639,7 @@ where
         events.checkpoint()?;
         events.phase("native-journal-create");
         let mut creation = {
-            let (source, _) = context.source_and_inspection();
+            let (source, _) = context.source_and_inspection()?;
             BoundNativeCreationJournal::create_new(
                 source,
                 &mut shadow,

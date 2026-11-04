@@ -315,7 +315,7 @@ fn require_construction_owners(
     );
     let source_before = context.native().before().clone();
     {
-        let (source, _) = context.source_and_inspection();
+        let (source, _) = context.source_and_inspection()?;
         ensure!(
             source.freeze_observation().is_some()
                 && source.binding() == &proof.scope().pair().source

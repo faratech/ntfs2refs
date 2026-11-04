@@ -97,6 +97,10 @@ mod native;
 #[cfg(windows)]
 pub use native::partition_isolation;
 #[cfg(windows)]
+pub use native::partition_lifecycle;
+#[cfg(windows)]
+pub use native::{PartitionOwnerState, PartitionOwnerToken, PartitionScopedOwner};
+#[cfg(windows)]
 pub use native::{
     BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
     GeneralAllocationSnapshot, GeneralDiskState, GeneralExclusiveRecoveryTarget,

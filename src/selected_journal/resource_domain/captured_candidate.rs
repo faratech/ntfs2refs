@@ -6,7 +6,7 @@ use super::{ResourceJournalDomain, add};
 use crate::{
     general_composite_target::paged::ProtectedPagedTargetSelection,
     general_shadow::capture_index::CaptureIndexRange,
-    general_source_admission::resource::ResourceSourceContext, lab_reconstruct::ReadSeek,
+    general_source_admission::resource::{ResourceSourceContext, source_owner::ResourceSourceReadLane}, lab_reconstruct::ReadSeek,
 };
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{GeneralDiskState, GeneralFrozenPartition, NativeEvent};
@@ -14,7 +14,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 pub(crate) struct ProtectedCapturedCandidate<'a> {
     proof: &'a ProtectedPagedTargetSelection,
-    source_lane: GeneralFrozenPartition,
+    source_lane: ResourceSourceReadLane,
     source_before: GeneralDiskState,
     shadow_before: GeneralDiskState,
     image_length: u64,
@@ -59,7 +59,7 @@ impl<'a> ProtectedCapturedCandidate<'a> {
             .arena()
             .context("source lane needs the actual shared arena")?
             .reserve_ram(lane_ram)?;
-        let (source, _) = context.source_and_inspection();
+        let (source, _) = context.scoped_source_and_inspection();
         ensure!(
             source.binding() == &proof.scope().pair().source
                 && shadow.binding() == &proof.scope().pair().shadow,
@@ -74,16 +74,16 @@ impl<'a> ProtectedCapturedCandidate<'a> {
                 && proof.native().after() == &shadow_before,
             "protected capture requires the original excluded source and shadow"
         );
-        let mut source_lane = GeneralFrozenPartition::reopen(source.binding().clone(), events)?;
+        let mut source_lane = ResourceSourceReadLane::open(source, events)?;
         ensure!(
-            source_lane.state(events)? == source_before,
+            source_lane.dedicated_state(events)? == source_before,
             "captured-candidate source lane differs from the real frozen source"
         );
         let image_length = domain.facts().image_length;
         ensure!(
-            GeneralFrozenPartition::byte_len(source) == image_length
+            source.byte_len() == image_length
                 && GeneralFrozenPartition::byte_len(shadow) == image_length
-                && GeneralFrozenPartition::byte_len(&source_lane) == image_length,
+                && source_lane.byte_len() == image_length,
             "captured-candidate image geometry differs"
         );
         Ok(Self {
@@ -137,12 +137,12 @@ impl<'a> ProtectedCapturedCandidate<'a> {
             self.proof.scope().source_inspection_sha256() == context.inspection_sha256(),
             "captured-candidate source inventory changed"
         );
-        let (source, _) = context.source_and_inspection();
+        let (source, _) = context.scoped_source_and_inspection();
         ensure!(
             source.binding() == &self.proof.scope().pair().source
                 && shadow.binding() == &self.proof.scope().pair().shadow
                 && source.state(events)? == self.source_before
-                && self.source_lane.state(events)? == self.source_before
+                && self.source_lane.dedicated_state(events)? == self.source_before
                 && shadow.state(events)? == self.shadow_before,
             "captured-candidate frozen route or exclusion changed"
         );

@@ -411,7 +411,7 @@ pub(crate) fn prepare_native_from_protected_capture<'journal, 'domain, 'capture,
     candidate.require_domain(domain)?;
     candidate.revalidate(context, shadow, events)?;
     let prepared = {
-        let (source, _) = context.source_and_inspection();
+        let (source, _) = context.source_and_inspection()?;
         prepare_native_inner(domain, source, shadow, candidate, creation, events, true)?
     };
     candidate.revalidate(context, shadow, events)?;

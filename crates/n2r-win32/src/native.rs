@@ -35,6 +35,7 @@ pub use paged_write_policy::{
 pub use paged_recovery::{BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection, PagedRecoveryPins};
 
 mod partition_dump_locations;
+mod partition_runtime_roles;
 mod partition_owner;
 pub use partition_owner::{PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner};
 

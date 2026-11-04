@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "kind": "partition-owner-current-vds-volume-role-facts",
+  "status": "focused-sdk-check-passed-native-query-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 200249,
+      "sha256": "19cd87a5cb44c78fdd287e53dc0dca1439f96071b65628066aeb58c3c8e706a2"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 18233,
+      "sha256": "90fda63cfc3db47f957857165e8130d6de0eb5875649d3ba2a9b8aa99d7fdf09"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_runtime_roles.rs",
+      "bytes": 29745,
+      "sha256": "d776f6d44fe7bf63445a2fbf7f4a3d037fde30b9bfe59b8c54799b5a8199853a"
+    }
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 10.7189369,
+  "check_receipt_sha256": "7c2846e8decae0fa2c0ca68a6564ebcec57bb8eca13ffd5be1f7956762855968",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "source_writer_admission_issued": false,
+  "behavior": [
+    "Readonly local VDS software-provider/pack/volume enumeration; exact SDK x64 ABI and balanced COM ownership.",
+    "Known critical roles require stable healthy properties and complete native extents outside target.",
+    "Noncritical offline/availability data stays explicit; critical binding comparison rejects role reclassification or inventory identity changes.",
+    "Configured dump routes remain separate from VDS facts; no claim of undocumented loaded driver state.",
+    "Owner revalidation compares current role facts without changing legacy writer/admission behavior."
+  ],
+  "limitations": [
+    "No native VDS query or owner constructor was executed for this change.",
+    "Configured nonempty DumpFilters remain conservative refusals; built-in dumpfve.sys policy is pending.",
+    "Upper source-context, mixed recovery and finalization are not enabled."
+  ]
+}

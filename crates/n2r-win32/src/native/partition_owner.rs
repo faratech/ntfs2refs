@@ -6,6 +6,9 @@ use super::partition_dump_locations::{
 use super::partition_isolation::{
     PartitionIsolationObservation, PartitionObservationBudget, PartitionSourceBinding,
 };
+use super::partition_runtime_roles::{
+    RuntimeVolumeRoleObservation, observe_runtime_volume_roles,
+};
 use super::{AlignedBuffer, HeldPagedWritePolicy, MAX_IO, NativeEvent, control};
 use serde::Serialize;
 use std::{
@@ -22,6 +25,7 @@ const GRANULE: u64 = 4096;
 pub struct PartitionOwnerState {
     pub partition: PartitionIsolationObservation,
     pub(super) configured_dump_locations: ConfiguredDumpObservation,
+    pub(super) vds_current_volume_roles: RuntimeVolumeRoleObservation,
     pub source_admission_issued: bool,
     pub loaded_dump_exclusion_qualified: bool,
 }
@@ -74,6 +78,7 @@ impl PartitionScopedOwner {
             .and_then(|n| n.checked_add(u64::from(budget.native_layout_bytes) * 8))
             .and_then(|n| n.checked_add(u64::from(budget.read_buffer_bytes) * 2))
             .and_then(|n| n.checked_add(2 * 1024 * 1024 + MAX_IO as u64 + 256 * 1024))
+            .and_then(|n| n.checked_add(budget.ram_bytes / 4))
             .ok_or_else(|| io::Error::other("partition owner memory accounting overflow"))?;
         if metadata_work > budget.ram_bytes
             || !binding
@@ -100,9 +105,19 @@ impl PartitionScopedOwner {
             events,
         )?;
         let dumps = observe_configured_dump_locations(&binding, budget, events)?;
+        let vds_roles = observe_runtime_volume_roles(&binding, budget, events)?;
+        if !dumps.configured_locations_outside_target
+            || !vds_roles.vds_enumeration_completed
+            || !vds_roles.vds_critical_role_extents_outside_target
+        {
+            return Err(io::Error::other(
+                "configured dump routes or current VDS critical-volume extents are unresolved",
+            ));
+        }
         let enrolled = PartitionOwnerState {
             partition,
             configured_dump_locations: dumps,
+            vds_current_volume_roles: vds_roles,
             source_admission_issued: false,
             loaded_dump_exclusion_qualified: false,
         };
@@ -157,8 +172,13 @@ impl PartitionScopedOwner {
             events,
         )?;
         let dumps = observe_configured_dump_locations(&self.binding, self.budget, events)?;
+        let vds_roles = observe_runtime_volume_roles(&self.binding, self.budget, events)?;
         if !super::partition_isolation::same_private_identity(&self.enrolled.partition, &current)
             || dumps != self.enrolled.configured_dump_locations
+            || !dumps.configured_locations_outside_target
+            || !vds_roles.vds_enumeration_completed
+            || !vds_roles.vds_critical_role_extents_outside_target
+            || !vds_roles.same_critical_roles(&self.enrolled.vds_current_volume_roles)
         {
             self.poisoned = true;
             return Err(io::Error::other(

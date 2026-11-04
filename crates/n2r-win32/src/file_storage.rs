@@ -12,8 +12,9 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError},
     Storage::FileSystem::{
-        FILE_DISPOSITION_INFO, FILE_STANDARD_INFO, FileAllocationInfo, FileDispositionInfo, FileStandardInfo,
-        GetCompressedFileSizeW, GetFileInformationByHandleEx, SetFileInformationByHandle,
+        FILE_DISPOSITION_INFO, FILE_STANDARD_INFO, FileAllocationInfo, FileDispositionInfo,
+        FileStandardInfo, GetCompressedFileSizeW, GetFileInformationByHandleEx,
+        SetFileInformationByHandle,
     },
 };
 
@@ -27,11 +28,15 @@ pub fn preallocate_empty_file(
     maximum_allocation: u64,
 ) -> io::Result<()> {
     let before = crate::reference_file::observe_reference_file_handle_with_limit(file, 0)?;
-    if requested_bytes == 0 || requested_bytes > maximum_allocation
-        || before.file_bytes != 0 || before.number_of_links != 1
+    if requested_bytes == 0
+        || requested_bytes > maximum_allocation
+        || before.file_bytes != 0
+        || before.number_of_links != 1
         || before.allocation_bytes > maximum_allocation
     {
-        return Err(io::Error::other("fresh bounded preallocation file required"));
+        return Err(io::Error::other(
+            "fresh bounded preallocation file required",
+        ));
     }
     let allocation = i64::try_from(requested_bytes)
         .map_err(|_| io::Error::other("preallocation exceeds native signed range"))?;
@@ -39,9 +44,14 @@ pub fn preallocate_empty_file(
     // this synchronous call uses the existing owned file handle and changes
     // allocation only. EOF and identity are checked through that handle.
     if unsafe {
-        SetFileInformationByHandle(file.as_raw_handle(), FileAllocationInfo,
-            (&allocation as *const i64).cast(), std::mem::size_of_val(&allocation) as u32)
-    } == 0 {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileAllocationInfo,
+            (&allocation as *const i64).cast(),
+            std::mem::size_of_val(&allocation) as u32,
+        )
+    } == 0
+    {
         return Err(io::Error::last_os_error());
     }
     let after = crate::reference_file::observe_reference_file_handle_with_limit(file, 0)?;
@@ -60,6 +70,92 @@ pub fn preallocate_empty_file(
         )));
     }
     Ok(())
+}
+
+/// Release allocation beyond the exact EOF of an already-held, exclusively
+/// owned fresh artifact writer. Never changes EOF or writes payload bytes.
+/// Call before reducing the writer to a read-only duplicate: duplicate handles
+/// retain the same FILE_OBJECT and its transient NTFS growth allocation.
+/// This does not retroactively prove a hard transient-allocation quota. The
+/// caller must retain its existing growth admission and full post-close hash.
+pub fn normalize_allocation_at_eof(
+    file: &std::fs::File,
+    expected_eof: u64,
+    maximum_eof: u64,
+    reserved_slack: u64,
+) -> io::Result<AllocationNormalization> {
+    use crate::reference_file::observe_reference_file_handle_with_limit;
+    let bound = expected_eof
+        .checked_add(reserved_slack)
+        .ok_or_else(|| io::Error::other("artifact allocation bound overflow"))?;
+    let before = observe_reference_file_handle_with_limit(file, maximum_eof)?;
+    if before.file_bytes != expected_eof
+        || expected_eof > maximum_eof
+        || before.number_of_links != 1
+        || before.allocation_bytes < expected_eof
+    {
+        return Err(io::Error::other(format!(
+            "owned artifact EOF/allocation differs before normalization: EOF {}, expected {}, maximum {}, allocation {}, links {}",
+            before.file_bytes,
+            expected_eof,
+            maximum_eof,
+            before.allocation_bytes,
+            before.number_of_links
+        )));
+    }
+    let attempted = before.allocation_bytes > expected_eof;
+    if attempted {
+        let allocation = i64::try_from(expected_eof)
+            .map_err(|_| io::Error::other("artifact allocation EOF exceeds native signed range"))?;
+        // SAFETY: the caller retains the actual writable artifact owner. A
+        // FILE_ALLOCATION_INFO at its current EOF releases unused allocation;
+        // it cannot truncate logical content or authorize volume/source writes.
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileAllocationInfo,
+                (&allocation as *const i64).cast(),
+                std::mem::size_of_val(&allocation) as u32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        file.sync_all()?;
+    }
+    let after = observe_reference_file_handle_with_limit(file, maximum_eof)?;
+    if after.final_path != before.final_path
+        || after.volume_serial_number != before.volume_serial_number
+        || after.file_id_128 != before.file_id_128
+        || after.file_attributes != before.file_attributes
+        || after.number_of_links != 1
+        || after.file_bytes != expected_eof
+        || after.allocation_bytes < expected_eof
+        || after.allocation_bytes > before.allocation_bytes
+        || after.allocation_bytes > bound
+    {
+        return Err(io::Error::other(format!(
+            "artifact allocation normalization identity/bound differs: path {:?}, EOF {}, allocation before {}, after {}, expected {}, slack {}",
+            after.final_path,
+            after.file_bytes,
+            before.allocation_bytes,
+            after.allocation_bytes,
+            expected_eof,
+            reserved_slack
+        )));
+    }
+    Ok(AllocationNormalization {
+        before,
+        after,
+        native_trim_attempted: attempted,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct AllocationNormalization {
+    pub before: crate::reference_file::ReferenceFileSnapshot,
+    pub after: crate::reference_file::ReferenceFileSnapshot,
+    pub native_trim_attempted: bool,
 }
 
 #[derive(serde::Serialize)]

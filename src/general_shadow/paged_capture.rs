@@ -738,6 +738,22 @@ fn capture_selected_inner(
     );
     literal.sync_all()?;
     let literal_hash = hex::encode(packed_digest.finalize());
+    // NTFS can keep speculative growth allocation on the writable FILE_OBJECT
+    // even after its last writable handle is dropped. Normalize through this
+    // exact writer before readonly duplication; EOF and the existing full
+    // literal hash/arena allocation checks remain unchanged.
+    {
+        // Covers both bounded native GUID-path/snapshot observations while the
+        // writer is normalized. Do not retain their heap buffers in the capture.
+        let _allocation_ram = scratch.lease_ram(512 * 1024)?;
+        let _allocation = n2r_win32::file_storage::normalize_allocation_at_eof(
+            &literal,
+            packed,
+            budget.max_literal_backing_bytes,
+            capture_group.arena().allocation_slack_bytes(),
+        )
+        .context("normalize owned capture literal allocation before sealing")?;
+    }
     let readonly = n2r_win32::file_storage::duplicate_readonly(&literal)?;
     drop(literal);
     let snapshot = n2r_win32::reference_file::observe_reference_file_handle_with_limit(

@@ -1393,7 +1393,12 @@ impl ArtifactPathPermit {
                     verified.snapshot.file_bytes,
                     self.group.arena.0.allocation_slack
                 )?,
-            "artifact physical allocation exceeds reserved slack"
+            "artifact physical allocation exceeds reserved slack: path={:?}, EOF={}, allocation={}, grant_max_EOF={}, reserved_slack={}",
+            verified.snapshot.final_path,
+            verified.snapshot.file_bytes,
+            verified.snapshot.allocation_bytes,
+            maximum,
+            self.group.arena.0.allocation_slack
         );
         let pin = Arc::new(FilePin {
             arena: self.group.arena.clone(),

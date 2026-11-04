@@ -40,8 +40,15 @@ All13 actual digest PID/birth/terminals0 and all1024 original UTF16 paths were v
 Same original J FileIDc9550200000003000000000000000000/186487480B has canonical N2RSAB01+N2RSRB01; old replay is closed.
 Qualified rollback Off checkpoint ea75dff5-36f4-42af-8e13-cc9b2e8cba6c was saved15:36:28UTC, childAP39ba,
 freshly verified Off/RAM0/all15/ancestry. Keep this checkpoint and its parent.
-Operator restored SAME originalAP39ba ONCE for resume; fresh Off/admission4GiB then one Start is running81629.
-Resume is NOT yet qualified; never use the closed ABT branch as a resume origin.
+Operator restored SAME originalAP39ba ONCE for resume and booted1793806644010 with persistent exclusion.
+Public resume b0aaf7b193624306b8e81e8c7bf59d10 actualPID2124/birth1793806973363
+TERMINATEDexit0 at15:46:21.136UTC/207.7208384s, stdout426B/stderr0, owned handle through terminal.
+ReFS oracle51f467bb8a48488286f42566a2a21fc9 PASSED all811/9885801949B/1534objects/1024originalUTF16paths,
+all13 actual digest PID/birth/terminals0,10.7988733s. SameJc955/186487480B canonical HND+AP verified.
+Qualified resumed Off HND checkpoint266130c1-51c8-479c-b528-423644770dc2 was saved15:52:02UTC,
+childAP39ba; fresh separate process verified Off/RAM0/currentparent266/all16.
+Operator is booting this operational branch for the bounded mutation/reboot and terminal-recovery gates, WITHOUT restore.
+Never use either closed ABT or HND journal as a new raw replay origin.
 Only /root/aef_postcut_operator owns subsequent VM/recovery/oracle operations; Root owns Git/build/docs only.
 V5 waits only for sharing-error32 while a receipt writer is still open; closed empty/corrupt/type/hash failures still refuse.
 Prior327 controller55466 TERMINATEDexit1/14:54:38.974UTC, TurnOffFALSE: 'Bounded ordinary closed receipt required'.
@@ -93,7 +100,7 @@ Fixture request .lab/development/fixture-diagnostic-request-3343.json SHA27f96da
   9885801949B/1534baseline objects/1024extra paths/all13actualdigestterminals before AND after normal shutdown/start WITHOUTrestore.
   Evidence: evidence/public-thin-conversion-20261104.json; all127archived source/host metadata lengths/SHA verified.
 - Completed operational HND checkpoint **8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f**, parent3343, was freshly verifiedOff/RAM0 before later restores.
-  Keep8a. NEVER replay its old raw journal. Current VM is the running f2 attempt, not that historical Off state.
+  Keep8a. NEVER replay its old raw journal. Use the current operation above, not this historical Off observation.
 - Frozen814 source814f380aa38be4d94e2a71ad221c779e5ab4dc7b/publicSHA0f5be1c72b05ff030aad85b21be2c37f32ecccbf214af1ee4d6f7afd4807fafb.
   Public-only ZIP .lab/packages/frozen-814-public-f969ce0e6ea94179bda483015c41982a/ntfs2refs-814-public-experimental.zip
   SHA129a037136a1c68ac89418c7fdcdfecc8b7d269cc4fb5d89026efeb57e7c4a82; all11entries checked. See docs/frozen-resource-alpha-20261104.md.
@@ -127,7 +134,8 @@ Fixture request .lab/development/fixture-diagnostic-request-3343.json SHA27f96da
   Observed64MiB flooring is not universal. Thread F through bitmap/placement/capture/retention and relocate out-of-F source runs before nonzero-tail support.
 - Bound carrier is owned NTFS, nested memberVHDX<=64TiB each, explicit thin overcommit. Nominal pool allocation/footprint is NOT host usage or equivalent physical capacity.
   Count carrier plus external metadata ONCE, not nested members twice. Sampled allocation/free/RAM is not peak, hard quota or reservation. Preserve strict format gates.
-- New aef AP/recovery, mutation, copied-payload interruption, actual ENOSPC/write-flush errors, physical power and broader geometry/hardware remain unqualified.
+- Controlled aef AP/public rollback/public resume passed on this finite profile; mutation/terminal gates, default VHDX conversion,
+  copied-payload interruption, actual ENOSPC/write-flush errors, physical power and broader geometry/hardware remain unqualified.
   See docs/private-thin-pool-addressability.md and per-case evidence; no broad-completion/stable-release claim.
 
 ## Fixed capacity and cleanup
@@ -147,7 +155,8 @@ Previously automatic-review-rejected research-image, .lab/ntfs2btrfs-source-audi
 
 ## Protected snapshot graph and VM
 
-Keep these15IDs and dependencies; guardedf4 is NEVER remove/force. Current VM-ownership transfer authorizes NO new retirement:
+Keep these16IDs and dependencies; guardedf4 is NEVER remove/force. Current VM-ownership transfer authorizes NO new retirement:
+- 266130c1-51c8-479c-b528-423644770dc2 (qualified resumed aef HND; old raw replay permanently closed), child of AP39ba.
 - ea75dff5-36f4-42af-8e13-cc9b2e8cba6c (qualified aef rollback; ABT closes raw replay), child of AP39ba.
 - 39ba49c9-01d1-48fa-941f-08d34ff346c1 (NEW interrupted aef AP origin; restore this exact checkpoint separately for each recovery case).
 - 8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f (completed aef HND),3343f2a4-cf81-4fa9-a504-030425a8011e (prepared NTFS).

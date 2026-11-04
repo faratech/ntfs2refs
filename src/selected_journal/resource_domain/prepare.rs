@@ -48,6 +48,164 @@ pub(crate) struct ProtectedPreparedJournal<'journal, 'domain, 'capture, 'proof, 
     candidate: &'scope mut super::captured_candidate::ProtectedCapturedCandidate<'proof>,
 }
 
+/// Genuine partition V4 preparation, retaining actual source/context, frozen
+/// shadow, protected NEW capture, native J/quota and its sealed closed index.
+/// It is neither the legacy Dedicated preparation nor an apply/writer token.
+pub(crate) struct PartitionProtectedPreparedJournal<'journal, 'domain, 'capture, 'proof, 'scope> {
+    journal: &'journal mut NativeSelectedJournal,
+    facts: crate::general_reconstruct::selected_native_journal::BoundPartitionCreationFacts<'journal>,
+    domain: &'domain ResourceJournalDomain<'capture>,
+    context: &'scope mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+    shadow: &'scope mut n2r_win32::GeneralFrozenPartition,
+    candidate: &'scope mut super::captured_candidate::ProtectedCapturedCandidate<'proof>,
+    ticket: SelectedTicket,
+    write_index: super::reopen::PreparedJournalIndex,
+}
+
+impl PartitionProtectedPreparedJournal<'_, '_, '_, '_, '_> {
+    pub(crate) fn revalidate(&mut self, events:&mut Vec<n2r_win32::NativeEvent>) -> Result<()> {
+        let proof = self.candidate.protected_proof();
+        let result = proof.captured().with_revalidation(|witness| {
+            self.domain.revalidate()?;
+            self.candidate.require_domain(self.domain)?;
+            self.candidate.revalidate_partition_with_capture_witness(
+                self.context, self.shadow, events, witness)?;
+            self.facts.revalidate_source(self.context, events)?;
+            self.journal.revalidate_resource_preparation(&self.facts.native, &self.ticket)?;
+            self.write_index.require_same_sealed_journal(self.journal, &self.ticket)?;
+            ensure!(selected_journal::classify(self.journal, &self.ticket)?
+                == selected_journal::SelectedLifecycle::PreparedClear,
+                "partition prepared journal is no longer actual clear state");
+            self.domain.revalidate()?;
+            Ok(())
+        });
+        let closing = proof.captured().revalidate();
+        match (result, closing) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+    pub(crate) fn prepared_index(&self) -> &super::reopen::PreparedJournalIndex { &self.write_index }
+    /// Non-escaping metadata bridge for the versioned partition publisher.
+    /// The actual sealed creation J/facts/ticket/context remain borrowed and
+    /// every source/capture/index/lifecycle close runs even on callback error.
+    /// It is not an apply issuer and exposes no writable source handle.
+    pub(crate) fn with_actual_publication_owners<T>(
+        &mut self,
+        events:&mut Vec<n2r_win32::NativeEvent>,
+        action:impl FnOnce(
+            &mut NativeSelectedJournal,
+            &crate::general_reconstruct::selected_native_journal::BoundPartitionCreationFacts<'_>,
+            &SelectedTicket,
+            &super::reopen::PreparedJournalIndex,
+            &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+            &mut Vec<n2r_win32::NativeEvent>,
+        )->Result<T>,
+    )->Result<T> {
+        self.revalidate(events)?;
+        let result=action(self.journal,&self.facts,&self.ticket,&self.write_index,self.context,events);
+        let closing=self.revalidate(events);
+        match (result,closing) {
+            (Ok(value),Ok(()))=>Ok(value),
+            (Err(error),_)|(_,Err(error))=>Err(error),
+        }
+    }
+    /// Read-only routing facts for the later explicitly scoped metadata
+    /// publisher. This clone cannot recreate any held owner or writer.
+    pub(crate) fn locator_facts(&mut self, events:&mut Vec<n2r_win32::NativeEvent>) -> Result<PreparedLocatorFacts> {
+        self.revalidate(events)?;
+        let f=&self.facts.native;
+        Ok(PreparedLocatorFacts {source:f.source.clone(), shadow:f.shadow.clone(),
+            journal_binding:f.binding.clone(), journal_identity:f.identity.clone(),
+            journal_path:f.path.to_path_buf(), profile:f.profile, marker_use:f.marker_use,
+            marker_native_qualified:None, ticket:self.ticket.clone()})
+    }
+}
+
+/// Explicit partition source adapter around the SAME complete streaming core.
+/// OLD bytes come from the actual partition owner and NEW/COPY/zero bytes from
+/// the actual protected candidate. No GeneralFrozen source is fabricated.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_native_partition_from_protected_capture<'journal,'domain,'capture,'proof,'scope>(
+    domain:&'domain ResourceJournalDomain<'capture>,
+    context:&'scope mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+    shadow:&'scope mut n2r_win32::GeneralFrozenPartition,
+    candidate:&'scope mut super::captured_candidate::ProtectedCapturedCandidate<'proof>,
+    creation:&'journal mut crate::general_reconstruct::selected_native_journal::BoundPartitionCreationJournal,
+    index_group:&ArtifactGroupPermit,
+    index_scratch:&SourceScratch,
+    index_path:&std::path::Path,
+    maximum_index_bytes:u64,
+    events:&mut Vec<n2r_win32::NativeEvent>,
+) -> Result<PartitionProtectedPreparedJournal<'journal,'domain,'capture,'proof,'scope>> {
+    domain.revalidate()?;
+    candidate.require_domain(domain)?;
+    candidate.revalidate_partition(context, shadow, events)?;
+    let shadow_before=shadow.state(events)?;
+    let f=domain.facts;
+    ensure!(shadow_before.disk_attributes==3 && f.marker_profile.is_none()
+        && context.binding().storage.identity.partition_bytes==f.image_length
+        && n2r_win32::GeneralFrozenPartition::byte_len(shadow)==f.image_length
+        && candidate.byte_len()?==f.image_length,
+        "partition source/shadow/candidate length or marker profile differs");
+    let memory=domain.scratch.lease_ram(12*BUFFER as u64)?;
+    let (journal,facts)=creation.split_for_partition_preparation(context,events)?;
+    let capture_group=domain.scratch.artifact_group().context("partition capture arena absent")?;
+    let quota=f.journal_length.checked_add(capture_group.arena().allocation_slack_bytes())
+        .context("partition journal quota overflow")?;
+    ensure!(facts.native.source==&context.binding().storage
+        && facts.native.shadow==shadow.binding()
+        && facts.native.marker_profile.is_none()
+        && facts.native.expected_journal_length==f.journal_length
+        && f.journal_length<=facts.native.profile.max_journal_bytes()
+        && facts.native.journal_quota.group()==ArtifactGroup::NativeJournal
+        && facts.native.journal_quota.arena().same_arena(capture_group.arena())
+        && facts.native.journal_quota.maximum_bytes()?==quota
+        && index_group.group()==ArtifactGroup::RecoveryCopy
+        && index_group.arena().same_arena(capture_group.arena()),
+        "partition actual J/profile/quota/index ownership differs");
+    let volume=format!("{}\\",facts.native.binding.disk.volume_path()?);
+    ensure!(n2r_win32::discovery::observe_volume_space(&volume)?.available_bytes_to_caller
+        >=f.journal_length,"actual partition J volume lacks calculated space");
+    let prepared=context.with_publication_handoff(events,|source,admission,stable,events| {
+        ensure!(facts.source_owner.same_owner(stable),"partition OLD reader is another actual owner");
+        admission.revalidate_publication_handoff(source,facts.guard_pin,events)?;
+        // Unchanged core performs complete source/capture descriptors, payload,
+        // COPY, canonical-zero/source-free framing and independent readback.
+        let result=prepare_inner(domain,source,candidate,journal,true);
+        let closing=admission.revalidate_publication_handoff(source,facts.guard_pin,events);
+        match (result,closing) {
+            (Ok(value),Ok(()))=>Ok(value),
+            (Err(error),_)=>Err(error),
+            (_,Err(error))=>Err(error.into()),
+        }
+    });
+    let closing=candidate.revalidate_partition(context,shadow,events);
+    let (ticket,_whole)=match (prepared,closing) {
+        (Ok(value),Ok(()))=>value,
+        (Err(error),_)|(_,Err(error))=>return Err(error),
+    };
+    ensure!(ticket.marker_profile.is_none() && ticket.journal_length==f.journal_length,
+        "partition actual ticket profile/length differs");
+    let allocation=journal.fix_length_and_observe_allocation(&facts.native,&ticket)?;
+    facts.native.journal_quota.arena().attach_native_journal(
+        facts.native.journal_quota,allocation)?;
+    facts.revalidate_source(context,events)?;
+    ensure!(journal.byte_len()?==f.journal_length && shadow.state(events)?==shadow_before,
+        "partition source/J/frozen shadow changed around complete preparation");
+    domain.revalidate()?;
+    // The real scanner builds its actual closed paged index and seals this
+    // same J body. A ticket, path or digest cannot stand in for that owner.
+    let write_index=super::reopen::JournalObservation::open(
+        journal,&ticket,index_group,index_scratch,index_path,maximum_index_bytes)?
+        .into_prepared_index()?;
+    drop(memory);
+    let mut result=PartitionProtectedPreparedJournal {journal,facts,domain,context,shadow,
+        candidate,ticket,write_index};
+    result.revalidate(events)?;
+    Ok(result)
+}
+
 /// Owned copies for writing a diagnostic locator only. This structure cannot
 /// reconstruct any live proof or authorize conversion/recovery.
 pub(super) struct PreparedLocatorFacts {

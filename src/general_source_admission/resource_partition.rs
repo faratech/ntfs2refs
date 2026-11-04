@@ -558,6 +558,9 @@ impl PartitionResourceSourceContext {
     pub(crate) fn source_owner_identity(&self) -> usize {
         std::ptr::from_ref(self.token.as_ref()) as usize
     }
+    pub(crate) fn source_admission_and_inspection(&mut self)->(&mut PartitionScopedOwner,&PartitionNtfsAdmission,&PagedInspection) {
+        (&mut self.source,&self.native_admission,&self.collected.raw)
+    }
     pub(crate) fn source_and_inspection(
         &mut self,
     ) -> (&mut PartitionScopedOwner, &PagedInspection) {
@@ -915,4 +918,115 @@ fn short_names_partition(
                         && s.short_name_creation_disabled
                 })
             })
+}
+
+/// Ordinary independent artifact directory retained through target/capture.
+/// The scope comes from the actual private source owner, never a path flag.
+pub(crate) struct PartitionAuxiliaryDirectory {
+    basis: ArenaOutputBasis,
+    token: PartitionOwnerToken,
+}
+impl PartitionAuxiliaryDirectory {
+    pub(crate) fn revalidate(&self,context:&mut PartitionResourceSourceContext,events:&mut Vec<NativeEvent>)->Result<()> {
+        ensure!(self.token.same_owner(&context.source.owner_token()),"auxiliary directory lost partition source owner");
+        context.source.revalidate(events)?;
+        validate_partition_output(&self.basis,&context.binding,&context.arena)
+    }
+}
+impl PartitionResourceSourceContext {
+    pub(crate) fn create_auxiliary_directory(&mut self,path:&Path,events:&mut Vec<NativeEvent>)->Result<PartitionAuxiliaryDirectory> {
+        self.source.revalidate(events)?;self.require_source_evidence()?;
+        let mut basis=output_in_private_owner_arena(&mut self.source,path,&self.arena,events)?;
+        ensure!(!path.exists(),"fresh partition auxiliary directory required");
+        let guid=PathBuf::from(&basis.parent_guid).join(path.file_name().context("auxiliary output leaf absent")?);
+        basis.create_directory(path,&guid)?;
+        let result=PartitionAuxiliaryDirectory{basis,token:self.source.owner_token()};
+        result.revalidate(self,events)?;Ok(result)
+    }
+}
+fn output_in_private_owner_arena(
+    owner: &mut PartitionScopedOwner,
+    output: &Path,
+    arena: &ArtifactArena,
+    events: &mut Vec<NativeEvent>,
+) -> Result<ArenaOutputBasis> {
+    owner.revalidate(events)?;
+    use std::path::{Component, Prefix};
+    let text = output
+        .to_str()
+        .context("Unicode source output path required")?;
+    let bytes = text.as_bytes();
+    ensure!(
+        output.is_absolute()
+            && bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && bytes[2] == b'\\'
+            && !text[2..].contains(':')
+            && matches!(output.components().next(),Some(Component::Prefix(p)) if matches!(p.kind(),Prefix::Disk(_)))
+            && !output
+                .components()
+                .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+        "arena source output requires an unambiguous ordinary local path"
+    );
+    let leaf = output
+        .file_name()
+        .and_then(|v| v.to_str())
+        .context("source output leaf absent")?;
+    ensure!(
+        !leaf.is_empty()
+            && !leaf.ends_with([' ', '.'])
+            && !leaf.chars().any(|c| c.is_control()
+                || matches!(c, ':' | '/' | '\\' | '"' | '<' | '>' | '|' | '?' | '*')),
+        "ambiguous source output leaf refused"
+    );
+    let ram = arena.reserve_ram(
+        (text.len() as u64)
+            .checked_mul(32)
+            .and_then(|n| n.checked_add(4 * 1024 * 1024))
+            .context("source output route RAM overflow")?,
+    )?;
+    let parent = output.parent().context("source output parent absent")?;
+    let mut parents = Vec::new();
+    for ancestor in parent.ancestors().filter(|p| !p.as_os_str().is_empty()) {
+        let metadata = fs::symlink_metadata(ancestor)?;
+        ensure!(
+            metadata.is_dir() && metadata.file_attributes() & 0x400 == 0,
+            "ordinary arena source-output ancestry required"
+        );
+        let file = OpenOptions::new()
+            .access_mode(0x80)
+            .share_mode(3)
+            .custom_flags(0x0200_0000 | 0x0020_0000)
+            .open(ancestor)?;
+        ensure!(
+            file.metadata()?.is_dir() && file.metadata()?.file_attributes() & 0x400 == 0,
+            "held arena source-output ancestry differs"
+        );
+        parents.push(file);
+    }
+    let held = parents
+        .first()
+        .context("held arena source-output parent absent")?;
+    arena.require_root_directory(held)?;
+    let parent_guid = n2r_win32::file_storage::final_path_guid(held)?;
+    let drive_root = text[..3].to_owned();
+    let volume = n2r_win32::discovery::discover(
+        &drive_root,
+        n2r_win32::discovery::Role::Journal {
+            allow_additional_partitions: true,
+        },
+    )?
+    .binding;
+    let basis = ArenaOutputBasis {
+        parents,
+        created: Vec::new(),
+        drive_root,
+        parent_guid,
+        volume,
+        _ram: ram,
+    };
+    validate_partition_output(&basis, owner.binding(), arena)?;
+    owner.revalidate(events)?;
+    Ok(basis)
 }

@@ -736,7 +736,7 @@ impl<'source, 'observation> PagedSourceBackedCandidate<'source, 'observation> {
         source.seek(SeekFrom::Start(offset))?;
         source.read_exact(output)?;
         if let Some(observer) = &mut self.closing_source {
-            observer.observe_original(source, offset, output)?;
+            source.observe_closing(&mut **observer, offset, output)?;
         }
         self.poisoned = false;
         Ok(())

@@ -37,6 +37,9 @@ pub use paged_recovery::{BorrowedPagedWriter, GeneralLiveConvertedObservation, P
 mod partition_dump_locations;
 mod partition_runtime_roles;
 mod partition_owner;
+mod partition_source_metadata;
+mod partition_target_observation;
+pub use partition_source_metadata::{PartitionSourceMetadataState, PartitionSourceMetadataWitness};
 pub mod partition_lifecycle;
 pub use partition_owner::{PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner};
 

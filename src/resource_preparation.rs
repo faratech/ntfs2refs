@@ -32,6 +32,8 @@ mod placement_evidence;
 pub(crate) mod abort;
 pub(crate) mod early_guard;
 pub(crate) mod file_observer;
+#[path = "resource_partition_target.rs"]
+pub(crate) mod partition_target;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent,

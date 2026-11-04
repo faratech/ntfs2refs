@@ -772,6 +772,10 @@ fn source_in_place(
     Intervals::finish(sort, path, image, scratch, *b"N2RTIPL1")
 }
 
+#[path = "partition_context.rs"]
+mod partition_context;
+use partition_context::ScopedSourceContext;
+
 /// A private scope issued only by the live native/closing-bracket constructor.
 /// Compared bytes exclude only actual same-source in-place mappings. This is
 /// deliberately not constructible from a RecordStorePin or serialized flags.
@@ -969,6 +973,56 @@ pub(crate) fn observe_and_select_paged(
         &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
     ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
 ) -> Result<ProtectedPagedTargetSelection> {
+    let mut scoped=ScopedSourceContext::Dedicated(context);
+    observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,
+        |scoped,target,expected,native,scope,closing| match scoped {
+            ScopedSourceContext::Dedicated(context)=>consume(context,target,expected,native,scope,closing),
+            ScopedSourceContext::Partition(_)=>anyhow::bail!("dedicated target callback received partition source"),
+        })
+}
+
+pub(crate) fn observe_and_select_partition_paged(
+    context: &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+    target: &mut n2r_win32::GeneralFrozenPartition,
+    pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+    expected: &PagedExpectedTree,
+    capture_group: &ArtifactGroupPermit,
+    output: &Path,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    consume: impl FnOnce(
+        &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        &mut n2r_win32::GeneralFrozenPartition,
+        &PagedExpectedTree,
+        &n2r_win32::GeneralLiveRefsLayoutObservation,
+        &PagedTargetScope,
+        &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+    ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
+) -> Result<ProtectedPagedTargetSelection> {
+    let mut scoped=ScopedSourceContext::Partition(context);
+    observe_and_select_scoped(&mut scoped,target,pair,expected,capture_group,output,events,
+        |scoped,target,expected,native,scope,closing| match scoped {
+            ScopedSourceContext::Partition(context)=>consume(context,target,expected,native,scope,closing),
+            ScopedSourceContext::Dedicated(_)=>anyhow::bail!("partition target callback received dedicated source"),
+        })
+}
+
+fn observe_and_select_scoped(
+    context: &mut ScopedSourceContext<'_>,
+    target: &mut n2r_win32::GeneralFrozenPartition,
+    pair: n2r_win32::general_layout::GeneralSourceShadowBinding,
+    expected: &PagedExpectedTree,
+    capture_group: &ArtifactGroupPermit,
+    output: &Path,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    consume: impl FnOnce(
+        &mut ScopedSourceContext<'_>,
+        &mut n2r_win32::GeneralFrozenPartition,
+        &PagedExpectedTree,
+        &n2r_win32::GeneralLiveRefsLayoutObservation,
+        &PagedTargetScope,
+        &mut dyn crate::general_shadow::source_backed::ClosingShadowBytes,
+    ) -> Result<crate::general_shadow::paged_capture::DiagnosticSelectedCapture>,
+) -> Result<ProtectedPagedTargetSelection> {
     let admission = context.resource_admission();
     let resources = crate::ntfs_admission::ResourceProfile::ResourceBoundedV4(Some(admission));
     let arena = context
@@ -991,17 +1045,11 @@ pub(crate) fn observe_and_select_paged(
     expected.require_shared_memory(&arena)?;
     let memory = super::paged_memory::ArenaReportMemory(arena);
     context.recheck_source(events)?;
-    let source_before = {
-        let (source, _) = context.source_and_inspection()?;
-        ensure!(
-            source.binding() == &pair.source,
-            "actual frozen source association differs"
-        );
-        source.state(events)?
-    };
+    let source_before = context.source_state(&pair,events)?;
+    source_before.require_excluded()?;
     let target_before = target.state(events)?;
     ensure!(
-        source_before.disk_attributes == 3 && target_before.disk_attributes == 3,
+        target_before.disk_attributes == 3,
         "protected target requires both frozen disks"
     );
     ensure!(!output.exists(), "fresh target scope directory required");
@@ -1018,13 +1066,7 @@ pub(crate) fn observe_and_select_paged(
         context.inspection().budget(),
         capture_group.clone(),
     )?;
-    let source_projection = crate::shadow_tree::source_pages::SourceExpectedDomain::derive(
-        context.inspection(),
-        context.native().domain(),
-        admission,
-        &projection_dir,
-        &projection_scratch,
-    )?;
+    let source_projection=context.derive_projection(admission,&projection_dir,&projection_scratch)?;
     ensure!(
         crate::general_qualification::pretty_json_sha256(&source_projection)?
             == expected.semantic_sha256(),
@@ -1035,9 +1077,7 @@ pub(crate) fn observe_and_select_paged(
     // now-unused object decoding workspace.
     let source_projection = source_projection.into_revalidation_owner()?;
     let source_tails = {
-        let (source, raw) = context.source_and_inspection()?;
-        let mut bytes =
-            PagedSourceByteAdapter::new(source, raw, admission, expected.logical_bytes().max(1))?;
+        let mut bytes=context.bytes(admission,expected.logical_bytes().max(1))?;
         let provider = SourceTailProvider::capture(
             &mut bytes,
             expected,
@@ -1075,8 +1115,8 @@ pub(crate) fn observe_and_select_paged(
     // per-object queries/retained rows and the paged residual writer.
     let native_wrapper_ram = scratch.lease_ram(32 * 1024 * 1024)?;
     drop(stage_ram);
-    let preliminary = target.observe_refs_layout_residuals_paged_domain_with_memory(
-        pair.clone(),
+    let preliminary = context.observe_target(
+        target, pair.clone(),
         &input,
         &source_tails,
         prelim_permit.path(),
@@ -1098,8 +1138,7 @@ pub(crate) fn observe_and_select_paged(
     // across those independently accounted allocations.
     drop(stage_ram);
     let opening_routes = {
-        let (source, raw) = context.source_and_inspection()?;
-        let mut bytes = PagedSourceByteAdapter::new(source, raw, admission, 1)?;
+        let mut bytes=context.bytes(admission,1)?;
         let routes = crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
             &preliminary,
             expected,
@@ -1118,8 +1157,7 @@ pub(crate) fn observe_and_select_paged(
         &scratch,
     )?;
     let in_place = {
-        let (source, raw) = context.source_and_inspection()?;
-        let mut bytes = PagedSourceByteAdapter::new(source, raw, admission, 1)?;
+        let mut bytes=context.bytes(admission,1)?;
         let result = source_in_place(
             &mut bytes,
             expected,
@@ -1208,8 +1246,8 @@ pub(crate) fn observe_and_select_paged(
     let closing_result_ram = capture_group.arena().reserve_ram(result_ram_bytes)?;
     let closing_permit = capture_group.reserve_file(&closing_path, result_budget.max_file_bytes)?;
     drop(stage_ram);
-    let native = target.observe_refs_layout_residuals_paged_domain_with_memory(
-        pair.clone(),
+    let native = context.observe_target(
+        target, pair.clone(),
         &input,
         &source_tails,
         closing_permit.path(),
@@ -1227,8 +1265,7 @@ pub(crate) fn observe_and_select_paged(
     let closing_lease = closing_permit.verify_closed(closing_results.sha256())?;
     drop(stage_ram);
     let closing_routes = {
-        let (source, raw) = context.source_and_inspection()?;
-        let mut bytes = PagedSourceByteAdapter::new(source, raw, admission, 1)?;
+        let mut bytes=context.bytes(admission,1)?;
         let routes = crate::general_shadow::paged_candidate::PagedPayloadRoutes::capture(
             &native,
             expected,
@@ -1319,10 +1356,7 @@ pub(crate) fn observe_and_select_paged(
     // Charge the small Arc control block, both live Arc values and the token
     // before allocation. Its identity never enters a serialized receipt.
     let identity_ram = scratch.lease_ram(128)?;
-    let source_owner = {
-        let (source, _) = context.source_and_inspection()?;
-        std::ptr::from_ref(source) as usize
-    };
+    let source_owner=context.source_owner_identity();
     let scope = PagedTargetScope {
         required:
             crate::general_shadow::paged_capture::DiagnosticCaptureSelection::from_held_store(
@@ -1384,9 +1418,8 @@ pub(crate) fn observe_and_select_paged(
     source_projection.revalidate()?;
     expected.require_resource_owner(admission)?;
     context.recheck_source(events)?;
-    let (source, _) = context.source_and_inspection()?;
     ensure!(
-        source.state(events)? == source_before,
+        context.source_state(&pair,events)?.same(&source_before),
         "frozen source changed during target selection/capture"
     );
     Ok(ProtectedPagedTargetSelection {

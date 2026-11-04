@@ -4,15 +4,20 @@
 use super::input_domain::{DomainMetadata, InputDomain, ObjectInput, SliceInputs};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+pub use crate::native::{PartitionSourceMetadataState, PartitionSourceMetadataWitness};
 mod enrollment;
 mod memory;
 mod metadata;
 mod placement;
 mod routed_prefix;
 mod source_backed;
+pub(super) mod source_scope;
 mod supply;
 mod system_payloads;
-pub use enrollment::{ConstructionEnrollment, enroll, enroll_with_resource_profile};
+pub use enrollment::{
+    ConstructionEnrollment, PartitionConstructionEnrollment, enroll,
+    enroll_partition_with_resource_profile, enroll_with_resource_profile,
+};
 pub use placement::{PlacementEvidenceSink, ResourcePlacementReport};
 pub use routed_prefix::RoutedPrefixReady;
 pub use source_backed::{
@@ -42,7 +47,8 @@ pub struct PrivateTree {
     carrier_directory: Option<sparse_stream::CarrierDirectory>,
     volume: File,
     pair: GeneralSourceShadowBinding,
-    source_before: native::GeneralDiskState,
+    source_before: source_scope::ConstructionSourceState,
+    partition_source: Option<native::PartitionSourceMetadataWitness>,
     initial_objects: Vec<serde_json::Value>,
     events: Vec<NativeEvent>,
     privileges: Privileges,
@@ -966,11 +972,11 @@ impl PrivateTree {
             }
         }
         let mut events = Vec::new();
-        if native::observe_general_disk_state_readonly(self.pair.source.clone(), &mut events)?
-            != self.source_before
-            || native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut events)?
-                .disk_attributes
-                != 0
+        self.source_before
+            .require(&self.pair, self.partition_source.as_ref(), &mut events)?;
+        if native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut events)?
+            .disk_attributes
+            != 0
         {
             return Err(invalid(
                 "private tree source exclusion or shadow state changed",
@@ -1292,6 +1298,15 @@ pub fn allocate_enrolled_domain_with_memory(
     allocate_domain_with_memory(&pair, input, Some(enrollment), Some(profile), Some(owner))
 }
 
+pub fn allocate_enrolled_partition_domain_with_memory(
+    enrollment: PartitionConstructionEnrollment,
+    input: &impl InputDomain,
+    profile: crate::attestation::ResourceProfile,
+    memory: Arc<dyn report_memory::ReportMemoryAccountant>,
+) -> io::Result<PrivateTree> {
+    allocate_enrolled_domain_with_memory(enrollment.inner, input, profile, memory)
+}
+
 fn allocate_domain(
     pair: &GeneralSourceShadowBinding,
     input: &impl InputDomain,
@@ -1471,12 +1486,24 @@ fn allocate_domain_with_memory(
     drop(directories);
     drop(preflight_ram);
     let mut events = Vec::new();
-    let source_before =
-        native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
-    if source_before.disk_attributes != 3
-        || native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
-            .disk_attributes
-            != 0
+    let source_before = if let Some(owned) = enrollment
+        .as_ref()
+        .filter(|owned| owned.source.partition().is_some())
+    {
+        owned
+            .source_before
+            .require(pair, owned.source.partition(), &mut events)?;
+        owned.source_before.clone()
+    } else {
+        let source = native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
+        if source.disk_attributes != 3 {
+            return Err(invalid("excluded dedicated source required"));
+        }
+        source_scope::ConstructionSourceState::Dedicated(source)
+    };
+    if native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
+        .disk_attributes
+        != 0
         || native::mounted_filesystem_general(pair.shadow.clone(), &mut events)? != "ReFS"
     {
         return Err(invalid("excluded source and writable ReFS shadow required"));
@@ -1502,7 +1529,7 @@ fn allocate_domain_with_memory(
             "private tree requires a 4-KiB ReFS allocation unit",
         ));
     }
-    let (privileges, root_handle, enrolled_volume, construction_enrollment) =
+    let (privileges, root_handle, enrolled_volume, construction_enrollment, partition_source) =
         if let Some(mut owned) = enrollment {
             owned.revalidate()?;
             let observed = owned.observation();
@@ -1514,6 +1541,7 @@ fn allocate_domain_with_memory(
                 owned.root,
                 Some(owned.volume),
                 Some(observed),
+                owned.source.into_partition(),
             )
         } else {
             let privileges = Privileges::enable_for(&[
@@ -1522,7 +1550,7 @@ fn allocate_domain_with_memory(
                 "SeSecurityPrivilege",
                 "SeManageVolumePrivilege",
             ])?;
-            (privileges, open(&root, true, true)?, None, None)
+            (privileges, open(&root, true, true)?, None, None, None)
         };
     let reparse_privileges =
         if input.any(|item| item.reparse.is_some_and(|point| point.tag() == 0xa000000c))? {
@@ -1821,6 +1849,7 @@ fn allocate_domain_with_memory(
         volume,
         pair: pair.clone(),
         source_before,
+        partition_source,
         initial_objects: objects,
         events,
         privileges,

@@ -795,11 +795,15 @@ pub struct PagedStreamIdentity<'a> {
 
 /// Logical bytes from the original protected source, using one checked DATA
 /// session. The legacy candidate and its Tree/NtfsInspection path stay intact.
+#[path = "partition_source_bytes.rs"]
+mod partition_source_bytes;
+use partition_source_bytes::BorrowedPagedSource;
+
 pub struct PagedSourceByteAdapter<'a> {
-    source: &'a mut GeneralFrozenPartition,
+    source: BorrowedPagedSource<'a>,
     raw: &'a crate::ntfs_inspect::PagedInspection,
     admission: n2r_win32::tree_resources::SourceResourceAdmission,
-    before: n2r_win32::GeneralDiskState,
+    before: Option<n2r_win32::GeneralDiskState>,
     budget: crate::ntfs_inspect::StreamTransferBudget,
     session: Option<crate::ntfs_inspect::PlainStreamRangeSession>,
     sequence: Option<u16>,
@@ -852,10 +856,10 @@ impl<'a> PagedSourceByteAdapter<'a> {
                 .context("paged DATA session working RAM overflow")?,
         )?;
         Ok(Self {
-            source,
+            source: BorrowedPagedSource::Dedicated(source),
             raw,
             admission,
-            before,
+            before:Some(before),
             // Individual NTFS logical lengths have the native signed-width
             // bound. Aggregate actual reads retain the caller's explicit budget.
             budget: crate::ntfs_inspect::StreamTransferBudget::new(
@@ -884,7 +888,7 @@ impl<'a> PagedSourceByteAdapter<'a> {
         });
         if !matches {
             if let Some(session) = self.session.take() {
-                session.finish_domain(self.source, self.raw)?;
+                session.finish_domain(&mut self.source, self.raw)?;
             }
             let file = self
                 .raw
@@ -904,7 +908,7 @@ impl<'a> PagedSourceByteAdapter<'a> {
             );
             let session = if identity.allow_sparse {
                 crate::ntfs_inspect::PlainStreamRangeSession::open_sparse_named_domain(
-                    self.source,
+                    &mut self.source,
                     self.raw,
                     identity.record_number,
                     identity.name_utf16,
@@ -912,7 +916,7 @@ impl<'a> PagedSourceByteAdapter<'a> {
                 )?
             } else {
                 crate::ntfs_inspect::PlainStreamRangeSession::open_named_domain(
-                    self.source,
+                    &mut self.source,
                     self.raw,
                     identity.record_number,
                     identity.name_utf16,
@@ -968,14 +972,14 @@ impl<'a> PagedSourceByteAdapter<'a> {
         let session = self.session.as_mut().context("paged DATA session absent")?;
         let receipt = if direct {
             Some(session.read_with_direct_receipts_domain(
-                self.source,
+                &mut self.source,
                 self.raw,
                 offset,
                 output,
                 &mut self.budget,
             )?)
         } else {
-            session.read_domain(self.source, self.raw, offset, output, &mut self.budget)?;
+            session.read_domain(&mut self.source, self.raw, offset, output, &mut self.budget)?;
             None
         };
         self.logical_bytes = self
@@ -1027,12 +1031,12 @@ impl<'a> PagedSourceByteAdapter<'a> {
         result
     }
 
-    pub(super) fn original_owner(&mut self) -> &mut GeneralFrozenPartition {
-        self.source
+    pub(super) fn original_owner(&mut self) -> &mut BorrowedPagedSource<'a> {
+        &mut self.source
     }
 
     pub(super) fn original_owner_id(&self) -> usize {
-        std::ptr::from_ref(&*self.source) as usize
+        self.source.owner_identity()
     }
 
     pub(crate) fn lease_working_ram(
@@ -1054,14 +1058,7 @@ impl<'a> PagedSourceByteAdapter<'a> {
 
     pub(crate) fn validate_protection(&mut self) -> Result<()> {
         ensure!(!self.poisoned, "failed source adapter cannot validate");
-        let result = (|| {
-            ensure!(
-                self.source.state(&mut Vec::new())? == self.before
-                    && self.before.disk_attributes == 3,
-                "original source identity or physical exclusion changed"
-            );
-            Ok(())
-        })();
+        let result=self.source.validate(self.before.as_ref());
         if result.is_err() {
             self.poisoned = true;
         }
@@ -1072,7 +1069,7 @@ impl<'a> PagedSourceByteAdapter<'a> {
         ensure!(!self.poisoned, "failed source adapter cannot close stream");
         self.poisoned = true;
         if let Some(session) = self.session.take() {
-            session.finish_domain(self.source, self.raw)?;
+            session.finish_domain(&mut self.source, self.raw)?;
         }
         self.sequence = None;
         self.allow_sparse = None;
@@ -1178,17 +1175,13 @@ impl<'a> PagedSourceByteAdapter<'a> {
             "failed paged source byte adapter cannot finish"
         );
         if let Some(session) = self.session.take() {
-            session.finish_domain(self.source, self.raw)?;
+            session.finish_domain(&mut self.source, self.raw)?;
         }
         self.raw.require_paged_source(
             self.admission.source_pages,
             self.admission.semantic_byte_budget(),
         )?;
-        let mut events = Vec::new();
-        ensure!(
-            self.source.state(&mut events)? == self.before && self.before.disk_attributes == 3,
-            "original source identity or protection changed around logical reads",
-        );
+        self.source.validate(self.before.as_ref())?;
         Ok(self.logical_bytes)
     }
 }

@@ -93,6 +93,13 @@ impl ReadSeek for n2r_win32::GeneralFrozenPartition {
 }
 
 #[cfg(windows)]
+impl ReadSeek for n2r_win32::PartitionScopedOwner {
+    fn byte_len(&mut self) -> io::Result<u64> {
+        Ok(n2r_win32::PartitionScopedOwner::byte_len(self))
+    }
+}
+
+#[cfg(windows)]
 impl ReadSeek for n2r_win32::GeneralJournaledPartition {
     fn byte_len(&mut self) -> io::Result<u64> {
         Ok(n2r_win32::GeneralJournaledPartition::byte_len(self))

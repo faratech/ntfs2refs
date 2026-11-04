@@ -285,9 +285,10 @@ pub(super) fn complete_domain(
     tree.require_source_excluded()?;
     // This consumes the only tree owner on success AND failure. A diagnostic
     // return cannot resume a partially public/private metadata transition.
-    let mut report = super::super::cache_refresh::complete_owned_metadata_domain(
+    let mut report = super::super::cache_refresh::complete_owned_metadata_scoped_domain(
         &tree.pair,
         &tree.source_before,
+        tree.partition_source.as_ref(),
         &tree.volume,
         input,
         &tree.metadata_targets,

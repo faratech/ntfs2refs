@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "kind": "actual-partition-native-shadow-capture-journal-preparation",
+  "status": "combined-public-check-passed-native-qualification-pending",
+  "base_commit": "4ab5d87",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 200442,
+      "sha256": "00809e5396fdf33b5b9e775c9071d143a1fd43da1b9e3a7c88a19014a5e6fc85"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 21798,
+      "sha256": "3b37abd9cf16664bd1cc4a9f01709297ca54ebf7f727421d58715edb50da3fbd"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata.rs",
+      "bytes": 7184,
+      "sha256": "59c09abb5bc765bf4aae3003859b94c511ce523c52adb0948fbba548aecbd1f0"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_target_observation.rs",
+      "bytes": 2919,
+      "sha256": "46b9fbf8d70cac5561ebb3fb9041c3e3ad4a44835e16d57040451a16418d7c22"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native.rs",
+      "bytes": 216501,
+      "sha256": "4167407cd309b9272e54a54a3e162f886d9c062c96f969094b8a634c3c796930"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/cache_refresh.rs",
+      "bytes": 38823,
+      "sha256": "9a14fc567c53da7601ab6048ccfb6667375d841e4eee9d90d801ab5a00160950"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree.rs",
+      "bytes": 74572,
+      "sha256": "7c6e56620132402c57fbff396ce7600455ef73ec85a98a46f75bcee4c4594c25"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/enrollment.rs",
+      "bytes": 9180,
+      "sha256": "ef875a5950186005fe8ce32931a7778ad5f8b21974b81b2e9b6db8ac3d0c0d63"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/memory.rs",
+      "bytes": 12146,
+      "sha256": "598fb72d738cef124b3cd188be21680402c013c9ba028fb27cffda4e835e77ee"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/metadata.rs",
+      "bytes": 14661,
+      "sha256": "5fe0e5ff1c2ff5a02111766d94986a9a65bc5fb22289613c65e33cb7562c9c2d"
+    },
+    {
+      "path": "crates/n2r-win32/src/shadow_native/private_tree/source_scope.rs",
+      "bytes": 2787,
+      "sha256": "0afd9bf18dc386bc838405d2876fa2dd0b2da948a05505252d942e4a76d0455e"
+    },
+    {
+      "path": "src/general_composite_target/paged.rs",
+      "bytes": 55582,
+      "sha256": "4152ed2fcf042ccb9cd24389c604e2e2872353d1511f443d64ef9979abc52f53"
+    },
+    {
+      "path": "src/general_composite_target/partition_context.rs",
+      "bytes": 7630,
+      "sha256": "6eafd529444bce60c1a4fe635ff4a6a2e903590fae7faf7dc6b0aa3e8a3bc82e"
+    },
+    {
+      "path": "src/general_reconstruct/selected_native_journal.rs",
+      "bytes": 47288,
+      "sha256": "f602dbd29a3ef7503ea9bfac0f7bbc1abc4dde35cc8042e8385f62a11bcf23eb"
+    },
+    {
+      "path": "src/general_shadow/paged_candidate.rs",
+      "bytes": 31087,
+      "sha256": "5e8075bb7108a4c5f713f6286612fb7d095b8e09fa73fafd30f7cefa5eacaf52"
+    },
+    {
+      "path": "src/general_shadow/partition_source_bytes.rs",
+      "bytes": 6133,
+      "sha256": "aade8c07b09c0351b30062fdabf1e963f50422aed697d736d389d179c7962e08"
+    },
+    {
+      "path": "src/general_shadow/source_backed.rs",
+      "bytes": 96002,
+      "sha256": "ad6d15794e511399e537a60034b3c267b21b170709decb12b00dc98dc7a15940"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition.rs",
+      "bytes": 46276,
+      "sha256": "e08114de52640df2aac53114cec7f605d041fe32c22b0ea28a6ab395c43d403f"
+    },
+    {
+      "path": "src/lab_reconstruct.rs",
+      "bytes": 109925,
+      "sha256": "13c0addc38098f4d872b4d7cae44e4cac20e085d77d2a95b52d69c337424dce2"
+    },
+    {
+      "path": "src/resource_partition_target.rs",
+      "bytes": 9911,
+      "sha256": "33dffd497361a5311c74856b4cca51ea04127cf47dd31df981e72acf32bbda40"
+    },
+    {
+      "path": "src/resource_preparation.rs",
+      "bytes": 37709,
+      "sha256": "272f834192daea58a6bdfeb112dbd176a6144bac3624349301376c4a44751792"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/captured_candidate.rs",
+      "bytes": 14803,
+      "sha256": "e91b44eba4bbbf314e096cc73b063a5982f3a3c0d8417af5b5dfa2e882b5918c"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare.rs",
+      "bytes": 44820,
+      "sha256": "fa186474967b0198ad8e641b0ace9ac6870eb36ca1c033ac6af78b19a6d64d00"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/replay.rs",
+      "bytes": 34386,
+      "sha256": "fe3605a13f9b6c721a879427da5d249ec0a6cc436b2cef2fa84fc385c085b626"
+    }
+  ],
+  "reviewed_draft_patches": [
+    {
+      "sha256": "be45a0388c3ac86c65cbdeba4d26fa735940bbcbe7c62beb51f3de3ce6e6838f",
+      "scope": "SDK actual source witness and native target"
+    },
+    {
+      "sha256": "c31bdb4c2eea538c9194860ff47624b9c4bc7990850dcfc96dcc3d958f5450b5",
+      "scope": "ROOT actual source supply target and capture"
+    },
+    {
+      "sha256": "dc1b53771005c3ebd93d5f498eb6dccbbda302d49a4e55321de692ba2e1ea7b8",
+      "scope": "actual native journal creation and preparation"
+    }
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 22.1812068,
+  "check_receipt_sha256": "f343d21a1a7097b70ce298340a418c6e0c6184e312b9ded2cf531d7300a20d06",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "writer_cli_enabled": false,
+  "review_fixes": [
+    "Normalized only CRLF in pinned copied source inputs.",
+    "Used explicit inherent byte length for actual SDK partition/frozen shadow owners and added readonly ROOT ReadSeek adapter.",
+    "Accounted query-only metadata witness conservatively at complete partition-observation RAM budget.",
+    "Closing candidate validation runs even if actual journal-domain callback returns an error."
+  ],
+  "behavior": [
+    "Actual original-FileObject query-only witness binds native admission, resource profile and stable source owner.",
+    "Private-partition shadow enrollment reuses PrivateTree placement, source-backed/routed/materialized supply and metadata fidelity.",
+    "Shared opening/closing target selection retains allocation, namespace, ACL, full retrieval and exact retained extent checks; General states describe actual dedicated shadow only.",
+    "Selected V4 capture produces actual protected NEW/COPY/zero records from actual partition OLD source.",
+    "Source-scoped J is created share-zero on an actual disjoint volume, preallocated, prepared by unchanged streaming core and sealed by real closed index scanner.",
+    "Legacy dedicated constructors and disk inequalities remain."
+  ],
+  "remaining": [
+    "Actual prepared certificate and AP-gated partition write activation.",
+    "Authenticated process-death restart and target-only HND/ABT restoration.",
+    "End-to-end shared-Windows-disk native qualification and public routing."
+  ]
+}

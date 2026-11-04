@@ -3,9 +3,9 @@
 use super::*;
 
 pub struct ConstructionEnrollment<'source> {
-    pub(super) source: &'source native::GeneralFrozenPartition,
+    pub(super) source: source_scope::ConstructionSource<'source>,
     pub(super) pair: GeneralSourceShadowBinding,
-    pub(super) source_before: native::GeneralDiskState,
+    pub(super) source_before: source_scope::ConstructionSourceState,
     pub(super) shadow_before: native::GeneralDiskState,
     pub(super) volume: File,
     pub(super) root: File,
@@ -66,9 +66,9 @@ pub fn enroll_with_resource_profile<'source>(
     validate_open_type(&root, true)?;
     let root_id = info(&root, 18, 24)?;
     let mut enrollment = ConstructionEnrollment {
-        source,
+        source: source_scope::ConstructionSource::Dedicated(source),
         pair: pair.clone(),
-        source_before,
+        source_before: source_scope::ConstructionSourceState::Dedicated(source_before),
         shadow_before,
         volume,
         root,
@@ -82,13 +82,27 @@ pub fn enroll_with_resource_profile<'source>(
 
 impl ConstructionEnrollment<'_> {
     pub(super) fn revalidate(&mut self) -> io::Result<()> {
-        if self.source.freeze_observation().is_none()
-            || self.source.binding() != &self.pair.source
-            || self.source.state(&mut self.events)? != self.source_before
-            || native::observe_general_disk_state_readonly(
-                self.pair.shadow.clone(),
-                &mut self.events,
-            )? != self.shadow_before
+        match &self.source {
+            source_scope::ConstructionSource::Dedicated(source) => {
+                let source_scope::ConstructionSourceState::Dedicated(expected) =
+                    &self.source_before
+                else {
+                    return Err(invalid("dedicated construction scope differs"));
+                };
+                if source.freeze_observation().is_none()
+                    || source.binding() != &self.pair.source
+                    || source.state(&mut self.events)? != *expected
+                {
+                    return Err(invalid("live dedicated construction freeze changed"));
+                }
+            }
+            source_scope::ConstructionSource::Partition(witness) => {
+                self.source_before
+                    .require(&self.pair, Some(witness), &mut self.events)?;
+            }
+        }
+        if native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut self.events)?
+            != self.shadow_before
             || info(&self.root, 18, 24)? != self.root_id
         {
             return Err(invalid(
@@ -156,4 +170,63 @@ fn check_mounted_profile(volume: &File, partition_bytes: u64) -> io::Result<()> 
         ));
     }
     Ok(())
+}
+
+/// Actual private-partition enrollment, retaining a query-only duplicate of
+/// the original source FileObject. No saved observation constructs this type.
+pub struct PartitionConstructionEnrollment {
+    pub(super) inner: ConstructionEnrollment<'static>,
+}
+pub fn enroll_partition_with_resource_profile(
+    source: &mut native::PartitionScopedOwner,
+    admission: &native::partition_lifecycle::PartitionNtfsAdmission,
+    pair: &GeneralSourceShadowBinding,
+    profile: crate::attestation::ResourceProfile,
+) -> io::Result<PartitionConstructionEnrollment> {
+    profile.resource_admission()?;
+    pair.validate_with_resource_profile(Some(profile))?;
+    if source.binding().storage != pair.source {
+        return Err(invalid("partition enrollment source binding differs"));
+    }
+    let mut events = Vec::new();
+    let witness = source.construction_metadata_witness(admission, &mut events)?;
+    witness.require_profile(profile)?;
+    let source_before = source_scope::ConstructionSourceState::Partition(witness.state().clone());
+    let shadow_before =
+        native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
+    if shadow_before.disk_attributes != 0 {
+        return Err(invalid(
+            "partition construction requires writable dedicated shadow",
+        ));
+    }
+    let privileges = Privileges::enable_for(&[
+        "SeBackupPrivilege",
+        "SeRestorePrivilege",
+        "SeSecurityPrivilege",
+        "SeManageVolumePrivilege",
+    ])?;
+    let volume = File::options()
+        .read(true)
+        .write(true)
+        .share_mode(3)
+        .open(pair.shadow.volume_path()?)?;
+    pair.shadow
+        .validate_volume_extent(&ctl(&volume, 0x00560000, &[], 1024)?)?;
+    check_mounted_profile(&volume, pair.shadow.identity.partition_bytes)?;
+    let root = open(&format!("{}\\", pair.shadow.volume_path()?), true, true)?;
+    validate_open_type(&root, true)?;
+    let root_id = info(&root, 18, 24)?;
+    let mut inner = ConstructionEnrollment {
+        source: source_scope::ConstructionSource::Partition(witness),
+        pair: pair.clone(),
+        source_before,
+        shadow_before,
+        volume,
+        root,
+        root_id,
+        privileges,
+        events,
+    };
+    inner.revalidate()?;
+    Ok(PartitionConstructionEnrollment { inner })
 }

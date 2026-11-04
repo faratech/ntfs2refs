@@ -131,7 +131,7 @@ impl BoundJournalObservation<'_> {
             "partition MIXED observation requires live AP/RB; clear/HND/ABT refuse raw recovery"
         );
         let source = owner.binding().clone();
-        let length = owner.byte_len();
+            let length = n2r_win32::PartitionScopedOwner::byte_len(owner);
         publication.revalidate_partition_mixed(
             owner,
             stable,
@@ -158,7 +158,7 @@ impl BoundJournalObservation<'_> {
         ensure!(
             self.observation.lifecycle()? == lifecycle
                 && owner.binding() == &source
-                && owner.byte_len() == length
+                && n2r_win32::PartitionScopedOwner::byte_len(owner) == length
                 && stable.same_owner(&owner.owner_token()),
             "partition MIXED actual owner/binding/journal lifecycle changed during scan"
         );

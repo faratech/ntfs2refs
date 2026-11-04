@@ -176,6 +176,35 @@ pub(super) fn complete_owned_metadata_domain(
     resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
     same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
 ) -> io::Result<serde_json::Value> {
+    if source_before.disk_attributes != 3 {
+        return Err(invalid(
+            "owning metadata requires original dedicated exclusion",
+        ));
+    }
+    complete_owned_metadata_scoped_domain(
+        pair,
+        &private_tree::source_scope::ConstructionSourceState::Dedicated(source_before.clone()),
+        None,
+        volume,
+        input,
+        handles,
+        maximum_objects,
+        resource_admission,
+        same_security,
+    )
+}
+
+pub(super) fn complete_owned_metadata_scoped_domain(
+    pair: &GeneralSourceShadowBinding,
+    source_before: &private_tree::source_scope::ConstructionSourceState,
+    partition_source: Option<&native::PartitionSourceMetadataWitness>,
+    volume: &File,
+    input: &impl InputDomain,
+    handles: &BTreeMap<usize, File>,
+    maximum_objects: usize,
+    resource_admission: Option<crate::tree_resources::SourceResourceAdmission>,
+    same_security: impl Fn(&[u8], &[u8]) -> io::Result<bool>,
+) -> io::Result<serde_json::Value> {
     let resource_root = format!("{}\\", pair.shadow.volume_path()?);
     if let Some(admission) = resource_admission {
         input.require_resource_metadata(admission)?;
@@ -196,7 +225,6 @@ pub(super) fn complete_owned_metadata_domain(
         || maximum_objects == 0
         || input.len() > maximum_objects
         || handles.len() != input.len()
-        || source_before.disk_attributes != 3
     {
         return Err(invalid("complete owning metadata capability required"));
     }
@@ -209,12 +237,12 @@ pub(super) fn complete_owned_metadata_domain(
     pair.shadow
         .validate_volume_extent(&ctl(volume, 0x00560000, &[], 1024)?)?;
     let mut events = Vec::new();
+    source_before.require(pair, partition_source, &mut events)?;
     let target = native::GeneralPartitionReader::open(pair.shadow.clone(), &mut events)?;
-    if native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?
-        != *source_before
-        || native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
-            .disk_attributes
-            != 0
+    source_before.require(pair, partition_source, &mut events)?;
+    if native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
+        .disk_attributes
+        != 0
         || native::mounted_filesystem_general(pair.shadow.clone(), &mut events)? != "ReFS"
     {
         return Err(invalid(
@@ -359,8 +387,7 @@ pub(super) fn complete_owned_metadata_domain(
     // Reuse the existing prepaid scalar slot; the feature flags add no index
     // allocation. The held InputDomain is immutable throughout completion.
     const _: () = assert!(
-        std::mem::size_of::<(usize, usize, u8)>()
-            == std::mem::size_of::<(usize, usize, bool)>()
+        std::mem::size_of::<(usize, usize, u8)>() == std::mem::size_of::<(usize, usize, bool)>()
     );
     let mut ordered = Vec::new();
     input.for_each(|index, item| {
@@ -378,7 +405,11 @@ pub(super) fn complete_owned_metadata_domain(
     for &(index, _, _) in ordered
         .iter()
         .filter(|(_, _, flags)| *flags & DIRECTORY != 0)
-        .chain(ordered.iter().filter(|(_, _, flags)| *flags & DIRECTORY == 0))
+        .chain(
+            ordered
+                .iter()
+                .filter(|(_, _, flags)| *flags & DIRECTORY == 0),
+        )
     {
         let owned = input.object(index)?;
         let view = owned.input();
@@ -548,11 +579,10 @@ pub(super) fn complete_owned_metadata_domain(
     target.revalidate_route(&mut events)?;
     pair.shadow
         .validate_volume_extent(&ctl(volume, 0x00560000, &[], 1024)?)?;
-    if native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?
-        != *source_before
-        || native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
-            .disk_attributes
-            != 0
+    source_before.require(pair, partition_source, &mut events)?;
+    if native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
+        .disk_attributes
+        != 0
     {
         return Err(invalid("owning metadata storage state changed"));
     }

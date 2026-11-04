@@ -354,6 +354,10 @@ pub struct GeneralLayoutReport {
     conversion_qualified: bool,
     #[serde(skip)]
     expected_memory: Option<report_memory::LayoutRetained>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partition_source_state: Option<native::PartitionSourceMetadataState>,
+    #[serde(skip)]
+    partition_source: Option<native::PartitionSourceMetadataWitness>,
 }
 
 impl Drop for GeneralLayoutReport {
@@ -361,6 +365,18 @@ impl Drop for GeneralLayoutReport {
         // The native report retains the lease paying for this reader/cache.
         // Close it before the native Arc can release its last accounting owner.
         drop(self.paged_residuals.take());
+    }
+}
+
+impl GeneralLayoutReport {
+    pub(crate) fn bind_partition_source(&mut self,witness:native::PartitionSourceMetadataWitness)->io::Result<()>{
+        if self.partition_source.is_some(){return Err(invalid("partition source report already bound"));}
+        witness.require_binding(&self.pair.source)?;witness.revalidate(&mut Vec::new())?;
+        self.partition_source_state=Some(witness.state().clone());self.partition_source=Some(witness);Ok(())
+    }
+    pub fn require_partition_source_owner(&self,token:&native::PartitionOwnerToken)->io::Result<()>{
+        let witness=self.partition_source.as_ref().ok_or_else(||invalid("report has no actual partition source owner"))?;
+        witness.require_owner(token)?;witness.revalidate(&mut Vec::new())
     }
 }
 
@@ -2762,6 +2778,8 @@ pub(crate) fn observe_general_layout_readonly_domain_accounted(
         complete_allocation_graph_verified: false,
         conversion_qualified: false,
         expected_memory,
+        partition_source_state: None,
+        partition_source: None,
     })
 }
 

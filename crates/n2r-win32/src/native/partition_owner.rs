@@ -189,6 +189,29 @@ impl PartitionScopedOwner {
         owner.revalidate(events)?;
         Ok(owner)
     }
+    pub fn construction_metadata_memory_bytes(&self) -> u64 { self.budget.ram_bytes }
+    /// Query-only duplicate of the original lifecycle FileObject. Neither a
+    /// pathname nor serialized state can create this construction witness.
+    pub fn construction_metadata_witness(
+        &mut self,
+        admission: &super::partition_lifecycle::PartitionNtfsAdmission,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::PartitionSourceMetadataWitness> {
+        use crate::attestation::NativeObservationDomain;
+        self.revalidate(events)?;
+        super::partition_lifecycle::require_complete_fresh_ntfs_admission(self, admission)?;
+        admission.native().domain().revalidate()?;
+        let pin = admission.durable_preparation_pin()?;
+        let duplicate = crate::file_storage::duplicate_readonly(&self.file)?;
+        let witness = super::PartitionSourceMetadataWitness::from_live(
+            duplicate, self.binding.clone(), self.budget, self.owner_token(), self.enrolled.clone(),
+            admission.native().domain().sha256().to_owned(), pin.intent_prefix_sha256,
+            admission.native().domain().header().request.resource_profile,
+        )?;
+        witness.revalidate(events)?;
+        self.revalidate(events)?;
+        Ok(witness)
+    }
     pub fn binding(&self) -> &PartitionSourceBinding {
         &self.binding
     }

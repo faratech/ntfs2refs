@@ -15,7 +15,8 @@ use std::io::{self, Read, Seek, SeekFrom};
 pub(crate) struct ProtectedCapturedCandidate<'a> {
     proof: &'a ProtectedPagedTargetSelection,
     source_lane: ResourceSourceReadLane,
-    source_before: GeneralDiskState,
+    source_before: Option<GeneralDiskState>,
+    partition_owner: Option<n2r_win32::PartitionOwnerToken>,
     shadow_before: GeneralDiskState,
     image_length: u64,
     position: u64,
@@ -90,7 +91,8 @@ impl<'a> ProtectedCapturedCandidate<'a> {
             proof,
             source_lane,
             _lane_memory: lane_memory,
-            source_before,
+            source_before:Some(source_before),
+            partition_owner:None,
             shadow_before,
             image_length,
             position: 0,
@@ -141,8 +143,8 @@ impl<'a> ProtectedCapturedCandidate<'a> {
         ensure!(
             source.binding() == &self.proof.scope().pair().source
                 && shadow.binding() == &self.proof.scope().pair().shadow
-                && source.state(events)? == self.source_before
-                && self.source_lane.dedicated_state(events)? == self.source_before
+                && Some(source.state(events)?) == self.source_before
+                && Some(self.source_lane.dedicated_state(events)?) == self.source_before
                 && shadow.state(events)? == self.shadow_before,
             "captured-candidate frozen route or exclusion changed"
         );
@@ -241,5 +243,72 @@ impl Seek for ProtectedCapturedCandidate<'_> {
 impl ReadSeek for ProtectedCapturedCandidate<'_> {
     fn byte_len(&mut self) -> io::Result<u64> {
         Ok(self.image_length)
+    }
+}
+
+impl<'a> ProtectedCapturedCandidate<'a> {
+    pub(crate) fn open_partition(
+        proof:&'a ProtectedPagedTargetSelection,domain:&ResourceJournalDomain<'_>,
+        context:&mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        shadow:&mut GeneralFrozenPartition,events:&mut Vec<NativeEvent>,
+    )->Result<Self>{
+        ensure!(std::ptr::eq(domain.capture(),proof.captured()),"partition journal does not borrow exact protected capture");
+        context.require_source_evidence()?;context.recheck_source(events)?;
+        proof.scope().revalidate()?;proof.captured().revalidate()?;
+        let token=context.owner_token();
+        proof.native().require_partition_source_owner(&token)?;
+        ensure!(proof.scope().matches_source_owner(context.source_owner_identity())
+            &&proof.scope().source_inspection_sha256()==context.inspection_sha256(),
+            "partition capture source owner/inventory differs");
+        let lane_ram=n2r_win32::partition_lifecycle::PartitionReadLane::read_buffer_memory_bytes()
+            .checked_add(64*1024).context("partition source lane RAM overflow")?;
+        let lane_memory=context.arena().reserve_ram(lane_ram)?;
+        let(owner,admission,_)=context.source_admission_and_inspection();
+        n2r_win32::partition_lifecycle::require_complete_fresh_ntfs_admission(owner,admission)?;
+        ensure!(owner.binding().storage==proof.scope().pair().source
+            &&shadow.binding()==&proof.scope().pair().shadow,"partition source/shadow route differs");
+        owner.revalidate(events)?;
+        let shadow_before=shadow.state(events)?;
+        ensure!(shadow_before.disk_attributes==3&&proof.native().before()==&shadow_before
+            &&proof.native().after()==&shadow_before,"protected partition target lost actual shadow exclusion");
+        let lane=n2r_win32::partition_lifecycle::PartitionReadLane::from_owner(owner,events)?;
+        let source_lane=ResourceSourceReadLane::Partition(lane);
+        let image_length=domain.facts().image_length;
+        ensure!(n2r_win32::PartitionScopedOwner::byte_len(owner)==image_length&&n2r_win32::GeneralFrozenPartition::byte_len(shadow)==image_length&&source_lane.byte_len()==image_length,
+            "partition capture/journal image geometry differs");
+        Ok(Self{proof,source_lane,source_before:None,partition_owner:Some(token),shadow_before,image_length,
+            position:0,cached:None,_lane_memory:lane_memory})
+    }
+    pub(crate) fn revalidate_partition(
+        &mut self,context:&mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        shadow:&mut GeneralFrozenPartition,events:&mut Vec<NativeEvent>,
+    )->Result<()> {
+        let proof=self.proof;
+        proof.captured().with_revalidation(|witness|self.revalidate_partition_with_capture_witness(context,shadow,events,witness))?;
+        proof.captured().revalidate()
+    }
+    pub(crate) fn revalidate_partition_with_capture_witness(
+        &mut self,context:&mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        shadow:&mut GeneralFrozenPartition,events:&mut Vec<NativeEvent>,
+        witness:&crate::general_shadow::paged_capture::CaptureRevalidation<'_>,
+    )->Result<()> {
+        witness.require_capture(self.proof.captured())?;self.proof.scope().revalidate()?;context.recheck_source(events)?;
+        let token=context.owner_token();
+        ensure!(self.source_before.is_none()&&self.partition_owner.as_ref().is_some_and(|p|p.same_owner(&token))
+            &&self.proof.scope().matches_source_owner(context.source_owner_identity())
+            &&self.proof.scope().source_inspection_sha256()==context.inspection_sha256(),
+            "partition candidate lost actual original context/token");
+        self.proof.native().require_partition_source_owner(&token)?;
+        let(owner,admission,_)=context.source_admission_and_inspection();
+        n2r_win32::partition_lifecycle::require_complete_fresh_ntfs_admission(owner,admission)?;
+        owner.revalidate(events)?;
+        ensure!(owner.binding().storage==self.proof.scope().pair().source
+            &&shadow.binding()==&self.proof.scope().pair().shadow&&shadow.state(events)?==self.shadow_before,
+            "partition candidate source/target binding or shadow state changed");
+        match &mut self.source_lane {
+            ResourceSourceReadLane::Partition(lane)=>lane.revalidate(owner,events)?,
+            ResourceSourceReadLane::Dedicated(_)=>anyhow::bail!("partition candidate acquired dedicated source lane"),
+        }
+        self.proof.recheck_frozen_target_with_capture_witness(shadow,events,witness)
     }
 }

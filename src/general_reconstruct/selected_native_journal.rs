@@ -97,6 +97,178 @@ pub(crate) struct BoundNativeCreationFacts<'a> {
     pub(crate) expected_journal_length: u64,
 }
 
+/// Separate actual partition creation owner. No GeneralFrozenPartition is
+/// constructed for its source, and legacy dedicated creation remains intact.
+pub(crate) struct BoundPartitionCreationJournal {
+    inner: BoundNativeCreationJournal,
+    source_owner: n2r_win32::PartitionOwnerToken,
+    guard_pin: n2r_win32::partition_lifecycle::PartitionPreparationPin,
+}
+pub(crate) struct BoundPartitionCreationFacts<'a> {
+    pub(crate) native: BoundNativeCreationFacts<'a>,
+    pub(crate) source_owner: &'a n2r_win32::PartitionOwnerToken,
+    pub(crate) guard_pin: &'a n2r_win32::partition_lifecycle::PartitionPreparationPin,
+}
+impl BoundPartitionCreationFacts<'_> {
+    pub(crate) fn revalidate_source(
+        &self,
+        context: &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<()> {
+        context.with_publication_handoff(events, |source, admission, stable, events| {
+            ensure!(self.source_owner.same_owner(stable)
+                && self.native.source == &source.binding().storage,
+                "partition creation facts lost the actual source owner");
+            admission.revalidate_publication_handoff(source, self.guard_pin, events)?;
+            require_partition_journal_volume(source, stable, self.native.binding, events)
+        })
+    }
+}
+
+fn require_partition_journal_volume(
+    source: &mut n2r_win32::PartitionScopedOwner,
+    stable: &n2r_win32::PartitionOwnerToken,
+    binding: &GeneralJournalStorageBinding,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<()> {
+    source.revalidate(events)?;
+    ensure!(stable.same_owner(&source.owner_token()), "actual partition journal owner changed");
+    binding.validate()?;
+    let root = format!("{}\\", binding.disk.volume_path()?.trim_end_matches('\\'));
+    let actual = n2r_win32::discovery::discover(&root,
+        n2r_win32::discovery::Role::Journal {allow_additional_partitions:binding.allow_additional_partitions})?;
+    let s = &source.binding().storage;
+    let j = &actual.binding;
+    let same_number = s.disk_number == j.disk_number;
+    let same_guid = n2r_win32::layout::guid_bytes(&s.identity.disk_guid)?
+        == n2r_win32::layout::guid_bytes(&j.identity.disk_guid)?;
+    ensure!(actual.observed_twice_unchanged && actual.read_only
+        && actual.source_write_requests == 0 && j == &binding.disk
+        && same_number == same_guid
+        && n2r_win32::layout::guid_bytes(&s.identity.partition_guid)?
+            != n2r_win32::layout::guid_bytes(&j.identity.partition_guid)?
+        && n2r_win32::layout::guid_bytes(&s.volume_guid)?
+            != n2r_win32::layout::guid_bytes(&j.volume_guid)?,
+        "actual partition journal volume identity/GUID/extent evidence differs");
+    if same_number {
+        let se = s.identity.partition_offset.checked_add(s.identity.partition_bytes)
+            .ok_or_else(|| anyhow::anyhow!("source extent overflow"))?;
+        let je = j.identity.partition_offset.checked_add(j.identity.partition_bytes)
+            .ok_or_else(|| anyhow::anyhow!("journal extent overflow"))?;
+        ensure!(s.identity.disk_bytes == j.identity.disk_bytes
+            && s.identity.logical_sector_bytes == j.identity.logical_sector_bytes
+            && s.identity.physical_sector_bytes == j.identity.physical_sector_bytes
+            && (se <= j.identity.partition_offset || je <= s.identity.partition_offset),
+            "actual C/journal volume overlaps selected private partition");
+    }
+    source.revalidate(events)?;
+    Ok(())
+}
+
+impl BoundPartitionCreationJournal {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_new(
+        context: &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        shadow: &mut n2r_win32::GeneralFrozenPartition,
+        arena: &crate::artifact_arena::ArtifactArena,
+        expected_journal_length: u64,
+        path: &Path,
+        binding: &GeneralJournalStorageBinding,
+        profile: JournalProfile,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<Self> {
+        context.recheck_source(events)?;
+        ensure!(arena.same_arena(context.arena()) && path.is_absolute()
+            && !path.components().any(|c| matches!(c, Component::ParentDir|Component::CurDir))
+            && expected_journal_length > 0
+            && expected_journal_length <= profile.max_journal_bytes()
+            && arena.volume_guid_path()?.eq_ignore_ascii_case(&binding.disk.volume_path()?),
+            "partition journal requires actual source arena/volume and bounded length");
+        let shadow_before = shadow.state(events)?;
+        ensure!(shadow_before.disk_attributes == 3, "actual shadow must remain frozen");
+        let shadow_binding = shadow.binding().clone();
+        let result = context.with_publication_handoff(events, |source, admission, stable, events| {
+            let guard_pin = admission.durable_preparation_pin()?;
+            admission.revalidate_publication_handoff(source, &guard_pin, events)?;
+            require_partition_journal_volume(source, stable, binding, events)?;
+            let source_binding = source.binding().storage.clone();
+            let sg = n2r_win32::layout::guid_bytes(&source_binding.identity.disk_guid)?;
+            let tg = n2r_win32::layout::guid_bytes(&shadow_binding.identity.disk_guid)?;
+            let jg = n2r_win32::layout::guid_bytes(&binding.disk.identity.disk_guid)?;
+            ensure!(source_binding.disk_number != shadow_binding.disk_number
+                && binding.disk.disk_number != shadow_binding.disk_number && sg != tg && jg != tg,
+                "partition source/J and actual frozen shadow are not independent");
+            // Hold actual ordinary output ancestry before CreateNew; a
+            // serialized path cannot substitute for its native GUID route.
+            let parent = path.parent().ok_or_else(||anyhow::anyhow!("journal parent absent"))?;
+            let directory = OpenOptions::new().access_mode(0x80).share_mode(3)
+                .custom_flags(0x0200_0000|0x0020_0000).open(parent)?;
+            use std::os::windows::fs::MetadataExt;
+            let meta = directory.metadata()?;
+            let route = n2r_win32::file_storage::final_path_guid(&directory)?;
+            let prefix = format!("{}\\", binding.disk.volume_path()?.trim_end_matches('\\'));
+            ensure!(meta.is_dir() && meta.file_attributes() & 0x400 == 0
+                && route.get(..prefix.len()).is_some_and(|p|p.eq_ignore_ascii_case(&prefix)),
+                "partition journal output directory is not actual disjoint J volume");
+            let quota_bytes = expected_journal_length.checked_add(arena.allocation_slack_bytes())
+                .ok_or_else(||anyhow::anyhow!("partition native journal quota overflow"))?;
+            let journal_quota = arena.reserve_group(
+                crate::artifact_arena::ArtifactGroup::NativeJournal, quota_bytes)?;
+            let (mut journal, identity) = NativeSelectedJournal::create_new(
+                path, binding, profile, None, MarkerStorageUse::QualifiedProduction, None)?;
+            let actual_path = journal.observed_guid_path(binding)?;
+            let Storage::Buffered(file) = &mut journal.storage else {
+                anyhow::bail!("partition creation supports the actual markerless buffered owner only")
+            };
+            let before = observe_general_journal_file_with_profile(file, binding, profile)?;
+            ensure!(before.identity == identity && before.file_bytes == 0
+                && before.number_of_links == 1, "fresh partition journal identity differs");
+            n2r_win32::file_storage::preallocate_empty_file(
+                file, expected_journal_length, quota_bytes)?;
+            let after = observe_general_journal_file_with_profile(file, binding, profile)?;
+            ensure!(after.identity == identity && after.identity == before.identity
+                && after.final_path == before.final_path
+                && Path::new(&after.final_path) == actual_path.as_path()
+                && after.file_bytes == 0 && after.file_attributes == before.file_attributes
+                && after.number_of_links == 1 && after.allocation_bytes >= expected_journal_length
+                && after.allocation_bytes <= quota_bytes,
+                "partition journal preallocation identity/EOF/allocation changed");
+            require_partition_journal_volume(source, stable, binding, events)?;
+            admission.revalidate_publication_handoff(source, &guard_pin, events)?;
+            ensure!(shadow.state(events)? == shadow_before, "actual frozen shadow changed");
+            Ok(Self {
+                inner:BoundNativeCreationJournal {journal, path:actual_path, binding:binding.clone(),
+                    identity, profile, marker_profile:None, marker_use:MarkerStorageUse::QualifiedProduction,
+                    source:source_binding, shadow:shadow_binding.clone(), preparation_borrowed:false,
+                    journal_quota, expected_journal_length},
+                source_owner:stable.clone(), guard_pin,
+            })
+        });
+        let closing = context.recheck_source(events);
+        match (result, closing) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+        }
+    }
+
+    pub(crate) fn split_for_partition_preparation(
+        &mut self,
+        context: &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+    ) -> Result<(&mut NativeSelectedJournal, BoundPartitionCreationFacts<'_>)> {
+        context.with_publication_handoff(events, |source, admission, stable, events| {
+            ensure!(self.source_owner.same_owner(stable)
+                && self.inner.source == source.binding().storage,
+                "partition journal cannot transfer to another source owner");
+            admission.revalidate_publication_handoff(source, &self.guard_pin, events)?;
+            require_partition_journal_volume(source, stable, &self.inner.binding, events)
+        })?;
+        let Self {inner, source_owner, guard_pin} = self;
+        let (journal, native) = inner.split_for_preparation()?;
+        Ok((journal, BoundPartitionCreationFacts {native, source_owner, guard_pin}))
+    }
+}
+
 /// A readonly duplicate of the exact native journal file object. Its fields
 /// are private; only a completed, fixed-length native owner can produce it.
 /// Queries use file metadata only and never call into the journal or arena.

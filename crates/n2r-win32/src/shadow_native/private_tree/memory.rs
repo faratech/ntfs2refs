@@ -55,7 +55,13 @@ fn json(v: &serde_json::Value) -> io::Result<u64> {
         _ => Ok(0),
     }
 }
-fn state(s: &native::GeneralDiskState) -> io::Result<u64> {
+fn state(scope: &source_scope::ConstructionSourceState) -> io::Result<u64> {
+    let s = match scope {
+        source_scope::ConstructionSourceState::Dedicated(state) => state,
+        source_scope::ConstructionSourceState::Partition(state) => {
+            return Ok(state.retained_memory_ceiling_bytes);
+        }
+    };
     let mut n = 0;
     for b in [&s.device, &s.disk_length, &s.alignment, &s.gpt_layout] {
         n = add(n, vec_bytes(b)?)?;
@@ -166,7 +172,7 @@ impl Owner {
     }
     fn static_bytes(
         pair: &GeneralSourceShadowBinding,
-        source_before: &native::GeneralDiskState,
+        source_before: &source_scope::ConstructionSourceState,
         events: &Vec<NativeEvent>,
         system_identities: &BTreeMap<Vec<String>, Vec<u8>>,
         construction_enrollment: &Option<serde_json::Value>,
@@ -214,7 +220,7 @@ impl Owner {
     pub(super) fn close_global_queries(
         &self,
         pair: &GeneralSourceShadowBinding,
-        source_before: &native::GeneralDiskState,
+        source_before: &source_scope::ConstructionSourceState,
         events: &Vec<NativeEvent>,
         system_identities: &BTreeMap<Vec<String>, Vec<u8>>,
         construction_enrollment: &Option<serde_json::Value>,

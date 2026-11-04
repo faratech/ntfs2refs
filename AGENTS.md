@@ -42,16 +42,55 @@ Root release75476 actually completed0/2m20s. Build source44cca72, output
 6bbe8f94638086d24c7e8900c7579f24f86caeeca84b22a99cbdda46b722a380,
 manifest6251f7c7216df7117c47470fa8b281e902cf7541613dffaf1805c055954e4762.
 
-**LIVE PUBLIC THIN RUN8be515c3788d416b94d4991efddd5141** dispatched exactly once.
-ActualPID5404/birth1793791444645 was confirmed live; boot1793791414487. VM is
-Running/4GiB/parent3343 after one restore/start. Do NOT retry/kill/restore/power
-while it runs. Gueststage `C:\ntfs2refs\resource-fixture-8be515c3788d416b94d4991efddd5141`;
+**PUBLIC THIN RUN8be515c3788d416b94d4991efddd5141 FAILED SAFELY BEFORE PUBLICATION.**
+ActualPID5404/birth1793791444645 exited1/732.9981954s at11:36:17.748UTC;
+process absent. Error `artifact physical allocation exceeds reserved slack`.
+The preparation cancellation restored sourceNTFS automatically; source1 is now
+online/read-write and F: returned. No J/publication/HND/cleanup was reached.
+VM Running/4GiB/parent3343/boot1793791414487; do not retry this old run.
+Gueststage `C:\ntfs2refs\resource-fixture-8be515c3788d416b94d4991efddd5141`;
 host `.lab/hyperv/streaming-v2-20261027/resource-fixture-8be515c3788d416b94d4991efddd5141`.
 Actual argv is the seven-option thin qualification command described below.
 SYSTEMworker e156ad5af5e0dd16e1ec656cdd892c405f69934ed312d5a910f597c1e0fa8af4,
 configce08af4e637a253d6c5038c01cf7bdbab7465e40d66b58f605fdb756748d4450.
-Launcher12723 completed0; this is NOT native conversion completion. Observe
-native-process/terminal PID+birth and actual finalization/cleanup separately.
+Launcher12723 completed0; native exit is1, not conversion completion.
+Root closed19metadatafiles865455B; manifest
+390b5aa659079e7d683250a6e09e97087be89ad0b1f5fafc26e9e6d319e9401b at
+`closed-public-terminal`. IndependentNTFS observer9646d5eb347045ee894ed4803c3e7903
+reported success: worker4752/birth1793792565158/SYSTEM, all811XXH3 streams9885801949B,
+1534baseline objects/1024extra directories,13batches10.772807s. Extra namespace
+comparison against the original manifest and all owned-terminal archives remain
+pending Root's prepared helper. This was CaptureNtfs, not ReFS verification.
+Its stage `C:\ntfs2refs\resource-recovery-observe-9646d5eb347045ee894ed4803c3e7903`.
+
+Allocation fix is committed/pushed **b5663b87d6bd124d2c235a2684a2c60a166c6f21**.
+Focused check passed22.03s; no units. Release build **session86723 is LIVE** until
+its actual terminal is observed, output
+`.lab/development/release-candidates/allocation-normalized-b5663b8`, selected
+`ntfs2refs` and `lab-artifact-allocation`. Observe the SAME handle, no duplicate.
+The fix touches file_storage.rs, artifact_arena.rs, paged_capture.rs and a small
+native artifact-growth probe (no units). Literal
+finalization duplicates the same FILE_OBJECT before sealing, keeping transient
+NTFS growth allocation alive. ALL files were within slack after process exit.
+Normalize allocation at exact held-writer EOF before readonly duplication;
+preserve EOF/FileID/content/full hash and the original unchanged slack check.
+Do not merely increase slack. This does NOT prove a hard transient NTFS quota.
+The new probe writes two fresh100MiB+4KiB ordinary files in separate512MiB arenas,
+must reproduce baseline actual guard refusal, then normalize and pass SAME original
+slack/hash/arena sealing while retaining the file object. CLI `--directory <fresh>
+--acknowledge-new-disposable-staging`. Run this focused native probe before another
+full conversion; only after it passes use the newly built public binary on a FRESH
+baseline/new run. Never reuse the failed8be artifacts as fresh conversion authority.
+No corrected native probe/full conversion has run yet. Root owns builds/VM/Git.
+
+Root closed the successful NTFS observer into57files250809B, every source/host
+length/SHA and13actual owned digest terminals checked; manifest
+e4450691e296efb7692ac7bd367cd942b4a47b26a1d3fd00c4e1fd251064a280,
+result45bcbf4a7b306c749f05326cc1477dd5ce337213dceaf1673dab09fc6c42c56c.
+All1024fresh UTF16 paths and full paths structure matched frozen8f14 namespace.
+Archive `closed-independent-ntfs` under8be hostroot. No live N2R jobs remain;
+VM stays Running3343, sourceF is restoredNTFS, original NTFS prealignment moves
+remain legitimate. This is logical preservation, not bit-identical physical layout.
 
 Before that run VM2401593c-4b30-472e-9b6d-c9534cbaa599 was saved
 **Off/RAM0/parent4b8dafbf-7500-4c51-ab12-d0a697bf7264**, freshly verified.

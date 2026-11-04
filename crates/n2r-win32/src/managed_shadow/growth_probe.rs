@@ -14,6 +14,9 @@ const PHYSICAL_SECTOR: u32 = 4096;
 const CLUSTER: u64 = 4096;
 const REFS_VOLUME_DATA: u32 = 0x0009_02d8;
 const VOLUME_EXTENTS: u32 = 0x0056_0000;
+// winnt.h FILE_READ_ONLY_VOLUME (the generated SDK places this in an
+// otherwise unused feature module).
+const FILE_READ_ONLY_VOLUME_FLAG: u32 = 0x0008_0000;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -440,12 +443,15 @@ fn snapshot(
     capacity(path, budget, false)?;
     let discovered =
         discovery::discover(&(binding.volume_path()? + "\\"), discovery::Role::Shadow)?;
+    log.note(serde_json::json!({"phase":phase,"mounted_discovery":discovered}))?;
     if discovered.binding != *binding
         || discovered.filesystem != "ReFS"
         || discovered.label != "n2r-retained-shadow"
         || discovered.bytes_per_sector != LOGICAL_SECTOR
         || discovered.sectors_per_cluster != 8
-        || discovered.read_only
+        // Discovery's read_only field describes the observation operation.
+        // The filesystem flag and native disk state describe the device.
+        || discovered.filesystem_flags & FILE_READ_ONLY_VOLUME_FLAG != 0
     {
         return Err(invalid("owned lab mounted binding/profile differs"));
     }

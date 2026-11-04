@@ -251,6 +251,45 @@ No VM mutation has occurred. Do not restore766 or repeat primitive tests. Actual
 
 ## Recovery and verification invariants
 
+LATEST AUTHORITATIVE VM is now **Off/RAM0/current07ca22f3-bb1c-444b-8f31-ff16b1fcb521/all17**.
+Prepared shared-Windows source: disk0 GPT1f804918-e98f-4a71-9022-fc00c3cb7c26 now120GiB; NEW partition6/rawslot6,
+GUID4310d74c-614f-435b-9cf1-7ff664391590, offset68719476736, length55834574848, D:, NTFS4KiB/1024MFT/4KiBindex,
+serial DECIMAL STRING7092616291886350003, volume GUID matches partition GUID. 8files67178865B/4directories independently
+hashed/native IDs/lengths/owner-group-DACL matched; residency UNPROVEN (73B reports Allocation80,211B→216).
+One NEW checkpoint07ca parent766 preserves all original16; no converter/probe has run on this source.
+`evidence/shared-windows52-source-baseline-20261104.json` binds full56-file324739B metadata archive and exact receipts.
+Closure7d6527c5..., oraclecb840325..., archivea54c94ee... under `.lab/hyperv/streaming-v2-20261027/shared-windows52-92c6ff5747c34c7db94931be9bd4a95b`.
+Original private2GiB T and WinRE stay unchanged. Current120GiB OS child is `os-shared52-0f4193296ed740d9add19db9ee364faa_104F354A-1FF6-4F00-B8F2-61940F826DCB.avhdx`.
+Before resizing, only932184064B oldOSleaf was copied to an ordinary .vhdx SIBLING; originals and parent chain were preserved.
+New-VHD refused .avhdx parent beforeboot; later wrapper boot-scalar/ExitCode and false resident checks failed honestly, no reformat/rewrite.
+Read-only completion fixed the oracle; Windows PMBR0xffffffff matched original and was not rewritten to invented disk-1.
+Final census318595964757/free88805801984; original globalmax329374052988/min17179869184/50GBepoch unchanged.
+Setup whole-case7GiB baseline317283309397, actualgrowth1312655360; this is not a new global epoch.
+Operator remains exclusive VM owner and is idle; next full conversion needs fresh capacity/build/GO, no automatic restore/boot.
+
+New development2759b65 checks actual reopened Origin and consuming terminal owner transfer, publiccheck0/34.5149335s;
+evidence/partition-recovered-origin-build-20261104.json. Current UNCOMMITTED slices: SDKfresh live terminal0ec3f1d6...,
+ROOTrestarted resume/rollback77fb15f3..., ROOTnormal finalization0fd62f62... applied; combined checks passed before latest tiny fixes.
+Root added duplicate_locator_file() using actual readonly same-FileObject duplicate; never reopen the share-zero locator/J/intent.
+Root fixed original RW lifecycle and each RO raw source handle with FSCTL_ALLOW_EXTENDED_DASD_IO90083 (same held handle), pending finalcombinedcheck.
+Root exposed observe_basic() single complete Basic metadata observation for bounded publication waiting; it grants no writer.
+Lowspace owns COPIED small publication-wait fix, frozen_candidate_cases owns COPIED actual guest alpha execution facade/bin.
+No new unit tests, no main.rs edits, no new public shared-disk CLI enablement; frozen alpha ZIP remains unchanged.
+
+SUPERSEDING CODE STATUS: **c4953652a1c8c3620f76e6e4b9dd4c13c8b1862b is COMMITTED/PUSHED** with all preceding fresh/restarted/finalization/wait slices,
+actual 90083 handle fixes, observed Basic metadata wrapper and actual owning-machine `lab-partition-alpha` facade/bin.
+Both public and lab binary checks passed **0/22.7642619s** in shared target; no unit tests. Evidence
+`evidence/partition-owning-alpha-entry-build-20261104.json` binds all15 source files. Root corrected mutable restarted locator,
+public terminal enum import/text serialization and facade placement-submission bound. This is code/check evidence, NOT native conversion.
+Exact committed lab build is ACTIVE in host exec session8897: `.lab/development/release-candidates/partition-alpha-c495365`,
+log `.lab/development/partition-alpha-c495365-build.log`; builder2df7a454.../shared-source helper842c5e7f...,
+4jobs/shared target+staging/2GiB working allowance, dependencies retained. Do not start competing Cargo/build jobs.
+`partition-alpha-c495365-build-admission.json` is the fresh all-lab/cache/staging admission. Inspect actual terminal/manifest before use.
+Operator is preparing the first NORMAL actual conversion helper on Off07ca/all17; it is NOT yet authorized to run a converter.
+Runner parameters: `--request <JSON> --request-sha256 <exact> --output <fresh> --acknowledge-disposable-source-conversion`.
+It must run INSIDE guest and actual native source/admission/certificate controls all writes. No fixture count/geometry whitelist grants authority.
+All currently pending code drafts have been applied; frozen_candidate_cases and lowspace have no canonical edits assigned.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

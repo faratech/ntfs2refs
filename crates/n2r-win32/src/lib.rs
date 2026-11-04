@@ -95,6 +95,8 @@ pub use attestation_native::collect_file_metadata;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
+pub use native::partition_isolation;
+#[cfg(windows)]
 pub use native::{
     BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,
     GeneralAllocationSnapshot, GeneralDiskState, GeneralExclusiveRecoveryTarget,

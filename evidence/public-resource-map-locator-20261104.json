@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "kind": "public-resource-map-locator-reuse-native-conversion",
+  "record_status": "Native conversion, independent content/path verification and normal reboot reobservation complete; mutation, new AP recovery and larger-cluster source qualification remain open.",
+  "source_commit": "a2255ba5ccb28e4e9e8ee2fe3fc4699decd982dc",
+  "source_tree": "a46719013dff4579456675b2c087d92448f35a8b",
+  "build_manifest_sha256": "abe2c25226fb77a0658dfbee6fdf853a6d9a42ef1c34c16fd5a3ae3273f2a609",
+  "public_binary_sha256": "4d2d515b1f2520c37989354823fd5de87f50425cdfb6a8ef4293f126678f4e08",
+  "run_id": "97468663c2a24eb69d4dd1efef66b58a",
+  "engine_run_id": "331a61f17aab4a51ba925f1e20493271",
+  "argv": [
+    "--drive",
+    "F",
+    "--partition",
+    "2",
+    "--minimize-scratch"
+  ],
+  "native": {
+    "pid": 5328,
+    "creation_ms": 1793769966082,
+    "actual_exit_observed": true,
+    "exit_code": 0,
+    "wall_seconds": 852.3886042,
+    "terminal_utc": "2026-11-04T05:40:18.5275716Z",
+    "terminal_sha256": "aa22b8b85ea14885352fdc663c7f89662ed1f16a62de0696cdec173226d9922f"
+  },
+  "observed_profile": {
+    "source_partition_bytes": 55834574848,
+    "source_NTFS_cluster_bytes": 65536,
+    "target_ReFS_cluster_bytes": 4096,
+    "logical_sector_bytes": 512,
+    "physical_sector_bytes": 4096,
+    "conversion_executed_inside_owning_machine": true,
+    "new_4KiB_to_2MiB_eligibility_range_qualified_by_this_case": false
+  },
+  "completion": {
+    "success": true,
+    "journal_handoff_closed": true,
+    "matching_map_bindings": 2558,
+    "known_streams_hashed": 157,
+    "known_payload_bytes_read": 119009,
+    "extent_only_streams": 654,
+    "label_restored": true,
+    "mount_paths_preserved": true,
+    "publication_sha256": "c1e50a6db52e5dedbcd4d9664c7a488e03403fbfadedd6379cca53a24e80e493"
+  },
+  "authenticated_closed_ledger": {
+    "frames": 42,
+    "used_bytes": 425699,
+    "used_prefix_sha256": "12d3ee9c84c20d21fb800167a6404adfc876b070f4421c6966b6c578e5f6653d",
+    "chain_sha256": "ab820f8ce108212c102a750c198c1e4adf0fbba637395671aef1f30972a349c9",
+    "whole_file_sha256": "d9f201a9fa805e51c340f58aa33deb60a24c5022c70da3646d966af9d90a41d8",
+    "all_frame_body_hashes_chain_commits_and_closed_record_verified": true,
+    "observer_elapsed_ms": 851695,
+    "observer_close_logical_read_bytes": 149570921478,
+    "observer_close_logical_write_bytes": 2983581325,
+    "observer_close_user_CPU_seconds": 638.703125,
+    "observer_close_kernel_CPU_seconds": 136.796875,
+    "physical_IO_exact_final_counters_or_peak_RAM_claimed": false
+  },
+  "actual_consumed_scope": {
+    "opening_and_closing_data_files_identical": true,
+    "data_file_bytes_each": 30306,
+    "data_file_sha256": "1bceaf7ebabc7b01c3a2bb901bd9662f2fed04dc5c1845af70af33f89b30c65c",
+    "metadata_page_and_logical_stream_hashes_verified": true,
+    "rows": 638,
+    "bytes": 6176772096,
+    "logical_rows_sha256": "5be84130a8415aa6736854c35951ae8c78afdee34324cffc6d5d6bada3066ad0",
+    "first": {
+      "offset": 0,
+      "length": 6174015488
+    },
+    "last": {
+      "offset": 55834558464,
+      "length": 16384
+    },
+    "same_normalized_interval_rows_and_bytes_as_814": true
+  },
+  "map_locator_comparison": {
+    "reference_case": "69c38a6bf34043b39c4389b119c50087",
+    "reference_evidence": "evidence/public-resource-cng-20261103.json",
+    "reference_map_locator_logical_read_bytes": 26831466803,
+    "actual_map_locator_logical_read_bytes": 13817219684,
+    "observed_logical_read_reduction_bytes": 13014247119,
+    "reference_elapsed_ms": 67501,
+    "actual_elapsed_ms": 36793,
+    "observed_elapsed_reduction_ms": 30708,
+    "raw_consumed_passes_before": 4,
+    "raw_consumed_passes_after": 2,
+    "actual_scope_normalized_raw_bytes_avoided": 12353544192,
+    "code_derived_814_scope_claim_matched_actual_a225_scope": true,
+    "native_snapshot_frame_queries_changed": true,
+    "scope": "The merged read-only operation retains complete outer frozen/capture checks and interior native/owner/domain/journal/artifact checks. It does not preserve the literal old interior full-scan/query count.",
+    "source_writer_or_journal_format_changed": false,
+    "publication_delegation_arena_close_separate_apply_and_SDK_OLD_journal_gates_retained": true
+  },
+  "journal_and_selection": {
+    "selected_bytes": 2547515392,
+    "ranges": 6131,
+    "journal_logical_bytes_from_authenticated_locator": 184318888,
+    "locator_sha256": "714cebd8acd55fdeacf7bb6d5424e91cba486cac33394a2c2e1bf02da13f61fa",
+    "immutable_journal_sha256_from_locator": "eb56eeed27a63ecc7e3b84a2d24f2ba4a76dacf1c4027056acb11d8f4068530a",
+    "full_journal_payload_rehashed_by_this_analysis": false,
+    "reference_814_selected_bytes": 2819706880,
+    "reference_814_ranges": 6182,
+    "reference_814_journal_logical_bytes": 185131104,
+    "ReFS_allocator_and_selected_write_variation_not_ruled_out": true,
+    "actual_peak_scratch_measured": false
+  },
+  "whole_run_comparison": {
+    "reference_814_wall_seconds": 913.2446592,
+    "actual_wall_seconds": 852.3886042,
+    "observed_wall_seconds_shorter": 60.856055,
+    "observer_close_logical_read_bytes_fewer": 15338989180,
+    "observer_close_logical_write_bytes_fewer": 272636392,
+    "controlled_benchmark": false,
+    "all_elapsed_or_IO_changes_attributed_to_map_locator_reuse": false,
+    "physical_disk_IO_or_other_hardware_volume_size_speed_claimed": false
+  },
+  "largest_recorded_phase_windows": [
+    {
+      "phase": "source-after-shadow-construction",
+      "elapsed_ms": 157825,
+      "logical_read_bytes": 2079685886,
+      "logical_write_bytes": 39011850
+    },
+    {
+      "phase": "protected-target-capture",
+      "elapsed_ms": 144392,
+      "logical_read_bytes": 23152403724,
+      "logical_write_bytes": 103785979
+    },
+    {
+      "phase": "prepared-conversion-publication",
+      "elapsed_ms": 116437,
+      "logical_read_bytes": 28908039981,
+      "logical_write_bytes": 389227
+    },
+    {
+      "phase": "source-apply-and-handoff",
+      "elapsed_ms": 89711,
+      "logical_read_bytes": 31213929123,
+      "logical_write_bytes": 2547596484
+    },
+    {
+      "phase": "native-journal-preparation",
+      "elapsed_ms": 63470,
+      "logical_read_bytes": 16573596622,
+      "logical_write_bytes": 184963706
+    }
+  ],
+  "phase_timing_scope": "Aggregated sample-to-sample phase labels, not isolated function timers. Map/locator aggregation includes the final zero-event caller checkpoint.",
+  "independent_observer": {
+    "success_reported_by_root": true,
+    "run_id": "f65044433a264901a8158cd661ad5f77",
+    "result_sha256": "2f87569caab5a2845ebb049252c40bd59f0487c0091da67967929aa5339507fe",
+    "worker_pid": 2960,
+    "worker_creation_ms": 1793771174086,
+    "mode": "CompareRefs",
+    "sid": "S-1-5-18",
+    "streams_matched": 811,
+    "logical_stream_bytes": 9885801949,
+    "baseline_objects_matched": 1534,
+    "extra_directories_matched": 1024,
+    "opening_and_closing_matched": true,
+    "reported_digest_batches": 13,
+    "digest_wall_seconds": 11.9111,
+    "all_actual_digest_terminal_archive_verification_pending": false,
+    "complete_original_ACL_SACL_time_audit_or_no_extra_original_objects_claimed": false,
+    "all_13_actual_digest_exit_PID_birth_and_owned_terminal_records_verified": true,
+    "closed_metadata": {
+      "root": ".lab/hyperv/streaming-v2-20261027/resource-fixture-97468663c2a24eb69d4dd1efef66b58a/closed-independent-observer",
+      "manifest_sha256": "32aa092b529623e903495b76ef3a63323d8400501074d9c8dbf3d6dd870a85b8",
+      "files": 56,
+      "bytes": 106463,
+      "all_source_and_host_file_lengths_and_SHA256_verified": true,
+      "all_13_actual_digest_exit_PID_birth_and_owned_terminal_records_verified": true
+    }
+  },
+  "closed_metadata": {
+    "root": ".lab/hyperv/streaming-v2-20261027/resource-fixture-97468663c2a24eb69d4dd1efef66b58a/closed-conversion-preliminary",
+    "original_six_file_manifest": "manifest.json",
+    "original_manifest_sha256": "fb60c9a3b394d6af5a7816277e3306d334a2d7e0d484b45f1e6a4110639023ba",
+    "all_six_copied_file_length_and_SHA256_pins_verified": true,
+    "additional_interval_receipt": "interval-metadata-receipt.json",
+    "additional_interval_receipt_sha256": "175ec299ad9694f8818631e190b2953a31e5709a28cf065239426024fa221a9e",
+    "all_three_interval_metadata_length_and_SHA256_pins_verified": true,
+    "original_six_file_manifest_preserved": true,
+    "journal_shadow_or_file_payloads_copied": false,
+    "ignored_detailed_analysis": ".lab/development/a225-map-locator-ledger-analysis.json",
+    "ignored_detailed_analysis_sha256": "aacd818b519e39353ac63b9d9df83e94f855f5c53433b56fdc158daf1044dfd0"
+  },
+  "qualification": {
+    "actual_public_same_partition_conversion": true,
+    "independent_content_result_success_reported_by_root": true,
+    "new_candidate_cold_boot": true,
+    "new_candidate_mutation": false,
+    "new_candidate_AP_resume_or_rollback": false,
+    "new_large_cluster_geometry": false,
+    "physical_power_loss": false,
+    "arbitrary_hardware_or_scale": false,
+    "stable_release": false,
+    "frozen_814_qualification_inherited": false,
+    "frozen_814_package_unchanged": true,
+    "unit_tests_added_or_run": false,
+    "independent_content_archive_verified": true
+  },
+  "final_run_state": {
+    "normal_postboot_shutdown_completed": true,
+    "fresh_VM_state_observed": "Off",
+    "assigned_RAM_bytes": 0,
+    "current_parent_checkpoint": "9702d1ce-6750-4d01-9490-001a194512bb",
+    "active_native_workers": 0,
+    "saved_checkpoint_is_completed_preboot_HND": true,
+    "postboot_metadata_archived": true,
+    "new_postboot_checkpoint_created": false
+  },
+  "handoff_rule": "Actual HND closes old raw replay. Do not apply this run's old NTFS journal over its operational ReFS source.",
+  "created_utc": "2026-11-04T05:53:42.88Z",
+  "normal_reboot": {
+    "completed_normal_HND_saved_checkpoint": {
+      "checkpoint_id": "9702d1ce-6750-4d01-9490-001a194512bb",
+      "parent_id": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+      "saved_state": "Off",
+      "raw_replay_closed": true
+    },
+    "normal_start_calls": 1,
+    "restore_between_save_and_reboot": false,
+    "new_boot_ms": 1793771926560,
+    "source_drive": "F:",
+    "source_filesystem": "ReFS",
+    "source_label": "n2r-stream-source",
+    "independent_observer": {
+      "run_id": "4798c27b5c7b47719ecb4cedee0fcd5b",
+      "worker_pid": 2144,
+      "worker_creation_ms": 1793771997922,
+      "sid": "S-1-5-18",
+      "mode": "CompareRefs",
+      "success": true,
+      "streams_matched": 811,
+      "logical_stream_bytes": 9885801949,
+      "digest_algorithm": "XXH3-128",
+      "baseline_objects_matched": 1534,
+      "extra_directories_matched": 1024,
+      "opening_and_closing_matched": true,
+      "digest_batches": 13,
+      "all_actual_digest_exits_zero_and_PID_birth_owned_terminal_records_verified": true,
+      "digest_wall_seconds": 10.7582927,
+      "result_sha256": "d00931c7a738cdb267249fe9813b391e006a33a2babe6b9b43c35884fc523cd9",
+      "complete_original_ACL_SACL_time_audit_or_no_extra_original_objects_claimed": false,
+      "closed_metadata": {
+        "root": ".lab/hyperv/streaming-v2-20261027/resource-fixture-97468663c2a24eb69d4dd1efef66b58a/closed-postboot-observer",
+        "manifest_sha256": "e41d97203af44ab517f8f443b229497bb066e85cbde4bd08cc4a7d2b428860a9",
+        "files": 56,
+        "bytes": 106462,
+        "all_source_and_host_file_lengths_and_SHA256_verified": true
+      }
+    },
+    "post_observer_shutdown_started_by_root": true,
+    "current_VM_off_claimed": false,
+    "new_mutation_AP_recovery_or_2MiB_source_qualified": false
+  }
+}

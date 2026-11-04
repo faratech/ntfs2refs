@@ -117,11 +117,13 @@ The prebuild complete census was282065971393B/free124511387648B; the40GiB foreca
 passed the unchanged epoch. It covers the build and bounded disposable growth
 work, not permission to skip fresh capacity admission before native growth.
 
-**CURRENT PUBLIC CONVERSION IS LIVE:** run97468663c2a24eb69d4dd1efef66b58a,
-actualPID5328/birth1793769966082, independently matched live. Boot1793769939651,
-VM Running4GiB/parent3343. Root launcher70499 completed0 after its ONE intentional
-fresh3343 restore/start from the normally Off, closed experiment branch. Do not
-restore, power off, duplicate dispatch, infer completion or change source state.
+**PUBLIC CONVERSION AND NORMAL REBOOT ARE COMPLETE:** run97468663c2a24eb69d4dd1efef66b58a,
+actualPID5328/birth1793769966082 exited0/852.3886042s at05:40:18.5275716UTC.
+Root launcher70499 completed0 after its ONE intentional fresh3343 restore/start
+from the normally Off, closed experiment branch. Native protected finalization
+matched2558bindings/157known119009B/654extent-only streams; label/mounts restored,
+HND closed. NEVER replay its old raw journal or compare operational writes with
+stale selected postimages. See `evidence/public-resource-map-locator-20261104.json`.
 Actual argv: `--drive F --partition 2 --minimize-scratch`; publica225 binary4d2d...
 is pinned above. Gueststage `C:\ntfs2refs\resource-fixture-97468663c2a24eb69d4dd1efef66b58a`;
 hostroot `.lab/hyperv/streaming-v2-20261027/resource-fixture-97468663c2a24eb69d4dd1efef66b58a`;
@@ -129,11 +131,24 @@ actual engine `C:\ProgramData\ntfs2refs\runs\331a61f17aab4a51ba925f1e20493271`.
 SYSTEMtask `N2R-ResourceFixture-97468663c2a24eb69d4dd1efef66b58a`, workerSHA
 ea822d7308da90a5d2cf46ed89b1d57dc8d441238215d276afcf9130022dce2c/configSHA
 89396a344558b8c837e349af46991ed8a8918f03f096c21654a7bdb8497e350e.
-Last05:31:15UTC actualsamePID/birth read15054543864B/write153700674B/working62361600B,
-terminal absent. These are live process samples, not physical/final I/O or peak.
-`native-events.log` currently denies concurrent read with ERROR32: do not bypass
-its sharing owner. Wait actual terminal before ledger analysis. Public stdout
-may remain buffered until worker close; an empty log does not mean stopped.
+Closed42-frame ledger authenticated; consumed scope is IDENTICAL to814:
+638ranges6176772096B/logicalSHA5be841...ad0. Exactly12353544192 raw bytes avoided.
+Map/locator logicalreads26831466803→13817219684B; sampled67.501→36.793s.
+Whole observer-close149570921478R/2983581325W are NOT physical or exact final I/O.
+Write selection changed2.819→2.548GB, so do not attribute the entire60.856s
+uncontrolled wall difference to coalescing. Source/host6+3preliminary metadata
+and56preboot observer files are verified; all13actual digest terminals checked.
+
+Saved normalOff HND checkpoint **9702d1ce-6750-4d01-9490-001a194512bb**, parent3343,
+then Root started ONCE with NOrestore. Newboot1793771926560; independent observer
+4798c27b5c7b47719ecb4cedee0fcd5b worker2144/birth1793771997922 matched all811XXH3
+streams9885801949B/1534baseline/1024extra paths opening+closing, all13owned
+digests exit0,10.7582927s. Result d00931c7a738cdb267249fe9813b391e006a33a2babe6b9b43c35884fc523cd9;
+closed56files106462B manifest e41d97203af44ab517f8f443b229497bb066e85cbde4bd08cc4a7d2b428860a9.
+Root normally shut down after closure; a FRESH process verified **Off/RAM0/
+parent9702**. No native workers remain. The saved9702 is the preboot completed
+HND origin; postboot proof files are archived and current leaf remains durable.
+Mutation/newAPrecovery/2MiB-source/physical-power qualification remain unproven.
 All frozen814 snapshots and source/binary archives remain untouched.
 
 Growth diagnostic only: `cd12d2cf3fc9dacc8492e7e3626bf530b5c6dd15` built one tool
@@ -192,6 +207,23 @@ CanPool=true through a unique matching native physical-disk object. Receipt
 is preserved. This is not a1PB address-space or ReFS-format qualification.
 Future Storage Spaces probing may use ONLY newly created private blank members,
 never an old disk number or this discarded R identity. No pool was created.
+Prepared ONLY `.lab/development/probe-private-thin-pool-addressability.ps1`, SHA
+20690a671c41362e2128ea23fd5f3af22973f74a7a65ba1f684563e8d940aa9c,
+uses2fresh5GiBmembers and one native-aligned request covering at least1e15 bytes.
+It does not format; Root must review/admit a new phase (at least12GiB forecast,
+10GiBmember maximum plus overhead/free reserve). Observed8GiB ceiling is not a
+kernel quota. Never run it against this completed HND branch without choosing
+and binding the intended disposable branch; no existing storage may join a pool.
+
+Next performance coding target: capture made688405 per4KiB capacity queries in
+814 (151.158s window). Arena check_free also folds the entire registry on each
+literal extension: O(changed-literal-granules × registry entries). Incremental
+checked arena totals and a monotone allocation cursor can preserve the same
+checks while removing repeated work. Any query batching needs real held storage
+reservation/equivalent scoped admission, not merely less frequent sampling.
+Do not repeat seed/grow experiments or weaken required zero writes; native
+zone-probe evidence disproved zero omission. StandaloneVHDX RCT baseline sealing
+and zero semantics are unproven; keep that research off the next coding step.
 
 ## Exact frozen source and finite native evidence
 

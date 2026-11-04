@@ -30,9 +30,18 @@ Eight-file original evidence manifestSHA010300916c4950c74fdf16b392ed6f76afff42bd
 Observe710546e2b3b24e0c91541a34f00570aa PASSED: full immutable journal, canonical AP,
 same held file identity, OLD source primary and distinct NEW4096 on boot1793805526137.
 Its worker-result authenticated_AP=true/native_launches=0. No source repair/pool reattachment.
-Public rollback b7b582216b814f21a71d7d905982a765 is now LIVE: actual PID572/birth1793806111266,
-exactaef executable, original printed C recovery directory/SHA, --rollback; no fresh apply.
-Worker1b1b0d prechecked the full AP/source. No native terminal yet; rollback/resume are NOT yet qualified.
+Public rollback b7b582216b814f21a71d7d905982a765 TERMINATEDexit0 at15:29:48.321UTC,
+actual PID572/birth1793806111266/77.0033413s, owned handle through terminal, stdout376B/stderr0.
+Exactaef executable used the original printed C recovery directory/SHA with --rollback; no fresh apply.
+Independent NTFS oracle00800221c8e04e0988e82aec571d03fe PASSED all811XXH3 streams9885801949B,
+1534baseline objects/1024extra directories/13batches10.0901516s; NTFS64KiB/online/writable/F mount and label preserved.
+Product rollback reports apply_intent→aborted/replay_closed,7015ranges/175001600OLD bytes/3278802944selected bytes verified.
+All13 actual digest PID/birth/terminals0 and all1024 original UTF16 paths were verified.
+Same original J FileIDc9550200000003000000000000000000/186487480B has canonical N2RSAB01+N2RSRB01; old replay is closed.
+Qualified rollback Off checkpoint ea75dff5-36f4-42af-8e13-cc9b2e8cba6c was saved15:36:28UTC, childAP39ba,
+freshly verified Off/RAM0/all15/ancestry. Keep this checkpoint and its parent.
+Operator restored SAME originalAP39ba ONCE for resume; fresh Off/admission4GiB then one Start is running81629.
+Resume is NOT yet qualified; never use the closed ABT branch as a resume origin.
 Only /root/aef_postcut_operator owns subsequent VM/recovery/oracle operations; Root owns Git/build/docs only.
 V5 waits only for sharing-error32 while a receipt writer is still open; closed empty/corrupt/type/hash failures still refuse.
 Prior327 controller55466 TERMINATEDexit1/14:54:38.974UTC, TurnOffFALSE: 'Bounded ordinary closed receipt required'.
@@ -138,7 +147,9 @@ Previously automatic-review-rejected research-image, .lab/ntfs2btrfs-source-audi
 
 ## Protected snapshot graph and VM
 
-Keep these13IDs and dependencies; guardedf4 is NEVER remove/force. Current VM-ownership transfer authorizes NO new retirement:
+Keep these15IDs and dependencies; guardedf4 is NEVER remove/force. Current VM-ownership transfer authorizes NO new retirement:
+- ea75dff5-36f4-42af-8e13-cc9b2e8cba6c (qualified aef rollback; ABT closes raw replay), child of AP39ba.
+- 39ba49c9-01d1-48fa-941f-08d34ff346c1 (NEW interrupted aef AP origin; restore this exact checkpoint separately for each recovery case).
 - 8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f (completed aef HND),3343f2a4-cf81-4fa9-a504-030425a8011e (prepared NTFS).
 - 895f472a-4d33-47f2-86ec-bb8ead5f3911,0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2,a0a8217f-894f-4311-bbf7-27151da5d216 (frozen814).
 - f4bf5238-14c0-4b15-bda6-7859abd4d1c9 (guarded),4b8dafbf-7500-4c51-ab12-d0a697bf7264 (large-format prototypes).

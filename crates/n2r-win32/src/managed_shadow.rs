@@ -130,6 +130,49 @@ struct AttachedDisk {
     number: u32,
 }
 
+// Private, sealed-by-module ownership boundary. Callers cannot implement this
+// trait or turn a deserialized disk route into GPT/formatter permission.
+#[derive(Clone, Copy)]
+struct FreshDiskGeometry {
+    number: u32,
+    bytes: u64,
+    logical: u32,
+    physical: u32,
+}
+trait FreshDiskOwner {
+    fn geometry(&self) -> FreshDiskGeometry;
+    fn verify_owned(&self) -> io::Result<()>;
+}
+impl FreshDiskOwner for AttachedDisk {
+    fn geometry(&self) -> FreshDiskGeometry {
+        FreshDiskGeometry {
+            number: self.number,
+            bytes: self.created.size,
+            logical: self.created.logical,
+            physical: self.created.physical,
+        }
+    }
+    fn verify_owned(&self) -> io::Result<()> {
+        self.verify_provider()
+    }
+}
+fn validate_owned_partition(owner: &impl FreshDiskOwner, partition_bytes: u64) -> io::Result<()> {
+    let geometry = owner.geometry();
+    if partition_bytes < 4096
+        || !partition_bytes.is_multiple_of(4096)
+        || partition_bytes
+            .checked_add(MARGIN)
+            .is_none_or(|bytes| bytes > geometry.bytes)
+        || geometry.bytes > i64::MAX as u64
+        || !matches!(geometry.logical, 512 | 4096)
+        || !matches!(geometry.physical, 512 | 4096)
+        || geometry.physical < geometry.logical
+    {
+        return Err(invalid("owned staging partition/sector geometry differs"));
+    }
+    Ok(())
+}
+
 fn win(error: u32) -> io::Result<()> {
     if error == 0 {
         Ok(())
@@ -323,99 +366,116 @@ impl AttachedDisk {
         }
         let disk =
             native::device_file(&format!("\\\\.\\PhysicalDrive{}", self.number), true, false)?;
-        let length = control(&disk, IOCTL_DISK_GET_LENGTH_INFO, &[], 8)?;
-        if layout::u64_at(&length, 0)? != self.created.size {
-            return Err(invalid("owned staging disk length differs"));
-        }
-        let initial = control(&disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], 65536)?;
-        if !(initial.len() == 48 && initial.iter().all(|v| *v == 0))
-            && !(initial.len() >= 48
-                && layout::u32_at(&initial, 0)? == 2
-                && layout::u32_at(&initial, 4)? == 0)
-        {
-            return Err(invalid("new owned staging disk is not RAW"));
-        }
-        let disk_guid = random_guid()?;
-        let partition_guid = random_guid()?;
-        let mut create = CREATE_DISK::default();
-        create.PartitionStyle = PARTITION_STYLE_GPT;
-        create.Anonymous = CREATE_DISK_0 {
-            Gpt: CREATE_DISK_GPT {
-                DiskId: disk_guid,
-                MaxPartitionCount: 128,
-            },
-        };
-        // SAFETY: zero-initialized complete CREATE_DISK C layout, synchronous
-        // input only; this handle belongs solely to the newly created VHDX.
-        let input = unsafe {
-            std::slice::from_raw_parts(
-                (&create as *const CREATE_DISK).cast::<u8>(),
-                mem::size_of::<CREATE_DISK>(),
-            )
-        };
-        control(&disk, IOCTL_DISK_CREATE_DISK, input, 0)?;
-        // Wait for the real GPT usable bounds. Preserve an observed MSR;
-        // CREATE_DISK may leave an empty table, in which case ready_layout
-        // explicitly creates the MSR on this owned new disk only.
-        let mut settled = None;
-        for _ in 0..120 {
-            control(&disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
-            let raw = control(&disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], 65536)?;
-            if let Some(layout) = ready_layout(&raw, &disk_guid, partition_bytes)? {
-                settled = Some(layout);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-        let (mut header, msr) = settled.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "owned staging GPT did not settle; attachment retained",
-            )
-        })?;
-        let number = layout::u32_at(&msr, 24)?
-            .checked_add(1)
-            .ok_or_else(|| invalid("staging partition number overflow"))?;
-        if number > 128 {
-            return Err(invalid("staging partition number exceeds GPT profile"));
-        }
-        header[4..8].copy_from_slice(&2u32.to_le_bytes());
-        let mut data = vec![0u8; 144];
-        data[..4].copy_from_slice(&1u32.to_le_bytes());
-        data[8..16].copy_from_slice(&OFFSET.to_le_bytes());
-        data[16..24].copy_from_slice(&partition_bytes.to_le_bytes());
-        data[24..28].copy_from_slice(&number.to_le_bytes());
-        data[28] = 1;
-        data[32..48].copy_from_slice(&layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?);
-        data[48..64].copy_from_slice(&guid_bytes(&partition_guid));
-        for (i, c) in "n2r-shadow".encode_utf16().enumerate() {
-            data[72 + i * 2..74 + i * 2].copy_from_slice(&c.to_le_bytes());
-        }
-        header.extend_from_slice(&msr);
-        header.extend_from_slice(&data);
-        control(&disk, IOCTL_DISK_SET_DRIVE_LAYOUT_EX, &header, 0)?;
-        control(&disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
-        let binding = GeneralDiskBinding {
-            disk_number: self.number,
-            // Placeholder only for syntax validation: discovery replaces this
-            // with the actual volume whose physical extents match this partition.
-            volume_guid: guid_text(&partition_guid),
-            identity: PartitionIdentity {
-                disk_guid: guid_text(&disk_guid),
-                partition_guid: guid_text(&partition_guid),
-                partition_number: number,
-                disk_bytes: self.created.size,
-                partition_offset: OFFSET,
-                partition_bytes,
-                logical_sector_bytes: self.created.logical,
-                physical_sector_bytes: self.created.physical,
-            },
-        };
-        let actual = control(&disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], 65536)?;
-        binding.validate_layout(&actual)?;
+        let binding = initialize_new_owned(self, &disk, partition_bytes)?;
         drop(disk);
         rediscover_stage(binding, stage_path, "partition-volume")
     }
+}
+
+// Only the live fresh owner and its actual retained native handle enter. The
+// thin caller keeps that same WRITE-capable handle across subsequent format.
+fn initialize_new_owned(
+    owner: &impl FreshDiskOwner,
+    disk: &File,
+    partition_bytes: u64,
+) -> io::Result<GeneralDiskBinding> {
+    owner.verify_owned()?;
+    validate_owned_partition(owner, partition_bytes)?;
+    let geometry = owner.geometry();
+    if native::current_windows_disk(&mut Vec::new())? == geometry.number {
+        return Err(invalid("new staging provider routes to Windows disk"));
+    }
+    let length = control(disk, IOCTL_DISK_GET_LENGTH_INFO, &[], 8)?;
+    if layout::u64_at(&length, 0)? != geometry.bytes {
+        return Err(invalid("owned staging disk length differs"));
+    }
+    let initial = control(disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], 65536)?;
+    if !(initial.len() == 48 && initial.iter().all(|v| *v == 0))
+        && !(initial.len() >= 48
+            && layout::u32_at(&initial, 0)? == 2
+            && layout::u32_at(&initial, 4)? == 0)
+    {
+        return Err(invalid("new owned staging disk is not RAW"));
+    }
+    let disk_guid = random_guid()?;
+    let partition_guid = random_guid()?;
+    let mut create = CREATE_DISK::default();
+    create.PartitionStyle = PARTITION_STYLE_GPT;
+    create.Anonymous = CREATE_DISK_0 {
+        Gpt: CREATE_DISK_GPT {
+            DiskId: disk_guid,
+            MaxPartitionCount: 128,
+        },
+    };
+    // SAFETY: zero-initialized complete CREATE_DISK C layout, synchronous
+    // input only; this handle belongs solely to the sealed fresh owner.
+    let input = unsafe {
+        std::slice::from_raw_parts(
+            (&create as *const CREATE_DISK).cast::<u8>(),
+            mem::size_of::<CREATE_DISK>(),
+        )
+    };
+    control(disk, IOCTL_DISK_CREATE_DISK, input, 0)?;
+    // Wait for the real GPT usable bounds. Preserve an observed MSR;
+    // CREATE_DISK may leave an empty table, in which case ready_layout
+    // explicitly creates the MSR on this owned new disk only.
+    let mut settled = None;
+    for _ in 0..120 {
+        control(disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
+        let raw = control(disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], 65536)?;
+        if let Some(layout) = ready_layout(&raw, &disk_guid, partition_bytes)? {
+            settled = Some(layout);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let (mut header, msr) = settled.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "owned staging GPT did not settle; attachment retained",
+        )
+    })?;
+    let number = layout::u32_at(&msr, 24)?
+        .checked_add(1)
+        .ok_or_else(|| invalid("staging partition number overflow"))?;
+    if number > 128 {
+        return Err(invalid("staging partition number exceeds GPT profile"));
+    }
+    header[4..8].copy_from_slice(&2u32.to_le_bytes());
+    let mut data = vec![0u8; 144];
+    data[..4].copy_from_slice(&1u32.to_le_bytes());
+    data[8..16].copy_from_slice(&OFFSET.to_le_bytes());
+    data[16..24].copy_from_slice(&partition_bytes.to_le_bytes());
+    data[24..28].copy_from_slice(&number.to_le_bytes());
+    data[28] = 1;
+    data[32..48].copy_from_slice(&layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?);
+    data[48..64].copy_from_slice(&guid_bytes(&partition_guid));
+    for (i, c) in "n2r-shadow".encode_utf16().enumerate() {
+        data[72 + i * 2..74 + i * 2].copy_from_slice(&c.to_le_bytes());
+    }
+    header.extend_from_slice(&msr);
+    header.extend_from_slice(&data);
+    control(disk, IOCTL_DISK_SET_DRIVE_LAYOUT_EX, &header, 0)?;
+    control(disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
+    let binding = GeneralDiskBinding {
+        disk_number: geometry.number,
+        // Placeholder only for syntax validation: discovery replaces this
+        // with the actual volume whose physical extents match this partition.
+        volume_guid: guid_text(&partition_guid),
+        identity: PartitionIdentity {
+            disk_guid: guid_text(&disk_guid),
+            partition_guid: guid_text(&partition_guid),
+            partition_number: number,
+            disk_bytes: geometry.bytes,
+            partition_offset: OFFSET,
+            partition_bytes,
+            logical_sector_bytes: geometry.logical,
+            physical_sector_bytes: geometry.physical,
+        },
+    };
+    let actual = control(disk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], 65536)?;
+    binding.validate_layout(&actual)?;
+    Ok(binding)
 }
 
 fn sidecar(path: &Path, phase: &str) -> io::Result<File> {
@@ -665,6 +725,43 @@ pub fn create_with_profile(
     let attached = created.attach()?;
     let binding = attached.initialize(partition_bytes, path)?;
     privileges.restore()?;
+    let (binding, format_policy, _) = format_new_owned(&attached, binding, path, target_format)?;
+    Ok(ManagedShadow {
+        _owned_binding: binding.clone(),
+        binding,
+        path: path.to_owned(),
+        virtual_disk_id: guid_text(&id),
+        format_policy,
+        _attachment: attached,
+        _backing: backing,
+    })
+}
+
+// Private formatting boundary, shared by VHDX and constructor-owned thin disks.
+// No public API accepts an arbitrary binding as formatting authority.
+fn format_new_owned(
+    owner: &impl FreshDiskOwner,
+    binding: GeneralDiskBinding,
+    path: &Path,
+    target_format: TargetFormatProfile,
+) -> io::Result<(
+    GeneralDiskBinding,
+    crate::volume_policy::Observation,
+    Vec<u8>,
+)> {
+    owner.verify_owned()?;
+    validate_owned_partition(owner, binding.identity.partition_bytes)?;
+    let geometry = owner.geometry();
+    let partition_bytes = binding.identity.partition_bytes;
+    if binding.disk_number != geometry.number
+        || binding.identity.disk_bytes != geometry.bytes
+        || binding.identity.logical_sector_bytes != geometry.logical
+        || binding.identity.physical_sector_bytes != geometry.physical
+    {
+        return Err(invalid(
+            "owned staging formatter binding differs from live owner",
+        ));
+    }
     let mut system = [0u16; 32768];
     // SAFETY: initialized buffer and explicit WCHAR capacity.
     let count = unsafe { GetSystemDirectoryW(system.as_mut_ptr(), system.len() as u32) } as usize;
@@ -678,7 +775,7 @@ pub fn create_with_profile(
         String::from_utf16(&system[..count]).map_err(|_| invalid("system directory UTF-16"))?,
     )
     .join("format.com");
-    // This volume route derives ONLY from the newly created provider handle.
+    // This volume route derives ONLY from the sealed freshly owned device.
     // No shell, caller-selected physical device, stdin answer, or source enters.
     let stdout = sidecar(path, "format.stdout.log")?;
     let stderr = sidecar(path, "format.stderr.log")?;
@@ -701,7 +798,7 @@ pub fn create_with_profile(
             path.display()
         )));
     }
-    attached.verify_provider()?;
+    owner.verify_owned()?;
     // Formatting may replace the filesystem's mount-manager identity. Rebind
     // only by the unchanged actual GPT partition and physical volume extents.
     let binding = rediscover_stage(binding, path, "formatted-volume")?;
@@ -709,7 +806,7 @@ pub fn create_with_profile(
     if observed.binding != binding
         || observed.filesystem != "ReFS"
         || observed.label != "n2r-retained-shadow"
-        || observed.bytes_per_sector != logical_sector
+        || observed.bytes_per_sector != geometry.logical
         || u64::from(observed.bytes_per_sector) * u64::from(observed.sectors_per_cluster) != 4096
     {
         return Err(invalid("formatted owned staging binding/profile differs"));
@@ -720,9 +817,9 @@ pub fn create_with_profile(
         || !(64..=data.len()).contains(&(layout::u32_at(&data, 0)? as usize))
         || layout::u32_at(&data, 4)? != 3
         || layout::u32_at(&data, 8)? != 14
-        || layout::u64_at(&data, 24)? != partition_bytes / u64::from(logical_sector)
+        || layout::u64_at(&data, 24)? != partition_bytes / u64::from(geometry.logical)
         || layout::u64_at(&data, 32)? != partition_bytes / 4096
-        || layout::u32_at(&data, 56)? != logical_sector
+        || layout::u32_at(&data, 56)? != geometry.logical
         || layout::u32_at(&data, 60)? != 4096
     {
         return Err(invalid(
@@ -751,13 +848,6 @@ pub fn create_with_profile(
             "formatted owned staging developer-volume designation is unknown or differs from the requested target format",
         ));
     }
-    Ok(ManagedShadow {
-        _owned_binding: binding.clone(),
-        binding,
-        path: path.to_owned(),
-        virtual_disk_id: guid_text(&id),
-        format_policy,
-        _attachment: attached,
-        _backing: backing,
-    })
+    owner.verify_owned()?;
+    Ok((binding, format_policy, data))
 }

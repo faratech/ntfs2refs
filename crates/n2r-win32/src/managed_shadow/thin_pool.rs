@@ -1,5 +1,5 @@
-//! Constructor-only private thin storage. Never formats, initializes GPT,
-//! accepts existing pool members, reconstructs an owner from JSON or cleans up.
+//! Fresh private thin storage. Its separate consuming formatter accepts only
+//! the live constructor owner, never an existing pool/binding or saved JSON.
 use super::*;
 use crate::{file_storage, reference_file, resource_native};
 use sha2::{Digest, Sha256};
@@ -16,6 +16,9 @@ const MEMBER_OVERHEAD: u64 = 128 << 20;
 const METADATA_BYTES: u64 = 2 << 20;
 const RUST_WORKSPACE: u64 = 2 << 20;
 const RESPONSE_BYTES: u64 = 128 << 10;
+
+mod formatted;
+pub use formatted::{FormattedThinShadow, FormattingObservation};
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Budget {
@@ -49,6 +52,30 @@ struct PoolRoute {
     physical_sector: u32,
 }
 
+/// Mutable capacity samples; these are never part of provider identity.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolCapacity {
+    pub size_bytes: u64,
+    pub allocated_bytes: u64,
+    pub free_bytes: u64,
+    pub virtual_footprint_bytes: u64,
+}
+
+impl PoolCapacity {
+    fn validate(&self, minimum_free: u64) -> io::Result<()> {
+        if self.size_bytes.checked_sub(self.allocated_bytes) != Some(self.free_bytes)
+            || self.virtual_footprint_bytes > self.size_bytes
+            || self.free_bytes < minimum_free
+        {
+            return Err(invalid(
+                "private thin pool cannot preserve its sampled free reserve",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Reply {
@@ -60,6 +87,7 @@ struct Reply {
     subsystem: String,
     members: Vec<MemberRoute>,
     pool: Option<PoolRoute>,
+    pool_capacity: Option<PoolCapacity>,
     sampled_child_working_set_bytes: u64,
     child_ram_hard_limit_enforced: bool,
     error: Option<String>,
@@ -74,6 +102,7 @@ struct Request<'a> {
     member_numbers: [u32; 2],
     members: &'a [MemberRoute],
     pool: Option<&'a PoolRoute>,
+    expected_partition: Option<&'a GeneralDiskBinding>,
     powershell_ram_bytes: u64,
     minimum_free_bytes: u64,
 }
@@ -132,6 +161,16 @@ pub struct ThinPool {
     _root_handle: File,
     _script: File,
     _disk: File,
+    root: PathBuf,
+    root_file_id: String,
+    root_guid_path: String,
+    subsystem: String,
+    nonce: String,
+    goal: u64,
+    budget: Budget,
+    routes: Vec<MemberRoute>,
+    pool: PoolRoute,
+    script_snapshot: reference_file::ReferenceFileSnapshot,
     observation: Observation,
 }
 
@@ -307,7 +346,7 @@ impl Member {
     }
 }
 
-fn raw_disk(file: &File, number: u32, bytes: u64) -> io::Result<RawDiskObservation> {
+fn native_disk(file: &File, number: u32, bytes: u64) -> io::Result<RawDiskObservation> {
     let device = control(file, IOCTL_STORAGE_GET_DEVICE_NUMBER, &[], 12)?;
     layout::validate_device(&device, number)?;
     let length = control(file, IOCTL_DISK_GET_LENGTH_INFO, &[], 8)?;
@@ -315,10 +354,6 @@ fn raw_disk(file: &File, number: u32, bytes: u64) -> io::Result<RawDiskObservati
     input[..4].copy_from_slice(&6u32.to_le_bytes());
     let alignment = control(file, IOCTL_STORAGE_QUERY_PROPERTY, &input, 28)?;
     let raw = control(file, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, &[], MAX_LAYOUT)?;
-    // On a freshly created, never-initialized owned device, Windows can return
-    // the empty all-zero 48-byte response before publishing RAW style 2. This
-    // accepts only that constructor-bound initial state, not an arbitrary MBR
-    // device. The live Storage queries also require PartitionStyle == RAW.
     if length.len() != 8
         || layout::u64_at(&length, 0)? != bytes
         || alignment.len() != 28
@@ -327,11 +362,9 @@ fn raw_disk(file: &File, number: u32, bytes: u64) -> io::Result<RawDiskObservati
         || layout::u32_at(&alignment, 16)? != 512
         || layout::u32_at(&alignment, 20)? != 4096
         || layout::u32_at(&alignment, 24)? != 0
-        || !((raw.len() == 48 && raw.iter().all(|b| *b == 0))
-            || (raw.len() >= 48 && layout::u32_at(&raw, 0)? == 2 && layout::u32_at(&raw, 4)? == 0))
     {
         return Err(invalid(
-            "new thin provider native RAW identity or geometry differs",
+            "owned thin provider native identity or geometry differs",
         ));
     }
     Ok(RawDiskObservation {
@@ -342,6 +375,21 @@ fn raw_disk(file: &File, number: u32, bytes: u64) -> io::Result<RawDiskObservati
         alignment,
         layout: raw,
     })
+}
+
+fn raw_disk(file: &File, number: u32, bytes: u64) -> io::Result<RawDiskObservation> {
+    let observed = native_disk(file, number, bytes)?;
+    let raw = &observed.layout;
+    // A fresh never-initialized owned device can return the empty all-zero
+    // 48-byte response before RAW style 2. Live Storage also requires RAW.
+    if !((raw.len() == 48 && raw.iter().all(|b| *b == 0))
+        || (raw.len() >= 48 && layout::u32_at(raw, 0)? == 2 && layout::u32_at(raw, 4)? == 0))
+    {
+        return Err(invalid(
+            "new thin provider is not uninitialized RAW storage",
+        ));
+    }
+    Ok(observed)
 }
 
 fn capacity(root: &Path, budget: Budget) -> io::Result<(u64, resource_native::AvailableResources)> {
@@ -503,12 +551,87 @@ fn run(root: &Path, mode: &str, request: &Request<'_>, budget: Budget) -> io::Re
         )));
     }
     capacity(root, budget)?;
+    if let Some(pool_capacity) = &reply.pool_capacity {
+        pool_capacity.validate(budget.minimum_free_bytes)?;
+    } else if mode != "members" {
+        return Err(invalid("private thin pool capacity observation absent"));
+    }
     Ok(reply)
 }
 
 impl ThinPool {
     pub fn observation(&self) -> &Observation {
         &self.observation
+    }
+
+    fn verify_live(&self) -> io::Result<()> {
+        ordinary_root(&self.root)?;
+        if file_storage::file_id_info(&self._root_handle)? != self.root_file_id
+            || file_storage::final_path_guid(&self._root_handle)? != self.root_guid_path
+        {
+            return Err(invalid("held private thin root identity changed"));
+        }
+        same_file(&self.script_snapshot, &self._script)?;
+        for member in &self._members {
+            member.revalidate()?;
+        }
+        native_disk(&self._disk, self.pool.number, self.pool.bytes)?;
+        capacity(&self.root, self.budget)?;
+        Ok(())
+    }
+
+    fn observe_stage(
+        &self,
+        mode: &str,
+        binding: Option<&GeneralDiskBinding>,
+    ) -> io::Result<PoolCapacity> {
+        self.verify_live()?;
+        let request = Request {
+            schema_version: 1,
+            nonce: &self.nonce,
+            subsystem: &self.subsystem,
+            goal_bytes: self.goal,
+            member_numbers: [
+                self._members[0].attachment.number,
+                self._members[1].attachment.number,
+            ],
+            members: &self.routes,
+            pool: Some(&self.pool),
+            expected_partition: binding,
+            powershell_ram_bytes: self.budget.powershell_ram_bytes,
+            minimum_free_bytes: self.budget.minimum_free_bytes,
+        };
+        let result = run(&self.root, mode, &request, self.budget);
+        let closing = self.verify_live();
+        let reply = match (result, closing) {
+            (Ok(reply), Ok(())) => reply,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(closing)) => {
+                return Err(io::Error::other(format!(
+                    "{error}; private thin closing check also failed: {closing}"
+                )));
+            }
+        };
+        if reply.members != self.routes || reply.pool.as_ref() != Some(&self.pool) {
+            return Err(invalid("live private pool or member identity changed"));
+        }
+        reply
+            .pool_capacity
+            .ok_or_else(|| invalid("live private pool headroom absent"))
+    }
+}
+
+impl FreshDiskOwner for ThinPool {
+    fn geometry(&self) -> FreshDiskGeometry {
+        FreshDiskGeometry {
+            number: self.pool.number,
+            bytes: self.pool.bytes,
+            logical: self.pool.logical_sector,
+            physical: self.pool.physical_sector,
+        }
+    }
+    fn verify_owned(&self) -> io::Result<()> {
+        self.verify_live()
     }
 }
 
@@ -571,6 +694,7 @@ pub fn create_new(
         member_numbers: numbers,
         members: &[],
         pool: None,
+        expected_partition: None,
         powershell_ram_bytes: budget.powershell_ram_bytes,
         minimum_free_bytes: budget.minimum_free_bytes,
     };
@@ -636,11 +760,7 @@ pub fn create_new(
             "new thin pool native addressability or route differs",
         ));
     }
-    let disk = native::device_file(
-        &format!("\\\\.\\PhysicalDrive{}", pool.number),
-        false,
-        false,
-    )?;
+    let disk = native::device_file(&format!("\\\\.\\PhysicalDrive{}", pool.number), true, false)?;
     let observed = raw_disk(&disk, pool.number, pool.bytes)?;
     let request = Request {
         pool: Some(&pool),
@@ -696,11 +816,22 @@ pub fn create_new(
         automatic_cleanup_or_fallback: false,
     };
     let _receipt = save(&directory.join("thin-owner-observation.json"), &observation)?;
+    let script_snapshot = file_snapshot(&script)?;
     Ok(ThinPool {
         _members: members,
         _root_handle: root_handle,
         _script: script,
         _disk: disk,
+        root: directory.into(),
+        root_file_id,
+        root_guid_path,
+        subsystem: subsystem_unique_id.into(),
+        nonce,
+        goal: requested_bytes,
+        budget,
+        routes: discovered.members,
+        pool,
+        script_snapshot,
         observation,
     })
 }
@@ -708,11 +839,11 @@ pub fn create_new(
 // Source controlled interop only. It receives live constructor-derived member
 // routes, never a saved receipt as permission to touch an existing device.
 const SCRIPT: &str = r#"
-param([ValidateSet('members','create','closing')][string]$Mode,[string]$InputPath,[string]$OutputPath)
+param([ValidateSet('members','create','closing','format-opening','partitioned','formatted','format-error')][string]$Mode,[string]$InputPath,[string]$OutputPath)
 Set-StrictMode -Version Latest; $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'
 function Need([bool]$ok,[string]$message){if(-not$ok){throw $message}}
 function BoundText([string]$s){Need ($s.Length-gt0-and$s.Length-le4096-and$s-cnotmatch'[\x00-\x1f]') 'Bounded native identity required'}
-$request=$null;$members=@();$poolRow=$null;$failure=$null;$success=$false;$reader=$null
+$request=$null;$members=@();$poolRow=$null;$poolCapacity=$null;$failure=$null;$success=$false;$reader=$null
 try{
  $f=[IO.File]::Open($InputPath,'Open','Read','Read');try{Need ($f.Length-gt0-and$f.Length-le131072) 'Bounded input required';$reader=[IO.StreamReader]::new($f,[Text.UTF8Encoding]::new($false,$true));$request=$reader.ReadToEnd()|ConvertFrom-Json}finally{if($null-ne$reader){$reader.Dispose()}else{$f.Dispose()}}
  Need ($request.schema_version-eq1-and$request.member_numbers.Count-eq2-and$request.member_numbers[0]-ne$request.member_numbers[1]-and$request.goal_bytes-gt0) 'Exact new-member input required'
@@ -722,7 +853,7 @@ try{
  $sub=@(Get-StorageSubSystem -UniqueId $request.subsystem);Need ($sub.Count-eq1-and$sub[0].UniqueId-ceq$request.subsystem-and$sub[0].FriendlyName-like'Windows Storage*') 'One exact Windows Storage subsystem required'
  $physical=@();$n=0
  foreach($number in $request.member_numbers){
-  if($Mode-ceq'closing'){
+  if($Mode-cnotin@('members','create')){
    # Pool claims can hide MSFT_Disk. Keep the original provider number as a
    # route binding checked by Rust, and query this exact live member identity.
    Need ($request.members.Count-eq2-and$request.members[$n].number-eq$number) 'Original live member route differs'
@@ -764,7 +895,7 @@ try{
   $made=@(New-VirtualDisk -StoragePoolUniqueId $pool.UniqueId -FriendlyName $diskName -Size ([uint64]$aligned) -ProvisioningType Thin -ResiliencySettingName Simple -NumberOfColumns 1 -WriteCacheSize 0)
   Need ($made.Count-eq1) 'One newly created thin virtual disk required';$virtual=$made[0]
   foreach($old in $before){$now=Get-Disk -Number $old.Number;Need ($now.UniqueId-ceq$old.UniqueId-and$now.Size-eq$old.Size-and$now.PartitionStyle.ToString()-ceq$old.PartitionStyle.ToString()-and$now.IsOffline-eq$old.IsOffline-and$now.IsReadOnly-eq$old.IsReadOnly-and$now.IsBoot-eq$old.IsBoot-and$now.IsSystem-eq$old.IsSystem) 'Existing disk configuration changed'}
- }elseif($Mode-ceq'closing'){
+ }elseif($Mode-cne'members'){
   Need ($null-ne$request.pool) 'Existing live pool route required'
   $made=@(Get-StoragePool -UniqueId $request.pool.unique_id);Need ($made.Count-eq1) 'Exact newly created pool absent';$pool=$made[0]
   $made=@(Get-VirtualDisk -UniqueId $request.pool.virtual_unique_id);Need ($made.Count-eq1) 'Exact newly created thin disk absent';$virtual=$made[0]
@@ -775,14 +906,29 @@ try{
   $membership=@(Get-PhysicalDisk -StoragePool $pool);Need ($membership.Count-eq2-and@($membership.UniqueId|Sort-Object -Unique).Count-eq2) 'Exact two-member private pool required'
   foreach($p in $physical){Need (@($membership|Where-Object{$_.UniqueId-ceq$p.UniqueId-and$_.ObjectId-ceq$p.ObjectId}).Count-eq1) 'Foreign or missing private pool member'}
   $v=@(Get-VirtualDisk -StoragePool $pool);Need ($v.Count-eq1-and$v[0].UniqueId-ceq$virtual.UniqueId-and$v[0].ObjectId-ceq$virtual.ObjectId) 'Private pool virtual membership differs'
-  $d=@(Get-Disk -VirtualDisk $virtual);Need ($d.Count-eq1-and$d[0].Number-notin$request.member_numbers-and-not$d[0].IsBoot-and-not$d[0].IsSystem-and-not$d[0].IsOffline-and-not$d[0].IsReadOnly-and$d[0].PartitionStyle.ToString()-ceq'RAW'-and$d[0].Size-eq$virtual.Size-and$d[0].Size-ge$request.goal_bytes-and$d[0].LogicalSectorSize-eq512-and$d[0].PhysicalSectorSize-eq4096) 'One new RAW thin device required'
+  $d=@(Get-Disk -VirtualDisk $virtual);Need ($d.Count-eq1-and$d[0].Number-notin$request.member_numbers-and-not$d[0].IsBoot-and-not$d[0].IsSystem-and-not$d[0].IsOffline-and-not$d[0].IsReadOnly-and$d[0].Size-eq$virtual.Size-and$d[0].Size-ge$request.goal_bytes-and$d[0].LogicalSectorSize-eq512-and$d[0].PhysicalSectorSize-eq4096) 'One exact owned thin device required'
+  $style=$d[0].PartitionStyle.ToString()
+  if($Mode-cin@('partitioned','formatted')){Need ($null-ne$request.expected_partition-and$style-ceq'GPT') 'Owned GPT partition observation required'}
+  elseif($Mode-ceq'format-error'){Need ($style-cin@('RAW','GPT')) 'Unknown failed-format disk layout'}
+  else{Need ($style-ceq'RAW') 'Fresh RAW thin disk required'}
+  if($null-ne$request.expected_partition){
+   $binding=$request.expected_partition;$identity=$binding.identity
+   Need ($style-ceq'GPT'-and$binding.disk_number-eq$d[0].Number-and[guid]$d[0].Guid-eq[guid]$identity.disk_guid-and$d[0].Size-eq$identity.disk_bytes) 'Live owned GPT disk binding differs'
+   $partition=@(Get-Partition -DiskNumber $d[0].Number -PartitionNumber $identity.partition_number)
+   Need ($partition.Count-eq1-and[guid]$partition[0].Guid-eq[guid]$identity.partition_guid-and$partition[0].Offset-eq$identity.partition_offset-and$partition[0].Size-eq$identity.partition_bytes) 'Live owned GPT partition binding differs'
+   if($Mode-ceq'formatted'){$volume=@(Get-Volume -Partition $partition[0]);Need ($volume.Count-eq1-and$volume[0].FileSystem-ceq'ReFS'-and$volume[0].AllocationUnitSize-eq4096-and$volume[0].FileSystemLabel-ceq'n2r-retained-shadow') 'Actual owned formatted ReFS profile differs'}
+  }
   if($Mode-ceq'create'){Need ($d[0].Number-notin$before.Number) 'New thin route aliases a previous disk'}
   $poolRow=@{unique_id=[string]$pool.UniqueId;object_id=[string]$pool.ObjectId;virtual_unique_id=[string]$virtual.UniqueId;virtual_object_id=[string]$virtual.ObjectId;number=[uint32]$d[0].Number;disk_unique_id=[string]$d[0].UniqueId;bytes=[uint64]$virtual.Size;divisor=[uint64]$divisor;logical_sector=[uint32]$d[0].LogicalSectorSize;physical_sector=[uint32]$d[0].PhysicalSectorSize}
+  [uint64]$poolSize=$pool.Size;[uint64]$allocated=$pool.AllocatedSize
+  Need ($poolSize-ge$allocated-and$poolSize-ge[uint64]$virtual.FootprintOnPool) 'Actual pool capacity fields disagree'
+  $poolCapacity=@{size_bytes=$poolSize;allocated_bytes=$allocated;free_bytes=$poolSize-$allocated;virtual_footprint_bytes=[uint64]$virtual.FootprintOnPool}
+  Need ($poolCapacity.free_bytes-ge$request.minimum_free_bytes) 'Private pool free reserve breached'
  }
  Sample;$success=$true
 }catch{$failure=$_.Exception.Message;if($failure.Length-gt2048){$failure=$failure.Substring(0,2048)}}
 $working=[uint64](Get-Process -Id $PID).WorkingSet64
-$result=@{schema_version=1;kind='new-owned-thin-native-observation';success=$success;mode=$Mode;nonce=if($null-eq$request){''}else{[string]$request.nonce};subsystem=if($null-eq$request){''}else{[string]$request.subsystem};members=@($members);pool=$poolRow;sampled_child_working_set_bytes=$working;child_ram_hard_limit_enforced=$false;error=$failure}
+$result=@{schema_version=1;kind='new-owned-thin-native-observation';success=$success;mode=$Mode;nonce=if($null-eq$request){''}else{[string]$request.nonce};subsystem=if($null-eq$request){''}else{[string]$request.subsystem};members=@($members);pool=$poolRow;pool_capacity=$poolCapacity;sampled_child_working_set_bytes=$working;child_ram_hard_limit_enforced=$false;error=$failure}
 $bytes=[Text.UTF8Encoding]::new($false).GetBytes(($result|ConvertTo-Json -Depth 8 -Compress));Need ($bytes.Length-le131072) 'Native result exceeds admitted metadata bound'
 $file=[IO.File]::Open($OutputPath,'CreateNew','Write','Read');try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
 if(-not$success){exit 1}

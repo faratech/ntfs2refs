@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "kind": "prepared-shared-windows-disk-native-source",
+  "status": "fixture-and-independent-readonly-oracle-complete-no-converter-run",
+  "checkpoint_id": "07ca22f3-bb1c-444b-8f31-ff16b1fcb521",
+  "checkpoint_parent": "766c9abc-8582-4de6-b497-8acbc81274da",
+  "vm_state": "Off",
+  "ram_bytes": 0,
+  "checkpoint_count": 17,
+  "original_16_preserved": true,
+  "source": {
+    "disk_number": 0,
+    "disk_guid": "1f804918-e98f-4a71-9022-fc00c3cb7c26",
+    "disk_bytes": 128849018880,
+    "partition_number": 6,
+    "raw_gpt_slot": 6,
+    "partition_guid": "4310d74c-614f-435b-9cf1-7ff664391590",
+    "offset": 68719476736,
+    "bytes": 55834574848,
+    "drive_letter": "D",
+    "volume_guid_path": "\\\\?\\Volume{4310d74c-614f-435b-9cf1-7ff664391590}\\",
+    "volume_serial_decimal": "7092616291886350003",
+    "cluster_bytes": 4096,
+    "mft_record_bytes": 1024,
+    "index_bytes": 4096
+  },
+  "file_count": 8,
+  "directory_count": 4,
+  "logical_bytes": 67178865,
+  "resident_files_qualified": false,
+  "independent_contents_and_owner_group_dacl_baseline": true,
+  "sacl_baseline_collected": false,
+  "extent_prearrangement": false,
+  "completion_source_payload_writes": 0,
+  "fixture_creator_actual_exit_code": 1,
+  "creator_refusal": "incorrect zero-allocation resident assertion; existing source completed read-only, no rewrite",
+  "refused_attempts_preserved": true,
+  "no_converter_run": true,
+  "conversion_qualified": false,
+  "small_archive_files": 56,
+  "small_archive_bytes": 324739,
+  "archive_rehashed": true,
+  "receipt_pins": [
+    {
+      "sha": "7d6527c5a85961ed8ae0036ed0fb20a57ec7436a0fd5aa7c3fc9db39b3aa6f74",
+      "name": "prepared-baseline-closed.json"
+    },
+    {
+      "sha": "cb840325903464d613db0df4a6cfe2194d3fbb548d08a4c366328757c740be2e",
+      "name": "readonly-oracle-complete.json"
+    },
+    {
+      "sha": "a54c94ee6f6e223dc2c226f6386225722f579611a20e227f58fb358f7dd18d15",
+      "name": "full-small-metadata-manifest.json"
+    }
+  ],
+  "capacity_after": {
+    "actual_bytes": 318595964757,
+    "free_bytes": 88805801984,
+    "maximum_actual_bytes": 329374052988,
+    "minimum_free_bytes": 17179869184,
+    "additional_bytes": 0,
+    "all_lab_shared_cache_and_staging_charged": true,
+    "epoch_reset": false
+  },
+  "original_case_forecast_bytes": 7516192768,
+  "actual_whole_case_growth_bytes": 1312655360,
+  "epoch_reset": false
+}

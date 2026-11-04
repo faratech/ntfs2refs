@@ -388,6 +388,14 @@ log `.lab/development/partition-alpha-8f7db1e-build.log`, fresh2GiB all-lab/cach
 Do not compete with Cargo. No converter GO for8f yet. Operator prepares OFF07ca17 normal launcher using correctedUTF8helpers and
 mandatory newbuildpins; preserveold82failurereceipts/provider/source, no source replay/restore/repair/delete.
 
+8f BUILD CLOSED0: source8f7db1e/tree8d0f75cfec71e9d7281b2f305472e4113472a3d6, manifest6e206e626dc6b4e5fede9960d8c045e678ff21ad88e84b75dc8575b72a533160.
+EXE8482816B/SHAb2b703ed51d1a696da50746d90ab4b3fc7d698e47f89b79c9c855b3589e1f9b4 (Rootfreshrehashmatched),
+sourceZIP2037182B/SHAea17a243e925332f7db112296e6cdf5c838e2e4253c7438f00470e2780aa4d77;414sourcesheldbefore/afterverified; no units.
+Smallreceipt evidence/partition-alpha-8f7db1e-exact-build-20261104.json. Hostsession32587terminal0, no build competing.
+ROOT ISSUED ONE actual normal8f conversion GO to operator using Offv4hostbdfa8925... +UTF8worker60d47f4e/oraclea4a57540/support40e8c171,
+fresh6GiB fullprogramme admission/Off07caall17/actual source8filebaselinefirst, mandatorybuildpinsabove. No newsourceprep/restore/repair/replay/retry/extraCP.
+Native launch/phase/success mustcome fromactualoperatorPID/birth/terminal observations, notfromGO. RootdoesnotcompeteVM.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

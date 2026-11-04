@@ -1,5 +1,38 @@
 # 0.0.1 release readiness — 2026-10-29
 
+## Current update — 2026-11-04
+
+The unchanged `814f380` resource-bounded executable is now packaged as an
+experimental alpha. Its own recorded cases cover normal conversion,
+mutation/reboot, independently restarted resume and rollback from a real
+first-flushed-write interruption, early cancellation, reserve refusal,
+one corrupt guard checksum and an exclusive journal-open failure. Independent
+observation matched all 811 original streams (9.9 GB), 1,534 baseline objects
+and 1,024 additional directory paths. The ZIP's 11 entries were independently
+checked by length and SHA-256. See the [usage guide](frozen-resource-alpha-20261104.md),
+[package record](../evidence/frozen-resource-alpha-814-package-20261104.json)
+and [exact-build qualification](../evidence/frozen-resource-alpha-814-qualification-20261104.json).
+No product code was changed or rebuilt for packaging; no unit tests were run.
+
+The package is usable within its experimental dedicated-disk profile, not a
+stable or arbitrary-volume release. Remaining work is:
+
+1. Reduce the remaining repeated allocated-range reads and shadow allocation
+   with evidence from the existing phase ledger; retain the frozen package.
+2. Implement and qualify partition-scoped source ownership and restart recovery
+   for data partitions sharing the Windows disk. The current writer refuses
+   them; a successful read-only observer is not conversion support.
+3. Qualify additional geometry and features, and replace the single-VHDX shadow
+   backend for sources beyond its native 64 TB limit. A 1,000 TB source is not
+   supported by this build. See [the scale gaps](native-shadow-scale-gaps.md).
+4. Qualify active write/flush/readback errors, actual storage exhaustion,
+   additional guard-copy combinations and interruption points on the intended
+   release build. The existing controlled faults do not establish physical
+   power-loss safety or a complete independent ACL/SACL/timestamp audit.
+
+The following dated updates preserve earlier builds' results and limits;
+their pending statements do not supersede the frozen 814 record above.
+
 ## Current update — 2026-11-02
 
 The clean `233c2a3` public command subsequently passed on the independently

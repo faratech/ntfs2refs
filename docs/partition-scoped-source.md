@@ -66,3 +66,26 @@ The separate frozen `814f380` converter has since completed its own native
 conversion and recovery cases; see the [packaged alpha](frozen-resource-alpha-20261104.md).
 Those dedicated-disk results do not qualify this partition-scoped writer.
 No unit tests were added or run.
+
+The fresh owning-handle experiment on 2026-11-04 now records the exact failure.
+It removed the captured T: mount, successfully locked and dismounted the target,
+set its persistent GPT offline bit and issued runtime offline while retaining
+the same volume owner. The physical read/write handle then verified Disk0,
+both GPT copies and the original marker. Its sole 8,192-byte `WriteFile` at
+absolute offset 65,714,388,992 failed with error 21 and returned zero bytes.
+The probe exited 1; it issued no retry or write-path flush/readback after failure.
+After owner closure, volume reads still failed with error 21, while a separate
+raw marker observation matched and C: and sibling GPT entries remained intact.
+Successful lock/dismount acquisition therefore does not qualify this writer.
+Runtime offline causing the refusal remains a hypothesis, not an isolated cause.
+
+A separate explicit restoration exited 0, restored only the target's original
+attributes and availability, and rebound T: to its original GUID. Marker identity,
+extents and contents, the C: control marker and sibling GPT bytes matched. It
+issued no payload write or retry. All 26 probe metadata files (353,925 bytes) and
+12 restoration files (76,970 bytes) are closed and length/SHA-256 verified.
+The VM was normally shut down and independently observed Off with zero assigned
+RAM, still parented to `766c9abc`; no new checkpoint was created. See
+[the exact refusal and restoration evidence](../evidence/partition-fresh-lock-write-refusal-20261104.json).
+The frozen `814f380` converter remains unchanged, and no partition writer was
+integrated or enabled.

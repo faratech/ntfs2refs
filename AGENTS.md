@@ -60,19 +60,30 @@ The original three-tool build manifest/source archive remain provenance;
 unshipped `lab-observe-resource-recovery` has **no execution/qualification claim**.
 The embedded registry and executable bytes were not rebuilt for packaging.
 
-**A separate compatibility attempt is staged after package closure:**
-`58c5d87cfedd487b8bf3e4a3e39ae3b6`. Root restored saved partition branch
-`766c9abc-8582-4de6-b497-8acbc81274da` **once** from the normally Off cancellation
-branch. A fresh process verified Off/parent766, then Root started it once.
-Guest boot `1793765146033`; no project processes were present. The pinned
-three helper files are staged at `C:\ntfs2refs\fresh-partition-58c5d87cfedd487b8bf3e4a3e39ae3b6`.
-No new native probe or conversion has launched. The old Off/parent3343 observation is no
-longer current authority. Root admitted a separate 6,442,450,944 B forecast at
-283,378,342,707 B used / 123,199,393,792 B free under the unchanged policy.
-The completed a709 reserve/corruption/cancellation case is not live. Independently
-inspect Root's latest dispatch/task, exact native PID/birth/terminal and fresh VM
-graph before acting. Root alone coordinates VM power, restore, task dispatch and
-snapshot removal while agents work in parallel.
+**The separate compatibility attempt is closed, not live:**
+`58c5d87cfedd487b8bf3e4a3e39ae3b6`, boot `1793765146033`, actual probe
+PID3660/birth1793765254103 exited1 in4.5908017s. Held LOCK/DISMOUNT, GPT0800,
+runtime OFFLINE and physical identity/GPT/marker checks all passed. The sole
+8192-byte physical WriteFile at65714388992 failed Error21, returned0 bytes.
+No retry, subsequent flush or readback followed. This does not qualify a writer.
+Record SHA `cd5fef323055f79da6f4ae57f04ae60f43627a9dec4ec4f7a0dbf5d6a2e089f3`.
+
+Separate explicit restoration PID6108/birth1793765364056 actually exited0;
+record `9e129374dc73d17bb1ee4af7f7579a8801932a1d6803843a2c98747139e552d1`.
+Only original target attributes/runtime state/T: were restored; marker identity,
+extents and bytes plus C: and GPT siblings matched. No payload write or retry.
+Probe26files353925B and restoration12files76970B were source/host SHA/length
+verified beneath `.lab/development/fresh-partition-814-closure-58c5d87cfedd487b8bf3e4a3e39ae3b6`.
+Archive manifests `72c9f4b67a4d452305de16d145b4251a5817c4e483f2f39b3dba1dbe64c5d7eb`
+and `fab25023c7e04523a0c12c852fda73629d0f23746b553552a4fb97f1d09cb9d2`.
+
+Root normally shut down; a fresh process verified **Off/RAM0/parent766**.
+No new checkpoint was created. Original766 and all frozen814 branches remain.
+The separate6GiB forecast passed unchanged policy at283378342707B used/
+123199393792B free. Inspect the latest actual PID/birth/terminal and fresh VM
+graph before actions. Root alone coordinates VM power, restore, dispatch and
+snapshot removal while agents work in parallel. No compatibility probe or
+conversion is currently running.
 
 ## Exact frozen source and finite native evidence
 
@@ -130,7 +141,7 @@ Keep required origins/ancestors unless a fresh retirement audit supersedes them:
 
 | Checkpoint | Role |
 |---|---|
-| `3343f2a4-cf81-4fa9-a504-030425a8011e` | Original prepared lab source; current recorded parent. |
+| `3343f2a4-cf81-4fa9-a504-030425a8011e` | Original prepared lab source and parent of the frozen 814 branches. |
 | `895f472a-4d33-47f2-86ec-bb8ead5f3911` | Verified 814 normal/mutation/reboot operational HND; parent 3343. Never replay its old raw journal. |
 | `0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2` | Original exact-814 interrupted AP origin; parent 3343. Restore this origin independently for a new authorized recovery direction. |
 | `a0a8217f-894f-4311-bbf7-27151da5d216` | Verified 814 resumed operational HND; parent 0cf3. Never replay its old raw journal. |
@@ -164,9 +175,11 @@ Preserve it while pursuing focused, evidence-backed continuation:
 
 - A data partition sharing the running Windows disk is unsupported by the
   current writer. The partition reader experiment grants no writer/isolation
-  authority. GPT/runtime offline alone failed the raw-write interlock; keep the
-  writer unavailable until actual lock/dismount ownership and post-reboot
-  reacquisition are demonstrated. Do not retry the old ambiguous write probe.
+  authority. Even the fresh held-lock/dismount/GPT/runtime-offline combination
+  failed physical WriteFile with Error21. Keep the writer unavailable until a
+  working protocol and persistent process-death/restart exclusion are proven.
+  Do not retry either closed failed write attempt or clear its exclusion to
+  evade refusal. Any different control sequence is a separate diagnostic case.
 - Useful larger geometries, feature combinations and exact Windows/storage
   profiles remain unqualified. Do not silently discard unsupported NTFS semantics.
 - The managed-shadow VHDX provider has an approximately 64 TB native ceiling

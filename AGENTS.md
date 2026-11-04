@@ -90,7 +90,7 @@ Public alpha ZIP/sourceaef1ab3 is immutable. Development commitd2f880b adds meas
 opaque meter duplicates original FILE_READ_ATTRIBUTES outerbacking handle, thin carrier counted once, existing capture/J/arena facts;
 no payload scan or writer/admission/recovery/default-policy changes. Focused public Cargo check passed0/38.7226731s using shared cache,
 no unit tests or alpha rebuild. `evidence/pre-ap-resource-accounting-build-20261104.json` binds all9 changedsourcefiles.
-Index physical allocation and all-stage payload I/O totals stay unknown; allocation samples are not peaks/physical usage.
+Development9651516 now reports capture-index allocation via sameheldreadonly metadata with advisory errors; focusedcheck passed0/21.3591422s. All-stage payload I/O totals remain unknown; allocation samples are not peaks/physical usage. See evidence/pre-ap-index-allocation-build-20261104.json.
 This new development code is NOT natively qualified or included in the frozen alpha. src/main.rs remains protected/unchanged.
 
 Private-type lifecycle **9f0f38dffbbc4f0a942b01cade0f4cb4 passed**: native5736/birth1793819318534/exit0/0.9410439s,
@@ -114,10 +114,10 @@ sourcece6cfd39eb703ddde3123d12b6f6e511a71a3737eb43e916bf1d7340b27a8419,module7a1
 inputpins4377cfdd59437acabd2a81ac8b93f05b96095c1d69253f453fbe5f3a4bd8c997,buildreceipt56d74cf4f998b8d7d77117eff605f663ec6a74ff7d8c3d49008d0f8b297c09b6.
 That binary was built against pre-accounting SDK; preserve it/sourcepins. SDKsourcehasnew observational changes now; don't claim oldpinsmatchcurrenttree.
 
-NEXT critical code: separate ignored Rust `.lab/development/partition-private-reopen-probe` is in preparation byfrozen_candidate_cases.
+NEXT case: separate ignored Rust `.lab/development/partition-private-reopen-probe` is reviewed and BUILT0/36.7441847s, sharedtarget reused, no unit tests.
 Test already-private target via `\\?\GLOBALROOT\Device\Harddisk0\Partition4` RW, held device/partition/fullrawGPT/C checks and atmostone SAME8192B write.
-No setters/typechanges/offline/wholelayout/physicalRW/fallback/autoRestore or publiccertificate. Rootmustreview/build before any nextGO.
-**Do not restore766 before this reopen test**: it needs current private state acrossnormalboot. Operator remains exclusiveVMowner, no nextnativeGO issued.
+No setters/typechanges/offline/wholelayout/physicalRW/fallback/autoRestore or publiccertificate. RetainedEXE585728B/SHA26bebdf9c4247e102f4ef5cca7d36badd8ea76dce7d2699cf611b3c22c189ef8; source-pinsaceb7d8c0bc202acc00bd1ac11a8d4d8cbf5f45a4cb9dcc7b02aa2c19c8902ac; input46460a3338e4afb79ebc72a00ff026bbca72dce49a54363248a47eac1cbd200d; lock0b56038991f092fb8e6b8d4b6562b869761b381135615e05b3924f4ba8cc03a1; receipt9266aac770b1f5249b9806111c5cfcf604c1fa19df1794235bd79222579c2f1c. See evidence/partition-private-reopen-build-20261104.json.
+**Do not restore766 before this reopen test**: it needs current private state acrossnormalboot. Operator remains exclusiveVMowner. Root issued ONEreopenGO: worker87cbf7d09edd17f6595ede114a115e7bd907711b8893dd9eb0f9619849167544 /runner25d0051ec1f7a8850abd13d026fa12d06f605b1217a02dd9ef4d75beb2f11cf9, fresh6GiB forecast, one SAMEprivateStart/no restore, Before/After readonlycoldobserver0e5ea60f041fa98f76212fd3553eb3b74d6550128ed11684d73a878ea5f65c09. No result inferred until actual native terminal+archive.
 Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volumeI/O;
 private-type route avoids that dead path. Existing whole-disk guards/certificates stay unchanged.
 See `docs/ntfs-conversion-policy.md` for implemented preserve/materialize/refuse semantics and qualification boundaries.

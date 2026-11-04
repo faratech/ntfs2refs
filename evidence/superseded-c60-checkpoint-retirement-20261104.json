@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "kind": "audited-superseded-c60-HyperV-checkpoint-retirement",
+  "retired_checkpoint": "c60b51c2-9e2a-4d57-8cc7-8a034d1802b8",
+  "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+  "replacement_completed_checkpoint": "8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f",
+  "audit": {
+    "path": ".lab/development/retire-c60-after-aef8a-audit.json",
+    "sha256": "3fe9b6b4426c3dc0ae5648e0047dfa575bec33b663550d9e95530c765f00e977",
+    "eligible": true,
+    "verified_archive_build_and_metadata_file_pins": 304,
+    "only_target_was_c60": true,
+    "all_registered_VM_current_saved_disk_and_ancestor_dependencies_checked": true,
+    "audit_performed_VM_mutations": false
+  },
+  "actual_retirement": {
+    "reviewed_executed_helper_sha256": "af6a1ecbcd42acf0e3fe83eead432b4acfcda621b434a9ff70698b49978f4687",
+    "receipt": ".lab/development/retired-c60-after-aef8a-20261104.json",
+    "receipt_sha256": "6f0e3b5bee1b2592fb7d76367b01a896698269355c439ddb30cabdbfe493b778",
+    "complete": true,
+    "single_action_removed_only_c60": true,
+    "action_UTC": "2026-11-04T13:31:39.4859958Z",
+    "native_HyperV_checkpoint_API_used": true,
+    "manual_AVHDX_deletion": false,
+    "force_used": false,
+    "raw_journal_replay_authorized": false,
+    "before_and_after_state": "Off, zero assigned RAM, actual parent8a",
+    "before_checkpoint_nodes": 14,
+    "after_checkpoint_nodes": 13
+  },
+  "fresh_independent_postcheck": {
+    "path": ".lab/development/retired-c60-after-aef8a-verified.json",
+    "sha256": "bb92fdf7b7b0597023c07994cf54c7e5e72851f68c39b52a67d544addb243350",
+    "UTC": "2026-11-04T13:32:40.4469626Z",
+    "fresh_separate_process_verified": true,
+    "VM_state": "Off",
+    "assigned_RAM_bytes": 0,
+    "actual_parent": "8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f",
+    "c60_absent_and_all_other_13_checkpoint_IDs_retained": true,
+    "this_is_post_retirement_state_before_the_later_public_run": true
+  },
+  "preserved_dependencies": {
+    "mandatory_keep_IDs": [
+      "8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f",
+      "3343f2a4-cf81-4fa9-a504-030425a8011e",
+      "895f472a-4d33-47f2-86ec-bb8ead5f3911",
+      "0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2",
+      "a0a8217f-894f-4311-bbf7-27151da5d216",
+      "f4bf5238-14c0-4b15-bda6-7859abd4d1c9",
+      "4b8dafbf-7500-4c51-ab12-d0a697bf7264",
+      "766c9abc-8582-4de6-b497-8acbc81274da",
+      "fe668886-647a-4928-9c14-9fd9e323aefb",
+      "d8db8fd9-284a-4e78-86b5-85d8a2607663",
+      "001f7611-257f-4c5a-8c5b-560ce8faa68d",
+      "a0627dbd-aa3b-4896-bbeb-495f5e372057",
+      "83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b"
+    ],
+    "B7_and_constructor_exact_sources_builds_and_metadata_archives_retained": true,
+    "c60_operational_raw_journal_payloads_and_private_research_assets_retained": false,
+    "discarded_raw_assets_can_be_reconstructed_from_metadata": false,
+    "future_cases_may_depend_on_discarded_c60_assets": false,
+    "large_format_prototypes_and_frozen_alpha_origins_preserved": true
+  },
+  "subsequent_capacity_admission": {
+    "path": ".lab/development/retired-c60-after-aef8a-capacity.json",
+    "sha256": "09d5ce94761a52f311a2b9544b6bdeb95b40532eb89e6b9ed3213be67349ea58",
+    "actual_all_lab_cache_and_staging_bytes": 304919823512,
+    "host_free_bytes": 101608116224,
+    "unchanged_lab_maximum_bytes": 329374052988,
+    "unchanged_minimum_host_free_bytes": 17179869184,
+    "unchanged_22GiB_next_run_forecast_bytes": 23622320128,
+    "admitted": true,
+    "epoch_reset": false,
+    "exact_storage_reclaimed_inferred_from_mixed_phase_censuses": false
+  },
+  "scope": {
+    "superseded_checkpoint_cleanup_only": true,
+    "additional_VM_or_checkpoint_deletions_authorized_by_this_record": false,
+    "conversion_or_new_interruption_recovery_qualified": false,
+    "later_f2_run_outcome_inferred": false,
+    "current_VM_still_Off_inferred_from_historical_postcheck": false
+  }
+}

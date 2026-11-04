@@ -2,363 +2,128 @@
 
 @C:\Users\mfara\.codex\RTK.md
 
-Work in **D:\code\ntfs2refs**, branch `codex/resource-based-admission`, private
-origin `faratech/ntfs2refs`. The C: environment workspace is stale. Read RTK.
-`CLAUDE.md` points here. The preceding handoff was preserved byte-for-byte in
-[history](docs/history/AGENTS-through-20261104-before-public-thin-44cca72.md).
-Old LIVE labels and retired checkpoint instructions there are historical.
+Work in **D:\code\ntfs2refs**, branch `codex/resource-based-admission`, private origin `faratech/ntfs2refs`.
+The C: workspace is stale; CLAUDE.md points here. Later documentation/harness changes leave product sourceaef1ab3 unchanged.
+The preceding handoff is preserved BYTE-EXACT in [history](docs/history/AGENTS-through-20261104-before-aef-public-AP.md),
+25977B/SHA01090cfc415113324028d1f1e457e7e3323d5c236e47460ad51a8246c1b2fad3. Historical LIVE/keep claims there are superseded below.
 
-## Objective and operative constraints
+## Objective and authority
 
-- Finish efficient in-place NTFS-to-ReFS conversion, resource-bounded preparation,
-  actual public conversion/recovery, useful hardware/NTFS coverage and exact-build
-  release qualification. The finite alpha does NOT complete this broader goal.
-- Conversion/recovery execute inside the machine owning the disk. Hyper-V is lab
-  infrastructure. Preserve the frozen native-shadow alpha; boot remains deferred.
-  Independent-writer research is off the critical path; no GPL engines in product.
-- User directed **no new or existing unit tests** unless explicitly asked.
-  Necessary focused builds/native integration are allowed. Avoid speculative
-  changes or repeating unchanged checks. Minimize reads, actual scratch and RAM.
-- **Never edit, format, reset or clean src/main.rs.** Its approved SHA256 remains
-  c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b.
-- Commit stable exact owned paths and push normally; never force-push or stage
-  everything. Keep .lab, images, journals, binaries, ISOs and secrets out of Git.
-- Root alone owns VM/power/build/Git. Agents can edit assigned files/prepare
-  ignored helpers; they must not execute VM operations without Root assignment.
-- Keep WSL running. No UAC disabling or persistent privilege changes. Import
-  credentials only from `.lab/hyperv/win11/secrets/guest-credential.xml`; never print.
+- Finish efficient in-place NTFS→ReFS, bounded preparation/recovery and useful exact-build hardware/NTFS coverage; broader goal remains incomplete.
+- Conversion/recovery run INSIDE the machine owning the disk. Hyper-V is lab infrastructure. Preserve frozen native-shadow alpha; boot deferred.
+- Independent-writer research is off the critical path; no GPL engines in product. Minimize actual reads/scratch/RAM, avoid speculative near-release changes.
+- User forbids new OR existing unit tests unless explicitly asked. Necessary focused builds/native integration are allowed; do not repeat unchanged checks.
+- NEVER edit/format/reset/clean src/main.rs: SHA256 c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b.
+- Root alone owns VM/power/build/Git. Agents edit only assigned files/prepare ignored helpers; no VM operations without Root assignment.
+- Commit exact stable owned paths and push normally; no force-push or staging everything. Keep .lab/images/journals/binaries/ISOs/secrets out of Git.
+- Keep WSL running. No UAC disabling or persistent privilege changes. Import ONLY .lab/hyperv/win11/secrets/guest-credential.xml; never print credentials.
 
-## Current authoritative state and immediate action
+## CURRENT actual run: do not infer terminal
 
-Current committed/pushed source **aef1ab3b3a6ea08f7093d83cc60462f8b799b79a**
-normalizes the actual capture-index writer before sealing. Its public-only release
-at `.lab/development/release-candidates/capture-index-aef1ab3`
-completed0 in2m30s. Manifest
-f60eca76b95fcb48a0708f44cf256f284d336b0e224a0b8e47a60d40b2dea291;
-public17198080B SHAdaa56b970b944efcc8cdb2987a2307231075961f5afb70c39e34f1add2b3026a.
-Fresh public runfc268ad154474588b5d4cf5226387674 SUCCEEDED: actualPID5372/birth
-1793796637023 exited0/664.2489071s at13:01:41.300UTC.
-Gueststage `C:\ntfs2refs\resource-fixture-fc268ad154474588b5d4cf5226387674`;
-actual engine `C:\ProgramData\ntfs2refs\runs\4a4b3a84a7e9419ba6f1c369dc319916`.
-Native resource-completion/HND passed2558mapbindings,157knownhash streams119009B,
-654extent streams; publicationSHAa8052b7a9f8b5dcc4abe454195871675ac40b6f560a3baea8938a578038455c7.
-Thin retirement completed: exactVD/pool removed, original members9/10 and carrier8
-detached, carrier backing deleted, recovery files retained. Before-retirement
-allocation702545920B is a snapshot, not peak scratch or measured physical reclaim.
-Root freshly observed F:ReFS/disk1onlineRW/eightdisks/boot1793796612940.
-Independent CompareRefs observercc45dd15cd3f4adc8df5a5968dd41d00 passed
-all811XXH3 streams9885801949B/1534baseline objects/1024extra paths and all13actual
-digest terminals in11.2762712s. Closed56files106456B, everyhostcopylength/SHA:
-manifestfe6ad97a1b432f6700e76fd5a331b1b76f9ceabe978424e3055451419828db0b,
-resultbd2301db5da7d53a325ea71cc9b90dad6cc77d601a6859f6787e3f24f3ddfdd7.
-Public terminal/locator/HND metadata closure passed:15files719910B, every source/
-hostlength/SHA matched; manifestd44e28a5db6836aadfc156da7a0a02853844cfc83f0385205a8c61ecb7ff6c08.
-Actual framedlocator-derived J identity/GUID/183716048B length and exact4KiB
-canonicalN2RSHN01 passed; fullJ was not read/copied. See
-evidence/public-thin-conversion-20261104.json. Normal shutdown/start WITHOUTrestore
-completed; actual newboot1793797766048 returned F:ReFS/disk1onlineRW/eightdisks.
-The exact retired pool/VD/carrier backing remained absent after boot. Postboot
-CompareRefsbb0dc975a9ff416da80626e6aef30aa2 passed all811/9885801949B/1534/1024
-and all13actualdigestterminal0 in10.7539403s. Closed56files106475B, everyhostlen/SHA:
-manifest80410c52487a5be11d054b67ffbba3c0489456981e0b790e33ba76e0a5dccfc2,
-resulte4cd98e67419bc25ccc93733554f815c703a2c29d57f40bd0b38ee99c78f112a.
-Both observer sets are preserved underfc `closed-content-cc45` and `closed-content-bb0d`.
-This qualifies normal reboot persistence for this case, not mutation/crash/physical
-power or new AP/recovery. Root completed orderly shutdown and saved checkpoint
-**8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f**, named
-`ntfs2refs-aef1ab3-thin-converted-coldboot-20261104`, parent3343, created13:14:00UTC.
-A fresh separate process at13:14:38UTC verified **VM Off/RAM0/actualparent8a**.
-Receipt `verified-saved-checkpoint.json` underfc hostroot SHA
-0a98accaf18de682c7f52c2a32493c99d284a487b28ad9c222ff74f6ee98e31c.
-Precheckpoint purecensus317890172705B/free88635187200B admitted the unchanged
-1GiB forecast under329374052988B maximum/17179869184B reserve; remeasure before growth.
-Keep8a: it preserves the completed operationalHND; NEVER replay its old raw journal.
-Next work is NEW exact-build interrupted resume/rollback qualification. Do not
-repeat the unchanged normal conversion/coldboot checks. Root alone owns VM work.
-Normal default remains
-VHDX; no stable/general hardware qualification follows. The exact-patternb0b576a probe
-did not reproduce the earlier guard refusal; its closed results are below.
-The subsequent publicb566 runf9a192c850934463af838a44deb480fe ENDED with actual
-PID5348/birth1793795529382/exit1/613.3199557s at12:42:22.729UTC. Gueststage
-`C:\ntfs2refs\resource-fixture-f9a192c850934463af838a44deb480fe`.
-Its actual engine is `C:\ProgramData\ntfs2refs\runs\096606d02283139f8caf4787a9600641`.
-The error DIRECTLY identifies capture.index: EOF560896B, physical allocation
-655360B, grant maximum560896B, reserved slack65535B. The reported allocation
-exceeded the admitted bound626431B; automatic preparation cancellation restored
-NTFS before publication. This identifies f9's failing artifact, unlike the earlier
-unattributed8be error or non-reproducing probes. No full conversion/cleanup pass
-is claimed. Root archive session70577 completed0:4198files215106439B, every host
-ZIP entry length/SHA checked. F9hostroot contains `closed-evidence.zip` SHA
-6ee0a24070af57fbaa9e9f10333110a94e0a0e91685df02e9054c1794e2079db,
-manifestSHA3cf1ed6a003bbf90c31a91fe21bc8bb97a22c41c46cd7fe3f62d115d0edb1cdf.
-See evidence/public-thin-capture-index-allocation-refusal-20261104.json.
-Root separately observed F:NTFS64KiB, disk1online/read-write and all tasks idle.
-After archive closure Root orderly shut down and restored3343 ONCE; a fresh
-separate process verifiedOff/RAM0 before the new fc dispatch. The unchanged22GiB
-launcher admitted and started that now-completed run. That pre-dispatch Off
-observation is historical; the current fresh Off/8a observation is recorded above.
-SDK graph retirement/getters/discovery, typed CLI staging wrapper, hidden forced
-thin mode, remaining-provider-growth reservation, and geometry diagnostics compile.
-The historical public check passed13.91s; no units ran. The aef normal thin
-conversion/graph-cleanup/content/normal-coldboot case succeeded as scoped above;
-new recovery remains pending. Normal default stays VHDX. Default VHDX location/retirement
-JSON is unchanged. V4 replay remains source/J/envelope/maps self-contained.
+**CURRENT LIVEv3 run8bd89251641f45af8fbc3a836cc4bc18**, actualnative5564/birth1793801190897,
+boot1793801147365, started14:06:30UTC. Watcher ARMED; Root host controller execsession96325 is ACTIVE waiting for a qualified Apply window.
+Root alone may monitor/control this session; at most ONE TurnOff. DO NOT power/restore/start a second controller or infer cut/AP/terminal/recovery success.
+VM at Root's last observation: Running/parent3343/fourGiB; saved8a remains protected. Root will provide actual outcomes.
+Gueststage `C:\ntfs2refs\resource-fixture-8bd89251641f45af8fbc3a836cc4bc18`; do not guess engine/run routes.
+Only harness code changed: C#v3 fixes STORAGE_PROPERTY_QUERY input8→12 bytes to match existing Rust ABI. Product/Rust remains exactaef; no unit tests.
+SourceCSef1e058ba84f411ee0f1f8fdc571ec831ab03f464a1e1c25a5506a6d72a2eba9; producerd1d445f9a1f934ac751ea3f8a08e6493439e2ba8c24919d6776dfed48b86054d;
+controllerd7c61e67720256881fe3573d71553d90d36a4c6e6e1ce782af078baa6ac8c0b6; recoverycc21bec916713b18e7e571eeb5ce5525c1a9a23424d9b0e2e8daa81c9b2c2f08.
+The v3 read-only compile/Open/Dispose preflight passed on NTFS attrs0/exact OLD primary/nonzero OLD4096, without Begin/native launch/source writes.
+Record `.lab/development/watcher-v3-native-initialization-20261104.json` SHAba45276c19f5c7677b4e6cc3897d3e3e12df238ad7d98799ca8f9a90fa57d1f9.
+Earlier f2e4b6fbf3864ef2a5ecbc567a62aa2d ended0/697.3724618s at13:47:45.857UTC; no interruption because XML reference compilation failed before watch start.
+Engine85dfda6e6e50ef4cead28faaa80a1187;24files804151B closuremanifestb42accc97c3fe2375df56f2cac60c657c8b60f49c10bc027c21bd9ab443aa6dc.
+Its duplicate HND branch was orderly shut down/discarded via3343 restore after closure; saved8a kept. No independent content repeat was needed.
+Then b9fe49379c07471488c187d9fc57da7e refused Watch.Open query0x2d1400 BEFORE native start: required guard worked, no new native process or cut.
+11files57242B closuremanifest46c281b24c3ec4be0e1dcd35164b66368f199ae1e7eae7661a88659847220da3. Failures remain preserved; never call them AP qualification.
+See evidence/public-thin-watch-initialization-20261104.json. NEW exact-build interrupted resume/rollback remains unqualified until actual evidence.
+Normal conversion/cleanup/coldboot is already proved below; do not intentionally repeat unchanged checks. Never infer actual terminal from timeout/task state.
 
-Root release75476 actually completed0/2m20s. Build source44cca72, output
-`.lab/development/release-candidates/public-thin-44cca72`, public17189888B SHA
-6bbe8f94638086d24c7e8900c7579f24f86caeeca84b22a99cbdda46b722a380,
-manifest6251f7c7216df7117c47470fa8b281e902cf7541613dffaf1805c055954e4762.
+Product source **aef1ab3b3a6ea08f7093d83cc60462f8b799b79a** normalizes the identified capture-index writer before sealing; original slack guards remain.
+Release `.lab/development/release-candidates/capture-index-aef1ab3` completed0/2m30s; public17198080B,
+SHAdaa56b970b944efcc8cdb2987a2307231075961f5afb70c39e34f1add2b3026a; manifestf60eca76b95fcb48a0708f44cf256f284d336b0e224a0b8e47a60d40b2dea291.
+Public argv: `--drive F --partition 2 --minimize-scratch --experimental-thin-shadow --experimental-thin-backing-bytes 11811160064`.
+Normal default stays VHDX; opt-in thin behavior is not a stable/general release. VHDX location/retirement JSON remains unchanged.
+Fixture request .lab/development/fixture-diagnostic-request-3343.json SHA27f96da22c6a67ba164ecf25cf828328c1b4741b2c5e5516b9d164767a52476d.
 
-**PUBLIC THIN RUN8be515c3788d416b94d4991efddd5141 FAILED SAFELY BEFORE PUBLICATION.**
-ActualPID5404/birth1793791444645 exited1/732.9981954s at11:36:17.748UTC;
-process absent. Error `artifact physical allocation exceeds reserved slack`.
-The preparation cancellation restored sourceNTFS automatically; source1 is now
-online/read-write and F: returned. No J/publication/HND/cleanup was reached.
-At failed-run closure VM was Running/4GiB/parent3343/boot1793791414487;
-the archived active branch was subsequently discarded as recorded below.
-Do not retry this old run.
-Gueststage `C:\ntfs2refs\resource-fixture-8be515c3788d416b94d4991efddd5141`;
-host `.lab/hyperv/streaming-v2-20261027/resource-fixture-8be515c3788d416b94d4991efddd5141`.
-Actual argv is the seven-option thin qualification command described below.
-SYSTEMworker e156ad5af5e0dd16e1ec656cdd892c405f69934ed312d5a910f597c1e0fa8af4,
-configce08af4e637a253d6c5038c01cf7bdbab7465e40d66b58f605fdb756748d4450.
-Launcher12723 completed0; native exit is1, not conversion completion.
-Root closed19metadatafiles865455B; manifest
-390b5aa659079e7d683250a6e09e97087be89ad0b1f5fafc26e9e6d319e9401b at
-`closed-public-terminal`. IndependentNTFS observer9646d5eb347045ee894ed4803c3e7903
-reported success: worker4752/birth1793792565158/SYSTEM, all811XXH3 streams9885801949B,
-1534baseline objects/1024extra directories,13batches10.772807s. All13actual owned
-terminals and the57-file archive are complete. All1024UTF16 paths and the full
-paths structure matched frozen8f14; exact closure pins are below. This was
-CaptureNtfs, not ReFS verification.
-Its stage `C:\ntfs2refs\resource-recovery-observe-9646d5eb347045ee894ed4803c3e7903`.
+## Completed proof to preserve
 
-Allocation fix is committed/pushed **b5663b87d6bd124d2c235a2684a2c60a166c6f21**.
-Focused check passed22.03s; no units. Release86723 actually completed0/2m43s, output
-`.lab/development/release-candidates/allocation-normalized-b5663b8`, selected
-`ntfs2refs` and `lab-artifact-allocation`. Buildmanifest
-a46365c34bcb3c385296ccdbdf25300a095eeee431347da568611120e5794b04.
-Public SHAa26e29dd40aab859c41230a4007c291afba6b0ac85ba6ecd88580327bae708b4;
-probeSHA21f12319fd220da7a7001c27090113f335191fdacd14fa993cd57a4d7fe88b2b.
-The fix touches file_storage.rs, artifact_arena.rs, paged_capture.rs and a small
-native artifact-growth probe (no units). Literal finalization used a duplicate
-of the same FILE_OBJECT before sealing; this alone does not identify the artifact
-that failed8be. ALL observed files were within slack after process exit.
-The b566 change normalizes allocation at exact held-writer EOF before readonly duplication;
-preserve EOF/FileID/content/full hash and the original unchanged slack check.
-Do not merely increase slack. This does NOT prove a hard transient NTFS quota.
-The original b566 probe writes two fresh100MiB+4KiB ordinary files in separate512MiB
-arenas and requires baseline actual guard refusal, then normalization and SAME original
-slack/hash/arena sealing while retaining the file object. CLI `--directory <fresh>
---acknowledge-new-disposable-staging`. Both focused probes are now closed without
-deterministic baseline reproduction. Root selected a FRESH publicb566 run with
-actual failing-artifact context rather than more speculative patches/probes.
-Never reuse the failed8be artifacts as fresh conversion authority.
-Focusednativeprobe **b969ca56204f4c129090a4499a1d6a70** DID run once:
-actual5988/birth1793793655718/exit1/6.0920276s at12:01:01.822UTC. Stage
-`C:\ntfs2refs\artifact-allocation-stage-b969ca56204f4c129090a4499a1d6a70`, output
-`C:\ntfs2refs\artifact-allocation-b969ca56204f4c129090a4499a1d6a70`, host
-`.lab/development/artifact-allocation-b969ca56204f4c129090a4499a1d6a70`.
-**Baseline did NOT reproduce original guard** (arena_error=null); do not call
-this overall pass. Normalized case DID trim104923136B allocation to104861696B EOF,
-sameFileID/fullhash/originalarena+groupsealed. Mechanism evidence only, not proof
-of original failing artifact. Original8be literalEOF86695936B and route/index
-finalization patterns differ; original error had no path. The exact-pattern
-follow-up below also did not reproduce it. Do not raise slack, relax the baseline
-criterion, or treat either probe as proof of the original failing artifact.
-Both probe file objects closed at actual exit, artifacts retained. SourceF remains
-restoredNTFS; no corrected full conversion. Root owns builds/VM/Git.
+- Exactaef runfc268ad154474588b5d4cf5226387674, actual5372/birth1793796637023/exit0/664.2489071s at13:01:41.300UTC.
+  Native HND/finalization2558bindings/157known119009B/654extent streams, label/mount restoration passed. Journal183716048B/locator kept;
+  actual framed locator/FileID/GUID/length/exact4KiBN2RSHN01 verified without fullJ reading. OwnVD/pool removed, members9/10/carrier8 detached,
+  carrier file deleted;702545920B allocation was a snapshot, NOT peak or physical reclaim. Both independent observers matched811XXH3 streams,
+  9885801949B/1534baseline objects/1024extra paths/all13actualdigestterminals before AND after normal shutdown/start WITHOUTrestore.
+  Evidence: evidence/public-thin-conversion-20261104.json; all127archived source/host metadata lengths/SHA verified.
+- Completed operational HND checkpoint **8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f**, parent3343, was freshly verifiedOff/RAM0 before later restores.
+  Keep8a. NEVER replay its old raw journal. Current VM is the running f2 attempt, not that historical Off state.
+- Frozen814 source814f380aa38be4d94e2a71ad221c779e5ab4dc7b/publicSHA0f5be1c72b05ff030aad85b21be2c37f32ecccbf214af1ee4d6f7afd4807fafb.
+  Public-only ZIP .lab/packages/frozen-814-public-f969ce0e6ea94179bda483015c41982a/ntfs2refs-814-public-experimental.zip
+  SHA129a037136a1c68ac89418c7fdcdfecc8b7d269cc4fb5d89026efeb57e7c4a82; all11entries checked. See docs/frozen-resource-alpha-20261104.md.
+  Its finite normal/mutation/coldboot/first-flushed-write/resume/rollback/early-cancel/refusal/HND proofs belong ONLY to that exact build.
+- 8be refused before publication, auto-restored NTFS; independent811/1534/1024 plus all1024UTF16 paths were verified. F9 directly identified
+  capture.index EOF560896/allocation655360/grant560896/slack65535, before-pub NTFS restoration. Earlier exact probes did NOT reproduce;
+  do not call them passing reproductions or retroactively prove8be's original path. All failed engines/proofs are archived; never retry old runs.
 
-Root closed the successful NTFS observer into57files250809B, every source/host
-length/SHA and13actual owned digest terminals checked; manifest
-e4450691e296efb7692ac7bd367cd942b4a47b26a1d3fd00c4e1fd251064a280,
-result45bcbf4a7b306c749f05326cc1477dd5ce337213dceaf1673dab09fc6c42c56c.
-All1024fresh UTF16 paths and full paths structure matched frozen8f14 namespace.
-Archive `closed-independent-ntfs` under8be hostroot. At observer closure all N2R
-jobs were terminal and sourceF was restoredNTFS; original NTFS prealignment moves
-remained legitimate. This is logical preservation, not bit-identical physical layout.
+## Recovery and preservation contracts
 
-LATEST EXACT-PATTERN RESULT:8be capture.index EOF564576 equals128-byte header
-+7054*80-byte rows+128-byte footer exactly. The footer follows initial literal
-sealing; it suggested an index investigation but did not identify the failure.
-Nativeb0b576a probe9f6f3c888f85406aafd06fbde4c6f567 actual3604/birth1793795117389
-exited1/7.4564207s at12:25:24.858UTC: NO baseline reproduction. LiteralEOF86695936
-had86704128B allocation; indexEOF564576 had589824B. Both unmodified original seals
-passed. Normalized literal/index seals and unnormalized production-route seals
-also passed. Route content/lengths were not identical to the original run.
-Do not call the overall probe a pass or infer an index/literal cause from it.
-No index production patch followed that probe alone. The later f9 actual error
-above supplies the direct capture-index evidence. Original allocation/slack
-guards remain unchanged; aef normalizes this identified writer rather than raising slack.
-Root archived4199files216627913B from the failed engine (excluding thin-provider
-graph), both probe stages/results and original artifacts. Every host ZIP entry
-length/SHA was independently checked. Archive
-`.lab/development/exact-allocation-9f6f3c888f85406aafd06fbde4c6f567/closed-evidence.zip`
-SHAe2163a0630c949eac2f89f64eda15a30c6c8f511522a3958d0aa982b6eecb9b0,
-manifestSHA1a53a45698840da00082abcd9dd3daf47f7e2ecaec346c750f0462243ccd63a3.
-Exact-probe buildmanifest1f64dad9e73e6c9912c1524052f20fef22045ded2e941ceb2724428bd232b744.
-See evidence/exact-capture-allocation-probe-20261104.json. Preserve b969's earlier
-non-reproduction. The earlier closed failed engine has no journal-layout.index;
-its index attribution remained a hypothesis. The later publicb566 run above
-reported the actual capture.index allocation failure. No corrected full
-conversion is yet qualified; do not transfer8be's independent content proof to f9.
-After archive closure Root orderly shut down and restored3343 ONCE; a fresh
-separate process verifiedOff/RAM0 before the new dispatch. Discarding the archived
-disposable active branch reclaimed about10GB. Frozen origins and saved4b8 remain.
-Complete census305248164376B/free101261185024B admitted the unchanged22GiB forecast
-23622320128B under329374052988B. No epoch/cap/runtime-limit change. New no-restore
-launcherSHAea5702c3c91496cc964a01a0e25add42fb82543a99a880cfe313ce088199708c.
-Root owns the fresh dispatch/run identity and all VM/Git actions; no pass inferred.
+- Fresh writes need the original live opaque source certificate and actual source/target/J/arena owners. JSON, paths, saved flags/bundles are routes, NOT authority.
+- Revalidate actual device/file identities, journal/index/ticket/lifecycle and recovery files. V4 source/J/envelope/maps recovery must NOT require thin-pool reattachment.
+- Preserve full phase snapshots and native metadata/allocation/namespace/ACL/retrieval checks, complete opening/closing boundaries and final allocation checks.
+- Keep durable intent/write/flush/readback, persistent exclusion and handoff. No manufactured witnesses, identity changes, sharing bypass, forced unknown/mixed bytes.
+- HND/ABT PERMANENTLY close old raw replay. Operational ReFS must never be compared/replayed against stale pre-handoff images; use terminal reconciliation.
+- A process lock alone does not survive death; partial raw states must stay excluded until authenticated resume/rollback. Do not fake old diagnostic exit/signal receipts.
+- Public watch failure/lateHND/terminal must stop ONLY the watch, letting conversion finish. An observed write is not a flush/readback proof.
+- Thin teardown is explicit ONLY after live V4 success: own frozen VD→own pool→original members→carrier→same-file backing deletion.
+  Default Drop/errors/partial cleanup preserve remaining assets. Never delete source/J/recovery/evidence, reconstruct owners from JSON, or accept existing storage as carrier.
+- Approved defaults: extent-based fast verification and destination bitmap windows. Retained bytes use exact metadata/physical mapping; moved/rewritten bytes hash during I/O.
+  Full-content option remains; missing hashes stay absent. Logical stream hashes are XXH3-128; metadata/J/artifact/tail pins are SHA256.
+  Required zero writes remain (blanket reserved-zero skipping disproved). Incremental retrieval and independent writer remain deferred.
 
-Before that run VM2401593c-4b30-472e-9b6d-c9534cbaa599 was saved
-**Off/RAM0/parent4b8dafbf-7500-4c51-ab12-d0a697bf7264**, freshly verified.
-This completed prototype checkpoint remains saved with parent3343 and
-preserves72TiB success, both earlier failures and1PB strict geometry refusal.
-Receipt `.lab/development/saved-large-format-prototypes-20261104.json` SHA
-06f668fe8855cf7220d65b6677005c9baaa10cdd02bba7b62c9a3898810f5e4e.
-All prototype jobs were terminal before that normal shutdown. Current state is
-the separately verified savedOff/8a above; this older4b8 observation is historical.
+## Remaining profile limits
 
-The executed launcher was
-`.lab/development/launch-public-thin-measured22-k.ps1` SHA
-600f0e8926d2bf74fd3b7c4391daa3a48a9fbcf53e938603c3998c7aa8ae66c3.
-It is the prior reviewed public launcher with only a22GiB forecast and actual argv
-`--drive F --partition 2 --minimize-scratch --experimental-thin-shadow
---experimental-thin-backing-bytes 11811160064` (11GiB provider ceiling).
-It restores3343 once, starts once and dispatches one SYSTEM-owned public process.
-This is the original independently populated52GiB/9.9GB source, no source fixture
-prearrangement. Pinned request `.lab/development/fixture-diagnostic-request-3343.json`
-SHA27f96da22c6a67ba164ecf25cf828328c1b4741b2c5e5516b9d164767a52476d.
-Do not touch source until live native admission succeeds. Inspect actual process
-PID/birth/terminal; never infer success from a task state or observation timeout.
+- Shared running-Windows-disk data partitions remain unsupported;766 experiment's physical WriteFile failed21 despite tested isolation. Reader ≠ writer authority.
+  Do not recreate its C-shrink/T fixture blindly. Source2MiB gate exists but conversion is unqualified;4Kn/1024-byte MFT/4096-byte index limits stay explicit.
+  Refuse unknown NTFS semantics. Boot/system conversion remains deferred; do not transfer old qualification across source/binary changes.
+- Private72TiB ReFS3.14/4K/DevDrive format+64KiB file probe passed; it was not a conversion or high-offset proof. Raw1PB construction passed separately.
+  1PB Windows format completed, but strict SDK geometry refused: P1000000000000000/F999999986991104; tail13008896B UNKNOWN, not free/omittable.
+  Observed64MiB flooring is not universal. Thread F through bitmap/placement/capture/retention and relocate out-of-F source runs before nonzero-tail support.
+- Bound carrier is owned NTFS, nested memberVHDX<=64TiB each, explicit thin overcommit. Nominal pool allocation/footprint is NOT host usage or equivalent physical capacity.
+  Count carrier plus external metadata ONCE, not nested members twice. Sampled allocation/free/RAM is not peak, hard quota or reservation. Preserve strict format gates.
+- New aef AP/recovery, mutation, copied-payload interruption, actual ENOSPC/write-flush errors, physical power and broader geometry/hardware remain unqualified.
+  See docs/private-thin-pool-addressability.md and per-case evidence; no broad-completion/stable-release claim.
 
-Forecast basis: prior same-fixture conversion+reboot charged11153050031B.
-Replace775946240B observed shadow allocation with full11811160064B provider budget:
-22188263855B.22GiB=23622320128B leaves1434056273B forecast headroom. This is
-not a hard quota. Carrier/host/nominal pool reserves remain enforced; no cap reset.
+## Fixed capacity and cleanup
 
-## Frozen and verified conversion evidence
+Original epoch: initial lab279374052988B/initial host free66133905408B; max329374052988B/minimum host free17179869184B/additional50000000000B.
+Never reset baselines/raise caps/lower forecasts merely to fit. Charge ALL .lab plus target/shared-experiments and shared-experiments-staging; remeasure before growth.
+Latest post-c60 purecensus304919823512B/free101608116224B admitted unchanged22GiB23622320128B forecast; it is historical, not future admission.
+22GiB forecast replaces observed775946240B staging in prior11153050031B conversion+reboot with full11811160064B provider budget; no hard-quota claim.
+Known census exceptions are ONLY four recognized allocation-test aliases,65536B each; never follow unknown reparse routes.
+User authorized obsolete-checkpoint cleanup, via Hyper-V APIs ONLY. No manual AVHDX deletion/force; freshly audit ALL registered VM/current/saved/ancestor dependencies and archives.
+Onlyc60b51c2-9e2a-4d57-8cc7-8a034d1802b8 was retired after304pinned metadata/build/archive checks. Its rawJ/private assets are gone; B7/constructor proofs remain.
+Audit3fe9b6b4426c3dc0ae5648e0047dfa575bec33b663550d9e95530c765f00e977; receipt6f0e3b5bee1b2592fb7d76367b01a896698269355c439ddb30cabdbfe493b778.
+Fresh post-retirement process confirmedOff8a/RAM0/13nodes/c60absent/otherIDs retained, BEFORE the current3343 restore/start.
+See evidence/superseded-c60-checkpoint-retirement-20261104.json. Do not restore/recreate c60 or depend on its discarded raw assets.
+Earlier retired a2259702/a51/b1de/7d81/fcfb/a724/ee42 also must not be restored. Historical proofs do not recreate their guest images.
+Previously automatic-review-rejected research-image, .lab/ntfs2btrfs-source-audit and THREE development Cargo-cache deletions MUST NOT be retried by another method/shell.
 
-Frozen alpha source814f380aa38be4d94e2a71ad221c779e5ab4dc7b, public SHA
-0f5be1c72b05ff030aad85b21be2c37f32ecccbf214af1ee4d6f7afd4807fafb.
-Public-only local ZIP:
-`D:\code\ntfs2refs\.lab\packages\frozen-814-public-f969ce0e6ea94179bda483015c41982a\ntfs2refs-814-public-experimental.zip`
-SHA129a037136a1c68ac89418c7fdcdfecc8b7d269cc4fb5d89026efeb57e7c4a82.
-All11entries independently checked. Finite normal/mutation/coldboot/interrupted
-first-flushed-write/resume/rollback/early-cancel/refusal/HND cases passed on that
-EXACT source/binary only. See docs/frozen-resource-alpha-20261104.md and its
-package/qualification evidence. No stable release or general hardware claim.
+## Protected snapshot graph and VM
 
-Latest qualified public VHDX candidate b7d97fb ran778e45f2bc4b4291b9d3cb4c9cfebc05,
-actual5348/birth1793779061600/exit0/753.764701s. HND/native finalization and automatic
-same-file shadow detach/delete passed; J/locator remained with exact HND marker.
-All811XXH3 streams9885801949B/1534baseline objects/1024extra directories matched
-before AND after normal restart without restore. Saved completed HND is
-c60b51c2-9e2a-4d57-8cc7-8a034d1802b8. NEVER replay its old raw journal.
-See evidence/public-owned-shadow-retirement-20261104.json. New thin, mutation,
-AP recovery, physical-power and arbitrary geometry qualification are not inherited.
+Keep these13IDs and their dependencies; guardedf4 is NEVER remove/force. Root alone chooses any future audited retirement:
+- 8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f (completed aef HND),3343f2a4-cf81-4fa9-a504-030425a8011e (prepared NTFS).
+- 895f472a-4d33-47f2-86ec-bb8ead5f3911,0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2,a0a8217f-894f-4311-bbf7-27151da5d216 (frozen814).
+- f4bf5238-14c0-4b15-bda6-7859abd4d1c9 (guarded),4b8dafbf-7500-4c51-ab12-d0a697bf7264 (large-format prototypes).
+- 766c9abc-8582-4de6-b497-8acbc81274da,fe668886-647a-4928-9c14-9fd9e323aefb (closed partition experiment/parent).
+- d8db8fd9-284a-4e78-86b5-85d8a2607663,001f7611-257f-4c5a-8c5b-560ce8faa68d,a0627dbd-aa3b-4896-bbeb-495f5e372057,83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b (ancestors).
+VM2401593c-4b30-472e-9b6d-c9534cbaa599/ntfs2refs-streaming-v2-20261027: fixed4GiB/4CPU/noNIC. Fresh separate process after checkpoint/restore;
+stale Hyper-V objects never justify repeating success. Actual PID/birth/owned terminal determines completion, not timeout/task state.
 
-CEC/a225 optimizations and independent native/source-free bitmap audit remain
-archived in their evidence files. Metadata feature-index optimization614341b
-skips absent EA/reparse reloads in authenticated immutable input using same-sized
-prepaid index flags. All initial/native/final/retrieval checks remain. Compilation
-passed; native speed/conversion improvement is NOT measured or qualified yet.
+## Build discipline
 
-## Large-storage prototypes and limitations
-
-- Native raw1PB constructor9606f22 passed. A later bounded72TiB formatter614341b
-  passed actual1728/birth1793787801943/exit0/29.3395837s on boot1793784849960.
-  New ReFS3.14/4KiB/DevDrive native15, volume65e52231-b1f7-41c6-9c49-1532db781de7,
-  partition79164837199872B. Flushed64KiB ordinary file/readback/EOF/FileID/XXH3
-  passed. This is formatting/file I/O, NOT a conversion or high-offset proof.
-- The bounded NTFS carrier has virtual max12717129728B inside12GiB admission.
-  Nested large nominal VHDX members stay inside it. Host accounting counts carrier
-  backing plus outer metadata ONCE, not nested members again. Native pool allocated/
-  footprint values are NOMINAL address space, not actual host backing or data
-  capacity.72TiB carrier sample580MiB before probe and612MiB after probe; neither
-  is peak. Actual FileID/volumeSN/bounds were independently checked at closure.
- 33files170168B manifest87a37bf48210b092d4f1d6555e08c1bf5edb47263f11f3c76d5b24aca7e32956.
-- v2 overcommit uses2nominal members<=64TiB each, larger logical Thin VD requests
-  remain subject to native capability and actual carrier/host/pool resource gates.
-  Fixed old create_new stays separate. Source must never be supplied as a carrier.
-- Native1PB case273b0f0f43f7476d9dd8bbce25264a2f (9e491d1) actual2724/birth
- 1793788961608/exit1/370.2866981s: Windows format returned0 and created ReFS3.14/4K,
-  but strict SDK full-partition profile refused before issuing formatted owner.
-  GPT P=1000000000000000B, native FS F=999999986991104B; tail13008896B is UNKNOWN,
-  not free. Observed64MiB rounding is not a universal contract. No file probe or
-  conversion/recovery qualification.31files90881B closure manifest
- 03921b758ed2933df9fa6f79e55b388b323ac79dfb65417c3b2a689fe1777e64.
-  Native carrier sample6144655360B; nominal pool allocation~5.2TB is not host usage.
-- Strict format acceptance stays unchanged. New refs_extent diagnostic runs only
-  on rejection and compares held route/FSCTL/VBR, records P/F/tail, gives explicit
-  refusal. Bitmap/placement/capture/retention must separately thread F and relocate
-  source runs outside F before ANY nonzero-tail conversion can be supported.
-- First72TiB trial37faa failed Windows status112 with tiny nominal5GiB members;
-  subsequent03a6 carrier NTFS succeeded but DOS canonicalization failed3 on its
-  unmapped GUID directory. Both failures and assets remain in4b8; never retry them.
-  GUID-only private sampler fixed this; generic ordinary-root validation unchanged.
-- Self-contained V4 AP/HND replay MUST NOT acquire a pool reattachment prerequisite.
-  Thin cleanup is explicit only after live V4 success: frozen own VD→own pool→
-  original members→carrier, then exact same-file carrier deletion. Default Drop,
-  errors and partial cleanup preserve remaining assets. No source/J/evidence deletion.
-
-See evidence/private-thin-native-format-20261104.json,
-evidence/private-thin-petabyte-profile-refusal-20261104.json and
- docs/private-thin-pool-addressability.md for exact profile/metadata pins.
-
-## Remaining hardware and safety contracts
-
-Data partitions sharing Windows' disk remain unsupported. Existing766c9abc-
-8582-4de6-b497-8acbc81274da branch contains the C shrink/T creation; do not recreate
-blindly. Physical WriteFile under tested lock/offline protocol failed21. No writer
-permission follows from the read-only partition reader. Source2MiB cluster gate
-exists but native conversion remains unqualified;4Kn/source1024-byte MFT/4096-byte
-index profile limits remain explicit. Unknown NTFS semantics must be refused.
-
-Preserve full phase snapshots, native metadata/allocation/namespace/ACL/retrieval,
-full opening/closing checks, durable intent/write/flush/readback, persistent
-exclusion and HND. Location JSON and observations never grant source/write/replay
-permission. Do not manufacture witnesses, bypass sharing errors, change device
-identity or force unknown/mixed bytes. HND/ABT close old raw replay permanently.
-Operational ReFS must never be compared/replayed against stale pre-handoff images.
-
-Extent fast verification and destination bitmap windows were explicitly approved.
-Retained payload uses exact metadata/physical mapping; moved/rewritten bytes are
-checksummed during I/O. Full-content option remains. Logical stream hashes use
-XXH3-128 despite old names; metadata/journal/artifact/tail pins useSHA256. Missing
-hashes stay missing. Required zero writes remain; blanket reserved-zero skipping
-was disproved. Incremental retrieval and independent writer remain deferred.
-
-## Capacity, snapshots, builds
-
-Original epoch: initial279374052988B, max329374052988B, minimum host free17179869184B,
-additional50000000000B. Never reset/raise/lower forecasts merely to fit. Charge ALL
-.lab plus target/shared-experiments and shared-experiments-staging. Census before
-prototype checkpoint304919822517B/free101592760320B is historical; remeasure.
-Pure packager AST-extracted census supports exactly four known allocation-test
-aliases at65536B each; never follow unknown reparse routes.
-
-Keep required origins/ancestors:3343 preparedNTFS, frozen814895f472a/0cf3dd7d/
-a0a8217f, guardedf4bf5238 (NEVER remove/force), convertedc60 and newest thin-HND8a5b96ff,
-prototypes4b8,
-partition766c9abc+fe668 parent and original ancestors. a2259702, oldera51/b1de/
-7d81/fcfb and supersededa724/ee42 were retired after archive checks; never restore.
-Latest2-node retirement audited318pins; receipt76b12c97b434f066aedaacc2950843b395efcabb439a12391ef63c504d28ab65.
-Use Hyper-V APIs only, no manual AVHDX deletion. Freshly verify actual inactive
-chain/dependencies/archive before removing more. Previously automatic-review-
-rejected research-image, .lab/ntfs2btrfs-source-audit and three development
-Cargo-cache deletions must NOT be retried by another shell/method.
-
-VM2401593c-4b30-472e-9b6d-c9534cbaa599 fixed4GiB/4CPU/noNIC. After checkpoint/
-restore, verify state/parent through a fresh separate process; stale objects are
-never permission to repeat a successful operation. Timeout is not terminal.
-
-Use Rust1.98.1/pinned MSVC, TEMP/TMP D:\code\ntfs2refs\target\tmp, four jobs.
-Reuse ONE target D:\code\ntfs2refs\target\shared-experiments and exclusive sibling
-shared-experiments.build.lock plus shared source staging. Build exact committed
-archive through lab/Build-ReleaseCandidate.ps1, offline/locked, shared switches,
-ExpectedSharedSourceHelperSha256842c5e7f7e65a1df72e6276af505e47f85f79b649429fe1eeac0833d1b534992.
-Record reuse, never claim clean/reproducible build or native qualification from
-compilation. Process-local direct rustc config can avoid incompatible sccache;
-no global settings. Rustfmt owned files only with edition2024/skip_children=true;
-never workspace-format or touch main. Documentation needs no rebuild/unit tests.
+Rust1.98.1/pinned MSVC; TEMP/TMP D:\code\ntfs2refs\target\tmp; preserve four-job default. Never modify old frozen targets.
+Reuse ONE D:\code\ntfs2refs\target\shared-experiments plus exclusive sibling shared-experiments.build.lock and shared source staging.
+Use lab/Build-ReleaseCandidate.ps1 with exact committed source/pinned tool/config/archive inputs, fresh output, offline/locked release,
+-UseSharedExperimentalTarget -UseSharedExperimentalSource and -ExpectedSharedSourceHelperSha256
+842c5e7f7e65a1df72e6276af505e47f85f79b649429fe1eeac0833d1b534992. Default isolated builds remain separate.
+Record cache reuse; never infer clean/reproducible build or native qualification from compilation. Process-local wrapper/config clearing may avoid incompatible sccache;
+no host-wide settings changes. Rustfmt ONLY owned files with --edition 2024 --config skip_children=true, never workspace-format/main.
+Documentation-only work needs no rebuild/unit tests. Read exact experiment evidence/history for older pins, not stale operational instructions.

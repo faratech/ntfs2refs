@@ -290,6 +290,14 @@ Runner parameters: `--request <JSON> --request-sha256 <exact> --output <fresh> -
 It must run INSIDE guest and actual native source/admission/certificate controls all writes. No fixture count/geometry whitelist grants authority.
 All currently pending code drafts have been applied; frozen_candidate_cases and lowspace have no canonical edits assigned.
 
+BUILD CLOSED: exactc495365 `lab-partition-alpha.exe`8378880B/SHA8557aab0872e63a070826e51e1c3c0347074b96c64862efdc18247acc73f5955,
+manifest3ae771f01aa46438ac2f3eb9c2b9ff291e74225d1ffb0a5cb2d3844baf225a2b, tree674b4e6c1dc67308097df367f48686adf6a23996.
+SourceZIP2027983B/SHA1d72ad78b9055823872ed1f9b2cdbbff07eb64e98e941f4219119bbe9470b726; all413 held source files verified before/after,
+no working-tree inputs/no units/native. Host session8897 is TERMINAL0, Cargo2m30s, one shared target/staging, own packages rebuilt/dependencies kept.
+`evidence/partition-alpha-c495365-exact-build-20261104.json` is the small checked receipt; no native qualification inherited.
+Next: operator preparing actual normal-source conversion helper with literal pins, Off07ca/all17/fresh6GiB forecast; converter GO still pending Root review.
+Focused review found no additional inevitable blocker after90083 and bounded-publication fixes; actual VDS/remount behavior still requires the native run.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

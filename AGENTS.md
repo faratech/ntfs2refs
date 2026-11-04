@@ -149,11 +149,32 @@ ConfiguredCrashControl/LiveKernelReports collector refusesunknownroutes/settings
 dumpfve.sys isalegitimatenonemptyconfiguration; explicitbuilt-infilterpolicy remainsCOMPATIBILITYBLOCKER, notuniversalunsupportedclaim.
 Thecollector'sruntime_loaded_dump_locations_verified remainsFALSE; no issuer/certificatecanbesynthesizedfromJSONorobservations.
 
-NEXT upperSourceContext slice is being written asCOPIEDPATCH `.lab/development/partition-source-scope-draft` byfrozen_candidate_cases:
-explicitDedicated(default)/Partition owner+stabletoken, boundedunadmittedNTFSraw/source lanes, SDKtarget-onlylifecycleinterfaces.
-CurrentdraftmustnotbeappliedbeforeRootreview/build. No fakeGeneralDiskState/GeneralFreezeObservation orbooleanadmission; missing
-freshBasic↔private/protectedNativeROguard remainsunavailable. Continuefullfreshadmission, AP/versionedscope/MIXED OLD-NEWrecovery,
-partition-onlyHND/ABTfinalization andC-siblingJ actualextentdisjointness; unusedlowerAPIs arenotcompletedconverter.
+UpperSourceContext ownership/read-lane slice APPLIED/COMMITTED56999d8. FullpublicCargo checkpassed0/35.0075151s/sharedcache/no units.
+`evidence/partition-source-scope-build-20261104.json` bindsactualapplied11-pathsource(exceptreviewedcopylineendingnormalization).
+Dedicated(default) keepsoriginalinnerGeneralFrozen pointeridentity/guardorder; Partition holdsactualowner+boxedstabletoken; complete
+rawNTFSinspection/readlanes existbutremainUNADMITTED. Getter/callerResult propagation preventswhole-diskfallback. SDKlifecycleinterfaces
+areexportedbuthaveNOpreparation/nativewitnessissuer; freshconstructorcurrentlyUnsupported. No CLIpartitionconversionenablement.
+Do not mistake these plumbing types forcompletedsharedWindowsdiskconversion.
+
+NEXT actualSDKtarget-onlylifecycle code isCOPIED in `.lab/development/partition-lifecycle-integration-draft` bylowspace_case_impl:
+originalRWvolume retained; Basic0→LOCK/DISMOUNT→BasicREADONLY→nativeROcollection→relock→private0; fullGPT/C/criticalchecks,
+durableexternalCintentbeforeeachsingle-partitionSET_INFO_EX. Dropneverrestores; actualNTFSadmissiononlyafteractualnativewitness.
+Rootreviewrequestedexactintentreadbackcompare(notmerelyhashingstoredbytes), ERROR32second-writer denialproof andadmittedintentbuffers.
+No apply/build/VMGO yet. NarrowcopiedowneradoptionmustconsumetheactualretainedFileobjectwithoutreopen; tokenissuedattransfer.
+
+Partitionnativecollector extraction COPIED patch `.lab/development/partition-native-attestation-draft/native-attestation.patch`,
+SHA39d3334a6fc02e93ad7e056464876ebac2ee6e93ad16a1af6825a08a648576d7,20,372B/4SDKpaths. Noapply/buildyet; combineactualphaseAPI.
+Shared nativepagedengine usesexplicitroutecallback; dedicatedroute/guards stay. New PartitionPagedNtfsObservation binds actualROphase
+andtoken, honestphysicalattrs0/writable versus actualtargetRO/error19, actualpagednamespace/security/EA/reparse/fullretrieval/bitmap,
+volumescopedTxF andVSSopening/closingpresencewithpreROcatalog. Sourcefilehandlesclosedbeforerelock/privateadvance. Rootpagedvalidators
+acceptactualphysical0facts; upperntfs_attestationcompare_volume needs explicitproof-boundpartitionbranch, notphysicalROwaiver.
+Frozencandidateagentnowcontinues realResourceSourceContext::prepare_partition copiedconstructoragainstthosewitnesses/fullraw-nativeadmission.
+
+Mixedrecovery CODE isCOPIED in `.lab/development/partition-mixed-recovery-draft` byaef_postcut_operator (codeonly; exclusiveVMowner).
+NewopaqueToken usesexistingCOMPLETE check_target_reader(owner,len,None,false) forMIXEDgranules/COPY/zero/sourceFree, bracketedactual
+publication/artifact/locator/journal/index/lifecycle/owner checks; consume_revalidated repeatsandconsumesit, no writerauthority.
+Partitionpublicationbinding remainsunissued untilactualversionedscope/sourceadmission iswired. Noapply/buildyet. No nextVMGO.
+FullAP/private-sourceactivation/versionedscope/replay/target-onlyHND-ABT and Cjournalactualdisjointextents stillrequired.
 FrozenalphaZIP/sourceaef1ab3 andpublicCLIwhole-diskguards stayunchanged. src/main.rsneveredit. OperatorstillidleexclusiveVMowner;
 no newnativeGO. **CurrentOff766containsPRIVATE T; no restore casually.** Lastcensus317250100370/free89303965696, all16keepers/fixedepoch unchanged.
 Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volumeI/O;

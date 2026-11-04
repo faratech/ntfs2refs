@@ -145,6 +145,50 @@ impl PartitionScopedOwner {
         owner.revalidate(events)?;
         Ok(owner)
     }
+    /// Transfer only the actual retained lifecycle File objects. No target
+    /// pathname is opened, and no serialized flag creates the owner/token.
+    pub(super) fn adopt_lifecycle_owner(
+        binding: PartitionSourceBinding,
+        budget: PartitionObservationBudget,
+        file: File,
+        mut physical_readonly: File,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        binding.validate()?;
+        budget.validate()?;
+        let partition = super::partition_isolation::observe_private(
+            &mut physical_readonly, &binding, budget, events,
+        )?;
+        let dumps = observe_configured_dump_locations(&binding, budget, events)?;
+        let vds_roles = observe_runtime_volume_roles(&binding, budget, events)?;
+        if !dumps.configured_locations_outside_target
+            || !vds_roles.vds_enumeration_completed
+            || !vds_roles.vds_critical_role_extents_outside_target
+        {
+            return Err(io::Error::other("lifecycle adoption lost critical-volume disjointness"));
+        }
+        let info = control(&file, "adopt-original-partition-owner-info", 0x0007_0048, &[], 144, events)?;
+        let target = crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?;
+        let expected = partition.gpt.native_layout[48..].chunks_exact(144)
+            .find(|row| row[48..64] == target)
+            .ok_or_else(|| io::Error::other("adopted target native row missing"))?;
+        if info.as_slice() != expected || info[32..48] != crate::layout::guid_bytes(PRIVATE_TYPE)?
+            || crate::layout::u64_at(&info, 64)? != 0
+        {
+            return Err(io::Error::other("original lifecycle File is not the actual private target"));
+        }
+        let mut owner = Self {
+            identity: Arc::new(PartitionOwnerIdentity { _private: () }),
+            file, physical_readonly, binding, budget,
+            enrolled: PartitionOwnerState {
+                partition, configured_dump_locations: dumps, vds_current_volume_roles: vds_roles,
+                source_admission_issued: false, loaded_dump_exclusion_qualified: false,
+            },
+            buffer: AlignedBuffer::new()?, position: 0, poisoned: false,
+        };
+        owner.revalidate(events)?;
+        Ok(owner)
+    }
     pub fn binding(&self) -> &PartitionSourceBinding {
         &self.binding
     }

@@ -3,6 +3,8 @@
 //! making it mountable requires a separate explicit handoff operation.
 pub mod attestation;
 #[cfg(windows)]
+pub mod attestation_partition;
+#[cfg(windows)]
 mod attestation_native;
 pub mod bitmap_layout;
 #[cfg(windows)]

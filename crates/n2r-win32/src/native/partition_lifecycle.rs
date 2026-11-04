@@ -1,5 +1,4 @@
-//! Partition-only lifecycle/read-lane interface. No whole-disk transition is a
-//! substitute. Fresh admission issuance intentionally remains UNAVAILABLE.
+//! Target-only lifecycle implementation plus the unchanged bounded read lane.
 use super::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
 use super::{
     AlignedBuffer, MAX_IO, NativeEvent, PartitionOwnerToken, PartitionScopedOwner, control,
@@ -9,46 +8,13 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     os::windows::fs::OpenOptionsExt,
 };
-
-/// Complete durable target-only preparation guard, not parsed intent JSON.
-/// Constructor/issuer is absent until cancellation/type lifecycle is complete.
-pub struct PartitionPreparationGuard {
-    _unissued: (),
-}
-/// Must own the real mounted-NTFS freeze/native-RO evidence and complete guard.
-/// No observation, boolean, saved file or GeneralFreezeObservation creates it.
-pub struct PartitionNtfsAdmission {
-    owner: PartitionOwnerToken,
-    _guard: PartitionPreparationGuard,
-    _unissued_protected_native: (),
-}
-pub fn freeze_mounted_ntfs_partition(
-    _binding: PartitionSourceBinding,
-    _budget: PartitionObservationBudget,
-    _guard: PartitionPreparationGuard,
-    _events: &mut Vec<NativeEvent>,
-) -> io::Result<(PartitionScopedOwner, PartitionNtfsAdmission)> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "target-only Basic/private freeze and protected native-RO witness issuer not implemented; no source transition performed",
-    ))
-}
-pub fn require_complete_fresh_ntfs_admission(
-    owner: &PartitionScopedOwner,
-    admission: &PartitionNtfsAdmission,
-) -> io::Result<()> {
-    if !admission.owner.same_owner(&owner.owner_token()) {
-        return Err(io::Error::other(
-            "partition native admission belongs to a different actual owner",
-        ));
-    }
-    // There is currently no constructor that could have produced admission.
-    // Never fall back to the legacy physical READ_ONLY observation lease.
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "partition native-RO and complete preparation guard issuance remain pending",
-    ))
-}
+mod staged;
+pub use staged::{
+    PartitionIntentReceipt, PartitionNtfsAdmission, PartitionPreparationGuard,
+    PartitionPreparationObserver, PartitionPreparationPin, PartitionPreparationStage,
+    PartitionPreparationToken, PartitionReadonlyPhase, PartitionReadonlyProtection,
+    PartitionReadonlyReader, freeze_mounted_ntfs_partition, require_complete_fresh_ntfs_admission,
+};
 
 /// Independent readonly FILE_OBJECT/cursor opened while actual owner remains
 /// held. No Write, Deserialize or caller-selected path constructor exists.

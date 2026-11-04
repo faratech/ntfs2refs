@@ -42,7 +42,7 @@ fn open(path: &str) -> io::Result<File> {
         .custom_flags(0x02000000)
         .open(path)
 }
-fn control(file: &File, code: u32, capacity: usize) -> io::Result<Vec<u8>> {
+pub(crate) fn control(file: &File, code: u32, capacity: usize) -> io::Result<Vec<u8>> {
     let mut b = vec![0; capacity];
     let mut used = 0;
     // SAFETY: live borrowed handle and writable output of the declared size;
@@ -84,7 +84,7 @@ fn u32le(b: &[u8], at: usize) -> io::Result<u32> {
             .unwrap(),
     ))
 }
-type Route = (Vec<u8>, Vec<u8>, Vec<u8>, i32);
+pub(crate) type Route = (Vec<u8>, Vec<u8>, Vec<u8>, i32);
 fn route(volume: &File, disk: &File, r: &Request) -> io::Result<Route> {
     let ext = control(volume, 0x00560000, 32)?;
     let data = control(volume, 0x00090064, 128)?;
@@ -609,11 +609,29 @@ pub(crate) fn collect_file_metadata_paged_domain(
     crate::observation_pages::PagedNativeObservation::open(path, &receipt.sha256, budget)
 }
 
+pub(crate) trait AttestationRoute {
+    fn observe(&mut self, volume: &File, disk: &File, request: &Request) -> io::Result<Route>;
+}
+struct DedicatedAttestationRoute;
+impl AttestationRoute for DedicatedAttestationRoute {
+    fn observe(&mut self, volume: &File, disk: &File, request: &Request) -> io::Result<Route> {
+        route(volume, disk, request)
+    }
+}
 fn collect_file_metadata_with_passes(
     request: &Request,
     selectors: &impl NativeRequestDomain,
     single_content_pass: bool,
+    sink: Option<&mut crate::observation_pages::NativePageWriter>,
+) -> io::Result<Report> {
+    collect_file_metadata_with_routes(request, selectors, single_content_pass, sink, &mut DedicatedAttestationRoute)
+}
+pub(crate) fn collect_file_metadata_with_routes(
+    request: &Request,
+    selectors: &impl NativeRequestDomain,
+    single_content_pass: bool,
     mut sink: Option<&mut crate::observation_pages::NativePageWriter>,
+    routes: &mut impl AttestationRoute,
 ) -> io::Result<Report> {
     request.validate()?;
     if matches!(
@@ -628,7 +646,7 @@ fn collect_file_metadata_with_passes(
     let limits = request.limits();
     let volume = open(request.volume.trim_end_matches('\\'))?;
     let disk = open(&format!(r"\\.\PhysicalDrive{}", request.disk_number))?;
-    let before = route(&volume, &disk, request)?;
+    let before = routes.observe(&volume, &disk, request)?;
     let mut privileges = Privileges::enable()?;
     let base_before = crate::stream_native::base(&volume);
     let extent_context = if request.uses_extent_identity() {
@@ -878,7 +896,7 @@ fn collect_file_metadata_with_passes(
     };
     selectors.revalidate()?;
     privileges.restore()?;
-    let after = route(&volume, &disk, request)?;
+    let after = routes.observe(&volume, &disk, request)?;
     let mut report = Report {
         schema_version: if request.schema_version == 8 {
             16

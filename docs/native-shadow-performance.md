@@ -283,3 +283,25 @@ existing workspace admissions reserve 2 KiB of application headroom, without
 claiming an exact size for private Windows allocations. File-content hashes
 remain XXH3-128. Focused compilation passed; the combined change still needs
 its own native result. No unit tests were added or run.
+
+## Frozen 814 native result
+
+The combined change completed conversion in 913.2446592 seconds (15:13),
+compared with cad's 1,101.1730916 seconds. Its authenticated observer-close
+process counters were 164,909,910,658 bytes read and 3,256,217,717 bytes written:
+14,717,789,054 fewer logical read bytes than cad. These are observations from
+separate uncontrolled VM runs, not physical I/O or a guarantee for other disks.
+
+Publication retained the same 638 ranges / 6,176,772,096 bytes, with two complete
+scans instead of four. The separate apply revalidation remains complete. All
+811 original XXH3 streams, 1,534 baseline objects and 1,024 added directories
+matched independently before and after a normal reboot. All 513 mutation files
+matched after reboot and after completed-volume recovery. An exclusive readonly
+journal lock produced the expected native sharing failure without changing the
+journal; the subsequent normal HND recovery exited zero without raw replay.
+
+Retained regular-file allocation after reboot was 1,227,365,280 bytes, including
+the 185,135,104-byte journal and 824,180,736-byte shadow. This is not peak scratch
+and excludes global filesystem/directory overhead. See
+[the exact result and limits](../evidence/public-resource-cng-20261103.json).
+Interrupted AP resume/rollback still need this exact candidate's own cases.

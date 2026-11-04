@@ -42,17 +42,68 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current state: verify before acting
 
-**NEW814 PUBLIC CONVERSION69c38a6bf34043b39c4389b119c50087 IS LIVE.**
+**814 FIRST-FLUSHED-WRITE CASEbe505d3d772f41ab9933f4daa4cba253 IS LIVE.**
+Native diagnosticPID5348/birth1793758643255 was independently matched live;
+SYSTEMworker5180/birth1793758636109, boot1793758616525. Parent3343, Running4GiB.
+Launcher session12034 completed0; source814/diagnostic790de5.../request27f96...
+are pinned. Actual --apply-and-verify --interrupt-after-first-flushed-write.
+Hostroot.lab/hyperv/streaming-v2-20261027/resource-fixture-be505d3d772f41ab9933f4daa4cba253;
+gueststageC:\ntfs2refs\resource-fixture-be505d3d772f41ab9933f4daa4cba253;
+actualoutputK:\n2r-resource-fixture-be505d3d772f41ab9933f4daa4cba253.
+No actual stop/partial qualification yet. Source could still be preparing.
+Observe actual native-process/PID/birth/terminal and nonzero signal; never infer
+AP from an exit1, allocated/zero-filled signal, elapsed time or old case.
+Root must not power/restore/dispatch while this process or newer worker is live.
+Prepared qualifier .lab/development/verify-814-first-flushed-write.ps1 SHA
+f7b1e33b9e66bb39a7d05c914803dc547ac7f52d9fd45b6ac8842b6d6466bda0
+takes RunId/PID/birth/NEWpublicationSHA/outputpath and authenticates actual J
+OLDprimary0+NEW4K, canonical AP/source1 and signal. Existing restart dispatcher
+6d3e6c9ee4a88d616536d28e3d65e0c0de2854a765acc7b77f82f23bdc7bf11e
+accepts814 pins; no new adapter needed. Save original AP only AFTER qualification,
+then separately restore it for each restart direction. Do not replay any HND J.
+
+**814 PUBLIC CASE69c38a6bf34043b39c4389b119c50087 IS COMPLETE**, not live.
 Exact nativePID5312/birth1793754588845 was independently matched live; SYSTEM
-workerPID5168/birth1793754583258, boot1793754562770. Parent3343, Running/4GiB.
+workerPID5168/birth1793754583258, original boot1793754562770. Actual exit0 in
+913.2446592s at2026-11-04T01:25:02.1308938Z. Matched2558bindings/157known119009B/
+654extent-only/label/mounts; publication6e656507526f5df6a0e1d7ce0890bc97a79b3d2262ddc8b2f9da115d6b8ce825.
 Root's launcher session32898 completed0; do not repeat restore/start/task.
 Hostroot.lab/hyperv/streaming-v2-20261027/resource-fixture-69c38a6bf34043b39c4389b119c50087;
 gueststageC:\ntfs2refs\resource-fixture-69c38a6bf34043b39c4389b119c50087.
 Actual engineC:\ProgramData\ntfs2refs\runs\9b2d1123c929f1533a6d1702d873d2d9.
 Actual argv --drive F --partition2 --minimize-scratch. Inspect newer owned
 native-process/PID/birth/terminal before ANY power/restore/dispatch.
-This LIVE run has no qualification yet; prior terminal cases below do not
-authorize stopping it or claiming this new build passed.
+Independent observerscfa376794868429bbda7bc5afcb97822 andf8298339778a42099560b58ade4adf63
+matchedALL811XXH3streams9885801949B/1534base/1024extra paths opening+closing;
+each13 native digest exits0. Normal reboot WITHOUT restore toboot1793756301825.
+Onlyfreshprobe files mutated:512create/64delete-replace/16MiBgrow→1048699Btruncate+
+rename; all513hashes matched immediately, afterboot, andafterHNDreconciliation.
+MutationmanifestSHA16237b3cd9ed6f8dd2d1f9de31c5057b5715f6aa4390126571eccd59532a00ad.
+ReadonlyexclusiveJfault9025 actualPID4648/birth1793756897953 exit1/0.0872535s ERROR32;
+same-heldhandle wholeJsha7ec462269a88ec6b3d1f39996cfff723e4afc2428cd9454568923eebda27b1de
+unchanged throughactualterminal. NormalHNDccbc PID3184/birth1793757510608 exit0/
+20.2316384s, alreadyonline/noRawReplay/noOldNewComparison/noDataRehash; productSHA
+cfa164eaeeb25a69beb9167c1412202c98c03fd91bf48ffb6c6b6ddbda4a22c5.
+NativeAPwrite/flush/readback failure and physical power remain unqualified.
+Saved normalshutdown Off/RAM0 at895f472a-4d33-47f2-86ec-bb8ead5f3911(parent3343),
+then restored3343 ONCE for the distinct LIVE be505 diagnostic above.
+NEVER replay old69c raw J. See evidence/public-resource-cng-20261103.json.
+ClosedZIPa2be70f0bbaac988e06f00802b0fa35b257161a91b60057de898c6fece0bd861,
+manifest83edd4a2fb47c009bbb0b32351675c74d0193c456ca8f37dd85108415e1ab399;
+ALL4360entries199887671B verified onhost under69c/closed-postboot/.
+J185131104logical/185135104allocatedB; retained regularfiles1227365280B postboot,
+4198files, excludesdirectory/MFTglobal overhead, NOT peak scratch. Lastobserved
+processpeak172519424B notfinal. Authenticated40frames440719usedB: close logical
+reads164909910658/write3256217717B; NOT physical/exactfinal. Same638consumedranges
+6176772096B. Publication4→2 scans saved12353544192rawB; wholeclose14717789054fewer
+readB vsCAD; runtime187.9284324s shorter, uncontrolledruncomparisononly.
+
+Old duplicateHND7d81 andfcfb were retired after current wholearchiveZIP pins
+matched prior ALL-entry verification; new895 HND retained. APIonly/nomanualAVHDX.
+Originala51AP,766partition,3343origins+ancestors andguardedf4bf remain. Retiring
+oldHNDs discards their directdisk/J/shadowrestore, not archivedevidence/package.
+Alllab/cache/staging267840165040B/free138738249728B admittedunchanged40GiB before
+be505 launch; max329374052988/minfree17179869184/originalepoch unchanged.
 
 Frozen source814f380aa38be4d94e2a71ad221c779e5ab4dc7b combines publication reuse
 and CNG paged hashing. Pinned three-tool release build completed successfully:
@@ -133,8 +184,21 @@ final-result revalidation and SDK AP gates separate. It also switches ONLY
 PagedShadowClosing to existing native CNG SHA-256; v1 bytes/framing/chunks/digest
 and all raw reads unchanged, errors propagate, three workspace admissions add
 2KiB context headroom. Main unchanged; focused four-bin check passed8.42s,
-no unit tests. Committed-source release build passed; its OWN native run is
-LIVE above. Do not keep making unrelated source changes.
+no unit tests. Committed-source release build and normal/mutation/reboot/HND
+cases passed; AP/restart cases are nowLIVE above. Keep productcode814 frozen.
+
+Important broadergoal gap: oneVHDXbackend virtualsize64TBlimit (including64MiB
+margin) cannotserve1000TB. Large NTFSclusterdecoderalreadysupports2MiB, but
+extent-onlyevidencebuilder+SDKstill4–64KiB; bigger fallsbackfullhash. Active
+geometry still512Bsector/1024BFRS/4096Bindex. Do NOTclaimarbitraryHW/scale;
+see docs/native-shadow-scale-gaps.md. Nativeformat50GiBseed→grow is a FUTURE
+disposableemptyimagehypothesis only, cannotbypassVHDXlimit andhasnoperfproof.
+No independentReFSwriterrestart. These remain open full-goal requirements.
+
+Packaginghelper PREPARED ONLY .lab/development/Package-814-FrozenCandidate.ps1
+SHAa0a9c0663bb4a005ccc91e821d6e76363aee5b485041cd58d853032183e2e80e;
+externalpinnedqualification+README required. Do notedit embeddedregistry or
+rebuild814 justtopackage. Do notmarknative_matrix_complete untilactualgatespass.
 
 Old Alpha AP leaf58bd9ceb-60bc-4b34-81e1-7af197523a80 was retired through
 Hyper-V AFTER369 archived entries/861118515B,13 power-report pins and10 powerZIP

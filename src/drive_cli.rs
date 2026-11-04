@@ -697,9 +697,27 @@ mod windows {
             convert_with_progress(request, budget, output.clone(), allocation_bounded)
         };
         let output = run.join("conversion");
-        drop(staged);
         match result {
             Ok(()) => {
+                if allocation_bounded {
+                    // This live Ok comes only after V4 HND/native finalization
+                    // returned and all construction/raw owners were released.
+                    // Its replay is self-contained; legacy compact recovery
+                    // still requires its original protected shadow backing.
+                    let retirement = staged.retire_after_successful_v4();
+                    if !retirement.success {
+                        eprintln!(
+                            "Conversion completed; temporary shadow cleanup stopped at {}: {}. Preserve any remaining staging files. Raw rollback remains closed.",
+                            retirement.phase,
+                            retirement.error.as_deref().unwrap_or("cleanup incomplete")
+                        );
+                    }
+                    if let Err(error) = save_new(&run.join("shadow-retirement.json"), &retirement) {
+                        eprintln!("Conversion completed; its temporary-shadow cleanup receipt could not be saved: {error}");
+                    }
+                } else {
+                    drop(staged);
+                }
                 // The source's actual post-handoff policy is independent of the
                 // temporary shadow's trust. Observation/report errors cannot
                 // reopen raw replay or invalidate an already closed handoff.
@@ -754,6 +772,9 @@ mod windows {
                 Ok(0)
             }
             Err(e) => {
+                // Preserve the permanent attachment/backing on every error,
+                // including committed-but-incomplete native finalization.
+                drop(staged);
                 if e.downcast_ref::<crate::resource_finalize::CommittedFinalizationError>()
                     .is_some()
                 {

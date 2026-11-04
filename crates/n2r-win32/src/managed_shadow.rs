@@ -46,6 +46,8 @@ const MAX_LAYOUT: usize = 48 + 128 * 144;
 
 mod recovery;
 pub use recovery::{ReattachedShadow, reattach_existing};
+mod retirement;
+pub use retirement::ShadowRetirementReceipt;
 pub mod growth_probe;
 
 /// Requested native formatter profile, not a trust or compatibility claim.
@@ -92,6 +94,10 @@ pub struct ManagedShadow {
     format_policy: crate::volume_policy::Observation,
     // Closing a permanently attached virtual handle does not detach it.
     _attachment: AttachedDisk,
+    // Same-file ownership is retained from creation. Ordinary Drop still
+    // neither detaches this disk nor deletes any backing/recovery file.
+    _backing: retirement::OwnedBacking,
+    _owned_binding: GeneralDiskBinding,
 }
 
 impl ManagedShadow {
@@ -654,6 +660,7 @@ pub fn create_with_profile(
         logical: logical_sector,
         physical: physical_sector,
     };
+    let backing = retirement::OwnedBacking::enroll(path)?;
     let attached = created.attach()?;
     let binding = attached.initialize(partition_bytes, path)?;
     privileges.restore()?;
@@ -744,10 +751,12 @@ pub fn create_with_profile(
         ));
     }
     Ok(ManagedShadow {
+        _owned_binding: binding.clone(),
         binding,
         path: path.to_owned(),
         virtual_disk_id: guid_text(&id),
         format_policy,
         _attachment: attached,
+        _backing: backing,
     })
 }

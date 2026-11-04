@@ -199,6 +199,27 @@ no newnativeGO. **CurrentOff766containsPRIVATE T; no restore casually.** Lastcen
 Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volumeI/O;
 private-type route avoids that dead path. Existing whole-disk guards/certificates stay unchanged.
 See `docs/ntfs-conversion-policy.md` for implemented preserve/materialize/refuse semantics and qualification boundaries.
+## Latest checked partition construction milestone
+
+Development **3b42108** integrates the actual partition source through native shadow enrollment, placement,
+source-backed/routed/materialized supply, full metadata completion, protected opening/closing target observations,
+V4 selected capture and actual native recovery-journal creation/preparation. The unchanged streaming journal core
+reads OLD bytes from the real partition owner and NEW/COPY/zero bytes from the actual protected capture.
+The closed native scanner seals the real index. Dedicated guards and actual target-only General states remain.
+Combined public Cargo check passed **0/22.1812068s** in the shared target; no unit tests or VM run.
+`evidence/partition-target-capture-journal-build-20261104.json` binds all24 source paths and the reviewed draft pins.
+Root fixed ReadSeek/inherent-byte-length dispatch, always-closing journal-domain callback validation, and conservative
+full-budget metadata-witness RAM accounting. Main and the frozen alpha are unchanged.
+
+NEXT copied code: operator owns SDK actual one-shot AP/writer activation; frozen_candidate_cases owns ROOT prepared
+certificate/publication/apply; lowspace_case_impl owns authenticated restart/terminal restoration. No new native GO.
+The new explicit partition critical-volume policy must use actual stable VDS boot/system/page/hiber/crash/backboot
+roles and native extents, live Windows/pagefiles, configured dump routes and the held private owner. Undocumented
+loaded-driver verification stays FALSE diagnostic; it must not become fabricated authority or an impossible placeholder.
+Unknown/custom dump-filter settings retain explicit refusals. Microsoft documents VDS critical flags at
+https://learn.microsoft.com/en-us/windows/win32/api/vds/ne-vds-vds_volume_flag . This policy still needs native qualification.
+Source writer activation, process-death recovery, terminal target restoration and public routing are incomplete.
+
 ## Recovery and verification invariants
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.

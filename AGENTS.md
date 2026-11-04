@@ -170,10 +170,16 @@ volumescopedTxF andVSSopening/closingpresencewithpreROcatalog. Sourcefilehandles
 acceptactualphysical0facts; upperntfs_attestationcompare_volume needs explicitproof-boundpartitionbranch, notphysicalROwaiver.
 Frozencandidateagentnowcontinues realResourceSourceContext::prepare_partition copiedconstructoragainstthosewitnesses/fullraw-nativeadmission.
 
-Mixedrecovery CODE isCOPIED in `.lab/development/partition-mixed-recovery-draft` byaef_postcut_operator (codeonly; exclusiveVMowner).
-NewopaqueToken usesexistingCOMPLETE check_target_reader(owner,len,None,false) forMIXEDgranules/COPY/zero/sourceFree, bracketedactual
-publication/artifact/locator/journal/index/lifecycle/owner checks; consume_revalidated repeatsandconsumesit, no writerauthority.
-Partitionpublicationbinding remainsunissued untilactualversionedscope/sourceadmission iswired. Noapply/buildyet. No nextVMGO.
+Mixedrecovery observer/token APPLIED/COMMITTEDfd12781, fullpublicCargo checkpassed0/21.5630155s/sharedcache/no units.
+`evidence/partition-mixed-recovery-build-20261104.json` binds3ROOTfiles. NewopaqueToken usesunchangedCOMPLETE
+check_target_reader(owner,len,None,false) forMIXEDgranules/COPY/zero/sourceFree, bracketedactualpublication/artifact/locator/J/index/
+lifecycle/sourceowner checks; consume_revalidated repeatsthecompletecheckandconsumesit. No writergrant. Existinglegacybodies/checker unchanged.
+Partitionpublicationbinding remainsunissued untilactualversionedscope/sourceadmission iswired. No nativequalification/newVMGO.
+Versionedpublication/locator scope isnowCOPIED in `.lab/development/partition-publication-scope-draft` byaef_postcut_operator:
+missingfield→DedicatedONLY, explicitpartitionversion/tag/binding/originalBasic/privateGUID/attrs/name/guardpin; actualheldguard+artifactissuer,
+actualC-J/output/artifactextentsdisjointness onlyforthisnewscope. No canonicalapply/buildyet; no savedflag/hash/pathauthority.
+SDKlifecycle/nativeattestation authors haveactualtransition andcollector codepersisted; Rootreviewedexactintentreadback/exclusivewriterproof
+andsharedcollectorroute/TxF/VSSextraction, awaiting finalcombinedpatch/pins for centralapplication/typecheck. No shortcutfreshissuer/Generalstate.
 FullAP/private-sourceactivation/versionedscope/replay/target-onlyHND-ABT and Cjournalactualdisjointextents stillrequired.
 FrozenalphaZIP/sourceaef1ab3 andpublicCLIwhole-diskguards stayunchanged. src/main.rsneveredit. OperatorstillidleexclusiveVMowner;
 no newnativeGO. **CurrentOff766containsPRIVATE T; no restore casually.** Lastcensus317250100370/free89303965696, all16keepers/fixedepoch unchanged.

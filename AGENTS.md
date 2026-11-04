@@ -42,8 +42,11 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current state: verify before acting
 
-**NEW PUBLIC CONVERSION DISPATCH33a1bb206c51427298b6240fe5a261f9 IS IN PROGRESS.**
-Root's launch-public-resource-min-k helper is exec session67606. Exact pinned
+**NEW PUBLIC CONVERSION33a1bb206c51427298b6240fe5a261f9 IS LIVE.**
+Root's launch-public-resource-min-k helper completed exit0 (session67606 closed).
+Actual nativePID5364/birth1793751740787 was independently matched live; SYSTEM
+workerPID5208/birth1793751734250, boot1793751711106. No native terminal yet.
+Exact pinned
 cad public binary/manifest below, --drive F --partition2 --minimize-scratch.
 Hostroot.lab/hyperv/streaming-v2-20261027/resource-fixture-33a1bb206c51427298b6240fe5a261f9;
 gueststageC:\ntfs2refs\resource-fixture-33a1bb206c51427298b6240fe5a261f9.

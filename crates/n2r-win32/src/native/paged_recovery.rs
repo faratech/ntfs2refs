@@ -1282,3 +1282,90 @@ impl GeneralJournaledPartition {
         Ok(GeneralExclusiveRecoveryTarget { inner: self })
     }
 }
+
+/// New private-partition gate only; legacy whole-disk paths above are unchanged.
+/// This does not issue source admission, publish AP or clear exclusion. It uses
+/// the existing actual journal/index/lifecycle and OLD/NEW selected-byte checks.
+pub(super) fn authenticate_partition_paged_source(
+    source: &mut super::partition_owner::PartitionScopedOwner,
+    policy: &HeldPagedWritePolicy,
+    journal: &mut File,
+    pins: &PagedRecoveryPins<'_>,
+    require_new: bool,
+) -> io::Result<()> {
+    pins.journal_binding.validate()?;
+    let binding = &source.binding().storage;
+    // Initial foundation retains independent-disk J policy. C:-sibling journal
+    // extent disjointness is a separate unimplemented source-scope change.
+    if binding.disk_number == pins.journal_binding.disk.disk_number
+        || crate::layout::guid_bytes(&binding.identity.disk_guid)?
+            == crate::layout::guid_bytes(&pins.journal_binding.disk.identity.disk_guid)?
+    {
+        return Err(invalid(
+            "partition foundation journal must remain on an independent disk",
+        ));
+    }
+    let facts = policy.facts()?;
+    if pins.journal_profile.version() != 3
+        || !(1..=5).contains(&facts.format_version)
+        || facts.image_length != source.byte_len()
+        || facts.journal_length < BODY + HEADER as u64 + FOOTER as u64
+        || facts.journal_length > pins.journal_profile.max_journal_bytes()
+        || facts.journal_immutable_sha256 != pins.immutable_sha256
+    {
+        return Err(invalid(
+            "partition paged policy/journal/geometry binding differs",
+        ));
+    }
+    let before = verify_journal_owner(journal, pins, facts.journal_length)?;
+    let modified = journal.metadata()?.modified()?;
+    let probe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(3)
+        .open(pins.journal_path);
+    match probe {
+        Ok(_) => {
+            return Err(invalid(
+                "partition journal permits a second ordinary writer",
+            ));
+        }
+        Err(error) if error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32) => (),
+        Err(error) => return Err(error),
+    }
+    check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
+    if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+        != pins.immutable_sha256
+    {
+        return Err(invalid("partition held journal immutable body differs"));
+    }
+    verify_index_against_journal(journal, policy, pins)?;
+    verify_selected_digest(
+        source,
+        policy,
+        if require_new {
+            pins.new_selected_sha256
+        } else {
+            pins.old_selected_sha256
+        },
+    )?;
+    check_lifecycle(journal, pins, PagedRecoveryDirection::Resume)?;
+    if crate::sha256_native::hash_range(journal, BODY, facts.journal_length - BODY)?
+        != pins.immutable_sha256
+    {
+        return Err(invalid(
+            "partition journal changed around selected-byte gate",
+        ));
+    }
+    let after = verify_journal_owner(journal, pins, facts.journal_length)?;
+    if after.identity != before.identity
+        || after.file_bytes != before.file_bytes
+        || !after.final_path.eq_ignore_ascii_case(&before.final_path)
+        || journal.metadata()?.modified()? != modified
+    {
+        return Err(invalid(
+            "partition actual journal owner changed during gate",
+        ));
+    }
+    Ok(())
+}

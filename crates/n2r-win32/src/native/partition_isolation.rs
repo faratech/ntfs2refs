@@ -438,6 +438,7 @@ fn gpt(
     binding: &GeneralDiskBinding,
     budget: PartitionObservationBudget,
     native: Vec<u8>,
+    target_type: [u8; 16],
 ) -> io::Result<PartitionGptObservation> {
     let identity = &binding.identity;
     let sector = u64::from(identity.logical_sector_bytes);
@@ -522,7 +523,7 @@ fn gpt(
             && layout::u32_at(&native, 40)? == count,
         "native GPT layout is incomplete or has different usable bounds",
     )?;
-    let basic = layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?;
+    let basic = target_type;
     let target_guid = layout::guid_bytes(&identity.partition_guid)?;
     let mut seen = Vec::<([u8; 16], u64, u64)>::new();
     let mut target = None;
@@ -644,6 +645,57 @@ fn observe(
     budget: PartitionObservationBudget,
     events: &mut Vec<NativeEvent>,
 ) -> io::Result<PartitionIsolationObservation> {
+    observe_with_type(
+        file,
+        binding,
+        budget,
+        events,
+        layout::guid_bytes("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7")?,
+    )
+}
+
+/// New explicit private-type READONLY profile; never a write/admission issuer.
+pub(super) fn observe_private(
+    file: &mut File,
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<PartitionIsolationObservation> {
+    let mut value = observe_with_type(
+        file,
+        binding,
+        budget,
+        events,
+        layout::guid_bytes("b627aadb-a893-48b6-aa0b-71e5f30ee370")?,
+    )?;
+    require(
+        value.gpt.target_attributes == 0,
+        "private owner profile requires unchanged zero target attributes",
+    )?;
+    value.profile = "partition_private_owner_foundation_v1";
+    Ok(value)
+}
+
+pub(super) fn same_private_identity(
+    a: &PartitionIsolationObservation,
+    b: &PartitionIsolationObservation,
+) -> bool {
+    a.binding == b.binding
+        && a.disk_device == b.disk_device
+        && a.disk_length == b.disk_length
+        && a.alignment == b.alignment
+        && a.disk_attributes == b.disk_attributes
+        && a.gpt == b.gpt
+        && a.windows_volume == b.windows_volume
+        && a.paging == b.paging
+}
+fn observe_with_type(
+    file: &mut File,
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+    target_type: [u8; 16],
+) -> io::Result<PartitionIsolationObservation> {
     binding.validate()?;
     budget.validate()?;
     let storage = &binding.storage;
@@ -683,7 +735,7 @@ fn observe(
         "partition-scoped observation requires the physical disk to remain online/writable",
     )?;
     let native = native_layout(file, budget, events)?;
-    let gpt = gpt(file, storage, budget, native)?;
+    let gpt = gpt(file, storage, budget, native, target_type)?;
     let mode = PartitionObservationMode::from_attributes(gpt.target_attributes);
     let (volume, volume_error) = match device_file(&storage.volume_path()?, false, false) {
         Ok(volume) => {

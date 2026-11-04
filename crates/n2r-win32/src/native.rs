@@ -34,6 +34,10 @@ pub use paged_write_policy::{
 };
 pub use paged_recovery::{BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection, PagedRecoveryPins};
 
+mod partition_dump_locations;
+mod partition_owner;
+pub use partition_owner::{PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner};
+
 const DEVICE: u32 = 0x002d1080;
 const LENGTH: u32 = 0x0007405c;
 const ALIGNMENT: u32 = 0x002d1400;

@@ -48,28 +48,36 @@ Original interrupted recovery directory was `C:\ProgramData\ntfs2refs\runs\fab21
 `ac849240114b1ba688ad9de8edbb9c9d5298fc28fafc8cc07d92ade59e26b5ab`; it is an AP recovery origin ONLY after restoring the exact saved39ba branch.
 Controlled thread pause/TurnOff is not physical power loss, first-flushed-write or arbitrary write/flush-error qualification.
 
-## Current next work: low-space case and packaging
+## Current frozen alpha and next work
 
-Eight of nine exact-aef finite gates pass. Public low-space refusal is pending; do not inherit older814 gates.
-`lab/Package-ExperimentalAef.ps1` is reviewed and unexecuted. It requires exact public/source/build pins and all9 actual gates.
-Ignored `.lab/development/qualification-aef-DRAFT.json` remains draft=true/native_matrix_complete=false until the actual low-space evidence passes.
-README is `userdocs/experimental-aef-candidate.md`; the package is experimental and finite-profile, not a stable/general release.
-Packaging only creates a local public-only ZIP; no tag/publication is implied. Packager accepts either recorded manifest alias but rejects conflicts.
+**All nine exact-aef finite gates passed. Do not rebuild or repeat unchanged cases.**
+Reviewed qualification: `evidence/public-aef-experimental-qualification-20261104.json`, SHA
+`d69d01b9127ad5651cc5daa18ec1a8df56cf18431059e2b91dfae74d32ae9ede`.
+Verified package: `.lab/packages/experimental-aef-public-3e15ac0829db452dbbb5d9c8b4c9d7e1/ntfs2refs-aef-public-experimental.zip`,
+19254647 bytes/SHA `00016d67e5580416f08a73c585c934b811fdd113d0325b24e17da9d42fda5514`.
+All12 ZIP entry lengths/hashes were checked; only executable is ntfs2refs.exe. Source/build provenance and small case receipts are included.
+See `docs/aef-experimental-alpha-20261104.md`, shipping README `userdocs/experimental-aef-candidate.md`,
+and `evidence/public-aef-experimental-package-20261104.json`. This is LOCAL experimental packaging, no tag/publication/stable release.
+The ignored qualification-aef-DRAFT.json is superseded; it must not be used for packaging.
 
-A **64MiB EOF0 pilot passed** on current508e without F:/converter access:
-run bffce4ae9b2846729be7787965c43dc3; child2744/birth1793813350676, exit0/31.3555384s at17:29:42UTC.
-Allocation0→67108864, EOF0; C free debit67121152 and release67104768 after original-handle close/file deletion.
-Host OSleaf length/allocation608174080 before+held,641728512 after (+32MiB); census316947846978/316947850370/316981407710.
-These timed samples include background I/O and establish neither zero I/O nor linear host growth.
-Pilot helper `.lab/development/Invoke-Eof0AllocationPilot64MiB.ps1`, SHA5982d17d4921b2a14bd66938f8683b23c1972ab6df1eb598cf21cffc565aa7a0.
-Pilot evidence is closed in `evidence/eof0-64m-allocation-pilot-20261104.json`. Fresh separate-process verification confirms Off/RAM0/all16/current508e; no restore or checkpoint changes. Final census317024397793/free89517182976; total boot-to-close growth915422059 bytes, distinct from the phase samples.
+Public low-space case **5b4f493b0824485893352829aaa2dcea passed**: actual public6036/birth1793815128501/exit1/0.0313206s
+with exact working-space refusal at real C3.75GiB, before staging. Helper5764/birth1793814609118/exit0; 34 <=1GiB steps,
+EOF0 reservation35592949760 bytes was closed/deleted and its guest free gain matched exactly. No product-runs namespace events.
+Source preservation covers observed identity/metadata/flags and512B primary, NOT a full-partition/content rehash.
+Evidence `evidence/public-low-space-refusal-20261104.json`, SHAe462be39049eec02d7b8ff29a1f38d0b46585db9827e8c31a14534e8503d6361.
+Archive manifest SHAea42f3e39eb9280dffa616ff911e133773115cee277b34290c5d598c01f86d8b;76case+9wrapper files pinned.
+No ENOSPC/write-flush or physical-power qualification. Earlier64MiB pilot evidence remains `evidence/eof0-64m-allocation-pilot-20261104.json`.
 
-Root explicitly authorized ONE actual low-space case for the exclusive operator: real caller-available C target3.75GiB (<actual public4GiB gate),
-ordinary EOF0 reservation with <=1GiB increments and host ACKs; stop host growth at4GiB, conservative6GiB total forecast, original fixed cap unchanged.
-At least3GiB OS headroom, no quota/free-API mocks/payload writes/persistent settings; exact candidate, fresh original3343 NTFS source;
-require actual public expected refusal before new run/staging, then close/delete reservation and verify release. Guest helper SHA c0f6d15f4400b903401deada8d3522e11f4c3bcc539ecb3e19e215987981c945 and host runner SHA29bc601cd21ea5d4901a90f925a06bcf1496d4605baf07cf2ff9a46bd590356b were reviewed; GO issued. No result is inferred yet. Stop on concrete failure; no automatic retries.
-The existing normal launcher >4GiB precondition must not be silently weakened.
+**Current VM Off/RAM0/current3343/all16 unchanged**, freshly verified by exclusive operator after orderly shutdown.
+Final low-space census322362016559/free84176871424. Boot-to-close growth5337570325 fit the unchanged6442450944 forecast;
+final OS-leaf postboot growth2118123520 exceeded earlier ACK samples through delayed/background growth. Samples are NOT peaks or hard quotas.
+Post-package census322400526126/free84137639936; original maximum329374052988 and reserve17179869184 remain unchanged.
+Operator is idle and retains exclusive VM ownership. No further native case is authorized yet.
 
+Next broader work is the already-built held-volume marker proof on the existing766 fixture, after separate Root/operator enrollment/admission.
+Read `.lab/development/held-volume-probe-execution-plan.md`, SHAd028275903cbabe0dbf5b14c9334c089f5a8b6b64423e7a25a27434f5817bdb4.
+Actual postboot target is Partition4/RawGPTSlot4; old fixture insertion ordinal5 is stale. Do not use old OFFLINE-only observer wrappers.
+Keep the public alpha immutable. Shared-OS-disk writer/recovery authority, broader geometry/NTFS coverage and actual write failures remain incomplete.
 ## Recovery and verification invariants
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.

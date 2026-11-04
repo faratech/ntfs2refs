@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "kind": "exact-committed-event-streaming-partition-alpha-native-candidate",
+  "source_commit": "82a6095f07672713cbe4c9bb4ff15de9fd2dd651",
+  "source_tree": "b90382a22efd0fcc0fc44336658cd5f064f2c58d",
+  "manifest_sha256": "41deea20b99616febdbbacfb64b0a11ebba3cf4078fd09221735811f4ba78f1f",
+  "candidate_directory": ".lab/development/release-candidates/partition-alpha-82a6095",
+  "binary": {
+    "name": "lab-partition-alpha",
+    "path": "bin/lab-partition-alpha.exe",
+    "bytes": 8452096,
+    "sha256": "2fedc80084654d472fd1464697a6bbd50aebbc7ae416df8d36b98d6134b14dcc"
+  },
+  "archive": {
+    "sha256": "1d4c8f29f8cd92e448a40fd0a00fcf019986f118c5f9ed5a2eae6add87999143",
+    "path": "source.zip",
+    "bytes": 2029873
+  },
+  "source_before_after_verified": true,
+  "working_tree_inputs_used": false,
+  "shared_target": true,
+  "shared_source": true,
+  "unit_tests_run": false,
+  "native_qualification_inherited": false,
+  "stable_release": false,
+  "supersedes_unexecuted_source_commit": "c4953652a1c8c3620f76e6e4b9dd4c13c8b1862b",
+  "fix": "actual durable bounded native event streaming",
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b"
+}

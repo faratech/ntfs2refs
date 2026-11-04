@@ -372,6 +372,22 @@ Primary: https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft
 OperatorROOTAUTHORIZEDnormalOffclosure afteractualprocessesabsent/tasksidle tofree4GiB, preserveall17/current07ca/provider100MiB/sourceBasic0.
 No new converter/source retry authorized. ObserveactualoperatorOff/censusreceipt; do not infer fromthisinstruction.
 
+LATEST VERIFIED VM is Off/RAM0/current07ca/all17; normalOffclosure e174/closed-off-vds-refusal.json
+SHA8680642f581e6fb922015d939c06a2757a90462551e878322a0889e18251e3b0, compact67file542082Barchive
+closed-off-small-archive-manifest.json SHAc352c4050c7f8b0636cc8cbc81856f18074a92a5852cfa9e3aaba9d7ddda6e00.
+Native1924/4624/workersabsent/tasksidle; sourceBasic0NTFS/intentEOF0/noJ/owned100MiBproviderfilepreserved. No extra power/reset/detach.
+Final census319661185528/free87719960576; original FIRSTNORMAL6GiBabsolute324997941421/remaining5336755893, globalcap unchanged.
+
+CIM POLICY CODE APPLIED/COMMITTED/PUSHED **8f7db1e50003b649098f635199d923bbaf016fcd**:
+collectorfd78e85e... + integrationcbec99fc...,7SDKsourcepaths, actual native COM/thread-local connection/two NEW bounded catalogs,
+direct native GUID/device/extent and typedBoot/System fields, no PowerShell child. C/critical bindings exact; private missing row remainsNone,
+never fabricatedfalse. VDSpartialdiagnostics unclassified/optional; all direct Windows/pagefile/configuredDump/lock/private/GPT checks retained.
+Lab+public check0/32.910964s/no units, evidence/partition-storage-role-integration-build-20261104.json binds code/docs/research evidence.
+Exact committed source8f build ACTIVE hostsession32587, `.lab/development/release-candidates/partition-alpha-8f7db1e`,
+log `.lab/development/partition-alpha-8f7db1e-build.log`, fresh2GiB all-lab/cache/staging admission, sharedtarget+staging/4jobs.
+Do not compete with Cargo. No converter GO for8f yet. Operator prepares OFF07ca17 normal launcher using correctedUTF8helpers and
+mandatory newbuildpins; preserveold82failurereceipts/provider/source, no source replay/restore/repair/delete.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

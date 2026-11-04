@@ -777,7 +777,7 @@ fn capture_selected_inner(
         artifact,
     };
     literal.revalidate()?;
-    let index = index.finish()?;
+    let index = index.finish(&scratch)?;
     ensure!(
         index.pin().old_zero_bytes == old_zero && index.pin().source_free_bytes == source_free,
         "actual per-range OLD classification differs from capture accounting"

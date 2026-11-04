@@ -613,7 +613,7 @@ impl OwnedCaptureIndex {
             |ordinal| self.range(ordinal),
         )
     }
-    pub(crate) fn finish(mut self) -> Result<ClosedCaptureIndex> {
+    pub(crate) fn finish(mut self, scratch: &SourceScratch) -> Result<ClosedCaptureIndex> {
         ensure!(
             !self.poisoned && self.pending.is_none(),
             "incomplete capture index cannot close"
@@ -645,13 +645,28 @@ impl OwnedCaptureIndex {
             &self.parent_id,
             &self.canonical_parent,
         )?;
+        let bytes = at
+            .checked_add(FOOTER)
+            .context("capture index length overflow")?;
+        // Use the same arena-backed scratch as create() while normalizing the
+        // exact writer before readonly duplicates retain its FILE_OBJECT.
+        {
+            let group = scratch
+                .artifact_group()
+                .context("capture index requires its actual arena")?;
+            let _allocation_ram = scratch.lease_ram(512 * 1024)?;
+            let _allocation = n2r_win32::file_storage::normalize_allocation_at_eof(
+                &self.file,
+                bytes,
+                bytes,
+                group.arena().allocation_slack_bytes(),
+            )
+            .context("normalize owned capture index allocation before sealing")?;
+        }
         let readonly = n2r_win32::file_storage::duplicate_readonly(&self.file)?;
         let snapshot = Snapshot::observe(&readonly)?;
         ensure!(
-            snapshot.bytes
-                == at
-                    .checked_add(FOOTER)
-                    .context("capture index length overflow")?,
+            snapshot.bytes == bytes,
             "capture index final length differs"
         );
         drop(self.file);

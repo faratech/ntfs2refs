@@ -26,8 +26,10 @@ The preceding handoff is preserved BYTE-EXACT in [history](docs/history/AGENTS-t
 
 ## CURRENT actual default-command run: do not infer terminal
 
-Default VHDX producer3c0b27586cb94f8ea556c1ad6283d7b6 is LIVE: actualPID5348/birth1793810208762,
-boot1793810184063, started16:36:48UTC; fresh GetProcess samebirthlive at16:38:05UTC.
+Default VHDX producer3c0b27586cb94f8ea556c1ad6283d7b6 TERMINATEDexit0 at16:50:51.873UTC,
+actualPID5348/birth1793810208762/843.0596228s, stdout2269B/stderr0/oneownednative launch.
+Boot1793810184063; actual engine0c05ca76d1a5529c8c7839515bcd26aa,
+printed recovery SHA f330f0a74424bf0c8fe4162ebbb38fa12ea590aca4aed5e01ffef20c8fb815c4.
 Exactaef public binary17198080B/daa56...; argv --drive F --partition 2 --minimize-scratch, NO thin flags/watcher.
 Only operator owns VM work. Native completion/default cleanup/original811/1024/save remain pending.
 Root-approved removal of ONLY8a+4b8 completed, receiptSHA9b4f159cb0c0be787d7204c758c1088f06dd3455486676d707bb2c2ef7b4b2a8.

@@ -307,6 +307,21 @@ Actual durable drains must run BEFORE lower target RO lease/setter and during ne
 All canonical code remains c495365; next fixed committed build will supersede the unexecuted candidate. Source fixture stays Off07ca/all17.
 Operator's next helper must accept externally pinned build inputs for that fixed candidate; no converter GO has been issued.
 
+EVENT FIX APPLIED/COMMITTED/PUSHED **82a6095f07672713cbe4c9bb4ff15de9fd2dd651**: SDKsink15fb3db3... + callerdrainsfe0ce05f...,
+all7sourcepaths; lab+public check0/32.5559411s, no units. `evidence/partition-native-event-streaming-build-20261104.json` binds them.
+Actual guard Rc/RefCell observer sink drains admission/witness/enrollment/privateTree/target bookends before buffers fill;
+all source/target checks and128-event ceiling remain. c495 executable stays unexecuted/superseded, not a qualification artifact.
+EXACT FIXED BUILD ACTIVE host session12296: `.lab/development/release-candidates/partition-alpha-82a6095`, log
+`.lab/development/partition-alpha-82a6095-build.log`, source82a6095,4jobs/sharedtarget+staging/2GiBfreshadmission.
+No competing Cargo. Operator's FIRSTNORMAL v2 launcher is frozen `launch-partition-alpha-first-normal-v2.ps1`
+SHAbede19c4034ec4dde797d27798a7e23a31f3b635c5649a27f8e1efa9493b2c29. Root reviewed its earlier full body;
+v2 only excludes capture literal/backing payloads from metadata copies, preserving old11333f55... launcher.
+Worker279e023175432f0b7af04b27153c9e77400862cfb567587e4834f426880f0e22,
+oracle3d7c1b325c217e5ab08d19341edd7b0aa8c01a686cde112c21ddf063a59e8c6a,
+readonlymetadata40e8c1719c0bc21255f4aafe7119a937eb7e9df0bdf695c76b6081323b6f9383;
+all AST0, requestextent_identity_v1, actual SYSTEM child PID/birth/exit, independent8file content/namespace/owner-group-DACL+Refs oracle.
+Build pins remain mandatory external params. Root must verify finished82 build/EXE manifest and issue exact one-run GO; VMstillOff07ca/all17.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

@@ -15,13 +15,28 @@ The preceding handoff is preserved BYTE-EXACT in [history](docs/history/AGENTS-t
 - User forbids new OR existing unit tests unless explicitly asked. Necessary focused builds/native integration are allowed; do not repeat unchanged checks.
 - NEVER edit/format/reset/clean src/main.rs: SHA256 c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b.
 - VM/power/native-run/archive ownership is EXCLUSIVELY /root/aef_postcut_operator by Root's explicit transfer. Root owns Git/build/docs ONLY and will not compete VM mutations.
-  All other agents edit assigned files/prepare ignored helpers only; no VM operations. Ownership transfer grants no protected-snapshot deletion or cap change.
+  All other agents edit assigned files/prepare ignored helpers only; no VM operations. No cap change is authorized.
+  Root reviewed audit6732542ccba7875a5d86194e863f731ff055cab8dc1bdf683ef7bd6810a6516f and explicitly authorized ONLY
+  inactive-leaf8a/4b8 removal with helpera8777767c52308978fc8dfee39391dd9167fef71738c443e2b0c738ce14a869e,
+  enrollment5b1381558dbc3adc94163b9f314c11887a5361be0a608906d93e508295accce0/current9f0372c8.
+  Operator must preserve all15other IDs, use Hyper-V APIs only, verify fresh separate-process graph and actual census afterward.
+  Raw old guest bytes are NOT replicated; metadata/source/build proofs stay. Future large prototypes require fresh owned construction.
 - Commit exact stable owned paths and push normally; no force-push or staging everything. Keep .lab/images/journals/binaries/ISOs/secrets out of Git.
 - Keep WSL running. No UAC disabling or persistent privilege changes. Import ONLY .lab/hyperv/win11/secrets/guest-credential.xml; never print credentials.
 
-## CURRENT actual run: do not infer cut or terminal
+## CURRENT actual default-command run: do not infer terminal
 
-**CURRENT interrupted origin AP39ba49c9-01d1-48fa-941f-08d34ff346c1**, saved Off15:18:09UTC, child3343.
+Default VHDX producer3c0b27586cb94f8ea556c1ad6283d7b6 is LIVE: actualPID5348/birth1793810208762,
+boot1793810184063, started16:36:48UTC; fresh GetProcess samebirthlive at16:38:05UTC.
+Exactaef public binary17198080B/daa56...; argv --drive F --partition 2 --minimize-scratch, NO thin flags/watcher.
+Only operator owns VM work. Native completion/default cleanup/original811/1024/save remain pending.
+Root-approved removal of ONLY8a+4b8 completed, receiptSHA9b4f159cb0c0be787d7204c758c1088f06dd3455486676d707bb2c2ef7b4b2a8.
+Fresh separate-process Off/current9f/RAM0/remaining15/twoabsent passed; purecensus301782495419B/free104758255616B
+admitted unchanged20GiB21474836480B. Operator restored original3343 ONCE and freshly verified Off/all15 before dispatch.
+
+## Completed interruption and recovery: old HND/ABT journals are closed
+
+Interrupted origin AP39ba49c9-01d1-48fa-941f-08d34ff346c1 was saved Off15:18:09UTC, child3343.
 Original public producer f9c1b2f236d442318afcec1df0cd24a8 was native5536/birth1793804848092/boot1793804805471.
 V5 controller55606 TERMINATEDexit0 after ONE actual TurnOff15:17:20UTC; no native exit code is inferred.
 Fresh separate process verified Off/RAM0/APparent/all14. Original8a HND and all13 earlier protected IDs remain.
@@ -47,7 +62,14 @@ ReFS oracle51f467bb8a48488286f42566a2a21fc9 PASSED all811/9885801949B/1534object
 all13 actual digest PID/birth/terminals0,10.7988733s. SameJc955/186487480B canonical HND+AP verified.
 Qualified resumed Off HND checkpoint266130c1-51c8-479c-b528-423644770dc2 was saved15:52:02UTC,
 childAP39ba; fresh separate process verified Off/RAM0/currentparent266/all16.
-Operator is booting this operational branch for the bounded mutation/reboot and terminal-recovery gates, WITHOUT restore.
+Operational gates PASSED on this branch: Create513/mutations, normal reboot WITHOUT restore,
+Verify513 plus original811/1534/1024, public HND reconciliation1552/20.8750595s/exit0 with NOrawreplay,
+and exclusive-J refusal3496/0.081524s/exit1/actualOSerror32 with wholeJ hash and513before/after unchanged.
+Final original oracle83657ea3033e407e94e2654f98079809 passed811/1534/1024 plus13actualdigestterminals0.
+New operational Off HND checkpoint9f0372c8-4aa9-4fd7-94d3-2f8356619e21 was saved16:19:59UTC, child266,
+and freshly verified Off/RAM0/currentparent9f/all17. Operator's audit of older8a/4b8 passed278pinned files and global dependencies.
+Root explicitly authorized this exact two-leaf cleanup; actual removal/postcheck are not yet reported.
+After actual reclaim and unchanged20GiB admission, ONE fresh default-VHDX aef conversion from original3343 is authorized.
 Never use either closed ABT or HND journal as a new raw replay origin.
 Only /root/aef_postcut_operator owns subsequent VM/recovery/oracle operations; Root owns Git/build/docs only.
 V5 waits only for sharing-error32 while a receipt writer is still open; closed empty/corrupt/type/hash failures still refuse.
@@ -134,8 +156,8 @@ Fixture request .lab/development/fixture-diagnostic-request-3343.json SHA27f96da
   Observed64MiB flooring is not universal. Thread F through bitmap/placement/capture/retention and relocate out-of-F source runs before nonzero-tail support.
 - Bound carrier is owned NTFS, nested memberVHDX<=64TiB each, explicit thin overcommit. Nominal pool allocation/footprint is NOT host usage or equivalent physical capacity.
   Count carrier plus external metadata ONCE, not nested members twice. Sampled allocation/free/RAM is not peak, hard quota or reservation. Preserve strict format gates.
-- Controlled aef AP/public rollback/public resume passed on this finite profile; mutation/terminal gates, default VHDX conversion,
-  copied-payload interruption, actual ENOSPC/write-flush errors, physical power and broader geometry/hardware remain unqualified.
+- Controlled aef AP/public rollback/public resume/mutation-reboot/terminal gates passed on this finite profile.
+  Default VHDX conversion, copied-payload interruption, actual ENOSPC/write-flush errors, physical power and broader geometry/hardware remain unqualified.
   See docs/private-thin-pool-addressability.md and per-case evidence; no broad-completion/stable-release claim.
 
 ## Fixed capacity and cleanup
@@ -155,13 +177,14 @@ Previously automatic-review-rejected research-image, .lab/ntfs2btrfs-source-audi
 
 ## Protected snapshot graph and VM
 
-Keep these16IDs and dependencies; guardedf4 is NEVER remove/force. Current VM-ownership transfer authorizes NO new retirement:
+Keep all15 non-target IDs and dependencies; guardedf4 is NEVER remove/force. Only Root-reviewed8a/4b8 leaf retirement above is authorized:
+- 9f0372c8-4aa9-4fd7-94d3-2f8356619e21 (qualified resumed/mutated/rebooted operational aef HND), child266.
 - 266130c1-51c8-479c-b528-423644770dc2 (qualified resumed aef HND; old raw replay permanently closed), child of AP39ba.
 - ea75dff5-36f4-42af-8e13-cc9b2e8cba6c (qualified aef rollback; ABT closes raw replay), child of AP39ba.
 - 39ba49c9-01d1-48fa-941f-08d34ff346c1 (NEW interrupted aef AP origin; restore this exact checkpoint separately for each recovery case).
-- 8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f (completed aef HND),3343f2a4-cf81-4fa9-a504-030425a8011e (prepared NTFS).
+- 3343f2a4-cf81-4fa9-a504-030425a8011e (prepared NTFS).
 - 895f472a-4d33-47f2-86ec-bb8ead5f3911,0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2,a0a8217f-894f-4311-bbf7-27151da5d216 (frozen814).
-- f4bf5238-14c0-4b15-bda6-7859abd4d1c9 (guarded),4b8dafbf-7500-4c51-ab12-d0a697bf7264 (large-format prototypes).
+- f4bf5238-14c0-4b15-bda6-7859abd4d1c9 (guarded).
 - 766c9abc-8582-4de6-b497-8acbc81274da,fe668886-647a-4928-9c14-9fd9e323aefb (closed partition experiment/parent).
 - d8db8fd9-284a-4e78-86b5-85d8a2607663,001f7611-257f-4c5a-8c5b-560ce8faa68d,a0627dbd-aa3b-4896-bbeb-495f5e372057,83290a28-1e83-4eb2-a4d3-b0e9f5a8d63b (ancestors).
 VM2401593c-4b30-472e-9b6d-c9534cbaa599/ntfs2refs-streaming-v2-20261027: fixed4GiB/4CPU/noNIC. Fresh separate process after checkpoint/restore;

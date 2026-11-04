@@ -61,7 +61,9 @@
     "run_id": "555a7dbced0a4d79aeeac77ce59cc1fe",
     "native_pid": 860,
     "native_creation_ms": 1793760754492,
-    "native_completion_not_yet_observed": true
+    "native_completion_not_yet_observed": false,
+    "actual_native_exit": 0,
+    "rollback_result_evidence": "resource-814-restart-rollback-20261103.json"
   },
   "conversion_or_recovery_success_claimed_by_origin": false,
   "unit_tests_added_or_run": false,

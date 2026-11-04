@@ -42,15 +42,39 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current state: verify before acting
 
-**814 ROLLBACK555a7dbced0a4d79aeeac77ce59cc1fe IS LIVE.**
+**814 RESUMEe10c19f1725d4398a9f8dc3b55606820 IS LIVE.**
+Actual publicPID1664/birth1793761630148 independently matched live; SYSTEMworker
+4308/birth1793761625259; boot1793761529400. ParentoriginalAP0cf3dd7d, Running4GiB.
+Hostroot.lab/hyperv/streaming-v2-20261027/resource-restart-e10c19f1725d4398a9f8dc3b55606820;
+gueststageC:\ntfs2refs\resource-restart-e10c19f1725d4398a9f8dc3b55606820.
+Launcher32936 completed0, exact814public0f5be...+manifest ea6d...+originalbe505
+envelope c19e.../signal a955.../terminal e105... pins. Actual --recover originalK
+directory --recovery-sha256 c19e... (NO --rollback). No freshApplyrequested.
+Root normally shut down the verifiedRollback branch, restoredoriginal0cf3 ONCE,
+freshprocessverifiedOff/RAM0 thenstartedONCE. Boot1793761529400/source1 observed
+beforeResume dispatch. SavedoriginalAP is unchanged. Inspect actual latest
+task/PID/birth/terminal BEFORE power/restore/any further dispatch.
+
+**814 ROLLBACK555a7dbced0a4d79aeeac77ce59cc1fe IS COMPLETE**, not live.
 Actual publicPID860/birth1793760754492 independently matched live, SYSTEMworker
 1996/birth1793760749673, boot1793760660732. ParentoriginalAP0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2,
-Running4GiB. Launcher83926 completed0; no newrestore/start/retry may be inferred.
+actuallyexited0/493.2588358s at2026-11-04T03:00:47.7805662Z; nativehandleheldterminal.
+ReturnedNTFS64KiB/F:/originallabel/source0, ABT/replayclosed; requiredselected
+bytesverified, wholeimagefalse/freebytesnotrestoredexactly. ProductK:\ntfs2refs-recovery-8aba2cefa1a05dee4042ca9c7713bbb9,
+resultSHA341c7d5fc933ad1710f784176bb8ff02d1066e56a1e4f56cc215f42a5ae3fd28.
+IndependentNTFSobservercf624877f8264a56ad9c582a03f35c28 worker5056/birth1793761378850
+matched811XXH3streams9885801949B/1534base/1024extra paths opening+closing;
+13 actual digest exits0,10.7991606s. Newpathmanifest68fb53bd6a1c7e6dcbd4cb082c6475fd1c610d98a88e82665cf129e657b0b3ab
+hasEXACT1024UTF16orderedpaths/anchor/counts comparedtoindependentold8f14 byarchiver.
+Closed72smallfiles949095B allsource/copySHA+lengthmatched, manifestfcaa78a1636adbb4f419f35774c513f4192d139abe3f297912d5971bb732b4b2
+under555a/closed-rollback-814. No bigJ/shadowcopied. No complete ACL/time audit.
+See evidence/resource-814-restart-rollback-20261103.json. ABTbranchwasnormally
+shut down AFTERarchive thenoriginalAPrestoredforseparateLIVEResumeabove.
 Hostroot.lab/hyperv/streaming-v2-20261027/resource-restart-555a7dbced0a4d79aeeac77ce59cc1fe;
 gueststageC:\ntfs2refs\resource-restart-555a7dbced0a4d79aeeac77ce59cc1fe.
 Actualpublic --recover K:\n2r-resource-fixture-be505d3d772f41ab9933f4daa4cba253
 --recovery-sha256 c19e929a6f8b24f9baa38e5a8de57cbafb21cc32692033bc7f68313786b10313 --rollback.
-Inspect actual latest task/PID/birth/terminal BEFORE any power/restore/dispatch.
+These oldterminal/idle facts DO NOT describe the new liveResume process.
 
 **814 FIRST-FLUSHED-WRITE CASEbe505 IS COMPLETE**, not live.
 Native diagnosticPID5348/birth1793758643255 actually exited1/1456.7158131s at

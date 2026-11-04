@@ -64,10 +64,10 @@ These timed samples include background I/O and establish neither zero I/O nor li
 Pilot helper `.lab/development/Invoke-Eof0AllocationPilot64MiB.ps1`, SHA5982d17d4921b2a14bd66938f8683b23c1972ab6df1eb598cf21cffc565aa7a0.
 Pilot evidence is closed in `evidence/eof0-64m-allocation-pilot-20261104.json`. Fresh separate-process verification confirms Off/RAM0/all16/current508e; no restore or checkpoint changes. Final census317024397793/free89517182976; total boot-to-close growth915422059 bytes, distinct from the phase samples.
 
-Full low-space case is PREPARATION ONLY, not authorized to execute yet: real caller-available C target3.75GiB (<actual public4GiB gate),
+Root explicitly authorized ONE actual low-space case for the exclusive operator: real caller-available C target3.75GiB (<actual public4GiB gate),
 ordinary EOF0 reservation with <=1GiB increments and host ACKs; stop host growth at4GiB, conservative6GiB total forecast, original fixed cap unchanged.
 At least3GiB OS headroom, no quota/free-API mocks/payload writes/persistent settings; exact candidate, fresh original3343 NTFS source;
-require actual public expected refusal before new run/staging, then close/delete reservation and verify release. Root must review the separate helper before GO.
+require actual public expected refusal before new run/staging, then close/delete reservation and verify release. Guest helper SHA c0f6d15f4400b903401deada8d3522e11f4c3bcc539ecb3e19e215987981c945 and host runner SHA29bc601cd21ea5d4901a90f925a06bcf1496d4605baf07cf2ff9a46bd590356b were reviewed; GO issued. No result is inferred yet. Stop on concrete failure; no automatic retries.
 The existing normal launcher >4GiB precondition must not be silently weakened.
 
 ## Recovery and verification invariants

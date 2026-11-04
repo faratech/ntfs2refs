@@ -85,6 +85,114 @@ graph before actions. Root alone coordinates VM power, restore, dispatch and
 snapshot removal while agents work in parallel. No compatibility probe or
 conversion is currently running.
 
+## Current development after the frozen package
+
+Commit `a2255ba` is a separate performance/geometry candidate, not the packaged
+814 executable. Focused `cargo check` of the library, public CLI, resource
+diagnostic and new growth tool passed in27.46s; no unit tests ran. Root release
+build session2875 completed0 in2m37s in
+`.lab/development/release-candidates/resource-map-locator-growth-a2255ba` using
+the pinned shared target/source and original4GiB build envelope. Manifest
+`abe2c25226fb77a0658dfbee6fdf853a6d9a42ef1c34c16fd5a3ae3273f2a609`;
+public executable `4d2d515b1f2520c37989354823fd5de87f50425cdfb6a8ef4293f126678f4e08`.
+Its new map/locator public conversion is not natively qualified yet. See
+`evidence/resource-map-locator-growth-build-20261104.json`.
+
+It combines recovery-map and locator creation inside one private, non-escaping
+frozen-owner boundary. Complete source/target/capture opening and closing checks
+remain, including callback-error closure; map/locator metadata, native owners,
+arena seals, journal identity and PreparedClear checks remain between them.
+Later publication, delegation, final admission and Apply gates are unchanged.
+For814's known range set, this removes2 of4 map/locator consumed-byte scans
+(12,353,544,192 raw bytes); native timing/read qualification is pending.
+
+Both source extent-fast gates now admit power-of-two4KiB–2MiB clusters; other
+alignment/VDL/ownership/feature checks remain. Native large-cluster qualification
+is pending. The new `lab-shadow-format-growth` creates only fresh owned empty
+240GiB shadows, comparing direct format with50GiB seed/grow. It accepts no source
+device and does not change normal formatter behavior. Its mounted bitmaps do not
+prove complete consumed metadata or conversion ownership; remount is still needed.
+
+The prebuild complete census was282065971393B/free124511387648B; the40GiB forecast
+passed the unchanged epoch. It covers the build and bounded disposable growth
+work, not permission to skip fresh capacity admission before native growth.
+
+**CURRENT PUBLIC CONVERSION IS LIVE:** run97468663c2a24eb69d4dd1efef66b58a,
+actualPID5328/birth1793769966082, independently matched live. Boot1793769939651,
+VM Running4GiB/parent3343. Root launcher70499 completed0 after its ONE intentional
+fresh3343 restore/start from the normally Off, closed experiment branch. Do not
+restore, power off, duplicate dispatch, infer completion or change source state.
+Actual argv: `--drive F --partition 2 --minimize-scratch`; publica225 binary4d2d...
+is pinned above. Gueststage `C:\ntfs2refs\resource-fixture-97468663c2a24eb69d4dd1efef66b58a`;
+hostroot `.lab/hyperv/streaming-v2-20261027/resource-fixture-97468663c2a24eb69d4dd1efef66b58a`;
+actual engine `C:\ProgramData\ntfs2refs\runs\331a61f17aab4a51ba925f1e20493271`.
+SYSTEMtask `N2R-ResourceFixture-97468663c2a24eb69d4dd1efef66b58a`, workerSHA
+ea822d7308da90a5d2cf46ed89b1d57dc8d441238215d276afcf9130022dce2c/configSHA
+89396a344558b8c837e349af46991ed8a8918f03f096c21654a7bdb8497e350e.
+Last05:31:15UTC actualsamePID/birth read15054543864B/write153700674B/working62361600B,
+terminal absent. These are live process samples, not physical/final I/O or peak.
+`native-events.log` currently denies concurrent read with ERROR32: do not bypass
+its sharing owner. Wait actual terminal before ledger analysis. Public stdout
+may remain buffered until worker close; an empty log does not mean stopped.
+All frozen814 snapshots and source/binary archives remain untouched.
+
+Growth diagnostic only: `cd12d2cf3fc9dacc8492e7e3626bf530b5c6dd15` built one tool
+in2m49s, manifest06969af7092f34ec8f10744b95901bbd682552c3a4b7da304b08310b5ab2be87,
+binary7bfac9cc9edafcac9dfca3fe0a0b7ccb4bbed12a76ca940dc04582ec6274a538.
+It corrected the lab's mistaken interpretation of discovery.read_only (that
+field describes observation, not device state). Normal formatter is unchanged.
+Direct case3589a47df3a04baa9c2405ca45610083 actualPID5316/birth1793768001128
+exited0/1.0402751s: final240GiB, bitmap union26373816320B, backing104857600B.
+Seed case78ee80cf5a704273b0ecfe75f7bd57d3 actualPID4132/birth1793768116528
+exited1/0.7662221s: the generic zero-output guard refused the grow control's
+nonzero returned count. Actual partition is already240GiB; filesystem remains
+50GiB. Its seed bitmap union5905612800B/backing104857600B is preserved. Do NOT
+retry that partially grown case. Initial diagnostic failureb92 (PID3480/birth
+1793767283749/exit1) is closed:17smallfiles1283960B archive manifest8513fe4801e7614e08c5286363c3855b837883623583ae41cbca87fee4e42fa6.
+
+New diagnostic-only commit3080e9d supplies bounded16/8-byte buffers for grow/
+extend and retains full actual-layout/geometry checks. Root release session
+21312 completed0/2m41s at `.lab/development/release-candidates/resource-growth-controls-3080e9d`;
+manifest a7f629ddee5f57285179556dc4b17997011172b482ca4586761d9724e9f159a2,
+binary9d6c91ad9f31a13b92d53aed72602ad0eddce5e5aefba19d8a0b2411a95d8688.
+Case69287e75d81b413e84c9f4923a80930d actualPID5348/birth1793768703991 exited1/
+0.8780946s after successful grow/extend; grown filesystem is239.9375GiB in240GiB
+partition, so strict geometry failed. Independent native data and complete
+declared-domain bitmap observation found25971179520B union, still about26GB.
+Do NOT integrate seed/grow into the product: it did not keep the seed reserve
+small and introduces a different filesystem span. Report
+`evidence/native-shadow-seed-growth-20261104.json` pins all scopes and limits.
+All3 named cases' small metadata closures passed; final21files119151B manifest
+3d139cec5509d6a57a62675120e95215a554650b94813dad549b8926a024c130.
+Their disposable empty images were NOT archived and were intentionally discarded
+by the public launcher's fresh3343 restore; no direct guest restoration claimed.
+The reviewed host
+launcher is `.lab/development/launch-shadow-format-growth-v3.ps1`, SHA
+e213a9e77465b6583b9a8b630dffe86a5f8111367b9646aa7b35e4b098f58f85;
+it accepts one-tool or three-tool pinned builds, stages only the lab executable,
+and performs no VM power/restore. Oldv1 failed before dispatch resolving guestK
+on host; v2 fixed that path; preserve those closed failures, never redispatch them.
+
+The separate2MiB fixture675d6bb6a62b40e9b0ea29c6e763d84d failed before formatting
+with "Invalid drive specification" (formatter4432/birth1793767795356/exit1;
+helper1672/birth1793767786880/exit1). R: was this new RAW disk, not a usable source;
+no user payload or conversion was created. Metadata ZIPaf1bcb920bf43bb7029f810fba1a4e1e216e72b70421a48b2ee7560c26e1651c
+and manifest6633ccb8121529da7d91e7b47e2f6e90ccc7261c84c1e50d39861cc5b1326d40
+under `.lab/hyperv/streaming-v2-20261027/native-2m-fixture-675-closed` are verified.
+Prepared helper `prepare-native-ntfs-2m-source-v2.ps1` SHA9922b9b63f5732ccd038bb24d45a86ec14d02db54c6fa80b4827e7dacf58618b
+trims only the formatter's Volume-GUID trailing slash. It is NOT executed.
+The failed RAW fixture was discarded by the already completed public-case
+restore. Any next2MiB case still needs its own fresh baseline/new ExperimentId
+after the current public conversion closes; do not disrupt the live run.
+
+The old disposable file-backed disk's read-only eligibility query reported
+CanPool=true through a unique matching native physical-disk object. Receipt
+`native-2m-fixture-675-closed/pool-eligibility-readonly.json` SHA
+9894e6fdce03ec4203aaab7698d63be2ce0c6eecd5e41173b2bcd76522d05492
+is preserved. This is not a1PB address-space or ReFS-format qualification.
+Future Storage Spaces probing may use ONLY newly created private blank members,
+never an old disk number or this discarded R identity. No pool was created.
+
 ## Exact frozen source and finite native evidence
 
 Executable source remains `814f380aa38be4d94e2a71ad221c779e5ab4dc7b`, source tree

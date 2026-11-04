@@ -21,10 +21,19 @@ The preceding handoff is preserved BYTE-EXACT in [history](docs/history/AGENTS-t
 
 ## CURRENT actual run: do not infer cut or terminal
 
-**CURRENT v4 producer f9c1b2f236d442318afcec1df0cd24a8**, actual native5536/NEW birth1793804848092,
-newboot1793804805471, started15:07:28UTC. V5 controller hostsession55606 is ACTIVE, at most one controlled cut.
-Watcher started; no native terminal/cut/AP outcome has been reported. Same PID was recycled: always verify the birth timestamp.
-Only /root/aef_postcut_operator owns this run, actual cut/save/new-boot authentication, then public rollback/resume and oracles.
+**CURRENT interrupted origin AP39ba49c9-01d1-48fa-941f-08d34ff346c1**, saved Off15:18:09UTC, child3343.
+Original public producer f9c1b2f236d442318afcec1df0cd24a8 was native5536/birth1793804848092/boot1793804805471.
+V5 controller55606 TERMINATEDexit0 after ONE actual TurnOff15:17:20UTC; no native exit code is inferred.
+Fresh separate process verified Off/RAM0/APparent/all14. Original8a HND and all13 earlier protected IDs remain.
+First postcut boot1793805526137 observed source1 persistently offline/writable WITHOUT repair/setters/pool reattachment.
+Eight-file original evidence manifestSHA010300916c4950c74fdf16b392ed6f76afff42bde18cd63ce230d2721719d432.
+Observe710546e2b3b24e0c91541a34f00570aa PASSED: full immutable journal, canonical AP,
+same held file identity, OLD source primary and distinct NEW4096 on boot1793805526137.
+Its worker-result authenticated_AP=true/native_launches=0. No source repair/pool reattachment.
+Public rollback b7b582216b814f21a71d7d905982a765 is now LIVE: actual PID572/birth1793806111266,
+exactaef executable, original printed C recovery directory/SHA, --rollback; no fresh apply.
+Worker1b1b0d prechecked the full AP/source. No native terminal yet; rollback/resume are NOT yet qualified.
+Only /root/aef_postcut_operator owns subsequent VM/recovery/oracle operations; Root owns Git/build/docs only.
 V5 waits only for sharing-error32 while a receipt writer is still open; closed empty/corrupt/type/hash failures still refuse.
 Prior327 controller55466 TERMINATEDexit1/14:54:38.974UTC, TurnOffFALSE: 'Bounded ordinary closed receipt required'.
 Its native5536/OLD birth1793803471429 actually ended0/891.1842362s at14:59:22.659UTC after the pause released.
@@ -32,7 +41,14 @@ Watch abort14:56:38.889UTC reported release attempted/remaining0/errors0. No AP/
 Operator archived19files69792B, manifestSHAeaf65aea59dc251902aff1c9a16758995e6f10119e3f97c179a763f5321673b9,
 then orderly shutdown/freshOff/all13 and ONE3343 restore. Census304922398237B/free101603741696B admitted unchanged22GiB.
 Root owns Git/build/docs only. DO NOT start competing VM/power/restore operations. Completed8a and all13protected IDs/cap remain unchanged.
-Gueststage `C:\ntfs2refs\resource-fixture-f9c1b2f236d442318afcec1df0cd24a8`; do not guess engine/run routes.
+Original stage `C:\ntfs2refs\resource-fixture-f9c1b2f236d442318afcec1df0cd24a8`.
+Actual recovery directory `C:\ProgramData\ntfs2refs\runs\fab216c1961efb6b3881f26e3be7ff00\conversion`,
+printed SHAac849240114b1ba688ad9de8edbb9c9d5298fc28fafc8cc07d92ade59e26b5ab. Never substitute an old run/checksum.
+Working ignored recovery adapter-v5-time-guid SHAf2471ae3eff6af38632c19a0908295f4f98a835ab3e78bdd6f1e9b7527887ae3
+adds UTC DateTime-kind handling and admits the authenticated live C-volume-GUID route
+only after both held locator paths prove the same FileID/serial/length/final GUID path.
+Original timestamp and lexical-route refusals occurred BEFORE native launch/source changes;
+the printed envelope checksum and all journal/source/native admission checks remain unchanged.
 V4 changes ONLY ignored harness: owned native-thread pause <=120s on normal path, exact suspend-increment release/watchdog,
 and postpause OLD-primary/NEW4096 verification. WHOLE WATCHER PROCESS DEATH CAN LEAVE NATIVE PAUSED; this is not absolute automatic resume.
 Pending kernel I/O and physical power are not qualified. HostPS5.1 compile succeeded WITHOUT instantiation/process control/source opening;

@@ -35,24 +35,50 @@ instructions. Earlier detailed handoffs remain under docs/history/.
 
 ## Current state: frozen alpha packaged
 
-**LIVE b7 PUBLIC CONVERSION, overriding the older Off/CEC labels below:**
+**b7 CONVERSION/CLEANUP/REBOOT COMPLETE, overriding older state below:**
 Root saved the closed thin-addressability/retirement-probe branch as checkpoint
 `a7242adb-27dc-4548-adb3-64b3719789f5`, parent3343, after normal shutdown.
 A fresh process verified Off/RAM0/parenta724 before the sole next restore.
 The reviewed20GiB launcher then restored3343 and started exactly one public
 `b7d97fb650d563a1f34b3df55889a1d9ed67eeb2` conversion. Run
 `778e45f2bc4b4291b9d3cb4c9cfebc05`, actualPID5348/birth1793779061600,
-boot1793779036686, remains LIVE until its actual owned terminal is observed.
-No retry/kill/power/restore while it is running. Gueststage
+boot1793779036686, exited0/753.764701s at08:10:15.425UTC. Gueststage
 `C:\ntfs2refs\resource-fixture-778e45f2bc4b4291b9d3cb4c9cfebc05`;
 hostroot `.lab/hyperv/streaming-v2-20261027/resource-fixture-778e45f2bc4b4291b9d3cb4c9cfebc05`.
 Publicargv `--drive F --partition 2 --minimize-scratch`, binarySHA
 41917337b9ffc2b493175800f51c3b6e13b498f23db32d5a712aac8357be6597,
 buildmanifestf39f1cd4b9d9f8f6d96e76e273fcf1939e68bc28b9ba4caa1a2e84be2ba71e92
 at `.lab/development/release-candidates/owned-shadow-retirement-b7d97fb`.
-This run must qualify successful V4 post-handoff shadow retirement; the
-standalone primitive below does not substitute for it. Compilation passed;
-no unit tests ran. Frozen814 package and qualification remain unchanged.
+ActualV4HND/native finalization2558bindings/157known119009B/654extent streams
+passed. The same constructor-owned shadow detached (loadedtrue→false) and its
+backing disappeared. Journal/locator remained present; the locator-bound actual
+JFileID/length and exact4KiBHND were verified without rehashing journal payload.
+Closed11files666871B manifestd3f438edb4d854f75f67b50d1ab382337ae94b9ce8057eb316205ea6f98f95bc.
+Independent preboot fcba5d61097f441ba0e90ba9b27f611f and postboot
+365b192f11514b92babaaa330261582a BOTH passed all811XXH3 streams9885801949B,
+1534baseline objects and1024extra directories; all13actual digest exits/PID/birth
+and56source/host file pins per observer were checked. Normal shutdown/start
+WITHOUTrestore/checkpoint returned operationalFReFS onboot1793780316134.
+Postbootclosure7d9e29dad8abc67ce7537c7c5887a87cdc3d00f7934fe5968d802eecae8d7b28.
+See `evidence/public-owned-shadow-retirement-20261104.json`. New mutation/AP/
+power/physical/petabyte qualification remain false. Frozen814 unchanged.
+VM is currently Running/4GiB/parent3343 on that operational postboot branch.
+Never replay its old raw journal. The separate private Rust probe build completed
+in actual session55010. Source e10ebd31eed06898efa71ad14ee14547994e566b,
+candidate `.lab/development/release-candidates/private-thin-constructor-e10ebd3`,
+manifest a4290c1621ae0b2f762b877b286e174da54bc6a91cb810940adf6cd8fc570ec6,
+binary73ef72c934d923eeca3be482ce3a557500b5ed575d4adebec925c9ca95c4cd9e.
+Actual Rust case1c412d52fbfb4c35a49005314244c75e, PID4524/birth1793781215004,
+exited1/10.9121802s after creating its private pool and1e15-aligned raw device;
+the closing check wrongly used Get-Disk for claimed members, which Windows hides.
+No opaque owner issued, no GPT/format/conversion. All assets preserved. Guest
+stage `C:\ntfs2refs\rust-thin-constructor-1c412d52fbfb4c35a49005314244c75e`,
+output `K:\n2r-rust-thin-1c412d52fbfb4c35a49005314244c75e`.
+Its pool{3ff6a752-2594-423d-b561-798eb26b1057}/VD626CEB9D71D4ED4798E24257D4C2CFD8
+remains on native disk10 RAW; the visible inventory is now9disks (0..7 and10).
+Preserve the failed case; do not rerun it or derive an owner from its reports.
+The closing lookup has a prepared fix using the same live members' exact
+Get-PhysicalDisk UniqueId/ObjectId. Root owns builds, the next fresh case and Git.
 
 The b7 standalone newly-owned empty-shadow primitive passed native detach and
 same-file retirement: PID3068/birth1793778325606/exit0/0.726818s, loadedtrue→false,
@@ -68,6 +94,12 @@ Private Windows Storage Spaces Thin/Simple addressability passed for
 Closed37files156492B manifesta6c88dc9d930a9efb536a4db4684246d3a61154c998b1cdfb9cb02b264eaf3f5.
 See `evidence/private-thin-pool-addressability-20261104.json`. Public backend
 still uses VHDX; this experiment does not qualify1,000TB conversion.
+Private Rust constructor-only owner is committed in cf424aa, with explicit fresh
+members/pool, sampled child resource share, same-handle native checks, no GPT/
+format/public default/reopen/cleanup. SDKcheck passed16.67s; embeddedPSparse0;
+only owned-file formatting followed that check. The e10ebd3 lab wrapper will
+exercise it with fixed1e15 goal/64MiBRust/384MiBPS/12GiBscratch/1GiBreserve.
+Native execution remains unqualified until the actual probe completes.
 
 Superseded inactive a225 leaf9702 was retired through Hyper-V only after all
 121 archived metadata file pins plus original build/source were reverified.

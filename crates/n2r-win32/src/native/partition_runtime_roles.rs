@@ -17,6 +17,7 @@ use std::{ffi::c_void, io, marker::PhantomData, mem, ptr, rc::Rc};
 
 const S_OK: i32 = 0;
 const S_FALSE: i32 = 1;
+const VDS_S_PROPERTIES_INCOMPLETE: i32 = 0x0004_2715;
 const KNOWN_FLAGS: u32 = 0x03ff_ffff;
 const CRITICAL_FLAGS: u32 = 0x1 | 0x2 | 0x80 | 0x100 | 0x200 | 0x0100_0000;
 const MAX_EXTENTS: usize = 16;
@@ -411,6 +412,9 @@ pub(super) struct VdsVolumeRoles {
     pub size_bytes: u64,
     pub vds_flags: u32,
     pub critical_flags: u32,
+    pub properties_hresult: i32,
+    pub closing_properties_hresult: i32,
+    pub role_classification_qualified: bool,
     pub reported_online_healthy_stable: bool,
     pub extents: Option<Vec<VdsExtent>>,
     pub extent_observation_note: Option<String>,
@@ -693,15 +697,23 @@ pub(super) fn observe_runtime_volume_roles(
                 let volume: Com<Volume> = volume.query(&VOLUME_IID)?;
                 // SAFETY: valid zero initialization; returned pwszName always has a Drop owner.
                 let mut raw: VolumeRaw = unsafe { mem::zeroed() };
-                exact("IVdsVolume::GetProperties", unsafe {
-                    ((*(*volume.raw).vtable).properties)(volume.raw, &mut raw)
-                })?;
+                let properties_hr =
+                    unsafe { ((*(*volume.raw).vtable).properties)(volume.raw, &mut raw) };
                 require(
-                    raw.id.bytes() != [0; 16] && raw.flags & !KNOWN_FLAGS == 0,
+                    matches!(properties_hr, S_OK | VDS_S_PROPERTIES_INCOMPLETE),
+                    &format!(
+                        "IVdsVolume::GetProperties diagnostic HRESULT0x{:08x}",
+                        properties_hr as u32
+                    ),
+                )?;
+                let complete = properties_hr == S_OK;
+                require(
+                    !complete || (raw.id.bytes() != [0; 16] && raw.flags & !KNOWN_FLAGS == 0),
                     "VDS volume identity or known role classification is unavailable",
                 )?;
-                let critical = raw.flags & CRITICAL_FLAGS != 0;
-                let available = raw.status == 1 && raw.health == 1 && raw.transition == 1;
+                let critical = complete && raw.flags & CRITICAL_FLAGS != 0;
+                let available =
+                    complete && raw.status == 1 && raw.health == 1 && raw.transition == 1;
                 if critical {
                     require(
                         raw.size > 0 && matches!(raw.kind, 10..=14) && available,
@@ -739,13 +751,20 @@ pub(super) fn observe_runtime_volume_roles(
                 };
                 // SAFETY: same live volume interface; requery properties after native mapping.
                 let mut closing: VolumeRaw = unsafe { mem::zeroed() };
-                exact("IVdsVolume::GetProperties(closing)", unsafe {
-                    ((*(*volume.raw).vtable).properties)(volume.raw, &mut closing)
-                })?;
+                let closing_hr =
+                    unsafe { ((*(*volume.raw).vtable).properties)(volume.raw, &mut closing) };
+                require(
+                    matches!(closing_hr, S_OK | VDS_S_PROPERTIES_INCOMPLETE),
+                    &format!(
+                        "IVdsVolume::GetProperties(closing) diagnostic HRESULT0x{:08x}",
+                        closing_hr as u32
+                    ),
+                )?;
                 let closing_name = limits.string(closing.name, !critical)?;
                 let closing_name = (!closing_name.is_empty()).then_some(closing_name);
                 require(
-                    closing.id.bytes() == raw.id.bytes()
+                    closing_hr == properties_hr
+                        && closing.id.bytes() == raw.id.bytes()
                         && closing.kind == raw.kind
                         && closing.status == raw.status
                         && closing.health == raw.health
@@ -756,8 +775,8 @@ pub(super) fn observe_runtime_volume_roles(
                         && closing_name == name,
                     "VDS volume properties changed across native extent observation",
                 )?;
-                result.vds_system_volume_count += u64::from(raw.flags & 1 != 0);
-                result.vds_boot_volume_count += u64::from(raw.flags & 2 != 0);
+                result.vds_system_volume_count += u64::from(complete && raw.flags & 1 != 0);
+                result.vds_boot_volume_count += u64::from(complete && raw.flags & 2 != 0);
                 result.volumes.push(VdsVolumeRoles {
                     provider_id,
                     pack_id,
@@ -770,10 +789,18 @@ pub(super) fn observe_runtime_volume_roles(
                     size_bytes: raw.size,
                     vds_flags: raw.flags,
                     critical_flags: raw.flags & CRITICAL_FLAGS,
+                    properties_hresult: properties_hr,
+                    closing_properties_hresult: closing_hr,
+                    role_classification_qualified: complete,
                     reported_online_healthy_stable: available,
                     extents: mapped,
                     extent_observation_note: (!critical).then(|| {
-                        "noncritical inventory; native extents intentionally not queried".into()
+                        if complete {
+                            "complete noncritical diagnostic inventory; extents not queried".into()
+                        } else {
+                            "UNCLASSIFIED partial VDS properties; no role flags are authoritative"
+                                .into()
+                        }
                     }),
                 });
             }
@@ -782,16 +809,46 @@ pub(super) fn observe_runtime_volume_roles(
     require(
         !result.software_providers.is_empty()
             && !result.packs.is_empty()
-            && !result.volumes.is_empty()
-            && result.vds_system_volume_count > 0
-            && result.vds_boot_volume_count > 0,
-        "VDS enumeration did not cover actual system and boot volume roles",
+            && !result.volumes.is_empty(),
+        "VDS diagnostic enumeration is empty",
     )?;
     result.software_providers.sort_by_key(|value| value.id);
     result.packs.sort_by_key(|value| value.id);
     result.volumes.sort_by_key(|value| value.volume_id);
     result.accounted_metadata_bytes = limits.retained_bytes;
     result.vds_enumeration_completed = true;
-    result.vds_critical_role_extents_outside_target = true;
+    result.vds_critical_role_extents_outside_target = result
+        .volumes
+        .iter()
+        .all(|v| v.role_classification_qualified)
+        && result.vds_system_volume_count > 0
+        && result.vds_boot_volume_count > 0;
     Ok(result)
+}
+
+/// Optional legacy-provider diagnostics. This cannot qualify the current
+/// partition role policy; authoritative Storage Management/native checks do.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(super) struct RuntimeVolumeRoleDiagnostic {
+    pub observation: Option<RuntimeVolumeRoleObservation>,
+    pub error: Option<String>,
+    pub used_as_source_admission_authority: bool,
+}
+pub(super) fn runtime_volume_role_diagnostics(
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+) -> RuntimeVolumeRoleDiagnostic {
+    match observe_runtime_volume_roles(binding, budget, events) {
+        Ok(observation) => RuntimeVolumeRoleDiagnostic {
+            observation: Some(observation),
+            error: None,
+            used_as_source_admission_authority: false,
+        },
+        Err(error) => RuntimeVolumeRoleDiagnostic {
+            observation: None,
+            error: Some(error.to_string().chars().take(4096).collect()),
+            used_as_source_admission_authority: false,
+        },
+    }
 }

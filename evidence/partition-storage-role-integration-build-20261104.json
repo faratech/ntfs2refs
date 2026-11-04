@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "native-storage-management-current-partition-role-integration",
+  "status": "lab-and-public-check-passed-native-qualification-pending",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native.rs",
+      "bytes": 201035,
+      "sha256": "5cc1df058d5afafd08aa0e0c6ab1a3dc3f7699afe679dda5f2d3bbcea8f6eabf"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 49057,
+      "sha256": "e2c19a0a261a391a7e5e7ef115b0959bad35a2a65542d4d93772678ae85faec0"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_owner.rs",
+      "bytes": 41297,
+      "sha256": "cceaffc3c0e4d023680f9651909442c94b9043405ea5b292cb7c7b2775657ac3"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_restoration.rs",
+      "bytes": 76362,
+      "sha256": "5778041e15f4286eb09985bb22a6e4610d389873d1f2ad52fad9675f1e5663c5"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_runtime_roles.rs",
+      "bytes": 32181,
+      "sha256": "6592bef059ea9ca2292779599d3eab3b1fa5a368e08920cf7d2f617c52f2d186"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_source_metadata.rs",
+      "bytes": 8366,
+      "sha256": "f5670c5c73e5b5a74918fa97bb0f394d24d189cdd80e383b59264d67fd0fceef"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_storage_roles.rs",
+      "bytes": 24856,
+      "sha256": "b31df2ac962b1a94d6691e432c71fd126ff50f24179bcd75a61462960c0d3555"
+    },
+    {
+      "path": "docs/partition-current-critical-volume-policy.md",
+      "bytes": 3191,
+      "sha256": "11d1d19c499d8a4aca45006365804c29e950e01ed29582d8754ff8254cc0133b"
+    },
+    {
+      "path": "evidence/vds-partial-properties-policy-20261104.json",
+      "bytes": 1123,
+      "sha256": "00b94b1cbab4b50c3fc4a6f9a638e1129e8f423ad75f5973c8464e8891fad754"
+    }
+  ],
+  "reviewed_patches": [
+    "fd78e85e2d9cd7e30cd25007b84bb2a2414adf16f4a5059d7e01a603244ec7a3",
+    "cbec99fc70734403af5b58aba9bf9056465e92c19d618325bcae8b61098e03ab"
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 32.910964,
+  "check_receipt_sha256": "958db61f2af48abe905e5af197ea015bb6161471995a8b0bf7b82effd16f5b6a",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_run": false,
+  "frozen_alpha_rebuilt": false,
+  "loaded_dump_verification_claimed": false,
+  "behavior": [
+    "Native COM queries MSFT_Partition twice around actual native target/current Windows/critical identity observations, binding GUID/disk/number/type/offset/size and required Boot/System booleans.",
+    "Thread-local COM connection is reused; role facts are queried freshly with bounded catalogs/property sizes and no PowerShell child process.",
+    "Owner, lifecycle, metadata witness and terminal checks use actual Storage Management facts instead of impossible complete-VDS coverage on this Windows build.",
+    "Direct Windows/pagefile/configured-dump native extents, actual lock/private/readonly exclusion and full GPT/native source checks remain.",
+    "Partial VDS raw HRESULT/properties remain explicitly unclassified diagnostics, without role admission authority."
+  ],
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "remaining": [
+    "Build exact committed lab executable and run the preserved source.",
+    "Native preparation/conversion/recovery and terminal qualification."
+  ]
+}

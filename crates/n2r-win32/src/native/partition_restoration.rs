@@ -1169,28 +1169,10 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             self.budget,
             events,
         )?;
-        let roles = partition_runtime_roles::observe_runtime_volume_roles(
-            &self.binding,
-            self.budget,
-            events,
-        )?;
-        // Publishing the selected BasicRO volume intentionally changes VDS's
-        // NONCRITICAL inventory. Require the full critical-role rows instead;
-        // flags are never cleared/masked to classify the new target as safe.
-        let original_roles = &self.baseline.vds_current_volume_roles;
-        let critical_unchanged = roles.vds_enumeration_completed
-            && roles.vds_critical_role_extents_outside_target
-            && roles.software_providers == original_roles.software_providers
-            && roles.vds_system_volume_count == original_roles.vds_system_volume_count
-            && roles.vds_boot_volume_count == original_roles.vds_boot_volume_count
-            && roles
-                .volumes
-                .iter()
-                .filter(|v| v.critical_flags != 0)
-                .eq(original_roles
-                    .volumes
-                    .iter()
-                    .filter(|v| v.critical_flags != 0));
+        let _vds_diagnostics=partition_runtime_roles::runtime_volume_role_diagnostics(&self.binding,self.budget,events);
+        let roles=super::partition_storage_roles::observe_partition_storage_roles(&self.binding,self.budget,events)?;
+        let critical_unchanged=roles.catalog_complete
+            &&roles.same_critical_roles(&self.baseline.storage_current_partition_roles);
         need(
             dumps == self.baseline.configured_dump_locations && critical_unchanged,
             "terminal critical-volume bindings changed",

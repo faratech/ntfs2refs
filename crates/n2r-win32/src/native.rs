@@ -38,6 +38,7 @@ pub use paged_recovery::{PartitionClosedJournalObservation, PartitionHandoffWitn
 
 mod partition_dump_locations;
 mod partition_runtime_roles;
+mod partition_storage_roles;
 mod partition_owner;
 mod partition_source_metadata;
 mod partition_target_observation;

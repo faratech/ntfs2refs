@@ -9,8 +9,9 @@ use super::super::partition_isolation::{
 };
 use super::super::partition_owner::{PartitionOwnerToken, PartitionScopedOwner};
 use super::super::partition_runtime_roles::{
-    RuntimeVolumeRoleObservation, observe_runtime_volume_roles,
+    RuntimeVolumeRoleDiagnostic, runtime_volume_role_diagnostics,
 };
+use super::super::partition_storage_roles::{PartitionStorageRoleObservation,observe_partition_storage_roles};
 use super::super::{AlignedBuffer, MAX_IO, NativeEvent, control, device_file};
 use crate::attestation_partition::PartitionPagedNtfsObservation;
 use serde::Serialize;
@@ -388,7 +389,8 @@ pub struct PartitionPreparationGuard {
     protection: Option<PartitionReadonlyProtection>,
     native: Option<PartitionPagedNtfsObservation>,
     dumps: ConfiguredDumpObservation,
-    roles: RuntimeVolumeRoleObservation,
+    roles: PartitionStorageRoleObservation,
+    vds_diagnostics:RuntimeVolumeRoleDiagnostic,
     vss: crate::vss_observation::Observation,
     mounted_ntfs: crate::txf_native::PartitionMountedTxfObservation,
     source_label: crate::volume_label::VolumeLabel,
@@ -613,10 +615,11 @@ impl PartitionPreparationGuard {
             "initial lifecycle checkpoint did not drain",
         )?;
         let dumps = observe_configured_dump_locations(&binding, budget, events)?;
-        let roles = observe_runtime_volume_roles(&binding, budget, events)?;
+        let vds_diagnostics=runtime_volume_role_diagnostics(&binding,budget,events);
+        let roles=observe_partition_storage_roles(&binding,budget,events)?;
         require(
             dumps.configured_locations_outside_target
-                && roles.vds_critical_role_extents_outside_target,
+                && roles.catalog_complete,
             "target intersects actual/configured critical volumes",
         )?;
         let vss = crate::vss_observation::observe_catalog(&format!(
@@ -677,6 +680,7 @@ impl PartitionPreparationGuard {
             native: None,
             dumps,
             roles,
+            vds_diagnostics,
             vss,
             mounted_ntfs,
             source_label,
@@ -827,7 +831,8 @@ impl PartitionPreparationGuard {
         )?;
         self.checkpoint("partition-preparation-critical-role-check", events)?;
         let dumps = observe_configured_dump_locations(&self.binding, self.budget, events)?;
-        let roles = observe_runtime_volume_roles(&self.binding, self.budget, events)?;
+        let _vds_diagnostics=runtime_volume_role_diagnostics(&self.binding,self.budget,events);
+        let roles=observe_partition_storage_roles(&self.binding,self.budget,events)?;
         require(
             dumps == self.dumps && roles.same_critical_roles(&self.roles),
             "configured/current critical-role bindings changed",

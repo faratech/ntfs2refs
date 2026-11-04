@@ -7,8 +7,9 @@ use super::partition_isolation::{
     PartitionIsolationObservation, PartitionObservationBudget, PartitionSourceBinding,
 };
 use super::partition_runtime_roles::{
-    RuntimeVolumeRoleObservation, observe_runtime_volume_roles,
+    RuntimeVolumeRoleDiagnostic, runtime_volume_role_diagnostics,
 };
+use super::partition_storage_roles::{PartitionStorageRoleObservation,observe_partition_storage_roles};
 use super::{AlignedBuffer, HeldPagedWritePolicy, MAX_IO, NativeEvent, control};
 use serde::Serialize;
 use std::{
@@ -25,7 +26,8 @@ const GRANULE: u64 = 4096;
 pub struct PartitionOwnerState {
     pub partition: PartitionIsolationObservation,
     pub(super) configured_dump_locations: ConfiguredDumpObservation,
-    pub(super) vds_current_volume_roles: RuntimeVolumeRoleObservation,
+    pub(super) vds_current_volume_roles: RuntimeVolumeRoleDiagnostic,
+    pub(super) storage_current_partition_roles:PartitionStorageRoleObservation,
     pub source_admission_issued: bool,
     pub loaded_dump_exclusion_qualified: bool,
 }
@@ -209,10 +211,10 @@ impl PartitionScopedOwner {
         events: &mut Vec<NativeEvent>) -> io::Result<()> {
         self.revalidate(events)?;
         let paging = &self.enrolled.partition.paging;
-        let roles = &self.enrolled.vds_current_volume_roles;
+        let roles = &self.enrolled.storage_current_partition_roles;
         if !paging.enumeration_succeeded || !paging.all_locations_resolved
             || paging.source_hosts_active_pagefile
-            || !roles.vds_enumeration_completed || !roles.vds_critical_role_extents_outside_target
+            || !roles.catalog_complete
             || !self.enrolled.configured_dump_locations.configured_locations_outside_target {
             return Err(io::Error::other("current-critical-volume partition policy unresolved"));
         }
@@ -333,19 +335,20 @@ impl PartitionScopedOwner {
             events,
         )?;
         let dumps = observe_configured_dump_locations(&binding, budget, events)?;
-        let vds_roles = observe_runtime_volume_roles(&binding, budget, events)?;
+        let vds_roles = runtime_volume_role_diagnostics(&binding,budget,events);
+        let storage_roles=observe_partition_storage_roles(&binding,budget,events)?;
         if !dumps.configured_locations_outside_target
-            || !vds_roles.vds_enumeration_completed
-            || !vds_roles.vds_critical_role_extents_outside_target
+            || !storage_roles.catalog_complete
         {
             return Err(io::Error::other(
-                "configured dump routes or current VDS critical-volume extents are unresolved",
+                "configured dump routes or current Storage Management partition roles are unresolved",
             ));
         }
         let enrolled = PartitionOwnerState {
             partition,
             configured_dump_locations: dumps,
             vds_current_volume_roles: vds_roles,
+            storage_current_partition_roles:storage_roles,
             source_admission_issued: false,
             loaded_dump_exclusion_qualified: false,
         };
@@ -388,10 +391,10 @@ impl PartitionScopedOwner {
             &mut physical_readonly, &binding, budget, events,
         )?;
         let dumps = observe_configured_dump_locations(&binding, budget, events)?;
-        let vds_roles = observe_runtime_volume_roles(&binding, budget, events)?;
+        let vds_roles = runtime_volume_role_diagnostics(&binding,budget,events);
+        let storage_roles=observe_partition_storage_roles(&binding,budget,events)?;
         if !dumps.configured_locations_outside_target
-            || !vds_roles.vds_enumeration_completed
-            || !vds_roles.vds_critical_role_extents_outside_target
+            || !storage_roles.catalog_complete
         {
             return Err(io::Error::other("lifecycle adoption lost critical-volume disjointness"));
         }
@@ -410,6 +413,7 @@ impl PartitionScopedOwner {
             file, physical_readonly, binding, budget,
             enrolled: PartitionOwnerState {
                 partition, configured_dump_locations: dumps, vds_current_volume_roles: vds_roles,
+            storage_current_partition_roles:storage_roles,
                 source_admission_issued: false, loaded_dump_exclusion_qualified: false,
             },
             buffer: AlignedBuffer::new()?, position: 0, poisoned: false,
@@ -474,13 +478,13 @@ impl PartitionScopedOwner {
             events,
         )?;
         let dumps = observe_configured_dump_locations(&self.binding, self.budget, events)?;
-        let vds_roles = observe_runtime_volume_roles(&self.binding, self.budget, events)?;
+        let _vds_roles = runtime_volume_role_diagnostics(&self.binding,self.budget,events);
+        let storage_roles=observe_partition_storage_roles(&self.binding,self.budget,events)?;
         if !super::partition_isolation::same_private_identity(&self.enrolled.partition, &current)
             || dumps != self.enrolled.configured_dump_locations
             || !dumps.configured_locations_outside_target
-            || !vds_roles.vds_enumeration_completed
-            || !vds_roles.vds_critical_role_extents_outside_target
-            || !vds_roles.same_critical_roles(&self.enrolled.vds_current_volume_roles)
+            || !storage_roles.catalog_complete
+            || !storage_roles.same_critical_roles(&self.enrolled.storage_current_partition_roles)
         {
             self.poisoned = true;
             return Err(io::Error::other(

@@ -220,6 +220,32 @@ Unknown/custom dump-filter settings retain explicit refusals. Microsoft document
 https://learn.microsoft.com/en-us/windows/win32/api/vds/ne-vds-vds_volume_flag . This policy still needs native qualification.
 Source writer activation, process-death recovery, terminal target restoration and public routing are incomplete.
 
+Development **8166aae** adds the actual owning source→expected pages→native shadow/capture preparation entry;
+public check0/22.2874068s, no units/native run. **d747112** adds SDK-internal actual read-only protection scopes,
+reuses the converted fidelity engine, and issues an opaque token-bound native observation with actual label.
+Public check0/33.2102706s; `evidence/partition-owning-preparation-build-20261104.json` and
+`evidence/partition-converted-readonly-build-20261104.json` bind those source versions. Terminal guard issuer was
+still pending at that commit. Root never added unsafe Sync to lifecycle owners; parallel object reads capture mode only.
+
+Development **fd9af7c** APPLIES/COMMITS actual SDK fresh AP patch0a848312... and MIXED replay patchbd8797ae...,
+ROOT prepared certificate/publication/AP patch7b0bb527..., Root execution-aware domain/orchestration,
+and known built-in `dumpfve.sys` configuration support. Unknown/custom filters still refuse; loaded-driver diagnostic stays false.
+Combined public check passed **0/22.5527078s**, shared target/no unit tests/no native writes or alpha rebuild.
+`evidence/partition-ap-replay-terminal-build-20261104.json` binds all18 source paths. Root applied the author-frozen
+41406-byte terminal snapshot SHAbe29ec6c62a9acaab0933ce5bdc53a751b8fed69240a91fa168e63dfcf447884, corrected
+three length/Path compiler sites, and qualified one retained-map comparator call. Terminal BasicRO auth/SET/native observation
+exists; attrs0/label/mount finish, fresh live-handle transfer, preAP cancellation and ROOT restarted MIXED orchestration do not.
+Root owns `resource_partition_preparation.rs` and `resource_partition_target.rs`; do not overwrite their new
+orchestration/execution changes from old draft bases. SDK AP/HND is actual code, but public CLI shared-disk routing remains disabled.
+Lowspace is implementing ONLY the two finish functions in a NEW copied draft, no architecture expansion before compile.
+Frozen_candidate_cases is implementing a separate actual ROOT restart/MIXED path with authenticated origin files and SDK mixed gate.
+Operator owns the actual next VM helper. Readonly plan `.lab/development/shared-windows-tail-target-readonly-plan-20261104.json`,
+SHA99b35db153de5887f3de6a42fcbc14c8bfdb8dde6d62b2f56a8da257eca5fa88: current oldT is followed by WinRE,
+so do not extend it. A new tiny differencing OS child can grow64→120GiB and host a NEW52GiB tail target at64GiB;
+old private T/WinRE/all16 keepers stay. Planning6GiB census317281799539/free89266679808 admitted, but remeasure at actual GO.
+No VM mutation has occurred. Do not restore766 or repeat primitive tests. Actual current source support is512-byte sectors,
+**1024-byte MFT records**,4096-byte indexes; other MFT sizes/4Kn remain outside this implementation.
+
 ## Recovery and verification invariants
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.

@@ -351,6 +351,27 @@ require complete native extents ALL outside target, bracket identity/returned pr
 Partial rows cannot establish positive boot/system coverage. Diagnose actual fields first; don't weaken guards or rewrite fixture.
 https://learn.microsoft.com/en-us/windows/win32/api/vds/nf-vds-ivdsvolume-getproperties
 
+LATEST READONLY DIAGNOSTIC: first26829e18c8074225ae9c047bb6bf08b1/PID2724/exit0 yielded0rows/QIerror due two
+C# transcription IIDs SOFTWARE+VOLUME; originalf072... script+receiptcbc76ff7... preserved. Converter's canonical Rust UUIDs were correct.
+Root+operator mechanically comparedall6; NEWv2scriptSHA87e3f7f4b887bb52e3811ba266c198955e9a3a569b02fcebb12c1a1f565a3417 differsONLY2GUIDliterals,
+RootissuedONCEreadonlyGO. Actual1b66341fdfcf4627b8a0c15b98c40283/PID1924/birth1793835455033/OSexit0/1.7632408s,
+7rows/noerror. ObservationSHA7ebc4450fd339df6b7bd019d7ebbb873ef0361207abb6b3b9c0976fa25907acb;
+archive `.lab/hyperv/streaming-v2-20261027/vds-properties-v2-1b66341fdfcf4627b8a0c15b98c40283/closed-manifest.json`
+SHAe9d3e8885103f4abfd7efa6206c046aef174d5d6871240536c4cab5d83c8eb6f (8files37359B), no source/storage/setter/refresh operations.
+ALL7opening+closing volume property calls return0x42715 with stable rawnonnullnames/type10/status1/health1/transition1/recommendedFS4.
+C volume588644bf-d154-4b1f-8a9f-e740e832c045/GLOBALROOT HarddiskVolume3/64091062272B/rawflags0x008986e2.
+No VDS systembit1 row exists (EFI not in this legacy software-volume enumeration). Thus even the old positive SYSTEMcount gate is impossible here.
+Do NOT promote partialflags0 to safe, nor merely allowoutsideTpartialrows and assumeT/coverage solved. AllrowsincludingT canbepartial.
+ROOTDECISION: implement documented named policy using ACTUAL MSFT_Partition IsBoot/IsSystem rows bound to nativeGUID/disk/extent,
+direct currentWindows/EnumPageFiles/configuredDump extent checks, actual same-original-file successfulLOCK (rejectssystem/pagefile),
+persistenttargetRO/private exclusion. Loaded-dump-driver diagnostic remainsFALSE; never claimundocumentedkernel-stateproof.
+Lowspace_case_impl owns COPIEDNEWnative `partition_storage_roles.rs` boundedreadonlyCIM/WMIcollector (prefernativeCOM, notPSspawnperrevalidation).
+Frozen_candidate_cases owns COPIEDSDK owner/lifecycle/witness/restorer integration replacing impossible completeVDS/count gate;
+retainVDSpartial rawproperties asUNCLASSIFIEDdiagnostics ONLY. Unknown required CIMproperties or nativebindings stillrefuse.
+Primary: https://learn.microsoft.com/en-us/windows-hardware/drivers/storage/msft-partition
+OperatorROOTAUTHORIZEDnormalOffclosure afteractualprocessesabsent/tasksidle tofree4GiB, preserveall17/current07ca/provider100MiB/sourceBasic0.
+No new converter/source retry authorized. ObserveactualoperatorOff/censusreceipt; do not infer fromthisinstruction.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

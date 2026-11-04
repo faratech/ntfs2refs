@@ -68,16 +68,29 @@ Evidence `evidence/public-low-space-refusal-20261104.json`, SHAe462be39049eec02d
 Archive manifest SHAea42f3e39eb9280dffa616ff911e133773115cee277b34290c5d598c01f86d8b;76case+9wrapper files pinned.
 No ENOSPC/write-flush or physical-power qualification. Earlier64MiB pilot evidence remains `evidence/eof0-64m-allocation-pilot-20261104.json`.
 
-**Current VM Off/RAM0/current3343/all16 unchanged**, freshly verified by exclusive operator after orderly shutdown.
+Low-space closure was Off/RAM0/current3343/all16 unchanged; this historical state is superseded by the latest766 closure below.
 Final low-space census322362016559/free84176871424. Boot-to-close growth5337570325 fit the unchanged6442450944 forecast;
 final OS-leaf postboot growth2118123520 exceeded earlier ACK samples through delayed/background growth. Samples are NOT peaks or hard quotas.
 Post-package census322400526126/free84137639936; original maximum329374052988 and reserve17179869184 remain unchanged.
 Operator is idle and retains exclusive VM ownership. No further native case is authorized yet.
 
-Next broader work is the already-built held-volume marker proof on the existing766 fixture, after separate Root/operator enrollment/admission.
-Read `.lab/development/held-volume-probe-execution-plan.md`, SHAd028275903cbabe0dbf5b14c9334c089f5a8b6b64423e7a25a27434f5817bdb4.
-Actual postboot target is Partition4/RawGPTSlot4; old fixture insertion ordinal5 is stale. Do not use old OFFLINE-only observer wrappers.
-Keep the public alpha immutable. Shared-OS-disk writer/recovery authority, broader geometry/NTFS coverage and actual write failures remain incomplete.
+**LATEST VM: Off/RAM0/current766/all16 unchanged**, freshly verified after orderly shutdown of the held-volume case.
+Held-volume marker proof1253d2da5eaa4335a6059e9b802d39bc PASSED: native6088/birth1793816618133/exit0/0.6501192s,
+one8192B SAME-BYTES WriteFile through the retained locked/dismounted/extended-DASD volume handle; flush/readback succeeded.
+Fresh independent Before5364/After3320 observations matched complete GPT/C/marker state. Evidence
+`evidence/held-volume-marker-interface-20261104.json`, SHA633a78c36ca987a0213ad145f5df595daf99b99bde561878628ff4ceecbb7078;
+44-file/231051B archive manifest SHA43e53197658801910a26f49dad28939431818bb4d56cb6b2aacc615842da990a.
+Final census317085822793/free89454919680; original cap/epoch and all16 keepers unchanged. No setter/fallback/retry was used.
+This proves only that bounded same-held-volume interface; not changed-data conversion, durable exclusion or reboot recovery.
+Do not repeat this completed native primitive. Saved observer/plan/build inputs remain in .lab; actual target is Partition4/RawGPTSlot4.
+
+Next critical-path code is a separate Rust private-type lifecycle prototype under `.lab/development/partition-private-type-probe`.
+It is PREPARATION ONLY, no build/VM action authorized: copy original single-partition GPT info and alter only target type through
+IOCTL_DISK_SET_PARTITION_INFO_EX, verify all other GPT bytes/siblings, test held-handle survival and ordinary route exclusion.
+No direct GPT writes, whole-layout setter, volume-OFFLINE I/O dead path, physical-RW payload fallback, auto restoration or public certificate.
+Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volume I/O, so it cannot simply be combined with the proved live volume writer.
+Keep the alpha immutable; existing whole-disk guards and certificates stay unchanged. Root must review/authorize each next build/native case.
+See `docs/ntfs-conversion-policy.md` for implemented preserve/materialize/refuse semantics and qualification boundaries.
 ## Recovery and verification invariants
 
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
@@ -126,8 +139,8 @@ SHA129a037136a1c68ac89418c7fdcdfecc8b7d269cc4fb5d89026efeb57e7c4a82; finite old-
 
 ## Broader work remains after finite package
 
-- Shared running-Windows-disk data partitions are unsupported. Existing physical-disk write failed21; read-only isolation is not writer authority.
-- Isolated Rust held-volume marker probe is built but UNEXECUTED: `.lab/development/partition-held-volume-probe/bin/partition-held-volume-probe.exe`,
+- Shared running-Windows-disk data partitions are unsupported. Existing physical-disk write failed21, but the retained-volume8KiB interface now passed. Persistent partition exclusion and full integration remain pending.
+- Isolated Rust held-volume marker probe is built and executed only for the interface proof above: `.lab/development/partition-held-volume-probe/bin/partition-held-volume-probe.exe`,
 491520 bytes/SHA0f2eee9155531d7267afc41d30316a36177a65b10bf6cc9c972e6a9e94f958de. Evidence: evidence/partition-held-volume-probe-build-20261104.json.
 Fixed existing766 fixture only, one8192B same-bytes write through retained locking volume handle before runtime offline. No conversion/recovery/exclusion certificate.
 - 72TiB private ReFS formatting/64KiB-file proof was not conversion/high-offset proof. 1PB formatting left unknown13008896-byte tail;

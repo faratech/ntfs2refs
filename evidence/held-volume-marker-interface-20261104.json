@@ -1,0 +1,156 @@
+{
+  "schema_version": 1,
+  "kind": "bounded-existing766-held-volume-SAME-BYTES-marker-proof",
+  "status": "observed-pass-limited-interface-only",
+  "date": "2026-11-04",
+  "attempt": "1253d2da5eaa4335a6059e9b802d39bc",
+  "private_probe": {
+    "binary_bytes": 491520,
+    "worker_sha256": "5789e6ca81659717e4414d378d06953bd4d0b9b2b3cf80c393e4185f3db8760e",
+    "input_pins_sha256": "8f1d82b276983f7b0278117f8f1f76cf92ceb2f193c01e6e79cf310ef4e7de37",
+    "runner_sha256": "463e5fed5d1137567931169ab39b96fc693b42beeafdc2db615742d1dedb3643",
+    "build_receipt_sha256": "3ad7ac0b7ec1b8556052ee9231b6b59b55ff10fca1dd97b690c5fb09ffc3084a",
+    "execution_plan_sha256": "d028275903cbabe0dbf5b14c9334c089f5a8b6b64423e7a25a27434f5817bdb4",
+    "observer_sha256": "a859e77bd0d94833d25490d611a0abedd959216bf40ecc6e3aca799fb13af609",
+    "binary_sha256": "0f2eee9155531d7267afc41d30316a36177a65b10bf6cc9c972e6a9e94f958de",
+    "source_sha256": "5e9dda160d30f733575e415819d5023880c10c1a3e148783c561d3940a52874b",
+    "cargo_lock_sha256": "f835e4fc17cdc77321e9e7eb606283b9ada078c7f4e8c9d571ef226fcb245067"
+  },
+  "public_product": {
+    "source_commit": "aef1ab3b3a6ea08f7093d83cc60462f8b799b79a",
+    "unchanged": true,
+    "whole_disk_guards_unchanged": true,
+    "probe_is_not_public_converter": true
+  },
+  "runtime": {
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "actual_native_birth_ms": 1793816618133,
+    "stderr_bytes": 222,
+    "restored_existing766_once": true,
+    "fixed_RAM_bytes": 4294967296,
+    "native_attempts": 1,
+    "stdout_bytes": 0,
+    "NICs": 0,
+    "terminal_utc": "2026-11-04T18:23:38.8034662Z",
+    "actual_owned_terminal_observed": true,
+    "wall_seconds": 0.6501192,
+    "actual_native_pid": 6088,
+    "vCPU": 4,
+    "boot_ms": 1793816452577,
+    "owned_through_terminal": true,
+    "native_exit": 0,
+    "automatic_retry": false
+  },
+  "enrollment": {
+    "target_GPT_attributes": "0000000000000000",
+    "disk_unique_id": "60022480BEA35BA9D496D5AFF633D768",
+    "target_online_readwrite": true,
+    "historical_fixture_number5_used_as_authority": false,
+    "actual_raw_GPT_slot": 4,
+    "logical_sector_bytes": 512,
+    "target_partition_guid": "20e3748f-b912-47c3-86aa-2285ab2b5583",
+    "disk_guid": "1f804918-e98f-4a71-9022-fc00c3cb7c26",
+    "C_remained_running": true,
+    "target_length": 2147483648,
+    "target_NTFS_cluster_bytes": 4096,
+    "physical_sector_bytes": 4096,
+    "disk_number": 0,
+    "target_offset": 64422412288,
+    "disk_bytes": 68719476736,
+    "target_volume_serial_hex": "b83a28253a27dede",
+    "actual_partition_number": 4
+  },
+  "source": {
+    "LCN": 315424,
+    "original_and_after_sha256": "153758bfed87777818c67e021f91ee89f8d96c365177d08f51f7e6371b7bf5aa",
+    "relative_marker_offset": 1291976704,
+    "C_control_bytes": 4096,
+    "allocation": 8192,
+    "C_control_sha256": "6c6413b8c0b413e072aeebaf36dd2c56d6d7fb98eb34a5e8ec895a932554346a",
+    "EOF": 8192,
+    "absolute_marker_offset": 65714388992,
+    "starting_VCN": 0,
+    "file_id": "27000000000001000000000000000000",
+    "links": 1,
+    "next_VCN": 2
+  },
+  "actual_source_write_outcome": {
+    "write_calls": 1,
+    "write_api_succeeded": true,
+    "write_native_error": null,
+    "write_returned_bytes": 8192,
+    "flush_called": true,
+    "flush_succeeded": true,
+    "flush_native_error": null,
+    "readback_matches_original": true
+  },
+  "primitive": {
+    "held_and_postclose_GPT_and_C_controls_verified": true,
+    "fallback_used": false,
+    "write_kind": "original same8192 bytes only",
+    "storage_availability_type_attribute_mount_setters_called": false,
+    "lock_dismount_extended_DASD_succeeded": true,
+    "interface": "same retained RW volume handle",
+    "physical_RW_handle_opened": false
+  },
+  "independent_observations": {
+    "saved_before_path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\held-volume-observe-1253d2da5eaa4335a6059e9b802d39bc\\before-observation.json",
+    "saved_after_path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\held-volume-observe-1253d2da5eaa4335a6059e9b802d39bc\\after-observation.json",
+    "C_identity_health_control_paging_equal": true,
+    "fresh_processes": true,
+    "canonical_complete_observed_state_equal": true,
+    "after_sha256": "1e27b73775cfd1712345771b0cd41422da02eda068315143ecd4b6225a1f9995",
+    "marker_hash_mapping_identity_allocation_equal": true,
+    "all_read_handles_closed_before_native": true,
+    "before_sha256": "97fa714b8b56a8dc12861ea41c4f70d48cf1c4fd160821854da7f50b41ce7893",
+    "all_GPT_headers_arrays_CRC_siblings_equal": true,
+    "old_OFFLINE_observers_used": false
+  },
+  "archive": {
+    "manifest_sha256": "43e53197658801910a26f49dad28939431818bb4d56cb6b2aacc615842da990a",
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\held-volume-marker-1253d2da5eaa4335a6059e9b802d39bc\\closed",
+    "files": 44,
+    "native_receipts": 36,
+    "source_host_all_lengths_and_SHA256_verified": true,
+    "bytes": 231051
+  },
+  "invocation_corrections": {
+    "initial_execution_policy_refusal_before_probe": true,
+    "process_local_ExecutionPolicy_Bypass_only": true,
+    "observer_and_probe_unchanged": true,
+    "source_write_retry": false,
+    "observation_directory_path_precondition_corrected": true
+  },
+  "final_state": {
+    "fresh_separate_process_verified": true,
+    "all16_preserved": true,
+    "RAM": 0,
+    "state": "Off",
+    "new_checkpoint_calls": 0,
+    "capacity": {
+      "actual_bytes": 317085822793,
+      "free_bytes": 89454919680,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 0,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "current_checkpoint": "766c9abc-8582-4de6-b497-8acbc81274da"
+  },
+  "capacity_policy": {
+    "epoch_reset": false,
+    "forecast_bytes": 6442450944,
+    "minimum_host_free_bytes": 17179869184,
+    "maximum_actual_bytes": 329374052988,
+    "sample_not_peak_or_hard_quota": true,
+    "maximum_additional_epoch_bytes": 50000000000,
+    "initial_epoch_actual_bytes": 279374052988
+  },
+  "limits": [
+    "Qualifies only one same-original-bytes held-volume write/flush/readback interface on this fixture.",
+    "No changed-data writer, persistent partition exclusion, process-death/reboot recovery, partition conversion, arbitrary hardware or physical-power durability qualification.",
+    "Public converter whole-disk guards and frozen alpha are unchanged."
+  ],
+  "stable_release": false
+}

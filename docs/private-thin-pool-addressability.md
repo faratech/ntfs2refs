@@ -65,16 +65,44 @@ members, retains their provider and backing-file owners, and checks the resultin
 raw device through a held native handle. The returned owner exposes observations;
 it cannot be recreated from a serialized report.
 
-The implementation has passed a focused SDK compile and embedded-script syntax
-check. Its native constructor has not yet run. It performs no GPT initialization,
-formatting, conversion or recovery. Public conversion still uses the existing
-VHDX provider. Unknown states preserve the private pool and members for explicit
-inspection; this stage supplies no automatic teardown.
+The corrected Rust constructor `9606f22` subsequently completed its own native
+case: its actual process exited 0 in 11.2804747 seconds and issued the opaque
+live owner after checking the new members, pool, virtual disk and held RAW
+device through opening and closing observations. Native disk 13 exposed
+1,000,001,530,494,976 bytes with 512-byte logical and 4 KiB physical sectors.
+This stage performs no GPT initialization, formatting, conversion or recovery.
+Public conversion still uses the existing VHDX provider. Unknown states preserve
+the private pool and members; this stage supplies no automatic teardown.
+
+The preceding Rust case exited 1 after creating its pool and virtual disk but
+before issuing an owner: the closing script looked up a pooled member using
+`Get-Disk`, whose surfaced inventory hides these members. Its failure and assets
+remain preserved. The corrected closing observation resolves members through
+their recorded physical-disk identities and pool association. Read-only closure
+after the successful second case also matched the first pool, both original
+members and RAW virtual disk 10. Neither pool was reset or reused for a retry.
 
 The constructor admits the complete two-member backing profile, metadata reserve
 and separate Rust/PowerShell RAM shares before work. Actual free space and child
 working set are sampled; they are not kernel quotas or physical reservations.
 See [the build record](../evidence/private-thin-pool-constructor-build-20261104.json).
+
+The successful constructor sampled 75,530,512 bytes of retained regular-file
+allocation before writing its final observation receipt and 219,471,872 bytes of
+PowerShell working set. Neither value is peak usage or a hard memory limit, and
+neither supplies physical capacity for a populated petabyte filesystem. The
+failed case's 15 metadata files (20,923 bytes) and successful case's 16 files
+(27,122 bytes) were copied with source/host length and SHA checks; VHDX members
+and payloads were excluded. See
+[the exact Rust constructor evidence](../evidence/private-thin-rust-constructor-20261104.json).
+Reattachment, ReFS formatting, payload I/O, conversion, recovery and replacement
+of the public single-VHDX backend remain separate unqualified steps.
+
+After metadata closure, the VM was normally shut down and one completed branch
+was saved at `c60b51c2`, parent `3343`. A separate fresh process observed Off,
+zero assigned RAM, that saved parent and no project workers. The b7 HND result
+and both private constructor cases remain preserved. Saving this branch does
+not establish thin-provider reattachment or recovery after a new boot.
 
 Microsoft documents the native management contracts in
 [New-StoragePool](https://learn.microsoft.com/en-us/powershell/module/storage/new-storagepool)

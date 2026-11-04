@@ -62,8 +62,12 @@ WITHOUTrestore/checkpoint returned operationalFReFS onboot1793780316134.
 Postbootclosure7d9e29dad8abc67ce7537c7c5887a87cdc3d00f7934fe5968d802eecae8d7b28.
 See `evidence/public-owned-shadow-retirement-20261104.json`. New mutation/AP/
 power/physical/petabyte qualification remain false. Frozen814 unchanged.
-VM is currently Running/4GiB/parent3343 on that operational postboot branch.
-Never replay its old raw journal. The separate private Rust probe build completed
+VM is now **Off/RAM0/parentc60b51c2-9e2a-4d57-8cc7-8a034d1802b8**,
+freshly verified in a separate process. This completed checkpoint's parent is3343;
+it retains the converted B7 source plus both Rust constructor cases. Receipt
+`saved-completed-native-branch.json` SHA606eecf7f08e251d4f49930104093b70660bd7f3ae2ee0523419c2a1aab101e8.
+No project workers remain. Never replay this operational HND's old raw journal.
+The separate first private Rust probe build completed
 in actual session55010. Source e10ebd31eed06898efa71ad14ee14547994e566b,
 candidate `.lab/development/release-candidates/private-thin-constructor-e10ebd3`,
 manifest a4290c1621ae0b2f762b877b286e174da54bc6a91cb810940adf6cd8fc570ec6,
@@ -75,10 +79,35 @@ No opaque owner issued, no GPT/format/conversion. All assets preserved. Guest
 stage `C:\ntfs2refs\rust-thin-constructor-1c412d52fbfb4c35a49005314244c75e`,
 output `K:\n2r-rust-thin-1c412d52fbfb4c35a49005314244c75e`.
 Its pool{3ff6a752-2594-423d-b561-798eb26b1057}/VD626CEB9D71D4ED4798E24257D4C2CFD8
-remains on native disk10 RAW; the visible inventory is now9disks (0..7 and10).
+was observed on native disk10 RAW before shutdown; that failed-case closure's
+visible inventory was9disks (0..7 and10).
 Preserve the failed case; do not rerun it or derive an owner from its reports.
-The closing lookup has a prepared fix using the same live members' exact
-Get-PhysicalDisk UniqueId/ObjectId. Root owns builds, the next fresh case and Git.
+Its15files20923B closure manifestf92d555ee50e0868fb9a26aae8b1bc2e6f0136e028b583aa149570b86ecf29ba
+contains the actual error. The closing lookup was fixed by resolving the same
+live members' exact Get-PhysicalDisk UniqueId/ObjectId, retaining original Rust
+provider/backing checks. New source9606f227ad2f214f0221161cfca0d27004e688d6
+release passed2m29s with the ONE shared target/source. Manifest
+5996b1d34de7f7d998b413bede3b732b3f618c610f4aeb4c6b17bb060321f685,
+binaryfb427060f57f378d8f4c4f24cc0e860ca37937f6aef8a48ac186f94a99e39d9b,
+at `.lab/development/release-candidates/private-thin-constructor-9606f22`.
+Fresh casef6d74a4ec24f477a91fa8a39fb22f227, actualPID3736/birth1793781853978,
+exited0/11.2804747s at08:44:25.263UTC. Its actual typed constructor owner
+held native13, size1000001530494976B/512e/4K/uninitialized RAW; all closing
+member/pool/provider/native/file checks passed. Sampled retained file allocation
+75530512B (about72MiB, includes small metadata), childWS219471872B, not peaks/
+kernel quotas/full-volume capacity. Closed16files27122B manifest
+c7a5d682bb29bb1859fd4ad73d7e251b091b519af4d6c8721b14cc53b1ff80a3.
+See `evidence/private-thin-rust-constructor-20261104.json` and
+`docs/private-thin-pool-addressability.md` for the exact scope and artifact pins.
+The first pool was preserved. Both cases are saved in c60; raw native numbers
+are pre-shutdown observations, NOT persistent routes. No GPT/ReFS format,
+payload adoption, public-backend change, restart discovery or recovery qualified.
+Do not assume pool members autoattach or mint a fresh formatter owner from JSON.
+Root owns any future VM actions/builds/Git. No unit tests were added or run.
+Final complete census after the saved checkpoint:310209026381B charged,
+96319320064B host free, original329374052988B maximum/17179869184B reserve.
+The original50GB additional-space epoch was not reset or raised. About19.165GB
+remains under the lab maximum; any future growth needs a fresh justified forecast.
 
 The b7 standalone newly-owned empty-shadow primitive passed native detach and
 same-file retirement: PID3068/birth1793778325606/exit0/0.726818s, loadedtrue→false,
@@ -99,7 +128,8 @@ members/pool, sampled child resource share, same-handle native checks, no GPT/
 format/public default/reopen/cleanup. SDKcheck passed16.67s; embeddedPSparse0;
 only owned-file formatting followed that check. The e10ebd3 lab wrapper will
 exercise it with fixed1e15 goal/64MiBRust/384MiBPS/12GiBscratch/1GiBreserve.
-Native execution remains unqualified until the actual probe completes.
+The corrected raw constructor has the narrow native success above; the public
+conversion provider still has its original VHDX ceiling.
 
 Superseded inactive a225 leaf9702 was retired through Hyper-V only after all
 121 archived metadata file pins plus original build/source were reverified.
@@ -430,6 +460,7 @@ Keep required origins/ancestors unless a fresh retirement audit supersedes them:
 | `895f472a-4d33-47f2-86ec-bb8ead5f3911` | Verified 814 normal/mutation/reboot operational HND; parent 3343. Never replay its old raw journal. |
 | `0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2` | Original exact-814 interrupted AP origin; parent 3343. Restore this origin independently for a new authorized recovery direction. |
 | `a0a8217f-894f-4311-bbf7-27151da5d216` | Verified 814 resumed operational HND; parent 0cf3. Never replay its old raw journal. |
+| `c60b51c2-9e2a-4d57-8cc7-8a034d1802b8` | Current completed B7 cleanup/coldboot HND plus both private Rust constructor cases; parent 3343, Off/RAM0. No old raw replay or qualified thin reattachment. |
 | `766c9abc-8582-4de6-b497-8acbc81274da` | Closed partition-only experiment; parent fe668. Its C: shrink/T: creation facts belong only to that saved branch; never repeat its setup blindly. |
 | `f4bf5238-14c0-4b15-bda6-7859abd4d1c9` | Guarded archive-mismatch checkpoint: never remove or force. |
 

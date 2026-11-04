@@ -31,7 +31,13 @@ actualPID5348/birth1793810208762/843.0596228s, stdout2269B/stderr0/oneownednativ
 Boot1793810184063; actual engine0c05ca76d1a5529c8c7839515bcd26aa,
 printed recovery SHA f330f0a74424bf0c8fe4162ebbb38fa12ea590aca4aed5e01ffef20c8fb815c4.
 Exactaef public binary17198080B/daa56...; argv --drive F --partition 2 --minimize-scratch, NO thin flags/watcher.
-Only operator owns VM work. Native completion/default cleanup/original811/1024/save remain pending.
+Default native finalization/HND/owned-VHDX cleanup PASSED; shadow backing is absent and locator/J are preserved.
+New J af550200000003000000000000000000/186969896B has the exact locator-bound N2RSHN01 marker.
+Default oraclee9bc247dccc44a35849af17043fb0e6a PASSED all811/9885801949B/1534objects/1024UTF16paths,
+all13actualdigestterminals0/11.4360169s. Default evidence is evidence/public-default-vhdx-conversion-20261104.json.
+Saved default Off HND checkpoint508e5c78-289b-4ad3-9c47-286fb03ddb01, created17:01:44UTC, child3343;
+fresh separate process verified Off/RAM0/current508e/all16. Census316108962275B/free90433630208B.
+Only operator owns VM work. No low-space reservation or shared-OS-disk probe has been executed yet.
 Root-approved removal of ONLY8a+4b8 completed, receiptSHA9b4f159cb0c0be787d7204c758c1088f06dd3455486676d707bb2c2ef7b4b2a8.
 Fresh separate-process Off/current9f/RAM0/remaining15/twoabsent passed; purecensus301782495419B/free104758255616B
 admitted unchanged20GiB21474836480B. Operator restored original3343 ONCE and freshly verified Off/all15 before dispatch.
@@ -179,7 +185,8 @@ Previously automatic-review-rejected research-image, .lab/ntfs2btrfs-source-audi
 
 ## Protected snapshot graph and VM
 
-Keep all15 non-target IDs and dependencies; guardedf4 is NEVER remove/force. Only Root-reviewed8a/4b8 leaf retirement above is authorized:
+Keep all16 remaining IDs and dependencies; guardedf4 is NEVER remove/force. No further retirement is authorized:
+- 508e5c78-289b-4ad3-9c47-286fb03ddb01 (qualified default VHDX aef HND), child3343.
 - 9f0372c8-4aa9-4fd7-94d3-2f8356619e21 (qualified resumed/mutated/rebooted operational aef HND), child266.
 - 266130c1-51c8-479c-b528-423644770dc2 (qualified resumed aef HND; old raw replay permanently closed), child of AP39ba.
 - ea75dff5-36f4-42af-8e13-cc9b2e8cba6c (qualified aef rollback; ABT closes raw replay), child of AP39ba.

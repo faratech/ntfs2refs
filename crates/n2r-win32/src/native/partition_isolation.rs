@@ -654,6 +654,17 @@ fn observe(
     )
 }
 
+/// Single complete metadata observation for the native terminal publication
+/// bracket. It grants no writer and imposes no equality on transient aliases.
+pub(super) fn observe_basic(
+    file: &mut File,
+    binding: &PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<PartitionIsolationObservation> {
+    observe(file, binding, budget, events)
+}
+
 /// New explicit private-type READONLY profile; never a write/admission issuer.
 pub(super) fn observe_private(
     file: &mut File,

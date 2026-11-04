@@ -186,6 +186,96 @@ impl Artifact {
             sha: observed,
         })
     }
+    fn adopt_held(
+        file: File,
+        expected: [u8; 32],
+        limit: u64,
+        binding: &PartitionSourceBinding,
+        windows: &partition_isolation::PartitionVolumeExtent,
+        require_c: bool,
+    ) -> io::Result<Self> {
+        crate::file_storage::require_readonly_access(&file)?;
+        let before = crate::reference_file::observe_reference_file_handle_with_limit(&file, limit)?;
+        need(
+            before.file_bytes > 0 && before.number_of_links == 1,
+            "ordinary nonempty single-link restoration artifact required",
+        )?;
+        // Actual SDK live transfer retains its original FileObject. Prove
+        // that object still denies an ordinary compatible RW contender.
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(3)
+            .custom_flags(0x0020_0000)
+            .open(&before.final_path)
+        {
+            Err(error) if error.raw_os_error() == Some(32) => (),
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("held live artifact sharing is unknown: {error}"),
+                ));
+            }
+            Ok(contender) => {
+                drop(contender);
+                return Err(bad("held live artifact permits another RW writer"));
+            }
+        }
+        let mut held = file;
+        let actual = crate::reference_file::observe_reference_file_handle_with_limit(&held, limit)?;
+        need(actual == before, "actual live artifact metadata changed")?;
+        let end = actual
+            .final_path
+            .find("}\\")
+            .ok_or_else(|| bad("artifact GUID route absent"))?
+            + 1;
+        let volume = device_file(&actual.final_path[..end], false, false)?;
+        let ext = control(
+            &volume,
+            "partition-restoration-artifact-extents",
+            VOLUME_EXTENTS,
+            &[],
+            32,
+            &mut Vec::new(),
+        )?;
+        need(
+            ext.len() == 32 && crate::layout::u32_at(&ext, 0)? == 1,
+            "restoration artifact extent is not a complete basic volume",
+        )?;
+        let disk = crate::layout::u32_at(&ext, 8)?;
+        let at = crate::layout::u64_at(&ext, 16)?;
+        let bytes = crate::layout::u64_at(&ext, 24)?;
+        let target = &binding.storage.identity;
+        let end = at
+            .checked_add(bytes)
+            .ok_or_else(|| bad("artifact extent overflow"))?;
+        let te = target
+            .partition_offset
+            .checked_add(target.partition_bytes)
+            .ok_or_else(|| bad("target extent overflow"))?;
+        need(
+            disk != binding.storage.disk_number || end <= target.partition_offset || at >= te,
+            "restoration metadata overlaps target",
+        )?;
+        if require_c {
+            need(
+                disk == windows.disk_number && at == windows.offset && bytes == windows.length,
+                "preparation intent is not on actual Windows C",
+            )?;
+        }
+        let observed = crate::sha256_native::hash_range(&mut held, 0, actual.file_bytes)?;
+        need(
+            observed == expected
+                && crate::reference_file::observe_reference_file_handle_with_limit(&held, limit)?
+                    == actual,
+            "restoration artifact hash/identity differs",
+        )?;
+        Ok(Self {
+            file: held,
+            snapshot: actual,
+            sha: observed,
+        })
+    }
     fn read(&mut self, max: u64) -> io::Result<Vec<u8>> {
         need(
             self.snapshot.file_bytes <= max,
@@ -220,7 +310,7 @@ struct Origin {
     publication: Artifact,
     locator: Artifact,
     intent: Artifact,
-    native_file: Artifact,
+    native_file: Option<Artifact>,
     native_pages: crate::observation_pages::PagedNativeObservation,
 }
 
@@ -362,8 +452,31 @@ impl Origin {
         windows: &partition_isolation::PartitionVolumeExtent,
         pins: &super::paged_recovery::PagedRecoveryPins<'_>,
     ) -> io::Result<Self> {
-        let mut publication = Artifact::hold(
+        Self::authenticate_owned(
             files.publication,
+            files.locator,
+            IntentInput::Reopened(files.preparation_intent),
+            NativeInput::Reopened(files.native_metadata),
+            published_sha,
+            binding,
+            budget,
+            windows,
+            pins,
+        )
+    }
+    fn authenticate_owned(
+        publication_file: File,
+        locator_file: File,
+        intent_input: IntentInput,
+        native_input: NativeInput,
+        published_sha: [u8; 32],
+        binding: &PartitionSourceBinding,
+        budget: PartitionObservationBudget,
+        windows: &partition_isolation::PartitionVolumeExtent,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+    ) -> io::Result<Self> {
+        let mut publication = Artifact::adopt_held(
+            publication_file,
             published_sha,
             MAX_JSON,
             binding,
@@ -406,8 +519,8 @@ impl Origin {
             "publication source differs from actual private target",
         )?;
         let lp = &envelope["locator"];
-        let mut locator = Artifact::hold(
-            files.locator,
+        let mut locator = Artifact::adopt_held(
+            locator_file,
             digest(lp, "sha256")?,
             MAX_JSON + 64,
             binding,
@@ -480,14 +593,30 @@ impl Origin {
             number_of_links: u32::try_from(num_field(ip, "number_of_links")?)
                 .map_err(io::Error::other)?,
         };
-        let mut intent = Artifact::hold(
-            files.preparation_intent,
-            digest(pin, "intent_prefix_sha256")?,
-            MAX_INTENT,
-            binding,
-            windows,
-            true,
-        )?;
+        let mut intent = match intent_input {
+            IntentInput::Reopened(file) => Artifact::hold(
+                file,
+                digest(pin, "intent_prefix_sha256")?,
+                MAX_INTENT,
+                binding,
+                windows,
+                true,
+            )?,
+            IntentInput::Live { file, pin: actual } => {
+                need(
+                    serde_json::to_value(&actual).map_err(io::Error::other)? == *pin,
+                    "published preparation pin differs from consumed actual live guard",
+                )?;
+                Artifact::adopt_held(
+                    file,
+                    digest(pin, "intent_prefix_sha256")?,
+                    MAX_INTENT,
+                    binding,
+                    windows,
+                    true,
+                )?
+            }
+        };
         need(
             intent.snapshot == intent_snapshot,
             "actual held preparation intent identity differs",
@@ -552,26 +681,43 @@ impl Origin {
         )?;
         let np = &scope["native_metadata"];
         let native_sha = digest(np, "sha256")?;
-        let native_file = Artifact::hold(
-            files.native_metadata,
-            native_sha,
-            num_field(np, "bytes")?,
-            binding,
-            windows,
-            false,
-        )?;
-        need(
-            native_file.snapshot.file_bytes == num_field(np, "bytes")?,
-            "actual native metadata length differs",
-        )?;
         let nb: crate::observation_pages::NativeObservationBudget =
             serde_json::from_value(np["budget"].clone()).map_err(io::Error::other)?;
         nb.validate()?;
-        let native_pages = crate::observation_pages::PagedNativeObservation::open(
-            std::path::Path::new(&native_file.snapshot.final_path),
-            &hex::encode(native_sha),
-            nb,
-        )?;
+        let (native_file, native_pages) = match native_input {
+            NativeInput::Reopened(file) => {
+                let held = Artifact::hold(
+                    file,
+                    native_sha,
+                    num_field(np, "bytes")?,
+                    binding,
+                    windows,
+                    false,
+                )?;
+                need(
+                    held.snapshot.file_bytes == num_field(np, "bytes")?,
+                    "actual native metadata length differs",
+                )?;
+                let pages = crate::observation_pages::PagedNativeObservation::open(
+                    std::path::Path::new(&held.snapshot.final_path),
+                    &hex::encode(native_sha),
+                    nb,
+                )?;
+                (Some(held), pages)
+            }
+            NativeInput::Live(native) => {
+                let pages = native.into_terminal_domain();
+                pages.revalidate()?;
+                need(
+                    pages.sha256() == str_field(np, "sha256")?
+                        && pages.final_path() == str_field(np, "path")?
+                        && pages.byte_len() == num_field(np, "bytes")?
+                        && pages.budget() == nb,
+                    "published native metadata pin differs from actual transferred domain",
+                )?;
+                (None, pages)
+            }
+        };
         let request = &native_pages.header().request;
         need(
             request.disk_number == binding.storage.disk_number
@@ -613,7 +759,9 @@ impl Origin {
         self.publication.revalidate()?;
         self.locator.revalidate()?;
         self.intent.revalidate()?;
-        self.native_file.revalidate()?;
+        if let Some(file) = self.native_file.as_mut() {
+            file.revalidate()?;
+        }
         self.native_pages.revalidate()
     }
 }
@@ -637,6 +785,13 @@ pub struct PartitionRestorationReceipt {
     pub source_payload_write_calls: u64,
 }
 pub trait PartitionRestorationObserver {
+    /// Durably preserve and drain each bounded metadata attempt. Clearing
+    /// without preservation, or silently retaining128 events, is not success.
+    fn checkpoint_native_events(
+        &mut self,
+        phase: &'static str,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()>;
     /// Persist this real before-change observation durably outside the target.
     /// The SDK still retains/authenticates actual closed-J and intent owners.
     fn before_partition_change(
@@ -663,6 +818,80 @@ pub struct PartitionTerminalRestorationGuard<'journal, 'pins> {
     current_info: Vec<u8>,
     mounted_binding: crate::general_layout::GeneralDiskBinding,
     mounted: Option<File>,
+}
+impl PartitionTerminalRestorationGuard<'static, 'static> {
+    /// Actual fresh-HND transfer. The closure is scoped to the owned journal,
+    /// index and captured pins; none of their borrows can escape as T. Intent
+    /// and native page owners are consumed from admission, never reopened.
+    pub fn with_fresh_handoff<T>(
+        mut owner: PartitionScopedOwner,
+        admission: super::partition_lifecycle::PartitionNtfsAdmission,
+        handoff: PartitionHandoffWitness,
+        files: PartitionLivePublicationFiles,
+        published_sha256: [u8; 32],
+        events: &mut Vec<NativeEvent>,
+        consume: impl for<'journal, 'pins> FnOnce(
+            PartitionTerminalRestorationGuard<'journal, 'pins>,
+            &mut Vec<NativeEvent>,
+        ) -> io::Result<T>,
+    ) -> io::Result<T> {
+        handoff.require_owner(&owner.owner_token())?;
+        let journal_owners = handoff.into_terminal_journal_owners(&mut owner, events)?;
+        let preparation = admission.into_terminal_preparation_owners(&mut owner, events)?;
+        let parts = owner.into_terminal_restoration_parts(&journal_owners.closed, events)?;
+        let PartitionLiveJournalOwners {
+            closed,
+            mut journal,
+            policy,
+            pins: owned_pins,
+        } = journal_owners;
+        let pins = owned_pins.pins();
+        let PartitionLivePreparationOwners {
+            intent,
+            native,
+            pin,
+            label,
+            mount_paths,
+        } = preparation;
+        let origin = Origin::authenticate_owned(
+            files.publication,
+            files.locator,
+            IntentInput::Live { file: intent, pin },
+            NativeInput::Live(native),
+            published_sha256,
+            &parts.binding,
+            parts.budget,
+            &parts.state.partition.windows_volume,
+            &pins,
+        )?;
+        need(
+            origin.original_label == label && origin.mount_paths == mount_paths.paths,
+            "publication label/mounts differ from consumed actual preparation guard",
+        )?;
+        let mut current_info = origin.original_info.clone();
+        current_info[32..48].copy_from_slice(&crate::layout::guid_bytes(PRIVATE)?);
+        let mut guard = PartitionTerminalRestorationGuard {
+            file: Some(parts.file),
+            physical: parts.physical_readonly,
+            binding: parts.binding.clone(),
+            budget: parts.budget,
+            baseline: parts.state,
+            token: parts.token,
+            origin,
+            closed,
+            policy: &policy,
+            journal: &mut journal,
+            pins,
+            kind: PartitionTerminalKind::Handoff,
+            stage: PartitionTerminalStage::Private,
+            current_info,
+            mounted_binding: parts.binding.storage,
+            mounted: None,
+        };
+        guard.revalidate_metadata(events)?;
+        guard.revalidate_closed()?;
+        consume(guard, events)
+    }
 }
 impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
     pub fn open_authenticated(
@@ -818,8 +1047,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             observer,
             events,
         )?;
-        let (binding, volume) =
-            find_terminal_volume(&self.binding, &self.current_info, self.budget, events)?;
+        let (binding, volume) = self.wait_for_terminal_volume(observer, events)?;
         self.mounted_binding = binding;
         self.mounted = Some(volume);
         let before = terminal_volume_info(self.mounted.as_ref().unwrap())?;
@@ -905,14 +1133,16 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         if self.current_info[32..48] == crate::layout::guid_bytes(PRIVATE)? {
             partition_isolation::observe_private(&mut physical, &self.binding, self.budget, events)
         } else {
-            let reader = partition_isolation::PartitionScopedReader::open(
-                PartitionSourceBinding {
+            // Namespace absence/appearance is not an isolation witness. The
+            // caller compares all complete GPT/C/critical fields separately.
+            partition_isolation::observe_basic(
+                &mut physical,
+                &PartitionSourceBinding {
                     storage: self.mounted_binding.clone(),
                 },
                 self.budget,
                 events,
-            )?;
-            Ok(reader.observation().clone())
+            )
         }
     }
     fn revalidate_metadata(
@@ -1007,6 +1237,99 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             &self.pins,
         )
     }
+    fn wait_for_terminal_volume(
+        &mut self,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<(crate::general_layout::GeneralDiskBinding, File)> {
+        let started = std::time::Instant::now();
+        let bound = std::time::Duration::from_millis(60 * 250);
+        for attempt in 0..60 {
+            publication_checkpoint(
+                Ok(()),
+                observer,
+                "terminal-volume-publication-before",
+                events,
+            )?;
+            let before = self.revalidate_metadata(events).map(|_| ());
+            publication_checkpoint(
+                before,
+                observer,
+                "terminal-volume-publication-critical-before",
+                events,
+            )?;
+            let found = find_terminal_volume(
+                &self.binding,
+                &self.current_info,
+                self.budget,
+                observer,
+                events,
+            );
+            match found {
+                Ok((binding, volume)) => {
+                    self.mounted_binding = binding.clone();
+                    let closing = (|| {
+                        self.revalidate_metadata(events)?;
+                        let info = control(
+                            &volume,
+                            "terminal-published-partition-closing",
+                            0x0007_0048,
+                            &[],
+                            144,
+                            events,
+                        )?;
+                        need(
+                            info == self.current_info,
+                            "published target native identity changed at closing bookend",
+                        )
+                    })();
+                    publication_checkpoint(
+                        closing,
+                        observer,
+                        "terminal-volume-publication-matched",
+                        events,
+                    )?;
+                    return Ok((binding, volume));
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::NotFound
+                        && error
+                            .get_ref()
+                            .is_some_and(|inner| inner.is::<NoTerminalTargetYet>()) =>
+                {
+                    let closing = self.revalidate_metadata(events).map(|_| ());
+                    publication_checkpoint(
+                        closing,
+                        observer,
+                        "terminal-volume-publication-not-yet",
+                        events,
+                    )?;
+                    if attempt == 59 || started.elapsed() >= bound {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "actual terminal volume was not published within bounded metadata wait",
+                        ));
+                    }
+                    let remaining = bound.saturating_sub(started.elapsed());
+                    std::thread::sleep(std::time::Duration::from_millis(250).min(remaining));
+                }
+                Err(error) => {
+                    // Identity/malformed/unknown errors are not retried. Keep
+                    // their actual native records before preserving the error.
+                    return publication_checkpoint(
+                        Err(error),
+                        observer,
+                        "terminal-volume-publication-hard-error",
+                        events,
+                    );
+                }
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "terminal publication metadata attempt bound exhausted",
+        ))
+    }
     fn change(
         &mut self,
         attrs: u64,
@@ -1076,8 +1399,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         // Persistent target-only RO precedes closing the old NTFS FileObject.
         // All root capture duplicates must also close before native publication.
         drop(self.file.take());
-        let (binding, volume) =
-            find_terminal_volume(&self.binding, &self.current_info, self.budget, events)?;
+        let (binding, volume) = self.wait_for_terminal_volume(observer, events)?;
         self.mounted_binding = binding;
         self.mounted = Some(volume);
         self.stage = PartitionTerminalStage::Readonly;
@@ -1253,28 +1575,41 @@ fn candidate_volume(
     name: &str,
     source: &PartitionSourceBinding,
     expected: &[u8],
+    events: &mut Vec<NativeEvent>,
 ) -> io::Result<Option<(crate::general_layout::GeneralDiskBinding, File)>> {
     if !name.starts_with(r"\\?\Volume{") || !name.ends_with("}\\") {
         return Err(bad("volume enumeration returned malformed local GUID"));
     }
+    crate::layout::guid_bytes(&name[11..name.len() - 2])?;
     let volume = match device_file(name.trim_end_matches('\\'), false, false) {
         Ok(file) => file,
-        Err(_) => return Ok(None),
+        Err(error) if matches!(error.raw_os_error(), Some(2 | 3 | 21 | 1167)) => return Ok(None),
+        Err(error) => return Err(error),
     };
+    let event_start = events.len();
     let ext = match control(
         &volume,
         "terminal-candidate-extents",
         VOLUME_EXTENTS,
         &[],
         32,
-        &mut Vec::new(),
+        events,
     ) {
         Ok(bytes) => bytes,
-        Err(_) => return Ok(None),
+        Err(_)
+            if events.get(event_start).is_some_and(|event| {
+                !event.succeeded && matches!(event.native_error, Some(2 | 3 | 21 | 1167))
+            }) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
     };
-    if ext.len() != 32
-        || crate::layout::u32_at(&ext, 0)? != 1
-        || crate::layout::u32_at(&ext, 8)? != source.storage.disk_number
+    need(
+        ext.len() == 32 && crate::layout::u32_at(&ext, 0)? == 1,
+        "terminal candidate extent reply is malformed or not a complete single extent",
+    )?;
+    if crate::layout::u32_at(&ext, 8)? != source.storage.disk_number
         || crate::layout::u64_at(&ext, 16)? != source.storage.identity.partition_offset
         || crate::layout::u64_at(&ext, 24)? != source.storage.identity.partition_bytes
     {
@@ -1286,7 +1621,7 @@ fn candidate_volume(
         0x0007_0048,
         &[],
         144,
-        &mut Vec::new(),
+        events,
     )?;
     need(
         info == expected,
@@ -1500,10 +1835,17 @@ fn find_terminal_volume(
     source: &PartitionSourceBinding,
     expected: &[u8],
     budget: PartitionObservationBudget,
-    _events: &mut Vec<NativeEvent>,
+    observer: &mut impl PartitionRestorationObserver,
+    events: &mut Vec<NativeEvent>,
 ) -> io::Result<(crate::general_layout::GeneralDiskBinding, File)> {
     let known = format!("{}\\", source.storage.volume_path()?);
-    if let Some(found) = candidate_volume(&known, source, expected)? {
+    let candidate = candidate_volume(&known, source, expected, events);
+    if let Some(found) = publication_checkpoint(
+        candidate,
+        observer,
+        "terminal-known-volume-metadata",
+        events,
+    )? {
         return Ok(found);
     }
     let mut name = [0u16; 1024];
@@ -1515,7 +1857,16 @@ fn find_terminal_volume(
         )
     };
     if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        return Err(
+            if error.raw_os_error()
+                == Some(windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES as i32)
+            {
+                no_terminal_target_yet()
+            } else {
+                error
+            },
+        );
     }
     struct Enumeration(windows_sys::Win32::Foundation::HANDLE);
     impl Drop for Enumeration {
@@ -1533,7 +1884,13 @@ fn find_terminal_volume(
             .position(|unit| *unit == 0)
             .ok_or_else(|| bad("enumerated volume name unterminated"))?;
         let path = String::from_utf16(&name[..n]).map_err(io::Error::other)?;
-        if let Some(found) = candidate_volume(&path, source, expected)? {
+        let candidate = candidate_volume(&path, source, expected, events);
+        if let Some(found) = publication_checkpoint(
+            candidate,
+            observer,
+            "terminal-enumerated-volume-metadata",
+            events,
+        )? {
             return Ok(found);
         }
         name.fill(0);
@@ -1549,7 +1906,7 @@ fn find_terminal_volume(
             if error.raw_os_error()
                 == Some(windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES as i32)
             {
-                return Err(bad("no actual BasicRO target volume was published"));
+                return Err(no_terminal_target_yet());
             }
             return Err(error);
         }
@@ -1557,6 +1914,47 @@ fn find_terminal_volume(
     Err(bad(
         "terminal volume enumeration exceeds admitted count budget",
     ))
+}
+
+// Only a completed metadata enumeration with no target, never an unrelated
+// native/observer NotFound error, authorizes another publication attempt.
+#[derive(Debug)]
+struct NoTerminalTargetYet;
+impl std::fmt::Display for NoTerminalTargetYet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no actual terminal target volume is published yet")
+    }
+}
+impl std::error::Error for NoTerminalTargetYet {}
+fn no_terminal_target_yet() -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, NoTerminalTargetYet)
+}
+
+// Checkpoint every attempted bounded metadata batch, including hard failures.
+// The observer must retain the actual events before clearing this live budget.
+fn publication_checkpoint<T>(
+    result: io::Result<T>,
+    observer: &mut impl PartitionRestorationObserver,
+    phase: &'static str,
+    events: &mut Vec<NativeEvent>,
+) -> io::Result<T> {
+    let checkpoint = observer
+        .checkpoint_native_events(phase, events)
+        .and_then(|()| {
+            need(
+                events.is_empty(),
+                "terminal publication checkpoint did not drain actual metadata events",
+            )
+        });
+    match (result, checkpoint) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(checkpoint)) => Err(io::Error::new(
+            error.kind(),
+            format!("{error}; native event checkpoint also failed: {checkpoint}"),
+        )),
+    }
 }
 
 /// Private transfer, not a pathname/serialized constructor. SDK owner validates
@@ -1568,6 +1966,36 @@ pub(super) struct PartitionTerminalTargetParts {
     pub(super) budget: PartitionObservationBudget,
     pub(super) state: PartitionOwnerState,
     pub(super) token: PartitionOwnerToken,
+}
+/// SDK-internal consuming transfers only. Neither type has a public/path/DTO
+/// constructor; fields come from the actual admission and spent HND witness.
+pub(super) struct PartitionLivePreparationOwners {
+    pub(super) intent: File,
+    pub(super) native: crate::attestation_partition::PartitionPagedNtfsObservation,
+    pub(super) pin: super::partition_lifecycle::PartitionPreparationPin,
+    pub(super) label: crate::volume_label::VolumeLabel,
+    pub(super) mount_paths: MountPathObservation,
+}
+pub(super) struct PartitionLiveJournalOwners {
+    pub(super) closed: PartitionClosedJournalObservation,
+    pub(super) journal: File,
+    pub(super) policy: HeldPagedWritePolicy,
+    pub(super) pins: super::paged_recovery::OwnedPartitionJournalPins,
+}
+pub struct PartitionLivePublicationFiles {
+    pub publication: File,
+    pub locator: File,
+}
+enum IntentInput {
+    Reopened(File),
+    Live {
+        file: File,
+        pin: super::partition_lifecycle::PartitionPreparationPin,
+    },
+}
+enum NativeInput {
+    Reopened(File),
+    Live(crate::attestation_partition::PartitionPagedNtfsObservation),
 }
 
 fn validate_origin_layout(

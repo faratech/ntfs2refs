@@ -108,6 +108,9 @@ pub mod refs_write_set;
 #[cfg(windows)]
 pub mod resource_diagnostic;
 #[cfg(windows)]
+#[doc(hidden)]
+pub mod resource_partition_alpha;
+#[cfg(windows)]
 pub(crate) mod resource_preparation;
 #[cfg(windows)]
 pub(crate) mod resource_recovery;

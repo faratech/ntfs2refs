@@ -525,6 +525,9 @@ impl PartitionResourcePreparedConversion<'_, '_, '_, '_, '_, '_> {
     pub(crate) fn locator_path(&self) -> &str {
         &self.locator.snapshot().final_path
     }
+    pub(crate) fn duplicate_locator_file(&mut self) -> Result<std::fs::File> {
+        self.locator.duplicate_readonly_origin_file()
+    }
 }
 
 /// Retains actual source-derived map/expected owners across shadow/context

@@ -895,3 +895,385 @@ impl JournalObservation<'_> {
         ))
     }
 }
+
+/// Actual terminal result of restarted replay, not a success DTO. HND and ABT
+/// witnesses own their same-J policy/identity and bind the live source token.
+pub(crate) enum PartitionReplayResult {
+    Resumed {
+        selected: SelectedResult,
+        handoff: SelectedResult,
+        witness: n2r_win32::PartitionHandoffWitness,
+        index_owner: crate::artifact_arena::ArtifactLease,
+    },
+    RolledBack {
+        selected: SelectedResult,
+        closed: n2r_win32::PartitionClosedJournalObservation,
+        index_owner: crate::artifact_arena::ArtifactLease,
+    },
+}
+fn partition_record<J: Read + Seek>(
+    policy: &n2r_win32::HeldPagedWritePolicy,
+    journal: &mut J,
+    format: JournalFormat,
+    ticket: &SelectedTicket,
+    ordinal: u64,
+) -> Result<Record> {
+    let item = policy.row(ordinal)?;
+    let mut bytes = [0u8; OLD_ZERO_RECORD];
+    at(
+        journal,
+        item.descriptor_offset,
+        &mut bytes[..format.record_size],
+    )?;
+    let row = Record::decode(&bytes, item.descriptor_offset, format, ticket.image_length)?;
+    ensure!(
+        row.offset == item.offset
+            && row.length == item.length
+            && item.flags == (row.old_kind | (row.new_kind << 2)),
+        "replay record differs from actual held index"
+    );
+    Ok(row)
+}
+fn partition_read_old<J: Read + Seek>(
+    policy: &n2r_win32::HeldPagedWritePolicy,
+    journal: &mut J,
+    format: JournalFormat,
+    ticket: &SelectedTicket,
+    mut source: u64,
+    before: u64,
+    out: &mut [u8],
+) -> Result<()> {
+    let (mut low, mut high) = (0, before);
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let r = policy.row(mid)?;
+        if add(r.offset, r.length)? <= source {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    let mut filled = 0;
+    while filled < out.len() {
+        ensure!(low < before, "replay COPY escapes earlier OLD rows");
+        let row = partition_record(policy, journal, format, ticket, low)?;
+        let end = add(row.offset, row.length)?;
+        ensure!(
+            row.offset <= source && source < end && row.old_kind != 2,
+            "replay COPY crosses gap/digest-only source"
+        );
+        let n = usize::try_from((end - source).min((out.len() - filled) as u64))?;
+        if row.old_kind == 1 {
+            out[filled..filled + n].fill(0);
+        } else {
+            at(
+                journal,
+                add(row.old_payload, source - row.offset)?,
+                &mut out[filled..filled + n],
+            )?;
+        }
+        filled += n;
+        source = add(source, n as u64)?;
+        low += 1;
+    }
+    Ok(())
+}
+fn partition_read_new<J: Read + Seek>(
+    policy: &n2r_win32::HeldPagedWritePolicy,
+    journal: &mut J,
+    format: JournalFormat,
+    ticket: &SelectedTicket,
+    row: Record,
+    ordinal: u64,
+    within: u64,
+    out: &mut [u8],
+) -> Result<()> {
+    ensure!(
+        within
+            .checked_add(out.len() as u64)
+            .is_some_and(|end| end <= row.length),
+        "replay NEW read escapes record"
+    );
+    match row.new_kind {
+        0 => at(journal, add(row.new_payload, within)?, out)?,
+        1 => out.fill(0),
+        2 => partition_read_old(
+            policy,
+            journal,
+            format,
+            ticket,
+            add(row.copy_source, within)?,
+            ordinal,
+            out,
+        )?,
+        _ => anyhow::bail!("unknown authenticated replay kind"),
+    };
+    Ok(())
+}
+fn partition_write_span(
+    writer: &mut n2r_win32::PartitionPagedWriter<'_, '_>,
+    policy: &n2r_win32::HeldPagedWritePolicy,
+    format: JournalFormat,
+    ticket: &SelectedTicket,
+    row: Record,
+    ordinal: u64,
+    start: u64,
+    length: u64,
+    forward: bool,
+    buffers: &mut Buffers,
+) -> Result<()> {
+    ensure!(
+        start
+            .checked_add(length)
+            .is_some_and(|end| end <= row.length),
+        "partition replay span escapes record"
+    );
+    let original = record(row);
+    let mut done = 0;
+    while done < length {
+        let n = usize::try_from((length - done).min(BUFFER as u64))?;
+        let within = add(start, done)?;
+        let at_source = add(row.offset, within)?;
+        at(writer, at_source, &mut buffers.current[..n])?;
+        {
+            let mut journal = writer.journal_read_view()?;
+            partition_read_new(
+                policy,
+                &mut journal,
+                format,
+                ticket,
+                row,
+                ordinal,
+                within,
+                &mut buffers.after[..n],
+            )?;
+            if row.old_kind == 2 {
+                sj::check_free_granules(
+                    &mut journal,
+                    &original,
+                    within,
+                    &buffers.current[..n],
+                    Some(&buffers.after[..n]),
+                )?;
+                if !forward {
+                    done = add(done, n as u64)?;
+                    continue;
+                }
+            } else {
+                sj::read_before(&mut journal, &original, within, &mut buffers.before[..n])?;
+                ensure!(
+                    sj::bytes_are_old_or_new(
+                        &buffers.current[..n],
+                        &buffers.before[..n],
+                        &buffers.after[..n]
+                    ),
+                    "partition replay changed immediately before write"
+                );
+            }
+        }
+        let desired = if forward {
+            &buffers.after[..n]
+        } else {
+            &buffers.before[..n]
+        };
+        if &buffers.current[..n] != desired {
+            writer.seek(SeekFrom::Start(at_source))?;
+            ensure!(
+                writer.write(desired)? == n,
+                "short bounded partition replay write"
+            );
+        }
+        done = add(done, n as u64)?;
+    }
+    Ok(())
+}
+impl BoundJournalObservation<'_> {
+    /// Actual publisher/intent/MIXED owner must be consumed immediately before
+    /// the SDK's independently authenticated CURRENT-state gate is issued.
+    pub(crate) fn replay_partition(
+        &mut self,
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        publication: &mut super::envelope::PartitionRecoveryPublicationBinding<'_>,
+        mixed: PartitionMixedObservation,
+        direction: PagedRecoveryDirection,
+        events: &mut Vec<NativeEvent>,
+        mut checkpoint: impl FnMut(&mut Vec<NativeEvent>) -> Result<()>,
+    ) -> Result<PartitionReplayResult> {
+        mixed.consume_revalidated(self, owner, stable, publication, events)?;
+        if !events.is_empty() {
+            checkpoint(events)?;
+            ensure!(
+                events.is_empty(),
+                "replay checkpoint did not drain native events"
+            );
+        }
+        self.observation.revalidate_index()?;
+        let ticket = self.observation.ticket;
+        let format = self.observation.format;
+        let policy = self.observation.index.clone();
+        let pins = PagedRecoveryPins {
+            journal_binding: self.facts.binding,
+            journal_identity: self.facts.identity,
+            journal_path: self.facts.path,
+            journal_profile: self.facts.profile,
+            immutable_sha256: ticket.immutable_sha256,
+            old_selected_sha256: ticket.old_selected_sha256,
+            old_restored_selected_sha256: ticket.old_restored_selected_sha256,
+            new_selected_sha256: ticket.new_selected_sha256,
+        };
+        let memory = publication.scratch_memory(12 * BUFFER as u64)?;
+        let mut buffers = Buffers::new();
+        let mut gate = self
+            .observation
+            .journal
+            .qualify_partition_replay(owner, &policy, &pins, direction, events)?;
+        let mut writer = self.observation.journal.begin_partition_replay(
+            owner,
+            &mut gate,
+            policy.clone(),
+            &pins,
+            events,
+        )?;
+
+        let forward = direction == PagedRecoveryDirection::Resume;
+        for ordinal in 0..u64::from(ticket.range_count) {
+            let row = {
+                let mut journal = writer.journal_read_view()?;
+                partition_record(&policy, &mut journal, format, ticket, ordinal)?
+            };
+            let skip = if row.offset == 0 { GRANULE } else { 0 };
+            partition_write_span(
+                &mut writer,
+                &policy,
+                format,
+                ticket,
+                row,
+                ordinal,
+                skip,
+                row.length - skip,
+                forward,
+                &mut buffers,
+            )?;
+        }
+        writer.sync_all()?;
+        let first = {
+            let mut journal = writer.journal_read_view()?;
+            partition_record(&policy, &mut journal, format, ticket, 0)?
+        };
+        if first.offset == 0 {
+            partition_write_span(
+                &mut writer,
+                &policy,
+                format,
+                ticket,
+                first,
+                0,
+                0,
+                GRANULE,
+                forward,
+                &mut buffers,
+            )?;
+        }
+        writer.sync_all()?;
+        writer.revalidate(events)?;
+        if forward {
+            writer.finish_new(events)?;
+        } else {
+            writer.finish_old(events)?;
+        }
+        drop(buffers);
+        drop(memory);
+        let length = n2r_win32::PartitionScopedOwner::byte_len(owner);
+        let digest = if forward {
+            self.observation.check_target_reader(
+                owner,
+                length,
+                Some(ticket.new_selected_sha256),
+                false,
+            )?
+        } else {
+            self.observation.check_restored_reader(owner, length)?
+        };
+        let restored = if forward {
+            None
+        } else {
+            self.observation.restored_bytes()?
+        };
+        let selected = SelectedResult {
+            selected_sha256: digest,
+            selected_bytes: ticket.selected_bytes,
+            range_count: ticket.range_count,
+            replay_closed: !forward,
+            whole_image_verified: false,
+            conversion_qualified: false,
+            old_restoration_bytes: restored,
+        };
+        ensure!(
+            self.observation.lifecycle()?
+                == if forward {
+                    SelectedLifecycle::ApplyIntent
+                } else {
+                    SelectedLifecycle::RollbackIntent
+                },
+            "actual replay lifecycle changed before terminal marker"
+        );
+        sj::write_lifecycle_marker(
+            self.observation.journal,
+            ticket,
+            if forward {
+                MarkerKind::Handoff
+            } else {
+                MarkerKind::Aborted
+            },
+        )?;
+        self.observation
+            .journal
+            .require_native_mount_barriers(ticket)?;
+        let result = if forward {
+            let witness = self
+                .observation
+                .journal
+                .finish_partition_resume(owner, gate, &policy, &pins, events)?;
+            let handoff = SelectedResult {
+                selected_sha256: digest,
+                selected_bytes: ticket.selected_bytes,
+                range_count: ticket.range_count,
+                replay_closed: true,
+                whole_image_verified: false,
+                conversion_qualified: false,
+                old_restoration_bytes: None,
+            };
+            PartitionReplayResult::Resumed {
+                selected,
+                handoff,
+                witness,
+                index_owner: self.observation.index_lease.clone(),
+            }
+        } else {
+            let closed = self
+                .observation
+                .journal
+                .finish_partition_rollback(owner, gate, &policy, &pins, events)?;
+            PartitionReplayResult::RolledBack {
+                selected,
+                closed,
+                index_owner: self.observation.index_lease.clone(),
+            }
+        };
+        publication.revalidate_partition_mixed(
+            owner,
+            stable,
+            self.observation.journal,
+            &self.facts,
+            ticket,
+            events,
+        )?;
+        checkpoint(events)?;
+        ensure!(
+            events.is_empty(),
+            "terminal replay checkpoint did not drain"
+        );
+        Ok(result)
+    }
+}

@@ -52,6 +52,11 @@ pub struct PartitionPagedNtfsObservation {
     vss_after: crate::vss_observation::Observation,
 }
 impl PartitionPagedNtfsObservation {
+    /// Consuming terminal transfer of the actual retained native-page owner.
+    /// This creates no new observation, source admission or reopened guard.
+    pub(crate) fn into_terminal_domain(self) -> PagedNativeObservation {
+        self.domain
+    }
     pub fn domain(&self) -> &PagedNativeObservation {
         &self.domain
     }

@@ -454,6 +454,22 @@ pub struct PartitionHandoffWitness {
     policy: HeldPagedWritePolicy,
 }
 impl PartitionHandoffWitness {
+    pub(in crate::native) fn into_terminal_journal_owners(
+        mut self,
+        source: &mut PartitionScopedOwner,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<crate::native::partition_restoration::PartitionLiveJournalOwners> {
+        self.revalidate(source, events)?;
+        let pins = OwnedPartitionJournalPins::capture(&self.closed.pins.pins());
+        Ok(
+            crate::native::partition_restoration::PartitionLiveJournalOwners {
+                closed: self.closed,
+                journal: self.journal,
+                policy: self.policy,
+                pins,
+            },
+        )
+    }
     pub(crate) fn from_spent_gate(source: &mut PartitionScopedOwner, policy: &HeldPagedWritePolicy,
         journal: &mut File, pins: &PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>) -> io::Result<Self> {
         let closed = authenticate_partition_closed_journal(source, policy, journal, pins, PartitionTerminalKind::Handoff, events)?;

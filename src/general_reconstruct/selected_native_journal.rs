@@ -1088,3 +1088,29 @@ impl NativeSelectedJournal {
             _=>anyhow::bail!("actual sealed markerless partition J absent")}
     }
 }
+impl NativeSelectedJournal {
+    pub(crate) fn qualify_partition_replay(&mut self,source:&mut n2r_win32::PartitionScopedOwner,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,
+        direction:n2r_win32::PagedRecoveryDirection,events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::PartitionMixedReplayGate>{
+        Ok(source.qualify_partition_paged_replay(policy,self.markerless_recovery_file()?,pins,direction,events)?)
+    }
+    pub(crate) fn begin_partition_replay<'a,'p>(&'a mut self,source:&'a mut n2r_win32::PartitionScopedOwner,
+        gate:&'a mut n2r_win32::PartitionMixedReplayGate,policy:n2r_win32::HeldPagedWritePolicy,
+        pins:&'a n2r_win32::PagedRecoveryPins<'p>,events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::PartitionPagedWriter<'a,'p>>{
+        Ok(source.begin_partition_paged_replay(gate,policy,self.markerless_recovery_file()?,pins,events)?)
+    }
+    pub(crate) fn finish_partition_resume(&mut self,source:&mut n2r_win32::PartitionScopedOwner,
+        gate:n2r_win32::PartitionMixedReplayGate,policy:&n2r_win32::HeldPagedWritePolicy,
+        pins:&n2r_win32::PagedRecoveryPins<'_>,events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::PartitionHandoffWitness>{
+        Ok(source.finish_partition_replay_handoff(gate,policy,self.markerless_recovery_file()?,pins,events)?)
+    }
+    pub(crate) fn finish_partition_rollback(&mut self,source:&mut n2r_win32::PartitionScopedOwner,
+        gate:n2r_win32::PartitionMixedReplayGate,policy:&n2r_win32::HeldPagedWritePolicy,
+        pins:&n2r_win32::PagedRecoveryPins<'_>,events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::PartitionClosedJournalObservation>{
+        Ok(source.finish_partition_replay_abort(gate,policy,self.markerless_recovery_file()?,pins,events)?)
+    }
+}

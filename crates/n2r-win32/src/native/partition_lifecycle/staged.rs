@@ -423,6 +423,9 @@ impl<'guard> PartitionReadonlyPhase<'guard> {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<PartitionReadonlyReader<'phase, 'guard>> {
         let file = self.open_readonly_volume(events)?;
+        let reply = control(&file, "partition-readonly-source-extended-dasd",
+            0x0009_0083, &[], 0, events)?;
+        require(reply.is_empty(), "readonly extended DASD returned unexpected data")?;
         Ok(PartitionReadonlyReader {
             phase: self,
             file,
@@ -729,6 +732,9 @@ impl PartitionPreparationGuard {
             0,
             events,
         )?;
+        let reply = control(self.volume.as_ref().unwrap(),
+            "partition-preparation-extended-dasd", 0x0009_0083, &[], 0, events)?;
+        require(reply.is_empty(), "extended DASD returned unexpected data")?;
         self.volume.as_ref().unwrap().sync_all()
     }
     fn expected_gpt(&self, current: &PartitionIsolationObservation) -> io::Result<()> {
@@ -1015,6 +1021,31 @@ pub struct PartitionNtfsAdmission {
     native: PartitionPagedNtfsObservation,
 }
 impl PartitionNtfsAdmission {
+    /// Consume the actual live guard. The readonly duplicate keeps the SAME
+    /// intent FileObject/share-zero lock; no filename reopen is attempted.
+    pub(in crate::native) fn into_terminal_preparation_owners(
+        mut self,
+        owner: &mut PartitionScopedOwner,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::super::partition_restoration::PartitionLivePreparationOwners> {
+        let pin = self.durable_preparation_pin()?;
+        self.revalidate_publication_handoff(owner, &pin, events)?;
+        let intent = crate::file_storage::duplicate_readonly(&self.guard.intent.file)?;
+        require(
+            crate::reference_file::observe_reference_file_handle_with_limit(&intent, MAX_INTENT)?
+                == pin.intent_file,
+            "live terminal intent duplicate differs from actual guard",
+        )?;
+        Ok(
+            super::super::partition_restoration::PartitionLivePreparationOwners {
+                intent,
+                native: self.native,
+                pin,
+                label: self.guard.source_label.clone(),
+                mount_paths: self.guard.mount_paths.clone(),
+            },
+        )
+    }
     pub fn native(&self) -> &PartitionPagedNtfsObservation {
         &self.native
     }

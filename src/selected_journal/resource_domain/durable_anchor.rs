@@ -699,3 +699,10 @@ impl DurableRecoveryLocator {
             .retire()
     }
 }
+
+impl DurableRecoveryLocator {
+    pub(crate) fn duplicate_readonly_origin_file(&mut self)->Result<File>{
+        self.revalidate()?;n2r_win32::file_storage::require_readonly_access(&self.file)?;
+        Ok(self.file.try_clone()?)
+    }
+}

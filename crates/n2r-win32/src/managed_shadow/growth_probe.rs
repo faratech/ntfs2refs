@@ -571,7 +571,14 @@ fn grow(
     input[8..16].copy_from_slice(&(increment as i64).to_le_bytes());
     log.note(serde_json::json!({"phase":"grow-partition-start","binding":binding,"bytes_to_grow":increment,"control":IOCTL_DISK_GROW_PARTITION}))?;
     let started = Instant::now();
-    control(&disk, IOCTL_DISK_GROW_PARTITION, &input, 0)?;
+    // This driver completes the buffered request with nonzero byte accounting
+    // even though no output is defined by the API. Supply only one bounded
+    // request-sized buffer; the full native layout below proves the result.
+    let response = control(&disk, IOCTL_DISK_GROW_PARTITION, &input, input.len())?;
+    log.note(
+        serde_json::json!({"phase":"grow-partition-control-returned",
+        "returned_bytes":response.len(),"response_not_used_as_growth_proof":true}),
+    )?;
     disk.sync_all()?;
     control(&disk, IOCTL_DISK_UPDATE_PROPERTIES, &[], 0)?;
     binding.identity.partition_bytes = FINAL_PARTITION_BYTES;
@@ -582,7 +589,11 @@ fn grow(
     binding.validate_volume_extent(&control(&volume, VOLUME_EXTENTS, &[], 32)?)?;
     let sectors = FINAL_PARTITION_BYTES / u64::from(LOGICAL_SECTOR);
     log.note(serde_json::json!({"phase":"extend-filesystem-start","control":FSCTL_EXTEND_VOLUME,"new_sector_count":sectors}))?;
-    control(&volume, FSCTL_EXTEND_VOLUME, &sectors.to_le_bytes(), 0)?;
+    let response = control(&volume, FSCTL_EXTEND_VOLUME, &sectors.to_le_bytes(), 8)?;
+    log.note(
+        serde_json::json!({"phase":"extend-filesystem-control-returned",
+        "returned_bytes":response.len(),"response_not_used_as_growth_proof":true}),
+    )?;
     volume.sync_all()?;
     disk.sync_all()?;
     geometry(&volume, &binding)?;

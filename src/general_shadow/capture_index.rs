@@ -712,6 +712,34 @@ impl ClosedCaptureIndex {
     pub(crate) fn pin(&self) -> &CaptureIndexPin {
         &self.pin
     }
+    /// Advisory allocation sample through the retained readonly file only.
+    /// Uses the existing bounded metadata workspace; no seek, index scan or
+    /// hash revalidation runs, and this observation grants no authority.
+    pub(crate) fn observe_allocation_bytes(&self) -> Result<u64> {
+        let file = self
+            .file
+            .try_borrow()
+            .map_err(|_| anyhow::anyhow!("capture index metadata handle is in use"))?;
+        ensure!(
+            Snapshot::observe(&file)? == self.snapshot,
+            "capture index held metadata changed before allocation observation"
+        );
+        let actual = n2r_win32::reference_file::observe_reference_file_handle_with_limit(
+            &file,
+            self.snapshot.bytes,
+        )?;
+        let mut id = [0; 24];
+        id[..8].copy_from_slice(&actual.volume_serial_number.to_le_bytes());
+        id[8..].copy_from_slice(&actual.file_id_128);
+        ensure!(
+            hex::encode(id) == self.snapshot.id
+                && actual.file_bytes == self.snapshot.bytes
+                && actual.file_attributes == self.snapshot.attributes
+                && actual.number_of_links == 1,
+            "capture index allocation sample differs from its held identity"
+        );
+        Ok(actual.allocation_bytes)
+    }
     pub(crate) fn len(&self) -> u64 {
         self.pin.ranges
     }

@@ -480,10 +480,11 @@ impl PreparationObserver for FilePreparationObserver {
         );
         let _ = writeln!(
             out,
-            "Capture file lengths: literal {} bytes (recorded allocation {} bytes), index {} bytes (allocation unknown). Logical source reads during capture: {} bytes; all-stage payload I/O totals unknown.",
+            "Capture file lengths: literal {} bytes (recorded allocation {} bytes), index {} bytes (current allocation {} bytes). Logical source reads during capture: {} bytes; all-stage payload I/O totals unknown.",
             text(value["capture_literal_file_bytes"].as_u64()),
             text(value["capture_literal_recorded_allocation_bytes"].as_u64()),
             text(value["capture_index_wire_bytes"].as_u64()),
+            text(value["capture_index_physical_allocation_bytes"].as_u64()),
             text(value["capture_source_logical_bytes"].as_u64())
         );
         let _ = out.flush();

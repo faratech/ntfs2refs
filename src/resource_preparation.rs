@@ -672,17 +672,18 @@ where
         // prepared-journal boundary. No payload read, new authority or quota.
         let literal = proof.captured().literal().pin();
         let index = proof.captured().index().pin();
+        let index_allocation = proof.captured().index().observe_allocation_bytes();
         let capture_reads = proof.captured().summary().get("read_counts");
         let journal = domain.facts();
         let usage = arena.usage();
-        events.observer.note(&serde_json::json!({
+        let mut accounting = serde_json::json!({
             "kind":"pre-ap-resource-accounting-v1","phase":"native-journal-prepared-before-publication",
             "admitted_resource_ram_bytes":request.resources.ram_bytes,
             "capture_literal_file_bytes":literal.snapshot.file_bytes,
             "capture_literal_recorded_allocation_bytes":literal.snapshot.allocation_bytes,
             "capture_literal_allocation_basis":"closed held capture pin; not a peak measurement",
             "capture_index_wire_bytes":index.bytes,
-            "capture_index_physical_allocation_bytes":Option::<u64>::None,
+            "capture_index_physical_allocation_bytes":index_allocation.as_ref().ok().copied(),
             "capture_index_length_is_not_physical_allocation":true,
             "encoded_journal_bytes":journal.journal_length,
             "encoded_journal_length_is_not_physical_allocation":true,
@@ -711,7 +712,12 @@ where
             "observed_allocation_and_reserved_ceilings_are_distinct":true,
             "metadata_queries_only":true,"peak_or_physical_usage_measured":false,
             "AP_or_source_write_authority_granted":false
-        }))?;
+        });
+        accounting["capture_index_allocation_observation_error"] =
+            serde_json::json!(index_allocation.as_ref().err().map(ToString::to_string));
+        accounting["capture_index_allocation_basis"] =
+            serde_json::json!("current retained readonly file metadata; telemetry only");
+        events.observer.note(&accounting)?;
         events.phase("recovery-map-publication");
         let map_group = if prepared.recovery_maps_required(&expected)? {
             Some(arena.reserve_group(

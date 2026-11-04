@@ -331,6 +331,26 @@ fixed82 manifest/EXE/source pins, fresh6GiB/currentOff07ca/all17 admission and e
 Only inside guest/SYSTEM one actual conversion; no restore/repair/replay/retry/checkpoint mutation. Operator owns actual PID/birth/terminal/archive/oracle.
 No native process/phase/success may be inferred from GO or task readiness. Observe actual operator messages for current state/run ID.
 
+LATEST ACTUAL NATIVE FAILURE (supersedes earlier Off/no-launch claims): VM is Running4GiB/current07ca/all17 on same boot1793834127817.
+First e404c2432387423dac5c48c18bde8ada wrapper stopped BEFORE facade because WindowsPS5 ANSI decoded baselinelambda asmojibake.
+Readonly diagnosisb17bc744... confirmed strictUTF8 names matchall8; no source mutation. New sameboot UTF8 continuation retained
+original6GiB baseline318555490477/absolute324997941421, no allowance reset. Root reviewed exact host7690cb9d...,
+worker60d47f4e..., oraclea4a57540..., unchangedmetadata40e8c171..., same82manifest/EXE and issuedONE first-native GO.
+Actual continuation e174633147f143d69cac9c525aa2bf35/native4624/birth1793834517548/realOSexit1/1.8636351s.
+Actualstdout: readonly-source-route-and-resource-admission→fresh-owned-devdrive-shadow-formatted→partition-preparation-basic-baseline.
+Actualstderr: IVdsVolume::GetProperties HRESULT0x00042715 (VDS_S_PROPERTIES_INCOMPLETE), before source protection.
+Readonly closure `.lab/hyperv/streaming-v2-20261027/partition-alpha-first-normal-e174633147f143d69cac9c525aa2bf35/readonly-after-native-vds-refusal.json`
+SHAdbe2ab8918a122a311273ecfbed78a1aa751e0800e876534ecebf52cf29d9579: native+workerabsent, source6Basic0/healthyNTFS,
+all6 GPT/header/MBR/native144B/Ccontrol unchanged, partition.intent EOF0, selected.journal absent. Fresh DevDrive provider remains
+attached/preserved, backing104857600B; no automatic retirement/repair/replay/source setters. Operator retains exclusive VM ownership.
+CURRENT NEXT: operator preparing READONLY VDS row diagnostic (HRESULT+raw properties for each same COM object), no diagnostic GO yet.
+Frozen_candidate_cases owns copied diagnostic/error-context work; lowspace researched partial-success policy and is idle.
+Microsoft GetProperties has NO per-field validity mask. Never accept partial flags0 as noncritical/complete role proof.
+Minimal possible handling: partial is UNCLASSIFIED; resolve same VDS object's native path (MF3 QueryVolumeGuidPathnames if needed),
+require complete native extents ALL outside target, bracket identity/returned properties; unresolved/target overlap refuses.
+Partial rows cannot establish positive boot/system coverage. Diagnose actual fields first; don't weaken guards or rewrite fixture.
+https://learn.microsoft.com/en-us/windows/win32/api/vds/nf-vds-ivdsvolume-getproperties
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

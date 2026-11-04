@@ -35,10 +35,10 @@ instructions. Earlier detailed handoffs remain under docs/history/.
 
 ## Current state: frozen alpha packaged
 
-**LATEST RUN IS LIVE, overriding older completed-case state below:**
+**LATEST CEC RUN IS COMPLETE, overriding older state below:**
 Public cec225215f6487ddc9eaeb6564f358f5e20b9823 run
-e7cd48e25fdf4552ae726e00de3ac454, actualPID5340/birth1793774388609 independently
-matched live; boot1793774364006, VMRunning4GiB/parent3343. Root launcher67141
+e7cd48e25fdf4552ae726e00de3ac454, actualPID5340/birth1793774388609
+exited0/757.8637882s at06:52:26.532UTC; originalboot1793774364006. Root launcher67141
 completed0 after one intentional baseline restore/start. Exact publicbinary
 3600c145ed48ca8e997aed8b2ce6e7a92f02178bf274aa0a5d2f3b217fa16f0a,
 argv `--drive F --partition 2 --minimize-scratch`. Gueststage
@@ -48,10 +48,26 @@ Hostroot `.lab/hyperv/streaming-v2-20261027/resource-fixture-e7cd48e25fdf4552ae7
 SYSTEMtaskN2R-ResourceFixture-e7cd48e25fdf4552ae726e00de3ac454,
 workerSHAea822d7308da90a5d2cf46ed89b1d57dc8d441238215d276afcf9130022dce2c,
 configSHA88e278856338094455e54ad37263671e8e2104eddf67b65d112b4b39a2f2bb91.
-Do not restore, power off, duplicate dispatch or infer completion. Latest
-06:43:40UTC samePID/birth R5998618646/W143946792/working31657984B, no terminal.
-Counters are live logical process I/O, not final/physical traffic or peak RAM.
-The native ledger is exclusive while live; do not bypass its sharing owner.
+Native conversion/HND and independent preboot811streams/1534baseline/1024extra
+paths passed; all13actual owned digest terminals checked. Normal shutdown/start
+WITHOUTrestore toboot1793775819488 then repeated all811/1534/1024 successfully.
+Postboot observerfec3fdb4a9b74f5d8b7b815e05cc0a2e worker1980/birth1793775874667
+matched13actualdigestexit0/11.5551665s. Closed56files106457B manifest
+cae701ffc3d286fa9e3fbdceb1c98d8ad0cb362dab7cf415362f07415f2d2c88.
+Offline audit of ALL6206capture records against the ORIGINALnativeNTFSbitmap
+passed0violations:615source-free rows1868578816B; OLD-zero4413rows97460224B
+remain separate/unqualified for content. AuditSHA
+f56c3dcf3dcc81c89ffbf0ac309be34b5258c543ce9ba7952c0d5c4e437ec093.
+
+Root normally shut down after all closures, saved one completed postboot HND
+checkpoint **ee42e97e-c415-4ac3-bb1b-24ad060e96d9**, parent3343. A FRESH process
+verified **Off/RAM0/parentee42**; no workers remain. Receipt
+`saved-normal-coldboot-hnd.json` SHA64e9f67222c03e23ffc57a462d6d33931fc7caa38786e3b9fc263597fd86bd25.
+NEVER replay the old raw journal from this operational HND. Capture window
+144.392→90.291s vs a225, but changedgranules621952→501518 and allocator ranges
+varied: do not attribute the entire54.101s/94.525s window/wall reduction tocode.
+See `evidence/public-resource-capture-cursor-20261104.json`. NewAPrecovery,
+mutation, power,2MiB-source and arbitrary hardware remain unqualified.
 
 This candidate adds a scalar forward allocation cursor (gap binary seeks,
 unchanged random COPY queries) and checked incremental arena allocation credit,
@@ -62,8 +78,9 @@ write/flush order remain unchanged. Cursor RAM is prepaid; no unit tests ran.
 Focusedcheck53344 passed21.11s; release83492 passed2m44s, two-toolmanifest
 9ac0bad3eeb288b87290ae6f32deda44f68b88b77a16b5f37d842d1cc50a8d36
 at `.lab/development/release-candidates/resource-capture-cursor-cec2252`.
-See `evidence/capture-cursor-arena-build-20261104.json`; native qualification
-is pending, not inherited from a225 or frozen814. Source main SHA is unchanged.
+See `evidence/capture-cursor-arena-build-20261104.json`; scoped native normal/
+boot/bitmap results have their own record, not inherited from a225 or frozen814.
+Source main SHA is unchanged.
 
 Root full-census native admission: actual295668432172/free110890270720,
 forecast21474836480B under unchanged329374052988/17179869184/50GB epoch.
@@ -72,6 +89,21 @@ adds10321786449B headroom. This is a measured phase forecast, no cap increase
 or baseline reset. Launcher `launch-public-resource-min-measured20-k.ps1` SHA
 c53991ddce7e4bbd1cc18b2e0d4ea835c6ccb7f0030da132c97e1669ee5df6f3.
 Frozen814 package/snapshots and completed a225 HND9702 remain preserved.
+The later shutdown/checkpoint/reboot phase admitted8GiB at307811925199B/
+98744885248B free under the same original policy. Remeasure before growth.
+Another20GiB run may no longer fit; do not raise caps or lower forecasts merely
+to fit. Obsolete intermediate checkpoints require a fresh dependency/archive
+retirement audit; preserve the frozen814 origins and guardedf4bf.
+
+Future public-apply VM interruption helpers are PREPARED ONLY, NOT executed:
+`launch-public-min-powerwatch.ps1` SHA4ab3daf8a2c1a01019da13bb6a623d95fbb66e9e78328d0c8f911624f844b5c8;
+`PublicMinApplyPowerWatch.cs` SHAb1ec653088cfeacbd0ec379a2c6f3a7a1b88e57f3d8789fa8f7abac50eb2c710;
+`interrupt-public-min-apply-once.ps1` SHAd69988de353cf3a1a1ed1260b56e73f224cf605d3403ce61a8134b75c4aeea08.
+C# is uncompiled. Root must review before any execution; any refused readonly
+watch/lateHND/terminal aborts only the watch and lets conversion finish. An
+observed write is not flush proof. New public-power postrestart AP/J/exclusion
+authentication and recovery dispatcher still need implementation; never fake
+the old diagnostic exit1/signal inputs to reuse its existing dispatcher.
 
 **The finite 814 native matrix and public-only local package are complete.**
 Root packaging session `71622` actually exited 0. Root independently read back

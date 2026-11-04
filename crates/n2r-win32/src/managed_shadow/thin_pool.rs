@@ -722,10 +722,20 @@ try{
  $sub=@(Get-StorageSubSystem -UniqueId $request.subsystem);Need ($sub.Count-eq1-and$sub[0].UniqueId-ceq$request.subsystem-and$sub[0].FriendlyName-like'Windows Storage*') 'One exact Windows Storage subsystem required'
  $physical=@();$n=0
  foreach($number in $request.member_numbers){
-  $d=Get-Disk -Number $number
-  Need ($d.Number-eq$number-and-not$d.IsBoot-and-not$d.IsSystem-and$d.Size-eq5368709120-and$d.LogicalSectorSize-eq512-and$d.PhysicalSectorSize-eq4096-and$d.UniqueId) 'New member geometry differs'
-  $p=@(Get-PhysicalDisk -UniqueId $d.UniqueId);Need ($p.Count-eq1-and$p[0].UniqueId-ceq$d.UniqueId-and$p[0].Size-eq5368709120-and$p[0].LogicalSectorSize-eq512-and$p[0].PhysicalSectorSize-eq4096) 'Exact member CIM association absent'
-  if($Mode-ceq'members'-or$Mode-ceq'create'){Need ($d.PartitionStyle.ToString()-ceq'RAW'-and-not$d.IsOffline-and-not$d.IsReadOnly-and$p[0].CanPool) 'Fresh RAW poolable member required'}
+  if($Mode-ceq'closing'){
+   # Pool claims can hide MSFT_Disk. Keep the original provider number as a
+   # route binding checked by Rust, and query this exact live member identity.
+   Need ($request.members.Count-eq2-and$request.members[$n].number-eq$number) 'Original live member route differs'
+   BoundText ([string]$request.members[$n].unique_id);BoundText ([string]$request.members[$n].object_id)
+   $p=@(Get-PhysicalDisk -UniqueId $request.members[$n].unique_id)
+   Need ($p.Count-eq1-and$p[0].UniqueId-ceq$request.members[$n].unique_id-and$p[0].ObjectId-ceq$request.members[$n].object_id) 'Exact claimed member CIM identity absent'
+  }else{
+   $d=Get-Disk -Number $number
+   Need ($d.Number-eq$number-and-not$d.IsBoot-and-not$d.IsSystem-and$d.Size-eq5368709120-and$d.LogicalSectorSize-eq512-and$d.PhysicalSectorSize-eq4096-and$d.UniqueId) 'New member geometry differs'
+   $p=@(Get-PhysicalDisk -UniqueId $d.UniqueId);Need ($p.Count-eq1-and$p[0].UniqueId-ceq$d.UniqueId) 'Exact member CIM association absent'
+   Need ($d.PartitionStyle.ToString()-ceq'RAW'-and-not$d.IsOffline-and-not$d.IsReadOnly-and$p[0].CanPool) 'Fresh RAW poolable member required'
+  }
+  Need ($p[0].Size-eq5368709120-and$p[0].LogicalSectorSize-eq512-and$p[0].PhysicalSectorSize-eq4096) 'Exact member physical geometry differs'
   $row=@{number=[uint32]$number;unique_id=[string]$p[0].UniqueId;object_id=[string]$p[0].ObjectId}
   if($Mode-cne'members'){Need ($request.members.Count-eq2-and$request.members[$n].number-eq$number-and$request.members[$n].unique_id-ceq$row.unique_id-and$request.members[$n].object_id-ceq$row.object_id) 'Live member identity changed'}
   $members+=,$row;$physical+=,$p[0];$n++

@@ -17,6 +17,68 @@ struct ExcludedRecoveryAuthority<'a> {
     target: &'a mut GeneralJournaledPartition,
 }
 
+/// Opaque read-only CURRENT OLD-or-NEW observation. There is no constructor
+/// from JSON, a selected hash, a path, or a fresh NTFS admission; no Clone,
+/// Deserialize, Write implementation or native-writer accessor is exposed.
+pub(crate) struct PartitionMixedObservation {
+    owner: n2r_win32::PartitionOwnerToken,
+    source: n2r_win32::partition_isolation::PartitionSourceBinding,
+    journal_owner: usize,
+    publication_owner: usize,
+    journal_binding: n2r_win32::journal_file::GeneralJournalStorageBinding,
+    journal_identity: n2r_win32::journal_file::JournalFileIdentity,
+    ticket_sha256: [u8; 32],
+    index_sha256: [u8; 32],
+    lifecycle: SelectedLifecycle,
+    current_selected_sha256: [u8; 32],
+}
+
+fn partition_mixed_ticket_pin(ticket: &sj::SelectedTicket) -> Result<[u8; 32]> {
+    let bytes = serde_json::to_vec(ticket)?;
+    ensure!(bytes.len() <= 4096, "partition MIXED ticket exceeds bound");
+    Ok(<sha2::Sha256 as sha2::Digest>::digest(bytes).into())
+}
+
+impl PartitionMixedObservation {
+    /// Consume the one-shot observation against the same actual context.
+    /// The complete checker runs again, so a stale digest cannot replace the
+    /// actual current MIXED bytes. Success is still not a native writer grant:
+    /// publication-scope issuance and the SDK partition replay gate remain
+    /// separate required boundaries, and HND/ABT are never raw-replayed.
+    pub(crate) fn consume_revalidated(
+        self,
+        observation: &mut BoundJournalObservation<'_>,
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        publication: &mut super::envelope::PartitionRecoveryPublicationBinding<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<()> {
+        ensure!(
+            self.owner.same_owner(stable)
+                && stable.same_owner(&owner.owner_token())
+                && owner.binding() == &self.source
+                && std::ptr::from_ref(&*observation.observation.journal) as usize
+                    == self.journal_owner
+                && publication.publication_owner_identity() == self.publication_owner
+                && *observation.facts.binding == self.journal_binding
+                && *observation.facts.identity == self.journal_identity
+                && partition_mixed_ticket_pin(observation.observation.ticket)?
+                    == self.ticket_sha256,
+            "partition MIXED observation belongs to another actual owner/publication/journal"
+        );
+        let current = observation.observe_partition_mixed(
+            owner, stable, publication, events,
+        )?;
+        ensure!(
+            current.lifecycle == self.lifecycle
+                && current.index_sha256 == self.index_sha256
+                && current.current_selected_sha256 == self.current_selected_sha256,
+            "partition MIXED lifecycle/index/current bytes changed before consumption"
+        );
+        Ok(())
+    }
+}
+
 /// Successful terminal replay is returned as the same excluded target with
 /// its raw write policy already removed. A HND/ABT result is not permission to
 /// mount without the separate native finalization/verification phase.
@@ -40,6 +102,82 @@ impl MarkerlessRecoveryTarget {
 }
 
 impl BoundJournalObservation<'_> {
+    /// Explicit partition CURRENT OLD-or-NEW validation. This is the same
+    /// complete per-record/span/granule checker used by dedicated replay,
+    /// including resolved COPY, canonical zero and source-free semantics.
+    /// It deliberately supplies NO aggregate OLD/NEW expected hash.
+    pub(crate) fn observe_partition_mixed(
+        &mut self,
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        publication: &mut super::envelope::PartitionRecoveryPublicationBinding<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<PartitionMixedObservation> {
+        owner.revalidate(events)?;
+        ensure!(
+            stable.same_owner(&owner.owner_token())
+                && self.observation.ticket.marker_profile.is_none()
+                && self.facts.marker_native_qualified.is_none()
+                && (1..=5).contains(&self.observation.format.version),
+            "partition MIXED observation requires the actual stable owner and markerless journal"
+        );
+        self.observation.revalidate_index()?;
+        let lifecycle = self.observation.lifecycle()?;
+        ensure!(
+            matches!(
+                lifecycle,
+                SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent
+            ),
+            "partition MIXED observation requires live AP/RB; clear/HND/ABT refuse raw recovery"
+        );
+        let source = owner.binding().clone();
+        let length = owner.byte_len();
+        publication.revalidate_partition_mixed(
+            owner,
+            stable,
+            self.observation.journal,
+            &self.facts,
+            self.observation.ticket,
+            events,
+        )?;
+
+        // None is intentional: Some(OLD/NEW) would only authenticate one
+        // endpoint and would not validate an interrupted mixed target.
+        let current_selected_sha256 =
+            self.observation.check_target_reader(owner, length, None, false)?;
+
+        publication.revalidate_partition_mixed(
+            owner,
+            stable,
+            self.observation.journal,
+            &self.facts,
+            self.observation.ticket,
+            events,
+        )?;
+        self.observation.revalidate_index()?;
+        ensure!(
+            self.observation.lifecycle()? == lifecycle
+                && owner.binding() == &source
+                && owner.byte_len() == length
+                && stable.same_owner(&owner.owner_token()),
+            "partition MIXED actual owner/binding/journal lifecycle changed during scan"
+        );
+        owner.revalidate(events)?;
+        let index_sha256 = self.observation.index.facts()?.index_sha256;
+        Ok(PartitionMixedObservation {
+            owner: stable.clone(),
+            source,
+            journal_owner: std::ptr::from_ref(&*self.observation.journal) as usize,
+            publication_owner: publication.publication_owner_identity(),
+            journal_binding: self.facts.binding.clone(),
+            journal_identity: self.facts.identity.clone(),
+            ticket_sha256: partition_mixed_ticket_pin(self.observation.ticket)?,
+            index_sha256,
+            lifecycle,
+            current_selected_sha256,
+        })
+    }
+
     /// The caller must retain its independently pinned recovery publication,
     /// expected/map owners, and exact target binding throughout this one-shot
     /// operation. The actual journal scanner and its paged index stay alive

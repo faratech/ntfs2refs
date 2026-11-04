@@ -6,6 +6,7 @@
 //! before any future replay method can be constructed.
 pub(crate) mod envelope;
 mod replay;
+pub(crate) use replay::PartitionMixedObservation;
 
 use super::*;
 use crate::{

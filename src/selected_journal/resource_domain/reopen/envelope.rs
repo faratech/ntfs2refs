@@ -298,6 +298,112 @@ pub(crate) struct ReopenedArtifact<'a> {
     pub sha256: [u8; 32],
 }
 
+/// An authenticated partition-scope publication is deliberately UNISSUED.
+/// Existing Publication has no partition-scope discriminant/guard contract.
+/// Only this envelope owner module may add the future issuer after validating
+/// that contract against the actual held publication, artifacts and locator.
+/// No public constructor, Deserialize implementation or saved boolean exists.
+struct AuthenticatedPartitionRecoveryScope {
+    source: n2r_win32::partition_isolation::PartitionSourceBinding,
+}
+
+/// Borrows actual authenticated publication/artifact owners, not their JSON
+/// representation. In particular the private scope above cannot be obtained
+/// from GeneralDiskBinding, a digest, an OLD scan, or a fresh NTFS admission.
+pub(crate) struct PartitionRecoveryPublicationBinding<'a> {
+    publication: &'a Publication,
+    publication_file: &'a mut HeldFile,
+    expected: &'a mut HeldFile,
+    maps: Option<&'a mut HeldFile>,
+    locator: &'a mut DurableRecoveryLocator,
+    scratch: &'a SourceScratch,
+    scope: AuthenticatedPartitionRecoveryScope,
+    actual_journal_owner: usize,
+}
+
+impl PartitionRecoveryPublicationBinding<'_> {
+    pub(super) fn publication_owner_identity(&self) -> usize {
+        std::ptr::from_ref(&*self.publication_file) as usize
+    }
+
+    /// Read-only revalidation through the same live owners on both sides of
+    /// the complete MIXED scan. This method issues no native writer.
+    pub(super) fn revalidate_partition_mixed(
+        &mut self,
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        journal: &mut crate::general_reconstruct::selected_native_journal::NativeSelectedJournal,
+        facts: &crate::general_reconstruct::selected_native_journal::BoundNativeJournalFacts<'_>,
+        ticket: &crate::selected_journal::SelectedTicket,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<()> {
+        owner.revalidate(events)?;
+        ensure!(
+            stable.same_owner(&owner.owner_token())
+                && owner.binding() == &self.scope.source
+                && owner.byte_len() == ticket.image_length
+                && self.publication.source == self.scope.source.storage
+                && self.locator.source() == &self.scope.source.storage
+                && std::ptr::from_ref(&*journal) as usize == self.actual_journal_owner,
+            "partition MIXED observation lost actual owner/publication/journal association"
+        );
+        self.publication_file.revalidate(self.scratch)?;
+        self.expected.revalidate(self.scratch)?;
+        if let Some(maps) = self.maps.as_deref_mut() {
+            maps.revalidate(self.scratch)?;
+        }
+        self.locator.revalidate()?;
+        let encoded = serde_json::to_vec(ticket)?;
+        let locator_ticket = serde_json::to_vec(self.locator.ticket())?;
+        ensure!(
+            encoded.len() <= 4096
+                && encoded == locator_ticket
+                && self.publication.ticket_sha256 == hex::encode(Sha256::digest(&encoded))
+                && ticket.marker_profile.is_none()
+                && facts.marker_native_qualified.is_none()
+                && self.locator.journal_binding() == facts.binding
+                && self.locator.journal_identity() == *facts.identity
+                && self.locator.journal_profile()?.version() == facts.profile.version()
+                && facts.journal_length == ticket.journal_length,
+            "partition MIXED publication/locator/actual journal ticket binding differs"
+        );
+        // The same held FILE_OBJECT is inspected. Paths and JSON are never
+        // reopened here to manufacture identity or replay permission.
+        let file = journal.markerless_recovery_file()?;
+        let before = n2r_win32::journal_file::observe_general_journal_file_with_profile(
+            file, facts.binding, facts.profile,
+        )?;
+        let modified = file.metadata()?.modified()?;
+        ensure!(
+            before.identity == *facts.identity
+                && before.file_bytes == ticket.journal_length
+                && before.final_path.eq_ignore_ascii_case(&facts.path.to_string_lossy())
+                && ticket.journal_length >= 8192
+                && n2r_win32::sha256_native::hash_range(
+                    file, 8192, ticket.journal_length - 8192,
+                )? == ticket.immutable_sha256,
+            "partition MIXED held journal identity/body differs"
+        );
+        let after = n2r_win32::journal_file::observe_general_journal_file_with_profile(
+            file, facts.binding, facts.profile,
+        )?;
+        ensure!(
+            after.identity == before.identity
+                && after.file_bytes == before.file_bytes
+                && after.final_path.eq_ignore_ascii_case(&before.final_path)
+                && file.metadata()?.modified()? == modified,
+            "partition MIXED held journal changed during revalidation"
+        );
+        owner.revalidate(events)?;
+        ensure!(
+            stable.same_owner(&owner.owner_token())
+                && owner.binding() == &self.scope.source,
+            "partition MIXED owner changed around publication/journal revalidation"
+        );
+        Ok(())
+    }
+}
+
 /// A non-serializable observation of an actual durable HND and selected target
 /// digest. It retains the reopened publication, real journal and offline target
 /// through the borrow; it does not itself authorize a mount.

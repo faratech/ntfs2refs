@@ -571,6 +571,173 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
     pub fn original_label(&self) -> &crate::volume_label::VolumeLabel {
         &self.origin.original_label
     }
+    /// Consume actual readonly ReFS fidelity, then restore only this target's
+    /// original attributes/label/mounts. Closed HND never becomes raw replay.
+    pub fn finish(
+        mut self,
+        native: super::PartitionTerminalNativeObservation,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionRestorationReceipt> {
+        need(
+            self.kind == PartitionTerminalKind::Handoff
+                && self.stage == PartitionTerminalStage::Readonly,
+            "HND finish requires actual terminal readonly stage",
+        )?;
+        self.require_readonly(events)?;
+        native.require_owner(&self.token, &self.mounted_binding)?;
+        need(
+            native.filesystem() == "ReFS",
+            "HND native fidelity is not ReFS",
+        )?;
+        let current = terminal_volume_info(
+            self.mounted
+                .as_ref()
+                .ok_or_else(|| bad("readonly target absent"))?,
+        )?;
+        need(
+            current.filesystem == "ReFS"
+                && current.label == *native.observed_label()
+                && current.flags & 0x80000 != 0,
+            "HND readonly filesystem/label changed after actual fidelity",
+        )?;
+        self.finish_checked("ReFS", observer, events)
+    }
+    /// ABT restores the previously admitted NTFS. Actual closed-J OLD/COPY/
+    /// source-free authentication plus NTFS identity/label and protection are
+    /// required; a deserialized aborted flag cannot call this constructor.
+    pub fn finish_aborted(
+        mut self,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionRestorationReceipt> {
+        need(
+            self.kind == PartitionTerminalKind::Aborted
+                && self.stage == PartitionTerminalStage::Readonly,
+            "ABT finish requires actual terminal readonly stage",
+        )?;
+        self.require_readonly(events)?;
+        self.revalidate_closed()?;
+        let volume = self
+            .mounted
+            .as_ref()
+            .ok_or_else(|| bad("readonly rollback target absent"))?;
+        let current = terminal_volume_info(volume)?;
+        let ntfs = control(
+            volume,
+            "terminal-abort-NTFS-identity",
+            0x0009_0064,
+            &[],
+            128,
+            events,
+        )?;
+        need(
+            current.filesystem == "NTFS"
+                && current.label == self.origin.original_label
+                && current.flags & 0x80000 != 0
+                && ntfs.len() >= 96
+                && crate::layout::u64_at(&ntfs, 0)?
+                    == self.origin.native_pages.header().request.ntfs_serial
+                && sha(&physical_read(
+                    &self.binding,
+                    self.binding.storage.identity.partition_offset,
+                    512,
+                )?) == self.origin.original_primary,
+            "ABT readonly NTFS identity/label/primary differs from authenticated original",
+        )?;
+        self.finish_checked("NTFS", observer, events)
+    }
+    fn finish_checked(
+        &mut self,
+        filesystem: &'static str,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionRestorationReceipt> {
+        self.revalidate_metadata(events)?;
+        self.require_readonly(events)?;
+        self.revalidate_closed()?;
+        // Check every path before enabling writes; never steal another volume's
+        // letter or replace a nonempty/unrelated mounted folder.
+        preflight_mounts(
+            &self.origin.mount_paths,
+            &self.mounted_binding,
+            &self.current_info,
+        )?;
+        drop(self.mounted.take());
+        self.change(
+            crate::layout::u64_at(&self.origin.original_info, 64)?,
+            observer,
+            events,
+        )?;
+        let (binding, volume) =
+            find_terminal_volume(&self.binding, &self.current_info, self.budget, events)?;
+        self.mounted_binding = binding;
+        self.mounted = Some(volume);
+        let before = terminal_volume_info(self.mounted.as_ref().unwrap())?;
+        need(
+            before.filesystem == filesystem && before.flags & 0x80000 == 0,
+            "terminal writable filesystem is not the verified target",
+        )?;
+        if before.label != self.origin.original_label {
+            self.revalidate_metadata(events)?;
+            let root = wide_terminal(&format!("{}\\", self.mounted_binding.volume_path()?));
+            let label = self.origin.original_label.terminated()?;
+            // SAFETY: exact freshly revalidated target GUID, bounded original
+            // label from authenticated publication. No physical payload write.
+            if unsafe {
+                windows_sys::Win32::Storage::FileSystem::SetVolumeLabelW(
+                    root.as_ptr(),
+                    label.as_ptr(),
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let after = terminal_volume_info(self.mounted.as_ref().unwrap())?;
+        need(
+            after.filesystem == filesystem
+                && after.label == self.origin.original_label
+                && after.flags & 0x80000 == 0,
+            "terminal source label readback differs",
+        )?;
+        restore_terminal_mounts(
+            &self.origin.mount_paths,
+            &self.mounted_binding,
+            &self.current_info,
+        )?;
+        self.revalidate_metadata(events)?;
+        need(
+            self.current_info == self.origin.original_info,
+            "terminal original native type/attrs/name not restored",
+        )?;
+        self.origin.revalidate()?;
+        self.stage = PartitionTerminalStage::Restored;
+        Ok(PartitionRestorationReceipt {
+            kind: if self.kind == PartitionTerminalKind::Handoff {
+                "Handoff"
+            } else {
+                "Aborted"
+            },
+            binding: PartitionSourceBinding {
+                storage: self.mounted_binding.clone(),
+            },
+            source_type_restored: true,
+            original_attributes_restored: true,
+            label_restored: true,
+            mount_paths_restored: true,
+            journal_raw_replay_closed: true,
+            source_payload_write_calls: 0,
+        })
+    }
+    /// No saved no-AP flag or primary512 digest proves complete original NTFS
+    /// after process death. This terminal guard never issues pre-AP cancel.
+    pub fn cancel_pre_ap(&mut self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "pre-AP restart cancellation requires a complete authenticated raw/native fingerprint; terminal guard cannot issue it",
+        ))
+    }
     fn expected_layout(
         &self,
         observed: &partition_isolation::PartitionIsolationObservation,
@@ -1029,6 +1196,205 @@ fn candidate_volume(
     binding.volume_guid = name[11..name.len() - 2].to_owned();
     binding.validate()?;
     Ok(Some((binding, volume)))
+}
+
+fn wide_terminal(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
+}
+struct TerminalVolumeInfo {
+    label: crate::volume_label::VolumeLabel,
+    filesystem: String,
+    flags: u32,
+}
+fn terminal_volume_info(file: &File) -> io::Result<TerminalVolumeInfo> {
+    use std::os::windows::io::AsRawHandle;
+    let mut label = [0u16; 33];
+    let mut filesystem = [0u16; 32];
+    let (mut serial, mut component, mut flags) = (0, 0, 0);
+    // SAFETY: actual held target volume and bounded initialized output arrays.
+    if unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            label.as_mut_ptr(),
+            label.len() as u32,
+            &mut serial,
+            &mut component,
+            &mut flags,
+            filesystem.as_mut_ptr(),
+            filesystem.len() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let n = label
+        .iter()
+        .position(|v| *v == 0)
+        .ok_or_else(|| bad("terminal label unterminated"))?;
+    let label = crate::volume_label::VolumeLabel::from_utf16(label[..n].to_vec())?;
+    let n = filesystem
+        .iter()
+        .position(|v| *v == 0)
+        .ok_or_else(|| bad("terminal filesystem name unterminated"))?;
+    let filesystem = String::from_utf16(&filesystem[..n]).map_err(io::Error::other)?;
+    Ok(TerminalVolumeInfo {
+        label,
+        filesystem,
+        flags,
+    })
+}
+fn validate_terminal_mount_path(path: &str) -> io::Result<()> {
+    let b = path.as_bytes();
+    need(
+        b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && b[2] == b'\\'
+            && path.ends_with('\\')
+            && path.encode_utf16().count() < 32768
+            && !path.contains('\0'),
+        "unsupported original local mount path",
+    )?;
+    if path.len() == 3 {
+        return Ok(());
+    }
+    for part in path[3..path.len() - 1]
+        .split('\\')
+        .filter(|p| !p.is_empty())
+    {
+        need(
+            !matches!(part, "." | "..")
+                && !part.ends_with([' ', '.'])
+                && !part
+                    .chars()
+                    .any(|c| c.is_control() || "<>:\"/|?*".contains(c)),
+            "ambiguous original mount component",
+        )?;
+    }
+    Ok(())
+}
+fn mount_owner(path: &str) -> io::Result<Option<String>> {
+    let input = wide_terminal(path);
+    let mut name = [0u16; 64];
+    // SAFETY: bounded validated mount path and fixed GUID output.
+    if unsafe {
+        windows_sys::Win32::Storage::FileSystem::GetVolumeNameForVolumeMountPointW(
+            input.as_ptr(),
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    } == 0
+    {
+        let error = io::Error::last_os_error();
+        if matches!(error.raw_os_error(), Some(2 | 3 | 87)) {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    let n = name
+        .iter()
+        .position(|v| *v == 0)
+        .ok_or_else(|| bad("mount-owner GUID unterminated"))?;
+    Ok(Some(
+        String::from_utf16(&name[..n]).map_err(io::Error::other)?,
+    ))
+}
+fn is_target_mount(
+    name: &str,
+    binding: &crate::general_layout::GeneralDiskBinding,
+    info: &[u8],
+) -> io::Result<bool> {
+    let volume = device_file(name.trim_end_matches('\\'), false, false)?;
+    let ext = control(
+        &volume,
+        "terminal-existing-mount-extents",
+        VOLUME_EXTENTS,
+        &[],
+        32,
+        &mut Vec::new(),
+    )?;
+    if ext.len() != 32
+        || crate::layout::u32_at(&ext, 0)? != 1
+        || crate::layout::u32_at(&ext, 8)? != binding.disk_number
+        || crate::layout::u64_at(&ext, 16)? != binding.identity.partition_offset
+        || crate::layout::u64_at(&ext, 24)? != binding.identity.partition_bytes
+    {
+        return Ok(false);
+    }
+    Ok(control(
+        &volume,
+        "terminal-existing-mount-partition-info",
+        0x0007_0048,
+        &[],
+        144,
+        &mut Vec::new(),
+    )? == info)
+}
+fn preflight_mounts(
+    paths: &[String],
+    binding: &crate::general_layout::GeneralDiskBinding,
+    info: &[u8],
+) -> io::Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    need(paths.len() <= 128, "terminal mount count exceeds bound")?;
+    for (i, path) in paths.iter().enumerate() {
+        validate_terminal_mount_path(path)?;
+        need(
+            !paths[..i].iter().any(|p| p.eq_ignore_ascii_case(path)),
+            "duplicate terminal mount path",
+        )?;
+        if let Some(name) = mount_owner(path)? {
+            need(
+                is_target_mount(&name, binding, info)?,
+                "original mount path is occupied by another volume",
+            )?;
+        } else if path.len() != 3 {
+            let metadata = std::fs::symlink_metadata(path)?;
+            need(
+                metadata.is_dir()
+                    && metadata.file_attributes() & 0x400 == 0
+                    && std::fs::read_dir(path)?.next().is_none(),
+                "original mounted folder is missing, redirected or nonempty",
+            )?;
+        }
+    }
+    Ok(())
+}
+fn restore_terminal_mounts(
+    paths: &[String],
+    binding: &crate::general_layout::GeneralDiskBinding,
+    info: &[u8],
+) -> io::Result<()> {
+    preflight_mounts(paths, binding, info)?;
+    for path in paths {
+        if let Some(name) = mount_owner(path)? {
+            need(
+                is_target_mount(&name, binding, info)?,
+                "mount changed during terminal restoration",
+            )?;
+            continue;
+        }
+        let p = wide_terminal(path);
+        let volume = wide_terminal(&format!("{}\\", binding.volume_path()?));
+        // SAFETY: original validated unoccupied path and exact actual target.
+        // No delete/steal/create-folder or unrelated mount change is attempted.
+        if unsafe {
+            windows_sys::Win32::Storage::FileSystem::SetVolumeMountPointW(
+                p.as_ptr(),
+                volume.as_ptr(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let name = mount_owner(path)?
+            .ok_or_else(|| bad("terminal mount was not observed after assignment"))?;
+        need(
+            is_target_mount(&name, binding, info)?,
+            "terminal mount readback points elsewhere",
+        )?;
+    }
+    Ok(())
 }
 fn find_terminal_volume(
     source: &PartitionSourceBinding,

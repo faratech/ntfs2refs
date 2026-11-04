@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "kind": "native-private-thin-pool-addressability",
+  "date_utc": "2026-11-04",
+  "scope": "Logical native-device addressability only; no filesystem or conversion",
+  "lab": {
+    "machine": "N2R-WIN11",
+    "vm_id": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "parent_checkpoint": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+    "boot_unix_ms": 1793776669679,
+    "memory_bytes": 4294967296,
+    "storage_operations_executed_inside_owning_Windows_guest": true
+  },
+  "original_probe": {
+    "run_id": "0fd5828dd8c94850b362a3369b6a06c6",
+    "helper_sha256": "723044a097b332b5532586c915350f58a72d3d9dd9eaa1c885c4a5ea81fa629e",
+    "pid": 5824,
+    "birth_unix_ms": 1793777028302,
+    "sid": "S-1-5-18",
+    "exit_code": 1,
+    "wall_seconds": 8.1984347,
+    "terminal_sha256": "dce6c133b63341326f851192a9e54c819b27f9f0af22372d830b97fc91cda707",
+    "outcome": "Created two private members and their pool; incorrectly refused capability strings Thin/Fixed before any virtual-disk request",
+    "virtual_disk_requests": 0,
+    "preserved_result_sha256": "a96d1b34b8e058a666c07f14cf8a3d52038f85b1807c790bd89a6b2015df1d8f"
+  },
+  "successful_continuation": {
+    "run_id": "f63f488a7c034e69b1306a2370c1b4b5",
+    "helper_sha256": "4821b4e38059259019fdb052b83aab9fc1019c70e946f4aaf1b736e349512d1a",
+    "pid": 3708,
+    "birth_unix_ms": 1793777738668,
+    "sid": "S-1-5-18",
+    "exit_code": 0,
+    "wall_seconds": 7.2995253,
+    "terminal_utc": "2026-11-04T07:35:46.1336815Z",
+    "terminal_sha256": "a34003c625e5856f120b772d3624ad7ec5066585ef3aef13d6a9ff57684dbb50",
+    "result_sha256": "c2be758b137e09055d1362ee70b17941dbb5b39732d006f88f3d749c33a3f713",
+    "addressability_sha256": "66225ba57731f6aa2cecec1c5c7d7db9de7b4836ee0ee4f8acaec44e138dd8f8",
+    "existing_member_information_handles_read_only": true,
+    "existing_member_persistent_GUIDs_and_geometries_matched": true,
+    "new_members_or_pool_created": false,
+    "virtual_disk_creation_requests": 1,
+    "retry_or_fallback_attempted": false
+  },
+  "provider_graph": {
+    "pool_unique_id": "{bcc329c1-1c24-4d60-bef0-5043f00f7edf}",
+    "members": [
+      {
+        "virtual_disk_id": "3bfc9c58-5780-401f-bf00-161416531a06",
+        "physical_disk_unique_id": "60022480589CFC3B8057161416531A06",
+        "native_disk_number_at_observation": 8,
+        "virtual_bytes": 5368709120,
+        "allocated_backing_file_bytes_at_closure": 37748736
+      },
+      {
+        "virtual_disk_id": "e80a320b-2571-4f20-9b70-4d0174efe339",
+        "physical_disk_unique_id": "600224800B320AE871254D0174EFE339",
+        "native_disk_number_at_observation": 9,
+        "virtual_bytes": 5368709120,
+        "allocated_backing_file_bytes_at_closure": 37748736
+      }
+    ],
+    "virtual_disk_unique_id": "7DFAA64ABDDB1248970566B3A82C138D",
+    "native_device_number_at_observation": 10,
+    "provisioning": "Thin",
+    "resiliency": "Simple",
+    "columns": 1,
+    "write_cache_bytes": 0,
+    "logical_sector_bytes": 512,
+    "physical_sector_bytes": 4096,
+    "partition_style": "RAW"
+  },
+  "addressability": {
+    "goal_bytes": 1000000000000000,
+    "native_size_divisor": 2147483648,
+    "aligned_requested_bytes": 1000001530494976,
+    "rounding_added_bytes": 1530494976,
+    "CIM_virtual_disk_bytes": 1000001530494976,
+    "CIM_disk_bytes": 1000001530494976,
+    "same_held_handle_device_number_and_length_verified": true,
+    "IOCTL_DISK_GET_LENGTH_INFO_bytes": 1000001530494976,
+    "goal_met": true,
+    "supported_size_query_min_bytes": 2147483648,
+    "supported_size_query_max_bytes": 8589934592,
+    "supported_size_query_max_is_not_claimed_a_universal_Thin_ceiling": true
+  },
+  "storage_at_closure": {
+    "observation_utc": "2026-11-04T07:49:55.0630856Z",
+    "member_virtual_capacity_total_bytes": 10737418240,
+    "member_actual_allocated_backing_total_bytes": 75497472,
+    "pool_size_bytes": 9628024832,
+    "pool_allocated_size_bytes": 805306368,
+    "virtual_disk_footprint_on_pool_bytes": 268435456,
+    "distinct_storage_measures_not_summed": true,
+    "peak_or_physical_storage_capacity_measured": false
+  },
+  "closure": {
+    "path": ".lab/development/native-thin-addressability-0fd5828dd8c94850b362a3369b6a06c6/closed-successful-continuation",
+    "manifest_sha256": "a6c88dc9d930a9efb536a4db4684246d3a61154c998b1cdfb9cb02b264eaf3f5",
+    "current_readonly_observation_sha256": "efe81903272b70fabe8c5b83551187872a8a4322603476342874fb78b959a8d4",
+    "files": 37,
+    "source_metadata_bytes": 156492,
+    "every_source_and_host_length_and_SHA_verified_by_closure_helper": true,
+    "both_original_process_identities_absent_at_closure": true,
+    "both_actual_owned_terminal_records_checked": true,
+    "VHDX_or_payload_copied_or_hashed": false,
+    "storage_mutation_by_closure_helper": false,
+    "VM_power_or_restore_by_closure_helper": false
+  },
+  "qualification_boundaries": {
+    "virtual_disk_GPT_created": false,
+    "ReFS_formatted": false,
+    "large_offset_payload_IO_exercised": false,
+    "conversion_qualified": false,
+    "restart_reattachment_qualified": false,
+    "pool_retirement_qualified": false,
+    "physical_power_loss_qualified": false,
+    "current_public_single_VHDX_backend_limit_removed": false,
+    "stable_release_claimed": false
+  },
+  "unit_tests_added_or_run": false
+}

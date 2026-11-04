@@ -35,7 +35,50 @@ instructions. Earlier detailed handoffs remain under docs/history/.
 
 ## Current state: frozen alpha packaged
 
-**LATEST CEC RUN IS COMPLETE, overriding older state below:**
+**LIVE b7 PUBLIC CONVERSION, overriding the older Off/CEC labels below:**
+Root saved the closed thin-addressability/retirement-probe branch as checkpoint
+`a7242adb-27dc-4548-adb3-64b3719789f5`, parent3343, after normal shutdown.
+A fresh process verified Off/RAM0/parenta724 before the sole next restore.
+The reviewed20GiB launcher then restored3343 and started exactly one public
+`b7d97fb650d563a1f34b3df55889a1d9ed67eeb2` conversion. Run
+`778e45f2bc4b4291b9d3cb4c9cfebc05`, actualPID5348/birth1793779061600,
+boot1793779036686, remains LIVE until its actual owned terminal is observed.
+No retry/kill/power/restore while it is running. Gueststage
+`C:\ntfs2refs\resource-fixture-778e45f2bc4b4291b9d3cb4c9cfebc05`;
+hostroot `.lab/hyperv/streaming-v2-20261027/resource-fixture-778e45f2bc4b4291b9d3cb4c9cfebc05`.
+Publicargv `--drive F --partition 2 --minimize-scratch`, binarySHA
+41917337b9ffc2b493175800f51c3b6e13b498f23db32d5a712aac8357be6597,
+buildmanifestf39f1cd4b9d9f8f6d96e76e273fcf1939e68bc28b9ba4caa1a2e84be2ba71e92
+at `.lab/development/release-candidates/owned-shadow-retirement-b7d97fb`.
+This run must qualify successful V4 post-handoff shadow retirement; the
+standalone primitive below does not substitute for it. Compilation passed;
+no unit tests ran. Frozen814 package and qualification remain unchanged.
+
+The b7 standalone newly-owned empty-shadow primitive passed native detach and
+same-file retirement: PID3068/birth1793778325606/exit0/0.726818s, loadedtrue→false,
+backing absent, external4KiB recovery sentinel identity and SHA preserved.
+Closed13files97323B manifestf585e9028eff6171ade62e80f8f679ca5c30413ecddf86a862c7dbc3668a02a8.
+See `evidence/owned-shadow-retirement-primitive-20261104.json`. The public
+success path alone invokes retirement; error/panic/legacy retain their shadow.
+It removes no recovery artifacts and grants no replay authority.
+
+Private Windows Storage Spaces Thin/Simple addressability passed for
+1000001530494976B using two newly-created5GiB dynamic VHDX members with
+75497472B total backing allocation at closure. No GPT/format/payload/conversion.
+Closed37files156492B manifesta6c88dc9d930a9efb536a4db4684246d3a61154c998b1cdfb9cb02b264eaf3f5.
+See `evidence/private-thin-pool-addressability-20261104.json`. Public backend
+still uses VHDX; this experiment does not qualify1,000TB conversion.
+
+Superseded inactive a225 leaf9702 was retired through Hyper-V only after all
+121 archived metadata file pins plus original build/source were reverified.
+Receipt `.lab/development/retired-a225-4586d336240a422b9abc8cd3bb55c859.json`,
+SHAf0a2d289585321de2c3f8eef548b259f1d729fa63d565413c6e1d6cb1034b492.
+A fresh process verified only9702 was removed; never restore/recreate it.
+Frozen814 origins, completed CECee42 and guardedf4bf were preserved. Census
+after retirement297078174033B/free109468106752B, before savinga724. Original
+329374052988B cap/17179869184B reserve/50GB epoch remain fixed; remeasure.
+
+**PREVIOUS CEC RUN COMPLETE:**
 Public cec225215f6487ddc9eaeb6564f358f5e20b9823 run
 e7cd48e25fdf4552ae726e00de3ac454, actualPID5340/birth1793774388609
 exited0/757.8637882s at06:52:26.532UTC; originalboot1793774364006. Root launcher67141
@@ -393,8 +436,9 @@ Preserve it while pursuing focused, evidence-backed continuation:
 - Useful larger geometries, feature combinations and exact Windows/storage
   profiles remain unqualified. Do not silently discard unsupported NTFS semantics.
 - The managed-shadow VHDX provider has an approximately 64 TB native ceiling
-  including staging overhead. No alternate scratch provider exists; 1,000 TB is
-  unsupported. Packaging does not establish arbitrary scale or maximum NTFS
+  including staging overhead. A private thin-pool addressability experiment
+  succeeded, but no alternative public conversion/recovery provider exists;
+  1,000 TB conversion is unsupported. Packaging does not establish arbitrary scale or maximum NTFS
   compatibility. Continue reducing reads/storage only through concrete same-owner
   proofs, without weakening source/recovery invariants.
 - Physical power loss, copied-user-payload interruption, active write/flush/

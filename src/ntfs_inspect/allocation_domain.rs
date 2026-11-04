@@ -190,6 +190,157 @@ pub fn is_free_granule(
     }
     Ok(allocated_bytes_in(store, geometry, summary, offset, 4096, partition_bytes)? == 0)
 }
+
+/// One destination classification, not source admission or a write capability.
+pub(crate) struct GranuleAllocation {
+    pub allocated_bytes: u64,
+    pub is_source_free: bool,
+}
+
+/// Forward queries over the actual held ownership index. Cache only the current
+/// scalar interval; the source adapter retains its complete metadata bookends.
+pub(crate) struct AllocationCursor<'a> {
+    store: &'a SortedRecordStore,
+    geometry: &'a super::NtfsGeometry,
+    summary: &'a PagedAllocationReconciliation,
+    partition_bytes: u64,
+    domain: u64,
+    next_ordinal: u64,
+    current: Option<(u64, u64)>,
+    prior_interval_end: Option<u64>,
+    last_query_end: Option<u64>,
+    poisoned: bool,
+}
+impl<'a> AllocationCursor<'a> {
+    pub(super) fn new(
+        store: &'a SortedRecordStore,
+        geometry: &'a super::NtfsGeometry,
+        summary: &'a PagedAllocationReconciliation,
+        partition_bytes: u64,
+    ) -> Result<Self> {
+        let (_, domain) = query_domain(store, geometry, summary, 0, 4096, partition_bytes)?;
+        Ok(Self {
+            store,
+            geometry,
+            summary,
+            partition_bytes,
+            domain,
+            next_ordinal: 0,
+            current: None,
+            prior_interval_end: None,
+            last_query_end: None,
+            poisoned: false,
+        })
+    }
+
+    fn advance(&mut self) -> Result<()> {
+        self.current = None;
+        if self.next_ordinal < self.store.len() {
+            let row = interval_bytes(
+                self.store,
+                self.next_ordinal,
+                u64::from(self.geometry.cluster_size),
+                self.domain,
+            )?;
+            ensure!(
+                self.prior_interval_end.is_none_or(|end| end <= row.0),
+                "held physical ownership overlaps in forward query"
+            );
+            self.next_ordinal = self
+                .next_ordinal
+                .checked_add(1)
+                .context("allocation cursor ordinal overflow")?;
+            self.prior_interval_end = Some(row.1);
+            self.current = Some(row);
+        }
+        Ok(())
+    }
+
+    fn seek_forward(&mut self, offset: u64) -> Result<()> {
+        // A sparse selection may jump over millions of irrelevant user-data
+        // intervals. Seek once across that gap rather than scanning them all.
+        let (mut low, mut high) = (self.next_ordinal, self.store.len());
+        let cluster = u64::from(self.geometry.cluster_size);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if interval_bytes(self.store, middle, cluster, self.domain)?.1 <= offset {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        self.current = None;
+        self.next_ordinal = low;
+        self.prior_interval_end = if low > 0 {
+            Some(interval_bytes(self.store, low - 1, cluster, self.domain)?.1)
+        } else {
+            None
+        };
+        self.advance()
+    }
+
+    pub(crate) fn granule(&mut self, offset: u64) -> Result<GranuleAllocation> {
+        ensure!(!self.poisoned, "failed allocation cursor cannot be reused");
+        self.poisoned = true;
+        let (end, domain) = query_domain(
+            self.store,
+            self.geometry,
+            self.summary,
+            offset,
+            4096,
+            self.partition_bytes,
+        )?;
+        ensure!(
+            domain == self.domain
+                && offset.is_multiple_of(4096)
+                && self.last_query_end.is_none_or(|prior| offset >= prior),
+            "allocation cursor requires forward, disjoint aligned granules"
+        );
+        let mut allocated_bytes = 0u64;
+        if offset < domain {
+            if self.current.is_none() && self.next_ordinal < self.store.len()
+                || self.current.is_some_and(|(_, finish)| finish <= offset)
+                    && self.last_query_end != Some(offset)
+            {
+                self.seek_forward(offset)?;
+            }
+            while let Some((start, finish)) = self.current {
+                if finish <= offset {
+                    self.advance()?;
+                    continue;
+                }
+                if start >= end {
+                    break;
+                }
+                let first = start.max(offset);
+                let last = finish.min(end);
+                if first < last {
+                    allocated_bytes = allocated_bytes
+                        .checked_add(last - first)
+                        .context("allocation cursor byte count overflow")?;
+                }
+                if finish >= end {
+                    break;
+                }
+                self.advance()?;
+            }
+        }
+        ensure!(allocated_bytes <= 4096, "allocation cursor exceeds granule");
+        let is_source_free = offset >= 4096
+            && self
+                .partition_bytes
+                .checked_sub(4096)
+                .is_some_and(|tail| end <= tail)
+            && end <= domain
+            && allocated_bytes == 0;
+        self.last_query_end = Some(end);
+        self.poisoned = false;
+        Ok(GranuleAllocation {
+            allocated_bytes,
+            is_source_free,
+        })
+    }
+}
 fn key(a: u64, b: u64) -> [u8; 16] {
     let mut key = [0; 16];
     key[..8].copy_from_slice(&a.to_be_bytes());

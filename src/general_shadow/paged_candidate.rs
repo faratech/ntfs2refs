@@ -4,8 +4,7 @@ use super::{
     PagedInputs,
     source_backed::{
         CandidateChunk, CandidateReadSpans, ClosingShadowBytes, ClosingSourceBytes,
-        PagedSourceByteAdapter, PagedStreamIdentity, ReadCounts,
-        candidate_span_workspace_bytes,
+        PagedSourceByteAdapter, PagedStreamIdentity, ReadCounts, candidate_span_workspace_bytes,
     },
 };
 use crate::{
@@ -479,6 +478,11 @@ impl<'source, 'observation> PagedSourceBackedCandidate<'source, 'observation> {
     }
     pub(crate) fn raw_source(&self) -> &crate::ntfs_inspect::PagedInspection {
         self.bytes.raw_source()
+    }
+    pub(crate) fn allocation_cursor(
+        &self,
+    ) -> Result<crate::ntfs_inspect::allocation_domain::AllocationCursor<'source>> {
+        self.bytes.allocation_cursor(self.length)
     }
 
     pub(crate) fn route_bytes_in(&self, offset: u64, length: u64) -> Result<u64> {

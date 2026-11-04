@@ -527,6 +527,10 @@ fn capture_selected_inner(
         .checked_mul(64)
         .context("capture span RAM overflow")?;
     let _ram = scratch.lease_ram((2 * CHUNK + GRANULE) as u64 + span_bytes)?;
+    let _allocation_ram = scratch.lease_ram(std::mem::size_of::<
+        crate::ntfs_inspect::allocation_domain::AllocationCursor<'_>,
+    >() as u64)?;
+    let mut allocation = candidate.allocation_cursor()?;
     guard(progress(budget, 0, 0, 0, 0, 0, 0, 0, 0, 256)?)?;
     let mut index = OwnedCaptureIndex::create(index_path, image, &scratch, &capture_group)?;
     let mut literal_permit = capture_group.reserve_file(literal_path, 0)?;
@@ -592,8 +596,9 @@ fn capture_selected_inner(
                 let destination = at + local as u64;
                 let new_zero = new.iter().all(|b| *b == 0);
                 let was_zero = old.iter().all(|b| *b == 0);
+                let ownership = allocation.granule(destination)?;
                 let free = budget.selected_capacity_policy.allows_source_free()
-                    && candidate.raw_source().is_free_granule(destination, image)?;
+                    && ownership.is_source_free;
                 let mut copy = None;
                 if !new_zero {
                     if let Some(source) = candidate.copy_source_for(&chunk, local, GRANULE)? {
@@ -690,9 +695,7 @@ fn capture_selected_inner(
                 let allocated = if destination < 4096 || destination >= image - 4096 {
                     GRANULE as u64
                 } else {
-                    candidate
-                        .raw_source()
-                        .allocated_bytes_in(destination, GRANULE as u64, image)?
+                    ownership.allocated_bytes
                 };
                 add(
                     &mut classes.changed_bytes_ntfs_allocated_destination,

@@ -67,6 +67,10 @@ struct Verified {
 struct State {
     groups: BTreeMap<ArtifactGroup, Group>,
     entries: BTreeMap<PathBuf, Entry>,
+    // The same immutable verified snapshots previously folded in check_free.
+    // Updated only with their installation/removal under this mutex.
+    verified_allocated_bytes: u64,
+    allocation_poisoned: bool,
     overhead: u64,
     index_bytes: u64,
     leased_ram_bytes: u64,
@@ -195,6 +199,58 @@ fn add(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b)
         .context("artifact arena accounting overflow")
 }
+impl State {
+    /// Independently reconcile the hot-path credit against every verified
+    /// registry entry before reporting usage or issuing a sealed owner.
+    fn reconciled_verified_totals(&mut self) -> Result<(u64, u64)> {
+        ensure!(
+            !self.allocation_poisoned,
+            "artifact allocation ledger is poisoned"
+        );
+        let totals = self
+            .entries
+            .values()
+            .filter_map(|entry| entry.verified.as_ref())
+            .try_fold((0, 0), |(wire, allocated), verified| {
+                Ok::<_, anyhow::Error>((
+                    add(wire, verified.snapshot.file_bytes)?,
+                    add(allocated, verified.snapshot.allocation_bytes)?,
+                ))
+            });
+        match totals {
+            Ok((wire, allocated)) if allocated == self.verified_allocated_bytes => {
+                Ok((wire, allocated))
+            }
+            Ok(_) => {
+                self.allocation_poisoned = true;
+                anyhow::bail!("verified artifact allocation aggregate differs from full registry")
+            }
+            Err(error) => {
+                self.allocation_poisoned = true;
+                Err(error.context("verified artifact allocation reconciliation overflow"))
+            }
+        }
+    }
+
+    /// Calculate a prospective transition before changing its registry entry.
+    fn next_verified_allocation(&mut self, remove: u64, credit: u64) -> Result<u64> {
+        ensure!(
+            !self.allocation_poisoned,
+            "artifact allocation ledger is poisoned"
+        );
+        match self
+            .verified_allocated_bytes
+            .checked_sub(remove)
+            .and_then(|bytes| bytes.checked_add(credit))
+        {
+            Some(bytes) => Ok(bytes),
+            None => {
+                self.allocation_poisoned = true;
+                anyhow::bail!("verified artifact allocation transition overflow or underflow")
+            }
+        }
+    }
+}
 const HASH_WORKSPACE: u64 = 4 * 1024 * 1024;
 const ORDINARY_GROUPS: [ArtifactGroup; 8] = [
     ArtifactGroup::Source,
@@ -266,13 +322,14 @@ fn inspect(file: &mut File, maximum: u64, expected: &str) -> Result<Verified> {
 }
 fn validate_prepared_state(
     arena: &ArtifactArena,
-    state: &State,
+    state: &mut State,
     ordinary: &[ArtifactGroupSeal],
     native_quota: &ArtifactGroupPermit,
     native_length: u64,
     native_reservation: u64,
     closed: bool,
 ) -> Result<ArenaUsage> {
+    state.reconciled_verified_totals()?;
     ensure!(
         state.prepared_closed == closed
             && !state.ram_poisoned
@@ -419,7 +476,7 @@ impl PreparedArenaClosure {
     /// Current bounded metadata accounting; full byte validation is separate.
     pub(crate) fn usage(&self) -> Result<ArenaUsage> {
         let _ram = self.arena.reserve_ram(256 * 1024)?;
-        let state = self
+        let mut state = self
             .arena
             .0
             .state
@@ -427,7 +484,7 @@ impl PreparedArenaClosure {
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         validate_prepared_state(
             &self.arena,
-            &state,
+            &mut state,
             &self.ordinary,
             &self.native_quota,
             self.native_length,
@@ -447,7 +504,7 @@ impl PreparedArenaClosure {
             512 * 1024,
         )?;
         let _ram = self.arena.reserve_ram(hash_bytes)?;
-        let state = self
+        let mut state = self
             .arena
             .0
             .state
@@ -455,7 +512,7 @@ impl PreparedArenaClosure {
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
         validate_prepared_state(
             &self.arena,
-            &state,
+            &mut state,
             &self.ordinary,
             &self.native_quota,
             self.native_length,
@@ -638,7 +695,7 @@ impl ArtifactArena {
             .1;
         validate_prepared_state(
             self,
-            &state,
+            &mut state,
             &ordinary,
             native_quota,
             native_length,
@@ -710,6 +767,8 @@ impl ArtifactArena {
             state: Mutex::new(State {
                 groups: BTreeMap::new(),
                 entries: BTreeMap::new(),
+                verified_allocated_bytes: 0,
+                allocation_poisoned: false,
                 overhead: 0,
                 index_bytes: 0,
                 leased_ram_bytes: 0,
@@ -867,6 +926,7 @@ impl ArtifactArena {
             .context("native journal quota missing")?;
         ensure!(
             !state.prepared_closed
+                && !state.allocation_poisoned
                 && !group.poisoned
                 && !group.sealed
                 && group.native_journal.is_none()
@@ -892,15 +952,15 @@ impl ArtifactArena {
     }
 
     fn check_free(&self, state: &State, additional: u64) -> Result<()> {
+        ensure!(
+            !state.allocation_poisoned,
+            "artifact allocation ledger is poisoned"
+        );
         let held = state
             .groups
             .values()
             .try_fold(state.overhead, |n, g| add(n, g.maximum))?;
-        let actual_files = state
-            .entries
-            .values()
-            .filter_map(|e| e.verified.as_ref())
-            .try_fold(0, |n, v| add(n, v.snapshot.allocation_bytes))?;
+        let actual_files = state.verified_allocated_bytes;
         // The retained native witness only queries its own readonly file
         // metadata. It acquires neither a journal lock nor this arena lock,
         // so querying it while State is held cannot invert lock ordering.
@@ -922,7 +982,7 @@ impl ArtifactArena {
         Ok(())
     }
     pub fn usage(&self) -> Result<ArenaUsage> {
-        let state = self
+        let mut state = self
             .0
             .state
             .lock()
@@ -931,16 +991,7 @@ impl ArtifactArena {
             .groups
             .values()
             .try_fold(state.overhead, |n, g| add(n, g.maximum))?;
-        let (mut wire, mut allocated) = state
-            .entries
-            .values()
-            .filter_map(|e| e.verified.as_ref())
-            .try_fold((0, 0), |(w, a), v| {
-                Ok::<_, anyhow::Error>((
-                    add(w, v.snapshot.file_bytes)?,
-                    add(a, v.snapshot.allocation_bytes)?,
-                ))
-            })?;
+        let (mut wire, mut allocated) = state.reconciled_verified_totals()?;
         let mut native_files = 0u64;
         for owner in state
             .groups
@@ -1180,6 +1231,7 @@ impl ArtifactGroupPermit {
             pins.push(pin);
         }
         ensure!(pins.len() == count, "artifact group changed before sealing");
+        state.reconciled_verified_totals()?;
         let group = state
             .groups
             .get_mut(&self.group)
@@ -1362,33 +1414,56 @@ impl ArtifactPathPermit {
             !state.prepared_closed,
             "prepared arena disk ledger is closed"
         );
-        let old = state
+        let entry = state
             .entries
             .get(&self.path)
-            .context("artifact entry absent")?
-            .reserved;
+            .context("artifact entry absent")?;
+        ensure!(
+            entry.group == self.group.group && entry.verified.is_none(),
+            "artifact entry is already verified or belongs to another group"
+        );
+        let old = entry.reserved;
+        let next_allocated =
+            state.next_verified_allocation(0, verified.snapshot.allocation_bytes)?;
         let extra = verified
             .snapshot
             .allocation_bytes
             .saturating_sub(verified.snapshot.file_bytes);
-        state.overhead = state
+        let next_overhead = state
             .overhead
-            .checked_sub(self.group.arena.0.allocation_slack - extra)
+            .checked_sub(
+                self.group
+                    .arena
+                    .0
+                    .allocation_slack
+                    .checked_sub(extra)
+                    .context("artifact allocation slack exceeded")?,
+            )
             .context("artifact slack underflow")?;
-        let group = state.groups.get_mut(&self.group.group).unwrap();
+        let group = state.groups.get(&self.group.group).unwrap();
         ensure!(
             !group.sealed && !group.poisoned,
             "artifact group sealed while writing"
         );
-        group.held = group
+        let next_held = group
             .held
-            .checked_sub(old - verified.snapshot.file_bytes)
+            .checked_sub(
+                old.checked_sub(verified.snapshot.file_bytes)
+                    .context("verified artifact exceeds its reservation")?,
+            )
             .context("artifact reservation underflow")?;
-        group.files = add(group.files, 1)?;
+        let next_files = add(group.files, 1)?;
+        // Publish the snapshot and its allocation credit in one infallible
+        // commit after all prospective accounting has passed.
+        state.overhead = next_overhead;
+        let group = state.groups.get_mut(&self.group.group).unwrap();
+        group.held = next_held;
+        group.files = next_files;
         let entry = state.entries.get_mut(&self.path).unwrap();
         entry.reserved = verified.snapshot.file_bytes;
         entry.verified = Some(verified);
         entry.lease = Arc::downgrade(&pin);
+        state.verified_allocated_bytes = next_allocated;
         self.complete = true;
         Ok(ArtifactLease {
             group: self.group.clone(),
@@ -1495,7 +1570,7 @@ impl ArtifactLease {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
             ensure!(
-                !state.prepared_closed,
+                !state.prepared_closed && !state.allocation_poisoned,
                 "prepared arena artifacts cannot be retired"
             );
         }
@@ -1541,47 +1616,93 @@ impl ArtifactLease {
                 pin.modified,
             );
         }
-        n2r_win32::file_storage::mark_delete_on_close(&file)?;
-        drop(file);
-        ensure!(
-            matches!(fs::symlink_metadata(&path),Err(ref e) if e.kind()==std::io::ErrorKind::NotFound),
-            "artifact retirement not observed complete"
-        );
         let mut state = group
             .arena
             .0
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("arena lock poisoned"))?;
-        ensure!(
-            !state.prepared_closed,
-            "prepared arena artifacts cannot be retired"
-        );
-        let entry = state
+        // Hashing, opening and RAM reservation are complete before this lock.
+        // Keep it through deletion and the infallible registry commit so no
+        // capacity query can observe freed disk space with the old credit.
+        let transition = (|| -> Result<_> {
+            ensure!(
+                !state.prepared_closed && !state.allocation_poisoned,
+                "prepared arena artifacts cannot be retired"
+            );
+            let entry = state
+                .entries
+                .get(&path)
+                .context("retired artifact missing from ledger")?;
+            let snapshot = &entry
+                .verified
+                .as_ref()
+                .context("retired artifact unverified")?
+                .snapshot;
+            ensure!(
+                entry.group == group.group && *snapshot == pin.snapshot,
+                "retired artifact differs from its credited snapshot"
+            );
+            let index = state
+                .index_bytes
+                .checked_sub(entry.registry_bytes)
+                .context("artifact registry RAM credit underflow")?;
+            let overhead = state
+                .overhead
+                .checked_sub(
+                    snapshot
+                        .allocation_bytes
+                        .saturating_sub(snapshot.file_bytes),
+                )
+                .context("artifact allocation credit underflow")?;
+            let current_group = state
+                .groups
+                .get(&group.group)
+                .context("retired artifact group absent")?;
+            let held = current_group
+                .held
+                .checked_sub(snapshot.file_bytes)
+                .context("artifact wire credit underflow")?;
+            let files = current_group
+                .files
+                .checked_sub(1)
+                .context("artifact file count underflow")?;
+            let remove = snapshot.allocation_bytes;
+            let allocated = state.next_verified_allocation(remove, 0)?;
+            Ok((index, overhead, held, files, allocated))
+        })();
+        let (index, overhead, held, files, allocated) = match transition {
+            Ok(values) => values,
+            Err(error) => {
+                state.allocation_poisoned = true;
+                return Err(error);
+            }
+        };
+        // These plain file operations acquire neither arena nor journal
+        // ownership locks. Failure poisons the already-held state directly.
+        if let Err(error) = n2r_win32::file_storage::mark_delete_on_close(&file) {
+            state.allocation_poisoned = true;
+            return Err(error.into());
+        }
+        drop(file);
+        if !matches!(fs::symlink_metadata(&path),Err(ref e) if e.kind()==std::io::ErrorKind::NotFound)
+        {
+            state.allocation_poisoned = true;
+            anyhow::bail!("artifact retirement not observed complete");
+        }
+        state
             .entries
             .remove(&path)
-            .context("retired artifact missing from ledger")?;
-        state.index_bytes = state
-            .index_bytes
-            .checked_sub(entry.registry_bytes)
-            .context("artifact registry RAM credit underflow")?;
-        let bytes = entry
-            .verified
-            .context("retired artifact unverified")?
-            .snapshot;
-        state.overhead = state
-            .overhead
-            .checked_sub(bytes.allocation_bytes.saturating_sub(bytes.file_bytes))
-            .context("artifact allocation credit underflow")?;
-        let group = state.groups.get_mut(&group.group).unwrap();
-        group.held = group
-            .held
-            .checked_sub(bytes.file_bytes)
-            .context("artifact wire credit underflow")?;
-        if group.sealed {
-            group.maximum = group.held;
+            .expect("validated retired entry");
+        state.index_bytes = index;
+        state.overhead = overhead;
+        state.verified_allocated_bytes = allocated;
+        let current_group = state.groups.get_mut(&group.group).unwrap();
+        current_group.held = held;
+        if current_group.sealed {
+            current_group.maximum = held;
         }
-        group.files -= 1;
+        current_group.files = files;
         Ok(())
     }
 }

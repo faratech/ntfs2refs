@@ -93,6 +93,17 @@ impl PagedInspection {
     pub fn allocation(&self) -> &PagedAllocationReconciliation {
         &self.allocation
     }
+    pub(crate) fn allocation_cursor(
+        &self,
+        partition_bytes: u64,
+    ) -> Result<allocation_domain::AllocationCursor<'_>> {
+        allocation_domain::AllocationCursor::new(
+            &self.ownership[0],
+            &self.header().geometry,
+            &self.allocation,
+            partition_bytes,
+        )
+    }
     pub fn allocated_bytes_in(
         &self,
         offset: u64,
@@ -144,10 +155,14 @@ impl PagedInspection {
     /// Bounded directory metadata from the already authenticated stores. No
     /// row is decoded or allocated before its actual wire length is known.
     pub(crate) fn checked_record_wire_sizes(&self, record: u64) -> Result<(u64, Option<u64>)> {
-        let file = self.files.record_wire_bytes(record)?
+        let file = self
+            .files
+            .record_wire_bytes(record)?
             .with_context(|| format!("source FILE {record} absent from complete domain"))?;
-        let assembly = self.assemblies[0].find_ordinal(file_key(record))?
-            .map(|ordinal| self.assemblies[0].record_bytes(ordinal)).transpose()?;
+        let assembly = self.assemblies[0]
+            .find_ordinal(file_key(record))?
+            .map(|ordinal| self.assemblies[0].record_bytes(ordinal))
+            .transpose()?;
         Ok((file, assembly))
     }
     pub(crate) fn lease_working_ram(

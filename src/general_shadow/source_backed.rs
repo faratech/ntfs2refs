@@ -146,13 +146,25 @@ impl CandidateChunk<'_> {
     }
 
     pub(super) fn copy_source(&self, offset: usize, length: usize) -> Option<u64> {
-        let span = self.reads.spans.iter().find(|span| span.output_offset <= offset
-            && span.output_offset.checked_add(span.length).is_some_and(|end| offset < end))?;
-        let source = span.source_offset.checked_add((offset-span.output_offset) as u64)?;
+        let span = self.reads.spans.iter().find(|span| {
+            span.output_offset <= offset
+                && span
+                    .output_offset
+                    .checked_add(span.length)
+                    .is_some_and(|end| offset < end)
+        })?;
+        let source = span
+            .source_offset
+            .checked_add((offset - span.output_offset) as u64)?;
         self.covers_copy(offset, source, length).then_some(source)
     }
 
-    pub(super) fn covers_copy(&self, output_offset: usize, source_offset: u64, length: usize) -> bool {
+    pub(super) fn covers_copy(
+        &self,
+        output_offset: usize,
+        source_offset: u64,
+        length: usize,
+    ) -> bool {
         if !self.reads.available || length == 0 {
             return false;
         }
@@ -988,6 +1000,12 @@ impl<'a> PagedSourceByteAdapter<'a> {
 
     pub(super) fn raw_source(&self) -> &crate::ntfs_inspect::PagedInspection {
         self.raw
+    }
+    pub(super) fn allocation_cursor(
+        &self,
+        partition_bytes: u64,
+    ) -> Result<crate::ntfs_inspect::allocation_domain::AllocationCursor<'a>> {
+        self.raw.allocation_cursor(partition_bytes)
     }
 
     pub(crate) fn source_physical_for(

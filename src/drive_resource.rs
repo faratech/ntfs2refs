@@ -63,6 +63,8 @@ struct PublicPlan {
     observed: AvailableResources,
     resources: ResourceBudget,
     reserve_bytes: u64,
+    provider_maximum_additional_backing_bytes: u64,
+    provider_minimum_host_free_bytes: u64,
     evidence_allocation_bytes: u64,
     evidence_maximum_bytes: u64,
     evidence_ram_bytes: u64,
@@ -86,8 +88,33 @@ pub(crate) fn convert_owned(
     verification_policy: VerificationPolicy,
     selected_capacity_policy: SelectedCapacityPolicy,
 ) -> Result<()> {
+    convert_owned_with_provider_commitment(
+        pair,
+        journal,
+        run,
+        verification_policy,
+        selected_capacity_policy,
+        0,
+        0,
+    )
+}
+
+/// Preserve the remaining maximum provider growth outside capture/journal
+/// promises. The live owner supplies this value; it is never replay authority.
+pub(crate) fn convert_owned_with_provider_commitment(
+    pair: GeneralSourceShadowBinding,
+    journal: GeneralJournalStorageBinding,
+    run: &Path,
+    verification_policy: VerificationPolicy,
+    selected_capacity_policy: SelectedCapacityPolicy,
+    provider_commitment: u64,
+    provider_minimum_free_bytes: u64,
+) -> Result<()> {
     let first = n2r_win32::resource_native::observe_available_resources(run)?;
-    let keep = reserve(first.scratch_available_bytes);
+    let keep = reserve(first.scratch_available_bytes)
+        .max(provider_minimum_free_bytes)
+        .checked_add(provider_commitment)
+        .context("provider and working-storage reserve overflow")?;
     let usable = first
         .scratch_available_bytes
         .checked_sub(keep)
@@ -156,6 +183,8 @@ pub(crate) fn convert_owned(
         observed: available,
         resources,
         reserve_bytes: keep,
+        provider_maximum_additional_backing_bytes: provider_commitment,
+        provider_minimum_host_free_bytes: provider_minimum_free_bytes,
         evidence_allocation_bytes: observer.allocation_bytes(),
         evidence_maximum_bytes: observer.maximum_bytes(),
         evidence_ram_bytes: observer.ram_bytes(),

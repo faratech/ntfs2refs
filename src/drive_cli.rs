@@ -6,6 +6,9 @@ use std::path::PathBuf;
 #[cfg(windows)]
 #[path = "drive_resource.rs"]
 mod resource;
+#[cfg(windows)]
+#[path = "drive_staging.rs"]
+mod staging;
 
 #[derive(Args, Debug)]
 pub struct DriveArgs {
@@ -54,6 +57,17 @@ pub struct DriveArgs {
     /// rollback. Requires fast verification and no VSS snapshots/diff areas.
     #[arg(long, requires = "drive", conflicts_with_all = ["whole_image_verification", "verify_full_content"])]
     pub minimize_scratch: bool,
+    /// Qualification-only: use bounded thin temporary storage on the V4 route.
+    #[arg(
+        long,
+        requires = "drive",
+        conflicts_with = "whole_image_verification",
+        hide = true
+    )]
+    pub experimental_thin_shadow: bool,
+    /// Qualification-only bound on the thin provider's carrier and metadata.
+    #[arg(long, requires = "experimental_thin_shadow", hide = true)]
+    pub experimental_thin_backing_bytes: Option<u64>,
 }
 impl DriveArgs {
     pub fn requested(&self) -> bool {
@@ -491,6 +505,8 @@ mod windows {
             verification_policy,
             args.minimize_scratch,
             target_format,
+            args.experimental_thin_shadow,
+            args.experimental_thin_backing_bytes,
         )
     }
     fn convert_selected(
@@ -502,6 +518,8 @@ mod windows {
         verification_policy: crate::verification_policy::VerificationPolicy,
         minimize_scratch: bool,
         target_format: n2r_win32::managed_shadow::TargetFormatProfile,
+        thin_shadow: bool,
+        thin_backing_bytes: Option<u64>,
     ) -> Result<u8> {
         let system = std::env::var("SystemRoot").context("Windows system path unavailable")?;
         let os_root = format!(
@@ -579,32 +597,63 @@ mod windows {
             "Preparing temporary ReFS metadata storage. Recovery files: {}",
             run.display()
         );
-        let staged = n2r_win32::managed_shadow::create_with_profile(
-            &run.join("shadow.vhdx"),
-            before.binding.identity.partition_bytes,
-            before.binding.identity.logical_sector_bytes,
-            before.binding.identity.physical_sector_bytes,
-            target_format,
-        )?;
+        let staged = if thin_shadow {
+            ensure!(
+                allocation_bounded,
+                "thin temporary storage requires the V4 route"
+            );
+            ensure!(
+                before.binding.identity.logical_sector_bytes == 512
+                    && before.binding.identity.physical_sector_bytes == 4096,
+                "thin temporary storage has not qualified this sector geometry"
+            );
+            let available = n2r_win32::resource_native::observe_available_resources(&run)?;
+            let planned_carrier = (usable - usable / 3).min(64u64 << 40);
+            let carrier_scratch = thin_backing_bytes
+                .unwrap_or(planned_carrier)
+                .min(planned_carrier)
+                / (2 << 20)
+                * (2 << 20);
+            let provider_bytes = before
+                .binding
+                .identity
+                .partition_bytes
+                .checked_add(64 << 20)
+                .context("thin provider geometry overflow")?;
+            let owner = n2r_win32::managed_shadow::thin_pool::create_bounded_with_carrier(
+                &run.join("thin-provider"),
+                &super::staging::windows_storage_subsystem()?,
+                provider_bytes,
+                n2r_win32::managed_shadow::thin_pool::Budget {
+                    rust_ram_bytes: available.available_physical_bytes / 16,
+                    powershell_ram_bytes: available.available_physical_bytes / 4,
+                    scratch_bytes: carrier_scratch,
+                    minimum_free_bytes: reserve,
+                },
+            )?;
+            super::staging::StageOwner::Thin(
+                owner.format(before.binding.identity.partition_bytes, target_format)?,
+            )
+        } else {
+            super::staging::StageOwner::Vhdx(n2r_win32::managed_shadow::create_with_profile(
+                &run.join("shadow.vhdx"),
+                before.binding.identity.partition_bytes,
+                before.binding.identity.logical_sector_bytes,
+                before.binding.identity.physical_sector_bytes,
+                target_format,
+            )?)
+        };
+        let provider_commitment = staged.maximum_additional_host_backing_commitment()?;
         // Record the provider identity as well as the disk identity: a guest
         // reboot can remove the attachment while leaving the recovery backing
         // intact. These facts locate the original shadow; they never grant
         // source admission, formatting or journal replay authority.
-        save_new(
-            &run.join("managed-shadow.json"),
-            &serde_json::json!({
-                "schema_version": 1,
-                "kind": "managed-native-shadow-location",
-                "path": staged.path,
-                "virtual_disk_id": staged.virtual_disk_id,
-                "binding": staged.binding,
-            }),
-        )?;
+        save_new(&run.join("managed-shadow.json"), &staged.location())?;
         save_new(
             &run.join("managed-shadow-policy.json"),
             &serde_json::json!({
                 "schema_version":1,"kind":"requested-and-observed-shadow-format-policy",
-                "requested_target_format":target_format,"shadow_binding":staged.binding,
+                "requested_target_format":target_format,"shadow_binding":staged.binding(),
                 "actual_shadow_policy":staged.format_policy(),
                 "requested_designation_verified":true,"explicit_trust_or_filter_configuration_changed":false,
                 "source_trust_inferred_from_shadow":false,
@@ -612,10 +661,10 @@ mod windows {
             }),
         )?;
         let result = if allocation_bounded {
-            super::resource::convert_owned(
+            super::resource::convert_owned_with_provider_commitment(
                 n2r_win32::general_layout::GeneralSourceShadowBinding {
                     source: before.binding.clone(),
-                    shadow: staged.binding.clone(),
+                    shadow: staged.binding().clone(),
                 },
                 n2r_win32::journal_file::GeneralJournalStorageBinding {
                     disk: journal.binding.clone(),
@@ -632,13 +681,15 @@ mod windows {
                 } else {
                     Default::default()
                 },
+                provider_commitment,
+                if thin_shadow { reserve } else { 0 },
             )
         } else {
             if minimize_scratch {
                 println!("Preparing NTFS file placement to reduce recovery storage.");
                 let preparation = crate::ntfs_preparation::prepare(
                     before.binding.clone(),
-                    staged.binding.clone(),
+                    staged.binding().clone(),
                     resources,
                     &run.join("ntfs-preparation"),
                     crate::ntfs_preparation::Budget {
@@ -663,7 +714,7 @@ mod windows {
                 experiment_id: id,
                 pair: n2r_win32::general_layout::GeneralSourceShadowBinding {
                     source: before.binding.clone(),
-                    shadow: staged.binding.clone(),
+                    shadow: staged.binding().clone(),
                 },
                 journal: n2r_win32::journal_file::GeneralJournalStorageBinding {
                     disk: journal.binding.clone(),
@@ -705,15 +756,17 @@ mod windows {
                     // Its replay is self-contained; legacy compact recovery
                     // still requires its original protected shadow backing.
                     let retirement = staged.retire_after_successful_v4();
-                    if !retirement.success {
+                    if !retirement.success() {
                         eprintln!(
                             "Conversion completed; temporary shadow cleanup stopped at {}: {}. Preserve any remaining staging files. Raw rollback remains closed.",
-                            retirement.phase,
-                            retirement.error.as_deref().unwrap_or("cleanup incomplete")
+                            retirement.phase(),
+                            retirement.error().unwrap_or("cleanup incomplete")
                         );
                     }
                     if let Err(error) = save_new(&run.join("shadow-retirement.json"), &retirement) {
-                        eprintln!("Conversion completed; its temporary-shadow cleanup receipt could not be saved: {error}");
+                        eprintln!(
+                            "Conversion completed; its temporary-shadow cleanup receipt could not be saved: {error}"
+                        );
                     }
                 } else {
                     drop(staged);

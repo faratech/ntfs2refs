@@ -49,6 +49,7 @@ pub use recovery::{ReattachedShadow, reattach_existing};
 mod retirement;
 pub use retirement::ShadowRetirementReceipt;
 pub mod growth_probe;
+pub mod refs_extent;
 pub mod thin_pool;
 
 /// Requested native formatter profile, not a trust or compatibility claim.
@@ -822,6 +823,36 @@ fn format_new_owned(
         || layout::u32_at(&data, 56)? != geometry.logical
         || layout::u32_at(&data, 60)? != 4096
     {
+        // Keep full-partition admission strict. A native formatter can declare
+        // a shorter filesystem extent; diagnose it without granting that
+        // uncovered physical tail allocation or conversion authority.
+        let extent = refs_extent::observe_formatted(&volume, &binding, &data);
+        let mut extent_file = sidecar(path, "refs-extent.json")?;
+        serde_json::to_writer_pretty(
+            &mut extent_file,
+            &serde_json::json!({
+                "schema_version":1,"kind":"owned-shadow-rejected-geometry-diagnostic",
+                "binding":binding,"native_refs_volume_data":data,
+                "observation":extent.as_ref().ok(),
+                "observation_error":extent.as_ref().err().map(ToString::to_string),
+                "strict_full_partition_profile_retained":true,
+                "conversion_profile_qualified":false,"grants_source_or_replay_authority":false,
+            }),
+        )
+        .map_err(io::Error::other)?;
+        extent_file.sync_all()?;
+        if let Ok(extent) = extent
+            && !extent.full_partition_extent_matches
+        {
+            return Err(invalid(&format!(
+                "formatted owned staging filesystem extent {} bytes differs from physical GPT partition {} bytes; uncovered tail [{}, {}) is {} bytes with unknown allocation, not free; conversion profile unqualified",
+                extent.filesystem_bytes,
+                extent.physical_partition_bytes,
+                extent.uncovered_tail_offset,
+                extent.physical_partition_bytes,
+                extent.uncovered_tail_bytes,
+            )));
+        }
         return Err(invalid(
             "formatted owned staging is not the selected ReFS3.14 profile",
         ));

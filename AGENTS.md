@@ -322,6 +322,15 @@ readonlymetadata40e8c1719c0bc21255f4aafe7119a937eb7e9df0bdf695c76b6081323b6f9383
 all AST0, requestextent_identity_v1, actual SYSTEM child PID/birth/exit, independent8file content/namespace/owner-group-DACL+Refs oracle.
 Build pins remain mandatory external params. Root must verify finished82 build/EXE manifest and issue exact one-run GO; VMstillOff07ca/all17.
 
+FIXED BUILD CLOSED0: source82a6095/treeb90382a22efd0fcc0fc44336658cd5f064f2c58d,
+manifest41deea20b99616febdbbacfb64b0a11ebba3cf4078fd09221735811f4ba78f1f;
+labEXE8452096B/SHA2fedc80084654d472fd1464697a6bbd50aebbc7ae416df8d36b98d6134b14dcc, actual host rehash matched.
+All413 held source files unchanged before/after; no units. `evidence/partition-alpha-82a6095-exact-build-20261104.json` binds build.
+ROOT ISSUED ONE FIRSTNORMAL CONVERSION GO to operator with reviewed v2 host/worker/oracle/support pins above,
+fixed82 manifest/EXE/source pins, fresh6GiB/currentOff07ca/all17 admission and exact source baseline required first.
+Only inside guest/SYSTEM one actual conversion; no restore/repair/replay/retry/checkpoint mutation. Operator owns actual PID/birth/terminal/archive/oracle.
+No native process/phase/success may be inferred from GO or task readiness. Observe actual operator messages for current state/run ID.
+
 - Fresh writes require original live opaque source certificate and actual source/target/J/arena owners. Saved JSON/paths/flags are routes, never authority.
 - Revalidate device/file identities, journal/index/ticket/lifecycle and recovery files. Recovery must not require thin-pool reattachment.
 - Preserve full phase snapshots and native metadata/allocation/namespace/ACL/full retrieval checks, opening/closing boundaries and final allocation checks.

@@ -36,11 +36,47 @@ at `.lab/development/release-candidates/capture-index-aef1ab3`
 completed0 in2m30s. Manifest
 f60eca76b95fcb48a0708f44cf256f284d336b0e224a0b8e47a60d40b2dea291;
 public17198080B SHAdaa56b970b944efcc8cdb2987a2307231075961f5afb70c39e34f1add2b3026a.
-Fresh public runfc268ad154474588b5d4cf5226387674 is LIVE: actualPID5372/birth
-1793796637023 started12:50:37UTC, terminal absent at Root's observation.
+Fresh public runfc268ad154474588b5d4cf5226387674 SUCCEEDED: actualPID5372/birth
+1793796637023 exited0/664.2489071s at13:01:41.300UTC.
 Gueststage `C:\ntfs2refs\resource-fixture-fc268ad154474588b5d4cf5226387674`;
 actual engine `C:\ProgramData\ntfs2refs\runs\4a4b3a84a7e9419ba6f1c369dc319916`.
-No conversion/cleanup outcome or native qualification is claimed. The exact-patternb0b576a probe
+Native resource-completion/HND passed2558mapbindings,157knownhash streams119009B,
+654extent streams; publicationSHAa8052b7a9f8b5dcc4abe454195871675ac40b6f560a3baea8938a578038455c7.
+Thin retirement completed: exactVD/pool removed, original members9/10 and carrier8
+detached, carrier backing deleted, recovery files retained. Before-retirement
+allocation702545920B is a snapshot, not peak scratch or measured physical reclaim.
+Root freshly observed F:ReFS/disk1onlineRW/eightdisks/boot1793796612940.
+Independent CompareRefs observercc45dd15cd3f4adc8df5a5968dd41d00 passed
+all811XXH3 streams9885801949B/1534baseline objects/1024extra paths and all13actual
+digest terminals in11.2762712s. Closed56files106456B, everyhostcopylength/SHA:
+manifestfe6ad97a1b432f6700e76fd5a331b1b76f9ceabe978424e3055451419828db0b,
+resultbd2301db5da7d53a325ea71cc9b90dad6cc77d601a6859f6787e3f24f3ddfdd7.
+Public terminal/locator/HND metadata closure passed:15files719910B, every source/
+hostlength/SHA matched; manifestd44e28a5db6836aadfc156da7a0a02853844cfc83f0385205a8c61ecb7ff6c08.
+Actual framedlocator-derived J identity/GUID/183716048B length and exact4KiB
+canonicalN2RSHN01 passed; fullJ was not read/copied. See
+evidence/public-thin-conversion-20261104.json. Normal shutdown/start WITHOUTrestore
+completed; actual newboot1793797766048 returned F:ReFS/disk1onlineRW/eightdisks.
+The exact retired pool/VD/carrier backing remained absent after boot. Postboot
+CompareRefsbb0dc975a9ff416da80626e6aef30aa2 passed all811/9885801949B/1534/1024
+and all13actualdigestterminal0 in10.7539403s. Closed56files106475B, everyhostlen/SHA:
+manifest80410c52487a5be11d054b67ffbba3c0489456981e0b790e33ba76e0a5dccfc2,
+resulte4cd98e67419bc25ccc93733554f815c703a2c29d57f40bd0b38ee99c78f112a.
+Both observer sets are preserved underfc `closed-content-cc45` and `closed-content-bb0d`.
+This qualifies normal reboot persistence for this case, not mutation/crash/physical
+power or new AP/recovery. Root completed orderly shutdown and saved checkpoint
+**8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f**, named
+`ntfs2refs-aef1ab3-thin-converted-coldboot-20261104`, parent3343, created13:14:00UTC.
+A fresh separate process at13:14:38UTC verified **VM Off/RAM0/actualparent8a**.
+Receipt `verified-saved-checkpoint.json` underfc hostroot SHA
+0a98accaf18de682c7f52c2a32493c99d284a487b28ad9c222ff74f6ee98e31c.
+Precheckpoint purecensus317890172705B/free88635187200B admitted the unchanged
+1GiB forecast under329374052988B maximum/17179869184B reserve; remeasure before growth.
+Keep8a: it preserves the completed operationalHND; NEVER replay its old raw journal.
+Next work is NEW exact-build interrupted resume/rollback qualification. Do not
+repeat the unchanged normal conversion/coldboot checks. Root alone owns VM work.
+Normal default remains
+VHDX; no stable/general hardware qualification follows. The exact-patternb0b576a probe
 did not reproduce the earlier guard refusal; its closed results are below.
 The subsequent publicb566 runf9a192c850934463af838a44deb480fe ENDED with actual
 PID5348/birth1793795529382/exit1/613.3199557s at12:42:22.729UTC. Gueststage
@@ -59,12 +95,13 @@ See evidence/public-thin-capture-index-allocation-refusal-20261104.json.
 Root separately observed F:NTFS64KiB, disk1online/read-write and all tasks idle.
 After archive closure Root orderly shut down and restored3343 ONCE; a fresh
 separate process verifiedOff/RAM0 before the new fc dispatch. The unchanged22GiB
-launcher admitted and started that new run. The Off observation precedes the
-current LIVE run; it is not current VM state. Root alone monitors the actual native owner.
+launcher admitted and started that now-completed run. That pre-dispatch Off
+observation is historical; the current fresh Off/8a observation is recorded above.
 SDK graph retirement/getters/discovery, typed CLI staging wrapper, hidden forced
 thin mode, remaining-provider-growth reservation, and geometry diagnostics compile.
-The final public check passed13.91s; no units ran. Public thin/native graph cleanup
-are NOT yet qualified. Normal default stays VHDX. Default VHDX location/retirement
+The historical public check passed13.91s; no units ran. The aef normal thin
+conversion/graph-cleanup/content/normal-coldboot case succeeded as scoped above;
+new recovery remains pending. Normal default stays VHDX. Default VHDX location/retirement
 JSON is unchanged. V4 replay remains source/J/envelope/maps self-contained.
 
 Root release75476 actually completed0/2m20s. Build source44cca72, output
@@ -179,8 +216,8 @@ This completed prototype checkpoint remains saved with parent3343 and
 preserves72TiB success, both earlier failures and1PB strict geometry refusal.
 Receipt `.lab/development/saved-large-format-prototypes-20261104.json` SHA
 06f668fe8855cf7220d65b6677005c9baaa10cdd02bba7b62c9a3898810f5e4e.
-All prototype jobs were terminal before that normal shutdown. Current live state
-is the public thin run above, overriding this historical Off observation.
+All prototype jobs were terminal before that normal shutdown. Current state is
+the separately verified savedOff/8a above; this older4b8 observation is historical.
 
 The executed launcher was
 `.lab/development/launch-public-thin-measured22-k.ps1` SHA
@@ -302,7 +339,8 @@ Pure packager AST-extracted census supports exactly four known allocation-test
 aliases at65536B each; never follow unknown reparse routes.
 
 Keep required origins/ancestors:3343 preparedNTFS, frozen814895f472a/0cf3dd7d/
-a0a8217f, guardedf4bf5238 (NEVER remove/force), latestconvertedc60, prototypes4b8,
+a0a8217f, guardedf4bf5238 (NEVER remove/force), convertedc60 and newest thin-HND8a5b96ff,
+prototypes4b8,
 partition766c9abc+fe668 parent and original ancestors. a2259702, oldera51/b1de/
 7d81/fcfb and supersededa724/ee42 were retired after archive checks; never restore.
 Latest2-node retirement audited318pins; receipt76b12c97b434f066aedaacc2950843b395efcabb439a12391ef63c504d28ab65.

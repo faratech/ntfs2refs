@@ -156,30 +156,43 @@ rawNTFSinspection/readlanes existbutremainUNADMITTED. Getter/callerResult propag
 areexportedbuthaveNOpreparation/nativewitnessissuer; freshconstructorcurrentlyUnsupported. No CLIpartitionconversionenablement.
 Do not mistake these plumbing types forcompletedsharedWindowsdiskconversion.
 
-NEXT actualSDKtarget-onlylifecycle code isCOPIED in `.lab/development/partition-lifecycle-integration-draft` bylowspace_case_impl:
-originalRWvolume retained; Basic0→LOCK/DISMOUNT→BasicREADONLY→nativeROcollection→relock→private0; fullGPT/C/criticalchecks,
-durableexternalCintentbeforeeachsingle-partitionSET_INFO_EX. Dropneverrestores; actualNTFSadmissiononlyafteractualnativewitness.
-Rootreviewrequestedexactintentreadbackcompare(notmerelyhashingstoredbytes), ERROR32second-writer denialproof andadmittedintentbuffers.
-No apply/build/VMGO yet. NarrowcopiedowneradoptionmustconsumetheactualretainedFileobjectwithoutreopen; tokenissuedattransfer.
+ActualSDKtarget-onlylifecycle/nativeROcollection APPLIED/COMMITTED9bfd25a; combinedSDKcheck0/10.9249462s/sharedcache/no units.
+`evidence/partition-lifecycle-native-build-20261104.json` binds7SDKpaths inclnewstaged1180lines andpartitionnativecollector304lines.
+Basic0 originalRWvolume→LOCK/DISMOUNT/flush→targetBasicREADONLY→borrowedactualnativecollect→relock→PRIVATE0→sameFileadoption.
+ExclusiveexternalCintent exactlength/hash/bodyreadback precedesSET; originalID/attrs/name/extent/sibling/Cbounds preserved; Dropneverrestores.
+Actualphase+preparationtoken/nativewitness guards producePartitionNtfsAdmission; noGeneralFreezeObservation/fakephysicalROstate.
+Sharednativepagedcore/TxF/VSScollectionhonestlyrecordsphysicalattrs0/writable andseparatetargetRO/error19. Legacydedicatedguardsstay.
+RootfixedpreLOCKTxF'serroneousGPTstyle0→1. Originalattestationpatch39d333...missingEOF LF wasrepaired inseparatec0ed27...artifact;
+malformedlifecyclepatch wasappliedfromverified3sourcecopiescf654... . No nativequalification/sourcechangesintheVMforthisnewcode.
+Livepre-privatecancel exists; processdeathprepare/cancelreopenandtarget-onlyHND/ABT/type/label/mountrestoration REMAINUNIMPLEMENTED.
 
-Partitionnativecollector extraction COPIED patch `.lab/development/partition-native-attestation-draft/native-attestation.patch`,
-SHA39d3334a6fc02e93ad7e056464876ebac2ee6e93ad16a1af6825a08a648576d7,20,372B/4SDKpaths. Noapply/buildyet; combineactualphaseAPI.
-Shared nativepagedengine usesexplicitroutecallback; dedicatedroute/guards stay. New PartitionPagedNtfsObservation binds actualROphase
-andtoken, honestphysicalattrs0/writable versus actualtargetRO/error19, actualpagednamespace/security/EA/reparse/fullretrieval/bitmap,
-volumescopedTxF andVSSopening/closingpresencewithpreROcatalog. Sourcefilehandlesclosedbeforerelock/privateadvance. Rootpagedvalidators
-acceptactualphysical0facts; upperntfs_attestationcompare_volume needs explicitproof-boundpartitionbranch, notphysicalROwaiver.
-Frozencandidateagentnowcontinues realResourceSourceContext::prepare_partition copiedconstructoragainstthosewitnesses/fullraw-nativeadmission.
+ActualROOTpartitionSourceConstructor APPLIED/COMMITTED248eccc; combinedpubliccheck0/30.913776s, aftertinypublicationgetters0/21.2559547s.
+`evidence/partition-source-constructor-build-20261104.json` binds7ROOTpaths/newresource_partition.rs. ActualborrowedROrawinspection,
+canonicalXXH3metadata/extentfingerprint/coverage, backup/LogFile/label/internalindexes, raw/nativeobject/namespace/security/ACL/stream/bitmap,
+TxF/VSS/quota/short-name/featuregatesallreusecompleteexistingchecks. ContextretainsactualadoptedOwner/SDKAdmission/token/arena/seals/nativepages.
+Samesource/outputphysicaldiskallowsONLYactualdisjointCvolume/directorybindings; nolegacyinequalitywaiver. Sourcepublicationcallbackretainsguard,
+checksactualintent/token before/after, exposingnoSourceWriter. Rootaddedsource_views_sha256()/verification_policy() getters.
+NoRootCLIenablement/no targetcertificate yet; native source-preparation execution remainspending. Malformedb533patchwasappliedfrompinnedcopies
+withCRLF-onlynormalization. Mainc6bcunchanged; frozenaefalpha/sourceZIPunchanged.
 
+NEXT target/capture integration COPIED `.lab/development/partition-target-capture-draft` (author maynameactualdir differently) byfrozen_candidate_cases:
+common actualsource-byte/viewadapters andactualpartitiontarget/capture/V4ResourceJournalDomain, preservingallnativefidelity andsourceprovenance.
+Lowspace_case_implownsCOPIEDSDKPrivateTree/sourceenrollment/protectedtargetobservers alongsideexistingDedicatedvariant, withactualowner/admission/token.
+Oneapprovednarrowquery-only readonlyduplicateoriginalFileObject witness canretainSourceROOT whilebyte-routingborrowsowner; noRead/Seek/writeAPI orpathctor.
+No application/build/nativeGO forthese nextpatches. FullpreparedJ/actualsourcewriteractivation stillrequired, notanotherunadmittedstubcompletion.
 Mixedrecovery observer/token APPLIED/COMMITTEDfd12781, fullpublicCargo checkpassed0/21.5630155s/sharedcache/no units.
 `evidence/partition-mixed-recovery-build-20261104.json` binds3ROOTfiles. NewopaqueToken usesunchangedCOMPLETE
 check_target_reader(owner,len,None,false) forMIXEDgranules/COPY/zero/sourceFree, bracketedactualpublication/artifact/locator/J/index/
 lifecycle/sourceowner checks; consume_revalidated repeatsthecompletecheckandconsumesit. No writergrant. Existinglegacybodies/checker unchanged.
 Partitionpublicationbinding remainsunissued untilactualversionedscope/sourceadmission iswired. No nativequalification/newVMGO.
-Versionedpublication/locator scope isnowCOPIED in `.lab/development/partition-publication-scope-draft` byaef_postcut_operator:
-missingfield→DedicatedONLY, explicitpartitionversion/tag/binding/originalBasic/privateGUID/attrs/name/guardpin; actualheldguard+artifactissuer,
-actualC-J/output/artifactextentsdisjointness onlyforthisnewscope. No canonicalapply/buildyet; no savedflag/hash/pathauthority.
-SDKlifecycle/nativeattestation authors haveactualtransition andcollector codepersisted; Rootreviewedexactintentreadback/exclusivewriterproof
-andsharedcollectorroute/TxF/VSSextraction, awaiting finalcombinedpatch/pins for centralapplication/typecheck. No shortcutfreshissuer/Generalstate.
+Versionedpublication/locator scope APPLIED/COMMITTED5410dad; fullpubliccheck0/22.0742262s/sharedcache/no units.
+`evidence/partition-publication-scope-build-20261104.json` binds5ROOTpaths. Missingfield→DedicatedONLY/oldserializeromitsfield; explicitpartitionv2/tag
+bindsoriginalBasic/privateGUID/attrs/name/completeguardpin. PublisherrequiresactualSourceContext/admission/guard+heldexpected/maps/locator/J/arena;
+scopedrecoverycanonicalheldfiles/J/index/AP-RBchecksandactualC/artifactextentsdisjointness retained. Actualretainedliveguardcanissuebinding;
+NOrestart/processdeathguardcanbeconstructedfromJSON/pin. No HND/ABT/clearrawreplay; no writerCLIenabled.
+NextSDK/ROOTjournalcreation/preparationcode COPIED `.lab/development/partition-native-journal-draft` (confirmactualdirectory) byaef_postcut_operator:
+explicitPartitionsource/actualC-Jdisjointextents vsoldGeneralFrozen+differentphysicaldisk, reuseactualNativeSelectedJournal/scanner/quotas/OLD-NEWcapture.
+NofakeGeneralownerorbroaddiskguardremoval; no apply/buildyet. Source/Capture/Writeractivation, authenticatedrestartguard andHND-ABT stillrequired.
 FullAP/private-sourceactivation/versionedscope/replay/target-onlyHND-ABT and Cjournalactualdisjointextents stillrequired.
 FrozenalphaZIP/sourceaef1ab3 andpublicCLIwhole-diskguards stayunchanged. src/main.rsneveredit. OperatorstillidleexclusiveVMowner;
 no newnativeGO. **CurrentOff766containsPRIVATE T; no restore casually.** Lastcensus317250100370/free89303965696, all16keepers/fixedepoch unchanged.

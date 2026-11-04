@@ -85,8 +85,17 @@ This proves only that bounded same-held-volume interface; not changed-data conve
 Do not repeat this completed native primitive. Saved observer/plan/build inputs remain in .lab; actual target is Partition4/RawGPTSlot4.
 
 Next critical-path code is a separate Rust private-type lifecycle prototype under `.lab/development/partition-private-type-probe`.
-It is PREPARATION ONLY, no build/VM action authorized: copy original single-partition GPT info and alter only target type through
-IOCTL_DISK_SET_PARTITION_INFO_EX, verify all other GPT bytes/siblings, test held-handle survival and ordinary route exclusion.
+The reviewed prototype BUILTexit0/2.5977706s with shared cache; native execution is NOT authorized yet. It copies original single-partition GPT info and alters only target type through
+IOCTL_DISK_SET_PARTITION_INFO_EX, verifies all other GPT bytes/siblings, and tests held-handle survival and ordinary route exclusion.
+Retained private EXE `.lab/development/partition-private-type-probe/bin/partition-private-type-probe.exe`,571392B,
+SHA01fdbc2da5616adf4280b9c9d63cfacb6f7677dc44b2a7e445fee5edec4d4533. Sourcece6cfd39eb703ddde3123d12b6f6e511a71a3737eb43e916bf1d7340b27a8419,
+module7a12b133697ffa91dc1d9c90a4003b926a6d9876da756bd49c043b33cd9c99a8, inputpins4377cfdd59437acabd2a81ac8b93f05b96095c1d69253f453fbe5f3a4bd8c997,
+lockc087c995e4151799da43147856569d149974bb52b22484d70ff92dfc43ea31ff, buildreceipt56d74cf4f998b8d7d77117eff605f663ec6a74ff7d8c3d49008d0f8b297c09b6.
+All118 source inputs revalidated afterbuild;25registry versions/checksums matchroot;2GiB build forecast;no unit tests, source/VM execution or product changes.
+See `evidence/partition-private-type-probe-build-20261104.json`. Fixed project typeb627aadb-a893-48b6-aa0b-71e5f30ee370.
+Independent AFTER observer `.lab/development/observe-private-type-766-after.ps1`,SHAc1ec694356faa65652aad4a0b2d0f4fccaa3c3951b6afbd4b3bda33b49b14555,
+was reviewed (correct GETlayout0x70050/GETpartinfo0x70048); requires pinned Before+native pre-setter intent and exactly private-type/CRC delta.
+Operator prepares minimal single-shot worker/runner; Root has not issued next native GO. Do not use old7afed observer with incorrect GET codes.
 No direct GPT writes, whole-layout setter, volume-OFFLINE I/O dead path, physical-RW payload fallback, auto restoration or public certificate.
 Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volume I/O, so it cannot simply be combined with the proved live volume writer.
 Keep the alpha immutable; existing whole-disk guards and certificates stay unchanged. Root must review/authorize each next build/native case.

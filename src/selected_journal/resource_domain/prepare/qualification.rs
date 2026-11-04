@@ -63,6 +63,8 @@ struct MapPin<'a> {
 struct Publication<'a> {
     schema_version: u32,
     kind: &'static str,
+    #[serde(skip_serializing_if = "super::super::source_scope::ResourceRecoverySourceScope::is_dedicated")]
+    source_scope: super::super::source_scope::ResourceRecoverySourceScope,
     source: &'a n2r_win32::general_layout::GeneralDiskBinding,
     shadow: &'a n2r_win32::general_layout::GeneralDiskBinding,
     resource_admission: n2r_win32::tree_resources::SourceResourceAdmission,
@@ -81,6 +83,134 @@ struct Publication<'a> {
     expected_mount_paths: &'a [String],
     expected_source_label: &'a n2r_win32::volume_label::VolumeLabel,
     serialized_publication_grants_authority: bool,
+}
+
+/// Actual arena-owned partition metadata only. No source certificate, apply
+/// issuer or writer follows from these files or from their versioned scope.
+pub(crate) struct PartitionMetadataPublication {
+    publication: ArtifactLease,
+    checksum: ArtifactLease,
+}
+
+impl PartitionMetadataPublication {
+    pub(crate) fn publication_lease(&self) -> &ArtifactLease { &self.publication }
+    pub(crate) fn checksum_lease(&self) -> &ArtifactLease { &self.checksum }
+}
+
+/// The distinct partition SourceContext supplies actual owner/admission
+/// borrows. It cannot enter the legacy GeneralFrozenPartition publisher.
+/// A recovered MIXED source never reuses this fresh-publication method.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn persist_partition_metadata(
+    context: &mut crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+    expected: &PagedExpectedTree,
+    maps: Option<&V4RecoveryMaps>,
+    locator: &mut super::super::durable_anchor::DurableRecoveryLocator,
+    journal: &mut super::super::reopen::BoundJournalObservation<'_>,
+    shadow: &n2r_win32::general_layout::GeneralDiskBinding,
+    group: &ArtifactGroupPermit,
+    scratch: &SourceScratch,
+    path: &Path,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<PartitionMetadataPublication> {
+    use super::super::source_scope::{PartitionPublicationScope, ResourceRecoverySourceScope};
+    use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+    context.require_source_evidence()?;
+    context.recheck_source(events)?;
+    let admission = context.resource_admission();
+    expected.require_resource_owner(admission)?;
+    expected.require_shared_memory(context.arena())?;
+    ensure!(group.group() == ArtifactGroup::RecoveryCopy
+        && group.arena().same_arena(context.arena())
+        && expected_requires_maps(expected, context.verification_policy())? == maps.is_some(),
+        "partition publication expected/maps/arena ownership differs");
+    let scratch_group = scratch.artifact_group().context("partition publication scratch arena absent")?;
+    ensure!(scratch_group.group() == group.group()
+        && scratch_group.arena().same_arena(group.arena()),
+        "partition publication scratch/group owner differs");
+    if let Some(maps) = maps { maps.revalidate()?; }
+    ensure!(journal.lifecycle()? == crate::selected_journal::SelectedLifecycle::PreparedClear,
+        "partition metadata publication is fresh-only; MIXED/HND/ABT cannot reuse it");
+    let binding = context.binding().clone();
+    shadow.validate()?;
+    ensure!(shadow.disk_number != binding.storage.disk_number
+        && n2r_win32::layout::guid_bytes(&shadow.identity.disk_guid)?
+            != n2r_win32::layout::guid_bytes(&binding.storage.identity.disk_guid)?,
+        "partition source/shadow are not independently bound");
+    let _memory = group.arena().reserve_ram(1024 * 1024)?;
+    let policy = context.verification_policy();
+    let fingerprint_kind = context.fingerprint().kind().to_owned();
+    let source_sha = context.source_sha256().to_owned();
+    let inspection_sha = context.inspection_sha256().to_owned();
+    let views_sha = context.source_views_sha256().to_owned();
+    let label = context.original_label().clone();
+    let mount_paths = context.mount_paths().paths.clone();
+    let result = context.with_publication_handoff(events, |owner, native, stable, events| {
+        let scope = PartitionPublicationScope::from_actual(owner, stable, native, events)?;
+        let source_scope = ResourceRecoverySourceScope::Partition(scope.clone());
+        locator.revalidate()?;
+        ensure!(locator.source_scope() == &source_scope
+            && locator.source() == &binding.storage
+            && same_ticket(locator.ticket(), journal.diagnostic_ticket())?,
+            "actual partition locator/scope/journal ticket differs");
+        let facts = journal.facts();
+        ensure!(locator.journal_binding() == facts.binding
+            && locator.journal_identity() == *facts.identity
+            && locator.journal_path() == facts.path,
+            "actual partition locator is not this held native journal");
+        source_scope.require_journal_route(&binding.storage, facts.binding)?;
+        // The actual held output directory must resolve on this actual
+        // observed J volume before CreateNew, never on selected source.
+        let parent = path.parent().context("partition publication parent absent")?;
+        let output = OpenOptions::new().access_mode(0x80).share_mode(3)
+            .custom_flags(0x0200_0000 | 0x0020_0000).open(parent)?;
+        let output_meta = output.metadata()?;
+        let output_guid = n2r_win32::file_storage::final_path_guid(&output)?;
+        let volume = facts.binding.disk.volume_path()?;
+        let prefix = format!("{}\\", volume.trim_end_matches('\\'));
+        ensure!(output_meta.is_dir() && output_meta.file_attributes() & 0x400 == 0
+            && output_guid.get(..prefix.len()).is_some_and(|p| p.eq_ignore_ascii_case(&prefix)),
+            "partition publication output is not the actual disjoint J volume");
+        let locator_sha = hex::encode(locator.external_sha256());
+        let expected_path = expected.final_path();
+        let map_path = maps.map(|m| m.artifact_lease().snapshot().final_path.as_str());
+        let publication = Publication {
+            schema_version:2, kind:"resource-partition-recovery-envelope-v2",
+            source_scope, source:&binding.storage, shadow,
+            resource_admission:admission, verification_policy:policy,
+            source_fingerprint_kind:&fingerprint_kind, source_sha256:&source_sha,
+            source_inspection_sha256:&inspection_sha, source_views_sha256:&views_sha,
+            locator:FilePin {path:&locator.snapshot().final_path, sha256:&locator_sha,
+                bytes:locator.snapshot().file_bytes},
+            expected:ExpectedPin {file:FilePin {path:&expected_path, sha256:expected.file_sha256(),
+                bytes:expected.byte_len()}, semantic_sha256:expected.semantic_sha256(),
+                objects:expected.len() as u64},
+            recovery_maps:maps.zip(map_path).map(|(m,p)|MapPin {file:FilePin {path:p,
+                sha256:m.sha256(), bytes:m.bytes()}, records:m.records()}),
+            early_preparation_guard:None,
+            ticket_sha256:hex::encode(serialization_pin(journal.diagnostic_ticket(),4096)?.1),
+            expected_mount_paths:&mount_paths, expected_source_label:&label,
+            serialized_publication_grants_authority:false,
+        };
+        scope.complete_preparation_guard.require_actual(native, owner, stable, events)?;
+        let (publication, checksum) =
+            save_publication(group, path, &publication, scratch.budget().record_bytes)?;
+        locator.revalidate()?;
+        if let Some(maps) = maps { maps.revalidate()?; }
+        ensure!(journal.lifecycle()? == crate::selected_journal::SelectedLifecycle::PreparedClear,
+            "actual partition journal lifecycle changed during publication");
+        scope.complete_preparation_guard.require_actual(native, owner, stable, events)?;
+        publication.revalidate()?;
+        checksum.revalidate()?;
+        Ok(PartitionMetadataPublication {publication, checksum})
+    });
+    // Keep the complete fresh source bookend on errors as well. This fresh
+    // OLD check is never part of the separate MIXED recovery issuer.
+    let closing = context.recheck_source(events);
+    match (result, closing) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
 }
 
 struct DigestWriter {
@@ -682,6 +812,7 @@ impl<'journal, 'domain, 'capture, 'proof, 'scope, 'expected>
                         let publication = Publication {
                             schema_version: 1,
                             kind: "resource-allocation-recovery-envelope-v1",
+                            source_scope: super::super::source_scope::ResourceRecoverySourceScope::Dedicated,
                             source: prepared.inner._facts.source,
                             shadow: prepared.inner._facts.shadow,
                             resource_admission: context.resource_admission(),

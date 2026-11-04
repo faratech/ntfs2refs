@@ -60,6 +60,8 @@ struct MapPin {
 struct Publication {
     schema_version: u32,
     kind: String,
+    #[serde(default, skip_serializing_if = "super::super::source_scope::ResourceRecoverySourceScope::is_dedicated")]
+    source_scope: super::super::source_scope::ResourceRecoverySourceScope,
     source: GeneralDiskBinding,
     shadow: GeneralDiskBinding,
     resource_admission: SourceResourceAdmission,
@@ -298,18 +300,19 @@ pub(crate) struct ReopenedArtifact<'a> {
     pub sha256: [u8; 32],
 }
 
-/// An authenticated partition-scope publication is deliberately UNISSUED.
-/// Existing Publication has no partition-scope discriminant/guard contract.
-/// Only this envelope owner module may add the future issuer after validating
+/// Authenticated only by the explicit scoped opener and actual held SDK guard.
+/// This source is extracted only after matching the versioned scope to that guard.
+/// Only this envelope owner module issues the binding after validating
 /// that contract against the actual held publication, artifacts and locator.
 /// No public constructor, Deserialize implementation or saved boolean exists.
 struct AuthenticatedPartitionRecoveryScope {
     source: n2r_win32::partition_isolation::PartitionSourceBinding,
+    actual_guard: n2r_win32::partition_lifecycle::PartitionPreparationPin,
 }
 
 /// Borrows actual authenticated publication/artifact owners, not their JSON
-/// representation. In particular the private scope above cannot be obtained
-/// from GeneralDiskBinding, a digest, an OLD scan, or a fresh NTFS admission.
+/// representation. The actual SDK admission alone is also insufficient:
+/// versioned scope plus all held publication/artifact/locator/J owners match it.
 pub(crate) struct PartitionRecoveryPublicationBinding<'a> {
     publication: &'a Publication,
     publication_file: &'a mut HeldFile,
@@ -319,6 +322,264 @@ pub(crate) struct PartitionRecoveryPublicationBinding<'a> {
     scratch: &'a SourceScratch,
     scope: AuthenticatedPartitionRecoveryScope,
     actual_journal_owner: usize,
+    actual_admission: &'a mut n2r_win32::partition_lifecycle::PartitionNtfsAdmission,
+}
+
+/// Explicit partition recovery files, independently authenticated while the
+/// actual private source and complete preparation guard remain held. This is
+/// intentionally not the legacy whole-disk target and has no writer accessor.
+/// A process-death restart guard needs a separate SDK issuer; this API cannot
+/// reconstruct one from a pin or an earlier native-RO observation.
+pub(crate) struct ReopenedPartitionResourceRecovery {
+    publication: Publication,
+    publication_file: HeldFile,
+    expected: HeldFile,
+    maps: Option<HeldFile>,
+    locator: DurableRecoveryLocator,
+    journal: BoundNativeRecoveryJournal,
+    index_parent: File,
+    scratch: SourceScratch,
+    _memory: SourceRamLease,
+}
+
+fn require_partition_artifact_volume(
+    owner: &mut n2r_win32::PartitionScopedOwner,
+    scope: &super::super::source_scope::ResourceRecoverySourceScope,
+    journal: &mut BoundNativeRecoveryJournal,
+    artifacts: &[&ReferenceFileSnapshot],
+    events: &mut Vec<NativeEvent>,
+) -> Result<()> {
+    ensure!(!scope.is_dedicated(), "same-disk policy requires explicit partition scope");
+    owner.revalidate(events)?;
+    let (actual, facts) = journal.split_for_observation()?;
+    scope.require_journal_route(&owner.binding().storage, facts.binding)?;
+    // This native call observes the actual held J and its actual volume
+    // extents/device/layout twice. A JSON offset or matching GUID alone is
+    // insufficient to establish the C:-sibling disjointness policy.
+    let observed = n2r_win32::journal_file::observe_general_journal_file_with_profile(
+        actual.markerless_recovery_file()?, facts.binding, facts.profile,
+    )?;
+    ensure!(observed.identity == *facts.identity
+        && observed.file_bytes == facts.journal_length,
+        "actual scoped journal identity/extent evidence changed");
+    let volume = facts.binding.disk.volume_path()?;
+    for artifact in artifacts {
+        ensure!(on_volume(&artifact.final_path, &volume)
+            && artifact.volume_serial_number == observed.identity.volume_serial_number
+            && artifact.number_of_links == 1,
+            "partition publication/expected/maps/locator artifact is not on actual disjoint J volume");
+    }
+    owner.revalidate(events)?;
+    Ok(())
+}
+
+impl ReopenedPartitionResourceRecovery {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_with_actual_guard(
+        path: &Path,
+        independently_supplied_sha256: [u8; 32],
+        maximum_publication_bytes: u64,
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        admission: &mut n2r_win32::partition_lifecycle::PartitionNtfsAdmission,
+        expected_shadow: &GeneralDiskBinding,
+        expected_journal: &GeneralJournalStorageBinding,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<Self> {
+        ensure!(group.group() == ArtifactGroup::RecoveryCopy
+            && maximum_publication_bytes > 0
+            && maximum_publication_bytes <= scratch.budget().record_bytes,
+            "scoped recovery requires its bounded actual recovery arena");
+        let same = scratch.artifact_group().context("scoped scratch arena absent")?;
+        ensure!(same.group() == group.group() && same.arena().same_arena(group.arena()),
+            "scoped recovery scratch/group owner differs");
+        owner.revalidate(events)?;
+        ensure!(stable.same_owner(&owner.owner_token()), "actual partition token differs");
+        let size = std::fs::symlink_metadata(path)?.len();
+        ensure!(size > 0 && size <= maximum_publication_bytes, "partition publication exceeds bound");
+        let reserve = size.checked_mul(4).and_then(|n| n.checked_add(8 * 1024 * 1024))
+            .context("partition publication RAM overflow")?;
+        let memory = scratch.lease_ram(reserve)?;
+        let mut publication_file = HeldFile::open(path, independently_supplied_sha256,
+            Some(size), maximum_publication_bytes, scratch)?;
+        publication_file.file.seek(SeekFrom::Start(0))?;
+        let publication: Publication = serde_json::from_reader(&mut publication_file.file)?;
+        let mut canonical = HashSink {bytes:0, maximum:size, hash:Sha256::new()};
+        serde_json::to_writer(&mut canonical, &publication)?;
+        ensure!(canonical.bytes == size
+            && <[u8;32]>::from(canonical.hash.finalize()) == independently_supplied_sha256,
+            "partition publication is not the exact canonical held encoding");
+        publication.source_scope.require_envelope_version(
+            publication.schema_version, &publication.kind)?;
+        let explicit = match &publication.source_scope {
+            super::super::source_scope::ResourceRecoverySourceScope::Partition(scope) => scope,
+            _ => anyhow::bail!("missing/dedicated publication cannot enter partition recovery"),
+        };
+        ensure!(explicit.binding == *owner.binding()
+            && publication.source == owner.binding().storage
+            && &publication.shadow == expected_shadow
+            && !publication.serialized_publication_grants_authority
+            && publication.early_preparation_guard.is_none(),
+            "foreign scope or legacy whole-disk guard in partition publication");
+        expected_shadow.validate()?;
+        ensure!(expected_shadow.disk_number != owner.binding().storage.disk_number
+            && n2r_win32::layout::guid_bytes(&expected_shadow.identity.disk_guid)?
+                != n2r_win32::layout::guid_bytes(&owner.binding().storage.identity.disk_guid)?,
+            "partition source and shadow physical identities overlap");
+        explicit.complete_preparation_guard.require_actual(admission, owner, stable, events)?;
+        publication.resource_admission.validate()?;
+        publication.expected_source_label.validate()?;
+        ensure!(publication.source_inspection_sha256
+                == hex::encode(publication.resource_admission.source_inspection_sha256)
+            && publication.expected.objects == publication.resource_admission.objects()?
+            && publication.source_fingerprint_kind
+                == if publication.verification_policy.is_full_content() {
+                    crate::source_fingerprint::resource::FULL_KIND
+                } else { crate::source_fingerprint::resource::EXTENT_KIND },
+            "partition publication resource/expected contract differs");
+        for value in [&publication.source_sha256, &publication.source_inspection_sha256,
+            &publication.source_views_sha256, &publication.expected.semantic_sha256,
+            &publication.ticket_sha256] { digest(value)?; }
+        let locator = DurableRecoveryLocator::open_observed(
+            Path::new(&publication.locator.path), digest(&publication.locator.sha256)?,
+            scratch, publication.locator.bytes)?;
+        ensure!(locator.source_scope() == &publication.source_scope
+            && locator.source() == &publication.source
+            && locator.journal_binding() == expected_journal
+            && locator.snapshot().file_bytes == publication.locator.bytes
+            && hex::encode(Sha256::digest(serde_json::to_vec(locator.ticket())?))
+                == publication.ticket_sha256
+            && locator.ticket().marker_profile.is_none()
+            && locator.marker_use()
+                == n2r_win32::journal_file::MarkerStorageUse::QualifiedProduction,
+            "foreign/mixed partition publication/locator/ticket scope");
+        publication.source_scope.require_journal_route(&publication.source, expected_journal)?;
+        // Shadow remains independently owned. The new C:-sibling allowance
+        // applies only between the selected source partition and its journal.
+        ensure!(expected_journal.disk.disk_number != expected_shadow.disk_number
+            && n2r_win32::layout::guid_bytes(&expected_journal.disk.identity.disk_guid)?
+                != n2r_win32::layout::guid_bytes(&expected_shadow.identity.disk_guid)?,
+            "partition shadow and journal are not independent");
+        let expected = HeldFile::open(Path::new(&publication.expected.file.path),
+            digest(&publication.expected.file.sha256)?, Some(publication.expected.file.bytes),
+            publication.resource_admission.expected_pages.max_file_bytes, scratch)?;
+        ensure!(expected.snapshot.final_path.eq_ignore_ascii_case(&publication.expected.file.path),
+            "partition expected artifact same-handle canonical route differs");
+        let maps = if let Some(pin) = &publication.recovery_maps {
+            ensure!(pin.records > 0, "empty partition recovery map refused");
+            let held = HeldFile::open(Path::new(&pin.file.path), digest(&pin.file.sha256)?,
+                Some(pin.file.bytes), publication.resource_admission.map_pages.max_file_bytes, scratch)?;
+            ensure!(held.snapshot.final_path.eq_ignore_ascii_case(&pin.file.path),
+                "partition recovery map same-handle canonical route differs");
+            Some(held)
+        } else { None };
+        ensure!(locator.snapshot().final_path.eq_ignore_ascii_case(&publication.locator.path),
+            "partition locator same-handle canonical route differs");
+        let (mut journal, _) = BoundNativeRecoveryJournal::open(
+            locator.journal_path(), expected_journal, locator.journal_profile()?,
+            locator.ticket(), None, locator.marker_use())?;
+        {
+            let (_, facts) = journal.split_for_observation()?;
+            ensure!(facts.binding == locator.journal_binding()
+                && *facts.identity == locator.journal_identity()
+                && facts.path == locator.journal_path()
+                && facts.profile == locator.journal_profile()?
+                && facts.marker_use == locator.marker_use()
+                && facts.marker_native_qualified.is_none(),
+                "actual partition journal owner differs from authenticated locator");
+        }
+        let volume = expected_journal.disk.volume_path()?;
+        let index_parent = hold_index_parent(index_path, &volume)?;
+        let mut artifacts = vec![&publication_file.snapshot, &expected.snapshot, locator.snapshot()];
+        if let Some(maps) = &maps { artifacts.push(&maps.snapshot); }
+        require_partition_artifact_volume(owner, &publication.source_scope, &mut journal,
+            &artifacts, events)?;
+        let mut observation = BoundJournalObservation::open(&mut journal, locator.ticket(),
+            group, scratch, index_path, maximum_index_bytes)?;
+        ensure!(matches!(observation.lifecycle()?,
+            SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent),
+            "clear/foreign/closed HND-ABT cannot issue partition recovery binding");
+        observation.retire()?;
+        explicit.complete_preparation_guard.require_actual(admission, owner, stable, events)?;
+        Ok(Self {publication, publication_file, expected, maps, locator, journal,
+            index_parent, scratch:scratch.clone(), _memory:memory})
+    }
+
+    /// Narrow issuer: actual held files, locator, J and actual SDK guard are
+    /// retained through the callback. No public DTO constructor or writer.
+    pub(crate) fn with_mixed_observation<T>(
+        &mut self,
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        admission: &mut n2r_win32::partition_lifecycle::PartitionNtfsAdmission,
+        group: &ArtifactGroupPermit,
+        index_path: &Path,
+        maximum_index_bytes: u64,
+        events: &mut Vec<NativeEvent>,
+        action: impl FnOnce(
+            &mut BoundJournalObservation<'_>,
+            &mut PartitionRecoveryPublicationBinding<'_>,
+            &mut n2r_win32::PartitionScopedOwner,
+            &n2r_win32::PartitionOwnerToken,
+            &mut Vec<NativeEvent>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        self.publication_file.revalidate(&self.scratch)?;
+        self.expected.revalidate(&self.scratch)?;
+        if let Some(maps) = &mut self.maps {maps.revalidate(&self.scratch)?;}
+        self.locator.revalidate()?;
+        self.journal.revalidate()?;
+        let scope = match &self.publication.source_scope {
+            super::super::source_scope::ResourceRecoverySourceScope::Partition(scope) => scope,
+            _ => anyhow::bail!("dedicated scope cannot issue partition binding"),
+        };
+        let actual_guard = scope.complete_preparation_guard.require_actual(admission, owner, stable, events)?;
+        let volume = self.locator.journal_binding().disk.volume_path()?;
+        let _same_output = hold_index_parent(index_path, &volume)?;
+        // Retain original output directory ownership as well as the new
+        // actual parent; neither directory path creates source authority.
+        ensure!(self.index_parent.metadata()?.is_dir(), "held scoped output parent lost");
+        let mut artifacts = vec![&self.publication_file.snapshot, &self.expected.snapshot, self.locator.snapshot()];
+        if let Some(maps) = &self.maps {artifacts.push(&maps.snapshot);}
+        require_partition_artifact_volume(owner, &self.publication.source_scope,
+            &mut self.journal, &artifacts, events)?;
+        let actual_ticket = self.locator.ticket().clone();
+        let mut observation = BoundJournalObservation::open(&mut self.journal, &actual_ticket,
+            group, &self.scratch, index_path, maximum_index_bytes)?;
+        let expected_lifecycle = observation.lifecycle()?;
+        ensure!(matches!(expected_lifecycle, SelectedLifecycle::ApplyIntent | SelectedLifecycle::RollbackIntent),
+            "HND/ABT/clear cannot enter partition MIXED callback");
+        let journal_owner = std::ptr::from_ref(&*observation.observation.journal) as usize;
+        // The scanner uses an independently owned ticket value so the actual
+        // locator can still revalidate through its original held file.
+        let mut binding = PartitionRecoveryPublicationBinding {
+            publication:&self.publication, publication_file:&mut self.publication_file,
+            expected:&mut self.expected, maps:self.maps.as_mut(),
+            locator:&mut self.locator, scratch:&self.scratch,
+            scope:AuthenticatedPartitionRecoveryScope {source:scope.binding.clone(), actual_guard},
+            actual_journal_owner:journal_owner, actual_admission:admission,
+        };
+        let result = action(&mut observation, &mut binding, owner, stable, events);
+        // Always close actual owner/J/artifact boundaries on callback errors.
+        let closing = binding.revalidate_partition_mixed(owner, stable,
+            observation.observation.journal, &observation.facts,
+            observation.observation.ticket, events);
+        let lifecycle_closing = (|| -> Result<()> {
+            ensure!(observation.lifecycle()? == expected_lifecycle,
+                "actual partition lifecycle changed around scoped callback");
+            Ok(())
+        })();
+        let retiring = observation.retire();
+        match (result, closing, lifecycle_closing, retiring) {
+            (Ok(value), Ok(()), Ok(()), Ok(())) => Ok(value),
+            (Err(error), _, _, _) => Err(error),
+            (_, Err(error), _, _) | (_, _, Err(error), _) | (_, _, _, Err(error)) => Err(error),
+        }
+    }
 }
 
 impl PartitionRecoveryPublicationBinding<'_> {
@@ -347,6 +608,18 @@ impl PartitionRecoveryPublicationBinding<'_> {
                 && std::ptr::from_ref(&*journal) as usize == self.actual_journal_owner,
             "partition MIXED observation lost actual owner/publication/journal association"
         );
+        let explicit = match &self.publication.source_scope {
+            super::super::source_scope::ResourceRecoverySourceScope::Partition(scope) => scope,
+            super::super::source_scope::ResourceRecoverySourceScope::Dedicated =>
+                anyhow::bail!("missing/dedicated scope cannot issue partition MIXED binding"),
+        };
+        ensure!(self.locator.source_scope() == &self.publication.source_scope,
+            "partition publication/locator scope differs");
+        let actual = explicit.complete_preparation_guard.require_actual(
+            self.actual_admission, owner, stable, events,
+        )?;
+        ensure!(actual == self.scope.actual_guard,
+            "actual complete partition guard changed after publication binding");
         self.publication_file.revalidate(self.scratch)?;
         self.expected.revalidate(self.scratch)?;
         if let Some(maps) = self.maps.as_deref_mut() {
@@ -778,6 +1051,7 @@ impl ReopenedResourceRecovery {
                 && <[u8; 32]>::from(canonical.hash.finalize()) == independently_supplied_sha256,
             "recovery publication is not the original canonical encoding"
         );
+        ensure!(publication.source_scope.is_dedicated(), "partition publication requires the explicit actual-owner/held-guard recovery path");
         publication.resource_admission.validate()?;
         ensure!(
             publication.source == expected_pair.source

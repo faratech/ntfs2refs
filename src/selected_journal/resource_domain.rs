@@ -8,6 +8,7 @@ pub(crate) mod captured_candidate;
 pub(crate) mod durable_anchor;
 pub(crate) mod prepare;
 pub(crate) mod reopen;
+pub(crate) mod source_scope;
 
 use super::{
     BODY, COPY_RECORD, FOOTER, FREE_DIGEST, GRANULE, HEADER, OLD_ZERO_RECORD, RECORD,

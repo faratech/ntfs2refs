@@ -80,6 +80,8 @@ impl From<&IdentityWire> for JournalFileIdentity {
 struct Locator {
     schema_version: u32,
     kind: String,
+    #[serde(default, skip_serializing_if = "super::source_scope::ResourceRecoverySourceScope::is_dedicated")]
+    source_scope: super::source_scope::ResourceRecoverySourceScope,
     source: GeneralDiskBinding,
     journal_binding: GeneralJournalStorageBinding,
     journal_identity: IdentityWire,
@@ -95,21 +97,17 @@ impl Locator {
     fn validate(&self) -> Result<()> {
         self.source.validate()?;
         self.journal_binding.validate()?;
+        self.source_scope.require_locator_version(self.schema_version, &self.kind)?;
+        self.source_scope.require_journal_route(&self.source, &self.journal_binding)?;
         let id = JournalFileIdentity::from(&self.journal_identity);
         let path = &self.journal_path;
         ensure!(
-            self.schema_version == 1
-                && self.kind == "resource-recovery-locator-v1"
-                && !self.serialized_locator_grants_authority
+            !self.serialized_locator_grants_authority
                 && path.is_absolute()
                 && !path
                     .components()
                     .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
-                && self.source.disk_number != self.journal_binding.disk.disk_number
-                && n2r_win32::layout::guid_bytes(&self.source.identity.disk_guid)?
-                    != n2r_win32::layout::guid_bytes(
-                        &self.journal_binding.disk.identity.disk_guid
-                    )?
+
                 && self.ticket.image_length == self.source.identity.partition_bytes
                 && self.ticket.range_count > 0
                 && self.ticket.selected_bytes <= self.ticket.image_length
@@ -213,6 +211,61 @@ pub(crate) struct DurableRecoveryLocator {
     arena_lease: Option<ArtifactLease>,
 }
 impl DurableRecoveryLocator {
+    /// Explicit new-scope metadata route from an actual scanner, private owner
+    /// and complete held preparation guard. No path/ticket/flag alone issues
+    /// this route, and the resulting locator still grants no target writes.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_partition_from_actual_owners(
+        owner: &mut n2r_win32::PartitionScopedOwner,
+        stable: &n2r_win32::PartitionOwnerToken,
+        admission: &mut n2r_win32::partition_lifecycle::PartitionNtfsAdmission,
+        observation: &mut BoundJournalObservation<'_>,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        path: &Path,
+        events: &mut Vec<NativeEvent>,
+    ) -> Result<Self> {
+        use super::source_scope::{PartitionPublicationScope, ResourceRecoverySourceScope};
+        ensure!(group.group() == ArtifactGroup::RecoveryCopy,
+            "partition locator requires actual recovery arena");
+        let actual_group = scratch.artifact_group().context("partition locator arena absent")?;
+        ensure!(actual_group.group() == group.group()
+            && actual_group.arena().same_arena(group.arena()),
+            "partition locator scratch/group owner differs");
+        let scope = PartitionPublicationScope::from_actual(owner, stable, admission, events)?;
+        let source_scope = ResourceRecoverySourceScope::Partition(scope.clone());
+        ensure!(matches!(observation.lifecycle()?,
+            crate::selected_journal::SelectedLifecycle::PreparedClear
+                | crate::selected_journal::SelectedLifecycle::ApplyIntent
+                | crate::selected_journal::SelectedLifecycle::RollbackIntent),
+            "closed HND/ABT cannot create a new partition replay locator");
+        let facts = observation.facts();
+        source_scope.require_journal_route(&scope.binding.storage, facts.binding)?;
+        ensure!(facts.marker_native_qualified.is_none()
+            && facts.marker_use == MarkerStorageUse::QualifiedProduction
+            && observation.diagnostic_ticket().marker_profile.is_none(),
+            "partition locator requires actual markerless production journal");
+        let locator = Locator {
+            schema_version:2, kind:"resource-partition-recovery-locator-v2".into(),
+            source_scope, source:scope.binding.storage.clone(),
+            journal_binding:facts.binding.clone(),
+            journal_identity:IdentityWire::from(facts.identity),
+            journal_path:facts.path.to_path_buf(),
+            journal_profile_version:facts.profile.version(),
+            journal_profile_max_bytes:facts.profile.max_journal_bytes(),
+            marker_native_qualified_observation:None, marker_lab_observation:false,
+            ticket:observation.diagnostic_ticket().clone(),
+            serialized_locator_grants_authority:false,
+        };
+        scope.complete_preparation_guard.require_actual(admission, owner, stable, events)?;
+        // write_locator validates the held output directory's actual native
+        // GUID route against this same observed J volume before CreateNew.
+        let mut result = Self::write_locator(&locator, group, scratch, path)?;
+        result.revalidate()?;
+        scope.complete_preparation_guard.require_actual(admission, owner, stable, events)?;
+        Ok(result)
+    }
+
     /// Persist routing from the actual still-held protected preparation before
     /// any activation. This remains diagnostic until the missing source,
     /// target and cross-stage resource certificates have real issuers.
@@ -267,6 +320,7 @@ impl DurableRecoveryLocator {
         let locator = Locator {
             schema_version: 1,
             kind: "resource-recovery-locator-v1".into(),
+            source_scope: super::source_scope::ResourceRecoverySourceScope::Dedicated,
             source: facts.source,
             journal_binding: facts.journal_binding,
             journal_identity: (&facts.journal_identity).into(),
@@ -316,6 +370,7 @@ impl DurableRecoveryLocator {
         let locator = Locator {
             schema_version: 1,
             kind: "resource-recovery-locator-v1".into(),
+            source_scope: super::source_scope::ResourceRecoverySourceScope::Dedicated,
             source: source.clone(),
             journal_binding: facts.binding.clone(),
             journal_identity: facts.identity.into(),
@@ -564,6 +619,9 @@ impl DurableRecoveryLocator {
     }
     pub(crate) fn snapshot(&self) -> &ReferenceFileSnapshot {
         &self.snapshot
+    }
+    pub(crate) fn source_scope(&self) -> &super::source_scope::ResourceRecoverySourceScope {
+        &self.payload.source_scope
     }
     pub(crate) fn source(&self) -> &GeneralDiskBinding {
         &self.payload.source

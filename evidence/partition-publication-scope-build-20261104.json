@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "kind": "versioned-actual-guard-partition-recovery-publication",
+  "status": "public-check-passed-restart-guard-and-activation-pending",
+  "files": [
+    {
+      "path": "src/selected_journal/resource_domain.rs",
+      "bytes": 18918,
+      "sha256": "bb314ca6d5a77ff4a929b1dc6711781c3d9ba2a2a524e37e7b2cbcb43d96e27c"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/prepare/qualification.rs",
+      "bytes": 48389,
+      "sha256": "b0afc7d98f428c93f11ed911fe76f12920a43e92e34bfc2421375dc95c394f27"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/reopen/envelope.rs",
+      "bytes": 81643,
+      "sha256": "2d6c73ede1df07fa7d1370cca4a7c4f26d218f4cbd8fff56caff097f9e1fedc1"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/durable_anchor.rs",
+      "bytes": 28788,
+      "sha256": "48c189ecca5454a88a6c238ba1878477ad1e3c607e2a02e2651d73b7b2d003cb"
+    },
+    {
+      "path": "src/selected_journal/resource_domain/source_scope.rs",
+      "bytes": 9671,
+      "sha256": "c5996923af57255f0cb2699c1638933523685de022a9663be87e4d20098bd268"
+    }
+  ],
+  "reviewed_patch_sha256": "2a2b5430f2ac166fd874d2b1cdb3e0d0fcc245fbcfac39b9c06e3bcde57c3ffe",
+  "check_exit": 0,
+  "check_wall_seconds": 22.0742262,
+  "check_receipt_sha256": "5fa79fcc59310f45440082c5d68e351865cbeb7f9494d2e39d3dbe4522ed0f62",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "restart_guard_issuer_implemented": false,
+  "writer_cli_enabled": false,
+  "behavior": [
+    "Missing scope remains dedicated-only and legacy serialization omits new field.",
+    "Explicit partition-v2 envelope/locator binds complete source geometry, private/original type, attributes/name and actual preparation pin.",
+    "Publisher borrows actual partition SourceContext/admission/guard plus held expected/maps/locator/J and arena; no DTO source authority.",
+    "Scoped recovery retains canonical held files, actual J/index/body/lifecycle and live SDK guard; AP/RB only.",
+    "C-sibling J/artifact/output allowed only after actual held volume extents and GUID/serial/disjointness checks, no legacy inequality deletion.",
+    "No guard/admission is reconstructed from JSON; current path still requires original live guard."
+  ],
+  "remaining": [
+    "Actual SDK/source-scoped J creation/preparation, target/capture/apply routing.",
+    "Authenticated restart/process-death preparation guard.",
+    "Partition replay writer activation and HND/ABT restoration plus native qualification."
+  ]
+}

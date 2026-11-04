@@ -101,7 +101,17 @@ pub use native::partition_isolation;
 #[cfg(windows)]
 pub use native::partition_lifecycle;
 #[cfg(windows)]
+pub use native::partition_restoration;
+#[cfg(windows)]
+pub use native::PartitionTerminalNativeObservation;
+#[cfg(windows)]
 pub use native::{PartitionOwnerState, PartitionOwnerToken, PartitionScopedOwner};
+#[cfg(windows)]
+pub use native::PartitionMixedReplayGate;
+#[cfg(windows)]
+pub use native::{PartitionClosedJournalObservation, PartitionHandoffWitness,
+    PartitionJournalReadView, PartitionPagedWriter, PartitionSourceAdmissionGate,
+    PartitionTerminalKind, authenticate_partition_closed_journal};
 #[cfg(windows)]
 pub use native::{
     BorrowedPagedWriter, DriveLetterRestore, GeneralAllocationFreezeWitness, GeneralAllocationPhase,

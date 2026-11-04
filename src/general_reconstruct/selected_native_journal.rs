@@ -1052,3 +1052,39 @@ impl DurableIo for NativeSelectedJournal {
         }
     }
 }
+
+impl NativeSelectedJournal {
+    /// Actual sealed-body bridge only; the RW File is never returned to Root.
+    pub(crate) fn qualify_sealed_partition_apply(
+        &mut self,source:&mut n2r_win32::PartitionScopedOwner,
+        admission:&mut n2r_win32::partition_lifecycle::PartitionNtfsAdmission,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,
+        events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::PartitionSourceAdmissionGate>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage {Storage::Buffered(file)=>Ok(source.qualify_fresh_paged_apply(admission,policy,file,pins,events)?),
+            _=>anyhow::bail!("actual sealed markerless partition J absent")}
+    }
+    pub(crate) fn begin_sealed_partition_apply<'a,'p>(
+        &'a mut self,source:&'a mut n2r_win32::PartitionScopedOwner,
+        gate:&'a mut n2r_win32::PartitionSourceAdmissionGate,
+        admission:&'a mut n2r_win32::partition_lifecycle::PartitionNtfsAdmission,
+        policy:n2r_win32::HeldPagedWritePolicy,pins:&'a n2r_win32::PagedRecoveryPins<'p>,
+        events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::PartitionPagedWriter<'a,'p>>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage {Storage::Buffered(file)=>Ok(source.begin_fresh_partition_paged_apply(gate,admission,policy,file,pins,events)?),
+            _=>anyhow::bail!("actual sealed markerless partition J absent")}
+    }
+    pub(crate) fn finish_sealed_partition_handoff(
+        &mut self,source:&mut n2r_win32::PartitionScopedOwner,
+        gate:n2r_win32::PartitionSourceAdmissionGate,
+        admission:&mut n2r_win32::partition_lifecycle::PartitionNtfsAdmission,
+        policy:&n2r_win32::HeldPagedWritePolicy,pins:&n2r_win32::PagedRecoveryPins<'_>,
+        events:&mut Vec<n2r_win32::NativeEvent>,
+    )->Result<n2r_win32::PartitionHandoffWitness>{
+        self.require_prepared_body_seal()?;
+        match &mut self.storage {Storage::Buffered(file)=>Ok(source.finish_fresh_partition_handoff(gate,admission,policy,file,pins,events)?),
+            _=>anyhow::bail!("actual sealed markerless partition J absent")}
+    }
+}

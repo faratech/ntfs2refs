@@ -1,0 +1,1105 @@
+//! Actual terminal partition restoration. No JSON flag issues a writer.
+//! All source fields below arrive by consuming the validated ORIGINAL owner.
+use super::partition_isolation::{PartitionObservationBudget, PartitionSourceBinding};
+use super::*;
+use crate::attestation::NativeObservationDomain;
+use serde::Serialize;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Read, Seek, SeekFrom},
+    os::windows::fs::OpenOptionsExt,
+};
+
+const RO: u64 = 0x1000_0000_0000_0000;
+const BASIC: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
+const PRIVATE: &str = "b627aadb-a893-48b6-aa0b-71e5f30ee370";
+const MAX_JSON: u64 = 4 * 1024 * 1024;
+const MAX_INTENT: u64 = 16 * 1024 * 1024;
+fn bad(m: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, m)
+}
+fn need(ok: bool, m: &str) -> io::Result<()> {
+    if ok { Ok(()) } else { Err(bad(m)) }
+}
+fn sha(b: &[u8]) -> [u8; 32] {
+    Sha256::digest(b).into()
+}
+fn str_field<'a>(v: &'a Value, n: &str) -> io::Result<&'a str> {
+    v.get(n)
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad("required string routing field absent"))
+}
+fn num_field(v: &Value, n: &str) -> io::Result<u64> {
+    v.get(n)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| bad("required integer routing field absent"))
+}
+fn json_bytes(v: &Value) -> io::Result<Vec<u8>> {
+    serde_json::from_value(v.clone()).map_err(io::Error::other)
+}
+fn digest(v: &Value, n: &str) -> io::Result<[u8; 32]> {
+    let s = str_field(v, n)?;
+    need(
+        s.len() == 64
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "noncanonical metadata SHA256",
+    )?;
+    hex::decode(s)
+        .map_err(io::Error::other)?
+        .try_into()
+        .map_err(|_| bad("SHA-256 pin length differs"))
+}
+fn crc(b: &[u8]) -> u32 {
+    let mut c = !0u32;
+    for byte in b {
+        c ^= u32::from(*byte);
+        for _ in 0..8 {
+            c = (c >> 1) ^ (0xedb8_8320u32 & 0u32.wrapping_sub(c & 1));
+        }
+    }
+    !c
+}
+fn header(original: &[u8], entries: &[u8]) -> io::Result<Vec<u8>> {
+    let mut b = original.to_vec();
+    let n = crate::layout::u32_at(&b, 12)? as usize;
+    need(n >= 92 && n <= b.len(), "original GPT header bound differs")?;
+    b[88..92].copy_from_slice(&crc(entries).to_le_bytes());
+    b[16..20].fill(0);
+    let h = crc(&b[..n]);
+    b[16..20].copy_from_slice(&h.to_le_bytes());
+    Ok(b)
+}
+fn physical_read(binding: &PartitionSourceBinding, at: u64, n: usize) -> io::Result<Vec<u8>> {
+    need(
+        n <= 65536
+            && at
+                .checked_add(n as u64)
+                .is_some_and(|e| e <= binding.storage.identity.disk_bytes),
+        "restoration metadata read bound differs",
+    )?;
+    let mut f = device_file(
+        &format!("\\\\.\\PhysicalDrive{}", binding.storage.disk_number),
+        false,
+        false,
+    )?;
+    need(
+        f.seek(SeekFrom::Start(at))? == at,
+        "restoration metadata seek differs",
+    )?;
+    let mut b = vec![0; n];
+    f.read_exact(&mut b)?;
+    Ok(b)
+}
+
+/// Held metadata files are routing inputs until open_authenticated checks their
+/// exact content/identity and actual J/source lineage. No flag is authority.
+pub struct PartitionRestartFiles {
+    pub publication: File,
+    pub locator: File,
+    pub preparation_intent: File,
+    pub native_metadata: File,
+}
+struct Artifact {
+    file: File,
+    snapshot: crate::reference_file::ReferenceFileSnapshot,
+    sha: [u8; 32],
+}
+impl Artifact {
+    fn hold(
+        file: File,
+        expected: [u8; 32],
+        limit: u64,
+        binding: &PartitionSourceBinding,
+        windows: &partition_isolation::PartitionVolumeExtent,
+        require_c: bool,
+    ) -> io::Result<Self> {
+        crate::file_storage::require_readonly_access(&file)?;
+        let before = crate::reference_file::observe_reference_file_handle_with_limit(&file, limit)?;
+        need(
+            before.file_bytes > 0 && before.number_of_links == 1,
+            "ordinary nonempty single-link restoration artifact required",
+        )?;
+        // Acquire our own readonly/write-delete-excluding FileObject on the
+        // actual observed GUID path, then prove it is the same supplied file.
+        let mut held = OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .custom_flags(0x0020_0000)
+            .open(&before.final_path)?;
+        let actual = crate::reference_file::observe_reference_file_handle_with_limit(&held, limit)?;
+        need(
+            actual == before,
+            "restoration artifact route changed while holding it",
+        )?;
+        let end = actual
+            .final_path
+            .find("}\\")
+            .ok_or_else(|| bad("artifact GUID route absent"))?
+            + 1;
+        let volume = device_file(&actual.final_path[..end], false, false)?;
+        let ext = control(
+            &volume,
+            "partition-restoration-artifact-extents",
+            VOLUME_EXTENTS,
+            &[],
+            32,
+            &mut Vec::new(),
+        )?;
+        need(
+            ext.len() == 32 && crate::layout::u32_at(&ext, 0)? == 1,
+            "restoration artifact extent is not a complete basic volume",
+        )?;
+        let disk = crate::layout::u32_at(&ext, 8)?;
+        let at = crate::layout::u64_at(&ext, 16)?;
+        let bytes = crate::layout::u64_at(&ext, 24)?;
+        let target = &binding.storage.identity;
+        let end = at
+            .checked_add(bytes)
+            .ok_or_else(|| bad("artifact extent overflow"))?;
+        let te = target
+            .partition_offset
+            .checked_add(target.partition_bytes)
+            .ok_or_else(|| bad("target extent overflow"))?;
+        need(
+            disk != binding.storage.disk_number || end <= target.partition_offset || at >= te,
+            "restoration metadata overlaps target",
+        )?;
+        if require_c {
+            need(
+                disk == windows.disk_number && at == windows.offset && bytes == windows.length,
+                "preparation intent is not on actual Windows C",
+            )?;
+        }
+        let observed = crate::sha256_native::hash_range(&mut held, 0, actual.file_bytes)?;
+        need(
+            observed == expected
+                && crate::reference_file::observe_reference_file_handle_with_limit(&held, limit)?
+                    == actual,
+            "restoration artifact hash/identity differs",
+        )?;
+        Ok(Self {
+            file: held,
+            snapshot: actual,
+            sha: observed,
+        })
+    }
+    fn read(&mut self, max: u64) -> io::Result<Vec<u8>> {
+        need(
+            self.snapshot.file_bytes <= max,
+            "restoration metadata exceeds parsing bound",
+        )?;
+        self.file.seek(SeekFrom::Start(0))?;
+        let mut b = vec![0; self.snapshot.file_bytes as usize];
+        self.file.read_exact(&mut b)?;
+        Ok(b)
+    }
+    fn revalidate(&mut self) -> io::Result<()> {
+        need(
+            crate::reference_file::observe_reference_file_handle_with_limit(
+                &self.file,
+                self.snapshot.file_bytes,
+            )? == self.snapshot
+                && crate::sha256_native::hash_range(&mut self.file, 0, self.snapshot.file_bytes)?
+                    == self.sha,
+            "held restoration artifact changed",
+        )
+    }
+}
+
+struct Origin {
+    scope: Value,
+    original_info: Vec<u8>,
+    original_gpt: Value,
+    original_mbr: Vec<u8>,
+    original_primary: [u8; 32],
+    original_label: crate::volume_label::VolumeLabel,
+    mount_paths: Vec<String>,
+    publication: Artifact,
+    locator: Artifact,
+    intent: Artifact,
+    native_file: Artifact,
+    native_pages: crate::observation_pages::PagedNativeObservation,
+}
+impl Origin {
+    fn authenticate(
+        files: PartitionRestartFiles,
+        published_sha: [u8; 32],
+        parts: &PartitionTerminalTargetParts,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+    ) -> io::Result<Self> {
+        let binding = &parts.binding;
+        let windows = &parts.state.partition.windows_volume;
+        let mut publication = Artifact::hold(
+            files.publication,
+            published_sha,
+            MAX_JSON,
+            binding,
+            windows,
+            false,
+        )?;
+        need(
+            publication
+                .snapshot
+                .file_bytes
+                .checked_mul(32)
+                .is_some_and(|n| n <= parts.budget.ram_bytes),
+            "publication parsing exceeds explicit RAM budget",
+        )?;
+        let envelope: Value =
+            serde_json::from_slice(&publication.read(MAX_JSON)?).map_err(io::Error::other)?;
+        need(
+            num_field(&envelope, "schema_version")? == 2
+                && str_field(&envelope, "kind")? == "resource-partition-recovery-envelope-v2",
+            "terminal restoration requires explicit partition-v2 publication",
+        )?;
+        let scope = envelope
+            .get("source_scope")
+            .ok_or_else(|| bad("partition scope missing"))?
+            .clone();
+        need(
+            str_field(&scope, "kind")? == "partition-v2"
+                && num_field(&scope, "scope_version")? == 2,
+            "unknown terminal restoration source scope",
+        )?;
+        let actual_binding: PartitionSourceBinding =
+            serde_json::from_value(scope["binding"].clone()).map_err(io::Error::other)?;
+        need(
+            &actual_binding == binding
+                && serde_json::from_value::<crate::general_layout::GeneralDiskBinding>(
+                    envelope["source"].clone(),
+                )
+                .map_err(io::Error::other)?
+                    == binding.storage,
+            "publication source differs from actual private target",
+        )?;
+        let lp = &envelope["locator"];
+        let mut locator = Artifact::hold(
+            files.locator,
+            digest(lp, "sha256")?,
+            MAX_JSON + 64,
+            binding,
+            windows,
+            false,
+        )?;
+        need(
+            locator.snapshot.file_bytes == num_field(lp, "bytes")?,
+            "locator length differs",
+        )?;
+        let raw = locator.read(MAX_JSON + 64)?;
+        need(
+            raw.len() >= 64
+                && &raw[..8] == b"N2RANC01"
+                && crate::layout::u32_at(&raw, 8)? == 1
+                && crate::layout::u64_at(&raw, 16)? == raw.len() as u64 - 64
+                && raw[24..56] == sha(&raw[64..]),
+            "actual framed locator length/hash differs",
+        )?;
+        let loc: Value = serde_json::from_slice(&raw[64..]).map_err(io::Error::other)?;
+        need(
+            num_field(&loc, "schema_version")? == 2
+                && str_field(&loc, "kind")? == "resource-partition-recovery-locator-v2"
+                && loc["source_scope"] == scope,
+            "locator/publication source scope differs",
+        )?;
+        let ticket = &loc["ticket"];
+        need(
+            json_bytes(&ticket["immutable_sha256"])? == pins.immutable_sha256
+                && json_bytes(&ticket["old_selected_sha256"])? == pins.old_selected_sha256
+                && json_bytes(&ticket["new_selected_sha256"])? == pins.new_selected_sha256,
+            "published ticket differs from actual closed-J pins",
+        )?;
+        need(
+            loc["journal_identity"]
+                == serde_json::to_value(pins.journal_identity).map_err(io::Error::other)?,
+            "actual journal identity differs from locator",
+        )?;
+        let pin = &scope["complete_preparation_guard"];
+        need(
+            num_field(pin, "version")? == 1
+                && str_field(pin, "kind")? == "partition-target-only-preparation-v1"
+                && str_field(pin, "observed_stage")? == "PrivateLocked",
+            "original preparation protocol differs",
+        )?;
+        let ip = &pin["intent_file"];
+        let intent_snapshot = crate::reference_file::ReferenceFileSnapshot {
+            final_path: str_field(ip, "final_path")?.into(),
+            volume_serial_number: num_field(ip, "volume_serial_number")?,
+            file_id_128: json_bytes(&ip["file_id_128"])?
+                .try_into()
+                .map_err(|_| bad("intent file ID length differs"))?,
+            file_bytes: num_field(ip, "file_bytes")?,
+            allocation_bytes: num_field(ip, "allocation_bytes")?,
+            file_attributes: u32::try_from(num_field(ip, "file_attributes")?)
+                .map_err(io::Error::other)?,
+            number_of_links: u32::try_from(num_field(ip, "number_of_links")?)
+                .map_err(io::Error::other)?,
+        };
+        let mut intent = Artifact::hold(
+            files.preparation_intent,
+            digest(pin, "intent_prefix_sha256")?,
+            MAX_INTENT,
+            binding,
+            windows,
+            true,
+        )?;
+        need(
+            intent.snapshot == intent_snapshot,
+            "actual held preparation intent identity differs",
+        )?;
+        let mut consumed = 0;
+        let mut sequence = 0;
+        let mut latest = None;
+        intent.file.seek(SeekFrom::Start(0))?;
+        while consumed < intent.snapshot.file_bytes {
+            let mut len = [0; 8];
+            let mut expected = [0; 32];
+            intent.file.read_exact(&mut len)?;
+            intent.file.read_exact(&mut expected)?;
+            let n = u64::from_le_bytes(len);
+            need(
+                n > 0
+                    && n <= MAX_JSON
+                    && n.checked_mul(32)
+                        .is_some_and(|n| n <= parts.budget.ram_bytes)
+                    && consumed + 40 + n <= intent.snapshot.file_bytes,
+                "preparation frame exceeds bounds",
+            )?;
+            let mut body = vec![0; n as usize];
+            intent.file.read_exact(&mut body)?;
+            need(sha(&body) == expected, "preparation frame digest differs")?;
+            let frame: Value = serde_json::from_slice(&body).map_err(io::Error::other)?;
+            sequence += 1;
+            need(
+                sequence <= 4
+                    && num_field(&frame, "version")? == 1
+                    && num_field(&frame, "sequence")? == sequence
+                    && str_field(&frame, "kind")? == "partition-target-only-pre-AP-intent",
+                "preparation frame protocol differs",
+            )?;
+            latest = Some(frame);
+            consumed += 40 + n;
+        }
+        let frame = latest.ok_or_else(|| bad("preparation intent has no actual frame"))?;
+        need(
+            sequence == num_field(pin, "sequence")? && frame["binding"] == scope["binding"],
+            "preparation sequence/source binding differs",
+        )?;
+        let original_info = json_bytes(&frame["original_partition_info"])?;
+        need(
+            original_info == json_bytes(&pin["original_partition_info"])?
+                && original_info.len() == 144
+                && original_info[32..48] == crate::layout::guid_bytes(BASIC)?
+                && crate::layout::u64_at(&original_info, 64)? == 0,
+            "authenticated original Basic0 native info differs",
+        )?;
+        let desired = json_bytes(&frame["desired_partition_info"])?;
+        need(
+            desired.len() == 144
+                && desired[32..48] == crate::layout::guid_bytes(PRIVATE)?
+                && crate::layout::u64_at(&desired, 64)? == 0,
+            "last authenticated intent does not target private0",
+        )?;
+        let original_gpt = frame["original_gpt"].clone();
+        let original_mbr = json_bytes(&frame["original_mbr"])?;
+        need(
+            original_mbr.len() == 512 && sha(&original_mbr) == digest(pin, "original_mbr_sha256")?,
+            "original MBR pin differs",
+        )?;
+        let np = &scope["native_metadata"];
+        let native_sha = digest(np, "sha256")?;
+        let native_file = Artifact::hold(
+            files.native_metadata,
+            native_sha,
+            num_field(np, "bytes")?,
+            binding,
+            windows,
+            false,
+        )?;
+        need(
+            native_file.snapshot.file_bytes == num_field(np, "bytes")?,
+            "actual native metadata length differs",
+        )?;
+        let nb: crate::observation_pages::NativeObservationBudget =
+            serde_json::from_value(np["budget"].clone()).map_err(io::Error::other)?;
+        nb.validate()?;
+        let native_pages = crate::observation_pages::PagedNativeObservation::open(
+            std::path::Path::new(&native_file.snapshot.final_path),
+            &hex::encode(native_sha),
+            nb,
+        )?;
+        let request = &native_pages.header().request;
+        need(
+            request.disk_number == binding.storage.disk_number
+                && request.partition_offset == binding.storage.identity.partition_offset
+                && request.partition_length == binding.storage.identity.partition_bytes
+                && request.source_inspection_sha256
+                    == str_field(&envelope, "source_inspection_sha256")?,
+            "authenticated native metadata source request differs",
+        )?;
+        let original_label: crate::volume_label::VolumeLabel =
+            serde_json::from_value(envelope["expected_source_label"].clone())
+                .map_err(io::Error::other)?;
+        original_label.validate()?;
+        let mount_paths: Vec<String> =
+            serde_json::from_value(envelope["expected_mount_paths"].clone())
+                .map_err(io::Error::other)?;
+        need(
+            mount_paths.len() <= 128,
+            "original mount-path count exceeds bound",
+        )?;
+        intent.file.seek(SeekFrom::Start(0))?;
+        let original_primary = digest(pin, "ntfs_primary_sha256")?;
+        Ok(Self {
+            scope,
+            original_info,
+            original_gpt,
+            original_mbr,
+            original_primary,
+            original_label,
+            mount_paths,
+            publication,
+            locator,
+            intent,
+            native_file,
+            native_pages,
+        })
+    }
+    fn revalidate(&mut self) -> io::Result<()> {
+        self.publication.revalidate()?;
+        self.locator.revalidate()?;
+        self.intent.revalidate()?;
+        self.native_file.revalidate()?;
+        self.native_pages.revalidate()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum PartitionTerminalStage {
+    Private,
+    Readonly,
+    Restored,
+    Poisoned,
+}
+#[derive(Debug, Serialize)]
+pub struct PartitionRestorationReceipt {
+    pub kind: &'static str,
+    pub binding: PartitionSourceBinding,
+    pub source_type_restored: bool,
+    pub original_attributes_restored: bool,
+    pub label_restored: bool,
+    pub mount_paths_restored: bool,
+    pub journal_raw_replay_closed: bool,
+    pub source_payload_write_calls: u64,
+}
+pub trait PartitionRestorationObserver {
+    /// Persist this real before-change observation durably outside the target.
+    /// The SDK still retains/authenticates actual closed-J and intent owners.
+    fn before_partition_change(
+        &mut self,
+        kind: PartitionTerminalKind,
+        current: &[u8],
+        desired: &[u8],
+    ) -> io::Result<()>;
+}
+pub struct PartitionTerminalRestorationGuard<'journal, 'pins> {
+    file: Option<File>,
+    physical: File,
+    binding: PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    baseline: PartitionOwnerState,
+    token: PartitionOwnerToken,
+    origin: Origin,
+    closed: PartitionClosedJournalObservation,
+    policy: &'journal HeldPagedWritePolicy,
+    journal: &'journal mut File,
+    pins: super::paged_recovery::PagedRecoveryPins<'pins>,
+    kind: PartitionTerminalKind,
+    stage: PartitionTerminalStage,
+    current_info: Vec<u8>,
+    mounted_binding: crate::general_layout::GeneralDiskBinding,
+    mounted: Option<File>,
+}
+impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
+    pub fn open_authenticated(
+        mut owner: PartitionScopedOwner,
+        policy: &'journal HeldPagedWritePolicy,
+        journal: &'journal mut File,
+        pins: super::paged_recovery::PagedRecoveryPins<'pins>,
+        kind: PartitionTerminalKind,
+        files: PartitionRestartFiles,
+        published_sha256: [u8; 32],
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        let closed = authenticate_partition_closed_journal(
+            &mut owner, policy, journal, &pins, kind, events,
+        )?;
+        let parts = owner.into_terminal_restoration_parts(&closed, events)?;
+        let origin = Origin::authenticate(files, published_sha256, &parts, &pins)?;
+        let mut current_info = origin.original_info.clone();
+        current_info[32..48].copy_from_slice(&crate::layout::guid_bytes(PRIVATE)?);
+        let mut guard = Self {
+            file: Some(parts.file),
+            physical: parts.physical_readonly,
+            binding: parts.binding.clone(),
+            budget: parts.budget,
+            baseline: parts.state,
+            token: parts.token,
+            origin,
+            closed,
+            policy,
+            journal,
+            pins,
+            kind,
+            stage: PartitionTerminalStage::Private,
+            current_info,
+            mounted_binding: parts.binding.storage,
+            mounted: None,
+        };
+        guard.revalidate_metadata(events)?;
+        guard.revalidate_closed()?;
+        Ok(guard)
+    }
+    pub fn stage(&self) -> PartitionTerminalStage {
+        self.stage
+    }
+    pub fn owner_token(&self) -> PartitionOwnerToken {
+        self.token.clone()
+    }
+    pub fn original_label(&self) -> &crate::volume_label::VolumeLabel {
+        &self.origin.original_label
+    }
+    fn expected_layout(
+        &self,
+        observed: &partition_isolation::PartitionIsolationObservation,
+    ) -> io::Result<()> {
+        let g = &self.origin.original_gpt;
+        let mut entries = json_bytes(&g["entries"])?;
+        let width = num_field(g, "entry_bytes")? as usize;
+        let slot = num_field(g, "target_slot")? as usize;
+        let at = slot
+            .checked_sub(1)
+            .and_then(|s| s.checked_mul(width))
+            .ok_or_else(|| bad("original target slot overflow"))?;
+        need(
+            width >= 128 && at.checked_add(width).is_some_and(|e| e <= entries.len()),
+            "original target slot out of bounds",
+        )?;
+        let original_entries = entries.clone();
+        let primary = json_bytes(&g["primary_header"])?;
+        let backup = json_bytes(&g["backup_header"])?;
+        let original_native = json_bytes(&g["native_layout"])?;
+        let mut full = Sha256::new();
+        full.update(&primary);
+        full.update(&original_entries);
+        full.update(&backup);
+        full.update(&original_native);
+        need(
+            <[u8; 32]>::from(full.finalize())
+                == digest(
+                    &self.origin.scope["complete_preparation_guard"],
+                    "original_gpt_sha256",
+                )?,
+            "original complete GPT pin differs",
+        )?;
+        entries[at..at + 16].copy_from_slice(&self.current_info[32..48]);
+        entries[at + 48..at + 56].copy_from_slice(&self.current_info[64..72]);
+        let mut native = original_native;
+        let guid = crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
+        let offsets: Vec<usize> = (48..native.len())
+            .step_by(144)
+            .filter(|a| *a + 144 <= native.len() && native[*a + 48..*a + 64] == guid)
+            .collect();
+        need(offsets.len() == 1, "original native target is not unique")?;
+        native[offsets[0]..offsets[0] + 144].copy_from_slice(&self.current_info);
+        let actual = &observed.gpt;
+        need(
+            actual.entries == entries
+                && actual.primary_header == header(&primary, &entries)?
+                && actual.backup_header == header(&backup, &entries)?
+                && actual.native_layout == native
+                && actual.primary_crc_valid
+                && actual.backup_crc_valid
+                && actual.entry_arrays_equal,
+            "terminal GPT/siblings/unused entries changed beyond target type/attrs and required CRCs",
+        )
+    }
+    fn observe(
+        &self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<partition_isolation::PartitionIsolationObservation> {
+        let mut physical = device_file(
+            &format!("\\\\.\\PhysicalDrive{}", self.binding.storage.disk_number),
+            false,
+            false,
+        )?;
+        if self.current_info[32..48] == crate::layout::guid_bytes(PRIVATE)? {
+            partition_isolation::observe_private(&mut physical, &self.binding, self.budget, events)
+        } else {
+            let reader = partition_isolation::PartitionScopedReader::open(
+                PartitionSourceBinding {
+                    storage: self.mounted_binding.clone(),
+                },
+                self.budget,
+                events,
+            )?;
+            Ok(reader.observation().clone())
+        }
+    }
+    fn revalidate_metadata(
+        &self,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<partition_isolation::PartitionIsolationObservation> {
+        let actual = self.observe(events)?;
+        self.expected_layout(&actual)?;
+        need(
+            actual.disk_attributes == 0
+                && actual.disk_device == self.baseline.partition.disk_device
+                && actual.disk_length == self.baseline.partition.disk_length
+                && actual.alignment == self.baseline.partition.alignment
+                && actual.windows_volume == self.baseline.partition.windows_volume
+                && actual.paging == self.baseline.partition.paging,
+            "terminal physical/C/pagefile identity changed",
+        )?;
+        need(
+            physical_read(&self.binding, 0, 512)? == self.origin.original_mbr,
+            "terminal protective MBR changed",
+        )?;
+        let dumps = partition_dump_locations::observe_configured_dump_locations(
+            &self.binding,
+            self.budget,
+            events,
+        )?;
+        let roles = partition_runtime_roles::observe_runtime_volume_roles(
+            &self.binding,
+            self.budget,
+            events,
+        )?;
+        // Publishing the selected BasicRO volume intentionally changes VDS's
+        // NONCRITICAL inventory. Require the full critical-role rows instead;
+        // flags are never cleared/masked to classify the new target as safe.
+        let original_roles = &self.baseline.vds_current_volume_roles;
+        let critical_unchanged = roles.vds_enumeration_completed
+            && roles.vds_critical_role_extents_outside_target
+            && roles.software_providers == original_roles.software_providers
+            && roles.vds_system_volume_count == original_roles.vds_system_volume_count
+            && roles.vds_boot_volume_count == original_roles.vds_boot_volume_count
+            && roles
+                .volumes
+                .iter()
+                .filter(|v| v.critical_flags != 0)
+                .eq(original_roles
+                    .volumes
+                    .iter()
+                    .filter(|v| v.critical_flags != 0));
+        need(
+            dumps == self.baseline.configured_dump_locations && critical_unchanged,
+            "terminal critical-volume bindings changed",
+        )?;
+        if let Some(file) = &self.file {
+            let info = control(
+                file,
+                "terminal-current-partition-info",
+                0x0007_0048,
+                &[],
+                144,
+                events,
+            )?;
+            need(
+                info == self.current_info,
+                "held terminal partition information changed",
+            )?;
+        }
+        Ok(actual)
+    }
+    fn revalidate_closed(&mut self) -> io::Result<()> {
+        self.origin.revalidate()?;
+        let file = OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .custom_flags(0xa000_0000)
+            .open(format!(
+                "\\\\?\\GLOBALROOT\\Device\\Harddisk{}\\Partition{}",
+                self.binding.storage.disk_number, self.binding.storage.identity.partition_number
+            ))?;
+        let mut reader = TerminalRawReader {
+            file,
+            buffer: AlignedBuffer::new()?,
+            position: 0,
+            length: self.binding.storage.identity.partition_bytes,
+        };
+        self.closed.revalidate_reader(
+            &mut reader,
+            self.binding.storage.identity.partition_bytes,
+            &self.binding,
+            &self.token,
+            self.policy,
+            self.journal,
+            &self.pins,
+        )
+    }
+    fn change(
+        &mut self,
+        attrs: u64,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        self.revalidate_metadata(events)?;
+        self.origin.revalidate()?;
+        let mut desired = self.origin.original_info.clone();
+        desired[64..72].copy_from_slice(&attrs.to_le_bytes());
+        observer.before_partition_change(self.kind, &self.current_info, &desired)?;
+        self.revalidate_metadata(events)?;
+        let route = format!(
+            "\\\\?\\GLOBALROOT\\Device\\Harddisk{}\\Partition{}",
+            self.binding.storage.disk_number, self.binding.storage.identity.partition_number
+        );
+        let management = if let Some(file) = self.file.take() {
+            file
+        } else {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .share_mode(3)
+                .open(route)?
+        };
+        let actual = control(
+            &management,
+            "terminal-management-partition-info",
+            0x0007_0048,
+            &[],
+            144,
+            events,
+        )?;
+        need(
+            actual == self.current_info,
+            "terminal management file names another partition/state",
+        )?;
+        let mut input = [0u8; 120];
+        input[..4].copy_from_slice(&1u32.to_le_bytes());
+        input[8..120].copy_from_slice(&desired[32..144]);
+        self.stage = PartitionTerminalStage::Poisoned;
+        let reply = control(
+            &management,
+            "terminal-SET_PARTITION_INFO_EX-once",
+            0x0007_c04c,
+            &input,
+            0,
+            events,
+        )?;
+        need(reply.is_empty(), "terminal setter returned unexpected data")?;
+        self.current_info = desired;
+        self.file = Some(management);
+        self.revalidate_metadata(events)?;
+        Ok(())
+    }
+    pub fn enter_readonly(
+        &mut self,
+        observer: &mut impl PartitionRestorationObserver,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        need(
+            self.stage == PartitionTerminalStage::Private,
+            "terminal readonly transition is one-shot",
+        )?;
+        self.revalidate_closed()?;
+        self.change(RO, observer, events)?;
+        // Persistent target-only RO precedes closing the old NTFS FileObject.
+        // All root capture duplicates must also close before native publication.
+        drop(self.file.take());
+        let (binding, volume) =
+            find_terminal_volume(&self.binding, &self.current_info, self.budget, events)?;
+        self.mounted_binding = binding;
+        self.mounted = Some(volume);
+        self.stage = PartitionTerminalStage::Readonly;
+        self.revalidate_metadata(events)?;
+        self.require_readonly(events)?;
+        self.revalidate_closed()?;
+        Ok(())
+    }
+    pub fn readonly_volume(
+        &self,
+    ) -> io::Result<PartitionTerminalReadonlyVolume<'_, 'journal, 'pins>> {
+        need(
+            self.stage == PartitionTerminalStage::Readonly && self.mounted.is_some(),
+            "actual terminal readonly volume unavailable",
+        )?;
+        Ok(PartitionTerminalReadonlyVolume { guard: self })
+    }
+    fn require_readonly(&self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        need(
+            self.current_info[32..48] == crate::layout::guid_bytes(BASIC)?
+                && crate::layout::u64_at(&self.current_info, 64)? == RO,
+            "terminal target lost exact BasicRO",
+        )?;
+        let volume = self
+            .mounted
+            .as_ref()
+            .ok_or_else(|| bad("actual mounted terminal volume absent"))?;
+        let ext = control(
+            volume,
+            "terminal-readonly-volume-extents",
+            VOLUME_EXTENTS,
+            &[],
+            32,
+            events,
+        )?;
+        self.mounted_binding.validate_volume_extent(&ext)?;
+        let info = control(
+            volume,
+            "terminal-readonly-partition-info",
+            0x0007_0048,
+            &[],
+            144,
+            events,
+        )?;
+        need(
+            info == self.current_info,
+            "terminal mounted partition information differs",
+        )?;
+        let at = events.len();
+        let result = control(
+            volume,
+            "terminal-readonly-IS_WRITABLE",
+            0x0007_0024,
+            &[],
+            0,
+            events,
+        );
+        need(
+            result.is_err()
+                && events
+                    .get(at)
+                    .is_some_and(|event| !event.succeeded && event.native_error == Some(19)),
+            "terminal volume must report actual WRITE_PROTECT19",
+        )
+    }
+}
+
+pub struct PartitionTerminalReadonlyVolume<'guard, 'journal, 'pins> {
+    guard: &'guard PartitionTerminalRestorationGuard<'journal, 'pins>,
+}
+impl PartitionTerminalReadonlyVolume<'_, '_, '_> {
+    pub fn binding(&self) -> &crate::general_layout::GeneralDiskBinding {
+        &self.guard.mounted_binding
+    }
+    pub fn volume(&self) -> &File {
+        self.guard
+            .mounted
+            .as_ref()
+            .expect("capability requires actual mounted volume")
+    }
+    pub fn owner_token(&self) -> PartitionOwnerToken {
+        self.guard.token.clone()
+    }
+    pub fn require_readonly(&self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.guard.revalidate_metadata(events)?;
+        self.guard.require_readonly(events)
+    }
+    pub fn snapshot(
+        &self,
+        binding: &crate::layout::DiskBinding,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionSnapshot> {
+        need(
+            binding.disk_number == self.binding().disk_number
+                && binding.volume_guid == self.binding().volume_guid
+                && binding.identity == self.binding().identity,
+            "terminal native snapshot binding differs",
+        )?;
+        let observed = self.guard.revalidate_metadata(events)?;
+        self.guard.require_readonly(events)?;
+        Ok(PartitionSnapshot {
+            binding: binding.clone(),
+            disk_attributes: observed.disk_attributes,
+            device: observed.disk_device,
+            length: observed.disk_length,
+            alignment: observed.alignment,
+            layout: observed.gpt.native_layout,
+        })
+    }
+}
+impl super::ProtectedReadonlyRefsAccess for PartitionTerminalReadonlyVolume<'_, '_, '_> {
+    fn binding(&self) -> &crate::general_layout::GeneralDiskBinding {
+        self.binding()
+    }
+    fn volume(&self) -> &File {
+        self.volume()
+    }
+    fn scope(&self) -> super::ReadonlyRefsScope {
+        super::ReadonlyRefsScope::SelectedPartition
+    }
+    fn snapshot(
+        &self,
+        binding: &crate::layout::DiskBinding,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionSnapshot> {
+        self.snapshot(binding, events)
+    }
+    fn partition_owner_token(&self) -> Option<&PartitionOwnerToken> {
+        Some(&self.guard.token)
+    }
+}
+struct TerminalRawReader {
+    file: File,
+    buffer: AlignedBuffer,
+    position: u64,
+    length: u64,
+}
+impl Seek for TerminalRawReader {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let at = match from {
+            SeekFrom::Start(n) => i128::from(n),
+            SeekFrom::Current(n) => i128::from(self.position) + i128::from(n),
+            SeekFrom::End(n) => i128::from(self.length) + i128::from(n),
+        };
+        need(
+            at >= 0 && at <= i128::from(self.length),
+            "terminal raw seek leaves target",
+        )?;
+        self.position = at as u64;
+        Ok(self.position)
+    }
+}
+impl Read for TerminalRawReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() || self.position == self.length {
+            return Ok(0);
+        }
+        let lead = (self.position % 4096) as usize;
+        let count = (out.len().min(MAX_IO - lead) as u64).min(self.length - self.position) as usize;
+        let n = (lead + count).div_ceil(4096) * 4096;
+        let at = self.position - lead as u64;
+        need(at + n as u64 <= self.length, "terminal read leaves target")?;
+        self.file.seek(SeekFrom::Start(at))?;
+        let got = self.file.read(&mut self.buffer.bytes_mut()[..n])?;
+        need(got >= lead + count, "short terminal raw read")?;
+        out[..count].copy_from_slice(&self.buffer.bytes_mut()[lead..lead + count]);
+        self.position += count as u64;
+        Ok(count)
+    }
+}
+
+fn candidate_volume(
+    name: &str,
+    source: &PartitionSourceBinding,
+    expected: &[u8],
+) -> io::Result<Option<(crate::general_layout::GeneralDiskBinding, File)>> {
+    if !name.starts_with(r"\\?\Volume{") || !name.ends_with("}\\") {
+        return Err(bad("volume enumeration returned malformed local GUID"));
+    }
+    let volume = match device_file(name.trim_end_matches('\\'), false, false) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    let ext = match control(
+        &volume,
+        "terminal-candidate-extents",
+        VOLUME_EXTENTS,
+        &[],
+        32,
+        &mut Vec::new(),
+    ) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+    if ext.len() != 32
+        || crate::layout::u32_at(&ext, 0)? != 1
+        || crate::layout::u32_at(&ext, 8)? != source.storage.disk_number
+        || crate::layout::u64_at(&ext, 16)? != source.storage.identity.partition_offset
+        || crate::layout::u64_at(&ext, 24)? != source.storage.identity.partition_bytes
+    {
+        return Ok(None);
+    }
+    let info = control(
+        &volume,
+        "terminal-candidate-partition-info",
+        0x0007_0048,
+        &[],
+        144,
+        &mut Vec::new(),
+    )?;
+    need(
+        info == expected,
+        "matched terminal volume changed native target identity",
+    )?;
+    let mut binding = source.storage.clone();
+    binding.volume_guid = name[11..name.len() - 2].to_owned();
+    binding.validate()?;
+    Ok(Some((binding, volume)))
+}
+fn find_terminal_volume(
+    source: &PartitionSourceBinding,
+    expected: &[u8],
+    budget: PartitionObservationBudget,
+    _events: &mut Vec<NativeEvent>,
+) -> io::Result<(crate::general_layout::GeneralDiskBinding, File)> {
+    let known = format!("{}\\", source.storage.volume_path()?);
+    if let Some(found) = candidate_volume(&known, source, expected)? {
+        return Ok(found);
+    }
+    let mut name = [0u16; 1024];
+    // SAFETY: bounded initialized volume-name output, local Mount Manager query.
+    let handle = unsafe {
+        windows_sys::Win32::Storage::FileSystem::FindFirstVolumeW(
+            name.as_mut_ptr(),
+            name.len() as u32,
+        )
+    };
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    struct Enumeration(windows_sys::Win32::Foundation::HANDLE);
+    impl Drop for Enumeration {
+        fn drop(&mut self) {
+            unsafe {
+                windows_sys::Win32::Storage::FileSystem::FindVolumeClose(self.0);
+            }
+        }
+    }
+    let enumeration = Enumeration(handle);
+    let maximum = (budget.ram_bytes / 4096).min(4096) as usize;
+    for _ in 0..maximum {
+        let n = name
+            .iter()
+            .position(|unit| *unit == 0)
+            .ok_or_else(|| bad("enumerated volume name unterminated"))?;
+        let path = String::from_utf16(&name[..n]).map_err(io::Error::other)?;
+        if let Some(found) = candidate_volume(&path, source, expected)? {
+            return Ok(found);
+        }
+        name.fill(0);
+        if unsafe {
+            windows_sys::Win32::Storage::FileSystem::FindNextVolumeW(
+                enumeration.0,
+                name.as_mut_ptr(),
+                name.len() as u32,
+            )
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error()
+                == Some(windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES as i32)
+            {
+                return Err(bad("no actual BasicRO target volume was published"));
+            }
+            return Err(error);
+        }
+    }
+    Err(bad(
+        "terminal volume enumeration exceeds admitted count budget",
+    ))
+}
+
+/// Private transfer, not a pathname/serialized constructor. SDK owner validates
+/// actual closed-J token and current private/C/critical state before moving it.
+pub(super) struct PartitionTerminalTargetParts {
+    pub(super) file: File,
+    pub(super) physical_readonly: File,
+    pub(super) binding: PartitionSourceBinding,
+    pub(super) budget: PartitionObservationBudget,
+    pub(super) state: PartitionOwnerState,
+    pub(super) token: PartitionOwnerToken,
+}

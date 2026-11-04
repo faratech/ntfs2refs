@@ -33,6 +33,8 @@ pub use paged_write_policy::{
     HeldPagedWritePolicy, PagedPolicyIndexBuilder, PagedPolicyIndexFacts, PagedPolicyIndexRow,
 };
 pub use paged_recovery::{BorrowedPagedWriter, GeneralLiveConvertedObservation, PagedRecoveryDirection, PagedRecoveryPins};
+pub use paged_recovery::{PartitionClosedJournalObservation, PartitionHandoffWitness,
+    PartitionTerminalKind, authenticate_partition_closed_journal};
 
 mod partition_dump_locations;
 mod partition_runtime_roles;
@@ -41,7 +43,10 @@ mod partition_source_metadata;
 mod partition_target_observation;
 pub use partition_source_metadata::{PartitionSourceMetadataState, PartitionSourceMetadataWitness};
 pub mod partition_lifecycle;
+pub mod partition_restoration;
 pub use partition_owner::{PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner};
+pub use partition_owner::{PartitionJournalReadView, PartitionSourceAdmissionGate};
+pub use partition_owner::PartitionMixedReplayGate;
 
 const DEVICE: u32 = 0x002d1080;
 const LENGTH: u32 = 0x0007405c;

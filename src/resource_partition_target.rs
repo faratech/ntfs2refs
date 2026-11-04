@@ -77,6 +77,52 @@ impl PartitionPreparedTargetCapture {
             (Err(error), _) | (_, Err(error)) => Err(error),
         }
     }
+
+    /// Execution consumes the real prepared certificate inside the callback.
+    /// A completed HND closes against NEW bytes; an interrupted execution keeps
+    /// private exclusion and its recovery files. Neither case reuses OLD proof.
+    pub(crate) fn with_execution_domain(
+        &mut self,
+        context: &mut PartitionResourceSourceContext,
+        budget: ResourceJournalBudget,
+        layout_index: &std::path::Path,
+        events: &mut Vec<NativeEvent>,
+        action: impl FnOnce(
+            &ResourceJournalDomain<'_>,
+            &mut PartitionResourceSourceContext,
+            &mut GeneralFrozenPartition,
+            &mut ProtectedCapturedCandidate<'_>,
+            &mut Vec<NativeEvent>,
+        ) -> Result<crate::selected_journal::resource_domain::prepare::PartitionExecutionOutcome>,
+    ) -> Result<crate::selected_journal::resource_domain::prepare::PartitionApplyOutcome> {
+        use crate::selected_journal::resource_domain::prepare::PartitionExecutionOutcome;
+        self._output_directory.revalidate(context, events)?;
+        context.recheck_source(events)?;
+        self.proof.recheck_frozen_target(&mut self.shadow, events)?;
+        let domain = ResourceJournalDomain::from_capture(
+            self.proof.captured(), budget, &self.capture_group,
+            &self.capture_scratch, layout_index,
+        )?;
+        let mut candidate = ProtectedCapturedCandidate::open_partition(
+            &self.proof, &domain, context, &mut self.shadow, events,
+        )?;
+        match action(&domain, context, &mut self.shadow, &mut candidate, events) {
+            Ok(PartitionExecutionOutcome::Handoff(mut outcome)) => {
+                outcome.require_terminal(context, &mut self.shadow, &self.proof, events)?;
+                self._output_directory.revalidate(context, events)?;
+                Ok(outcome)
+            }
+            Ok(PartitionExecutionOutcome::Interrupted(failure)) => {
+                failure.require_owner_scope(context, &self.proof)?;
+                anyhow::bail!("Partition execution interrupted; preserve the private partition and recovery files: {:#}", failure.error())
+            }
+            Err(error) => {
+                // An error cannot restore or grant replay. In particular, do
+                // not assume OLD merely because the callback did not return.
+                Err(error.context("Partition execution stopped; private exclusion and recovery files are preserved"))
+            }
+        }
+    }
 }
 
 /// `pair.shadow` must be the fresh owned native provider enrolled by the SDK;

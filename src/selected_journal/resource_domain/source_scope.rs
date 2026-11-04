@@ -1,11 +1,11 @@
 //! Versioned routing only. No deserialized value is source/guard authority.
 use anyhow::{Result, ensure};
 use n2r_win32::{
+    NativeEvent, PartitionOwnerToken, PartitionScopedOwner,
     general_layout::GeneralDiskBinding,
     journal_file::GeneralJournalStorageBinding,
     partition_isolation::PartitionSourceBinding,
     partition_lifecycle::{PartitionNtfsAdmission, PartitionPreparationPin},
-    PartitionOwnerToken, PartitionScopedOwner, NativeEvent,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,8 +43,12 @@ pub(crate) struct PartitionPreparationGuardPin {
 }
 
 fn require_sha(s: &str) -> Result<()> {
-    ensure!(s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-        "noncanonical partition preparation SHA256");
+    ensure!(
+        s.len() == 64
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "noncanonical partition preparation SHA256"
+    );
     Ok(())
 }
 
@@ -56,37 +60,87 @@ impl PartitionPreparationGuardPin {
     }
     pub(crate) fn validate(&self) -> Result<()> {
         self.binding.validate()?;
-        for value in [&self.original_gpt_sha256, &self.original_mbr_sha256,
-            &self.ntfs_primary_sha256, &self.intent_prefix_sha256] { require_sha(value)?; }
-        ensure!(self.version == 1 && self.kind == "partition-target-only-preparation-v1"
-            && self.original_partition_info.len() == 144 && (1..=4).contains(&self.sequence)
-            && self.observed_stage == "PrivateLocked" && !self.serialized_pin_grants_authority
-            && self.intent_file.file_bytes > 0 && self.intent_file.file_bytes <= 16 * 1024 * 1024
-            && self.intent_file.file_id_128 != [0;16] && self.intent_file.volume_serial_number != 0
-            && self.intent_file.number_of_links == 1
-            && std::path::Path::new(&self.intent_file.final_path).is_absolute(),
-            "incomplete/foreign partition preparation routing contract");
+        for value in [
+            &self.original_gpt_sha256,
+            &self.original_mbr_sha256,
+            &self.ntfs_primary_sha256,
+            &self.intent_prefix_sha256,
+        ] {
+            require_sha(value)?;
+        }
+        ensure!(
+            self.version == 1
+                && self.kind == "partition-target-only-preparation-v1"
+                && self.original_partition_info.len() == 144
+                && (1..=4).contains(&self.sequence)
+                && self.observed_stage == "PrivateLocked"
+                && !self.serialized_pin_grants_authority
+                && self.intent_file.file_bytes > 0
+                && self.intent_file.file_bytes <= 16 * 1024 * 1024
+                && self.intent_file.file_id_128 != [0; 16]
+                && self.intent_file.volume_serial_number != 0
+                && self.intent_file.number_of_links == 1
+                && std::path::Path::new(&self.intent_file.final_path).is_absolute(),
+            "incomplete/foreign partition preparation routing contract"
+        );
         Ok(())
     }
     pub(crate) fn require_actual(
-        &self, admission: &mut PartitionNtfsAdmission, owner: &mut PartitionScopedOwner,
-        stable: &PartitionOwnerToken, events: &mut Vec<NativeEvent>,
+        &self,
+        admission: &mut PartitionNtfsAdmission,
+        owner: &mut PartitionScopedOwner,
+        stable: &PartitionOwnerToken,
+        events: &mut Vec<NativeEvent>,
     ) -> Result<PartitionPreparationPin> {
         self.validate()?;
-        ensure!(stable.same_owner(&owner.owner_token()) && owner.binding() == &self.binding,
-            "partition publication lost its actual stable owner");
+        ensure!(
+            stable.same_owner(&owner.owner_token()) && owner.binding() == &self.binding,
+            "partition publication lost its actual stable owner"
+        );
         let actual = admission.durable_preparation_pin()?;
-        ensure!(serde_json::to_value(self)? == serde_json::to_value(&actual)?,
-            "serialized partition pin differs from actual complete held guard");
+        ensure!(
+            serde_json::to_value(self)? == serde_json::to_value(&actual)?,
+            "serialized partition pin differs from actual complete held guard"
+        );
         admission.revalidate_publication_handoff(owner, &actual, events)?;
-        ensure!(stable.same_owner(&owner.owner_token()), "actual partition owner changed");
+        ensure!(
+            stable.same_owner(&owner.owner_token()),
+            "actual partition owner changed"
+        );
         Ok(actual)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct PartitionNativeMetadataPin {
+    pub path: String,
+    pub bytes: u64,
+    pub sha256: String,
+    pub budget: n2r_win32::observation_pages::NativeObservationBudget,
+}
+impl PartitionNativeMetadataPin {
+    fn validate(&self) -> Result<()> {
+        self.budget.validate()?;
+        require_sha(&self.sha256)?;
+        let path = std::path::Path::new(&self.path);
+        ensure!(
+            self.bytes > 0
+                && self.bytes <= self.budget.pages.max_file_bytes
+                && path.is_absolute()
+                && !path.components().any(|c| matches!(
+                    c,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )),
+            "partition native metadata route/budget differs"
+        );
+        Ok(())
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PartitionPublicationScope {
+    pub native_metadata: PartitionNativeMetadataPin,
     pub scope_version: u32,
     pub binding: PartitionSourceBinding,
     pub private_type_guid: String,
@@ -98,91 +152,158 @@ pub(crate) struct PartitionPublicationScope {
 }
 impl PartitionPublicationScope {
     pub(crate) fn from_actual(
-        owner: &mut PartitionScopedOwner, stable: &PartitionOwnerToken,
-        admission: &mut PartitionNtfsAdmission, events: &mut Vec<NativeEvent>,
+        owner: &mut PartitionScopedOwner,
+        stable: &PartitionOwnerToken,
+        admission: &mut PartitionNtfsAdmission,
+        events: &mut Vec<NativeEvent>,
     ) -> Result<Self> {
         owner.revalidate(events)?;
-        ensure!(stable.same_owner(&owner.owner_token()), "partition owner/token differs");
+        ensure!(
+            stable.same_owner(&owner.owner_token()),
+            "partition owner/token differs"
+        );
         let actual = admission.durable_preparation_pin()?;
         admission.revalidate_publication_handoff(owner, &actual, events)?;
         let info = admission.original_partition_info();
-        ensure!(info.len() == 144, "actual original partition information length differs");
+        ensure!(
+            info.len() == 144,
+            "actual original partition information length differs"
+        );
+        use n2r_win32::attestation::NativeObservationDomain;
+        let domain = admission.native().domain();
+        domain.revalidate()?;
+        let native_metadata = PartitionNativeMetadataPin {
+            path: domain.final_path(),
+            bytes: domain.byte_len(),
+            sha256: domain.sha256().into(),
+            budget: domain.budget(),
+        };
         let scope = Self {
-            scope_version: 2, binding: owner.binding().clone(), private_type_guid: PRIVATE_TYPE.into(),
+            native_metadata,
+            scope_version: 2,
+            binding: owner.binding().clone(),
+            private_type_guid: PRIVATE_TYPE.into(),
             original_basic_type_guid: BASIC_TYPE.into(),
             original_attributes: u64::from_le_bytes(info[64..72].try_into()?),
             original_name_utf16le: info[72..144].to_vec(),
             complete_preparation_guard: PartitionPreparationGuardPin::from_actual(&actual)?,
         };
         scope.validate()?;
-        scope.complete_preparation_guard.require_actual(admission, owner, stable, events)?;
+        scope
+            .complete_preparation_guard
+            .require_actual(admission, owner, stable, events)?;
         Ok(scope)
     }
     pub(crate) fn validate(&self) -> Result<()> {
         self.binding.validate()?;
         self.complete_preparation_guard.validate()?;
+        self.native_metadata.validate()?;
         let info = &self.complete_preparation_guard.original_partition_info;
-        ensure!(self.scope_version == 2 && self.private_type_guid == PRIVATE_TYPE
-            && self.original_basic_type_guid == BASIC_TYPE
-            && self.original_name_utf16le.len() == 72
-            && self.complete_preparation_guard.binding == self.binding
-            && u32::from_le_bytes(info[0..4].try_into()?) == 1
-            && info[32..48] == n2r_win32::layout::guid_bytes(BASIC_TYPE)?
-            && info[48..64] == n2r_win32::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?
-            && u64::from_le_bytes(info[8..16].try_into()?) == self.binding.storage.identity.partition_offset
-            && u64::from_le_bytes(info[16..24].try_into()?) == self.binding.storage.identity.partition_bytes
-            && u32::from_le_bytes(info[24..28].try_into()?) == self.binding.storage.identity.partition_number
-            && u64::from_le_bytes(info[64..72].try_into()?) == self.original_attributes
-            && info[72..144] == self.original_name_utf16le,
-            "partition publication original type/ID/extent/attrs/name contract differs");
+        ensure!(
+            self.scope_version == 2
+                && self.private_type_guid == PRIVATE_TYPE
+                && self.original_basic_type_guid == BASIC_TYPE
+                && self.original_name_utf16le.len() == 72
+                && self.complete_preparation_guard.binding == self.binding
+                && u32::from_le_bytes(info[0..4].try_into()?) == 1
+                && info[32..48] == n2r_win32::layout::guid_bytes(BASIC_TYPE)?
+                && info[48..64]
+                    == n2r_win32::layout::guid_bytes(
+                        &self.binding.storage.identity.partition_guid
+                    )?
+                && u64::from_le_bytes(info[8..16].try_into()?)
+                    == self.binding.storage.identity.partition_offset
+                && u64::from_le_bytes(info[16..24].try_into()?)
+                    == self.binding.storage.identity.partition_bytes
+                && u32::from_le_bytes(info[24..28].try_into()?)
+                    == self.binding.storage.identity.partition_number
+                && u64::from_le_bytes(info[64..72].try_into()?) == self.original_attributes
+                && info[72..144] == self.original_name_utf16le,
+            "partition publication original type/ID/extent/attrs/name contract differs"
+        );
         Ok(())
     }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag="kind", deny_unknown_fields)]
+#[serde(tag = "kind", deny_unknown_fields)]
 pub(crate) enum ResourceRecoverySourceScope {
     #[default]
-    #[serde(rename="dedicated-disk-v1")]
+    #[serde(rename = "dedicated-disk-v1")]
     Dedicated,
-    #[serde(rename="partition-v2")]
+    #[serde(rename = "partition-v2")]
     Partition(PartitionPublicationScope),
 }
 impl ResourceRecoverySourceScope {
-    pub(crate) fn is_dedicated(&self) -> bool { matches!(self, Self::Dedicated) }
-    pub(crate) fn require_envelope_version(&self, version:u32, kind:&str) -> Result<()> {
-        ensure!(match self {
-            Self::Dedicated => version==1 && kind=="resource-allocation-recovery-envelope-v1",
-            Self::Partition(p) => {p.validate()?; version==2 && kind=="resource-partition-recovery-envelope-v2"}
-        }, "missing/foreign/mixed publication source scope/version");
+    pub(crate) fn is_dedicated(&self) -> bool {
+        matches!(self, Self::Dedicated)
+    }
+    pub(crate) fn require_envelope_version(&self, version: u32, kind: &str) -> Result<()> {
+        ensure!(
+            match self {
+                Self::Dedicated =>
+                    version == 1 && kind == "resource-allocation-recovery-envelope-v1",
+                Self::Partition(p) => {
+                    p.validate()?;
+                    version == 2 && kind == "resource-partition-recovery-envelope-v2"
+                }
+            },
+            "missing/foreign/mixed publication source scope/version"
+        );
         Ok(())
     }
-    pub(crate) fn require_locator_version(&self, version:u32, kind:&str) -> Result<()> {
-        ensure!(match self {
-            Self::Dedicated => version==1 && kind=="resource-recovery-locator-v1",
-            Self::Partition(p) => {p.validate()?;version==2 && kind=="resource-partition-recovery-locator-v2"}
-        }, "missing/foreign/mixed locator source scope/version");
+    pub(crate) fn require_locator_version(&self, version: u32, kind: &str) -> Result<()> {
+        ensure!(
+            match self {
+                Self::Dedicated => version == 1 && kind == "resource-recovery-locator-v1",
+                Self::Partition(p) => {
+                    p.validate()?;
+                    version == 2 && kind == "resource-partition-recovery-locator-v2"
+                }
+            },
+            "missing/foreign/mixed locator source scope/version"
+        );
         Ok(())
     }
-    pub(crate) fn require_journal_route(&self, source:&GeneralDiskBinding, journal:&GeneralJournalStorageBinding) -> Result<()> {
-        source.validate()?; journal.validate()?;
-        let same_number=source.disk_number==journal.disk.disk_number;
-        let same_guid=n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?
-            ==n2r_win32::layout::guid_bytes(&journal.disk.identity.disk_guid)?;
+    pub(crate) fn require_journal_route(
+        &self,
+        source: &GeneralDiskBinding,
+        journal: &GeneralJournalStorageBinding,
+    ) -> Result<()> {
+        source.validate()?;
+        journal.validate()?;
+        let same_number = source.disk_number == journal.disk.disk_number;
+        let same_guid = n2r_win32::layout::guid_bytes(&source.identity.disk_guid)?
+            == n2r_win32::layout::guid_bytes(&journal.disk.identity.disk_guid)?;
         match self {
             // The legacy dedicated inequality is unchanged and cannot be
             // weakened by a missing partition tag or by different GUID syntax.
-            Self::Dedicated => ensure!(!same_number && !same_guid, "legacy journal must remain on a different disk"),
+            Self::Dedicated => ensure!(
+                !same_number && !same_guid,
+                "legacy journal must remain on a different disk"
+            ),
             Self::Partition(scope) => {
                 scope.validate()?;
-                ensure!(&scope.binding.storage==source && same_number==same_guid,
-                    "partition journal/source physical identity disagrees");
+                ensure!(
+                    &scope.binding.storage == source && same_number == same_guid,
+                    "partition journal/source physical identity disagrees"
+                );
                 if same_number {
-                    let s=&source.identity;let j=&journal.disk.identity;
-                    let se=s.partition_offset.checked_add(s.partition_bytes).ok_or_else(||anyhow::anyhow!("source extent overflow"))?;
-                    let je=j.partition_offset.checked_add(j.partition_bytes).ok_or_else(||anyhow::anyhow!("journal extent overflow"))?;
-                    ensure!(s.partition_guid!=j.partition_guid && (se<=j.partition_offset || je<=s.partition_offset),
-                        "same-disk partition journal extent overlaps selected source");
+                    let s = &source.identity;
+                    let j = &journal.disk.identity;
+                    let se = s
+                        .partition_offset
+                        .checked_add(s.partition_bytes)
+                        .ok_or_else(|| anyhow::anyhow!("source extent overflow"))?;
+                    let je = j
+                        .partition_offset
+                        .checked_add(j.partition_bytes)
+                        .ok_or_else(|| anyhow::anyhow!("journal extent overflow"))?;
+                    ensure!(
+                        s.partition_guid != j.partition_guid
+                            && (se <= j.partition_offset || je <= s.partition_offset),
+                        "same-disk partition journal extent overlaps selected source"
+                    );
                 }
             }
         }

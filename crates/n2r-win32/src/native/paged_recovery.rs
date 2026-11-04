@@ -11,6 +11,12 @@ use super::{
     ResourcePolicyAuthority, close_file, device_file, general_disk_state, set_attributes,
 };
 use crate::journal_file::{GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile};
+mod partition_scope;
+pub use partition_scope::{PartitionClosedJournalObservation, PartitionHandoffWitness,
+    PartitionTerminalKind, authenticate_partition_closed_journal};
+pub(super) use partition_scope::{OwnedPartitionJournalPins, PartitionJournalPhase,
+    authenticate_scoped_partition_paged_source, publish_partition_apply_marker,
+    authenticate_partition_mixed, publish_partition_rollback_marker};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},

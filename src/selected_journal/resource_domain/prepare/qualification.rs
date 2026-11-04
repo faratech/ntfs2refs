@@ -20,6 +20,7 @@ use std::{
 };
 
 mod apply;
+pub(crate) mod partition_apply;
 pub(crate) use apply::{FirstFlushedWrite, ResourceAppliedConversion, ResourceFreshApply};
 
 /// A complete fresh-source/target/preparation publication, still incapable of

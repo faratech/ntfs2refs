@@ -16,6 +16,7 @@ use crate::{
 
 mod qualification;
 pub(super) use qualification::FrozenPreparedWitness;
+pub(crate) use qualification::partition_apply::{PartitionResourcePreparedConversion,PartitionFreshApply,PartitionExecutionOutcome,PartitionApplyOutcome,PartitionApplyFailure,PartitionRetainedVerification};
 pub(crate) use qualification::{
     FirstFlushedWrite, ResourceAppliedConversion, ResourceFreshApply, ResourcePreparedConversion,
 };
@@ -853,7 +854,7 @@ fn read_stored<J: ReadSeek>(
 
 /// Resolve an OLD byte position only from the held planned rows; source-free
 /// rows have digest tables and cannot satisfy COPY references.
-fn read_prior_old<J: ReadSeek>(
+fn read_prior_old<J: Read+Seek>(
     domain: &ResourceJournalDomain<'_>,
     file: &mut J,
     mut source: u64,
@@ -1101,4 +1102,12 @@ fn validate_readback<J: ReadSeek>(
         "diagnostic I/O buffers differ"
     );
     Ok((finish(immutable)?, finish(whole)?))
+}
+
+impl PartitionProtectedPreparedJournal<'_,'_,'_,'_,'_> {
+    pub(crate) fn recovery_maps_required(&self,expected:&crate::shadow_tree::PagedExpectedTree)->Result<bool>{
+        expected.require_resource_owner(self.context.resource_admission())?;
+        expected.require_shared_memory(self.context.arena())?;
+        qualification::expected_requires_maps(expected,self.context.verification_policy())
+    }
 }

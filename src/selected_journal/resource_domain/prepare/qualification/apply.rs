@@ -22,13 +22,13 @@ pub(crate) struct ResourceAppliedConversion<'journal, 'domain, 'capture, 'proof,
     native_bytes_written: u64,
 }
 
-struct Buffers {
-    current: Vec<u8>,
-    old: Vec<u8>,
-    new: Vec<u8>,
+pub(super) struct Buffers {
+    pub(super) current: Vec<u8>,
+    pub(super) old: Vec<u8>,
+    pub(super) new: Vec<u8>,
 }
 impl Buffers {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             current: vec![0; BUFFER],
             old: vec![0; BUFFER],
@@ -37,10 +37,10 @@ impl Buffers {
     }
 }
 
-fn record(
+pub(super) fn record<J: Read+Seek>(
     row: JournalLayoutRow,
     domain: &ResourceJournalDomain<'_>,
-    journal: &mut NativeSelectedJournal,
+    journal: &mut J,
 ) -> Result<JournalRecord> {
     let f = domain.facts();
     let mut descriptor = [0; OLD_ZERO_RECORD];
@@ -79,9 +79,9 @@ fn record(
     })
 }
 
-fn read_new(
+pub(super) fn read_new<J:Read+Seek>(
     domain: &ResourceJournalDomain<'_>,
-    journal: &mut NativeSelectedJournal,
+    journal: &mut J,
     row: JournalLayoutRow,
     ordinal: u64,
     within: u64,
@@ -103,7 +103,7 @@ fn read_new(
     Ok(())
 }
 
-fn check_selected<T: Read + Seek>(
+pub(super) fn check_selected<T: Read + Seek>(
     target: &mut T,
     domain: &ResourceJournalDomain<'_>,
     buffer: &mut [u8],

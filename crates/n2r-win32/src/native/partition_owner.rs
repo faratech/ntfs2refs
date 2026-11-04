@@ -1,5 +1,5 @@
-//! UNAPPLIED foundation: an actual held private-partition owner, not a frozen
-//! NTFS admission certificate. No CLI selector, setter, repair or Drop teardown.
+//! Actual held private-partition owner with explicit same-guard fresh writer
+//! admission. No CLI selector, setter, repair or Drop teardown.
 use super::partition_dump_locations::{
     ConfiguredDumpObservation, observe_configured_dump_locations,
 };
@@ -57,11 +57,239 @@ impl PartitionOwnerToken {
     }
 }
 
-/// Intentionally UNISSUED. No constructor, Deserialize, saved flag or public
-/// observer can create this. Full live NTFS/target admission remains pending.
-pub(super) struct PartitionSourceAdmissionGate {
+/// Only actual fresh NTFS admission plus complete same-owner clear J/OLD
+/// authentication issue this gate. No Clone, Deserialize or path constructor.
+pub struct PartitionSourceAdmissionGate {
     owner_identity: Arc<PartitionOwnerIdentity>,
     binding: PartitionSourceBinding,
+    preparation: super::partition_lifecycle::PartitionPreparationToken,
+    preparation_pin: super::partition_lifecycle::PartitionPreparationPin,
+    journal: super::paged_recovery::OwnedPartitionJournalPins,
+    index_sha256: [u8; 32],
+    used: bool,
+}
+
+impl PartitionSourceAdmissionGate {
+    fn require_bound(&self, owner: &PartitionScopedOwner,
+        admission: &super::partition_lifecycle::PartitionNtfsAdmission,
+        policy: &HeldPagedWritePolicy, pins: &super::paged_recovery::PagedRecoveryPins<'_>) -> io::Result<()> {
+        super::partition_lifecycle::require_complete_fresh_ntfs_admission(owner, admission)?;
+        if !Arc::ptr_eq(&self.owner_identity, &owner.identity) || self.binding != owner.binding
+            || !self.preparation.same_owner(admission.preparation_token())
+            || self.preparation_pin != admission.durable_preparation_pin()?
+            || self.index_sha256 != policy.facts()?.index_sha256 {
+            return Err(io::Error::other("partition apply gate owner/preparation/index differs"));
+        }
+        self.journal.require(pins)
+    }
+}
+
+/// Single-use actual reopened MIXED observation. Serialized publication pins
+/// cannot construct it. ROOT must ALSO consume its independently authenticated
+/// publication/current-MIXED token before invoking this native issuer.
+pub struct PartitionMixedReplayGate {
+    owner: PartitionOwnerToken,
+    binding: PartitionSourceBinding,
+    journal: super::paged_recovery::OwnedPartitionJournalPins,
+    index_sha256: [u8; 32],
+    current_sha256: [u8; 32],
+    lifecycle_sha256: [u8; 32],
+    direction: super::paged_recovery::PagedRecoveryDirection,
+    used: bool,
+}
+impl PartitionMixedReplayGate {
+    fn require_bound(&self, owner: &PartitionScopedOwner, policy: &HeldPagedWritePolicy,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>) -> io::Result<()> {
+        if !self.owner.same_owner(&owner.owner_token()) || self.binding != *owner.binding()
+            || self.index_sha256 != policy.facts()?.index_sha256 {
+            return Err(io::Error::other("partition replay owner/index binding differs"));
+        }
+        self.journal.require(pins)
+    }
+}
+
+impl PartitionScopedOwner {
+    pub fn qualify_partition_paged_replay(&mut self, policy: &HeldPagedWritePolicy,
+        journal: &mut File, pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+        direction: super::paged_recovery::PagedRecoveryDirection, events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionMixedReplayGate> {
+        if self.enrolled.source_admission_issued {
+            return Err(io::Error::other("partition source gate already issued; reopen actual recovery owner"));
+        }
+        self.revalidate_current_critical_volume_policy(events)?;
+        let (current_sha256, lifecycle_sha256) = super::paged_recovery::authenticate_partition_mixed(
+            self, policy, journal, pins, direction)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        let gate = PartitionMixedReplayGate { owner: self.owner_token(), binding: self.binding.clone(),
+            journal: super::paged_recovery::OwnedPartitionJournalPins::capture(pins),
+            index_sha256: policy.facts()?.index_sha256, current_sha256, lifecycle_sha256, direction, used: false };
+        self.enrolled.source_admission_issued = true;
+        Ok(gate)
+    }
+
+    /// Recheck the ENTIRE same CURRENT mixed state. Retire the gate before any
+    /// RB attempt or writer issuance. Resume requires AP; rollback durably
+    /// writes/readbacks canonical RB before exposing the bounded writer.
+    pub fn begin_partition_paged_replay<'a, 'p>(&'a mut self,
+        gate: &'a mut PartitionMixedReplayGate, policy: HeldPagedWritePolicy,
+        journal: &'a mut File, pins: &'a super::paged_recovery::PagedRecoveryPins<'p>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionPagedWriter<'a, 'p>> {
+        if gate.used { return Err(io::Error::other("partition replay gate spent")); }
+        gate.require_bound(self, &policy, pins)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        let (current, lifecycle) = super::paged_recovery::authenticate_partition_mixed(
+            self, &policy, journal, pins, gate.direction)?;
+        if current != gate.current_sha256 || lifecycle != gate.lifecycle_sha256 {
+            return Err(io::Error::other("partition CURRENT mixed state/lifecycle changed since qualification"));
+        }
+        self.revalidate_current_critical_volume_policy(events)?;
+        gate.used = true;
+        let activation = (|| {
+            if gate.direction == super::paged_recovery::PagedRecoveryDirection::Rollback {
+                super::paged_recovery::publish_partition_rollback_marker(journal, pins, events)?;
+            }
+            super::paged_recovery::authenticate_scoped_partition_paged_source(self, &policy,
+                journal, pins, super::paged_recovery::PartitionJournalPhase::Replaying(gate.direction))?;
+            self.revalidate_current_critical_volume_policy(events)
+        })();
+        if let Err(error) = activation { self.poisoned = true; return Err(error); }
+        Ok(PartitionPagedWriter { owner: self, policy, journal, pins,
+            _admission: None, native_admission: None, replay_admission: Some(gate),
+            requested: 0, written: 0, pending: None, poisoned: false })
+    }
+
+    pub fn finish_partition_replay_handoff(&mut self, gate: PartitionMixedReplayGate,
+        policy: &HeldPagedWritePolicy, journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::paged_recovery::PartitionHandoffWitness> {
+        gate.require_bound(self, policy, pins)?;
+        if !gate.used || gate.direction != super::paged_recovery::PagedRecoveryDirection::Resume {
+            return Err(io::Error::other("partition HND requires consumed Resume writer gate"));
+        }
+        self.revalidate_current_critical_volume_policy(events)?;
+        super::paged_recovery::PartitionHandoffWitness::from_spent_gate(self, policy, journal, pins, events)
+    }
+
+    pub fn finish_partition_replay_abort(&mut self, gate: PartitionMixedReplayGate,
+        policy: &HeldPagedWritePolicy, journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::paged_recovery::PartitionClosedJournalObservation> {
+        gate.require_bound(self, policy, pins)?;
+        if !gate.used || gate.direction != super::paged_recovery::PagedRecoveryDirection::Rollback {
+            return Err(io::Error::other("partition ABT requires consumed Rollback writer gate"));
+        }
+        super::paged_recovery::authenticate_partition_closed_journal(self, policy, journal, pins,
+            super::paged_recovery::PartitionTerminalKind::Aborted, events)
+    }
+}
+
+impl PartitionScopedOwner {
+    /// Only the terminal restoration module receives these original retained
+    /// objects. It must validate its BasicRO state independently after the
+    /// target type transition; no path reopen or copied admission is involved.
+    pub(super) fn into_terminal_restoration_parts(mut self,
+        closed: &super::paged_recovery::PartitionClosedJournalObservation,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::partition_restoration::PartitionTerminalTargetParts> {
+        let token = self.owner_token();
+        closed.require_owner(&token)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        Ok(super::partition_restoration::PartitionTerminalTargetParts {
+            file: self.file, physical_readonly: self.physical_readonly,
+            binding: self.binding, budget: self.budget, state: self.enrolled, token,
+        })
+    }
+    /// Named current-critical-volume policy, not hidden loaded-driver proof.
+    /// revalidate reobserves actual complete VDS roles/native critical extents,
+    /// Windows/pagefiles, resolved configured dumps and private target baseline.
+    /// The raw runtime_loaded_dump_locations_verified diagnostic stays false;
+    /// existing unknown/custom-filter refusals remain in the collector.
+    pub(super) fn revalidate_current_critical_volume_policy(&mut self,
+        events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        self.revalidate(events)?;
+        let paging = &self.enrolled.partition.paging;
+        let roles = &self.enrolled.vds_current_volume_roles;
+        if !paging.enumeration_succeeded || !paging.all_locations_resolved
+            || paging.source_hosts_active_pagefile
+            || !roles.vds_enumeration_completed || !roles.vds_critical_role_extents_outside_target
+            || !self.enrolled.configured_dump_locations.configured_locations_outside_target {
+            return Err(io::Error::other("current-critical-volume partition policy unresolved"));
+        }
+        Ok(())
+    }
+
+    pub fn qualify_fresh_paged_apply(&mut self,
+        admission: &mut super::partition_lifecycle::PartitionNtfsAdmission,
+        policy: &HeldPagedWritePolicy, journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionSourceAdmissionGate> {
+        if self.enrolled.source_admission_issued {
+            return Err(io::Error::other("partition fresh source admission already issued"));
+        }
+        self.revalidate_current_critical_volume_policy(events)?;
+        super::partition_lifecycle::require_complete_fresh_ntfs_admission(self, admission)?;
+        let preparation_pin = admission.durable_preparation_pin()?;
+        admission.revalidate_publication_handoff(self, &preparation_pin, events)?;
+        super::paged_recovery::authenticate_scoped_partition_paged_source(self, policy, journal,
+            pins, super::paged_recovery::PartitionJournalPhase::FreshOld)?;
+        admission.revalidate_publication_handoff(self, &preparation_pin, events)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        let gate = PartitionSourceAdmissionGate { owner_identity: self.identity.clone(),
+            binding: self.binding.clone(), preparation: admission.preparation_token().clone(),
+            preparation_pin, journal: super::paged_recovery::OwnedPartitionJournalPins::capture(pins),
+            index_sha256: policy.facts()?.index_sha256, used: false };
+        self.enrolled.source_admission_issued = true;
+        Ok(gate)
+    }
+
+    /// Spend this actual gate BEFORE any AP write attempt. Flush/read back AP
+    /// before returning the only bounded writer. No device setter is needed.
+    pub fn begin_fresh_partition_paged_apply<'a, 'p>(&'a mut self,
+        gate: &'a mut PartitionSourceAdmissionGate,
+        admission: &'a mut super::partition_lifecycle::PartitionNtfsAdmission,
+        policy: HeldPagedWritePolicy, journal: &'a mut File,
+        pins: &'a super::paged_recovery::PagedRecoveryPins<'p>, events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionPagedWriter<'a, 'p>> {
+        if gate.used { return Err(io::Error::other("partition AP gate is spent")); }
+        gate.require_bound(self, admission, &policy, pins)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
+        super::paged_recovery::authenticate_scoped_partition_paged_source(self, &policy, journal,
+            pins, super::paged_recovery::PartitionJournalPhase::FreshOld)?;
+        admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        gate.used = true;
+        let activation = (|| {
+            super::paged_recovery::publish_partition_apply_marker(journal, pins, events)?;
+            admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
+            self.revalidate_current_critical_volume_policy(events)?;
+            super::paged_recovery::authenticate_scoped_partition_paged_source(self, &policy,
+                journal, pins, super::paged_recovery::PartitionJournalPhase::Applying)
+        })();
+        if let Err(error) = activation { self.poisoned = true; return Err(error); }
+        Ok(PartitionPagedWriter { owner: self, policy, journal, pins, _admission: Some(gate),
+            native_admission: Some(admission), replay_admission: None,
+            requested: 0, written: 0, pending: None, poisoned: false })
+    }
+
+    /// Consume only the actual AP-spent gate. A readonly SAME-FileObject J
+    /// duplicate is retained after canonical HND and complete NEW verification.
+    pub fn finish_fresh_partition_handoff(&mut self, gate: PartitionSourceAdmissionGate,
+        admission: &mut super::partition_lifecycle::PartitionNtfsAdmission,
+        policy: &HeldPagedWritePolicy, journal: &mut File,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>, events: &mut Vec<NativeEvent>,
+    ) -> io::Result<super::paged_recovery::PartitionHandoffWitness> {
+        if !gate.used { return Err(io::Error::other("partition HND requires spent actual AP gate")); }
+        gate.require_bound(self, admission, policy, pins)?;
+        admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        let witness = super::paged_recovery::PartitionHandoffWitness::from_spent_gate(
+            self, policy, journal, pins, events)?;
+        admission.revalidate_publication_handoff(self, &gate.preparation_pin, events)?;
+        self.revalidate_current_critical_volume_policy(events)?;
+        Ok(witness)
+    }
 }
 
 impl PartitionScopedOwner {
@@ -330,7 +558,9 @@ impl PartitionScopedOwner {
             policy,
             journal,
             pins,
-            _admission: admission,
+            _admission: Some(admission),
+            native_admission: None,
+            replay_admission: None,
             requested: 0,
             written: 0,
             pending: None,
@@ -404,7 +634,9 @@ pub struct PartitionPagedWriter<'a, 'p> {
     policy: HeldPagedWritePolicy,
     journal: &'a mut File,
     pins: &'a super::paged_recovery::PagedRecoveryPins<'p>,
-    _admission: &'a PartitionSourceAdmissionGate,
+    _admission: Option<&'a PartitionSourceAdmissionGate>,
+    native_admission: Option<&'a mut super::partition_lifecycle::PartitionNtfsAdmission>,
+    replay_admission: Option<&'a PartitionMixedReplayGate>,
     requested: u64,
     written: u64,
     pending: Option<(u64, usize, [u8; 32])>,
@@ -449,9 +681,49 @@ impl PartitionPagedWriter<'_, '_> {
         })();
         result.map_err(|error| self.poison(error))
     }
+    /// Read+Seek only, borrowing this SAME J. Drop before the next source write.
+    pub fn journal_read_view(&mut self) -> io::Result<PartitionJournalReadView<'_>> {
+        self.sync_all()?;
+        let length = self.policy.facts()?.journal_length;
+        let position = self.journal.stream_position()?;
+        if position > length { return Err(self.poison(io::Error::other("partition J view position outside actual length"))); }
+        Ok(PartitionJournalReadView { journal: self.journal, length, position })
+    }
+    pub fn revalidate(&mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        let result = (|| {
+            self.sync_all()?;
+            self.owner.revalidate_current_critical_volume_policy(events)?;
+            if let Some(admission) = self.native_admission.as_deref_mut() {
+                let gate = self._admission.ok_or_else(|| io::Error::other("fresh partition writer gate missing"))?;
+                gate.require_bound(self.owner, admission, &self.policy, self.pins)?;
+                admission.revalidate_publication_handoff(self.owner, &gate.preparation_pin, events)?;
+                super::paged_recovery::authenticate_scoped_partition_paged_source(self.owner,
+                    &self.policy, self.journal, self.pins, super::paged_recovery::PartitionJournalPhase::Applying)?;
+            } else if let Some(gate) = self.replay_admission {
+                gate.require_bound(self.owner, &self.policy, self.pins)?;
+                if !gate.used { return Err(io::Error::other("partition replay writer gate not spent")); }
+                super::paged_recovery::authenticate_scoped_partition_paged_source(self.owner,
+                    &self.policy, self.journal, self.pins,
+                    super::paged_recovery::PartitionJournalPhase::Replaying(gate.direction))?;
+            } else { return Err(io::Error::other("legacy partition lease lacks current-policy admission")); }
+            self.owner.revalidate_current_critical_volume_policy(events)
+        })();
+        result.map_err(|error| self.poison(error))
+    }
     pub fn finish_new(mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
         let result = (|| {
             self.sync_all()?;
+            if let Some(gate) = self.replay_admission {
+                if gate.direction != super::paged_recovery::PagedRecoveryDirection::Resume {
+                    return Err(io::Error::other("Rollback writer cannot finish NEW"));
+                }
+            }
+            if self.native_admission.is_some() || self.replay_admission.is_some() {
+                self.revalidate(events)?;
+                super::paged_recovery::authenticate_scoped_partition_paged_source(self.owner,
+                    &self.policy, self.journal, self.pins, super::paged_recovery::PartitionJournalPhase::New)?;
+                return self.revalidate(events);
+            }
             self.owner.revalidate(events)?;
             super::paged_recovery::authenticate_partition_paged_source(
                 self.owner,
@@ -463,6 +735,51 @@ impl PartitionPagedWriter<'_, '_> {
             self.owner.revalidate(events)
         })();
         result.map_err(|error| self.poison(error))
+    }
+    /// Complete restore-required OLD digest plus source-free OLD/NEW granules,
+    /// while exact RB is still active. ROOT then flushes canonical ABT and uses
+    /// finish_partition_replay_abort to consume the spent direction-bound gate.
+    pub fn finish_old(mut self, events: &mut Vec<NativeEvent>) -> io::Result<()> {
+        let result = (|| {
+            let gate = self.replay_admission.ok_or_else(|| io::Error::other("finish OLD requires reopened Rollback gate"))?;
+            if gate.direction != super::paged_recovery::PagedRecoveryDirection::Rollback {
+                return Err(io::Error::other("Resume writer cannot finish OLD"));
+            }
+            self.revalidate(events)?;
+            super::paged_recovery::authenticate_scoped_partition_paged_source(self.owner,
+                &self.policy, self.journal, self.pins, super::paged_recovery::PartitionJournalPhase::Restored)?;
+            self.revalidate(events)
+        })();
+        result.map_err(|error| self.poison(error))
+    }
+}
+
+/// Bounded readonly borrow; no Write/File/raw-handle/clone interface exists.
+pub struct PartitionJournalReadView<'a> {
+    journal: &'a mut File,
+    length: u64,
+    position: u64,
+}
+impl Read for PartitionJournalReadView<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let count = (out.len().min(MAX_IO) as u64).min(self.length - self.position) as usize;
+        if count == 0 { return Ok(0); }
+        if self.journal.seek(SeekFrom::Start(self.position))? != self.position {
+            return Err(io::Error::other("partition J view seek differs"));
+        }
+        let n = self.journal.read(&mut out[..count])?;
+        self.position += n as u64;
+        Ok(n)
+    }
+}
+impl Seek for PartitionJournalReadView<'_> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let at = match from { SeekFrom::Start(n) => i128::from(n),
+            SeekFrom::Current(n) => i128::from(self.position) + i128::from(n),
+            SeekFrom::End(n) => i128::from(self.length) + i128::from(n) };
+        if at < 0 || at > i128::from(self.length) { return Err(io::Error::other("partition J view outside bounds")); }
+        self.position = at as u64;
+        Ok(self.position)
     }
 }
 impl Read for PartitionPagedWriter<'_, '_> {

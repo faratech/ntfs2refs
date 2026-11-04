@@ -68,14 +68,27 @@ fn key(object: usize, stream: usize) -> Result<[u8; 16]> {
     Ok(key)
 }
 
+enum MapSourceContext<'a>{Dedicated(&'a ResourceSourceContext),Partition(&'a crate::general_source_admission::resource::partition::PartitionResourceSourceContext)}
+struct MapSourceReport<'a>{binding:&'a n2r_win32::general_layout::GeneralDiskBinding,source_sha256:&'a str,source_inspection_sha256:&'a str,source_views_sha256:&'a str}
+impl MapSourceContext<'_>{
+ fn require_source_evidence(&self)->Result<()>{match self{Self::Dedicated(c)=>c.require_source_evidence(),Self::Partition(c)=>c.require_source_evidence()}}
+ fn report(&self)->MapSourceReport<'_>{match self{Self::Dedicated(c)=>{let r=c.report();MapSourceReport{binding:r.binding,source_sha256:r.source_sha256,source_inspection_sha256:r.source_inspection_sha256,source_views_sha256:r.source_views_sha256}},Self::Partition(c)=>MapSourceReport{binding:&c.binding().storage,source_sha256:c.source_sha256(),source_inspection_sha256:c.inspection_sha256(),source_views_sha256:c.source_views_sha256()}}}
+ fn resource_admission(&self)->n2r_win32::tree_resources::SourceResourceAdmission{match self{Self::Dedicated(c)=>c.resource_admission(),Self::Partition(c)=>c.resource_admission()}}
+ fn arena(&self)->Option<&crate::artifact_arena::ArtifactArena>{match self{Self::Dedicated(c)=>c.arena(),Self::Partition(c)=>Some(c.arena())}}
+ fn source_group_seal(&self)->Option<&ArtifactGroupSeal>{match self{Self::Dedicated(c)=>c.source_group_seal(),Self::Partition(c)=>Some(c.source_group_seal())}}
+ fn source_owner_identity(&self)->usize{match self{Self::Dedicated(c)=>c.source_owner_identity(),Self::Partition(c)=>c.source_owner_identity()}}
+ fn require_native_source(&self,proof:&ProtectedPagedTargetSelection)->Result<()>{if let Self::Partition(c)=self{proof.native().require_partition_source_owner(&c.owner_token())?;}Ok(())}
+}
+
 fn check_binding(
     proof: &ProtectedPagedTargetSelection,
     expected: &PagedExpectedTree,
-    context: &ResourceSourceContext,
+    context: &MapSourceContext<'_>,
     domain: &ResourceJournalDomain<'_>,
     ticket: &SelectedTicket,
 ) -> Result<()> {
     context.require_source_evidence()?;
+    context.require_native_source(proof)?;
     let report = context.report();
     let facts = domain.facts();
     let admission = context.resource_admission();
@@ -249,6 +262,30 @@ impl V4RecoveryMaps {
         proof: &ProtectedPagedTargetSelection,
         expected: &PagedExpectedTree,
         context: &ResourceSourceContext,
+        domain: &ResourceJournalDomain<'_>,
+        ticket: &SelectedTicket,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        path: &Path,
+    ) -> Result<Self> {
+        Self::create_scoped(proof,expected,&MapSourceContext::Dedicated(context),domain,ticket,group,scratch,path)
+    }
+    pub(crate) fn create_partition(
+        proof: &ProtectedPagedTargetSelection,
+        expected: &PagedExpectedTree,
+        context: &crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        domain: &ResourceJournalDomain<'_>,
+        ticket: &SelectedTicket,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        path: &Path,
+    ) -> Result<Self> {
+        Self::create_scoped(proof,expected,&MapSourceContext::Partition(context),domain,ticket,group,scratch,path)
+    }
+    fn create_scoped(
+        proof: &ProtectedPagedTargetSelection,
+        expected: &PagedExpectedTree,
+        context: &MapSourceContext<'_>,
         domain: &ResourceJournalDomain<'_>,
         ticket: &SelectedTicket,
         group: &ArtifactGroupPermit,
@@ -458,6 +495,26 @@ impl V4RecoveryMaps {
         domain: &ResourceJournalDomain<'_>,
         ticket: &SelectedTicket,
     ) -> Result<()> {
+        self.require_binding_scoped(proof,expected,&MapSourceContext::Dedicated(context),domain,ticket)
+    }
+    pub(crate) fn require_binding_partition(
+        &self,
+        proof: &ProtectedPagedTargetSelection,
+        expected: &PagedExpectedTree,
+        context: &crate::general_source_admission::resource::partition::PartitionResourceSourceContext,
+        domain: &ResourceJournalDomain<'_>,
+        ticket: &SelectedTicket,
+    ) -> Result<()> {
+        self.require_binding_scoped(proof,expected,&MapSourceContext::Partition(context),domain,ticket)
+    }
+    fn require_binding_scoped(
+        &self,
+        proof: &ProtectedPagedTargetSelection,
+        expected: &PagedExpectedTree,
+        context: &MapSourceContext<'_>,
+        domain: &ResourceJournalDomain<'_>,
+        ticket: &SelectedTicket,
+    ) -> Result<()> {
         check_binding(proof, expected, context, domain, ticket)?;
         let report = context.report();
         ensure!(
@@ -493,5 +550,90 @@ impl V4RecoveryMaps {
     }
     pub(crate) fn records(&self) -> u64 {
         self.records
+    }
+}
+
+impl V4RecoveryMaps {
+    pub(crate) fn compare_terminal_report(
+        &self,
+        expected: &PagedExpectedTree,
+        ticket: &SelectedTicket,
+        converted: &shadow_native::GeneralConvertedReport,
+    ) -> Result<u64> {
+        ensure!(
+            expected
+                .artifact_lease()
+                .is_some_and(|owner| self.expected_owner.same_owner(owner))
+                && expected.semantic_sha256() == self.expected_sha256
+                && canonical_json_sha256(ticket)? == self.ticket_sha256,
+            "V4 diagnostic expected owner or ticket differs"
+        );
+        expected.require_resource_owner(self.admission)?;
+        let arena = self.source_owner.permit().arena();
+        expected.require_shared_memory(arena)?;
+        // Reader retains its own page lease. Pay independently for decoded
+        // chunk copies, their base64 form and one bounded serialized native row.
+        let budget = self.admission.map_page_budget()?;
+        let bytes = u64::from(budget.max_page_bytes)
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(self.admission.budget.max_row_bytes))
+            .and_then(|n| n.checked_add(1024 * 1024))
+            .context("V4 comparator RAM overflow")?;
+        let _ram = arena.reserve_ram(bytes)?;
+        self.revalidate()?;
+        let mut reader = self.reader.borrow_mut();
+        let first = reader.get(0)?;
+        ensure!(first.key.is_empty(), "V4 map header key differs");
+        let header: comparator::Header = serde_json::from_slice(&first.payload)?;
+        let report = &converted.native;
+        let observation = converted
+            .content_observation
+            .as_ref()
+            .context("converted metadata observation absent")?;
+        ensure!(
+            header.schema_version == 4
+                && header.kind == "protected-v4-ordinal-stream-maps"
+                && !header.grants_write_authority
+                && header.admission == self.admission
+                && header.source_sha256 == self.source_sha256
+                && header.source_inspection_sha256 == self.source_inspection_sha256
+                && header.source_views_sha256 == self.source_views_sha256
+                && header.expected_tree_sha256 == self.expected_sha256
+                && header.ticket_sha256 == self.ticket_sha256
+                && header.native_bindings == self.records
+                && header.selected_bytes == ticket.selected_bytes
+                && header.journal_length == ticket.journal_length
+                && header.range_count == ticket.range_count
+                && converted.pair.source.identity == header.source.identity
+                && converted.pair.shadow.identity == header.shadow.identity
+                && report.binding.identity == converted.pair.source.identity
+                && report.resource_profile
+                    == Some(n2r_win32::attestation::ResourceProfile::ResourceBoundedV4(
+                        Some(self.admission)
+                    ))
+                && !converted.conversion_qualified
+                && !observation.full_file_hashes
+                && observation.metadata_and_namespace_verified
+                && observation.complete_stream_mappings_observed
+                && observation.data_storage_validity_checked,
+            "V4 diagnostic header/source/metadata observation differs"
+        );
+        // The current native observer initializes base_sectors to zero and
+        // does not actually query a nonzero retrieval base. Compare LCNs in
+        // volume-relative coordinates only under the diagnostic zero-base assumption.
+        // In particular, never add either disk's different GPT start offset.
+        ensure!(
+            header.native_base_sectors == 0 && report.base_sectors == 0,
+            "nonzero or unobserved retrieval base requires native normalization evidence"
+        );
+        ensure!(
+            report.objects.len() == expected.len(),
+            "V4 converted object coverage differs"
+        );
+        let bindings =
+            comparator::compare_records(&mut reader, expected, report, self.admission, self.records)?;
+        drop(reader);
+        self.revalidate()?;
+        Ok(bindings)
     }
 }

@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "kind": "one-readonly-normal-boot-of-same-private-type-branch",
+  "status": "observed-pass-narrow-boot-observation",
+  "date": "2026-11-04",
+  "original_attempt": "9f0f38dffbbc4f0a942b01cade0f4cb4",
+  "observer_sha256": "0e5ea60f041fa98f76212fd3553eb3b74d6550128ed11684d73a878ea5f65c09",
+  "binding": {
+    "original_native_intent_sha256": "a65b10e10e8362bde31a2b662c2b89317737762d9521b2b1634a4741427de89d",
+    "before_receipt_sha256": "439811a9e47ba33e5e2e611191c44f4a582adb45976b4f29af7785cac89a9b1b",
+    "original_native_birth_ms": 1793819318534,
+    "private_type_module_sha256": "7a12b133697ffa91dc1d9c90a4003b926a6d9876da756bd49c043b33cd9c99a8",
+    "original_boot_ms": 1793819256485,
+    "private_probe_source_sha256": "ce6cfd39eb703ddde3123d12b6f6e511a71a3737eb43e916bf1d7340b27a8419",
+    "private_probe_binary_sha256": "01fdbc2da5616adf4280b9c9d63cfacb6f7677dc44b2a7e445fee5edec4d4533",
+    "original_native_pid": 5736
+  },
+  "runtime": {
+    "normal_start_calls": 1,
+    "fresh_process_local_ExecutionPolicy_Bypass": true,
+    "actual_observer_birth_ms": 1793819724611,
+    "actual_observer_exit": 0,
+    "setter_calls": 0,
+    "new_checkpoint_calls": 0,
+    "restore_calls": 0,
+    "VM": "2401593c-4b30-472e-9b6d-c9534cbaa599",
+    "powercut_calls": 0,
+    "current_parent": "766c9abc-8582-4de6-b497-8acbc81274da",
+    "new_native_probe_calls": 0,
+    "source_write_calls": 0,
+    "actual_new_boot_ms": 1793819671617,
+    "same_current_private_image_without_restore": true,
+    "actual_observer_pid": 904
+  },
+  "observed": {
+    "raw_GPT_private_type_and_required_CRC_only": true,
+    "actual_partition": 4,
+    "raw_GPT_slot": 4,
+    "raw_original8192B_marker_matches": true,
+    "C_identity_bounds_health_control_paging_unchanged": true,
+    "marker_sha256": "153758bfed87777818c67e021f91ee89f8d96c365177d08f51f7e6371b7bf5aa",
+    "private_type_guid": "b627aadb-a893-48b6-aa0b-71e5f30ee370",
+    "all_read_handles_closed": true,
+    "original_MBR_and_siblings_unused_bytes_ID_attributes_name_preserved": true,
+    "ordinary_GUID_and_T_open_read_observations": [
+      {
+        "Path": "\\\\?\\Volume{20e3748f-b912-47c3-86aa-2285ab2b5583}\\n2r-new-partition-marker.bin",
+        "Sha256": null,
+        "MetadataError": null,
+        "OpenSucceeded": false,
+        "ReadAttempted": false,
+        "ReadApiSucceeded": false,
+        "ExactOriginalMarkerRead": false,
+        "OpenError": 3,
+        "ReadError": 0,
+        "ReadReturnedBytes": 0,
+        "Metadata": null
+      },
+      {
+        "Path": "T:\\n2r-new-partition-marker.bin",
+        "Sha256": null,
+        "MetadataError": null,
+        "OpenSucceeded": false,
+        "ReadAttempted": false,
+        "ReadApiSucceeded": false,
+        "ExactOriginalMarkerRead": false,
+        "OpenError": 3,
+        "ReadError": 0,
+        "ReadReturnedBytes": 0,
+        "Metadata": null
+      }
+    ],
+    "target_partition_guid": "20e3748f-b912-47c3-86aa-2285ab2b5583"
+  },
+  "receipt": {
+    "source_host_copy_verified": true,
+    "path": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\private-type-observe-9f0f38dffbbc4f0a942b01cade0f4cb4\\coldboot-observation.json",
+    "archive_manifest_sha256": "37d31fcc6e8e6214b633f5998bec0cec7081f7da57b31c3e48f36782ffd04ef3",
+    "source_and_host_sha256": "4055e6bdea0c424de26588c6435d274d31999b5e815a85a341cc17aea8767ef6",
+    "archive_manifest": "D:\\code\\ntfs2refs\\.lab\\hyperv\\streaming-v2-20261027\\private-type-observe-9f0f38dffbbc4f0a942b01cade0f4cb4\\coldboot-archive-manifest.json"
+  },
+  "qualification": {
+    "physical_power_loss_qualified": false,
+    "partition_conversion_or_changed_data_writer_qualified": false,
+    "public_alpha_unchanged": true,
+    "process_death_or_crash_recovery_qualified": false,
+    "persistent_exclusion_qualified": false,
+    "normal_reboot_observed": true,
+    "private_type_observed_after_this_normal_boot": true,
+    "ordinary_path_absence_alone_proves_exclusion": false
+  },
+  "final_state": {
+    "type_last_observed_private": true,
+    "all16_preserved": true,
+    "state": "Off",
+    "RAM": 0,
+    "capacity": {
+      "actual_bytes": 317196549746,
+      "free_bytes": 89352134656,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 0,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "automatic_restoration_attempted": false,
+    "fresh_separate_process_verified": true
+  },
+  "capacity": {
+    "combined_VM_and_build_forecast_bytes": 8589934592,
+    "VM_forecast_bytes": 6442450944,
+    "sample_not_peak_or_hard_quota": true,
+    "epoch_reset": false,
+    "host_build_share_bytes": 2147483648,
+    "minimum_host_free_bytes": 17179869184,
+    "initial_epoch_actual_bytes": 279374052988,
+    "maximum_actual_bytes": 329374052988
+  },
+  "limits": [
+    "One readonly normal boot, not process death, crash, power-loss or conversion proof.",
+    "GUID/T failures are observations; missing namespace alone does not establish exclusion.",
+    "The actual private type remains; restoration requires separate reviewed authorization."
+  ],
+  "stable_release": false
+}

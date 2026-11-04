@@ -84,21 +84,42 @@ Final census317085822793/free89454919680; original cap/epoch and all16 keepers u
 This proves only that bounded same-held-volume interface; not changed-data conversion, durable exclusion or reboot recovery.
 Do not repeat this completed native primitive. Saved observer/plan/build inputs remain in .lab; actual target is Partition4/RawGPTSlot4.
 
-Next critical-path code is a separate Rust private-type lifecycle prototype under `.lab/development/partition-private-type-probe`.
-The reviewed prototype BUILTexit0/2.5977706s with shared cache; native execution is NOT authorized yet. It copies original single-partition GPT info and alters only target type through
-IOCTL_DISK_SET_PARTITION_INFO_EX, verifies all other GPT bytes/siblings, and tests held-handle survival and ordinary route exclusion.
-Retained private EXE `.lab/development/partition-private-type-probe/bin/partition-private-type-probe.exe`,571392B,
-SHA01fdbc2da5616adf4280b9c9d63cfacb6f7677dc44b2a7e445fee5edec4d4533. Sourcece6cfd39eb703ddde3123d12b6f6e511a71a3737eb43e916bf1d7340b27a8419,
-module7a12b133697ffa91dc1d9c90a4003b926a6d9876da756bd49c043b33cd9c99a8, inputpins4377cfdd59437acabd2a81ac8b93f05b96095c1d69253f453fbe5f3a4bd8c997,
-lockc087c995e4151799da43147856569d149974bb52b22484d70ff92dfc43ea31ff, buildreceipt56d74cf4f998b8d7d77117eff605f663ec6a74ff7d8c3d49008d0f8b297c09b6.
-All118 source inputs revalidated afterbuild;25registry versions/checksums matchroot;2GiB build forecast;no unit tests, source/VM execution or product changes.
-See `evidence/partition-private-type-probe-build-20261104.json`. Fixed project typeb627aadb-a893-48b6-aa0b-71e5f30ee370.
-Independent AFTER observer `.lab/development/observe-private-type-766-after.ps1`,SHAc1ec694356faa65652aad4a0b2d0f4fccaa3c3951b6afbd4b3bda33b49b14555,
-was reviewed (correct GETlayout0x70050/GETpartinfo0x70048); requires pinned Before+native pre-setter intent and exactly private-type/CRC delta.
-Operator prepares minimal single-shot worker/runner; Root has not issued next native GO. Do not use old7afed observer with incorrect GET codes.
-No direct GPT writes, whole-layout setter, volume-OFFLINE I/O dead path, physical-RW payload fallback, auto restoration or public certificate.
-Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volume I/O, so it cannot simply be combined with the proved live volume writer.
-Keep the alpha immutable; existing whole-disk guards and certificates stay unchanged. Root must review/authorize each next build/native case.
+## Current development after the frozen alpha
+
+Public alpha ZIP/sourceaef1ab3 is immutable. Development commitd2f880b adds measured pre-AP resource reporting ONLY:
+opaque meter duplicates original FILE_READ_ATTRIBUTES outerbacking handle, thin carrier counted once, existing capture/J/arena facts;
+no payload scan or writer/admission/recovery/default-policy changes. Focused public Cargo check passed0/38.7226731s using shared cache,
+no unit tests or alpha rebuild. `evidence/pre-ap-resource-accounting-build-20261104.json` binds all9 changedsourcefiles.
+Index physical allocation and all-stage payload I/O totals stay unknown; allocation samples are not peaks/physical usage.
+This new development code is NOT natively qualified or included in the frozen alpha. src/main.rs remains protected/unchanged.
+
+Private-type lifecycle **9f0f38dffbbc4f0a942b01cade0f4cb4 passed**: native5736/birth1793819318534/exit0/0.9410439s,
+one target-only IOCTL_DISK_SET_PARTITION_INFO_EX thenone SAME8192B write/flush/readback through the SAMElockingvolumeowner.
+Only target type became b627aadb-a893-48b6-aa0b-71e5f30ee370 plus required GPT CRC changes; ID/attrs/name/extent/siblings/MBR remained.
+Independent AFTER3932 matched C/control/paging/GPT/rawmarker; ordinaryGUID/T opens both error3. No automatic restoration/fallback/retry.
+Evidence `evidence/private-type-lifecycle-20261104.json`, SHA22b80ce064593826f79dcd59257f5cd55bd15129a22a2118d7ecad88d08ed2fa;
+69-file356723B archive manifest2146723334f97cd9323c80c398ab1bc09c39fb53e2cc5499db14a10b361bb49b.
+
+**LATEST VM Off/RAM0/current766/all16, T LEFT PRIVATE, NO RESTORE.** Same-image normalStart withoutrestore passedreadonlyobserver904/exit0,
+actualnewboot1793819671617 > original1793819256485. Both GPT copies/nativeinfo/type,Ccontrols and8192B rawmarker matched expected;
+GUID/T ordinaryopens againerror3. No sourcewrite/setter/newprobe. `evidence/private-type-normal-boot-20261104.json`,
+SHA846412cd48978753b759cbe6d7968f82d1d705c2c4142db8383cdc8f831e3fa6; rawreceipt4055e6bdea0c424de26588c6435d274d31999b5e815a85a341cc17aea8767ef6;
+archive37d31fcc6e8e6214b633f5998bec0cec7081f7da57b31c3e48f36782ffd04ef3. Finalcensus317196549746/free89352134656.
+These are normal-reboot observations, NOT complete exclusion/writer/recovery/conversion authority. Do not repeat completed primitives.
+
+Original intent remains at `C:\ntfs2refs\partition-isolation-probe-803bb22b85044f74916d9cc6fda878c8\proposed-private-type-9f0f38dffbbc4f0a942b01cade0f4cb4\26-durable-intent-BEFORE-private-type-setter.json`,
+SHAa65b10e10e8362bde31a2b662c2b89317737762d9521b2b1634a4741427de89d. Original Before439811a9e47ba33e5e2e611191c44f4a582adb45976b4f29af7785cac89a9b1b.
+Retained lifecycle EXE `.lab/development/partition-private-type-probe/bin/partition-private-type-probe.exe`,571392B/SHA01fdbc2da5616adf4280b9c9d63cfacb6f7677dc44b2a7e445fee5edec4d4533;
+sourcece6cfd39eb703ddde3123d12b6f6e511a71a3737eb43e916bf1d7340b27a8419,module7a12b133697ffa91dc1d9c90a4003b926a6d9876da756bd49c043b33cd9c99a8,
+inputpins4377cfdd59437acabd2a81ac8b93f05b96095c1d69253f453fbe5f3a4bd8c997,buildreceipt56d74cf4f998b8d7d77117eff605f663ec6a74ff7d8c3d49008d0f8b297c09b6.
+That binary was built against pre-accounting SDK; preserve it/sourcepins. SDKsourcehasnew observational changes now; don't claim oldpinsmatchcurrenttree.
+
+NEXT critical code: separate ignored Rust `.lab/development/partition-private-reopen-probe` is in preparation byfrozen_candidate_cases.
+Test already-private target via `\\?\GLOBALROOT\Device\Harddisk0\Partition4` RW, held device/partition/fullrawGPT/C checks and atmostone SAME8192B write.
+No setters/typechanges/offline/wholelayout/physicalRW/fallback/autoRestore or publiccertificate. Rootmustreview/build before any nextGO.
+**Do not restore766 before this reopen test**: it needs current private state acrossnormalboot. Operator remains exclusiveVMowner, no nextnativeGO issued.
+Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volumeI/O;
+private-type route avoids that dead path. Existing whole-disk guards/certificates stay unchanged.
 See `docs/ntfs-conversion-policy.md` for implemented preserve/materialize/refuse semantics and qualification boundaries.
 ## Recovery and verification invariants
 

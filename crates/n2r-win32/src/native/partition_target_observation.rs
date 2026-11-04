@@ -27,6 +27,7 @@ impl GeneralFrozenPartition {
             return Err(invalid("partition-source target observer binding differs"));
         }
         partition_lifecycle::require_complete_fresh_ntfs_admission(source, admission)?;
+        admission.checkpoint_native_events("partition-target-observation-opening", events)?;
         source.revalidate(events)?;
         let token = source.owner_token();
         let paid = memory.reserve(source.construction_metadata_memory_bytes())?;
@@ -36,6 +37,9 @@ impl GeneralFrozenPartition {
         witness.require_profile(resource_profile.ok_or_else(|| {
             invalid("partition target observation requires actual resource profile")
         })?)?;
+        // A full source witness can retain several complete native batches.
+        // Its actual guard must preserve/drain them BEFORE the target RO SET.
+        admission.checkpoint_native_events("partition-target-before-readonly-lease", events)?;
         let observed = self.observe_refs_layout_residuals_paged_domain_with_memory(
             pair,
             input,
@@ -47,8 +51,30 @@ impl GeneralFrozenPartition {
             memory,
             events,
         );
+        // Keep the target lease's real controls, including its restore path,
+        // before adding the closing source queries to this fixed128 budget.
+        if let Err(checkpoint) =
+            admission.checkpoint_native_events("partition-target-after-readonly-lease", events)
+        {
+            return Err(match observed {
+                Err(error) => io::Error::new(
+                    error.kind(),
+                    format!("{error}; target event checkpoint also failed: {checkpoint}"),
+                ),
+                Ok(_) => checkpoint,
+            });
+        }
         // Closing source checks run even when native target observation failed.
         let closing = source.revalidate(events);
+        let drained = admission.checkpoint_native_events("partition-target-source-closing", events);
+        let closing = match (closing, drained) {
+            (Err(error), Err(checkpoint)) => Err(io::Error::new(
+                error.kind(),
+                format!("{error}; closing source checkpoint also failed: {checkpoint}"),
+            )),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        };
         let mut observed = match (observed, closing) {
             (Ok(report), Ok(())) => report,
             (Err(error), _) | (_, Err(error)) => return Err(error),
@@ -57,6 +83,7 @@ impl GeneralFrozenPartition {
         witness.revalidate(events)?;
         observed.report.bind_partition_source(witness)?;
         observed.require_partition_source_owner(&token)?;
+        admission.checkpoint_native_events("partition-target-observation-complete", events)?;
         Ok(observed)
     }
 }

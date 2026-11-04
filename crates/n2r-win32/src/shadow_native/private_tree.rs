@@ -3,8 +3,8 @@
 //! exposes placement operations, never source writes or conversion authority.
 use super::input_domain::{DomainMetadata, InputDomain, ObjectInput, SliceInputs};
 use super::*;
-use std::collections::{BTreeMap, BTreeSet};
 pub use crate::native::{PartitionSourceMetadataState, PartitionSourceMetadataWitness};
+use std::collections::{BTreeMap, BTreeSet};
 mod enrollment;
 mod memory;
 mod metadata;
@@ -972,17 +972,35 @@ impl PrivateTree {
             }
         }
         let mut events = Vec::new();
-        self.source_before
-            .require(&self.pair, self.partition_source.as_ref(), &mut events)?;
-        if native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut events)?
-            .disk_attributes
-            != 0
-        {
-            return Err(invalid(
-                "private tree source exclusion or shadow state changed",
-            ));
+        let result = (|| {
+            self.source_before
+                .require(&self.pair, self.partition_source.as_ref(), &mut events)?;
+            if native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut events)?
+                .disk_attributes
+                != 0
+            {
+                return Err(invalid(
+                    "private tree source exclusion or shadow state changed",
+                ));
+            }
+            Ok(())
+        })();
+        if let Some(witness) = &self.partition_source {
+            let drained = witness.checkpoint_native_events(
+                "partition-private-tree-source-shadow-check",
+                &mut events,
+            );
+            match (result, drained) {
+                (Err(error), Err(checkpoint)) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; private-tree event checkpoint also failed: {checkpoint}"),
+                )),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+                (Ok(()), Ok(())) => Ok(()),
+            }
+        } else {
+            result
         }
-        Ok(())
     }
 
     fn require_bound_input(&self, input: &[Input<'_>]) -> io::Result<()> {
@@ -1486,28 +1504,51 @@ fn allocate_domain_with_memory(
     drop(directories);
     drop(preflight_ram);
     let mut events = Vec::new();
-    let source_before = if let Some(owned) = enrollment
-        .as_ref()
-        .filter(|owned| owned.source.partition().is_some())
-    {
-        owned
-            .source_before
-            .require(pair, owned.source.partition(), &mut events)?;
-        owned.source_before.clone()
-    } else {
-        let source = native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
-        if source.disk_attributes != 3 {
-            return Err(invalid("excluded dedicated source required"));
+    let opening = (|| {
+        let source_before = if let Some(owned) = enrollment
+            .as_ref()
+            .filter(|owned| owned.source.partition().is_some())
+        {
+            owned
+                .source_before
+                .require(pair, owned.source.partition(), &mut events)?;
+            owned.source_before.clone()
+        } else {
+            let source =
+                native::observe_general_disk_state_readonly(pair.source.clone(), &mut events)?;
+            if source.disk_attributes != 3 {
+                return Err(invalid("excluded dedicated source required"));
+            }
+            source_scope::ConstructionSourceState::Dedicated(source)
+        };
+        if native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
+            .disk_attributes
+            != 0
+            || native::mounted_filesystem_general(pair.shadow.clone(), &mut events)? != "ReFS"
+        {
+            return Err(invalid("excluded source and writable ReFS shadow required"));
         }
-        source_scope::ConstructionSourceState::Dedicated(source)
-    };
-    if native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?
-        .disk_attributes
-        != 0
-        || native::mounted_filesystem_general(pair.shadow.clone(), &mut events)? != "ReFS"
+        Ok(source_before)
+    })();
+    let source_before = if let Some(witness) = enrollment
+        .as_ref()
+        .and_then(|owned| owned.source.partition())
     {
-        return Err(invalid("excluded source and writable ReFS shadow required"));
-    }
+        let drained =
+            witness.checkpoint_native_events("partition-private-allocation-opening", &mut events);
+        match (opening, drained) {
+            (Ok(value), Ok(())) => value,
+            (Err(error), Err(checkpoint)) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; allocation opening checkpoint also failed: {checkpoint}"),
+                ));
+            }
+            (Err(error), _) | (_, Err(error)) => return Err(error),
+        }
+    } else {
+        opening?
+    };
     let root = format!("{}\\", pair.shadow.volume_path()?);
     let (mut sectors, mut sector_bytes, mut free, mut clusters) = (0, 0, 0, 0);
     let root_name = wide(&root);
@@ -1585,8 +1626,23 @@ fn allocate_domain_with_memory(
     // Reuse the existing narrow formatter-cache preflight; unknown SVI entries
     // refuse. Target-only IndexerVolumeGuid normalization is already scoped to
     // these enrolled disks and never touches the excluded source.
-    let system_identities =
-        existing_system_entries_domain(&root, &initial, input, true, &mut events)?;
+    let system = existing_system_entries_domain(&root, &initial, input, true, &mut events);
+    let system_identities = if let Some(witness) = &partition_source {
+        let drained = witness
+            .checkpoint_native_events("partition-private-allocation-global-queries", &mut events);
+        match (system, drained) {
+            (Ok(value), Ok(())) => value,
+            (Err(error), Err(checkpoint)) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; allocation global checkpoint also failed: {checkpoint}"),
+                ));
+            }
+            (Err(error), _) | (_, Err(error)) => return Err(error),
+        }
+    } else {
+        system?
+    };
     let volume = if let Some(volume) = enrolled_volume {
         volume
     } else {

@@ -20,6 +20,8 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     os::windows::fs::OpenOptionsExt,
     sync::Arc,
+    rc::Rc,
+    cell::RefCell,
 };
 
 const BASIC: &str = "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7";
@@ -132,6 +134,26 @@ pub struct PartitionPreparationPin {
 pub trait PartitionPreparationObserver {
     fn checkpoint(&mut self, phase: &'static str, events: &mut Vec<NativeEvent>) -> io::Result<()>;
     fn durable_intent(&mut self, receipt: &PartitionIntentReceipt) -> io::Result<()>;
+}
+/// Clone of the actual live guard's observer only. It carries no source or
+/// writer authority; metadata witnesses share this durable event destination.
+#[derive(Clone)]
+pub(in crate::native) struct PartitionNativeEventSink {
+    observer: Rc<RefCell<Box<dyn PartitionPreparationObserver>>>,
+}
+impl PartitionNativeEventSink {
+    fn new(observer:Box<dyn PartitionPreparationObserver>)->Self {
+        Self{observer:Rc::new(RefCell::new(observer))}
+    }
+    pub(in crate::native) fn checkpoint(&self,phase:&'static str,events:&mut Vec<NativeEvent>)->io::Result<()> {
+        let mut observer=self.observer.try_borrow_mut().map_err(|_|invalid("native event sink is already borrowed"))?;
+        observer.checkpoint(phase,events)?;
+        require(events.is_empty(),"actual durable native event checkpoint did not drain")
+    }
+    fn durable_intent(&self,receipt:&PartitionIntentReceipt)->io::Result<()> {
+        self.observer.try_borrow_mut().map_err(|_|invalid("intent event sink is already borrowed"))?
+            .durable_intent(receipt)
+    }
 }
 struct IntentFile {
     file: File,
@@ -372,7 +394,7 @@ pub struct PartitionPreparationGuard {
     source_label: crate::volume_label::VolumeLabel,
     mount_paths: super::super::MountPathObservation,
     intent: IntentFile,
-    observer: Box<dyn PartitionPreparationObserver>,
+    observer: PartitionNativeEventSink,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PartitionReadonlyProtection {
@@ -660,7 +682,7 @@ impl PartitionPreparationGuard {
             source_label,
             mount_paths,
             intent,
-            observer,
+            observer:PartitionNativeEventSink::new(observer),
         };
         guard.check_volume(guard.volume.as_ref().unwrap(), events)?;
         guard.lock_and_flush(events)?;
@@ -1046,6 +1068,10 @@ impl PartitionNtfsAdmission {
             },
         )
     }
+    pub fn checkpoint_native_events(&self,phase:&'static str,events:&mut Vec<NativeEvent>)->io::Result<()> {
+        self.guard.observer.checkpoint(phase,events)
+    }
+    pub(in crate::native) fn event_sink(&self)->PartitionNativeEventSink {self.guard.observer.clone()}
     pub fn native(&self) -> &PartitionPagedNtfsObservation {
         &self.native
     }
@@ -1064,6 +1090,8 @@ impl PartitionNtfsAdmission {
         expected: &PartitionPreparationPin,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<()> {
+        self.checkpoint_native_events("partition-handoff-revalidation-opening",events)?;
+        let result=(||->io::Result<()> {
         require_complete_fresh_ntfs_admission(owner, self)?;
         owner.revalidate(events)?;
         let pin = self.durable_preparation_pin()?;
@@ -1103,7 +1131,11 @@ impl PartitionNtfsAdmission {
                 )? == before,
             "live preparation intent content/identity changed",
         )?;
-        owner.revalidate(events)
+        owner.revalidate(events)?;
+        Ok(())
+        })();
+        let closed=self.checkpoint_native_events("partition-handoff-revalidation-closed",events);
+        match(result,closed){(Ok(value),Ok(()))=>Ok(value),(Err(error),_)|(_,Err(error))=>Err(error)}
     }
     pub fn original_label(&self) -> &crate::volume_label::VolumeLabel {
         &self.guard.source_label

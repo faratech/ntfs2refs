@@ -82,38 +82,59 @@ pub fn enroll_with_resource_profile<'source>(
 
 impl ConstructionEnrollment<'_> {
     pub(super) fn revalidate(&mut self) -> io::Result<()> {
-        match &self.source {
-            source_scope::ConstructionSource::Dedicated(source) => {
-                let source_scope::ConstructionSourceState::Dedicated(expected) =
-                    &self.source_before
-                else {
-                    return Err(invalid("dedicated construction scope differs"));
-                };
-                if source.freeze_observation().is_none()
-                    || source.binding() != &self.pair.source
-                    || source.state(&mut self.events)? != *expected
-                {
-                    return Err(invalid("live dedicated construction freeze changed"));
+        let result = (|| {
+            match &self.source {
+                source_scope::ConstructionSource::Dedicated(source) => {
+                    let source_scope::ConstructionSourceState::Dedicated(expected) =
+                        &self.source_before
+                    else {
+                        return Err(invalid("dedicated construction scope differs"));
+                    };
+                    if source.freeze_observation().is_none()
+                        || source.binding() != &self.pair.source
+                        || source.state(&mut self.events)? != *expected
+                    {
+                        return Err(invalid("live dedicated construction freeze changed"));
+                    }
+                }
+                source_scope::ConstructionSource::Partition(witness) => {
+                    self.source_before
+                        .require(&self.pair, Some(witness), &mut self.events)?;
                 }
             }
-            source_scope::ConstructionSource::Partition(witness) => {
-                self.source_before
-                    .require(&self.pair, Some(witness), &mut self.events)?;
+            if native::observe_general_disk_state_readonly(
+                self.pair.shadow.clone(),
+                &mut self.events,
+            )? != self.shadow_before
+                || info(&self.root, 18, 24)? != self.root_id
+            {
+                return Err(invalid(
+                    "live construction enrollment identity or exclusion changed",
+                ));
             }
+            self.pair
+                .shadow
+                .validate_volume_extent(&ctl(&self.volume, 0x00560000, &[], 1024)?)?;
+            check_mounted_profile(&self.volume, self.pair.shadow.identity.partition_bytes)?;
+            Ok(())
+        })();
+        // The partition witness carries the actual preparation observer. Its
+        // closing source checkpoint precedes the shadow controls above, so
+        // preserve those remaining controls even when a later query failed.
+        if let Some(witness) = self.source.partition() {
+            let drained = witness
+                .checkpoint_native_events("partition-construction-enrollment", &mut self.events);
+            match (result, drained) {
+                (Err(error), Err(checkpoint)) => Err(io::Error::new(
+                    error.kind(),
+                    format!("{error}; enrollment event checkpoint also failed: {checkpoint}"),
+                )),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+                (Ok(()), Ok(())) => Ok(()),
+            }
+        } else {
+            result
         }
-        if native::observe_general_disk_state_readonly(self.pair.shadow.clone(), &mut self.events)?
-            != self.shadow_before
-            || info(&self.root, 18, 24)? != self.root_id
-        {
-            return Err(invalid(
-                "live construction enrollment identity or exclusion changed",
-            ));
-        }
-        self.pair
-            .shadow
-            .validate_volume_extent(&ctl(&self.volume, 0x00560000, &[], 1024)?)?;
-        check_mounted_profile(&self.volume, self.pair.shadow.identity.partition_bytes)?;
-        Ok(())
     }
 
     pub(super) fn observation(&self) -> serde_json::Value {
@@ -193,7 +214,19 @@ pub fn enroll_partition_with_resource_profile(
     witness.require_profile(profile)?;
     let source_before = source_scope::ConstructionSourceState::Partition(witness.state().clone());
     let shadow_before =
-        native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events)?;
+        native::observe_general_disk_state_readonly(pair.shadow.clone(), &mut events);
+    let drained =
+        witness.checkpoint_native_events("partition-enrollment-shadow-opening", &mut events);
+    let shadow_before = match (shadow_before, drained) {
+        (Ok(value), Ok(())) => value,
+        (Err(error), Err(checkpoint)) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("{error}; opening shadow checkpoint also failed: {checkpoint}"),
+            ));
+        }
+        (Err(error), _) | (_, Err(error)) => return Err(error),
+    };
     if shadow_before.disk_attributes != 0 {
         return Err(invalid(
             "partition construction requires writable dedicated shadow",

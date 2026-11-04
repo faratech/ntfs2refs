@@ -173,3 +173,5 @@ impl Read for PartitionReadLane {
         result
     }
 }
+
+pub(in crate::native) use staged::PartitionNativeEventSink;

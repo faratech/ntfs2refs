@@ -426,6 +426,8 @@ impl PartitionScopedOwner {
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<super::PartitionSourceMetadataWitness> {
         use crate::attestation::NativeObservationDomain;
+        admission.checkpoint_native_events("partition-construction-owner-opening",events)?;
+        let result=(|| {
         self.revalidate(events)?;
         super::partition_lifecycle::require_complete_fresh_ntfs_admission(self, admission)?;
         admission.native().domain().revalidate()?;
@@ -435,10 +437,15 @@ impl PartitionScopedOwner {
             duplicate, self.binding.clone(), self.budget, self.owner_token(), self.enrolled.clone(),
             admission.native().domain().sha256().to_owned(), pin.intent_prefix_sha256,
             admission.native().domain().header().request.resource_profile,
+            admission.event_sink(),
         )?;
         witness.revalidate(events)?;
+
         self.revalidate(events)?;
         Ok(witness)
+        })();
+        let closed=admission.checkpoint_native_events("partition-construction-owner-closed",events);
+        match(result,closed){(Ok(value),Ok(()))=>Ok(value),(Err(error),_)|(_,Err(error))=>Err(error)}
     }
     pub fn binding(&self) -> &PartitionSourceBinding {
         &self.binding

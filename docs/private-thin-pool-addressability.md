@@ -195,3 +195,16 @@ as NTFS without a payload hash. See
 [the petabyte profile-refusal evidence](../evidence/private-thin-petabyte-profile-refusal-20261104.json).
 This does not admit a petabyte conversion or establish large-offset data I/O,
 recovery, public backend integration or cleanup qualification.
+
+The first opt-in public thin-provider conversion, `44cca72` / `8be515`, stopped
+before publication because artifact physical allocation exceeded its reserved
+slack. Automatic preparation cancellation restored online, writable NTFS; no
+conversion journal, envelope, HND or raw apply was reached. An independent
+observer then matched all 811 XXH3-128 streams (9,885,801,949 bytes), 1,534
+baseline objects and 1,024 extra directories. Host closure compared every extra
+UTF-16 path and the full path structure against the frozen independent manifest,
+including all 13 real digest-process terminals. This establishes logical NTFS
+restoration, not a bit-identical source image. The allocation guard remains in
+place, and this refused run supplies no thin conversion or retirement
+qualification. See
+[the allocation-refusal evidence](../evidence/public-thin-preparation-allocation-refusal-20261104.json).

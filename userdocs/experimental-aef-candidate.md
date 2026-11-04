@@ -88,7 +88,7 @@ paths, hashes or journal.
 The first command requests resume; the second requests rollback or preparation
 cancellation before handoff. Run one direction for the admitted state.
 HND and ABT terminal states permanently close the old raw replay path. After
-successful handoff, the old NTFS journal cannot undo ordinary ReFS changes;
+successful handoff, the saved conversion journal cannot undo ordinary ReFS changes;
 terminal reconciliation must preserve current contents.
 
 The package's controlled interruption used an owned native-thread pause and

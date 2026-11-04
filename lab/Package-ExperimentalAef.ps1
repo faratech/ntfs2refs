@@ -107,7 +107,17 @@ try{
   if($evidenceCopies.ContainsKey($key)){Need ($evidenceCopies[$key]-ceq$gate.evidence_sha256) 'Conflicting evidence pin'}else{
    $proof=JsonPin $path $gate.evidence_sha256 ('evidence/receipt-'+$evidenceCopies.Count.ToString('D3')+'.json') 'exact-build-observational-case'
    $e=$proof.value;Need ($e.source_commit-ceq$sourceCommit) 'Old/different-build proof cannot qualify aef'
-   if($null-ne$e.PSObject.Properties['public_binary_sha256']){Need ($e.public_binary_sha256-ceq$binarySha-and$e.build_manifest_sha256-ceq$buildSha) 'Evidence public/build pin differs'}else{Need ($e.public_binary.sha256-ceq$binarySha-and$e.public_binary.bytes-eq17198080-and$e.public_binary.build_manifest_sha256-ceq$buildSha) 'Evidence executable/build pin differs'}
+   $direct=$e.PSObject.Properties['public_binary_sha256'];$nested=$e.PSObject.Properties['public_binary']
+   Need ($null-ne$direct-or$null-ne$nested) 'Evidence public binary binding absent'
+   if($null-ne$direct){Need ($direct.Value-is[string]-and$direct.Value-ceq$binarySha-and$e.build_manifest_sha256-ceq$buildSha) 'Evidence public/build pin differs'}
+   if($null-ne$nested){
+    $public=$nested.Value;Need ($public.sha256-is[string]-and$public.sha256-ceq$binarySha-and$public.bytes-eq17198080) 'Evidence executable pin differs'
+    # Existing receipts use either explicit alias. Every supplied alias must
+    # agree with the exact build; an omitted or conflicting binding refuses.
+    $buildPins=@(foreach($name in @('build_manifest_sha256','manifest_sha256')){$property=$public.PSObject.Properties[$name];if($null-ne$property){$property}})
+    Need ($buildPins.Count-gt0) 'Evidence executable build binding absent'
+    foreach($pin in $buildPins){Need ($pin.Value-is[string]-and$pin.Value-ceq$buildSha) 'Evidence executable build aliases conflict or differ'}
+   }
    $evidenceCopies[$key]=$gate.evidence_sha256
   }
  }

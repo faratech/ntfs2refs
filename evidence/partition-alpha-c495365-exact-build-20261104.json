@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "exact-committed-partition-alpha-native-candidate",
+  "source_commit": "c4953652a1c8c3620f76e6e4b9dd4c13c8b1862b",
+  "source_tree": "674b4e6c1dc67308097df367f48686adf6a23996",
+  "build_manifest_sha256": "3ae771f01aa46438ac2f3eb9c2b9ff291e74225d1ffb0a5cb2d3844baf225a2b",
+  "candidate_directory": ".lab/development/release-candidates/partition-alpha-c495365",
+  "source_archive": {
+    "sha256": "1d72ad78b9055823872ed1f9b2cdbbff07eb64e98e941f4219119bbe9470b726",
+    "bytes": 2027983,
+    "path": "source.zip"
+  },
+  "binary": {
+    "name": "lab-partition-alpha",
+    "path": "bin/lab-partition-alpha.exe",
+    "bytes": 8378880,
+    "sha256": "8557aab0872e63a070826e51e1c3c0347074b96c64862efdc18247acc73f5955"
+  },
+  "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+  "source_before_after_verified": true,
+  "held_source_files": 413,
+  "working_tree_inputs_used": false,
+  "shared_target_reused": true,
+  "shared_source_reused": true,
+  "dependencies_preserved": true,
+  "maximum_working_bytes": 2147483648,
+  "observed_working_bytes_before_manifest": 19085222,
+  "offline": true,
+  "locked": true,
+  "unit_tests_run": false,
+  "native_conversion_run": false,
+  "native_qualified": false,
+  "stable_release": false,
+  "public_shared_disk_cli_enabled": false
+}

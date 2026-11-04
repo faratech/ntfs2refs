@@ -30,14 +30,37 @@ Old LIVE labels and retired checkpoint instructions there are historical.
 
 ## Current authoritative state and immediate action
 
-Current committed source **b0b576a** adds the exact N2RCAP02 artifact probe;
-its focused check passed0.55s. Native9f6f3c888f85406aafd06fbde4c6f567 exited1:
-the required baseline refusal did NOT reproduce; exact results are below.
-The closed failed attempt used44cca72; a fresh publicb566 run is now LIVE.
-Runf9a192c850934463af838a44deb480fe, actualPID5348/birth1793795529382,
-started12:32:09UTC; terminal absent at Root's observation. Gueststage
+Current committed/pushed source **aef1ab3b3a6ea08f7093d83cc60462f8b799b79a**
+normalizes the actual capture-index writer before sealing. Its public-only release
+at `.lab/development/release-candidates/capture-index-aef1ab3`
+completed0 in2m30s. Manifest
+f60eca76b95fcb48a0708f44cf256f284d336b0e224a0b8e47a60d40b2dea291;
+public17198080B SHAdaa56b970b944efcc8cdb2987a2307231075961f5afb70c39e34f1add2b3026a.
+Fresh public runfc268ad154474588b5d4cf5226387674 is LIVE: actualPID5372/birth
+1793796637023 started12:50:37UTC, terminal absent at Root's observation.
+Gueststage `C:\ntfs2refs\resource-fixture-fc268ad154474588b5d4cf5226387674`;
+actual engine `C:\ProgramData\ntfs2refs\runs\4a4b3a84a7e9419ba6f1c369dc319916`.
+No conversion/cleanup outcome or native qualification is claimed. The exact-patternb0b576a probe
+did not reproduce the earlier guard refusal; its closed results are below.
+The subsequent publicb566 runf9a192c850934463af838a44deb480fe ENDED with actual
+PID5348/birth1793795529382/exit1/613.3199557s at12:42:22.729UTC. Gueststage
 `C:\ntfs2refs\resource-fixture-f9a192c850934463af838a44deb480fe`.
-Only Root monitors this process. No full native pass or cleanup success is claimed.
+Its actual engine is `C:\ProgramData\ntfs2refs\runs\096606d02283139f8caf4787a9600641`.
+The error DIRECTLY identifies capture.index: EOF560896B, physical allocation
+655360B, grant maximum560896B, reserved slack65535B. The reported allocation
+exceeded the admitted bound626431B; automatic preparation cancellation restored
+NTFS before publication. This identifies f9's failing artifact, unlike the earlier
+unattributed8be error or non-reproducing probes. No full conversion/cleanup pass
+is claimed. Root archive session70577 completed0:4198files215106439B, every host
+ZIP entry length/SHA checked. F9hostroot contains `closed-evidence.zip` SHA
+6ee0a24070af57fbaa9e9f10333110a94e0a0e91685df02e9054c1794e2079db,
+manifestSHA3cf1ed6a003bbf90c31a91fe21bc8bb97a22c41c46cd7fe3f62d115d0edb1cdf.
+See evidence/public-thin-capture-index-allocation-refusal-20261104.json.
+Root separately observed F:NTFS64KiB, disk1online/read-write and all tasks idle.
+After archive closure Root orderly shut down and restored3343 ONCE; a fresh
+separate process verifiedOff/RAM0 before the new fc dispatch. The unchanged22GiB
+launcher admitted and started that new run. The Off observation precedes the
+current LIVE run; it is not current VM state. Root alone monitors the actual native owner.
 SDK graph retirement/getters/discovery, typed CLI staging wrapper, hidden forced
 thin mode, remaining-provider-growth reservation, and geometry diagnostics compile.
 The final public check passed13.91s; no units ran. Public thin/native graph cleanup
@@ -126,8 +149,10 @@ exited1/7.4564207s at12:25:24.858UTC: NO baseline reproduction. LiteralEOF866959
 had86704128B allocation; indexEOF564576 had589824B. Both unmodified original seals
 passed. Normalized literal/index seals and unnormalized production-route seals
 also passed. Route content/lengths were not identical to the original run.
-Do not call the overall probe a pass or infer an index/literal cause. No index
-production patch follows. The original unchanged allocation/slack guards remain.
+Do not call the overall probe a pass or infer an index/literal cause from it.
+No index production patch followed that probe alone. The later f9 actual error
+above supplies the direct capture-index evidence. Original allocation/slack
+guards remain unchanged; aef normalizes this identified writer rather than raising slack.
 Root archived4199files216627913B from the failed engine (excluding thin-provider
 graph), both probe stages/results and original artifacts. Every host ZIP entry
 length/SHA was independently checked. Archive
@@ -136,9 +161,10 @@ SHAe2163a0630c949eac2f89f64eda15a30c6c8f511522a3958d0aa982b6eecb9b0,
 manifestSHA1a53a45698840da00082abcd9dd3daf47f7e2ecaec346c750f0462243ccd63a3.
 Exact-probe buildmanifest1f64dad9e73e6c9912c1524052f20fef22045ded2e941ceb2724428bd232b744.
 See evidence/exact-capture-allocation-probe-20261104.json. Preserve b969's earlier
-non-reproduction. The closed failed engine has no journal-layout.index; index
-remains an unproved suspect. Root's fresh publicb566 run above has improved
-actual failing-artifact context; no corrected full conversion is yet qualified.
+non-reproduction. The earlier closed failed engine has no journal-layout.index;
+its index attribution remained a hypothesis. The later publicb566 run above
+reported the actual capture.index allocation failure. No corrected full
+conversion is yet qualified; do not transfer8be's independent content proof to f9.
 After archive closure Root orderly shut down and restored3343 ONCE; a fresh
 separate process verifiedOff/RAM0 before the new dispatch. Discarding the archived
 disposable active branch reclaimed about10GB. Frozen origins and saved4b8 remain.

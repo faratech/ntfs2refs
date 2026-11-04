@@ -18,26 +18,32 @@ The preceding handoff is preserved BYTE-EXACT in [history](docs/history/AGENTS-t
 - Commit exact stable owned paths and push normally; no force-push or staging everything. Keep .lab/images/journals/binaries/ISOs/secrets out of Git.
 - Keep WSL running. No UAC disabling or persistent privilege changes. Import ONLY .lab/hyperv/win11/secrets/guest-credential.xml; never print credentials.
 
-## CURRENT actual run: do not infer terminal
+## CURRENT actual run: do not infer cut or terminal
 
-**CURRENT LIVEv3 run8bd89251641f45af8fbc3a836cc4bc18**, actualnative5564/birth1793801190897,
-boot1793801147365, started14:06:30UTC. Watcher ARMED; Root host controller execsession96325 is ACTIVE waiting for a qualified Apply window.
-Root alone may monitor/control this session; at most ONE TurnOff. DO NOT power/restore/start a second controller or infer cut/AP/terminal/recovery success.
-VM at Root's last observation: Running/parent3343/fourGiB; saved8a remains protected. Root will provide actual outcomes.
-Gueststage `C:\ntfs2refs\resource-fixture-8bd89251641f45af8fbc3a836cc4bc18`; do not guess engine/run routes.
-Only harness code changed: C#v3 fixes STORAGE_PROPERTY_QUERY input8→12 bytes to match existing Rust ABI. Product/Rust remains exactaef; no unit tests.
-SourceCSef1e058ba84f411ee0f1f8fdc571ec831ab03f464a1e1c25a5506a6d72a2eba9; producerd1d445f9a1f934ac751ea3f8a08e6493439e2ba8c24919d6776dfed48b86054d;
-controllerd7c61e67720256881fe3573d71553d90d36a4c6e6e1ce782af078baa6ac8c0b6; recoverycc21bec916713b18e7e571eeb5ce5525c1a9a23424d9b0e2e8daa81c9b2c2f08.
-The v3 read-only compile/Open/Dispose preflight passed on NTFS attrs0/exact OLD primary/nonzero OLD4096, without Begin/native launch/source writes.
-Record `.lab/development/watcher-v3-native-initialization-20261104.json` SHAba45276c19f5c7677b4e6cc3897d3e3e12df238ad7d98799ca8f9a90fa57d1f9.
-Earlier f2e4b6fbf3864ef2a5ecbc567a62aa2d ended0/697.3724618s at13:47:45.857UTC; no interruption because XML reference compilation failed before watch start.
-Engine85dfda6e6e50ef4cead28faaa80a1187;24files804151B closuremanifestb42accc97c3fe2375df56f2cac60c657c8b60f49c10bc027c21bd9ab443aa6dc.
-Its duplicate HND branch was orderly shut down/discarded via3343 restore after closure; saved8a kept. No independent content repeat was needed.
-Then b9fe49379c07471488c187d9fc57da7e refused Watch.Open query0x2d1400 BEFORE native start: required guard worked, no new native process or cut.
-11files57242B closuremanifest46c281b24c3ec4be0e1dcd35164b66368f199ae1e7eae7661a88659847220da3. Failures remain preserved; never call them AP qualification.
-See evidence/public-thin-watch-initialization-20261104.json. NEW exact-build interrupted resume/rollback remains unqualified until actual evidence.
-Normal conversion/cleanup/coldboot is already proved below; do not intentionally repeat unchanged checks. Never infer actual terminal from timeout/task state.
+**CURRENT LIVEv4 producer327342c5c9194032a0de7c892bdef54f**, actualnative5536/birth1793803471429,
+boot1793803427458, started14:44:31UTC. Watcher ARMED; Root host controller execsession55466 is ACTIVE waiting for its qualified Apply window.
+Root alone controls this session: at most ONE controlled pause+TurnOff. DO NOT power/restore/start another controller or infer cut/AP/terminal/recovery success.
+VM at Root's last observation: Running/parent3343/fourGiB; completed8a and all13protected IDs remain. Root will provide actual outcomes.
+Gueststage `C:\ntfs2refs\resource-fixture-327342c5c9194032a0de7c892bdef54f`; do not guess engine/run routes.
+V4 changes ONLY ignored harness: owned native-thread pause <=120s on normal path, exact suspend-increment release/watchdog,
+and postpause OLD-primary/NEW4096 verification. WHOLE WATCHER PROCESS DEATH CAN LEAVE NATIVE PAUSED; this is not absolute automatic resume.
+Pending kernel I/O and physical power are not qualified. HostPS5.1 compile succeeded WITHOUT instantiation/process control/source opening;
+that compile is distinct from the now-armed actual case. Product/Rust remains exactaef; no unit tests or new Rust build.
+CS2d58957f47800579f43aab3718d79df265c04932973b8b1f793334931fe45bde;
+producer6c456585c141771b0e35f4b5a361db0c709ef78875a1d9fc8368bf9162368c7b;
+controller4a3d98900092063026e2f4be5a49e0497028f0b653c207918279c10b45a835d2;
+recovery2612b8bc25aadae367175968ead7f8d3adcd378c8b88c48794b7997cbf6702ca. Recovery is not yet executed/qualified.
 
+Priorv3 controller96325 is TERMINALexit1 ('Watch/native already closed'), TurnOffFALSE. The8bd89251641f45af8fbc3a836cc4bc18 watcher
+observed partial/trigger but OLD primary advanced, so it aborted14:16:34.400UTC before fresh confirmation; host refused14:16:42.432UTC.
+Native5564/birth1793801190897 then actually ended0/704.0066318s at14:18:14.929UTC; enginebe1b19ef6f4e8209775309a9d37ed338.
+NO CUT/AP qualification. Closed28files817343B, every source/hostlenSHA; manifest9ee007362063e5e0411a6390b683fe060a41c15c6d11ff5283d45fe76f54055a.
+After closure Root orderly shut down, freshly verifiedOff and restored3343 ONCE for v4. Do not retry or power the closed8bd attempt.
+Earlier XML-compilation failure f2 ended0 without watch/cut; b9 Watch.Open0x2d1400 refusal happened BEFORE native start. Their archives remain;
+v3 ABI8→12 read-only Open/Dispose preflight passed without Begin/native launch/source writes. See evidence/public-thin-watch-initialization-20261104.json.
+See evidence/public-thin-watch-missed-window-20261104.json for the no-cut event and v4 limits. NEW exact-build interrupted resume/rollback
+requires an ACTUAL single cut and postboot full-journal authentication before qualification. Normal conversion/cleanup/coldboot is already proved;
+do not intentionally repeat unchanged checks or infer completion from timeout/task state.
 Product source **aef1ab3b3a6ea08f7093d83cc60462f8b799b79a** normalizes the identified capture-index writer before sealing; original slack guards remain.
 Release `.lab/development/release-candidates/capture-index-aef1ab3` completed0/2m30s; public17198080B,
 SHAdaa56b970b944efcc8cdb2987a2307231075961f5afb70c39e34f1add2b3026a; manifestf60eca76b95fcb48a0708f44cf256f284d336b0e224a0b8e47a60d40b2dea291.

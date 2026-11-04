@@ -237,7 +237,10 @@ three length/Path compiler sites, and qualified one retained-map comparator call
 exists; attrs0/label/mount finish, fresh live-handle transfer, preAP cancellation and ROOT restarted MIXED orchestration do not.
 Root owns `resource_partition_preparation.rs` and `resource_partition_target.rs`; do not overwrite their new
 orchestration/execution changes from old draft bases. SDK AP/HND is actual code, but public CLI shared-disk routing remains disabled.
-Lowspace is implementing ONLY the two finish functions in a NEW copied draft, no architecture expansion before compile.
+Terminal finish code is now applied/checked: author patch5ec43cfe..., source54729B/SHAee5ae23e..., publiccheck0/32.6135023s.
+`evidence/partition-terminal-finish-build-20261104.json` binds HND native fidelity/ABT OLD+NTFS identity, single targetattrs0 setter,
+actual original label readback and nonstealing mount restoration. No native qualification or public routing yet.
+Lowspace next owns separate narrow actual Origin extraction for restart plus fresh-live ownership transfer; no preAP fake evidence.
 Frozen_candidate_cases is implementing a separate actual ROOT restart/MIXED path with authenticated origin files and SDK mixed gate.
 Operator owns the actual next VM helper. Readonly plan `.lab/development/shared-windows-tail-target-readonly-plan-20261104.json`,
 SHA99b35db153de5887f3de6a42fcbc14c8bfdb8dde6d62b2f56a8da257eca5fa88: current oldT is followed by WinRE,

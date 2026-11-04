@@ -57,6 +57,25 @@ retirement. ReFS formatting, large-offset data I/O, conversion and recovery on
 this provider remain unqualified. The existing alpha gains no new size claim
 from this experiment.
 
+The Rust constructor stage is now implemented in
+[`thin_pool.rs`](../crates/n2r-win32/src/managed_shadow/thin_pool.rs).
+`create_new` accepts a fresh directory, an exact storage-subsystem identity,
+requested address space and explicit resource budgets. It creates its own two
+members, retains their provider and backing-file owners, and checks the resulting
+raw device through a held native handle. The returned owner exposes observations;
+it cannot be recreated from a serialized report.
+
+The implementation has passed a focused SDK compile and embedded-script syntax
+check. Its native constructor has not yet run. It performs no GPT initialization,
+formatting, conversion or recovery. Public conversion still uses the existing
+VHDX provider. Unknown states preserve the private pool and members for explicit
+inspection; this stage supplies no automatic teardown.
+
+The constructor admits the complete two-member backing profile, metadata reserve
+and separate Rust/PowerShell RAM shares before work. Actual free space and child
+working set are sampled; they are not kernel quotas or physical reservations.
+See [the build record](../evidence/private-thin-pool-constructor-build-20261104.json).
+
 Microsoft documents the native management contracts in
 [New-StoragePool](https://learn.microsoft.com/en-us/powershell/module/storage/new-storagepool)
 and [New-VirtualDisk](https://learn.microsoft.com/en-us/powershell/module/storage/new-virtualdisk).

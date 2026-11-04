@@ -49,6 +49,7 @@ pub use recovery::{ReattachedShadow, reattach_existing};
 mod retirement;
 pub use retirement::ShadowRetirementReceipt;
 pub mod growth_probe;
+pub mod thin_pool;
 
 /// Requested native formatter profile, not a trust or compatibility claim.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]

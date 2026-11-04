@@ -121,9 +121,9 @@ fn run() -> anyhow::Result<()> {
             .open(args.directory.join("result.json"))?,
         remaining: RESULT_BYTES,
     };
-    let mut phase = "create-new-private-provider";
+    let mut phase = "create-new-bounded-private-provider";
     let operation = (|| -> anyhow::Result<_> {
-        let owner = thin_pool::create_new(
+        let owner = thin_pool::create_bounded_with_carrier(
             &args.directory.join("provider"),
             &args.storage_subsystem,
             PROVIDER_GOAL_BYTES,

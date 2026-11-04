@@ -17,6 +17,8 @@ const METADATA_BYTES: u64 = 2 << 20;
 const RUST_WORKSPACE: u64 = 2 << 20;
 const RESPONSE_BYTES: u64 = 128 << 10;
 
+mod bounded_carrier;
+pub use bounded_carrier::CarrierObservation;
 mod formatted;
 pub use formatted::{FormattedThinShadow, FormattingObservation};
 
@@ -99,6 +101,8 @@ struct Request<'a> {
     nonce: &'a str,
     subsystem: &'a str,
     goal_bytes: u64,
+    member_virtual_bytes: u64,
+    carrier_root: Option<&'a str>,
     member_numbers: [u32; 2],
     members: &'a [MemberRoute],
     pool: Option<&'a PoolRoute>,
@@ -130,6 +134,8 @@ pub struct Observation {
     pub member_backing_paths: [PathBuf; 2],
     pub member_virtual_disk_ids: [String; 2],
     pub member_virtual_bytes_each: u64,
+    pub bounded_carrier: Option<CarrierObservation>,
+    pub host_allocation_excludes_nested_member_files: bool,
     pub native_disk: RawDiskObservation,
     pub retained_regular_file_allocation_bytes: u64,
     pub allocation_sample_precedes_this_observation_receipt: bool,
@@ -172,6 +178,7 @@ pub struct ThinPool {
     pool: PoolRoute,
     script_snapshot: reference_file::ReferenceFileSnapshot,
     observation: Observation,
+    carrier: Option<bounded_carrier::BoundedCarrier>,
 }
 
 fn text(value: &str) -> io::Result<()> {
@@ -236,7 +243,12 @@ fn same_file(old: &reference_file::ReferenceFileSnapshot, file: &File) -> io::Re
     Ok(())
 }
 
-fn create_member(path: &Path) -> io::Result<Member> {
+fn create_member(path: &Path, virtual_bytes: u64) -> io::Result<Member> {
+    if virtual_bytes < 4096 || !virtual_bytes.is_multiple_of(2 << 20) || virtual_bytes > 64 << 40 {
+        return Err(invalid(
+            "member VHDX size exceeds the constructor profile (maximum64TiB)",
+        ));
+    }
     if path.exists() {
         return Err(invalid("fresh owned thin member required"));
     }
@@ -250,7 +262,7 @@ fn create_member(path: &Path) -> io::Result<Member> {
     parameters.Anonymous = CREATE_VIRTUAL_DISK_PARAMETERS_0 {
         Version2: CREATE_VIRTUAL_DISK_PARAMETERS_0_1 {
             UniqueId: id,
-            MaximumSize: MEMBER_BYTES,
+            MaximumSize: virtual_bytes,
             BlockSizeInBytes: 2 << 20,
             SectorSizeInBytes: 512,
             PhysicalSectorSizeInBytes: 4096,
@@ -283,7 +295,7 @@ fn create_member(path: &Path) -> io::Result<Member> {
     let created = CreatedDisk {
         handle: VirtualHandle(handle),
         id,
-        size: MEMBER_BYTES,
+        size: virtual_bytes,
         logical: 512,
         physical: 4096,
     };
@@ -306,7 +318,7 @@ fn create_member(path: &Path) -> io::Result<Member> {
         false,
         false,
     )?;
-    raw_disk(&disk, member.attachment.number, MEMBER_BYTES)?;
+    raw_disk(&disk, member.attachment.number, virtual_bytes)?;
     Ok(member)
 }
 
@@ -336,7 +348,10 @@ impl Member {
         }
         same_file(&self.snapshot, &self.backing)?;
         let current = file_snapshot(&self.backing)?;
-        let admitted = MEMBER_BYTES
+        let admitted = self
+            .attachment
+            .created
+            .size
             .checked_add(MEMBER_OVERHEAD)
             .ok_or_else(|| invalid("thin member file bound overflow"))?;
         if current.file_bytes > admitted || current.allocation_bytes > admitted {
@@ -566,6 +581,9 @@ impl ThinPool {
 
     fn verify_live(&self) -> io::Result<()> {
         ordinary_root(&self.root)?;
+        if let Some(carrier) = &self.carrier {
+            carrier.observe(self.budget)?;
+        }
         if file_storage::file_id_info(&self._root_handle)? != self.root_file_id
             || file_storage::final_path_guid(&self._root_handle)? != self.root_guid_path
         {
@@ -591,6 +609,8 @@ impl ThinPool {
             nonce: &self.nonce,
             subsystem: &self.subsystem,
             goal_bytes: self.goal,
+            member_virtual_bytes: self._members[0].attachment.created.size,
+            carrier_root: self.carrier.as_ref().map(|c| c.member_root_text()),
             member_numbers: [
                 self._members[0].attachment.number,
                 self._members[1].attachment.number,
@@ -643,6 +663,57 @@ pub fn create_new(
     requested_bytes: u64,
     budget: Budget,
 ) -> io::Result<ThinPool> {
+    create_configured(
+        directory,
+        subsystem_unique_id,
+        requested_bytes,
+        budget,
+        None,
+    )
+}
+
+/// Build large nominal members only inside a fresh capacity-bounded NTFS
+/// carrier. This two-member profile refuses >64TiB per VHDX before creation.
+/// It is not the public conversion backend or a persistent recovery factory.
+pub fn create_bounded_with_carrier(
+    directory: &Path,
+    subsystem_unique_id: &str,
+    requested_bytes: u64,
+    budget: Budget,
+) -> io::Result<ThinPool> {
+    let rounding = 4u64 << 30; // Conservative implementation granularity.
+    let half = requested_bytes
+        .checked_add(1)
+        .map(|n| n / 2)
+        .ok_or_else(|| invalid("nominal member size overflow"))?;
+    let member_bytes = half
+        .checked_add(rounding - 1)
+        .map(|n| n / rounding)
+        .and_then(|n| n.checked_mul(rounding))
+        .and_then(|n| n.checked_add(rounding))
+        .ok_or_else(|| invalid("nominal member rounding overflow"))?;
+    if requested_bytes == 0 || member_bytes > 64u64 << 40 {
+        return Err(invalid(
+            "bounded two-member backend cannot represent this goal: each VHDX member must be <=64TiB; more members are required",
+        ));
+    }
+    bounded_carrier::dimensions(budget)?;
+    create_configured(
+        directory,
+        subsystem_unique_id,
+        requested_bytes,
+        budget,
+        Some(member_bytes),
+    )
+}
+
+fn create_configured(
+    directory: &Path,
+    subsystem_unique_id: &str,
+    requested_bytes: u64,
+    budget: Budget,
+    bounded_member_bytes: Option<u64>,
+) -> io::Result<ThinPool> {
     text(subsystem_unique_id)?;
     let maximum = MEMBER_BYTES
         .checked_add(MEMBER_OVERHEAD)
@@ -652,7 +723,7 @@ pub fn create_new(
     if directory.exists()
         || requested_bytes == 0
         || requested_bytes > i64::MAX as u64
-        || budget.scratch_bytes < maximum
+        || (bounded_member_bytes.is_none() && budget.scratch_bytes < maximum)
         || budget.minimum_free_bytes == 0
         || budget.rust_ram_bytes < RUST_WORKSPACE
     {
@@ -678,9 +749,27 @@ pub fn create_new(
     let nonce = guid_text(&random_guid()?);
     let script = save_bytes(&directory.join("thin-constructor.ps1"), SCRIPT.as_bytes())?;
     let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
-    let first = create_member(&directory.join("member-0.vhdx"))?;
+    let carrier = if bounded_member_bytes.is_some() {
+        Some(bounded_carrier::BoundedCarrier::create(directory, budget)?)
+    } else {
+        None
+    };
+    let member_bytes = bounded_member_bytes.unwrap_or(MEMBER_BYTES);
+    let member_path = |index| -> io::Result<PathBuf> {
+        match &carrier {
+            Some(carrier) => carrier.member_path(index, budget),
+            None => Ok(directory.join(format!("member-{index}.vhdx"))),
+        }
+    };
+    let first = create_member(&member_path(0)?, member_bytes)?;
     capacity(directory, budget)?;
-    let second = create_member(&directory.join("member-1.vhdx"))?;
+    if let Some(carrier) = &carrier {
+        carrier.observe(budget)?;
+    }
+    let second = create_member(&member_path(1)?, member_bytes)?;
+    if let Some(carrier) = &carrier {
+        carrier.observe(budget)?;
+    }
     if first.attachment.number == second.attachment.number {
         return Err(invalid("new thin member routes overlap"));
     }
@@ -691,6 +780,8 @@ pub fn create_new(
         nonce: &nonce,
         subsystem: subsystem_unique_id,
         goal_bytes: requested_bytes,
+        member_virtual_bytes: member_bytes,
+        carrier_root: carrier.as_ref().map(|c| c.member_root_text()),
         member_numbers: numbers,
         members: &[],
         pool: None,
@@ -799,7 +890,9 @@ pub fn create_new(
             guid_text(&members[0].attachment.created.id),
             guid_text(&members[1].attachment.created.id),
         ],
-        member_virtual_bytes_each: MEMBER_BYTES,
+        member_virtual_bytes_each: member_bytes,
+        bounded_carrier: carrier.as_ref().map(|c| c.observe(budget)).transpose()?,
+        host_allocation_excludes_nested_member_files: carrier.is_some(),
         native_disk: observed,
         retained_regular_file_allocation_bytes: allocation,
         allocation_sample_precedes_this_observation_receipt: true,
@@ -833,6 +926,7 @@ pub fn create_new(
         pool,
         script_snapshot,
         observation,
+        carrier,
     })
 }
 
@@ -848,7 +942,7 @@ try{
  $f=[IO.File]::Open($InputPath,'Open','Read','Read');try{Need ($f.Length-gt0-and$f.Length-le131072) 'Bounded input required';$reader=[IO.StreamReader]::new($f,[Text.UTF8Encoding]::new($false,$true));$request=$reader.ReadToEnd()|ConvertFrom-Json}finally{if($null-ne$reader){$reader.Dispose()}else{$f.Dispose()}}
  Need ($request.schema_version-eq1-and$request.member_numbers.Count-eq2-and$request.member_numbers[0]-ne$request.member_numbers[1]-and$request.goal_bytes-gt0) 'Exact new-member input required'
  BoundText $request.subsystem;Need ($request.nonce-cmatch'\A[0-9a-f-]{36}\z') 'Constructor nonce required'
- function Sample{Need ((Get-Process -Id $PID).WorkingSet64-le$request.powershell_ram_bytes) 'Sampled child RAM share exceeded';Need ((Get-Volume -FilePath $InputPath).SizeRemaining-ge$request.minimum_free_bytes) 'Backing volume free reserve breached'}
+ function Sample{Need ((Get-Process -Id $PID).WorkingSet64-le$request.powershell_ram_bytes) 'Sampled child RAM share exceeded';Need ((Get-Volume -FilePath $InputPath).SizeRemaining-ge$request.minimum_free_bytes) 'Backing volume free reserve breached';if($null-ne$request.carrier_root){$carrierVolume=Get-Volume -FilePath $request.carrier_root;Need ($carrierVolume.FileSystem-ceq'NTFS'-and$carrierVolume.SizeRemaining-ge$request.minimum_free_bytes) 'Actual carrier NTFS free reserve breached'}}
  Sample
  $sub=@(Get-StorageSubSystem -UniqueId $request.subsystem);Need ($sub.Count-eq1-and$sub[0].UniqueId-ceq$request.subsystem-and$sub[0].FriendlyName-like'Windows Storage*') 'One exact Windows Storage subsystem required'
  $physical=@();$n=0
@@ -862,11 +956,11 @@ try{
    Need ($p.Count-eq1-and$p[0].UniqueId-ceq$request.members[$n].unique_id-and$p[0].ObjectId-ceq$request.members[$n].object_id) 'Exact claimed member CIM identity absent'
   }else{
    $d=Get-Disk -Number $number
-   Need ($d.Number-eq$number-and-not$d.IsBoot-and-not$d.IsSystem-and$d.Size-eq5368709120-and$d.LogicalSectorSize-eq512-and$d.PhysicalSectorSize-eq4096-and$d.UniqueId) 'New member geometry differs'
+   Need ($d.Number-eq$number-and-not$d.IsBoot-and-not$d.IsSystem-and$d.Size-eq$request.member_virtual_bytes-and$d.LogicalSectorSize-eq512-and$d.PhysicalSectorSize-eq4096-and$d.UniqueId) 'New member geometry differs'
    $p=@(Get-PhysicalDisk -UniqueId $d.UniqueId);Need ($p.Count-eq1-and$p[0].UniqueId-ceq$d.UniqueId) 'Exact member CIM association absent'
    Need ($d.PartitionStyle.ToString()-ceq'RAW'-and-not$d.IsOffline-and-not$d.IsReadOnly-and$p[0].CanPool) 'Fresh RAW poolable member required'
   }
-  Need ($p[0].Size-eq5368709120-and$p[0].LogicalSectorSize-eq512-and$p[0].PhysicalSectorSize-eq4096) 'Exact member physical geometry differs'
+  Need ($p[0].Size-eq$request.member_virtual_bytes-and$p[0].LogicalSectorSize-eq512-and$p[0].PhysicalSectorSize-eq4096) 'Exact member physical geometry differs'
   $row=@{number=[uint32]$number;unique_id=[string]$p[0].UniqueId;object_id=[string]$p[0].ObjectId}
   if($Mode-cne'members'){Need ($request.members.Count-eq2-and$request.members[$n].number-eq$number-and$request.members[$n].unique_id-ceq$row.unique_id-and$request.members[$n].object_id-ceq$row.object_id) 'Live member identity changed'}
   $members+=,$row;$physical+=,$p[0];$n++

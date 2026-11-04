@@ -10,6 +10,9 @@ pub struct FormattingObservation {
     pub provider_requested_bytes_at_constructor: u64,
     pub provider_actual_bytes: u64,
     pub constructor_observation_is_pre_format: bool,
+    pub bounded_carrier_before_gpt: Option<CarrierObservation>,
+    pub bounded_carrier_after_formatter: Option<CarrierObservation>,
+    pub host_allocation_excludes_nested_member_files: bool,
     pub pool_before_gpt: PoolCapacity,
     pub pool_before_formatter: PoolCapacity,
     pub pool_after_formatter: PoolCapacity,
@@ -61,6 +64,11 @@ impl ThinPool {
         validate_owned_partition(&self, partition_bytes)?;
         self.verify_live()?;
         let before = self.observe_stage("format-opening", None)?;
+        let carrier_before = self
+            .carrier
+            .as_ref()
+            .map(|c| c.observe(self.budget))
+            .transpose()?;
         let mut privileges = Privileges::enable_for(&["SeManageVolumePrivilege"])?;
         let path = self.root.join("thin-shadow");
         let mut current_binding = None;
@@ -81,6 +89,11 @@ impl ThinPool {
             binding.validate_alignment(&actual.alignment)?;
             self.verify_live()?;
             let (allocated, available) = capacity(&self.root, self.budget)?;
+            let carrier_after = self
+                .carrier
+                .as_ref()
+                .map(|c| c.observe(self.budget))
+                .transpose()?;
             Ok((
                 binding,
                 policy,
@@ -89,24 +102,33 @@ impl ThinPool {
                 after,
                 allocated,
                 available,
+                carrier_after,
             ))
         })();
-        let (binding, policy, refs_volume_data, partitioned, after, allocated, available) =
-            match operation {
-                Ok(value) => value,
-                Err(error) => {
-                    // Read-only closing is attempted even after a partial native
-                    // mutation. Unknown GPT state grants no owner or retry; retain
-                    // all assets and report both errors if closing also refuses.
-                    let closing = self.observe_stage("format-error", current_binding.as_ref());
-                    return match closing {
-                        Ok(_) => Err(error),
-                        Err(closing) => Err(io::Error::other(format!(
-                            "{error}; private thin format closing also failed: {closing}; all assets preserved"
-                        ))),
-                    };
-                }
-            };
+        let (
+            binding,
+            policy,
+            refs_volume_data,
+            partitioned,
+            after,
+            allocated,
+            available,
+            carrier_after,
+        ) = match operation {
+            Ok(value) => value,
+            Err(error) => {
+                // Read-only closing is attempted even after a partial native
+                // mutation. Unknown GPT state grants no owner or retry; retain
+                // all assets and report both errors if closing also refuses.
+                let closing = self.observe_stage("format-error", current_binding.as_ref());
+                return match closing {
+                    Ok(_) => Err(error),
+                    Err(closing) => Err(io::Error::other(format!(
+                        "{error}; private thin format closing also failed: {closing}; all assets preserved"
+                    ))),
+                };
+            }
+        };
         privileges.restore()?;
         let observation = FormattingObservation {
             schema_version: 1,
@@ -116,6 +138,9 @@ impl ThinPool {
             provider_requested_bytes_at_constructor: self.goal,
             provider_actual_bytes: self.pool.bytes,
             constructor_observation_is_pre_format: true,
+            bounded_carrier_before_gpt: carrier_before,
+            bounded_carrier_after_formatter: carrier_after,
+            host_allocation_excludes_nested_member_files: self.carrier.is_some(),
             pool_before_gpt: before,
             pool_before_formatter: partitioned,
             pool_after_formatter: after,

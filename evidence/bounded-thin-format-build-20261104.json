@@ -1,0 +1,46 @@
+{
+  "focused_check": {
+    "actual_exit_code": 0,
+    "log_sha256": "4e2163c6e5450ec23e71da75d891e2cb71aa4d0a7c78530831597eb6175d2160",
+    "exclusive_build_lock_held": true,
+    "shared_target": "target/shared-experiments",
+    "reported_seconds": 15.57
+  },
+  "embedded_script_parse_errors": 0,
+  "utc": "2026-11-04T10:00:38.8174859Z",
+  "planned_scratch_bytes": 12884901888,
+  "free_space_and_process_memory_are_sampled_not_quotas": true,
+  "nominal_member_model": "Two members derive from requested logical size with checked conservative4GiB rounding and4GiB spare each; each <=64TiB or refuse before creation",
+  "source_parent_commit": "74025098aedc54a0d0e3fe08111c336402a781fc",
+  "native_bounded_carrier_format_qualified": false,
+  "physical_backing_model": "Host allocation counts bounded outer NTFS carrier and external metadata; nested member allocation is not added twice",
+  "planned_native_partition_bytes": 79164837199872,
+  "existing_fixed_profile_retained": true,
+  "public_backend_or_recovery_changed": false,
+  "kind": "bounded-carrier-private-thin-format-build",
+  "schema_version": 1,
+  "carrier_data_growth_bound": "New NTFS carrier filesystem capacity; outer VHDX overhead separately admitted",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool.rs",
+      "bytes": 44735,
+      "sha256": "ed83ed82213da902017c6c88ff9579cca085e9670ba8e048623536260479e00d"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/formatted.rs",
+      "bytes": 7101,
+      "sha256": "cd2a86a4e68d60c61d578cd2d521aa697013cde8936fed4fe56c46ef1fe38c07"
+    },
+    {
+      "path": "crates/n2r-win32/src/managed_shadow/thin_pool/bounded_carrier.rs",
+      "bytes": 11401,
+      "sha256": "2ad5afe2e87c3632d3f21728ac22186421daeddfef4d0967f8693a1c2c320a73"
+    },
+    {
+      "path": "src/bin/lab-private-thin-format.rs",
+      "bytes": 8696,
+      "sha256": "461fc4415b219f001efc4a241ee37e2e696b33102b2bb910f2c82572c68b7bf4"
+    }
+  ],
+  "unit_tests_added_or_run": false
+}

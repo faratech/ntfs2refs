@@ -281,3 +281,60 @@ impl ManagedShadow {
         Ok(())
     }
 }
+
+/// Read-only metadata meter issued only from an original constructor-held
+/// FILE_READ_ATTRIBUTES backing owner. No path/JSON constructor or authority.
+/// It can move to the conversion worker independently of provider attachment.
+pub struct StagingAllocationMeter {
+    file: File,
+    identity: ReferenceFileSnapshot,
+    kind: &'static str,
+}
+#[derive(Debug, Serialize)]
+pub struct StagingAllocationObservation {
+    pub backing_kind: &'static str,
+    pub backing_file: ReferenceFileSnapshot,
+    pub outer_backing_files_counted: u32,
+    pub nested_members_counted_separately: bool,
+    pub payload_bytes_read_by_meter: u64,
+    pub measured_peak_or_physical_usage: bool,
+}
+impl StagingAllocationMeter {
+    pub(super) fn from_held(
+        file: &File,
+        identity: &ReferenceFileSnapshot,
+        kind: &'static str,
+    ) -> io::Result<Self> {
+        let file = file.try_clone()?; // original read-attributes access only
+        let actual = snapshot(&file)?;
+        same_identity(identity, &actual)?;
+        Ok(Self {
+            file,
+            identity: identity.clone(),
+            kind,
+        })
+    }
+    pub fn observe(&self) -> io::Result<StagingAllocationObservation> {
+        let actual = snapshot(&self.file)?; // metadata only, no path reopen
+        same_identity(&self.identity, &actual)?; // EOF/allocation may grow
+        Ok(StagingAllocationObservation {
+            backing_kind: self.kind,
+            backing_file: actual,
+            outer_backing_files_counted: 1,
+            nested_members_counted_separately: false,
+            payload_bytes_read_by_meter: 0,
+            measured_peak_or_physical_usage: false,
+        })
+    }
+}
+impl ManagedShadow {
+    pub fn staging_allocation_meter(&self) -> io::Result<StagingAllocationMeter> {
+        // Observe against the existing owned identity before duplicating it.
+        self._backing.observe()?;
+        StagingAllocationMeter::from_held(
+            &self._backing.file,
+            &self._backing.identity,
+            "native-vhdx-outer-backing",
+        )
+    }
+}

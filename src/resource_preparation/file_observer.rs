@@ -26,6 +26,8 @@ pub(crate) struct FilePreparationObserver {
     phase: Option<&'static str>,
     started: std::time::Instant,
     finished: bool,
+    staging_meter: Option<n2r_win32::managed_shadow::StagingAllocationMeter>,
+    staging_meter_error: Option<String>,
 }
 struct CountHash {
     bytes: u64,
@@ -61,6 +63,18 @@ impl Write for WrittenHash<'_> {
     }
 }
 impl FilePreparationObserver {
+    pub(crate) fn attach_staging_meter(
+        &mut self,
+        meter: std::io::Result<Option<n2r_win32::managed_shadow::StagingAllocationMeter>>,
+    ) {
+        match meter {
+            Ok(meter) => self.staging_meter = meter,
+            Err(error) => {
+                self.staging_meter_error = Some(error.to_string().chars().take(1024).collect())
+            }
+        }
+    }
+
     pub(crate) fn required_ram(path: &Path) -> Result<u64> {
         // The native prefix hasher uses at most4MiB. Include streaming IO,
         // ordinary parent handles and their path encodings before allocation.
@@ -222,6 +236,8 @@ impl FilePreparationObserver {
             phase: None,
             started: std::time::Instant::now(),
             finished: false,
+            staging_meter: None,
+            staging_meter_error: None,
         })
     }
     pub(crate) fn allocation_bytes(&self) -> u64 {
@@ -408,16 +424,70 @@ impl PreparationObserver for FilePreparationObserver {
         // boundary. This adds no payload scan and never contributes authority.
         // An unavailable sample stays explicit rather than failing conversion.
         let counters = n2r_win32::process_io::snapshot();
-        self.append(&serde_json::json!({"kind":"native-events","phase":phase,"events":events,
+        self.append(
+            &serde_json::json!({"kind":"native-events","phase":phase,"events":events,
             "observer_elapsed_ms":self.started.elapsed().as_millis(),
             "process_io":counters.as_ref().ok(),
             "process_io_error":counters.as_ref().err().map(ToString::to_string),
-            "process_io_is_advisory_not_physical_disk_traffic":true}))?;
+            "process_io_is_advisory_not_physical_disk_traffic":true}),
+        )?;
         events.clear();
         Ok(())
     }
     fn note(&mut self, value: &serde_json::Value) -> Result<()> {
-        self.append(value)
+        if value.get("kind").and_then(serde_json::Value::as_str)
+            != Some("pre-ap-resource-accounting-v1")
+        {
+            return self.append(value);
+        }
+        // Only the original held metadata handle is queried. Instrumentation
+        // errors stay unknown; no admission/write/recovery policy changes.
+        let observed = self.staging_meter.as_ref().map(|meter| meter.observe());
+        let sample = observed.as_ref().and_then(|value| value.as_ref().ok());
+        let error = observed
+            .as_ref()
+            .and_then(|value| value.as_ref().err())
+            .map(ToString::to_string)
+            .or_else(|| self.staging_meter_error.clone());
+        let total_ram = value["admitted_resource_ram_bytes"]
+            .as_u64()
+            .and_then(|bytes| bytes.checked_add(self.ram_bytes));
+        let report = serde_json::json!({
+            "kind":"pre-ap-resource-accounting-v1","preparation":value,
+            "staging_backing":sample,"staging_observation_error":error,
+            "staging_meter_available":self.staging_meter.is_some(),
+            "observer_admitted_ram_bytes":self.ram_bytes,
+            "combined_admitted_preparation_and_observer_ram_bytes":total_ram,
+            "admitted_ram_is_not_working_set_or_peak":true,
+            "staging_allocation_is_not_provider_logical_capacity_or_peak":true,
+            "grants_source_or_replay_authority":false,
+        });
+        self.append(&report)?;
+        let text = |value: Option<u64>| {
+            value
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        };
+        let allocated = sample.map(|sample| sample.backing_file.allocation_bytes);
+        let mut out = std::io::stdout().lock();
+        // Human progress is advisory, not an additional refusal/write gate.
+        let _ = writeln!(
+            out,
+            "Before apply: staging backing allocation {} bytes; encoded recovery journal {} bytes; admitted preparation RAM {} bytes.",
+            text(allocated),
+            text(value["encoded_journal_bytes"].as_u64()),
+            text(total_ram)
+        );
+        let _ = writeln!(
+            out,
+            "Capture file lengths: literal {} bytes (recorded allocation {} bytes), index {} bytes (allocation unknown). Logical source reads during capture: {} bytes; all-stage payload I/O totals unknown.",
+            text(value["capture_literal_file_bytes"].as_u64()),
+            text(value["capture_literal_recorded_allocation_bytes"].as_u64()),
+            text(value["capture_index_wire_bytes"].as_u64()),
+            text(value["capture_source_logical_bytes"].as_u64())
+        );
+        let _ = out.flush();
+        Ok(())
     }
     fn published(&mut self, path: &Path, sha: &str, locator_sha: [u8; 32]) -> Result<()> {
         self.append(&serde_json::json!({"kind":"published-recovery-route","path":path,"sha256":sha,"locator_sha256":hex::encode(locator_sha)}))?;

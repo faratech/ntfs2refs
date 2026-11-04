@@ -683,6 +683,7 @@ mod windows {
                 },
                 provider_commitment,
                 if thin_shadow { reserve } else { 0 },
+                staged.staging_allocation_meter(),
             )
         } else {
             if minimize_scratch {

@@ -668,6 +668,50 @@ where
         // closed files before reserving the separate map group, so unused promised
         // capture capacity is not mistaken for a second simultaneous allocation.
         let _capture_seal = capture_group.seal()?;
+        // Observational post-alpha accounting at the existing closed-capture /
+        // prepared-journal boundary. No payload read, new authority or quota.
+        let literal = proof.captured().literal().pin();
+        let index = proof.captured().index().pin();
+        let capture_reads = proof.captured().summary().get("read_counts");
+        let journal = domain.facts();
+        let usage = arena.usage();
+        events.observer.note(&serde_json::json!({
+            "kind":"pre-ap-resource-accounting-v1","phase":"native-journal-prepared-before-publication",
+            "admitted_resource_ram_bytes":request.resources.ram_bytes,
+            "capture_literal_file_bytes":literal.snapshot.file_bytes,
+            "capture_literal_recorded_allocation_bytes":literal.snapshot.allocation_bytes,
+            "capture_literal_allocation_basis":"closed held capture pin; not a peak measurement",
+            "capture_index_wire_bytes":index.bytes,
+            "capture_index_physical_allocation_bytes":Option::<u64>::None,
+            "capture_index_length_is_not_physical_allocation":true,
+            "encoded_journal_bytes":journal.journal_length,
+            "encoded_journal_length_is_not_physical_allocation":true,
+            "selected_bytes":journal.selected_bytes,"old_zero_bytes":journal.old_zero_bytes,
+            "source_free_bytes":journal.source_free_bytes,"new_zero_bytes":journal.new_zero_bytes,
+            "copy_bytes":journal.copy_bytes,"literal_bytes":journal.literal_bytes,
+            "journal_classifications_are_not_source_device_IO_counters":true,
+            "source_payload_bytes_read":Option::<u64>::None,
+            "source_payload_bytes_written":Option::<u64>::None,
+            "source_payload_counter_basis":"not available in this metadata sample",
+            "capture_source_logical_bytes":capture_reads.and_then(|v|v.get("source_logical_bytes")).and_then(serde_json::Value::as_u64),
+            "capture_shadow_bytes":capture_reads.and_then(|v|v.get("shadow_bytes")).and_then(serde_json::Value::as_u64),
+            "capture_source_reference_bytes":capture_reads.and_then(|v|v.get("source_reference_bytes")).and_then(serde_json::Value::as_u64),
+            "capture_source_reference_bytes_reused":capture_reads.and_then(|v|v.get("source_reference_bytes_reused")).and_then(serde_json::Value::as_u64),
+            "capture_counters_are_one_stage_not_total_device_traffic":true,
+            "arena_observed_wire_bytes":usage.as_ref().ok().map(|v|v.actual_wire_bytes),
+            "arena_observed_allocation_bytes":usage.as_ref().ok().map(|v|v.actual_allocated_bytes),
+            "arena_promised_bytes":usage.as_ref().ok().map(|v|v.promised_bytes),
+            "arena_leased_ram_bytes":usage.as_ref().ok().map(|v|v.leased_ram_bytes),
+            "arena_registry_ram_bytes":usage.as_ref().ok().map(|v|v.registry_ram_bytes),
+            "arena_observation_error":usage.as_ref().err().map(ToString::to_string),
+            "capture_arena_ceiling_bytes":request.capture_arena_bytes,
+            "literal_backing_ceiling_bytes":request.max_literal_backing_bytes,
+            "journal_ceiling_bytes":request.max_journal_bytes,
+            "combined_backing_journal_ceiling_bytes":request.max_combined_backing_and_journal_bytes,
+            "observed_allocation_and_reserved_ceilings_are_distinct":true,
+            "metadata_queries_only":true,"peak_or_physical_usage_measured":false,
+            "AP_or_source_write_authority_granted":false
+        }))?;
         events.phase("recovery-map-publication");
         let map_group = if prepared.recovery_maps_required(&expected)? {
             Some(arena.reserve_group(

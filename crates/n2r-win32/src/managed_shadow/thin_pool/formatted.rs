@@ -45,6 +45,16 @@ pub struct FormattedThinShadow {
 }
 
 impl FormattedThinShadow {
+    pub fn staging_allocation_meter(
+        &self,
+    ) -> io::Result<Option<super::super::StagingAllocationMeter>> {
+        self._owner
+            .carrier
+            .as_ref()
+            .map(|carrier| carrier.staging_allocation_meter())
+            .transpose()
+    }
+
     pub fn provider_root(&self) -> &Path {
         &self._owner.root
     }

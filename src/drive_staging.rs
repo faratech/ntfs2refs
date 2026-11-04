@@ -25,6 +25,15 @@ pub(crate) enum StageOwner {
 }
 
 impl StageOwner {
+    pub(crate) fn staging_allocation_meter(
+        &self,
+    ) -> std::io::Result<Option<n2r_win32::managed_shadow::StagingAllocationMeter>> {
+        match self {
+            Self::Vhdx(owner) => owner.staging_allocation_meter().map(Some),
+            Self::Thin(owner) => owner.staging_allocation_meter(),
+        }
+    }
+
     pub(crate) fn binding(&self) -> &GeneralDiskBinding {
         match self {
             Self::Vhdx(owner) => &owner.binding,

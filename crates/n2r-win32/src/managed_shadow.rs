@@ -47,7 +47,9 @@ const MAX_LAYOUT: usize = 48 + 128 * 144;
 mod recovery;
 pub use recovery::{ReattachedShadow, reattach_existing};
 mod retirement;
-pub use retirement::ShadowRetirementReceipt;
+pub use retirement::{
+    ShadowRetirementReceipt, StagingAllocationMeter, StagingAllocationObservation,
+};
 pub mod growth_probe;
 pub mod refs_extent;
 pub mod thin_pool;

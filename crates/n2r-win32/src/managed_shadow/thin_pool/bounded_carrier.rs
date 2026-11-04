@@ -113,6 +113,16 @@ fn ntfs_geometry(
 }
 
 impl BoundedCarrier {
+    pub(super) fn staging_allocation_meter(
+        &self,
+    ) -> io::Result<super::super::retirement::StagingAllocationMeter> {
+        super::super::retirement::StagingAllocationMeter::from_held(
+            &self.member.backing,
+            &self.member.snapshot,
+            "thin-outer-carrier-backing",
+        )
+    }
+
     pub(super) fn create(directory: &Path, budget: Budget) -> io::Result<Self> {
         let (virtual_bytes, partition_bytes) = dimensions(budget)?;
         capacity(directory, budget)?;

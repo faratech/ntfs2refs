@@ -96,6 +96,7 @@ pub(crate) fn convert_owned(
         selected_capacity_policy,
         0,
         0,
+        Ok(None),
     )
 }
 
@@ -109,6 +110,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
     selected_capacity_policy: SelectedCapacityPolicy,
     provider_commitment: u64,
     provider_minimum_free_bytes: u64,
+    staging_meter: std::io::Result<Option<n2r_win32::managed_shadow::StagingAllocationMeter>>,
 ) -> Result<()> {
     let first = n2r_win32::resource_native::observe_available_resources(run)?;
     let keep = reserve(first.scratch_available_bytes)
@@ -129,6 +131,7 @@ pub(crate) fn convert_owned_with_provider_commitment(
         log_ram,
         keep,
     )?;
+    observer.attach_staging_meter(staging_meter);
     // The public CLI selects this policy for --minimize-scratch. Prealignment
     // runs on live NTFS before the final frozen source certificate exists.
     if selected_capacity_policy == SelectedCapacityPolicy::SourceFreeActualBytesV1 {

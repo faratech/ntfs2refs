@@ -42,18 +42,37 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current state: verify before acting
 
-**814 FIRST-FLUSHED-WRITE CASEbe505d3d772f41ab9933f4daa4cba253 IS LIVE.**
-Native diagnosticPID5348/birth1793758643255 was independently matched live;
+**814 ROLLBACK555a7dbced0a4d79aeeac77ce59cc1fe IS LIVE.**
+Actual publicPID860/birth1793760754492 independently matched live, SYSTEMworker
+1996/birth1793760749673, boot1793760660732. ParentoriginalAP0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2,
+Running4GiB. Launcher83926 completed0; no newrestore/start/retry may be inferred.
+Hostroot.lab/hyperv/streaming-v2-20261027/resource-restart-555a7dbced0a4d79aeeac77ce59cc1fe;
+gueststageC:\ntfs2refs\resource-restart-555a7dbced0a4d79aeeac77ce59cc1fe.
+Actualpublic --recover K:\n2r-resource-fixture-be505d3d772f41ab9933f4daa4cba253
+--recovery-sha256 c19e929a6f8b24f9baa38e5a8de57cbafb21cc32692033bc7f68313786b10313 --rollback.
+Inspect actual latest task/PID/birth/terminal BEFORE any power/restore/dispatch.
+
+**814 FIRST-FLUSHED-WRITE CASEbe505 IS COMPLETE**, not live.
+Native diagnosticPID5348/birth1793758643255 actually exited1/1456.7158131s at
+2026-11-04T02:41:40.0184045Z with intentional diagnostic write-stop cause.
 SYSTEMworker5180/birth1793758636109, boot1793758616525. Parent3343, Running4GiB.
 Launcher session12034 completed0; source814/diagnostic790de5.../request27f96...
 are pinned. Actual --apply-and-verify --interrupt-after-first-flushed-write.
 Hostroot.lab/hyperv/streaming-v2-20261027/resource-fixture-be505d3d772f41ab9933f4daa4cba253;
 gueststageC:\ntfs2refs\resource-fixture-be505d3d772f41ab9933f4daa4cba253;
 actualoutputK:\n2r-resource-fixture-be505d3d772f41ab9933f4daa4cba253.
-No actual stop/partial qualification yet. Source could still be preparing.
-Observe actual native-process/PID/birth/terminal and nonzero signal; never infer
-AP from an exit1, allocated/zero-filled signal, elapsed time or old case.
-Root must not power/restore/dispatch while this process or newer worker is live.
+Independent raw qualificationPASSED: full5818196800B immutableJ authenticated
+3a1c9ad7566de81e108d5703f1805160cb01941678753ea2c62c0b240bebcee3;
+canonicalAP/source1, primary0 matchesOLD NTFS while4096+4096 matchesNEW+signal.
+SavednormalshutdownOff/RAM0 atoriginalAP0cf3dd7d(parent3343), thenstartedONCE
+forRollback above. Newerboot1793760660732 provedpersistent source1 beforedispatch.
+SignalSHAa955169d90f4bb30934ba1b9d3e0a21872bd2728741f4da14457c8fa4c99487d;
+terminalSHAe105d3becdf46860e180f87758c8acc4f87c82897512430f8c0bd27fae636b3c;
+publicationSHAc19e929a6f8b24f9baa38e5a8de57cbafb21cc32692033bc7f68313786b10313.
+See evidence/resource-814-first-flushed-write-20261103.json. No physicalpower
+or copied-user-payload interruption claimed. AfterRollback terminal+proof,
+normallyshutdown and independentlyrestore SAME original0cf3 forResume; NEVER
+resume a completedABT/HND branch. Do not alter the savedoriginalAP.
 Prepared qualifier .lab/development/verify-814-first-flushed-write.ps1 SHA
 f7b1e33b9e66bb39a7d05c914803dc547ac7f52d9fd45b6ac8842b6d6466bda0
 takes RunId/PID/birth/NEWpublicationSHA/outputpath and authenticates actual J
@@ -61,6 +80,13 @@ OLDprimary0+NEW4K, canonical AP/source1 and signal. Existing restart dispatcher
 6d3e6c9ee4a88d616536d28e3d65e0c0de2854a765acc7b77f82f23bdc7bf11e
 accepts814 pins; no new adapter needed. Save original AP only AFTER qualification,
 then separately restore it for each restart direction. Do not replay any HND J.
+The original qualifierfailed at raw PhysicalDrive1.FileStream.Length guard
+(regular-file EOF, not device bound), before raw read. It is preserved.
+Fixed qualifier verify-814-first-flushed-write-v2.ps1 SHA
+34c2a9a886e2e2b55abc5e0e4c20d2f5daf6820638512e864d62100d41c1636b
+queries actualsame read-onlyhandle DEVICE+LENGTH; originalregularfile/J checks
+unchanged. Actualv2reportSHA d4c7db66f97ddc73fc1b13b16400d6382b45c28e582e547342c48edf9dbb8767,
+archived underbe505/partial-origin along with3 originalpinfiles andcheckpoint.
 
 **814 PUBLIC CASE69c38a6bf34043b39c4389b119c50087 IS COMPLETE**, not live.
 Exact nativePID5312/birth1793754588845 was independently matched live; SYSTEM

@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "kind": "frozen-814-original-first-flushed-write-recovery-origin",
+  "source_commit": "814f380aa38be4d94e2a71ad221c779e5ab4dc7b",
+  "producer_binary_sha256": "790de5dba9eaf3b17b58fb871e9733f73ee2531de7534c08037bd4e5071b092a",
+  "public_recovery_binary_sha256": "0f5be1c72b05ff030aad85b21be2c37f32ecccbf214af1ee4d6f7afd4807fafb",
+  "run_id": "be505d3d772f41ab9933f4daa4cba253",
+  "native": {
+    "pid": 5348,
+    "creation_ms": 1793758643255,
+    "actual_exit_observed": true,
+    "exit_code": 1,
+    "wall_seconds": 1456.7158131,
+    "terminal_utc": "2026-11-04T02:41:40.0184045Z",
+    "intentional_first_flushed_readback_interruption_reported": true,
+    "terminal_sha256": "e105d3becdf46860e180f87758c8acc4f87c82897512430f8c0bd27fae636b3c"
+  },
+  "recovery_pins": {
+    "envelope_path": "K:\\n2r-resource-fixture-be505d3d772f41ab9933f4daa4cba253\\recovery-envelope.json",
+    "envelope_sha256": "c19e929a6f8b24f9baa38e5a8de57cbafb21cc32692033bc7f68313786b10313",
+    "signal_path": "K:\\n2r-resource-fixture-be505d3d772f41ab9933f4daa4cba253-first-write-signal\\signal.json",
+    "signal_sha256": "a955169d90f4bb30934ba1b9d3e0a21872bd2728741f4da14457c8fa4c99487d",
+    "journal_bytes": 5818196800,
+    "complete_immutable_journal_authenticated": true,
+    "immutable_journal_sha256": "3a1c9ad7566de81e108d5703f1805160cb01941678753ea2c62c0b240bebcee3"
+  },
+  "independent_raw_qualification": {
+    "helper_revision": 2,
+    "helper_sha256": "34c2a9a886e2e2b55abc5e0e4c20d2f5daf6820638512e864d62100d41c1636b",
+    "report_sha256": "d4c7db66f97ddc73fc1b13b16400d6382b45c28e582e547342c48edf9dbb8767",
+    "same_handle_device_identity_and_disk_length_verified": true,
+    "canonical_AP_and_source_disk_attributes_1": true,
+    "primary0_is_authenticated_OLD_NTFS": true,
+    "primary_old_sha256": "56a080fb5eea9f1d6a141dac037f82ee89a4bf9743c51c3f94511901fb15695d",
+    "primary_new_sha256": "fcccd150838595bf924703fa147c132715c594838e7512bd5fa6fc0b6683dec6",
+    "written_offset": 4096,
+    "written_bytes": 4096,
+    "native_written_bytes_before": 0,
+    "native_written_bytes_after": 4096,
+    "written_region_matches_authenticated_NEW_and_signal": true,
+    "written_new_sha256": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7",
+    "source_or_journal_bytes_written_by_verifier": false,
+    "copied_user_payload_interruption": false,
+    "physical_power_loss_proven": false,
+    "original_verifier_failure": "Ordinary FileStream.Length is not a physical-device bound; failure occurred before its raw read.",
+    "original_verifier_preserved": true
+  },
+  "saved_original_AP": {
+    "checkpoint_id": "0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2",
+    "parent_id": "3343f2a4-cf81-4fa9-a504-030425a8011e",
+    "normal_shutdown_before_save": true,
+    "saved_state": "Off",
+    "saved_assigned_RAM_bytes": 0,
+    "no_resume_rollback_or_handoff_before_save": true
+  },
+  "first_restart": {
+    "actual_boot_ms": 1793760660732,
+    "source_disk1_offline": true,
+    "source_disk1_readonly": false,
+    "direction_started": "Rollback",
+    "run_id": "555a7dbced0a4d79aeeac77ce59cc1fe",
+    "native_pid": 860,
+    "native_creation_ms": 1793760754492,
+    "native_completion_not_yet_observed": true
+  },
+  "conversion_or_recovery_success_claimed_by_origin": false,
+  "unit_tests_added_or_run": false,
+  "stable_release": false
+}

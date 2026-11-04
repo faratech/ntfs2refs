@@ -14,25 +14,33 @@ The preceding handoff is preserved BYTE-EXACT in [history](docs/history/AGENTS-t
 - Independent-writer research is off the critical path; no GPL engines in product. Minimize actual reads/scratch/RAM, avoid speculative near-release changes.
 - User forbids new OR existing unit tests unless explicitly asked. Necessary focused builds/native integration are allowed; do not repeat unchanged checks.
 - NEVER edit/format/reset/clean src/main.rs: SHA256 c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b.
-- Root alone owns VM/power/build/Git. Agents edit only assigned files/prepare ignored helpers; no VM operations without Root assignment.
+- VM/power/native-run/archive ownership is EXCLUSIVELY /root/aef_postcut_operator by Root's explicit transfer. Root owns Git/build/docs ONLY and will not compete VM mutations.
+  All other agents edit assigned files/prepare ignored helpers only; no VM operations. Ownership transfer grants no protected-snapshot deletion or cap change.
 - Commit exact stable owned paths and push normally; no force-push or staging everything. Keep .lab/images/journals/binaries/ISOs/secrets out of Git.
 - Keep WSL running. No UAC disabling or persistent privilege changes. Import ONLY .lab/hyperv/win11/secrets/guest-credential.xml; never print credentials.
 
 ## CURRENT actual run: do not infer cut or terminal
 
-**CURRENT LIVEv4 producer327342c5c9194032a0de7c892bdef54f**, actualnative5536/birth1793803471429,
-boot1793803427458, started14:44:31UTC. Watcher ARMED; Root host controller execsession55466 is ACTIVE waiting for its qualified Apply window.
-Root alone controls this session: at most ONE controlled pause+TurnOff. DO NOT power/restore/start another controller or infer cut/AP/terminal/recovery success.
-VM at Root's last observation: Running/parent3343/fourGiB; completed8a and all13protected IDs remain. Root will provide actual outcomes.
-Gueststage `C:\ntfs2refs\resource-fixture-327342c5c9194032a0de7c892bdef54f`; do not guess engine/run routes.
+**CURRENT v4 producer f9c1b2f236d442318afcec1df0cd24a8**, actual native5536/NEW birth1793804848092,
+newboot1793804805471, started15:07:28UTC. V5 controller hostsession55606 is ACTIVE, at most one controlled cut.
+Watcher started; no native terminal/cut/AP outcome has been reported. Same PID was recycled: always verify the birth timestamp.
+Only /root/aef_postcut_operator owns this run, actual cut/save/new-boot authentication, then public rollback/resume and oracles.
+V5 waits only for sharing-error32 while a receipt writer is still open; closed empty/corrupt/type/hash failures still refuse.
+Prior327 controller55466 TERMINATEDexit1/14:54:38.974UTC, TurnOffFALSE: 'Bounded ordinary closed receipt required'.
+Its native5536/OLD birth1793803471429 actually ended0/891.1842362s at14:59:22.659UTC after the pause released.
+Watch abort14:56:38.889UTC reported release attempted/remaining0/errors0. No AP/cut qualification.
+Operator archived19files69792B, manifestSHAeaf65aea59dc251902aff1c9a16758995e6f10119e3f97c179a763f5321673b9,
+then orderly shutdown/freshOff/all13 and ONE3343 restore. Census304922398237B/free101603741696B admitted unchanged22GiB.
+Root owns Git/build/docs only. DO NOT start competing VM/power/restore operations. Completed8a and all13protected IDs/cap remain unchanged.
+Gueststage `C:\ntfs2refs\resource-fixture-f9c1b2f236d442318afcec1df0cd24a8`; do not guess engine/run routes.
 V4 changes ONLY ignored harness: owned native-thread pause <=120s on normal path, exact suspend-increment release/watchdog,
 and postpause OLD-primary/NEW4096 verification. WHOLE WATCHER PROCESS DEATH CAN LEAVE NATIVE PAUSED; this is not absolute automatic resume.
 Pending kernel I/O and physical power are not qualified. HostPS5.1 compile succeeded WITHOUT instantiation/process control/source opening;
 that compile is distinct from the now-armed actual case. Product/Rust remains exactaef; no unit tests or new Rust build.
 CS2d58957f47800579f43aab3718d79df265c04932973b8b1f793334931fe45bde;
 producer6c456585c141771b0e35f4b5a361db0c709ef78875a1d9fc8368bf9162368c7b;
-controller4a3d98900092063026e2f4be5a49e0497028f0b653c207918279c10b45a835d2;
-recovery2612b8bc25aadae367175968ead7f8d3adcd378c8b88c48794b7997cbf6702ca. Recovery is not yet executed/qualified.
+controller-v5 02b8b5a4b7f7a9c10609df0cd79223ab2d0708e0a3314eaf37c5922c5572b1da;
+recovery-v5 8bb64caf2ce94fbdcdfe6eaf03089638839a904871ee5344f041a204bc28199f. Recovery is not yet executed/qualified.
 
 Priorv3 controller96325 is TERMINALexit1 ('Watch/native already closed'), TurnOffFALSE. The8bd89251641f45af8fbc3a836cc4bc18 watcher
 observed partial/trigger but OLD primary advanced, so it aborted14:16:34.400UTC before fresh confirmation; host refused14:16:42.432UTC.
@@ -114,7 +122,7 @@ Previously automatic-review-rejected research-image, .lab/ntfs2btrfs-source-audi
 
 ## Protected snapshot graph and VM
 
-Keep these13IDs and their dependencies; guardedf4 is NEVER remove/force. Root alone chooses any future audited retirement:
+Keep these13IDs and dependencies; guardedf4 is NEVER remove/force. Current VM-ownership transfer authorizes NO new retirement:
 - 8a5b96ff-5f13-4e18-ab6c-c8c02cd7e86f (completed aef HND),3343f2a4-cf81-4fa9-a504-030425a8011e (prepared NTFS).
 - 895f472a-4d33-47f2-86ec-bb8ead5f3911,0cf3dd7d-9724-46d2-83da-6cbcbcca9fc2,a0a8217f-894f-4311-bbf7-27151da5d216 (frozen814).
 - f4bf5238-14c0-4b15-bda6-7859abd4d1c9 (guarded),4b8dafbf-7500-4c51-ab12-d0a697bf7264 (large-format prototypes).

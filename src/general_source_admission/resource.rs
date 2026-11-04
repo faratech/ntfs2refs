@@ -88,6 +88,8 @@ pub struct ResourceSourceReport<'a> {
 pub(crate) mod source_owner;
 use source_owner::ResourceSourceOwner;
 
+#[path = "resource_partition.rs"]
+pub(crate) mod partition;
 pub struct ResourceSourceContext {
     early_preparation_guard: Option<crate::resource_preparation::early_guard::EarlyPreparationGuard>,
     source: ResourceSourceOwner,

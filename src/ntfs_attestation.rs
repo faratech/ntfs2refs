@@ -981,6 +981,91 @@ pub(crate) fn check_header_geometry(
     Ok(())
 }
 
+#[cfg(windows)]
+pub(crate) fn check_partition_header_geometry(
+    geometry: &crate::ntfs_inspect::NtfsGeometry,
+    observed: &n2r_win32::attestation_partition::PartitionPagedNtfsObservation,
+) -> Result<()> {
+    use n2r_win32::attestation::NativeObservationDomain;
+    let native=observed.domain().header();
+    ensure!(observed.before()==observed.after()
+        && observed.before().partition_write_protect_error==19
+        && observed.before().physical_disk_is_writable_succeeded
+        && observed.before().volume_extents==native.volume_extents_before
+        && observed.before().ntfs_volume_data==native.ntfs_data_before
+        && observed.before().actual_physical_disk_attributes==native.disk_attributes_before,
+        "actual partition protection does not bind native header");
+    ensure!(
+        native.request.ntfs_serial == geometry.serial_number,
+        "source serial differs"
+    );
+    ensure!(
+        native.privileges_restored
+            && native.write_protect_error_before == 0
+            && native.write_protect_error_after == 0,
+        "native protection or privilege restoration incomplete"
+    );
+    ensure!(
+        native.privilege_states.len() == 2,
+        "native privilege audit incomplete"
+    );
+    for (p, name) in native
+        .privilege_states
+        .iter()
+        .zip(["SeBackupPrivilege", "SeSecurityPrivilege"])
+    {
+        ensure!(
+            p.name == name
+                && p.enabled == p.before | 2
+                && (p.restored & !0x8000_0000) == (p.before & !0x8000_0000),
+            "native privilege audit differs"
+        );
+    }
+    ensure!(
+        native.volume_extents_before == native.volume_extents_after
+            && native.disk_attributes_before == native.disk_attributes_after
+            && native.ntfs_data_before == native.ntfs_data_after,
+        "native volume state changed"
+    );
+    let ext = &native.volume_extents_before;
+    ensure!(
+        ext.len() == 32
+            && u32le(ext, 0) == 1
+            && u32le(ext, 8) == native.request.disk_number
+            && u64le(ext, 16) == native.request.partition_offset
+            && u64le(ext, 24) == native.request.partition_length,
+        "native disk route differs"
+    );
+    let attrs = &native.disk_attributes_before;
+    ensure!(
+        attrs.len() == 16 && u32le(attrs, 0) == 16 && u64le(attrs, 8) == 0,
+        "actual physical disk state differs from partition protection profile"
+    );
+    let data = &native.ntfs_data_before;
+    ensure!(
+        (96..=128).contains(&data.len())
+            && u64le(data, 0) == geometry.serial_number
+            && u32le(data, 40) == u32::from(geometry.bytes_per_sector)
+            && u32le(data, 44) == geometry.cluster_size
+            && u32le(data, 48) == geometry.file_record_size
+            && u64le(data, 8) == geometry.total_sectors
+            && u64le(data, 16) == geometry.total_clusters
+            && u64le(data, 64) == geometry.mft_lcn
+            && u64le(data, 72) == geometry.mftmirr_lcn,
+        "native NTFS geometry differs"
+    );
+    ensure!(
+        native.request.partition_length == geometry.volume_size
+            || native.request.partition_length
+                == geometry
+                    .volume_size
+                    .checked_add(u64::from(geometry.bytes_per_sector))
+                    .context("source length overflow")?,
+        "native/source partition length differs"
+    );
+    Ok(())
+}
+
 pub fn compare(
     raw: &NtfsInspection,
     inspection_sha256: &str,

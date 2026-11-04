@@ -243,7 +243,35 @@ pub fn compare_domain(
     budget: ResourceBudget,
     policy: VerificationPolicy,
     native: &impl NativeObservationDomain,
+    emit: impl FnMut(PagedFileComparison) -> Result<()>,
+) -> Result<PagedComparisonSummary> {
+    compare_domain_with_header(source,binding,budget,policy,native,emit,super::check_header_geometry)
+}
+/// Only an actual phase-bound wrapper may select partition protection rules.
+pub(crate) fn compare_partition_domain(
+    source: &PagedInspection,
+    binding: &GeneralDiskBinding,
+    budget: ResourceBudget,
+    policy: VerificationPolicy,
+    observed: &n2r_win32::attestation_partition::PartitionPagedNtfsObservation,
+    phase: &mut n2r_win32::partition_lifecycle::PartitionReadonlyPhase<'_>,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+    emit: impl FnMut(PagedFileComparison)->Result<()>,
+) -> Result<PagedComparisonSummary> {
+    observed.require_phase(phase,events)?;
+    let result=compare_domain_with_header(source,binding,budget,policy,observed.domain(),emit,
+        |geometry,_|super::check_partition_header_geometry(geometry,observed))?;
+    observed.require_phase(phase,events)?;
+    Ok(result)
+}
+fn compare_domain_with_header(
+    source: &PagedInspection,
+    binding: &GeneralDiskBinding,
+    budget: ResourceBudget,
+    policy: VerificationPolicy,
+    native: &impl NativeObservationDomain,
     mut emit: impl FnMut(PagedFileComparison) -> Result<()>,
+    mut check_header: impl FnMut(&crate::ntfs_inspect::NtfsGeometry,&n2r_win32::attestation::Report)->Result<()>,
 ) -> Result<PagedComparisonSummary> {
     use crate::ntfs_stream_attestation::Check;
     let expected = PagedObservationRequest::new(source, binding, budget, policy)?;
@@ -270,7 +298,7 @@ pub fn compare_domain(
             && native.request_len()? == expected.len(),
         "native source coverage differs"
     );
-    super::check_header_geometry(&source.header().geometry, header)?;
+    check_header(&source.header().geometry, header)?;
     let allocation = header
         .allocation
         .as_ref()

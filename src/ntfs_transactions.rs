@@ -288,3 +288,41 @@ pub(crate) fn verify_domain(
     source.revalidate()?;
     Ok(result)
 }
+
+/// Same default-RM/raw-log reconciliation with an actual selected-partition
+/// lifecycle phase, never a fabricated GeneralFreezeObservation.
+#[cfg(windows)]
+pub(crate) fn verify_partition_domain(
+    source: &ntfs::PagedInspection,
+    log: &ntfs_log::VerifiedRestart,
+    phase: &mut n2r_win32::partition_lifecycle::PartitionReadonlyPhase<'_>,
+    observed: &n2r_win32::attestation_partition::PartitionPagedNtfsObservation,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<VerifiedTransactions> {
+    use ntfs::RootFileDomain;
+    use n2r_win32::{attestation::NativeObservationDomain, txf_native::DefaultRmState};
+    observed.require_phase(phase,events)?;
+    source.revalidate()?;
+    let pin=source.canonical_sha256()?;
+    ensure!(log.binds_domain(source) && log.restart.candidate_clean_dismount
+        && source.header().dirty==Some(false), "clean selected-partition restart proof required");
+    let before=phase.mounted_ntfs_before_freeze();
+    let after=observed.txf().observation();
+    ensure!(before.binding()==phase.binding()
+        && observed.domain().header().request.source_inspection_sha256==pin,
+        "partition transaction observations differ from actual lifecycle source");
+    let before=before.observation();
+    ensure!(before.windows_version==[10,0,26300] && after.windows_version==before.windows_version
+        && before.rm_handle_profile=="volume-root-directory-access-time-suppressed"
+        && before.native_volume_state_stably_clear && after.native_volume_state_stably_clear
+        && before.default_rm_state()!=DefaultRmState::Unresolved
+        && after.rm_handle_profile=="volume-root-directory-selected-partition-read-only"
+        && after.default_rm_state()==DefaultRmState::Inactive,
+        "partition default RM did not transition through actual lock/dismount to protected inactive state");
+    let result=VerifiedTransactions { inspection_sha256:pin,scope:inspect_scope_domain(source)?,
+        default_rm_before:format!("{:?}",before.default_rm_state()),default_rm_after:"Inactive".into(),
+        lock_dismount_exclusion_observed:true,clean_restart_bound:true };
+    observed.require_phase(phase,events)?;
+    source.revalidate()?;
+    Ok(result)
+}

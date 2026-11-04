@@ -925,4 +925,97 @@ impl PagedSourceFingerprint {
         self.revalidate()?;
         Ok(hex::encode(envelope.finalize()))
     }
+    /// Same canonical fingerprint with a bounded partition reader. Its caller
+    /// brackets the actual phase/owner; generic bytes cannot issue admission.
+    pub(crate) fn hash_partition_reader<R: Read + Seek>(&self, source: &mut R, partition_bytes:u64) -> Result<String> {
+        use crate::parallel_digest::{Chunk, MAX_CHUNK_BYTES, digest_chunks};
+        ensure!(
+            partition_bytes == self.pins.partition_bytes,
+            "fingerprint source length differs"
+        );
+        self.revalidate()?;
+        let batch = usize::try_from((u64::from(self.scratch.budget().page_bytes) / 128).max(1))?;
+        let depth = 1usize;
+        let workers = crate::parallel_digest::workers().min(batch).max(1);
+        let (buffers, threads) = if depth > 1 {
+            (depth, depth - 1)
+        } else {
+            (workers + 2, workers)
+        };
+        // Each additional physical lane has its own SDK aligned buffer in
+        // addition to the caller-owned digest buffer. Reserve both before
+        // digest_frozen_chunks can open any lane. The original source buffer
+        // is already owned and paid by ResourceSourceContext.
+        let extra_lanes = depth.saturating_sub(1) as u64;
+        let lane_bytes = extra_lanes
+            .checked_mul(n2r_win32::GeneralFrozenPartition::read_buffer_memory_bytes())
+            .and_then(|n| n.checked_add(extra_lanes * 65536))
+            .context("fingerprint physical lane RAM overflow")?;
+        let ram = (buffers as u64)
+            .checked_mul(MAX_CHUNK_BYTES as u64)
+            .and_then(|n| n.checked_add(lane_bytes))
+            .and_then(|n| n.checked_add(threads as u64 * 2 * 1024 * 1024))
+            .and_then(|n| n.checked_add(batch as u64 * 256))
+            .context("fingerprint worker RAM overflow")?;
+        let _ram = self.scratch.lease_ram(ram)?;
+        let mut pieces = Vec::new();
+        pieces.try_reserve_exact(batch)?;
+        let mut frames = Vec::new();
+        frames.try_reserve_exact(batch)?;
+        let mut digest = n2r_win32::sha256_native::Sha256::new()?;
+        let mut flush = |pieces: &mut Vec<Chunk>, frames: &mut Vec<Option<Range>>| -> Result<()> {
+            let digests = digest_chunks(source, pieces)?;
+            ensure!(
+                digests.len() == frames.len(),
+                "fingerprint piece digest coverage differs"
+            );
+            for (frame, hash) in frames.iter().zip(digests) {
+                if let Some(row) = frame {
+                    digest.update(&row.offset.to_le_bytes())?;
+                    digest.update(&row.length.to_le_bytes())?;
+                }
+                digest.update(&hash)?;
+            }
+            pieces.clear();
+            frames.clear();
+            Ok(())
+        };
+        for ordinal in 0..self.covered.len() {
+            let row: Range = self.covered.get(ordinal)?;
+            let mut done = 0;
+            while done < row.length {
+                let length = (row.length - done).min(MAX_CHUNK_BYTES as u64) as usize;
+                pieces.push(Chunk {
+                    offset: row.offset + done,
+                    length,
+                });
+                frames.push((done == 0).then_some(row));
+                done += length as u64;
+                if pieces.len() == batch {
+                    flush(&mut pieces, &mut frames)?;
+                }
+            }
+        }
+        if !pieces.is_empty() {
+            flush(&mut pieces, &mut frames)?;
+        }
+        drop(flush);
+        let inner = digest.finish()?;
+        let mut envelope = Sha256::new();
+        envelope.update(DOMAIN);
+        envelope.update(self.pins.partition_bytes.to_le_bytes());
+        envelope.update(hex::decode(&self.pins.source_inspection_sha256)?);
+        envelope.update([u8::from(self.pins.policy.is_fast())]);
+        for ranges in [&self.covered, &self.omitted] {
+            envelope.update(ranges.len().to_le_bytes());
+            for ordinal in 0..ranges.len() {
+                let row: Range = ranges.get(ordinal)?;
+                envelope.update(row.offset.to_le_bytes());
+                envelope.update(row.length.to_le_bytes());
+            }
+        }
+        envelope.update(inner);
+        self.revalidate()?;
+        Ok(hex::encode(envelope.finalize()))
+    }
 }

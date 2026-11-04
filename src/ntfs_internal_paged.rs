@@ -106,6 +106,43 @@ impl PagedVerifiedIndexes {
         self.replacement_supported = self.indexes.iter().all(|i| i.replacement_supported);
         true
     }
+    pub(crate) fn bind_partition_native_quota(
+        &mut self,
+        observed: &n2r_win32::attestation_partition::PartitionPagedNtfsObservation,
+    ) -> bool {
+        let native = observed.txf().observation();
+        if observed.domain().header().request.source_inspection_sha256 != self.inspection_sha256
+            || !self.default_quotas_only
+            || native.windows_version != [10, 0, 26300]
+            || native.rm_handle_profile != "volume-root-directory-selected-partition-read-only"
+            || !native
+                .quota_before
+                .as_ref()
+                .zip(native.quota_after.as_ref())
+                .is_some_and(|(a, b)| {
+                    a == b
+                        && a.control_flags == 0
+                        && a.default_threshold == -1
+                        && a.default_limit == -1
+                        && a.free_space_start_filtering == 0
+                        && a.free_space_threshold == 0
+                        && a.free_space_stop_filtering == 0
+                })
+        {
+            return false;
+        }
+        self.native_quota_policy_bound = true;
+        for index in &mut self.indexes {
+            if index.role == "$Extend\\$Quota" {
+                index.replacement_supported = true;
+                index.detail =
+                    "cross-matched unlimited defaults; native quotas disabled with zero accounting"
+                        .into();
+            }
+        }
+        self.replacement_supported = self.indexes.iter().all(|i| i.replacement_supported);
+        true
+    }
     pub fn revalidate(&self) -> Result<()> {
         for store in &self.stores {
             store.revalidate()?;

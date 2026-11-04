@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "kind": "actual-partition-resource-source-constructor",
+  "status": "public-check-passed-target-capture-activation-pending",
+  "files": [
+    {
+      "path": "src/general_source_admission/resource.rs",
+      "bytes": 71409,
+      "sha256": "51e4a7cf45e89e957815b931f74d51f485e78c871a2b74a14ffa160429a84ce1"
+    },
+    {
+      "path": "src/general_source_admission/resource_partition.rs",
+      "bytes": 41585,
+      "sha256": "f3d7c490b9014ba3050d8ecf65a8a600613586233e5b19250222bcff7a0f87d3"
+    },
+    {
+      "path": "src/ntfs_attestation.rs",
+      "bytes": 47894,
+      "sha256": "bd85e33b13cc5ffe793b16abbf33daaf39fbca182375bd00a55a408d14be36af"
+    },
+    {
+      "path": "src/ntfs_attestation/paged.rs",
+      "bytes": 20489,
+      "sha256": "465a19b883f1185ffba0a820fa2680183ddc01f92297e8e159aff15d190937ac"
+    },
+    {
+      "path": "src/ntfs_internal_paged.rs",
+      "bytes": 26504,
+      "sha256": "e387aa57e60e8332220ba0310ceacf0f353d1a51e3cdc0a9a6a1af7df0e69248"
+    },
+    {
+      "path": "src/ntfs_transactions.rs",
+      "bytes": 13183,
+      "sha256": "549122c5b8bbbd61f2707a0bc1c3a3f947c8c21515ca5629d0fa070d1cb3b8e9"
+    },
+    {
+      "path": "src/source_fingerprint/resource.rs",
+      "bytes": 38099,
+      "sha256": "6f87caddfb50c74602d763bfed93e3491bb1b91504555d775e75e06afff73b92"
+    }
+  ],
+  "check_exit": 0,
+  "check_wall_seconds": 21.2559547,
+  "check_receipt_sha256": "e791f134f167c1f6c6e36e8cc0d423d96fba6f8ddac5dd929cbb582dc8a12751",
+  "shared_target_reused": true,
+  "unit_tests_run": false,
+  "native_qualified": false,
+  "frozen_alpha_rebuilt": false,
+  "reviewed_source_patch_sha256": "b5337679d76be255bc0de9a6f665369976c9e12784234471e9449519a1b06a6d",
+  "applied_verified_copies_after_patch_fragment_error": true,
+  "line_endings_normalized": true,
+  "added_readonly_publication_getters": true,
+  "behavior": [
+    "Actual borrowed target-RO source reader, raw NTFS inspection/coverage and canonical XXH3 metadata/extent fingerprint.",
+    "Complete existing native/raw object/namespace/security/ACL/stream/bitmap/TxF/VSS/quota/feature admission checks via explicit partition proof.",
+    "Adopted original native owner/token, actual SDK admission and guard/native artifact seals are retained.",
+    "Same-disk source metadata output uses actual held directory/volume identity and disjoint extents, without changing legacy dedicated rules.",
+    "Failure requests only actual live pre-private cancellation; no whole-disk restoration or fabricated GeneralDiskState.",
+    "Publication handoff borrows actual owner/admission and verifies held intent before/after; no source writer."
+  ],
+  "remaining": [
+    "Partition-specific target/placement/capture and prepared-source certificate consumption.",
+    "Versioned authenticated publication, MIXED replay activation, full process-death preparation recovery and HND/ABT.",
+    "Native qualification and public selection wiring; no shared-disk conversion capability is advertised."
+  ]
+}

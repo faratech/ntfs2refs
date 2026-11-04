@@ -42,11 +42,21 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current state: verify before acting
 
-**NO NATIVE WORKER IS LIVE as of the completed814Resume closure.**
-VM actuallyOff/RAM0, currentparent a0a8217f-894f-4311-bbf7-27151da5d216,
+**814 PREPARE-ONLY RESERVE CASEa709d06ceeb34041ad26f5cb80856852 IS LIVE.**
+ActualdiagnosticPID5324/birth1793763246502 independentlymatchedlive; SYSTEMworker
+5164/birth1793763239871; boot1793763220616. Parent3343, Running4GiB. Launcher96552
+completed0, c879de78.../reserveRequest643bce91.../source814+diag790de5...pins.
+Hostroot.lab/hyperv/streaming-v2-20261027/resource-fixture-a709d06ceeb34041ad26f5cb80856852;
+gueststageC:\ntfs2refs\resource-fixture-a709d06ceeb34041ad26f5cb80856852;
+actualoutputK:\n2r-resource-fixture-a709d06ceeb34041ad26f5cb80856852.
+NO apply/faultflag passed; minimum_free_bytes33285996544(entireKvolume) intended
+to refuse beforeJ/AP. No refusal/corruption/cancelqualifiedyet. Inspectactual
+task/PID/birth/terminalbefore ANY power/restore/action. Do not restart thiscase.
+
+The completed814Resume branch was Off/RAM0, savedata0a8217f-894f-4311-bbf7-27151da5d216,
 savedresumedHND childoforiginalAP0cf3dd7d. Rootnormalshutdown AFTERnative0+
 independent811/1534/1024 success+metadataarchive. Neverrawreplay thisHND J.
-Actual latest newer process/task state must still be checked before any action.
+It wasthenrestoredONCE to3343 byprepare-onlylauncherforNEWLIVEa709 above.
 
 **814 RESUMEe10c19f1725d4398a9f8dc3b55606820 IS COMPLETE**, not live.
 Actual publicPID1664/birth1793761630148 independently matched live; SYSTEMworker
@@ -77,10 +87,16 @@ Remainingfrozen814releasegates: native reserve-refusal→corruptguard-refusal+
 normalrestart/earlycancel, thenexternalqualification/package. Productcode814
 mustremainfrozen; no unit tests. Broad hardware/Windows-diskpartition/1000TB
 goals remain OPEN and must not be marked complete merely by alpha packaging.
-Current40GiBpreparationforecastfails labcap; Rootrequestedread-only audit of
-obsoleteolda51AP because new0cf3AP/both814directions nowhaveactualevidence.
-Do notraise caps/resetepoch/lowerforecasttohidegrowth. No removalapprovedby
-Root yet; independentlyverify graphandarchives before any Hyper-V retirement.
+Old obsoletea51AP was retiredviaHyper-V AFTERnew0cf3AP/both814directions+a0a/895
+HNDs wereverified/saved andhistoricalarchive manifestpinsmatched. Itwasinactive
+leafoutsidecurrentancestry; originalpartial21files6640939B/rollback72files949084B/
+resume72files949262B observations+oldsource/binaries remain. Exactold5.82GBJ,
+shadowanddirecta51restoration intentionallydiscarded; archivedobservations
+cannotreconstructthatoldjournal. Supersede historicalrestorea51instructions;
+NEVERrecreate/restore retiredID. Neworiginal0cf3 and895/a0a/766/ancestors and
+guardedf4bf preserved. Retirementmetadata.lab/development/retire-old-a51-ap-20261103.
+Alllab/cache/staging281098706161B/free125478793216B admittedunchanged40GiB before
+a709; max329374052988/minfree17179869184/epochunchanged. No budgetincrease.
 Preparedearly helper run-814-early-guard-case.ps1 finalSHA
 ced5451297371c301e4d21a6edd1e48d2fc4b054a78687f1ae4e4b92d4c25a03.
 UsefreshPowershellprocessperaction (Add-Type cannotrepeatinPS5session).

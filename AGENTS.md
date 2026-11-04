@@ -130,11 +130,32 @@ input46460a3338e4afb79ebc72a00ff026bbca72dce49a54363248a47eac1cbd200d; buildrece
 Built0/36.7441847s/sharedtarget/25registry rows matchroot, all120inputs revalidated; dependencycommit9651516379024dde8308e831eadd2e8e3d622aff.
 `evidence/partition-private-reopen-build-20261104.json` preserves buildscope. Frozenalpha remains unchanged.
 
-NEXT actual SDK integration is being written ONLY as copiedfiles/patch in `.lab/development/partition-owner-integration-draft` byfrozen_candidate_cases.
-Opaque partition-scoped owner and bounded paged adapter alongside legacywhole-disk types; completeWindows/pagefile/configureddump checks;
-no newpublicCLI bypass, no JSON/path-only certificate, no observation-derived writeauthority. ExistingHeldPagedWritePolicy/authenticatedjournal/OLD-NEW gates remain prerequisites.
-Upper SourceContext/recovery/finalization and same-disk C journal disjointness mustbe integrated; do not mistake unused lowerprimitives for completedconversion.
-No application/build/nativeGO for this integration patch yet. Operator remains exclusiveVMowner; code/build/Git ownership rules remain.
+## Current SDK integration after the proved primitives
+
+SDK foundation is APPLIED/COMMITTED asf4e737c; SDKcheckpassed0/15.3161403s,sharedcache,no unit tests orVMexecution.
+`evidence/partition-owner-foundation-build-20261104.json` binds the CHECKEDfoundationcopies, notsubsequentruntimechanges.
+ActualPartitionScopedOwner holdsGLOBALROOTRWfile butpublicly exposes boundedRead/Seek; stableArctoken; newprivate-type observerprofile;
+pagedwriter has actualJ/index/lifecycle/OLD/NEW gates andpoisonsaftererrors. GateissuerABSENT/currentleaseunavailable, noCLIenablement.
+Legacy nativebodyafterconstDEVICE andentireoldpaged_recoveryprefix arebyteexact; Rootstrippedunrelatedrustfmt beforecompile.
+Foundationcommit'sCRLF-only declaration/evidence whitespace wasnormalizedin2440d7f; no legacybodybehaviorchange.
+
+Runtimecritical-role facts are APPLIED/COMMITTED as2440d7f; SDKcheckpassed0/10.7189369s,sharedcache,no unit tests orVMexecution.
+`evidence/partition-runtime-role-build-20261104.json` binds newreadonlyVDScollector andownerhooks. Actualsoftwareprovider/pack/volume
+properties+flags andnativecriticalextents outsideT arecollected beforeRWopen/revalidated. Criticalboot/system/page/hiber/crash/backboot
+roles mustbestable/healthy/resolved; noncriticalofflineavailability isrecordedwithoutblockingownfrozenShadow. Explicit
+same_critical_roles comparescriticalbindings+inventoryidentity, rawtelemetry keepsfullEq. COMlayouts matchSDK10.0.26100x64, balancedownedreferences.
+No Refresh/Reenumerate/setter/datafileIO. Runtimefacts areNOTundocumentedloaded-driverauthority andcannotissueadmission.
+ConfiguredCrashControl/LiveKernelReports collector refusesunknownroutes/settings andANYnonemptyDumpFilters. Microsoftdocumented
+dumpfve.sys isalegitimatenonemptyconfiguration; explicitbuilt-infilterpolicy remainsCOMPATIBILITYBLOCKER, notuniversalunsupportedclaim.
+Thecollector'sruntime_loaded_dump_locations_verified remainsFALSE; no issuer/certificatecanbesynthesizedfromJSONorobservations.
+
+NEXT upperSourceContext slice is being written asCOPIEDPATCH `.lab/development/partition-source-scope-draft` byfrozen_candidate_cases:
+explicitDedicated(default)/Partition owner+stabletoken, boundedunadmittedNTFSraw/source lanes, SDKtarget-onlylifecycleinterfaces.
+CurrentdraftmustnotbeappliedbeforeRootreview/build. No fakeGeneralDiskState/GeneralFreezeObservation orbooleanadmission; missing
+freshBasic↔private/protectedNativeROguard remainsunavailable. Continuefullfreshadmission, AP/versionedscope/MIXED OLD-NEWrecovery,
+partition-onlyHND/ABTfinalization andC-siblingJ actualextentdisjointness; unusedlowerAPIs arenotcompletedconverter.
+FrozenalphaZIP/sourceaef1ab3 andpublicCLIwhole-diskguards stayunchanged. src/main.rsneveredit. OperatorstillidleexclusiveVMowner;
+no newnativeGO. **CurrentOff766containsPRIVATE T; no restore casually.** Lastcensus317250100370/free89303965696, all16keepers/fixedepoch unchanged.
 Microsoft's [volume-OFFLINE contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddvol/ni-ntddvol-ioctl_volume_offline) blocks all volumeI/O;
 private-type route avoids that dead path. Existing whole-disk guards/certificates stay unchanged.
 See `docs/ntfs-conversion-policy.md` for implemented preserve/materialize/refuse semantics and qualification boundaries.

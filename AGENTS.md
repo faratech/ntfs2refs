@@ -42,9 +42,26 @@ not current instructions. Earlier archives remain in docs/history/.
 
 ## Current state: verify before acting
 
-**814 RESUMEe10c19f1725d4398a9f8dc3b55606820 IS LIVE.**
+**NO NATIVE WORKER IS LIVE as of the completed814Resume closure.**
+VM actuallyOff/RAM0, currentparent a0a8217f-894f-4311-bbf7-27151da5d216,
+savedresumedHND childoforiginalAP0cf3dd7d. Rootnormalshutdown AFTERnative0+
+independent811/1534/1024 success+metadataarchive. Neverrawreplay thisHND J.
+Actual latest newer process/task state must still be checked before any action.
+
+**814 RESUMEe10c19f1725d4398a9f8dc3b55606820 IS COMPLETE**, not live.
 Actual publicPID1664/birth1793761630148 independently matched live; SYSTEMworker
-4308/birth1793761625259; boot1793761529400. ParentoriginalAP0cf3dd7d, Running4GiB.
+4308/birth1793761625259; boot1793761529400. Actualnativeexit0/997.9298581s at
+2026-11-04T03:23:48.1427883Z; actualhandleheldterminal. Applied8356ranges/
+11403857920selectedB then successfulprotectednativeReFS/HNDfinalization,
+2558bindings/157known119009B/654extent-only/label/mounts. ProductK:\ntfs2refs-recovery-72c1b9042ce05047c322c570cc2da1fa
+resultSHA3620edf073c05049b682e8e031c18fbcfdcae84527e2a437d473b2026192ff7b.
+IndependentReFSobserver03c03f3995e74cf3b4aa82a7aa86c10b worker5928/birth1793762692707
+matchedALL811XXH3streams9885801949B/1534base/1024extrapaths usingfrozen8f14 input,
+opening+closingtrue,13actualdigestexit0,11.8034244s. No completeACL/time audit.
+Closed72smallfiles949267B allsource/copylength+SHAverified, manifest4aa544d3e63915b0533d1ee28e276ca3f0f1521cf9eab682bf66e95274024112
+undere10c/closed-resume-814; bigJ/shadownotcopied. SavednormalOff/RAM0
+ata0a8217f(parent0cf3); receiptSHA213d2847616fcdcad085e8a73e498a56f275395a6c3dccbc38afb719d083886f.
+See evidence/resource-814-restart-resume-20261103.json.
 Hostroot.lab/hyperv/streaming-v2-20261027/resource-restart-e10c19f1725d4398a9f8dc3b55606820;
 gueststageC:\ntfs2refs\resource-restart-e10c19f1725d4398a9f8dc3b55606820.
 Launcher32936 completed0, exact814public0f5be...+manifest ea6d...+originalbe505
@@ -53,7 +70,20 @@ directory --recovery-sha256 c19e... (NO --rollback). No freshApplyrequested.
 Root normally shut down the verifiedRollback branch, restoredoriginal0cf3 ONCE,
 freshprocessverifiedOff/RAM0 thenstartedONCE. Boot1793761529400/source1 observed
 beforeResume dispatch. SavedoriginalAP is unchanged. Inspect actual latest
-task/PID/birth/terminal BEFORE power/restore/any further dispatch.
+task/PID/birth/terminal BEFORE power/restore/any further dispatch. This completed
+case does NOT authorize a future replay of its HND; preserve original0cf3 AP.
+
+Remainingfrozen814releasegates: native reserve-refusal→corruptguard-refusal+
+normalrestart/earlycancel, thenexternalqualification/package. Productcode814
+mustremainfrozen; no unit tests. Broad hardware/Windows-diskpartition/1000TB
+goals remain OPEN and must not be marked complete merely by alpha packaging.
+Current40GiBpreparationforecastfails labcap; Rootrequestedread-only audit of
+obsoleteolda51AP because new0cf3AP/both814directions nowhaveactualevidence.
+Do notraise caps/resetepoch/lowerforecasttohidegrowth. No removalapprovedby
+Root yet; independentlyverify graphandarchives before any Hyper-V retirement.
+Preparedearly helper run-814-early-guard-case.ps1 finalSHA
+ced5451297371c301e4d21a6edd1e48d2fc4b054a78687f1ae4e4b92d4c25a03.
+UsefreshPowershellprocessperaction (Add-Type cannotrepeatinPS5session).
 
 **814 ROLLBACK555a7dbced0a4d79aeeac77ce59cc1fe IS COMPLETE**, not live.
 Actual publicPID860/birth1793760754492 independently matched live, SYSTEMworker

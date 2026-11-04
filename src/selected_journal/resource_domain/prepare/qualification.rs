@@ -218,12 +218,15 @@ fn require_owners_with_capture_witness(
 /// A borrow of the exact source and protected target whose complete frozen
 /// bytes were checked at this boundary's opening. It supplies no writer or
 /// admission authority and cannot escape the higher-ranked callback below.
-struct FrozenPreparedWitness<'boundary> {
+pub(in crate::selected_journal::resource_domain) struct FrozenPreparedWitness<'boundary> {
     source_owner: usize,
     proof: &'boundary crate::general_composite_target::paged::ProtectedPagedTargetSelection,
 }
 impl FrozenPreparedWitness<'_> {
-    fn require(&self, prepared: &ProtectedPreparedJournal<'_, '_, '_, '_, '_>) -> Result<()> {
+    pub(in crate::selected_journal::resource_domain) fn require(
+        &self,
+        prepared: &ProtectedPreparedJournal<'_, '_, '_, '_, '_>,
+    ) -> Result<()> {
         let actual = prepared.candidate.protected_proof();
         ensure!(
             self.source_owner == prepared.context.source_owner_identity()
@@ -267,6 +270,166 @@ fn with_frozen_preparation_revalidation<'journal, 'domain, 'capture, 'proof, 'sc
     // including callback errors. Only a successful close can release T.
     let closing = prepared.revalidate_with_capture_witness(witness, events);
     finish_readonly_boundary(result, closing)
+}
+
+/// Preserve the interior metadata/native/journal checks while the exact frozen
+/// byte owners remain enclosed by the complete opening and closing scans.
+fn require_construction_owners(
+    frozen: &FrozenPreparedWitness<'_>,
+    prepared: &mut ProtectedPreparedJournal<'_, '_, '_, '_, '_>,
+    capture: &crate::general_shadow::paged_capture::CaptureRevalidation<'_>,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<()> {
+    frozen.require(prepared)?;
+    let proof = prepared.candidate.protected_proof();
+    capture.require_capture(proof.captured())?;
+    prepared.candidate.require_domain(prepared.inner._domain)?;
+    let context = &mut prepared.context;
+    context.require_source_evidence()?;
+    context.revalidate_evidence()?;
+    let arena = context
+        .arena()
+        .context("construction source arena absent")?;
+    ensure!(
+        arena.budget() == context.resource_admission().budget,
+        "construction arena admission differs"
+    );
+    for (seal, group) in [
+        (context.source_group_seal(), ArtifactGroup::Source),
+        (context.native_group_seal(), ArtifactGroup::Native),
+    ] {
+        let seal = seal.context("construction source/native seal absent")?;
+        ensure!(
+            seal.permit().group() == group && seal.permit().arena().same_arena(arena),
+            "construction seal belongs to another actual arena"
+        );
+        seal.revalidate()?;
+    }
+    proof.scope().revalidate()?;
+    ensure!(
+        proof
+            .scope()
+            .matches_source_owner(context.source_owner_identity())
+            && proof.scope().source_inspection_sha256() == context.inspection_sha256(),
+        "construction source/scope owner differs"
+    );
+    let source_before = context.native().before().clone();
+    {
+        let (source, _) = context.source_and_inspection();
+        ensure!(
+            source.freeze_observation().is_some()
+                && source.binding() == &proof.scope().pair().source
+                && source.state(events)? == source_before
+                && source_before.disk_attributes == 3
+                && prepared.shadow.binding() == &proof.scope().pair().shadow
+                && prepared.shadow.state(events)? == *proof.native().after()
+                && proof.native().after().disk_attributes == 3,
+            "construction native route or frozen exclusion changed"
+        );
+    }
+    prepared
+        .inner
+        ._journal
+        .revalidate_resource_preparation(&prepared.inner._facts, &prepared.inner.ticket)?;
+    ensure!(
+        crate::selected_journal::classify(prepared.inner._journal, &prepared.inner.ticket)?
+            == crate::selected_journal::SelectedLifecycle::PreparedClear,
+        "construction journal is not its original PreparedClear owner"
+    );
+    prepared.inner._domain.revalidate_with_witness(capture)?;
+    frozen.require(prepared)
+}
+
+impl ProtectedPreparedJournal<'_, '_, '_, '_, '_> {
+    /// Build only independent arena metadata. The witness cannot escape, and
+    /// both full frozen/capture closes run even if a producer or checkpoint fails.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_recovery_metadata(
+        &mut self,
+        expected: &PagedExpectedTree,
+        map_group: Option<&ArtifactGroupPermit>,
+        map_scratch: &SourceScratch,
+        map_path: &Path,
+        locator_group: &ArtifactGroupPermit,
+        locator_scratch: &SourceScratch,
+        locator_path: &Path,
+        events: &mut Vec<n2r_win32::NativeEvent>,
+        mut checkpoint_events: impl FnMut(&'static str, &mut Vec<n2r_win32::NativeEvent>) -> Result<()>,
+    ) -> Result<(
+        Option<V4RecoveryMaps>,
+        super::super::durable_anchor::DurableRecoveryLocator,
+    )> {
+        self.require_arena(locator_group)?;
+        ensure!(
+            locator_group.group() == ArtifactGroup::RecoveryCopy
+                && expected_requires_maps(expected, self.context.report().policy)?
+                    == map_group.is_some(),
+            "construction recovery groups differ from actual expected streams"
+        );
+        let mut phase = if map_group.is_some() {
+            "recovery-map-publication"
+        } else {
+            "durable-locator"
+        };
+        checkpoint_native_events(events, &mut |batch| checkpoint_events(phase, batch))?;
+        let capture = self.candidate.protected_proof().captured();
+        let result = capture.with_revalidation(|capture_witness| {
+            with_frozen_preparation_revalidation(
+                self,
+                capture_witness,
+                events,
+                |frozen, prepared, events| {
+                    let result = (|| {
+                        let maps = if let Some(group) = map_group {
+                            prepared.require_arena(group)?;
+                            let maps = V4RecoveryMaps::create(
+                                prepared.candidate.protected_proof(),
+                                expected,
+                                prepared.context,
+                                prepared.inner._domain,
+                                &prepared.inner.ticket,
+                                group,
+                                map_scratch,
+                                map_path,
+                            )?;
+                            let _map_seal = group.seal()?;
+                            Some(maps)
+                        } else {
+                            None
+                        };
+                        if let Some(maps) = &maps {
+                            require_construction_owners(frozen, prepared, capture_witness, events)?;
+                            maps.require_binding(
+                                prepared.candidate.protected_proof(), expected, prepared.context,
+                                prepared.inner._domain, &prepared.inner.ticket,
+                            )?;
+                            checkpoint_native_events(events, &mut |batch| {
+                                checkpoint_events(phase, batch)
+                            })?;
+                            phase = "durable-locator";
+                            require_construction_owners(frozen, prepared, capture_witness, events)?;
+                        }
+                        let mut locator = super::super::durable_anchor::DurableRecoveryLocator::create_with_frozen_witness(
+                            prepared, frozen, locator_group, locator_scratch, locator_path,
+                        )?;
+                        locator.revalidate()?;
+                        frozen.require(prepared)?;
+                        Ok((maps, locator))
+                    })();
+                    // Drain bounded native records on failures too, before the
+                    // closing source/target observations need their own batch.
+                    let drained = checkpoint_native_events(events, &mut |batch| {
+                        checkpoint_events(phase, batch)
+                    });
+                    finish_readonly_boundary(result, drained)
+                },
+            )
+        });
+        let result = finish_readonly_boundary(result, capture.revalidate());
+        let drained =
+            checkpoint_native_events(events, &mut |batch| checkpoint_events(phase, batch));
+        finish_readonly_boundary(result, drained)
+    }
 }
 
 /// Preserve all native/identity/lifecycle, expected/map, artifact and journal

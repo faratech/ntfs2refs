@@ -15,6 +15,7 @@ use crate::{
 };
 
 mod qualification;
+pub(super) use qualification::FrozenPreparedWitness;
 pub(crate) use qualification::{
     FirstFlushedWrite, ResourceAppliedConversion, ResourceFreshApply, ResourcePreparedConversion,
 };
@@ -155,13 +156,28 @@ impl ProtectedPreparedJournal<'_, '_, '_, '_, '_> {
         events: &mut Vec<n2r_win32::NativeEvent>,
     ) -> Result<PreparedLocatorFacts> {
         self.revalidate(events)?;
+        Ok(self.copy_locator_facts())
+    }
+
+    /// Copy routing only inside the exact live owner's non-escaping frozen
+    /// boundary. The surrounding constructor still checks the actual journal
+    /// and native owners; these facts never carry replay or Apply authority.
+    pub(super) fn locator_facts_with_frozen_witness(
+        &self,
+        witness: &FrozenPreparedWitness<'_>,
+    ) -> Result<PreparedLocatorFacts> {
+        witness.require(self)?;
+        Ok(self.copy_locator_facts())
+    }
+
+    fn copy_locator_facts(&self) -> PreparedLocatorFacts {
         let marker_native_qualified = self
             .inner
             ._journal
             .marker_observation()
             .map(|m| m.native_qualified);
         let facts = &self.inner._facts;
-        Ok(PreparedLocatorFacts {
+        PreparedLocatorFacts {
             source: facts.source.clone(),
             shadow: facts.shadow.clone(),
             journal_binding: facts.binding.clone(),
@@ -171,7 +187,7 @@ impl ProtectedPreparedJournal<'_, '_, '_, '_, '_> {
             marker_use: facts.marker_use,
             marker_native_qualified,
             ticket: self.inner.ticket.clone(),
-        })
+        }
     }
 }
 

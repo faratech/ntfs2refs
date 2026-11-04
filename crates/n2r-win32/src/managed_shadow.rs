@@ -46,6 +46,7 @@ const MAX_LAYOUT: usize = 48 + 128 * 144;
 
 mod recovery;
 pub use recovery::{ReattachedShadow, reattach_existing};
+pub mod growth_probe;
 
 /// Requested native formatter profile, not a trust or compatibility claim.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]

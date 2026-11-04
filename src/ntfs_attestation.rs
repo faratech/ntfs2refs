@@ -170,7 +170,7 @@ fn extent_identity_stream_request_with_paths(
     source_paths: impl FnOnce() -> Result<Option<Vec<Vec<String>>>>,
 ) -> Result<Option<n2r_win32::attestation::ExtentIdentityStream>> {
     use crate::ntfs_inspect::MetadataRole;
-    if !(4096..=65536).contains(&geometry.cluster_size)
+    if !(4096..=2 * 1024 * 1024).contains(&geometry.cluster_size)
         || !geometry.cluster_size.is_power_of_two()
         || file.is_directory
         || file.record_number < 16

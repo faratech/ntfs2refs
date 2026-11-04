@@ -225,6 +225,36 @@ impl DurableRecoveryLocator {
     ) -> Result<Self> {
         prepared.require_arena(group)?;
         let facts = prepared.locator_facts(events)?;
+        let mut result = Self::write_prepared_locator(facts, group, scratch, path)?;
+        prepared.revalidate(events)?;
+        result.revalidate()?;
+        Ok(result)
+    }
+
+    /// The scoped producer retains both full source/target/capture bookends.
+    /// This route cannot be used with a saved publication or copied flag.
+    pub(super) fn create_with_frozen_witness(
+        prepared: &super::prepare::ProtectedPreparedJournal<'_, '_, '_, '_, '_>,
+        witness: &super::prepare::FrozenPreparedWitness<'_>,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        path: &Path,
+    ) -> Result<Self> {
+        witness.require(prepared)?;
+        prepared.require_arena(group)?;
+        let facts = prepared.locator_facts_with_frozen_witness(witness)?;
+        let mut result = Self::write_prepared_locator(facts, group, scratch, path)?;
+        result.revalidate()?;
+        witness.require(prepared)?;
+        Ok(result)
+    }
+
+    fn write_prepared_locator(
+        facts: super::prepare::PreparedLocatorFacts,
+        group: &ArtifactGroupPermit,
+        scratch: &SourceScratch,
+        path: &Path,
+    ) -> Result<Self> {
         ensure!(
             facts.source.disk_number != facts.shadow.disk_number
                 && facts.journal_binding.disk.disk_number != facts.shadow.disk_number
@@ -248,10 +278,7 @@ impl DurableRecoveryLocator {
             ticket: facts.ticket,
             serialized_locator_grants_authority: false,
         };
-        let mut result = Self::write_locator(&locator, group, scratch, path)?;
-        prepared.revalidate(events)?;
-        result.revalidate()?;
-        Ok(result)
+        Self::write_locator(&locator, group, scratch, path)
     }
 
     /// Experimental locator creation from actual held read-only observations.

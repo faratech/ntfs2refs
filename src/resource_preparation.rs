@@ -19,7 +19,6 @@ use crate::{
         resource_domain::{
             ResourceJournalBudget, ResourceJournalDomain,
             captured_candidate::ProtectedCapturedCandidate,
-            durable_anchor::DurableRecoveryLocator,
             prepare::{ResourcePreparedConversion, prepare_native_from_protected_capture},
         },
     },
@@ -31,8 +30,8 @@ use crate::{
 mod placement_evidence;
 
 pub(crate) mod abort;
-pub(crate) mod file_observer;
 pub(crate) mod early_guard;
+pub(crate) mod file_observer;
 use anyhow::{Context, Result, ensure};
 use n2r_win32::{
     GeneralFrozenPartition, NativeEvent,
@@ -357,15 +356,29 @@ where
         "diagnostic arena must use the actual external journal volume"
     );
     let mut events = EventLog::new(observer);
-    let locator_group = arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?;
+    let locator_group =
+        arena.reserve_group(ArtifactGroup::RecoveryCopy, request.locator_arena_bytes)?;
     events.phase("early-preparation-guard");
     let early_guard = early_guard::EarlyPreparationGuard::create(
-        &request.pair, &request.journal, request.resources, output, &arena, &locator_group, &mut events)?;
-    events.observer.note(&serde_json::json!({"kind":"resource-preparation-cancellation-anchor",
-        "intent":early_guard.pin(),"source_payload_writes_authorized":false}))?;
+        &request.pair,
+        &request.journal,
+        request.resources,
+        output,
+        &arena,
+        &locator_group,
+        &mut events,
+    )?;
+    events.observer.note(
+        &serde_json::json!({"kind":"resource-preparation-cancellation-anchor",
+        "intent":early_guard.pin(),"source_payload_writes_authorized":false}),
+    )?;
     {
         let pin = early_guard.pin();
-        println!("Preparation recovery: {}\nPreparation SHA-256: {}", pin.path.display(), pin.sha256);
+        println!(
+            "Preparation recovery: {}\nPreparation SHA-256: {}",
+            pin.path.display(),
+            pin.sha256
+        );
         std::io::stdout().flush()?;
     }
     events.checkpoint()?;
@@ -656,34 +669,34 @@ where
         // capture capacity is not mistaken for a second simultaneous allocation.
         let _capture_seal = capture_group.seal()?;
         events.phase("recovery-map-publication");
-        let recovery_maps = if prepared.recovery_maps_required(&expected)? {
-            let map_group = arena.reserve_group(
+        let map_group = if prepared.recovery_maps_required(&expected)? {
+            Some(arena.reserve_group(
                 ArtifactGroup::Map,
                 admission.map_page_budget()?.max_file_bytes,
-            )?;
-            let maps = prepared.create_recovery_maps(
-                &expected,
-                &map_group,
-                &capture_scratch,
-                &output.join("recovery-maps.pages"),
-                &mut events,
-            )?;
-            let _map_seal = map_group.seal()?;
-            Some(maps)
+            )?)
         } else {
             None
         };
-        events.checkpoint()?;
         let locator_scratch =
             SourceScratch::new_auxiliary_in_arena(source_budget, locator_group.clone())?;
-        events.phase("durable-locator");
-        let locator = DurableRecoveryLocator::create_from_protected_preparation(
-            &mut prepared,
-            &locator_group,
-            &locator_scratch,
-            &output.join("recovery.locator"),
-            &mut events,
-        )?;
+        let (recovery_maps, locator) = {
+            let EventLog {
+                observer,
+                events: native_events,
+                ..
+            } = &mut events;
+            prepared.create_recovery_metadata(
+                &expected,
+                map_group.as_ref(),
+                &capture_scratch,
+                &output.join("recovery-maps.pages"),
+                &locator_group,
+                &locator_scratch,
+                &output.join("recovery.locator"),
+                native_events,
+                |phase, batch| observer.native_events(phase, batch),
+            )?
+        };
         events.checkpoint()?;
         events.phase("prepared-conversion-publication");
         let prepared_conversion = {

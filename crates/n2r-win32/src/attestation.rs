@@ -364,7 +364,7 @@ impl ExtentIdentityStream {
         if self.identity.record_number < 16
             || self.identity.record_number >= 1 << 48
             || self.identity.sequence_number == 0
-            || !(4096..=65536).contains(&self.cluster_bytes)
+            || !(4096..=2 * 1024 * 1024).contains(&self.cluster_bytes)
             || !self.cluster_bytes.is_power_of_two()
             // Source maps still cover all allocation through rounded EOF.
             // A partial logical tail is bound by exact EOF, not rounded away;

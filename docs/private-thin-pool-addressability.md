@@ -135,3 +135,63 @@ See [the scoped refusal evidence](../evidence/private-thin-format-refusal-202611
 The next bounded-carrier implementation has no native qualification from either
 result. Public conversion/recovery and the frozen alpha retain their existing
 scope.
+
+The first bounded-carrier run, `358d395` / `03a6`, successfully created its fresh
+NTFS 4 KiB carrier, then stopped with native error 3 before creating member
+VHDX files or a pool. A separate read-only diagnostic found that DOS-path
+`GetFinalPathNameByHandle` failed on this undrivelettered carrier while its GUID
+form succeeded; GUID-root and member-directory free-space queries also
+succeeded. The carrier remained NTFS with 12,606,513,152 bytes free, and its
+member directory was empty. The old failed pool was preserved; F: was observed
+as NTFS without a payload rehash. The 13 metadata files / 39,381 bytes were
+archived with source/host length and SHA checks. See
+[the exact carrier-path refusal](../evidence/carrier-guid-sampling-refusal-20261104.json).
+This case establishes those path observations, not target ReFS formatting,
+conversion or recovery.
+
+The corrected private carrier route subsequently **formatted an exact 72 TiB
+ReFS 3.14 Dev Drive with 4 KiB clusters**. Case `614341b` / `2eb944` exited 0 in
+29.3395837 seconds and issued the formatted owner after its native identity,
+geometry and policy checks. One ordinary 64 KiB file passed write, flush, exact
+readback, same-file identity, length, EOF and XXH3-128 verification. Its default
+allocation does not prove I/O at an offset beyond 64 TiB. No NTFS source
+conversion or recovery ran on this provider.
+
+The carrier backing measured 608,174,080 bytes before the probe and
+641,728,512 bytes at metadata closure. The latter observation matched the
+original file identity and admitted bounds; requiring equality with the earlier
+sample would have rejected legitimate later growth. The external regular-file
+allocation sample was 608,342,888 bytes before its final receipt. These are
+file-allocation snapshots, not peak scratch or host physical usage. The pool's
+433,254,825,984 nominal allocated bytes describe its large virtual members,
+not the carrier's actual backing allocation; nested members are not counted
+twice as external storage.
+
+All 33 metadata files / 170,168 bytes were closed with source/host length and
+SHA checks, preserving both earlier failed cases. See
+[the native 72 TiB evidence](../evidence/private-thin-native-format-20261104.json).
+This establishes private owned formatting and the small ordinary file probe.
+Public backend integration, conversion, restart recovery and large-offset or
+populated-volume I/O remain separate work.
+
+The next private `9e491d1` case requested a **1,000,000,000,000,000-byte GPT
+partition**. Windows completed formatting and a read-only native query found
+ReFS 3.14 with 4 KiB clusters. The SDK nevertheless refused its strict exact
+geometry check: the filesystem reported 999,999,986,991,104 bytes, leaving a
+13,008,896-byte difference from the partition. The actual process exited 1 in
+370.2866981 seconds, issued no formatted owner and did not reach its file probe.
+The observed size equals a 64 MiB floor for this case; this is not an established
+universal formatting rule. The intervening physical range has not been proved
+free, usable or safe to omit.
+
+Two nominal 64 TiB members supplied an explicitly overcommitted thin address
+space inside the bounded carrier. The carrier backing sampled 6,144,655,360
+bytes at closure, while the pool reported 5,211,137,507,328 nominal allocated
+bytes. These remain different accounting layers, not host physical usage or
+peak scratch. The 31 metadata files / 90,881 bytes preserve the successful
+Windows formatter log, failed SDK result and the independently queried 152-byte
+native geometry. The earlier 72 TiB volume remained present; F: was observed
+as NTFS without a payload hash. See
+[the petabyte profile-refusal evidence](../evidence/private-thin-petabyte-profile-refusal-20261104.json).
+This does not admit a petabyte conversion or establish large-offset data I/O,
+recovery, public backend integration or cleanup qualification.

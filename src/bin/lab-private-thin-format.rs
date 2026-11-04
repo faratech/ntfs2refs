@@ -26,8 +26,8 @@ fn run() -> anyhow::Result<()> {
     };
     use xxhash_rust::xxh3::xxh3_128;
 
-    const PARTITION_BYTES: u64 = 72 << 40;
-    const PROVIDER_GOAL_BYTES: u64 = PARTITION_BYTES + (64 << 20);
+    const DEFAULT_PARTITION_BYTES: u64 = 72 << 40;
+
     const PROBE_BYTES: usize = 64 << 10;
     const RESULT_BYTES: u64 = 128 << 10;
 
@@ -39,6 +39,9 @@ fn run() -> anyhow::Result<()> {
         /// Exact Windows Storage subsystem UniqueId, never a device or pool.
         #[arg(long)]
         storage_subsystem: String,
+        /// Logical size on fresh private storage; never a source/device selector.
+        #[arg(long, default_value_t = DEFAULT_PARTITION_BYTES)]
+        partition_bytes: u64,
         #[arg(long)]
         acknowledge_new_disposable_staging: bool,
     }
@@ -62,6 +65,15 @@ fn run() -> anyhow::Result<()> {
     }
 
     let args = Args::parse();
+    let partition_bytes = args.partition_bytes;
+    ensure!(
+        partition_bytes >= 4096 && partition_bytes.is_multiple_of(4096),
+        "private partition must be a positive4KiB multiple"
+    );
+    let provider_goal_bytes = partition_bytes
+        .checked_add(64 << 20)
+        .filter(|n| *n <= i64::MAX as u64)
+        .context("private provider size exceeds native signed geometry")?;
     ensure!(
         args.acknowledge_new_disposable_staging,
         "explicit new disposable staging acknowledgement required"
@@ -126,11 +138,11 @@ fn run() -> anyhow::Result<()> {
         let owner = thin_pool::create_bounded_with_carrier(
             &args.directory.join("provider"),
             &args.storage_subsystem,
-            PROVIDER_GOAL_BYTES,
+            provider_goal_bytes,
             budget,
         )?;
         phase = "format-constructor-owned-partition";
-        let owner = owner.format(PARTITION_BYTES, TargetFormatProfile::DevDrive)?;
+        let owner = owner.format(partition_bytes, TargetFormatProfile::DevDrive)?;
         phase = "ordinary-file-write-flush-readback";
         let probe_path =
             PathBuf::from(format!("{}\\", owner.binding().volume_path()?)).join("probe.bin");
@@ -185,7 +197,7 @@ fn run() -> anyhow::Result<()> {
         Ok((owner, probe)) => serde_json::json!({
             "schema_version":1,"kind":"lab-private-thin-format","success":true,
             "phase":phase,"directory":args.directory,"budget":budget,
-            "partition_bytes":PARTITION_BYTES,"provider_goal_bytes":PROVIDER_GOAL_BYTES,
+            "partition_bytes":partition_bytes,"provider_goal_bytes":provider_goal_bytes,
             "binding":owner.binding(),"format_policy":owner.format_policy(),
             "observation":owner.observation(),"ordinary_file_probe":probe,
             "source_argument_supplied":false,"conversion_authorized":false,
@@ -196,7 +208,7 @@ fn run() -> anyhow::Result<()> {
         Err(error) => serde_json::json!({
             "schema_version":1,"kind":"lab-private-thin-format","success":false,
             "phase":phase,"directory":args.directory,"budget":budget,
-            "partition_bytes":PARTITION_BYTES,"provider_goal_bytes":PROVIDER_GOAL_BYTES,
+            "partition_bytes":partition_bytes,"provider_goal_bytes":provider_goal_bytes,
             "error":format!("{error:#}"),
             "native_error":error.chain().find_map(|e| e.downcast_ref::<io::Error>()
                 .and_then(io::Error::raw_os_error)),

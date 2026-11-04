@@ -5,10 +5,15 @@ use super::*;
 pub struct FormattingObservation {
     pub schema_version: u32,
     pub kind: &'static str,
+    pub backing_profile: &'static str,
     pub target_format: TargetFormatProfile,
     pub binding: GeneralDiskBinding,
     pub provider_requested_bytes_at_constructor: u64,
     pub provider_actual_bytes: u64,
+    pub nominal_member_virtual_bytes_total: u64,
+    pub nominal_member_size_was_clamped: bool,
+    pub logical_bytes_exceed_nominal_members: bool,
+    pub provider_pool_capacity_scope: &'static str,
     pub constructor_observation_is_pre_format: bool,
     pub bounded_carrier_before_gpt: Option<CarrierObservation>,
     pub bounded_carrier_after_formatter: Option<CarrierObservation>,
@@ -133,10 +138,17 @@ impl ThinPool {
         let observation = FormattingObservation {
             schema_version: 1,
             kind: "live-private-thin-native-formatted-shadow",
+            backing_profile: self.observation.backing_profile,
             target_format,
             binding: binding.clone(),
             provider_requested_bytes_at_constructor: self.goal,
             provider_actual_bytes: self.pool.bytes,
+            nominal_member_virtual_bytes_total: self.observation.nominal_member_virtual_bytes_total,
+            nominal_member_size_was_clamped: self.observation.nominal_member_size_was_clamped,
+            logical_bytes_exceed_nominal_members: self
+                .observation
+                .logical_bytes_exceed_nominal_members,
+            provider_pool_capacity_scope: POOL_CAPACITY_SCOPE,
             constructor_observation_is_pre_format: true,
             bounded_carrier_before_gpt: carrier_before,
             bounded_carrier_after_formatter: carrier_after,

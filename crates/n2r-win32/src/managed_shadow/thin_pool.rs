@@ -16,6 +16,11 @@ const MEMBER_OVERHEAD: u64 = 128 << 20;
 const METADATA_BYTES: u64 = 2 << 20;
 const RUST_WORKSPACE: u64 = 2 << 20;
 const RESPONSE_BYTES: u64 = 128 << 10;
+const MAX_NOMINAL_MEMBER_BYTES: u64 = 64 << 40;
+const FIXED_BACKING_PROFILE: &str = "fixed-two-5gib-members-v1";
+const BOUNDED_BACKING_PROFILE: &str = "bounded-carrier-thin-overcommit-v2";
+const POOL_CAPACITY_SCOPE: &str =
+    "provider-reported nominal member address space; not physical carrier allocation";
 
 mod bounded_carrier;
 pub use bounded_carrier::CarrierObservation;
@@ -54,7 +59,9 @@ struct PoolRoute {
     physical_sector: u32,
 }
 
-/// Mutable capacity samples; these are never part of provider identity.
+/// Provider-reported mutable capacity in nominal member address space. With a
+/// bounded carrier, neither allocation nor footprint measures physical host
+/// backing. Carrier filesystem space and backing allocation are separate.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PoolCapacity {
@@ -125,6 +132,7 @@ pub struct RawDiskObservation {
 pub struct Observation {
     pub schema_version: u32,
     pub kind: &'static str,
+    pub backing_profile: &'static str,
     pub nonce: String,
     pub requested_bytes: u64,
     pub actual_bytes: u64,
@@ -134,6 +142,11 @@ pub struct Observation {
     pub member_backing_paths: [PathBuf; 2],
     pub member_virtual_disk_ids: [String; 2],
     pub member_virtual_bytes_each: u64,
+    pub nominal_member_virtual_bytes_total: u64,
+    pub nominal_member_size_was_clamped: bool,
+    /// Compares the native VD logical size, not actual written file data.
+    pub logical_bytes_exceed_nominal_members: bool,
+    pub provider_pool_capacity_scope: &'static str,
     pub bounded_carrier: Option<CarrierObservation>,
     pub host_allocation_excludes_nested_member_files: bool,
     pub native_disk: RawDiskObservation,
@@ -244,7 +257,10 @@ fn same_file(old: &reference_file::ReferenceFileSnapshot, file: &File) -> io::Re
 }
 
 fn create_member(path: &Path, virtual_bytes: u64) -> io::Result<Member> {
-    if virtual_bytes < 4096 || !virtual_bytes.is_multiple_of(2 << 20) || virtual_bytes > 64 << 40 {
+    if virtual_bytes < 4096
+        || !virtual_bytes.is_multiple_of(2 << 20)
+        || virtual_bytes > MAX_NOMINAL_MEMBER_BYTES
+    {
         return Err(invalid(
             "member VHDX size exceeds the constructor profile (maximum64TiB)",
         ));
@@ -672,31 +688,35 @@ pub fn create_new(
     )
 }
 
-/// Build large nominal members only inside a fresh capacity-bounded NTFS
-/// carrier. This two-member profile refuses >64TiB per VHDX before creation.
-/// It is not the public conversion backend or a persistent recovery factory.
+fn desired_bounded_member_bytes(requested_bytes: u64) -> io::Result<u64> {
+    let rounding = 4u64 << 30; // Conservative implementation granularity.
+    let half = requested_bytes
+        .checked_add(1)
+        .map(|n| n / 2)
+        .ok_or_else(|| invalid("nominal member size overflow"))?;
+    half.checked_add(rounding - 1)
+        .map(|n| n / rounding)
+        .and_then(|n| n.checked_mul(rounding))
+        .and_then(|n| n.checked_add(rounding))
+        .ok_or_else(|| invalid("nominal member rounding overflow"))
+}
+
+/// Create a capacity-bounded carrier with the explicit thin-overcommit profile.
+/// Each member is capped at64TiB; the native thin VD may address more than the
+/// total nominal pool. This supplies no promise of equivalent file-data capacity
+/// and is not the public conversion backend or persistent recovery factory.
 pub fn create_bounded_with_carrier(
     directory: &Path,
     subsystem_unique_id: &str,
     requested_bytes: u64,
     budget: Budget,
 ) -> io::Result<ThinPool> {
-    let rounding = 4u64 << 30; // Conservative implementation granularity.
-    let half = requested_bytes
-        .checked_add(1)
-        .map(|n| n / 2)
-        .ok_or_else(|| invalid("nominal member size overflow"))?;
-    let member_bytes = half
-        .checked_add(rounding - 1)
-        .map(|n| n / rounding)
-        .and_then(|n| n.checked_mul(rounding))
-        .and_then(|n| n.checked_add(rounding))
-        .ok_or_else(|| invalid("nominal member rounding overflow"))?;
-    if requested_bytes == 0 || member_bytes > 64u64 << 40 {
+    if requested_bytes == 0 || requested_bytes > i64::MAX as u64 {
         return Err(invalid(
-            "bounded two-member backend cannot represent this goal: each VHDX member must be <=64TiB; more members are required",
+            "thin logical request must fit the positive native signed byte range",
         ));
     }
+    let member_bytes = desired_bounded_member_bytes(requested_bytes)?.min(MAX_NOMINAL_MEMBER_BYTES);
     bounded_carrier::dimensions(budget)?;
     create_configured(
         directory,
@@ -876,9 +896,17 @@ fn create_configured(
     }
     let (allocation, available) = capacity(directory, budget)?;
     privileges.restore()?;
+    let nominal_total = member_bytes
+        .checked_mul(2)
+        .ok_or_else(|| invalid("nominal member total overflow"))?;
     let observation = Observation {
         schema_version: 1,
         kind: "constructor-owned-private-thin-raw-disk",
+        backing_profile: if carrier.is_some() {
+            BOUNDED_BACKING_PROFILE
+        } else {
+            FIXED_BACKING_PROFILE
+        },
         nonce: nonce.clone(),
         requested_bytes,
         actual_bytes: pool.bytes,
@@ -891,6 +919,11 @@ fn create_configured(
             guid_text(&members[1].attachment.created.id),
         ],
         member_virtual_bytes_each: member_bytes,
+        nominal_member_virtual_bytes_total: nominal_total,
+        nominal_member_size_was_clamped: bounded_member_bytes.is_some()
+            && member_bytes < desired_bounded_member_bytes(requested_bytes)?,
+        logical_bytes_exceed_nominal_members: pool.bytes > nominal_total,
+        provider_pool_capacity_scope: POOL_CAPACITY_SCOPE,
         bounded_carrier: carrier.as_ref().map(|c| c.observe(budget)).transpose()?,
         host_allocation_excludes_nested_member_files: carrier.is_some(),
         native_disk: observed,

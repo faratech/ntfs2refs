@@ -107,6 +107,16 @@ Archive `closed-independent-ntfs` under8be hostroot. No live N2R jobs remain;
 VM stays Running3343, sourceF is restoredNTFS, original NTFS prealignment moves
 remain legitimate. This is logical preservation, not bit-identical physical layout.
 
+LATEST DIAGNOSTIC REFINEMENT:8be capture.index EOF564576 equals128-byte header
++7054*80-byte rows+128-byte footer exactly. In actual capture flow literal sealing
+precedes index.finish, so the footer is evidence that literal may ALREADY have
+passed. The index writer's same-FILE_OBJECT sealing is now the leading suspected
+offender; NOT proven. Min is updating only the focused native probe to include
+the actual literalEOF86695936 and index80-byte/header/footer pattern. Preserve
+existing b969 no-reproduction result; do not retroactively call it a pass, bulk
+normalize other artifacts, or rerun the long conversion without focused evidence.
+No native jobs are active. CurrentHEAD docs c698e10, product fix sourceb5663b8.
+
 Before that run VM2401593c-4b30-472e-9b6d-c9534cbaa599 was saved
 **Off/RAM0/parent4b8dafbf-7500-4c51-ab12-d0a697bf7264**, freshly verified.
 This completed prototype checkpoint remains saved with parent3343 and

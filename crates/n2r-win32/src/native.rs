@@ -44,6 +44,7 @@ mod partition_target_observation;
 pub use partition_source_metadata::{PartitionSourceMetadataState, PartitionSourceMetadataWitness};
 pub mod partition_lifecycle;
 pub mod partition_restoration;
+mod partition_restoration_observation;
 pub use partition_owner::{PartitionOwnerState, PartitionOwnerToken, PartitionPagedWriter, PartitionScopedOwner};
 pub use partition_owner::{PartitionJournalReadView, PartitionSourceAdmissionGate};
 pub use partition_owner::PartitionMixedReplayGate;

@@ -223,15 +223,145 @@ struct Origin {
     native_file: Artifact,
     native_pages: crate::observation_pages::PagedNativeObservation,
 }
+
+/// Recovered metadata/physical origin only. Actual held publication, locator,
+/// intent frames and native pages are authenticated; no live NTFS admission,
+/// all-OLD assertion, replay direction or source writer is created here.
+/// The independent SDK MIXED/closed-J gates remain mandatory.
+pub struct PartitionRecoveredOrigin {
+    origin: Origin,
+    binding: PartitionSourceBinding,
+    budget: PartitionObservationBudget,
+    token: PartitionOwnerToken,
+    journal_pins: super::paged_recovery::OwnedPartitionJournalPins,
+}
+impl PartitionRecoveredOrigin {
+    pub fn open_authenticated(
+        owner: &mut PartitionScopedOwner,
+        budget: PartitionObservationBudget,
+        files: PartitionRestartFiles,
+        published_sha256: [u8; 32],
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        budget.validate()?;
+        owner.revalidate(events)?;
+        let binding = owner.binding().clone();
+        let token = owner.owner_token();
+        let origin = Origin::authenticate(
+            files,
+            published_sha256,
+            &binding,
+            budget,
+            &owner.state().partition.windows_volume,
+            pins,
+        )?;
+        let mut recovered = Self {
+            origin,
+            binding,
+            budget,
+            token,
+            journal_pins: super::paged_recovery::OwnedPartitionJournalPins::capture(pins),
+        };
+        recovered.revalidate_private(owner, events)?;
+        Ok(recovered)
+    }
+    pub fn binding(&self) -> &PartitionSourceBinding {
+        &self.binding
+    }
+    pub fn owner_token(&self) -> &PartitionOwnerToken {
+        &self.token
+    }
+    pub fn require_journal_pins(
+        &self,
+        pins: &super::paged_recovery::PagedRecoveryPins<'_>,
+    ) -> io::Result<()> {
+        self.journal_pins.require(pins)
+    }
+    /// Validated routing DTO, not the SDK's process-live preparation guard.
+    pub fn original_pin(&self) -> &Value {
+        &self.origin.scope["complete_preparation_guard"]
+    }
+    pub fn routing_scope(&self) -> &Value {
+        &self.origin.scope
+    }
+    pub fn native_metadata(&self) -> &crate::observation_pages::PagedNativeObservation {
+        &self.origin.native_pages
+    }
+    pub fn revalidate_private(
+        &mut self,
+        owner: &mut PartitionScopedOwner,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<()> {
+        need(
+            self.token.same_owner(&owner.owner_token()) && self.binding == *owner.binding(),
+            "recovered origin lost its actual private owner",
+        )?;
+        owner.revalidate(events)?;
+        self.origin.revalidate()?;
+        let mut current_info = self.origin.original_info.clone();
+        current_info[32..48].copy_from_slice(&crate::layout::guid_bytes(PRIVATE)?);
+        validate_origin_layout(
+            &self.origin,
+            &self.binding,
+            &current_info,
+            &owner.state().partition,
+        )?;
+        need(
+            physical_read(&self.binding, 0, 512)? == self.origin.original_mbr,
+            "recovered origin protective MBR differs",
+        )?;
+        owner.revalidate(events)
+    }
+    pub fn into_terminal<'journal, 'pins>(
+        mut self,
+        mut owner: PartitionScopedOwner,
+        policy: &'journal HeldPagedWritePolicy,
+        journal: &'journal mut File,
+        pins: super::paged_recovery::PagedRecoveryPins<'pins>,
+        kind: PartitionTerminalKind,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<PartitionTerminalRestorationGuard<'journal, 'pins>> {
+        self.revalidate_private(&mut owner, events)?;
+        self.journal_pins.require(&pins)?;
+        let closed = authenticate_partition_closed_journal(
+            &mut owner, policy, journal, &pins, kind, events,
+        )?;
+        let parts = owner.into_terminal_restoration_parts(&closed, events)?;
+        let mut current_info = self.origin.original_info.clone();
+        current_info[32..48].copy_from_slice(&crate::layout::guid_bytes(PRIVATE)?);
+        let mut guard = PartitionTerminalRestorationGuard {
+            file: Some(parts.file),
+            physical: parts.physical_readonly,
+            binding: parts.binding.clone(),
+            budget: parts.budget,
+            baseline: parts.state,
+            token: parts.token,
+            origin: self.origin,
+            closed,
+            policy,
+            journal,
+            pins,
+            kind,
+            stage: PartitionTerminalStage::Private,
+            current_info,
+            mounted_binding: parts.binding.storage,
+            mounted: None,
+        };
+        guard.revalidate_metadata(events)?;
+        guard.revalidate_closed()?;
+        Ok(guard)
+    }
+}
 impl Origin {
     fn authenticate(
         files: PartitionRestartFiles,
         published_sha: [u8; 32],
-        parts: &PartitionTerminalTargetParts,
+        binding: &PartitionSourceBinding,
+        budget: PartitionObservationBudget,
+        windows: &partition_isolation::PartitionVolumeExtent,
         pins: &super::paged_recovery::PagedRecoveryPins<'_>,
     ) -> io::Result<Self> {
-        let binding = &parts.binding;
-        let windows = &parts.state.partition.windows_volume;
         let mut publication = Artifact::hold(
             files.publication,
             published_sha,
@@ -245,7 +375,7 @@ impl Origin {
                 .snapshot
                 .file_bytes
                 .checked_mul(32)
-                .is_some_and(|n| n <= parts.budget.ram_bytes),
+                .is_some_and(|n| n <= budget.ram_bytes),
             "publication parsing exceeds explicit RAM budget",
         )?;
         let envelope: Value =
@@ -306,6 +436,19 @@ impl Origin {
         )?;
         let ticket = &loc["ticket"];
         need(
+            loc["source"] == serde_json::to_value(&binding.storage).map_err(io::Error::other)?
+                && loc["journal_binding"]
+                    == serde_json::to_value(pins.journal_binding).map_err(io::Error::other)?
+                && num_field(ticket, "image_length")? == binding.storage.identity.partition_bytes
+                && ticket
+                    .get("old_restored_selected_sha256")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+                    == serde_json::to_value(pins.old_restored_selected_sha256)
+                        .map_err(io::Error::other)?,
+            "locator source/journal/restored-OLD lineage differs",
+        )?;
+        need(
             json_bytes(&ticket["immutable_sha256"])? == pins.immutable_sha256
                 && json_bytes(&ticket["old_selected_sha256"])? == pins.old_selected_sha256
                 && json_bytes(&ticket["new_selected_sha256"])? == pins.new_selected_sha256,
@@ -362,8 +505,7 @@ impl Origin {
             need(
                 n > 0
                     && n <= MAX_JSON
-                    && n.checked_mul(32)
-                        .is_some_and(|n| n <= parts.budget.ram_bytes)
+                    && n.checked_mul(32).is_some_and(|n| n <= budget.ram_bytes)
                     && consumed + 40 + n <= intent.snapshot.file_bytes,
                 "preparation frame exceeds bounds",
             )?;
@@ -537,7 +679,14 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
             &mut owner, policy, journal, &pins, kind, events,
         )?;
         let parts = owner.into_terminal_restoration_parts(&closed, events)?;
-        let origin = Origin::authenticate(files, published_sha256, &parts, &pins)?;
+        let origin = Origin::authenticate(
+            files,
+            published_sha256,
+            &parts.binding,
+            parts.budget,
+            &parts.state.partition.windows_volume,
+            &pins,
+        )?;
         let mut current_info = origin.original_info.clone();
         current_info[32..48].copy_from_slice(&crate::layout::guid_bytes(PRIVATE)?);
         let mut guard = Self {
@@ -742,56 +891,7 @@ impl<'journal, 'pins> PartitionTerminalRestorationGuard<'journal, 'pins> {
         &self,
         observed: &partition_isolation::PartitionIsolationObservation,
     ) -> io::Result<()> {
-        let g = &self.origin.original_gpt;
-        let mut entries = json_bytes(&g["entries"])?;
-        let width = num_field(g, "entry_bytes")? as usize;
-        let slot = num_field(g, "target_slot")? as usize;
-        let at = slot
-            .checked_sub(1)
-            .and_then(|s| s.checked_mul(width))
-            .ok_or_else(|| bad("original target slot overflow"))?;
-        need(
-            width >= 128 && at.checked_add(width).is_some_and(|e| e <= entries.len()),
-            "original target slot out of bounds",
-        )?;
-        let original_entries = entries.clone();
-        let primary = json_bytes(&g["primary_header"])?;
-        let backup = json_bytes(&g["backup_header"])?;
-        let original_native = json_bytes(&g["native_layout"])?;
-        let mut full = Sha256::new();
-        full.update(&primary);
-        full.update(&original_entries);
-        full.update(&backup);
-        full.update(&original_native);
-        need(
-            <[u8; 32]>::from(full.finalize())
-                == digest(
-                    &self.origin.scope["complete_preparation_guard"],
-                    "original_gpt_sha256",
-                )?,
-            "original complete GPT pin differs",
-        )?;
-        entries[at..at + 16].copy_from_slice(&self.current_info[32..48]);
-        entries[at + 48..at + 56].copy_from_slice(&self.current_info[64..72]);
-        let mut native = original_native;
-        let guid = crate::layout::guid_bytes(&self.binding.storage.identity.partition_guid)?;
-        let offsets: Vec<usize> = (48..native.len())
-            .step_by(144)
-            .filter(|a| *a + 144 <= native.len() && native[*a + 48..*a + 64] == guid)
-            .collect();
-        need(offsets.len() == 1, "original native target is not unique")?;
-        native[offsets[0]..offsets[0] + 144].copy_from_slice(&self.current_info);
-        let actual = &observed.gpt;
-        need(
-            actual.entries == entries
-                && actual.primary_header == header(&primary, &entries)?
-                && actual.backup_header == header(&backup, &entries)?
-                && actual.native_layout == native
-                && actual.primary_crc_valid
-                && actual.backup_crc_valid
-                && actual.entry_arrays_equal,
-            "terminal GPT/siblings/unused entries changed beyond target type/attrs and required CRCs",
-        )
+        validate_origin_layout(&self.origin, &self.binding, &self.current_info, observed)
     }
     fn observe(
         &self,
@@ -1468,4 +1568,62 @@ pub(super) struct PartitionTerminalTargetParts {
     pub(super) budget: PartitionObservationBudget,
     pub(super) state: PartitionOwnerState,
     pub(super) token: PartitionOwnerToken,
+}
+
+fn validate_origin_layout(
+    origin: &Origin,
+    binding: &PartitionSourceBinding,
+    current_info: &[u8],
+    observed: &partition_isolation::PartitionIsolationObservation,
+) -> io::Result<()> {
+    let g = &origin.original_gpt;
+    let mut entries = json_bytes(&g["entries"])?;
+    let width = num_field(g, "entry_bytes")? as usize;
+    let slot = num_field(g, "target_slot")? as usize;
+    let at = slot
+        .checked_sub(1)
+        .and_then(|s| s.checked_mul(width))
+        .ok_or_else(|| bad("original target slot overflow"))?;
+    need(
+        width >= 128 && at.checked_add(width).is_some_and(|e| e <= entries.len()),
+        "original target slot out of bounds",
+    )?;
+    let original_entries = entries.clone();
+    let primary = json_bytes(&g["primary_header"])?;
+    let backup = json_bytes(&g["backup_header"])?;
+    let original_native = json_bytes(&g["native_layout"])?;
+    let mut full = Sha256::new();
+    full.update(&primary);
+    full.update(&original_entries);
+    full.update(&backup);
+    full.update(&original_native);
+    need(
+        <[u8; 32]>::from(full.finalize())
+            == digest(
+                &origin.scope["complete_preparation_guard"],
+                "original_gpt_sha256",
+            )?,
+        "original complete GPT pin differs",
+    )?;
+    entries[at..at + 16].copy_from_slice(&current_info[32..48]);
+    entries[at + 48..at + 56].copy_from_slice(&current_info[64..72]);
+    let mut native = original_native;
+    let guid = crate::layout::guid_bytes(&binding.storage.identity.partition_guid)?;
+    let offsets: Vec<usize> = (48..native.len())
+        .step_by(144)
+        .filter(|a| *a + 144 <= native.len() && native[*a + 48..*a + 64] == guid)
+        .collect();
+    need(offsets.len() == 1, "original native target is not unique")?;
+    native[offsets[0]..offsets[0] + 144].copy_from_slice(&current_info);
+    let actual = &observed.gpt;
+    need(
+        actual.entries == entries
+            && actual.primary_header == header(&primary, &entries)?
+            && actual.backup_header == header(&backup, &entries)?
+            && actual.native_layout == native
+            && actual.primary_crc_valid
+            && actual.backup_crc_valid
+            && actual.entry_arrays_equal,
+        "terminal GPT/siblings/unused entries changed beyond target type/attrs and required CRCs",
+    )
 }

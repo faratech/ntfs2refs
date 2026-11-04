@@ -1,5 +1,7 @@
 //! Actual selected-partition source preparation. This parallel context never
 //! manufactures GeneralDiskState/GeneralFreezeObservation or enables a CLI.
+#[path = "resource_partition_terminal.rs"]
+mod terminal;
 use super::*;
 use n2r_win32::{
     PartitionOwnerState, PartitionOwnerToken, PartitionScopedOwner,

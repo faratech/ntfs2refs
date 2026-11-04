@@ -37,6 +37,20 @@ pub(crate) struct PartitionExecutionRequest {
 }
 
 impl PartitionPreparedResources {
+    /// Drop target/capture witnesses before opening the new filesystem. They
+    /// retain query duplicates of the original locked NTFS FileObject. Expected
+    /// pages and the completed HND's saved maps remain independently owned.
+    pub(crate) fn into_terminal_inputs(self) -> (
+        n2r_win32::PartitionScopedOwner,
+        n2r_win32::partition_lifecycle::PartitionNtfsAdmission,
+        PagedExpectedTree,
+    ) {
+        let Self { context, expected, target, .. } = self;
+        drop(target);
+        let (source, admission) = context.into_terminal_owners();
+        (source, admission, expected)
+    }
+
     /// Publish the actual prepared journal and recovery owners, then consume
     /// the real fresh certificate. The final SDK handoff witness keeps replay
     /// permanently closed before terminal mount/restoration is attempted.

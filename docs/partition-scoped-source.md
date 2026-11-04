@@ -43,6 +43,24 @@ copies, while the already mounted volume still accepted reads. These observation
 show why raw persistence and runtime exclusion require separate checks. They do
 not qualify conversion on a Windows-sharing disk.
 
-Focused compilation passed. Native reader execution and the complete partition
-exclusion/restart/restoration workflow remain separate qualification steps.
-No unit tests were added or run.
+The GPT offline bit plus a separate runtime-offline operation survived a normal
+reboot: volume reads failed with error 21 while raw reads and C: stayed usable.
+The pinned Rust observer then exited 0 in 0.0417076 seconds, reading exactly
+8,192 payload bytes and matching the independently generated marker hash. It
+also resolved the actual C: pagefile to the nonoverlapping Windows extent.
+
+The same-byte physical-write experiment failed with error 21. Its older helper
+did not record the exact failed stage, so write completion remains unknown.
+A separate diagnostic issued no writes and successfully opened the physical
+disk read/write, queried its identity, read both GPT headers and the marker, and
+flushed the disk. This narrows the failure; it does not qualify a writer. An
+offline volume is not proof that a filesystem lock/dismount owner satisfies
+Windows' separate raw-write interlock. A fresh lock/dismount experiment and a
+sound post-reboot reacquisition protocol remain necessary before integration.
+
+The test partition's original GPT attributes and T: access were restored, its
+NTFS marker matched, and C: remained healthy. The VM was normally shut down and
+the completed branch saved. See the exact build, receipts and limits in
+[the recorded experiment](../evidence/partition-scoped-source-20261103.json).
+The changed converter's performance optimization has not yet had its own full
+native conversion run. No unit tests were added or run.

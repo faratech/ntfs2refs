@@ -274,7 +274,7 @@ pub(crate) fn authenticate_partition_mixed(source: &mut PartitionScopedOwner,
     Ok((current, Sha256::digest(blocks).into()))
 }
 
-fn authenticate_scoped_partition_reader<R: Read + Seek>(
+pub(in crate::native) fn authenticate_scoped_partition_reader<R: Read + Seek>(
     source: &mut R, source_length: u64, binding: &PartitionSourceBinding,
     policy: &HeldPagedWritePolicy, j: &mut File, p: &PagedRecoveryPins<'_>,
     phase: PartitionJournalPhase,

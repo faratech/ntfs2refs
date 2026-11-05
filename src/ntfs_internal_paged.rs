@@ -143,6 +143,47 @@ impl PagedVerifiedIndexes {
         self.replacement_supported = self.indexes.iter().all(|i| i.replacement_supported);
         true
     }
+    pub(crate) fn bind_offline_native_quota(
+        &mut self,
+        observed: &n2r_win32::offline_environment::OfflinePagedNtfsObservation,
+        owner: &n2r_win32::offline_environment::OfflineSourceOwnerToken,
+    ) -> Result<bool> {
+        observed.require_owner(owner)?;
+        observed.require_admission_evidence()?;
+        let native = observed
+            .txf()
+            .context("actual offline quota observation absent")?;
+        if observed.domain().header().request.source_inspection_sha256 != self.inspection_sha256
+            || !self.default_quotas_only
+            || native.windows_version != [10, 0, 26100]
+            || native.rm_handle_profile != "volume-root-directory-physical-disk-read-only"
+            || !native
+                .quota_before
+                .as_ref()
+                .zip(native.quota_after.as_ref())
+                .is_some_and(|(a, b)| {
+                    a == b
+                        && a.control_flags == 0
+                        && a.default_threshold == -1
+                        && a.default_limit == -1
+                        && a.free_space_start_filtering == 0
+                        && a.free_space_threshold == 0
+                        && a.free_space_stop_filtering == 0
+                })
+        {
+            return Ok(false);
+        }
+        self.native_quota_policy_bound = true;
+        for index in &mut self.indexes {
+            if index.role == "$Extend\\$Quota" {
+                index.replacement_supported = true;
+                index.detail = "cross-matched unlimited defaults and disabled native quotas on the actual offline owner".into();
+            }
+        }
+        self.replacement_supported = self.indexes.iter().all(|index| index.replacement_supported);
+        observed.revalidate()?;
+        Ok(true)
+    }
     pub fn revalidate(&self) -> Result<()> {
         for store in &self.stores {
             store.revalidate()?;

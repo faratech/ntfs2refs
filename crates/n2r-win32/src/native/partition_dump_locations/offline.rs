@@ -43,8 +43,20 @@ fn offline_location(
         .ok_or_else(|| invalid("offline critical root unterminated"))?;
     let root = text(&root[..n])?;
     let kind = unsafe { GetDriveTypeW(wide(&root).as_ptr()) };
-    if kind == 6 {
-        // Positive actual current-RAM backing, not a failed extent query.
+    if root.len() == 3
+        && windows
+            .get(..3)
+            .is_some_and(|w| w.eq_ignore_ascii_case(&root))
+    {
+        // Exact current Windows root must have positive SAME held kernel
+        // Ramdisk proof even when the actual WinPE drive classification is3.
+        let native_ram =
+            crate::native::offline_environment::kernel_ram_backing::require_path(&effective)?;
+        require(
+            native_ram.dos_root.eq_ignore_ascii_case(&root),
+            "critical currentRAM native root differs",
+        )?;
+        // Positive actual current-RAM backing, never a failed extent query.
         require(
             root.len() == 3
                 && windows
@@ -53,8 +65,9 @@ fn offline_location(
             "unbound noncurrent RAM critical route",
         )?;
         require(
-            unsafe { GetDriveTypeW(wide(&root).as_ptr()) } == 6,
-            "critical RAM route changed",
+            crate::native::offline_environment::kernel_ram_backing::require_path(&effective)?
+                == native_ram,
+            "critical currentRAM kernel device proof changed",
         )?;
         let mut closing_root = [0u16; 4096];
         if unsafe {
@@ -77,8 +90,8 @@ fn offline_location(
         )?;
         return Ok(
             serde_json::json!({"setting":setting,"configured_path":raw,"effective_path":effective,
-            "documented_default_used":configured.is_none(),"backing":"positively_observed_current_RAMDISK6",
-            "ram_root":root,"physical_extents":null,"unqueried_extents_are_not_absence":true}),
+            "documented_default_used":configured.is_none(),"backing":"positively_matched_current_kernel_Ramdisk_GUID_v1",
+            "actual_drive_type":kind,"native_ram_backing":native_ram,"ram_root":root,"physical_extents":null,"unqueried_extents_are_not_absence":true}),
         );
     }
     require(

@@ -4,8 +4,9 @@ mod source;
 use super::*;
 use crate::journal_file::GeneralJournalStorageBinding;
 pub use source::{
-    OfflineFrozenSource, OfflineRecoverySource, OfflineSourceIntentPin, OfflineSourceOwnerToken,
-    OfflineSourceState,
+    OfflineFreshWitness, OfflineFrozenSource, OfflinePagedNtfsObservation,
+    OfflineReadonlyNtfsPhase, OfflineRecoverySource, OfflineSourceIntentPin,
+    OfflineSourceOwnerToken, OfflineSourceState,
 };
 use std::{ffi::c_void, fs::OpenOptions, os::windows::fs::OpenOptionsExt, ptr};
 use windows_sys::Win32::{
@@ -70,12 +71,9 @@ fn current_windows() -> io::Result<String> {
     text(&out[..n])
 }
 fn require_ram_root(path: &str) -> io::Result<String> {
-    let actual = root(path)?;
-    require(
-        unsafe { GetDriveTypeW(wide(&actual).as_ptr()) } == 6,
-        "actual Windows/component backing is not DRIVE_RAMDISK6",
-    )?;
-    Ok(actual)
+    // DriveType is only a classification: actual WinPE WIM reports FIXED3.
+    // Require matching kernel-owned DOS mapping + SAME held Ramdisk volume.
+    Ok(crate::native::offline_environment::kernel_ram_backing::require_path(path)?.dos_root)
 }
 fn mini_nt() -> io::Result<()> {
     let mut key = ptr::null_mut();
@@ -197,6 +195,8 @@ pub struct OfflineImageIdentity {
     pub bytes: u64,
     pub sha256: String,
     pub loaded_image_bytes_hashed: bool,
+    pub held_nt_object_name: String,
+    pub ram_device_object_name: String,
 }
 struct ImageOwner {
     file: File,
@@ -205,7 +205,14 @@ struct ImageOwner {
 fn file_identity(file: &File) -> io::Result<(Vec<u8>, u64)> {
     let mut raw = [0u32; 13];
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), raw.as_mut_ptr().cast()) } == 0 {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        return Err(io::Error::new(
+            error.kind(),
+            format!(
+                "ImageOwner GetFileInformationByHandle(52B) failed: native_error={:?}; {error}",
+                error.raw_os_error()
+            ),
+        ));
     }
     require(
         raw[0] & 0x410 == 0 && raw[10] == 1,
@@ -229,6 +236,12 @@ impl ImageOwner {
             .share_mode(1)
             .custom_flags(0x0020_0000)
             .open(&path)?;
+        let (native_backing, held_nt_object_name) =
+            crate::native::offline_environment::kernel_ram_backing::require_file(&path, &file)?;
+        require(
+            native_backing.dos_root == ram_root,
+            "actual image native RAM root differs",
+        )?;
         let (id, size) = file_identity(&file)?;
         require(
             size <= *remaining,
@@ -249,10 +262,21 @@ impl ImageOwner {
                 bytes: size,
                 sha256: hex::encode(hash),
                 loaded_image_bytes_hashed: false,
+                held_nt_object_name,
+                ram_device_object_name: native_backing.ram_device_object_name,
             },
         })
     }
     fn require_current(&self) -> io::Result<()> {
+        let (backing, name) = crate::native::offline_environment::kernel_ram_backing::require_file(
+            &self.identity.path,
+            &self.file,
+        )?;
+        require(
+            name == self.identity.held_nt_object_name
+                && backing.ram_device_object_name == self.identity.ram_device_object_name,
+            "held offline image kernel RAM device/name changed",
+        )?;
         require(
             require_ram_root(&self.identity.path)? == self.identity.ram_root
                 && file_identity(&self.file)?
@@ -407,6 +431,7 @@ pub struct OfflineOwningFacts {
     pub windows_directory: String,
     pub windows_ram_root: String,
     pub windows_drive_type: u32,
+    pub native_ram_backing: crate::native::offline_environment::KernelRamBackingFacts,
     pub mini_nt_present: bool,
     pub boot: OfflineBootIdentity,
     pub running_image: OfflineImageIdentity,
@@ -445,6 +470,12 @@ impl OfflineOwningEnvironment {
         )?;
         let windows = current_windows()?;
         let ram_root = require_ram_root(&windows)?;
+        let ram = OpenOptions::new()
+            .access_mode(0x00100080)
+            .share_mode(3)
+            .open(format!("\\\\.\\{}:", &ram_root[..1]))?;
+        let native_ram_backing =
+            crate::native::offline_environment::kernel_ram_backing::require_held(&windows, &ram)?;
         mini_nt()?;
         let boot = boot_identity()?;
         let mut component_bytes = budget.ram_bytes;
@@ -457,7 +488,6 @@ impl OfflineOwningEnvironment {
             kernel_image(&windows, &ram_root, budget)?,
             &mut component_bytes,
         )?;
-        let ram = device_file(&format!("\\\\.\\{}:", &ram_root[..1]), false, false)?;
         let device = control(
             &ram,
             "offline-current-RAM-volume-device",
@@ -491,7 +521,8 @@ impl OfflineOwningEnvironment {
             source: source.clone(),
             windows_directory: windows,
             windows_ram_root: ram_root,
-            windows_drive_type: 6,
+            windows_drive_type: native_ram_backing.actual_drive_type,
+            native_ram_backing,
             mini_nt_present: true,
             boot,
             running_image: running_image.identity.clone(),
@@ -519,7 +550,7 @@ impl OfflineOwningEnvironment {
         Ok(value)
     }
     pub fn windows_backing_is_ram(&self) -> bool {
-        self.facts.windows_drive_type == 6
+        self.facts.native_ram_backing.positive_native_kernel_ramdisk
     }
     pub fn facts(&self) -> &OfflineOwningFacts {
         &self.facts
@@ -538,6 +569,20 @@ impl OfflineOwningEnvironment {
             current_windows()? == self.facts.windows_directory
                 && require_ram_root(&self.facts.windows_directory)? == self.facts.windows_ram_root,
             "current RAM Windows root changed",
+        )?;
+        require(
+            crate::native::offline_environment::kernel_ram_backing::require_held(
+                &self.facts.windows_directory,
+                &self.ram,
+            )? == self.facts.native_ram_backing,
+            "current actual kernel RAM backing changed",
+        )?;
+        require(
+            self.running_image.identity.ram_device_object_name
+                == self.facts.native_ram_backing.ram_device_object_name
+                && self.kernel.identity.ram_device_object_name
+                    == self.facts.native_ram_backing.ram_device_object_name,
+            "current Windows/process/loaded kernel are not on SAME native RAMdisk",
         )?;
         mini_nt()?;
         require(
@@ -655,3 +700,8 @@ impl OfflineOwningEnvironment {
         self.require_current(events)
     }
 }
+
+pub use source::{
+    OfflineClosedJournalObservation, OfflineJournalReadView, OfflinePagedWriter,
+    OfflineSourceApplyGate, OfflineTerminalKind,
+};

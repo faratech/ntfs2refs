@@ -19,6 +19,7 @@ mod live_cancel;
 mod readonly_physical;
 pub use readonly_physical::freeze_mounted_ntfs_readonly_physical;
 mod physical_window;
+mod external_intent;
 pub use live_cancel::PartitionLiveCancellationReceipt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -170,6 +171,11 @@ struct IntentFile {
     sequence: u64,
     max_allocation: u64,
     latest_receipt: Option<PartitionIntentReceipt>,
+    external_journal: Option<external_intent::ExternalIntentEnrollment>,
+}
+enum IntentLocation<'a> {
+    Windows,
+    IndependentJournal(&'a crate::journal_file::GeneralJournalStorageBinding),
 }
 struct BoundedBytes {
     bytes: Vec<u8>,
@@ -210,6 +216,14 @@ impl IntentFile {
     fn new(
         file: File,
         baseline: &PartitionIsolationObservation,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        Self::new_at(file, baseline, IntentLocation::Windows, events)
+    }
+    fn new_at(
+        file: File,
+        baseline: &PartitionIsolationObservation,
+        location: IntentLocation<'_>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
         let identity =
@@ -265,15 +279,25 @@ impl IntentFile {
             32,
             events,
         )?;
-        let c = &baseline.windows_volume;
-        require(
+        let external_journal = match location {
+            IntentLocation::Windows => {
+                let c = &baseline.windows_volume;
+                require(
             ext.len() == 32
                 && crate::layout::u32_at(&ext, 0)? == 1
                 && crate::layout::u32_at(&ext, 8)? == c.disk_number
                 && crate::layout::u64_at(&ext, 16)? == c.offset
                 && crate::layout::u64_at(&ext, 24)? == c.length,
             "intent file is not on the actual running Windows C extent",
-        )?;
+                )?;
+                None
+            }
+            IntentLocation::IndependentJournal(journal) => Some(
+                external_intent::ExternalIntentEnrollment::observe(
+                    journal, &baseline.binding, volume, &identity.final_path, events,
+                )?,
+            ),
+        };
         Ok(Self {
             file,
             identity,
@@ -281,6 +305,7 @@ impl IntentFile {
             sequence: 0,
             max_allocation,
             latest_receipt: None,
+            external_journal,
         })
     }
     fn persist(
@@ -289,6 +314,9 @@ impl IntentFile {
         from: PartitionPreparationStage,
         desired: &[u8],
     ) -> io::Result<PartitionIntentReceipt> {
+        if let Some(enrollment) = &self.external_journal {
+            enrollment.revalidate(&self.identity.final_path, &mut Vec::new())?;
+        }
         let before = crate::reference_file::observe_reference_file_handle_with_limit(
             &self.file, MAX_INTENT,
         )?;
@@ -600,7 +628,33 @@ impl PartitionPreparationGuard {
         binding: PartitionSourceBinding,
         budget: PartitionObservationBudget,
         intent_file: File,
+        observer: Box<dyn PartitionPreparationObserver>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        Self::begin_at(binding, budget, intent_file, observer, IntentLocation::Windows, events)
+    }
+    /// Full-Windows preparation with an independently bound journal volume.
+    /// The original constructor retains its Windows-volume requirement.
+    pub fn begin_external_journal(
+        binding: PartitionSourceBinding,
+        budget: PartitionObservationBudget,
+        intent_file: File,
+        journal: &crate::journal_file::GeneralJournalStorageBinding,
+        observer: Box<dyn PartitionPreparationObserver>,
+        events: &mut Vec<NativeEvent>,
+    ) -> io::Result<Self> {
+        Self::begin_at(binding, budget, intent_file, observer,
+            IntentLocation::IndependentJournal(journal), events)
+    }
+    pub fn external_intent_journal(&self) -> Option<&crate::journal_file::GeneralJournalStorageBinding> {
+        self.intent.external_journal.as_ref().map(|enrollment| enrollment.binding())
+    }
+    fn begin_at(
+        binding: PartitionSourceBinding,
+        budget: PartitionObservationBudget,
+        intent_file: File,
         mut observer: Box<dyn PartitionPreparationObserver>,
+        location: IntentLocation<'_>,
         events: &mut Vec<NativeEvent>,
     ) -> io::Result<Self> {
         binding.validate()?;
@@ -677,7 +731,10 @@ impl PartitionPreparationGuard {
             binding.storage.identity.partition_offset,
             512,
         )?);
-        let intent = IntentFile::new(intent_file, &baseline, events)?;
+        let intent = match location {
+            IntentLocation::Windows => IntentFile::new(intent_file, &baseline, events)?,
+            other => IntentFile::new_at(intent_file, &baseline, other, events)?,
+        };
         let mut guard = Self {
             binding,
             budget,
@@ -1287,6 +1344,9 @@ impl PartitionNtfsAdmission {
     pub(in crate::native) fn event_sink(&self)->PartitionNativeEventSink {self.guard.observer.clone()}
     pub fn native(&self) -> &PartitionPagedNtfsObservation {
         &self.native
+    }
+    pub fn external_intent_journal(&self) -> Option<&crate::journal_file::GeneralJournalStorageBinding> {
+        self.guard.external_intent_journal()
     }
     pub fn preparation_token(&self) -> &PartitionPreparationToken {
         &self.guard.token

@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "kind": "offline-paged-writer-native-proof-and-external-Windows-preparation-build",
+  "focused_check": {
+    "main_sha256": "c6bc5c52c8458ee70bd2567a9d8350105aeaa6245448df22675780403e04348b",
+    "capacity": {
+      "actual_bytes": 241108194332,
+      "free_bytes": 166189400064,
+      "maximum_actual_bytes": 329374052988,
+      "minimum_free_bytes": 17179869184,
+      "additional_bytes": 2147483648,
+      "all_lab_shared_cache_and_staging_charged": true,
+      "epoch_reset": false
+    },
+    "wall_seconds": 28.0663647,
+    "native_run": false,
+    "shared_target_reused": true,
+    "exit_code": 0,
+    "unit_tests_run": false,
+    "kind": "public-partition-dispatch-focused-check"
+  },
+  "check_receipt_sha256": "5cc54db2bf5fba5e2d282b3109193ea3c63b5121fa4b371514178884560d4de9",
+  "generic_source_journal_checker_unchanged_except_visibility": true,
+  "fresh_apply_requires_actual_native_owner_and_J_old_state": true,
+  "replay_requires_actual_current_mixed_state_and_J": true,
+  "AP_RB_before_source_write": true,
+  "pending_write_flush_and_readback_required": true,
+  "independent_J_intent_requires_native_volume_enrollment": true,
+  "actual_GetDriveType3_is_not_RAM_proof": true,
+  "native_kernel_Ramdisk_GUID_proof_required": true,
+  "new_code_native_execution": false,
+  "cross_boot_protection_qualified": false,
+  "shared_conversion_enabled": false,
+  "critical_path": "Full Windows preparation/native shadow; offline journal apply and recovery",
+  "files": [
+    {
+      "path": "crates/n2r-win32/src/native/offline_environment.rs",
+      "bytes": 23673,
+      "sha256": "a80167dec1cf450ebdfd69310154bfb4683bbf2ea3bbd04fe68bf306b6b8fdaf"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/kernel_ram_backing.rs",
+      "bytes": 10622,
+      "sha256": "84589b58e336936ddeb73121e58c972d436e7472b973d66bed06b95a9e2b419c"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/paged_recovery.rs",
+      "bytes": 57111,
+      "sha256": "39ab42840e98bbbef490d2b02c92631564755496ecb60d182b8572d63637d150"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/paged_recovery/partition_scope.rs",
+      "bytes": 26391,
+      "sha256": "7630239d742c4b6d6c1bff27d26300113ee1bea497c89b095589c6e48b36f454"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_dump_locations/offline.rs",
+      "bytes": 13280,
+      "sha256": "a568bd45ed0ca55ee35e84fa237a09298c840dda5a79afb91c043d2a68f90f26"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline.rs",
+      "bytes": 25757,
+      "sha256": "55511aaa1e809f886d0a8ef68642bfcc327c5de1f337fadf9543520a545d617c"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source.rs",
+      "bytes": 33432,
+      "sha256": "d6be528f12836d13cf2954d1f12a0eb00cc3b3e84553ff9c4da159c6f7842aaa"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/paged.rs",
+      "bytes": 31392,
+      "sha256": "35c6e3420a871a92026b04fe465f86e023b471989d0f5d814bf106e5d02ba00e"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_isolation/offline/source/native_observation.rs",
+      "bytes": 31007,
+      "sha256": "d1ce8de5db35f1a4ca5fd9e204ce98f1114f72debccdf0f23f70103449472af6"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged.rs",
+      "bytes": 61860,
+      "sha256": "da501ca048bcdb9692f5ef21cdf496fc24b3de196993633b121a353f33df087d"
+    },
+    {
+      "path": "crates/n2r-win32/src/native/partition_lifecycle/staged/external_intent.rs",
+      "bytes": 4262,
+      "sha256": "7259ba22573d4b955e8d1bab04d61785bc420360549e3b4f985cd6a5cc419c52"
+    },
+    {
+      "path": "crates/n2r-win32/src/txf_native.rs",
+      "bytes": 29577,
+      "sha256": "d059beced5640cb4a4759ae9022b696b2916ff8c2a03c62ff91611b2c4c57759"
+    },
+    {
+      "path": "src/ntfs_internal_paged.rs",
+      "bytes": 28320,
+      "sha256": "572b1a5ee063456ada4be6f16ec3d7d6f54900edb9637d6db5a1f781e71c8902"
+    },
+    {
+      "path": "src/ntfs_transactions.rs",
+      "bytes": 16342,
+      "sha256": "1a4142618815ed5a06213cedadc923e611aa4b10e7198552f04b58ef5abb40b5"
+    }
+  ]
+}

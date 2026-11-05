@@ -752,3 +752,21 @@ pub(crate) fn observe_partition_before_freeze(
     }
     Ok(PartitionMountedTxfObservation {binding:binding.clone(),observation})
 }
+
+/// Actual opaque offline NTFS phase only; preserves the existing volume/RM
+/// engine and its physical0-vs2 root-access behavior. No caller bool bypass.
+pub(crate) fn observe_offline_bound_phase(
+    phase:&mut crate::offline_environment::OfflineReadonlyNtfsPhase<'_>,
+    events:&mut Vec<crate::native::NativeEvent>,
+)->io::Result<Observation>{
+    phase.require_current(events)?;
+    if !matches!(phase.expected_attributes(),0|2){return Err(io::Error::other("offline TxF phase is neither real original0 nor physicalreadonly2"));}
+    let binding=phase.binding().clone();let volume=phase.duplicate_volume()?;
+    let extent=control(&volume,0x0056_0000).map_err(|n|io::Error::from_raw_os_error(n as i32))?;
+    binding.validate_volume_extent(&extent)?;
+    let proxy=DiskBinding{disk_number:binding.disk_number,volume_guid:binding.volume_guid.clone(),identity:binding.identity.clone()};
+    let path=binding.volume_path()?;
+    let observed=observe_volume(proxy,volume,&path)?;
+    phase.require_current(events)?;
+    Ok(observed)
+}

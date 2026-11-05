@@ -289,6 +289,79 @@ pub(crate) fn verify_domain(
     Ok(result)
 }
 
+/// Bind the actual offline owner's pre-lock and protected native transaction
+/// observations to the complete frozen NTFS model.
+#[cfg(windows)]
+pub(crate) fn verify_offline_domain(
+    source: &ntfs::PagedInspection,
+    log: &ntfs_log::VerifiedRestart,
+    owner: &mut n2r_win32::offline_environment::OfflineFrozenSource,
+    observed: &n2r_win32::offline_environment::OfflinePagedNtfsObservation,
+    events: &mut Vec<n2r_win32::NativeEvent>,
+) -> Result<VerifiedTransactions> {
+    use n2r_win32::{attestation::NativeObservationDomain, txf_native::DefaultRmState};
+    use ntfs::RootFileDomain;
+    let token = owner.owner_token();
+    observed.require_owner(&token)?;
+    observed.require_admission_evidence()?;
+    let opening = owner.state(events)?;
+    source.revalidate()?;
+    let pin = source.canonical_sha256()?;
+    ensure!(
+        opening.actual.disk_attributes == 3
+            && !opening.source_writer_issued
+            && log.binds_domain(source)
+            && log.restart.candidate_clean_dismount
+            && source.header().dirty == Some(false)
+            && observed.domain().header().request.source_inspection_sha256 == pin
+            && observed.before().actual == observed.after().actual
+            && observed.after().actual == opening.actual,
+        "offline transaction evidence does not bind the clean, unchanged frozen source"
+    );
+    let witness = owner
+        .fresh_witness()
+        .context("actual pre-lock offline witness absent")?;
+    let before = witness
+        .before_freeze_txf()
+        .context("actual pre-lock TxF facts absent")?;
+    let after = observed
+        .txf()
+        .context("actual protected offline TxF facts absent")?;
+    ensure!(
+        before.windows_version == [10, 0, 26100]
+            && after.windows_version == before.windows_version
+            && before.rm_handle_profile == "volume-root-directory-access-time-suppressed"
+            && after.rm_handle_profile == "volume-root-directory-physical-disk-read-only"
+            && before.native_volume_state_stably_clear
+            && after.native_volume_state_stably_clear
+            && matches!(
+                before.default_rm_state(),
+                DefaultRmState::QueriedEmpty | DefaultRmState::Inactive
+            )
+            && after.default_rm_state() == DefaultRmState::Inactive,
+        "offline default RM lacks the actual idle/lock/protected-inactive transition"
+    );
+    let result = VerifiedTransactions {
+        inspection_sha256: pin,
+        scope: inspect_scope_domain(source)?,
+        default_rm_before: format!("{:?}", before.default_rm_state()),
+        default_rm_after: "Inactive".into(),
+        lock_dismount_exclusion_observed: opening.original_live_volume_locks_acquired,
+        clean_restart_bound: true,
+    };
+    ensure!(
+        result.lock_dismount_exclusion_observed,
+        "actual source locks absent"
+    );
+    observed.revalidate()?;
+    source.revalidate()?;
+    ensure!(
+        token.same_owner(&owner.owner_token()) && owner.state(events)?.actual == opening.actual,
+        "offline source owner changed across transaction reconciliation"
+    );
+    Ok(result)
+}
+
 /// Same default-RM/raw-log reconciliation with an actual selected-partition
 /// lifecycle phase, never a fabricated GeneralFreezeObservation.
 #[cfg(windows)]

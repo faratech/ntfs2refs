@@ -12,6 +12,7 @@ use super::{
 };
 use crate::journal_file::{GeneralJournalStorageBinding, JournalFileIdentity, JournalProfile};
 mod partition_scope;
+pub(in crate::native) use partition_scope::authenticate_scoped_partition_reader;
 pub(in crate::native) use partition_scope::authenticate_basic_ro_closed;
 pub use partition_scope::{PartitionClosedJournalObservation, PartitionHandoffWitness,
     PartitionTerminalKind, authenticate_partition_closed_journal};

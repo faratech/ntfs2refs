@@ -1,10 +1,19 @@
 //! Actual offline-machine source ownership. No legacy Windows-C/layout guard
 //! changes and no source writer or online/repair operation is exposed here.
+mod native_observation;
+mod paged;
 use super::*;
 use crate::native::{
     AlignedBuffer, MAX_IO, close_file,
     partition_lifecycle::{PartitionNativeEventSink, PartitionPreparationObserver},
     set_attributes,
+};
+pub use native_observation::{
+    OfflineFreshWitness, OfflinePagedNtfsObservation, OfflineReadonlyNtfsPhase,
+};
+pub use paged::{
+    OfflineClosedJournalObservation, OfflineJournalReadView, OfflinePagedWriter,
+    OfflineSourceApplyGate, OfflineTerminalKind,
 };
 use std::{
     io::{Read, Seek, SeekFrom, Write},
@@ -32,6 +41,7 @@ pub struct OfflineSourceState {
     pub current_filesystem_lock_claimed: bool,
     pub disk_offline_in_current_environment: bool,
     pub cross_environment_restart_exclusion_qualified: bool,
+    pub source_gate_ever_issued: bool,
     pub source_writer_issued: bool,
     pub serialized_state_grants_authority: bool,
 }
@@ -403,6 +413,13 @@ struct Core {
     token: OfflineSourceOwnerToken,
     poisoned: bool,
     fresh: bool,
+    gate_ever_issued: bool,
+    writer_ever_issued: bool,
+    fresh_witness: Option<native_observation::OfflineFreshWitness>,
+    native_read_bytes_requested: u64,
+    native_read_bytes_succeeded: u64,
+    native_read_error_count: u64,
+    native_read_short_count: u64,
     intent: Option<HeldIntent>,
     sink: PartitionNativeEventSink,
 }
@@ -483,9 +500,10 @@ impl Core {
                 },
                 original_live_volume_locks_acquired: self.fresh,
                 current_filesystem_lock_claimed: false,
-                disk_offline_in_current_environment: true,
+                disk_offline_in_current_environment: self.expected_attributes & DISK_OFFLINE != 0,
                 cross_environment_restart_exclusion_qualified: false,
-                source_writer_issued: false,
+                source_gate_ever_issued: self.gate_ever_issued,
+                source_writer_issued: self.writer_ever_issued,
                 serialized_state_grants_authority: false,
             })
         })();
@@ -548,8 +566,33 @@ impl Core {
                 self.file.seek(SeekFrom::Start(absolute))? == absolute,
                 "offline source physical seek differs",
             )?;
-            let n = self.file.read(&mut self.buffer.bytes_mut()[..bytes])?;
-            require(n >= lead + count, "offline source physical read short")?;
+            self.native_read_bytes_requested = self
+                .native_read_bytes_requested
+                .checked_add(bytes as u64)
+                .ok_or_else(|| invalid("offline physical read request counter overflow"))?;
+            let n = match self.file.read(&mut self.buffer.bytes_mut()[..bytes]) {
+                Ok(n) => {
+                    self.native_read_bytes_succeeded = self
+                        .native_read_bytes_succeeded
+                        .checked_add(n as u64)
+                        .ok_or_else(|| invalid("offline physical read success counter overflow"))?;
+                    n
+                }
+                Err(error) => {
+                    self.native_read_error_count = self
+                        .native_read_error_count
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("offline physical read error counter overflow"))?;
+                    return Err(error);
+                }
+            };
+            if n < lead + count {
+                self.native_read_short_count = self
+                    .native_read_short_count
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("offline short-read counter overflow"))?;
+                return Err(invalid("offline source physical read short"));
+            }
             out[..count].copy_from_slice(&self.buffer.bytes_mut()[lead..lead + count]);
             self.position += count as u64;
             Ok(count)
@@ -585,6 +628,9 @@ fn require_owner_budget(budget: PartitionObservationBudget) -> io::Result<()> {
     )
 }
 impl OfflineFrozenSource {
+    pub fn fresh_witness(&self) -> Option<&native_observation::OfflineFreshWitness> {
+        self.core.fresh_witness.as_ref()
+    }
     /// Caller reserves this PLUS actual artifact_allocation_slack before entry.
     pub fn maximum_intent_file_bytes(budget: PartitionObservationBudget) -> io::Result<u64> {
         budget.validate()?;
@@ -623,6 +669,14 @@ impl OfflineFrozenSource {
             "fresh offline owner cannot reinterpret legacy/private AP source",
         )?;
         checkpoint(&sink, "offline-fresh-source-journal-native-bound", events)?;
+        let fresh_witness =
+            native_observation::capture_offline_fresh_witness(&mut env, &sink, events)?;
+        fresh_witness.require_environment(&mut env, events)?;
+        checkpoint(
+            &sink,
+            "offline-actual-prelock-NTFS-witness-captured",
+            events,
+        )?;
         let locked = lock_source_volumes(&mut env, &sink, events)?;
         env.require_current(events)?;
         checkpoint(&sink, "offline-all-source-volume-locks-held", events)?;
@@ -678,6 +732,13 @@ impl OfflineFrozenSource {
                 token: OfflineSourceOwnerToken(Arc::new(())),
                 poisoned: false,
                 fresh: true,
+                gate_ever_issued: false,
+                writer_ever_issued: false,
+                native_read_bytes_requested: 0,
+                native_read_bytes_succeeded: 0,
+                native_read_error_count: 0,
+                native_read_short_count: 0,
+                fresh_witness: Some(fresh_witness),
                 intent: Some(held_intent),
                 sink,
             },
@@ -727,6 +788,13 @@ impl OfflineRecoverySource {
                 token: OfflineSourceOwnerToken(Arc::new(())),
                 poisoned: false,
                 fresh: false,
+                gate_ever_issued: false,
+                writer_ever_issued: false,
+                native_read_bytes_requested: 0,
+                native_read_bytes_succeeded: 0,
+                native_read_error_count: 0,
+                native_read_short_count: 0,
+                fresh_witness: None,
                 intent: None,
                 sink,
             },
@@ -738,6 +806,20 @@ impl OfflineRecoverySource {
 macro_rules! readonly_owner {
     ($type:ty) => {
         impl $type {
+            /// These count this aligned physical source-data reader only;
+            /// GPT/native metadata, filesystem collectors and J I/O are separate.
+            pub fn native_read_bytes_requested(&self) -> u64 {
+                self.core.native_read_bytes_requested
+            }
+            pub fn native_read_bytes_succeeded(&self) -> u64 {
+                self.core.native_read_bytes_succeeded
+            }
+            pub fn native_read_error_count(&self) -> u64 {
+                self.core.native_read_error_count
+            }
+            pub fn native_read_short_count(&self) -> u64 {
+                self.core.native_read_short_count
+            }
             pub fn read_buffer_memory_bytes() -> u64 {
                 MAX_IO as u64 + 4096
             }

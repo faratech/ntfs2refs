@@ -1,6 +1,7 @@
 //! Read-only environment facts for a future offline boot lane. No constructor
 //! here issues source admission, exclusion, restoration or write authority.
 pub use super::partition_isolation::offline::{OfflineOwningEnvironment,OfflineOwningFacts,OfflineSourcePhysicalFacts};
+pub use super::partition_isolation::offline::{OfflineFreshWitness,OfflinePagedNtfsObservation,OfflineReadonlyNtfsPhase};
 use super::{NativeEvent, control, device_file};
 use crate::general_layout::GeneralDiskBinding;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,9 @@ use windows_sys::Win32::{
 
 #[path = "offline_environment_wmi.rs"]
 mod wmi;
+#[path="kernel_ram_backing.rs"]
+pub(crate) mod kernel_ram_backing;
+pub use kernel_ram_backing::{KernelRamBackingFacts,KernelRamBackingObservation,NativeNameObservation,Legacy52Observation};
 
 #[link(name = "ntdll")]
 unsafe extern "system" {
@@ -124,6 +128,9 @@ pub struct ComponentObservation {
     pub failure: Option<Failure>,
     pub version_collected: bool,
     pub authenticode_collected: bool,
+    pub held_object_name_query:Option<NativeNameObservation>,
+    pub legacy_file_info52_query:Option<Legacy52Observation>,
+    pub file_id128_qualification_failure:Option<String>,
 }
 #[derive(Debug, Serialize)]
 pub struct VssAvailability {
@@ -147,6 +154,7 @@ pub struct Observation {
     pub rtl_get_version_status: i32,
     pub running_kernel_version: Option<[u32; 3]>,
     pub current_volume: Option<VolumeQuery>,
+    pub native_kernel_ram_backing:Option<KernelRamBackingObservation>,
     pub positive_ramdisk_reported_by_get_drive_type: bool,
     pub native_physical_extents_reported: bool,
     pub backing_classification: &'static str,
@@ -384,6 +392,7 @@ fn component(path: &Path, remaining: &mut u64) -> ComponentObservation {
         failure: None,
         version_collected: false,
         authenticode_collected: false,
+        held_object_name_query:None,legacy_file_info52_query:None,file_id128_qualification_failure:None,
     };
     let result = (|| {
         let mut file = OpenOptions::new()
@@ -392,8 +401,13 @@ fn component(path: &Path, remaining: &mut u64) -> ComponentObservation {
             .custom_flags(0x0020_0000)
             .open(path)?;
         crate::file_storage::require_readonly_access(&file)?;
-        let before =
-            crate::reference_file::observe_reference_file_handle_with_limit(&file, *remaining)?;
+        // Distinct diagnostic calls on this SAME held ordinary component.
+        // Legacy52 success is recorded only; it does NOT relax the Id128 gate.
+        out.held_object_name_query=Some(kernel_ram_backing::object_name(&file));
+        out.legacy_file_info52_query=Some(kernel_ram_backing::legacy52(&file));
+        let before=match crate::reference_file::observe_reference_file_handle_with_limit(&file,*remaining){
+            Ok(v)=>v,Err(e)=>{out.file_id128_qualification_failure=Some(format!("reference_file FileId128/standard metadata failed: native_error={:?}; {e}",e.raw_os_error()));return Err(e)},
+        };
         out.actual_file_bytes = Some(before.file_bytes);
         let modified = file.metadata()?.modified()?;
         *remaining = remaining
@@ -472,6 +486,7 @@ pub fn observe(
         Some(6) => "ramdisk",
         _ => "not-observed-or-unrecognized",
     };
+    let native_kernel_ram_backing=windows_directory.value.as_deref().map(kernel_ram_backing::observe);
     let firmware_type = Fact::result({
         let mut value = 0;
         let ok = unsafe { GetFirmwareType(&mut value) };
@@ -584,9 +599,12 @@ pub fn observe(
             None
         },
         current_volume,
+        native_kernel_ram_backing: native_kernel_ram_backing.clone(),
         positive_ramdisk_reported_by_get_drive_type: drive_type == Some(6),
         native_physical_extents_reported,
-        backing_classification: if drive_type == Some(6) && native_physical_extents_reported {
+        backing_classification: if native_kernel_ram_backing.as_ref().and_then(|v|v.facts.as_ref()).is_some_and(|v|v.positive_native_kernel_ramdisk){
+            "positively_matched_current_kernel_Ramdisk_GUID_v1"
+        }else if drive_type == Some(6) && native_physical_extents_reported {
             "RAMDISK-reported-and-physical-extents-also-observed"
         } else if drive_type == Some(6) {
             "RAMDISK-positively-reported-by-GetDriveTypeW"
@@ -614,3 +632,5 @@ pub fn observe(
 }
 
 pub use super::partition_isolation::offline::{OfflineFrozenSource,OfflineRecoverySource,OfflineSourceOwnerToken,OfflineSourceState,OfflineSourceIntentPin};
+
+pub use super::partition_isolation::offline::{OfflineSourceApplyGate,OfflinePagedWriter,OfflineJournalReadView,OfflineClosedJournalObservation,OfflineTerminalKind};
